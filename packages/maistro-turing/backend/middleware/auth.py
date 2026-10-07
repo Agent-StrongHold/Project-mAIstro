@@ -24,6 +24,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import JSONResponse, Response
 
 from maistro.auth import Scope, ServiceKeyAuthProvider, ServiceKeyRegistry
+from maistro.identity import Principal
 
 logger = logging.getLogger("turing.auth_middleware")
 
@@ -42,6 +43,7 @@ _PUBLIC_EXACT = frozenset(
     {
         "/",
         "/health",
+        "/health/ready",
         "/v1/auth/login",
         "/v1/auth/whoami",
         "/favicon.ico",
@@ -58,7 +60,7 @@ _PUBLIC_PREFIXES = (
 class TuringAuthMiddleware(BaseHTTPMiddleware):
     """Resolve a human session cookie OR a Turing service key onto request.state.
 
-    Leaves request.state.user / request.state.service unset when absent; the
+    Leaves request.state.principal / request.state.service unset when absent; the
     route dependencies decide whether that is acceptable.
     """
 
@@ -74,10 +76,15 @@ class TuringAuthMiddleware(BaseHTTPMiddleware):
         if path in _PUBLIC_EXACT or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
             return await call_next(request)
 
-        request.state.user = self._get_user(request)
+        user = self._get_user(request)
+        request.state.principal = Principal.from_legacy_dict(user) if user is not None else None
         request.state.service = self._get_service(request)
 
-        if path.startswith("/v1/") and request.state.user is None and request.state.service is None:
+        if (
+            path.startswith("/v1/")
+            and request.state.principal is None
+            and request.state.service is None
+        ):
             return JSONResponse(status_code=401, content={"detail": "Authentication required"})
 
         return await call_next(request)
@@ -105,24 +112,24 @@ class TuringAuthMiddleware(BaseHTTPMiddleware):
 # --------------------------------------------------------------- dependencies --
 
 
-def require_user(request: Request) -> dict:
+def require_user(request: Request) -> Principal:
     """Human session required (any role)."""
-    user = getattr(request.state, "user", None)
-    if user is None:
+    principal = getattr(request.state, "principal", None)
+    if not isinstance(principal, Principal):
         from fastapi import HTTPException
 
         raise HTTPException(status_code=401, detail="Human session required")
-    return user
+    return principal
 
 
-def require_admin(request: Request) -> dict:
+def require_admin(request: Request) -> Principal:
     """Human session with the admin role required."""
-    user = require_user(request)
-    if user.get("role") != "admin":
+    principal = require_user(request)
+    if not principal.is_admin:
         from fastapi import HTTPException
 
         raise HTTPException(status_code=403, detail="Admin role required")
-    return user
+    return principal
 
 
 def require_user_or_turing_scope(*scopes: Scope):  # type: ignore[no-untyped-def]
@@ -139,9 +146,9 @@ def require_user_or_turing_scope(*scopes: Scope):  # type: ignore[no-untyped-def
     def _dep(request: Request):  # type: ignore[no-untyped-def]
         from fastapi import HTTPException
 
-        user = getattr(request.state, "user", None)
-        if user is not None:
-            return user
+        principal = getattr(request.state, "principal", None)
+        if isinstance(principal, Principal):
+            return principal
 
         service = getattr(request.state, "service", None)
         if service is None:

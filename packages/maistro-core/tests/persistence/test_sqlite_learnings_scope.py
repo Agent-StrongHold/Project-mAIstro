@@ -19,6 +19,7 @@ from __future__ import annotations
 import aiosqlite
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.persistence.sqlite_learnings import SqliteLearningStore
 from maistro.types.memory import Learning
 
@@ -26,7 +27,7 @@ from maistro.types.memory import Learning
 @pytest.fixture
 async def store():
     conn = await aiosqlite.connect(":memory:")
-    st = SqliteLearningStore(conn)
+    st = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await st.ensure_schema()
     yield st
     await conn.close()
@@ -170,11 +171,13 @@ async def test_mark_outcome_cannot_write_across_scopes(store) -> None:
 @pytest.mark.contract("scope-isolation")
 @pytest.mark.scope("unit")
 async def test_promotion_is_scoped(store) -> None:
-    await store.store(_learning(learning="a", org_id="org-a"))
-    await store.store(_learning(learning="b", org_id="org-b"))
+    await store.store(_learning(learning="a", org_id="org-a", run_id="run-a"))
+    await store.store(_learning(learning="b", org_id="org-b", run_id="run-b"))
     await store.mark_used([1, 2])
     for _ in range(6):
         await store.mark_used([1, 2])
+    await store.mark_outcome([1, 2], success=True, org_id="org-a")
+    await store.mark_outcome([2], success=True, org_id="org-b")
 
     promoted = await store.check_auto_promotions(threshold=5, org_id="org-a")
 
@@ -212,7 +215,7 @@ async def test_ensure_schema_upgrades_a_pre_org_id_database() -> None:
         )
         await conn.commit()
 
-        store = SqliteLearningStore(conn)
+        store = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
 
         # The pre-existing row must survive the migration and stay readable by

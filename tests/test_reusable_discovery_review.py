@@ -116,3 +116,45 @@ def test_true_false_remain_booleans_for_conditional_job_refusal(gate):
     path.write_text(path.read_text() + "    if: false\n")
     with pytest.raises(gate.ContractError, match="conditional"):
         gate.collect()
+
+
+@pytest.mark.parametrize("required", ["", "        required: false\n"])
+def test_omitted_optional_string_uses_implicit_empty_default(gate, required):
+    _pair(gate, default=True)
+    path = gate.WORKFLOW_DIR / "reusable.yml"
+    path.write_text(path.read_text().replace('        default: ""\n', required))
+    assert gate.collect() == [("Caller", "Quality / Test", "every PR")]
+
+
+@pytest.mark.parametrize("prefix", ["", " "])
+def test_implicit_empty_default_cannot_be_the_entire_check_name(gate, prefix):
+    _pair(gate, default=True)
+    path = gate.WORKFLOW_DIR / "reusable.yml"
+    text = path.read_text().replace('        default: ""\n', "")
+    text = text.replace(
+        "name: Test${{ inputs.suffix }}", f'name: "{prefix}${{{{ inputs.suffix }}}}"'
+    )
+    path.write_text(text)
+    with pytest.raises(gate.ContractError, match="unsupported check name"):
+        gate.collect()
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "        type: string\n        required: true\n",
+        '        type: string\n        required: "false"\n',
+        "        type: string\n        required: null\n",
+        "        type: boolean\n",
+        "        type: number\n",
+        "        type: choice\n",
+        "        description: missing type\n",
+    ],
+)
+def test_implicit_string_default_is_not_guessed_for_other_declarations(gate, definition):
+    _pair(gate, default=True)
+    path = gate.WORKFLOW_DIR / "reusable.yml"
+    text = path.read_text().replace('        type: string\n        default: ""\n', definition)
+    path.write_text(text)
+    with pytest.raises(gate.ContractError, match="unresolved input"):
+        gate.collect()

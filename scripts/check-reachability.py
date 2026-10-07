@@ -58,6 +58,12 @@ _EXCLUDED_PACKAGE_PYTHON = frozenset(
         "packages/hive-conductor/run_hill_climb.py",
         "packages/maistro-evolve/examples/builders_swebench_live.py",
         "packages/maistro-canvas/frontend/server/mcp/generate_golden.py",
+        # The ext-SDK's out-of-tree example extension (#949): a copy-paste
+        # reference for external authors, executed only by consumers outside
+        # this monorepo — validation stats its files, it is never imported
+        # here (that is the acceptance criterion it demonstrates).
+        "packages/maistro-ext-sdk/examples/minimal-extension/acme_weather/__init__.py",
+        "packages/maistro-ext-sdk/examples/minimal-extension/acme_weather/plugin.py",
         # Department DAG corpus (packages/hive-conductor/dags/).
         "packages/hive-conductor/dags/__init__.py",
         "packages/hive-conductor/dags/author_examples.py",
@@ -71,11 +77,6 @@ _EXCLUDED_PACKAGE_PYTHON = frozenset(
         "packages/hive-conductor/dags/marketing.py",
         "packages/hive-conductor/dags/press_releases.py",
         "packages/hive-conductor/dags/product_management.py",
-        # Canvas migration environment
-        # (packages/maistro-canvas/frontend/alembic/).
-        "packages/maistro-canvas/frontend/alembic/env.py",
-        "packages/maistro-canvas/frontend/alembic/versions/001_initial_schema.py",
-        "packages/maistro-canvas/frontend/alembic/versions/003_canvas_job_lease_203.py",
         # Book-maker POC backend surfaces with no runtime path
         # (packages/maistro-canvas/frontend/server/).
         "packages/maistro-canvas/frontend/server/config.py",
@@ -174,7 +175,15 @@ FLAT_APPS = (
     FlatApp(
         name="maistro-turing-backend",
         path="packages/maistro-turing/backend",
-        roots=("main",),
+        # `provision` is the operator-invoked service-identity bootstrap CLI
+        # (#858): `python -m backend.provision` from packages/maistro-turing is
+        # the documented activation path (README, module docstring). Like the
+        # canvas server's `export_book`, a script a person launches is an
+        # entry point the import graph can root — not unreachable debt to
+        # baseline. Rooting it is also what keeps the #858 guarantee checkable:
+        # the no-default-credential ratchet and the key generation it proves
+        # both live on this path.
+        roots=("main", "provision"),
         report_prefix="maistro-turing-backend",
     ),
     FlatApp(
@@ -200,6 +209,17 @@ STATIC_ROOTS = (
     "maistro_registry.cli",
     "maistro_rsi.cli",
     "maistro_bootstrap",
+    # The extension SDK's console validator (#949): `maistro-ext-sdk validate`
+    # is the package's own entry point, the maistro_registry.cli precedent for
+    # a standalone library shipping its CLI as the in-graph root.
+    "maistro_ext_sdk.cli",
+    # The extension host harness's console runner (#974): `maistro-ext-harness
+    # run` is the package's own entry point ([project.scripts] in
+    # packages/maistro-ext-harness/pyproject.toml), the same
+    # maistro_registry.cli / maistro_ext_sdk.cli precedent — this is the
+    # invocation a third-party CI performs, so the runner is the harness's
+    # in-graph root, not unreachable library debt.
+    "maistro_ext_harness.cli",
 )
 
 # Package modules reached only through runtime strings or external launchers.
@@ -208,6 +228,11 @@ DYNAMIC_ROOTS = (
     "maistro_rsi.__main__",
     "maistro_turing.runtime",
     "maistro_canvas.canvas.routes",
+    # The harness's `python -m maistro_ext_harness` form (#974): the same CLI
+    # behind the console script, launched by module — the maistro_rsi.__main__
+    # precedent for an external launcher naming the package. __main__ imports
+    # cli.main, so this root also carries the console-script surface.
+    "maistro_ext_harness.__main__",
 )
 
 

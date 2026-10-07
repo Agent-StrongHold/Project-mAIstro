@@ -4,16 +4,43 @@ When a learning's hit_count crosses the promotion threshold,
 it graduates to 'promoted' status and optionally triggers
 skill mutation via the SkillForge protocol.
 
+Three promotion postures, most-governed first:
+
+- **Gauntlet** (`gauntlet=`): a threshold-crossing learning is only a
+  *candidate*. An independent Gauntlet evaluates it across contexts other than
+  the one that produced it, and only an accepted candidate promotes — with the
+  exact evaluation Runs, evaluator version and frozen-content hash recorded on
+  the promoted learning. Local success alone cannot create shared
+  institutional knowledge (M4-B2). Rejected candidates stay active and local,
+  evidence intact.
+- **Approval gate** (`approval_gate=`): learnings queue for human approval.
+- **Legacy**: threshold-crossing learnings auto-promote (unchanged behavior
+  for existing callers).
+
+Failure knowledge is retained, not discarded: :meth:`capture_anti_patterns`
+(#121, M4-B5) turns repeatedly-followed-into-failure learnings into retained
+``ANTI_PATTERN`` rows — still promotable through the same Gauntlet.
+
 Ported from Stronghold.
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+
+from maistro.memory.learnings.evidence import DEFAULT_MIN_PROMOTION_CONFIDENCE, promotion_blockers
+from maistro.persistence.learning_scope import matches_learning_scope
+from maistro.protocols.memory import AntiPatternSink, IneffectiveLearningSource
+from maistro.types.memory import (
+    ANTI_PATTERN_CONFIDENCE_FLOOR,
+    EpistemicType,
+)
 
 if TYPE_CHECKING:
     from maistro.memory.learnings.approval import LearningApprovalGate
+    from maistro.memory.learnings.gauntlet import GauntletVerdict, LearningGauntlet
     from maistro.memory.mutations import InMemorySkillMutationStore
     from maistro.protocols.memory import LearningStore
     from maistro.protocols.skills import SkillForge
@@ -23,10 +50,13 @@ logger = logging.getLogger(__name__)
 
 
 class LearningPromoter:
-    """Checks and executes promotions with an optional approval gate.
+    """Checks and executes promotions with an optional approval gate or Gauntlet.
 
-    If an approval_gate is configured, learnings enter 'pending_approval'
-    instead of auto-promoting. An admin must approve before mutation fires.
+    A configured Gauntlet takes precedence over the approval gate: the
+    question "has this measurably helped independent Runs?" decides
+    promotion, and the human queue answers a different one. Without a
+    Gauntlet, an approval gate (if configured) queues candidates for a
+    human; with neither, promotion is automatic (legacy behavior).
     """
 
     def __init__(
@@ -34,31 +64,41 @@ class LearningPromoter:
         learning_store: LearningStore,
         *,
         threshold: int = 5,
+        min_confidence: float = DEFAULT_MIN_PROMOTION_CONFIDENCE,
         skill_forge: SkillForge | None = None,
         mutation_store: InMemorySkillMutationStore | None = None,
         approval_gate: LearningApprovalGate | None = None,
+        gauntlet: LearningGauntlet | None = None,
     ) -> None:
         self._store = learning_store
         self._threshold = threshold
+        self._min_confidence = min_confidence
         self._forge = skill_forge
         self._mutation_store = mutation_store
         self._approval_gate = approval_gate
+        self._gauntlet = gauntlet
 
     async def check_and_promote(self, org_id: str = "") -> list[Learning]:
         """Check for learnings that should be promoted.
 
-        With approval gate: creates approval requests (pending state).
-        Without approval gate: auto-promotes immediately (legacy behavior).
+        With a Gauntlet: only Gauntlet-accepted candidates promote, carrying
+        their validation provenance.
+        With an approval gate: creates approval requests (pending state).
+        Without either: auto-promotes immediately (legacy behavior).
 
         Returns the list of newly promoted learnings.
         """
+        if self._gauntlet:
+            return await self._check_with_gauntlet(org_id)
         if self._approval_gate:
             return await self._check_with_gate(org_id)
         return await self._check_auto(org_id)
 
     async def _check_auto(self, org_id: str = "") -> list[Learning]:
         """Legacy auto-promotion (no gate)."""
-        promoted = await self._store.check_auto_promotions(self._threshold, org_id=org_id)
+        promoted = await self._store.check_auto_promotions(
+            self._threshold, org_id=org_id, min_confidence=self._min_confidence
+        )
         for learning in promoted:
             logger.info(
                 "Auto-promoted learning #%s (hits=%d): %s",
@@ -69,6 +109,141 @@ class LearningPromoter:
             if learning.tool_name and self._forge:
                 await self._try_mutate_skill(learning)
         return promoted
+
+    async def _check_with_gauntlet(self, org_id: str = "") -> list[Learning]:
+        """Gauntlet-gated promotion: evaluate candidates, promote only the accepted.
+
+        The threshold makes a learning a candidate; it does not promote. Each
+        candidate is evaluated independently (the Gauntlet freezes the
+        candidate and judges evaluation Runs the producer did not take part
+        in). A rejected candidate's row is left exactly as it is — `active`,
+        scoped where it was learned, outcome counters intact — so failure
+        keeps its evidence while the collective repertoire stays closed to
+        it. On acceptance, `promote_learning` flips the row and writes the
+        verdict's provenance: the exact evaluation Run ids, the evaluator
+        version, and the frozen-content hash that was validated.
+        """
+        assert self._gauntlet is not None
+        promoted: list[Learning] = []
+
+        # Same candidate enumeration as the gate path: find_relevant("")
+        # scores nothing, so list_all plus the org scoping that
+        # check_auto_promotions applies is the honest candidate set.
+        all_candidates = await self._store.list_all(org_id=org_id, limit=10_000)
+        candidates = [lr for lr in all_candidates if org_id or not lr.org_id]
+        for lr in candidates:
+            updated = await self._evaluate_candidate(lr)
+            if updated is not None:
+                promoted.append(updated)
+
+        return promoted
+
+    async def _evaluate_candidate(self, lr: Learning) -> Learning | None:
+        """Run one candidate through the Gauntlet; promote it only on acceptance.
+
+        Returns the promoted Learning, or None when the candidate is not due
+        (below threshold, not active), was rejected, could not be evaluated,
+        or raced away before its row could be flipped. Each outcome is logged
+        with its own reason; none raises — a failed candidate costs its own
+        promotion, never the caller's pass.
+        """
+        assert self._gauntlet is not None
+        if lr.hit_count < self._threshold or lr.status != "active":
+            return None
+        # A candidate whose evaluation cannot complete (transient trial
+        # Run or evaluator failure) is not a rejected candidate: it stays
+        # active here and is re-evaluated on a later pass. The failure is
+        # contained to this candidate so the remaining candidates are
+        # still considered and promotion never breaks the caller, which
+        # awaits this inline before persisting the Run.
+        try:
+            verdict = await self._gauntlet.evaluate(lr)
+        except Exception:
+            logger.exception(
+                "Gauntlet evaluation failed for learning #%s; leaves it active for retry",
+                lr.id,
+            )
+            return None
+        if not verdict.ok:
+            logger.info(
+                "Gauntlet rejected learning #%s (%s): stays active and local",
+                lr.id,
+                verdict.reason,
+            )
+            return None
+        return await self._promote_validated(lr, verdict)
+
+    async def _promote_validated(self, lr: Learning, verdict: GauntletVerdict) -> Learning | None:
+        """Promote one Gauntlet-accepted candidate, stamping the verdict's provenance.
+
+        Writes the verdict's audit trail onto the promoted row: the exact
+        evaluation Run ids, the evaluator version, and the frozen-content
+        hash that was validated. Returns None when the row raced away or
+        left scope between enumeration and promotion — not ours to resurrect.
+        """
+        updated = await self._store.promote_learning(
+            lr.id or 0,
+            org_id=lr.org_id,
+            validated_by=verdict.evaluator_name or verdict.gauntlet,
+            evaluator_version=verdict.evaluator_version,
+            validated_at=datetime.now(UTC),
+            validation_run_ids=verdict.evaluation_run_ids,
+            validation_content_hash=verdict.content_hash,
+        )
+        if updated is None:
+            return None
+        logger.info(
+            "Gauntlet-validated promotion: learning #%d (runs=%d, evaluator=%s@%s)",
+            updated.id,
+            len(verdict.evaluation_run_ids),
+            verdict.evaluator_name,
+            verdict.evaluator_version,
+        )
+        if updated.tool_name and self._forge:
+            await self._try_mutate_skill(updated)
+        return updated
+
+    async def capture_anti_patterns(
+        self,
+        org_id: str = "",
+        *,
+        min_uses: int = 3,
+    ) -> list[Learning]:
+        """Turn repeatedly-followed-into-failure learnings into anti-patterns (#121).
+
+        Failure knowledge is retained, not discarded: the learning is
+        reclassified ``ANTI_PATTERN`` and its confidence is lifted to the
+        anti-pattern floor, because it cost real failures to learn and a later
+        Run must not re-buy them. The row stays ``active`` at its captured
+        stage (``MEMORY`` under ADR-103: reclassification is not assertion) --
+        joining the repertoire still requires the Gauntlet like any other
+        learning.
+
+        Requires a store that can name its ineffective learnings; one that
+        cannot simply yields nothing to capture. A store that also implements
+        :class:`AntiPatternSink` has the reclassification written back: the
+        SQL twins return detached row copies, so without the write the
+        decision would evaporate with the copy and the next process would
+        re-learn the anti-pattern by re-buying the failure.
+        """
+        source = self._store if isinstance(self._store, IneffectiveLearningSource) else None
+        if source is None:
+            return []
+        sink = self._store if isinstance(self._store, AntiPatternSink) else None
+        captured: list[Learning] = []
+        for lr in await source.list_ineffective(min_uses):
+            if not matches_learning_scope(lr, org_id=org_id):
+                continue
+            if lr.epistemic_type is EpistemicType.ANTI_PATTERN:
+                continue
+            lr.epistemic_type = EpistemicType.ANTI_PATTERN
+            # An unmeasured row lifts from 0.0: the capture itself is the
+            # measurement (the failures it cost are the evidence) (M4-B3).
+            lr.confidence = max(lr.confidence or 0.0, ANTI_PATTERN_CONFIDENCE_FLOOR)
+            if sink is not None and lr.id is not None:
+                await sink.mark_anti_pattern(lr.id, ANTI_PATTERN_CONFIDENCE_FLOOR, org_id=lr.org_id)
+            captured.append(lr)
+        return captured
 
     async def _check_with_gate(self, org_id: str = "") -> list[Learning]:
         """Gate-aware promotion: queue for approval + process approved."""
@@ -83,7 +258,10 @@ class LearningPromoter:
         all_candidates = await self._store.list_all(org_id=org_id, limit=10_000)
         candidates = [lr for lr in all_candidates if org_id or not lr.org_id]
         for lr in candidates:
-            if lr.hit_count >= self._threshold and lr.status == "active":
+            # The threshold is this promoter's knob; the evidence half is the
+            # shared verdict (M4-B3): a learning without validation evidence
+            # never reaches the queue, however often it was hit.
+            if lr.hit_count >= self._threshold and self._promotable_candidate(lr):
                 self._approval_gate.request_approval(
                     learning_id=lr.id or 0,
                     org_id=lr.org_id,
@@ -95,7 +273,14 @@ class LearningPromoter:
         approved_ids = self._approval_gate.get_approved_ids()
         for lid in approved_ids:
             for lr in candidates:
-                if lr.id == lid and lr.status == "active":
+                # The evidence verdict is re-evaluated at consumption time, not
+                # only when the request was queued: outcomes recorded while an
+                # approval sat pending can sink confidence below the floor, and
+                # a stale approval must not bypass the rule the queue enforces
+                # (M4-B3). Candidates were re-enumerated from the store this
+                # pass, so _promotable_candidate sees the current measured
+                # confidence.
+                if lr.id == lid and self._promotable_candidate(lr):
                     logger.info(
                         "Gate-approved promotion: learning #%d (hits=%d)",
                         lid,
@@ -107,6 +292,17 @@ class LearningPromoter:
                     promoted.append(lr)
 
         return promoted
+
+    def _promotable_candidate(self, lr: Learning) -> bool:
+        """Whether the learning may reach the approval queue at all.
+
+        Status first, then the shared evidence verdict (M4-B3): the gate
+        queues candidates for a human, but the human is the second check,
+        not the only one.
+        """
+        return lr.status == "active" and not promotion_blockers(
+            lr, min_confidence=self._min_confidence
+        )
 
     async def _try_mutate_skill(self, learning: Learning) -> None:
         """Attempt to mutate a skill based on a promoted learning."""

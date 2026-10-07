@@ -87,7 +87,10 @@ def test_undeclared_name_input_is_not_treated_as_valid(discovery):
 
 def test_unresolved_name_input_fails_closed(discovery):
     caller(discovery, **{"with": {}})
-    callee(discovery)
+    callee(
+        discovery,
+        on={"workflow_call": {"inputs": {"check_name": {"type": "string", "required": True}}}},
+    )
     with pytest.raises(discovery.ContractError, match="unresolved input"):
         discovery.collect()
 
@@ -286,20 +289,30 @@ def test_composed_names_still_require_merge_group_on_the_caller(discovery, merge
         assert "Quality / lint / Lint" in gaps[0]
 
 
-def test_invalid_workflow_call_configuration_is_rejected(discovery):
+@pytest.mark.parametrize("configuration", ["invalid", [], False, 0, ""])
+def test_invalid_workflow_call_configuration_is_rejected(discovery, configuration):
     caller(discovery)
-    callee(discovery, on={"workflow_call": "invalid"})
+    callee(
+        discovery,
+        on={"workflow_call": configuration},
+        jobs={"check": {"name": "Test"}},
+    )
     with pytest.raises(discovery.ContractError, match="invalid workflow_call"):
         discovery.collect()
 
 
 @pytest.mark.parametrize("invalid_side", ["caller", "callee"])
-def test_invalid_input_mapping_is_rejected(discovery, invalid_side):
-    caller(discovery, **({"with": ["bad"]} if invalid_side == "caller" else {}))
+@pytest.mark.parametrize("invalid_mapping", [["bad"], [], False, 0, ""])
+def test_invalid_input_mapping_is_rejected(discovery, invalid_side, invalid_mapping):
+    caller(discovery, **({"with": invalid_mapping} if invalid_side == "caller" else {}))
     if invalid_side == "callee":
-        callee(discovery, on={"workflow_call": {"inputs": ["bad"]}})
+        callee(
+            discovery,
+            on={"workflow_call": {"inputs": invalid_mapping}},
+            jobs={"check": {"name": "Test"}},
+        )
     else:
-        callee(discovery)
+        callee(discovery, jobs={"check": {"name": "Test${{ inputs.check_name }}"}})
     with pytest.raises(discovery.ContractError, match="invalid reusable input mapping"):
         discovery.collect()
 

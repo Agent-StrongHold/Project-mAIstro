@@ -46,7 +46,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import TypeGuard
+from typing import ClassVar, TypeGuard
 
 import yaml
 
@@ -88,7 +88,7 @@ class _ActionsSafeLoader(yaml.SafeLoader):
     unrelated callers in the root test process. Safe constructors are retained.
     """
 
-    yaml_implicit_resolvers = {
+    yaml_implicit_resolvers: ClassVar[dict] = {
         key: [(tag, pattern) for tag, pattern in rules if tag != "tag:yaml.org,2002:bool"]
         for key, rules in yaml.SafeLoader.yaml_implicit_resolvers.items()
     }
@@ -121,7 +121,7 @@ def _trigger_block(doc: dict, events: tuple[str, ...]) -> dict | None:
         return None
     for event in events:
         if event in triggers:
-            return triggers[event] or {}
+            return {} if triggers[event] is None else triggers[event]
     return None
 
 
@@ -284,11 +284,24 @@ def _resolve_reusable_name(template: str, supplied: dict, declared: dict) -> str
             raise ContractError(f"reusable check name references undeclared input {key!r}")
         if key in supplied:
             return _literal_name_component(supplied[key])
-        if "default" not in definition:
-            raise ContractError(f"reusable check name needs unresolved input {key!r}")
-        return _literal_name_component(definition["default"])
+        if "default" in definition:
+            return _literal_name_component(definition["default"])
+        # Actions supplies an empty string for an omitted optional string input.
+        # Do not invent this value for required, untyped or non-string inputs.
+        if definition.get("type") == "string" and definition.get("required", False) is False:
+            return ""
+        raise ContractError(f"reusable check name needs unresolved input {key!r}")
 
     return _literal_check_name(_INPUT_EXPRESSION_RE.sub(substitute, template))
+
+
+def _reusable_input_mapping(value: object, uses: str) -> dict:
+    """Only absent/null input mappings are equivalent to an empty mapping."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ContractError(f"invalid reusable input mapping in {uses!r}")
+    return value
 
 
 def _reusable_check_names(job_id: str, job: dict) -> list[str]:
@@ -304,13 +317,11 @@ def _reusable_check_names(job_id: str, job: dict) -> list[str]:
     caller_name = _literal_check_name(job.get("name", job_id))
     uses = str(job.get("uses", ""))
     callee = _load_reusable_workflow(uses)
-    supplied = job.get("with") or {}
+    supplied = _reusable_input_mapping(job.get("with"), uses)
     trigger = _trigger_block(callee, ("workflow_call",))
     if not isinstance(trigger, dict):
         raise ContractError(f"invalid workflow_call configuration in {uses!r}")
-    declared = trigger.get("inputs") or {}
-    if not isinstance(supplied, dict) or not isinstance(declared, dict):
-        raise ContractError(f"invalid reusable input mapping in {uses!r}")
+    declared = _reusable_input_mapping(trigger.get("inputs"), uses)
     names: list[str] = []
     for called_id, called_job in callee["jobs"].items():
         if not isinstance(called_job, dict):

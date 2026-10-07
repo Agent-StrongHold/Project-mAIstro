@@ -19,13 +19,19 @@ jobs:
     runs-on: ubuntu-latest
     # #869 demonstrated a 35-minute gap between this aggregator starting and
     # the last required specialized producer receiving a runner. docker-build
-    # is bounded to 25 minutes by #899. Give evidence 60 minutes to appear and
-    # complete, plus five minutes for checkout/scope resolution and cleanup.
-    timeout-minutes: 65
+    # is bounded to 45 minutes (#899 coherence, raised for the maistro-core
+    # cold-rebuild path measured in run 36831116132). Give evidence 120 minutes
+    # to appear and complete, plus five minutes for checkout/scope resolution
+    # and cleanup. The 60-minute window (issue #41 lane, run 36303867276)
+    # expired while specialized producers were queued 38–55 minutes; every
+    # required check later concluded success (docker-build 67 minutes after
+    # this aggregator started). The window must cover queue starvation, not
+    # just execution time; it does not weaken the required evidence.
+    timeout-minutes: 125
     env:
-      # A 30-second cadence preserves the 60-minute evidence window while
+      # A 30-second cadence preserves the 120-minute evidence window while
       # bounding each aggregator to about 120 check-list requests per hour.
-      EVIDENCE_WAIT_ATTEMPTS: "120"
+      EVIDENCE_WAIT_ATTEMPTS: "240"
       EVIDENCE_WAIT_INTERVAL_MS: "30000"
     steps:
       - uses: actions/checkout@v7
@@ -81,18 +87,43 @@ jobs:
             if (required.size === 0) return;
 
             for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-              const runs = await github.paginate(
-                github.rest.checks.listForRef,
-                {
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  ref: candidateSha,
-                  per_page: 100,
-                },
-              );
+              // A transient GitHub API outage must not fail the aggregator
+              // while evidence is still pending: run 37156105427 died on an
+              // unhandled 503 at attempt 5 of 170 with every required check
+              // still in flight. Treat server-side and throttling failures
+              // (and unclassed network errors) as one spent attempt; anything
+              // else — especially permanent 4xx — is a real fault and
+              // rethrows. Budget exhaustion still fails closed below.
+              let runs;
+              try {
+                runs = await github.paginate(
+                  github.rest.checks.listForRef,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    ref: candidateSha,
+                    per_page: 100,
+                  },
+                );
+              } catch (error) {
+                const status = error && error.status;
+                if (status !== undefined && status !== null && status < 500 && status !== 429) {
+                  throw error;
+                }
+                core.warning(`attempt ${attempt}: checks API request failed transiently (${status === undefined || status === null ? 'network error' : `HTTP ${status}`}); retrying within the evidence budget`);
+                await new Promise(resolve => setTimeout(resolve, intervalMs));
+                continue;
+              }
 
               const latest = new Map();
-              for (const run of runs) latest.set(run.name, run);
+              for (const run of runs) {
+                // Same-SHA workflow attempts can arrive newest-first or span
+                // pages. Compare check-run IDs, not response order or verdict:
+                // a newer queued/cancelled/failed attempt must supersede success.
+                // started_at may be null while queued; an old job can finish last.
+                const previous = latest.get(run.name);
+                if (!previous || run.id > previous.id) latest.set(run.name, run);
+              }
 
               const pending = [];
               for (const name of required) {

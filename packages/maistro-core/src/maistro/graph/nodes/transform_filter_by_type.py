@@ -12,7 +12,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from . import register_node
-from .base import BaseNode, NodeContext
+from .base import BaseNode, NodeContext, ReplaySemantics
 
 
 class FilterByTypeIn(BaseModel):
@@ -38,7 +38,7 @@ class TransformFilterByTypeNode(BaseNode[FilterByTypeIn, FilterByTypeOut]):
     input_schema: ClassVar[type[BaseModel]] = FilterByTypeIn
     output_schema: ClassVar[type[BaseModel]] = FilterByTypeOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.PURE
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Filter by type"
     description: ClassVar[str] = (

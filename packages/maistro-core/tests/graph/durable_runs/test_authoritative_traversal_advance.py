@@ -15,6 +15,7 @@ from maistro.graph.durable_runs import (
 )
 from maistro.graph.nodes import BaseNode, NodeContext, NodeResult
 from maistro.runs import Attempt, AttemptStatus, GraphSnapshot, NodeRun, Run
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 class _Empty(BaseModel):
@@ -120,6 +121,7 @@ def _recovery_record() -> DurableRunRecord:
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
         status=RunStatus.RUNNING,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     node_run = NodeRun(
         node_run_id="recovery-node-run",
@@ -161,6 +163,7 @@ async def test_each_advancing_frontier_persists_accepted_outcome_and_commit() ->
         _two_node_graph(),
         store=store,
         node_resolver=_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.COMPLETED
@@ -193,6 +196,7 @@ async def test_physical_completion_can_be_accepted_as_logical_failure_without_ad
         _failure_graph(),
         store=store,
         node_resolver=_failure_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.FAILED
