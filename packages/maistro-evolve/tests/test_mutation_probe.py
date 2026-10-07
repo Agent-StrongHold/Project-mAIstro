@@ -126,6 +126,48 @@ def test_missing_host_file_is_still_skipped(tmp_path: Path) -> None:
     assert not probe.available
 
 
+def test_contained_runner_writes_the_mutant_into_the_tree_it_runs(
+    tmp_path: Path,
+) -> None:
+    """The contained probe's happy path (#614): with a runner, the plan is read
+    through it, each mutant is written through it (the tree the tests RUN
+    against — the sandbox's copy, never the host worktree), the selectors reach
+    the runner's test channel once per mutant, a mutant the tests catch counts
+    as killed, and the original bytes are always restored — on the runner's
+    tree AND on the host, which never saw the mutant at all."""
+    (tmp_path / "source.py").write_text(_SOURCE, encoding="utf-8")
+
+    class _Runner:
+        def __init__(self) -> None:
+            self.files = {"source.py": _SOURCE}
+            self.runs: list[list[str]] = []
+
+        def read_text(self, rel: str) -> str:
+            return self.files[rel]
+
+        def write_text(self, rel: str, content: str) -> None:
+            self.files[rel] = content
+
+        def run_tests(self, selectors: list[str], *, timeout: int) -> tuple[int, str]:
+            self.runs.append(list(selectors))
+            # the mutant is in place while this runs: the changed tests fail
+            return (1, "1 failed")
+
+    runner = _Runner()
+    probe = probe_diff_mutations(
+        tmp_path, {"source.py": _RETURN_LINE}, ["test_source.py"], runner=runner
+    )
+
+    assert probe.available is True
+    assert probe.total >= 1
+    assert probe.killed == probe.total
+    assert not probe.survivors
+    assert runner.runs == [["test_source.py"]] * probe.total
+    assert runner.files["source.py"] == _SOURCE, "the runner's tree must be restored"
+    host_after = (tmp_path / "source.py").read_text(encoding="utf-8")
+    assert host_after == _SOURCE, "the host worktree must never see a mutant"
+
+
 def test_score_rounds_and_summary_reads() -> None:
     # Pure unit: no subprocess. Two killed of three -> 0.6667.
     probe = MutationProbe(available=True, total=3, killed=2, survived=1, survivors=["m.py:4"])

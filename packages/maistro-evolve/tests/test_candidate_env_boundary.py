@@ -191,3 +191,79 @@ def test_measure_coverage_host_failure_is_unavailable_not_a_crash(
     monkeypatch.setattr(cg.subprocess, "run", _broken)
 
     assert cg.measure_coverage_detailed(".") == (None, {})
+
+
+def test_measure_coverage_detailed_execute_seam_reads_the_report_back_as_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The contained coverage run (#614): both invocations cross the injected
+    channel — the instrumented run first, then the report — the number and the
+    missing lines are parsed from the report STREAM that channel returns (one
+    builder, so a contained run cannot drift from the host argv shape), and a
+    channel that dies mid-flight propagates instead of reading as 'the
+    candidate has no coverage'."""
+    from maistro_evolve.coverage_gate import measure_coverage_detailed
+
+    def _refuse(*_a: Any, **_kw: Any) -> Any:
+        raise AssertionError("host subprocess spawned despite execute=")
+
+    monkeypatch.setattr(subprocess, "run", _refuse)
+    seen: list[list[str]] = []
+    report = json.dumps(
+        {
+            "totals": {"percent_covered": 87.5},
+            "files": {"pkg/mod.py": {"missing_lines": [4, 5]}},
+        }
+    )
+
+    def _execute(argv: list[str]) -> tuple[int, str, str]:
+        seen.append(list(argv))
+        if "run" in argv:  # the instrumented pytest run — its output is ignored
+            return 1, "", ""
+        return 0, report, ""
+
+    total, missing = measure_coverage_detailed(
+        Path("."), source=".", pytest_args="tests/", execute=_execute
+    )
+
+    assert (total, missing) == (87.5, {"pkg/mod.py": [4, 5]})
+    assert len(seen) == 2
+    assert seen[0][1:4] == ["-m", "coverage", "run"]
+    assert "--source=." in seen[0]
+    assert seen[0][-1] == "tests/"
+    assert seen[1][1:4] == ["-m", "coverage", "json"]
+
+    def _explode(_argv: list[str]) -> tuple[int, str, str]:
+        raise RuntimeError("sandbox gone")
+
+    with pytest.raises(RuntimeError, match="sandbox gone"):
+        measure_coverage_detailed(Path("."), execute=_explode)
+
+
+def test_a_failed_or_empty_report_is_unavailable_on_both_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A report run that FAILS (or prints nothing) is 'coverage unavailable' —
+    (None, {}) — on the contained path just as on the host one: an unusable
+    report is a data-shaped answer, while a channel that RAISES is a refusal
+    (the test above). The distinction is the fail-closed rule: only the raise
+    may stop an evaluation; the empty report only drops one signal."""
+    from maistro_evolve.coverage_gate import measure_coverage_detailed
+
+    assert measure_coverage_detailed(
+        Path("."), execute=lambda _argv: (1, "", "coverage failed")
+    ) == (None, {})
+    assert measure_coverage_detailed(Path("."), execute=lambda _argv: (0, "", "")) == (
+        None,
+        {},
+    )
+
+    class _FailedHostReport:
+        returncode = 1
+        stdout = ""
+        stderr = "coverage failed"
+
+    import maistro_evolve.coverage_gate as cg
+
+    monkeypatch.setattr(cg.subprocess, "run", lambda *a, **k: _FailedHostReport())
+    assert cg.measure_coverage_detailed(".") == (None, {})

@@ -358,6 +358,26 @@ def test_related_detection_matches_changed_module_imports(tmp_path: Path) -> Non
     )
 
 
+def test_related_detection_matches_a_module_used_without_an_import() -> None:
+    """The textual stem match is the arc for a failing test that USES the
+    changed module without importing it — attribute access on a fixture- or
+    monkeypatch-injected reference. No import name intersects the changed
+    module's dotted suffixes, and the bare stem appearing in the source still
+    counts as related evidence; a file mentioning nothing about it does not."""
+
+    def _uses_not_imports(_rel: str) -> str:
+        return "result = helper.g()\nassert result == 5\n"
+
+    assert fail_first._has_related_failure(
+        _uses_not_imports, ["test_mod.py::test_g"], ["pkg/helper.py"]
+    )
+
+    def _silent(_rel: str) -> str:
+        return "x = 1\n"
+
+    assert not fail_first._has_related_failure(_silent, ["test_mod.py::test_g"], ["pkg/helper.py"])
+
+
 def test_related_detection_tolerates_transport_and_parse_failures() -> None:
     """A contained read that dies mid-flight (Docker gone, exec timeout) is
     'no import surface', never a crash (#614) — and unparsable test source
