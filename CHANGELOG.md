@@ -189,6 +189,14 @@ or placeholder-only section.
 
 ### Security
 
+- **Boot Agent model tools retain governed admission and logical identity** (#1954 follow-up; [review finding](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1954#discussion_r4189499393)).
+  Clarification and model-fallback search use the persisted Run actor/scope and
+  configured model Binding through the existing Provider/Invocation boundary.
+  Agent, delegation, response-round and ToolCall identity distinguish intentional
+  calls while preserving replay. Ambiguous outcomes stop the strategy. The tool
+  deadline also bounds third-party adapters, without replacing their catalog or
+  retry authority. Hive's configured API prefix and omitted sampling are retained.
+
 - **Hive DAG model-backed tools use governed model egress (#1085, #1370).**
   `clarify` and the model fallback of `web_search` require a configured
   `model.chat` Binding referenced by the DAG node's `model_binding_id`
