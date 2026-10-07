@@ -157,6 +157,21 @@ or placeholder-only section.
   see — another tenant's rows, or a stale projected row — advances the walk
   past itself instead of reading as the end of human work, and a bounded
   walk that stops at its inspection ceiling reports capped, never exhausted.
+- **Cancelling admitted work under a legacy two-method `TaskAdmitter` no longer
+  crashes, and no longer lies (#1338).** #1320 grew the protocol with
+  `cancel_run`, and `TaskQueue.cancel` called it unconditionally, so a
+  downstream adapter compiled against the earlier `admit`/`record_transition`
+  shape raised `AttributeError` on the first cancelled task. The queue now
+  probes the capability (`getattr`) — the Protocol is structural, so absence
+  is invisible to `isinstance`. An adapter without `cancel_run` keeps its
+  admitted work's receipt open and the refusal is logged as
+  `task_cancel_unsupported_by_admitter`: physical cancellation is genuinely
+  unavailable, and terminalizing the receipt CANCELLED over a Run nothing
+  signalled would make "stopped" mean "locally forgotten" (#1242). Work with
+  no canonical identity behind it (no admitter wired, no `run_id`) keeps its
+  documented receipt-only cancellation, visibly distinct from stopped physical
+  execution. Capable adapters still route cancellation through the canonical
+  Run/Attempt service unchanged.
 
 - **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
   always invokes Compose with explicit `-f` files, which disables Compose's own
