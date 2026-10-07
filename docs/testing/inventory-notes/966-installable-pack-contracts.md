@@ -300,14 +300,20 @@ convergence-matrix, reachability-dispositions, security/image/workflow
 inventory, backlog-consistency, execution-lifecycles, model-egress,
 foreign-harness-egress) all exit 0; the core fitness suite passes 23/23.
 
-Mid-round, `origin/develop` advanced once more (00382f657, release publishes
-the scanned digest, #611/#2037: release.yml, check-image-inventory.py,
-quality/image-inventory.json, +22 tests and its own note); merged conflict-
-free as 45d735d0c and the affected gates re-proven on that head: ruff clean,
-`check-image-inventory.py` + `check-workflow-inventory.py` exit 0, vulture
-still 1328 = 1328 (scripts/ is outside the `packages/*/src` scan), the
-extensions suite 806/806, develop's new `tests/test_check_image_inventory.py`
-46/46, and suite inventory 17/17 (28813 unique node IDs).
+Mid-round, `origin/develop` advanced twice more and the branch re-synced
+each time, both merges conflict-free: 00382f657 (release publishes the
+scanned digest, #611/#2037: release.yml, check-image-inventory.py,
+quality/image-inventory.json, +22 tests and its own note) → 45d735d0c, and
+feb19affc (graph harness waits wake through canonical polling, #1952:
+agent_spawn_harness + durable-effects, +236-line note) → 90abfb9aa. Gates
+re-proven on the final head 90abfb9aa: ruff check/format clean, `mypy
+--strict packages/maistro-core/src` clean, vulture still 1328 = 1328 and
+`check-radon-baseline.py` exit 0 (scripts/ is outside the `packages/*/src`
+scan; neither merge touches a ledger row), `check-image-inventory.py` +
+`check-workflow-inventory.py` exit 0, the extensions suite 806/806 with the
+import-order posture holding against the new harness code, develop's new
+`tests/test_check_image_inventory.py` 46/46 and harness suites 118 passed /
+5 skipped, and suite inventory 17/17 (28919 unique node IDs).
 
 ## Repair round 6: full develop-tip sync + gate battery re-proof (this note carries the round)
 
