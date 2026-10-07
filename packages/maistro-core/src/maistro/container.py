@@ -13,10 +13,10 @@ import asyncio
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from maistro.a2a.delegate import A2ADelegator
@@ -24,9 +24,17 @@ from maistro.a2a.guest_peers import GuestPeerManager
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
-from maistro.capabilities.effect_context import CapabilityEffectContext, new_effect_context
+from maistro.capabilities.binding import Binding
+from maistro.capabilities.effect_context import (
+    CapabilityEffectContext,
+    binding_scope_policy,
+    configure_default_effect_context,
+    new_effect_context,
+    release_default_effect_context,
+)
 from maistro.capabilities.invocation import InvocationStore as CapabilityInvocationStore
 from maistro.classifier.engine import ClassifierEngine
+from maistro.credentials.router import CredentialRouter
 from maistro.events.consumer_cursor import (
     DEFAULT_HOLE_GRACE_SECONDS,
     LEGACY_BRIDGE_CONSUMER_ID,
@@ -37,10 +45,31 @@ from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
 from maistro.graph.templates import GraphTemplateStore, NodeTemplateStore
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
 from maistro.memory.episodic.store import InMemoryEpisodicStore
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
+
+# Two working-memory managers share this package (#301): the durable
+# observation-log manager (projection, wired as `working_log` below) and the
+# indexed hot projection's manager (hydrated from the authoritative episodic
+# store, wired as `hot_working_memory` below). The alias keeps both importable
+# without renaming either side's public class.
+from maistro.memory.working.manager import (
+    WorkingMemoryManager as HotWorkingMemoryManager,
+)
+from maistro.memory.working.projection import WorkingMemoryManager
+from maistro.memory.working.wiring import (
+    wire_in_memory_working_memory,
+    wire_working_memory,
+)
+from maistro.memory.working_graph.manager import WorkspaceWorkingMemoryManager
+from maistro.memory.working_graph.wiring import (
+    build_workspace_working_memory,
+    working_memory_context_message,
+)
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.quota.default_tracker import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
@@ -57,13 +86,16 @@ from maistro.runs.chat_execution import (
     ChatDispatchUnrecorded,
 )
 from maistro.runs.chat_refusal import ChatTurnRefused
+from maistro.runs.concurrency import RunConcurrencyExceeded
 from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
+    Attempt,
     AttemptStatus,
     Run,
     RunStatus,
 )
+from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.runs.store import RunIntegrityError, RunNotFound, RunStore
 from maistro.runs.wiring import (
     SPINE_PG_TABLES,
@@ -82,6 +114,13 @@ from maistro.tasks.admission import WorkspaceRoutingAdmitter
 from maistro.tasks.idempotency import TaskIdempotencyStore, wire_task_idempotency
 from maistro.types.config import AgentConfig
 from maistro.types.errors import AgentError, ConfigError
+from maistro.workspaces.backlog_history.store import BacklogHistoryStore
+from maistro.workspaces.backlog_history.wiring import wire_backlog_history_store
+from maistro.workspaces.campaigns.store import CampaignStore
+from maistro.workspaces.campaigns.wiring import (
+    wire_campaign_store,
+    wire_in_memory_campaign_store,
+)
 from maistro.workspaces.store import WorkspaceStore
 from maistro.workspaces.wiring import WORKSPACE_PG_TABLES, wire_workspace_store
 
@@ -96,6 +135,7 @@ if TYPE_CHECKING:
         SecretResolver,
         StateStore,
     )
+    from maistro.capabilities.provider_adapters import ProviderAdapterCatalog
     from maistro.capabilities.registry import CapabilityRegistry
     from maistro.events.bus import EventBus
     from maistro.events.consumer_cursor import ConsumerCursorStore
@@ -103,6 +143,9 @@ if TYPE_CHECKING:
     from maistro.events.invocations import InvocationStore
     from maistro.events.processing import HandlerCaller
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
+    from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
+    from maistro.extensions.service import ExtensionInstallService
+    from maistro.extensions.store import InMemoryExtensionStore
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
         AgentIdentity as LifecycleIdentity,
@@ -131,7 +174,9 @@ if TYPE_CHECKING:
     from maistro.protocols.strikes import StrikeTracker
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
     from maistro.resilience.p1 import ResiliencePolicyStore
-    from maistro.runs.consumption import ParkedPause
+    from maistro.runs.consumption import ParkedPause, TickAccounting
+    from maistro.runs.model import Attempt
+    from maistro.runs.reconciliation import AttemptLifecycleReconciler
     from maistro.runs.store import RunStore
     from maistro.security._types import AuditLog
     from maistro.security.sentinel.elevation import ElevationStore
@@ -154,6 +199,10 @@ logger = logging.getLogger("maistro.container")
 #: ineligible rows every tick and never reaches a resumable one (#666 review).
 RESUME_SCAN_LIMIT = 1000
 
+#: What one parked Run's resume came to — the vocabulary of `TickAccounting`
+#: (#849). "skipped" is the only outcome that is not counted as attempted.
+ParkedResumeOutcome = Literal["succeeded", "failed", "parked", "skipped"]
+
 #: How long a chat Run may sit RUNNING with no NodeRun before
 #: `recover_stranded_chat_admissions` treats it as stranded rather than merely
 #: slow. Generous well past any real admission-to-first-Attempt gap -- a
@@ -162,6 +211,12 @@ RESUME_SCAN_LIMIT = 1000
 #: `ChatAttemptExecutor.execute()` persisting the turn's first NodeRun, never
 #: a turn still in flight.
 DEFAULT_STRANDED_ADMISSION_AGE = timedelta(minutes=5)
+
+#: How many abandoned Attempts, and separately how many stranded chat Runs, a
+#: chat turn refused at a full active-Run ceiling reclaims before asking again
+#: (#1182). The operator ticks' own default, so a refused turn costs no more
+#: than one scheduled tick would.
+_CHAT_SLOT_RECLAIM_LIMIT = 100
 
 
 @dataclass
@@ -196,7 +251,28 @@ class Container:
     #: backend since #132 while the thing its `workspace_id` names had none,
     #: so the only Workspaces that survived a restart were the Conductor's own.
     workspace_store: WorkspaceStore = None  # type: ignore[assignment]
+    #: Append-only BacklogItem history (#101), on the Project store's backend.
+    #: References canonical Goals/Runs; never an execution authority itself.
+    backlog_history_store: BacklogHistoryStore = None  # type: ignore[assignment]
+    #: Durable home for Workspace work campaigns and their operator controls
+    #: (#103, SPEC-092626-1831). SQLite-backed when the deployment selected
+    #: SQLite, so pin-next / pause / exclude / human-only survive a restart
+    #: (AC-5); in-memory with a loud warning otherwise, because PostgreSQL
+    #: campaign tables are not part of the schema yet.
+    campaign_store: CampaignStore | None = None
+    #: Durable log-as-context for repeated autonomous work (#301, M4-H): the
+    #: append-only per-Workspace observation log and the disposable working
+    #: graphs projected over it (ADR-082226-5104 §5-6). Rides the SQLite pool
+    #: like campaigns; in-memory with a loud warning otherwise, because a log
+    #: that dies with the process is not the durable context the epic asks for.
+    #: Distinct from `working_memory` below (#776): that seam projects chat
+    #: context from the episodic/Run stores; this one owns the durable
+    #: observation log itself. Same ADR, not the same substrate.
+    working_log: WorkingMemoryManager | None = None
     run_store: RunStore = None  # type: ignore[assignment]
+    #: The product read seam over `run_store` (#1152): Workspace membership
+    #: decides who may read a Run tree, and foreign ids answer like missing ones.
+    run_reader: ScopedRunReader = None  # type: ignore[assignment]
     # Routing rather than bound: one Conductor process serves every Workspace
     # its users belong to, so the Workspace is chosen per submission (#158).
     # `config.workspace_id` remains the default for a submission that names none.
@@ -249,6 +325,15 @@ class Container:
     a2a_delegator: Any = None
     guest_peers: Any = None
     context_assembly_policy: ContextAssemblyPolicy = None  # type: ignore[assignment]
+    #: Per-Workspace working-memory projection (#776, ADR-082226-5104): the
+    #: disposable graph the persistent Workspace Agent's chat turns read
+    #: graph-backed context from. Never authoritative and never an
+    #: authorization path — the block a turn receives is projected from the
+    #: turn's Run's own Workspace and carries canonical durable references;
+    #: degradation arrives as an explicit health state, not silence.
+    #: ``None`` for a Container built by hand: those dispatch exactly as
+    #: before, the seam adds context, it never gates a turn.
+    working_memory: WorkspaceWorkingMemoryManager | None = None
     agents: dict[str, Agent] = field(default_factory=dict)
     audit_log: AuditLog | None = None
     conduit: Any = None
@@ -266,6 +351,14 @@ class Container:
     #: spine stores without colliding with, or rolling back, their open
     #: transactions.
     schedule_conn: Any = None
+    #: The BacklogItem history journal's own SQLite connection (#101), on the
+    #: same terms as `session_conn` and `schedule_conn`: the journal holds a
+    #: `BEGIN IMMEDIATE` across its sequence read and its insert, and the
+    #: spine stores sharing `db_pool` — `ClaimingSqliteRunStore` foremost —
+    #: commit and roll back on their own locks' cadence, so a journal
+    #: transaction paused between read and insert would be committed or
+    #: discarded by a sibling while `append` reported success.
+    history_conn: Any = None
     #: The asyncpg pool, when PostgreSQL is selected. Separate from `db_pool`
     #: because the two are different objects with different APIs, and code that
     #: branches on "is a database configured" needs to know which.
@@ -302,14 +395,28 @@ class Container:
     # application populated. Absence of a registered Binding stays a hard
     # refusal; wiring the context grants nothing on its own.
     capability_effects: CapabilityEffectContext = None  # type: ignore[assignment]  # wired in create_container
+    # Registered provider-adapter packages (M9-E1, #961): the catalog this
+    # container composed and published as the process default. Held so close()
+    # withdraws exactly this container's catalog (identity-checked), the way
+    # capability_effects is released; adapters add destinations to the one
+    # governed egress, never a second process-wide authority.
+    provider_adapter_catalog: Any = None
     # Shared quota usage log for any node/hook that needs one (e.g.
     # RsiQuotaPaceTriggerNode via build_node_resolver). Defaults to the
     # process-wide singleton (quota/usage_log.py) so this container and any
     # caller using build_node_resolver's standalone default share state.
     usage_log: InMemoryUsageLog = field(default_factory=get_default_usage_log)
     #: Durable write-behind owner for the SQLite usage log, when configured.
-    #: Callers may flush it periodically; `aclose()` performs the shutdown flush.
+    #: Callers may flush it periodically via `flush_usage_log()`; `aclose()`
+    #: performs the shutdown flush. `None` means the deployment chose an
+    #: ephemeral backend; health reports that mixed mode rather than implying
+    #: quota-rate accounting survives restart.
     usage_log_persistence: Any = None
+    #: True when the relational stores run on SQLite's in-memory database
+    #: (pathless `sqlite://`): the store classes are the durable twins, but
+    #: the backing database evaporates with the process, so health must
+    #: report them as restart-ephemeral rather than durable (#72).
+    stores_memory_backed: bool = False
     #: Where `resume_parked_runs`' next scan of each parked status resumes.
     #: In-process and deliberately not durable: losing it on restart costs one
     #: lap back to the oldest page, which is where a fresh process would start
@@ -321,7 +428,8 @@ class Container:
     event_bus: EventBus = None  # type: ignore[assignment]
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
-    invocation_store: InvocationStore = None  # type: ignore[assignment]
+    invocation_store: Any = None
+    handler_invocation_store: InvocationStore = None  # type: ignore[assignment]
     handler_caller: HandlerCaller = None  # type: ignore[assignment]
     # Durable replay cursor for the legacy-event bridge (#1163): a claim
     # lease + fencing token so of several replicas that might tick
@@ -368,6 +476,15 @@ class Container:
     strike_tracker: StrikeTracker | None = None
     strike_recovery: Any = None
     durable_event_cursor: int = 0
+    # Governed extension install lifecycle (#953, M9-B2). Process-lifetime
+    # in-memory records until the B1 signing/identity substrate (#952) lands;
+    # this is a records-and-authority store, never an execution authority.
+    extension_install_store: InMemoryExtensionStore | None = None
+    extension_install_service: ExtensionInstallService | None = None
+    # Private organizational extension catalog (#979). In-memory catalog per
+    # organization until a durable backend is configured.
+    catalog_store: InMemoryCatalogStore | None = None
+    catalog_service: CatalogService | None = None
 
     def __post_init__(self) -> None:
         if self.conduit is None:
@@ -379,8 +496,17 @@ class Container:
 
             self.capabilities = default_capability_registry()
 
+    async def flush_usage_log(self) -> None:
+        """Flush durable SQLite usage snapshots when that layer is configured.
+
+        Recording remains synchronous on the quota hot path; callers that own a
+        response boundary can await this method at a checkpoint or shutdown.
+        """
+        if self.usage_log_persistence is not None:
+            await self.usage_log_persistence.snapshot(self.usage_log)
+
     async def _flush_usage_log_on_shutdown(self) -> None:
-        """Write the usage log's retained events to its SQLite persistence.
+        """Flush the usage log during `aclose`, without failing the shutdown.
 
         The final flush of the write-behind `SqliteUsageLog` (#1204): a
         container wired with `usage_log_persistence` must not drop the events
@@ -390,10 +516,8 @@ class Container:
         block the rest of the shutdown, which is why the exception is only
         logged.
         """
-        if self.usage_log_persistence is None:
-            return
         try:
-            await self.usage_log_persistence.snapshot(self.usage_log)
+            await self.flush_usage_log()
         except Exception:
             logger.exception("container: the usage log did not flush cleanly")
 
@@ -411,10 +535,11 @@ class Container:
         when the last holder lets go (Codex, #335).
 
         SQLite follows the same ownership rule (#1161): the connections this
-        container opened -- `db_pool`, the session store's `session_conn` and
-        the schedule store's `schedule_conn`, all from one
-        `_wire_sqlite_backend` call -- are closed here, each exactly once, and
-        a connection the caller supplied stays the caller's.
+        container opened -- `db_pool`, the session store's `session_conn`, the
+        schedule store's `schedule_conn` and the history journal's
+        `history_conn`, all from one `_wire_sqlite_backend` call -- are closed
+        here, each exactly once, and a connection the caller supplied stays
+        the caller's.
         aiosqlite's `close()` drains the operations still queued on its worker
         thread before releasing the database, so a durable write a store has
         already issued completes rather than being dropped by the shutdown;
@@ -431,6 +556,18 @@ class Container:
         # leave the container looking open and invite a second attempt at a pool
         # that is already going down.
         self.closed = True
+        release_default_effect_context(self.capability_effects)
+        if self.provider_adapter_catalog is not None:
+            from maistro.capabilities.provider_adapters import release_default_adapter_catalog
+
+            release_default_adapter_catalog(self.provider_adapter_catalog)
+        if self.working_log is not None:
+            # Release the working-memory graphs the container took (#301):
+            # they are process-local caches over the durable observation log,
+            # so shutdown drops the graphs and never the log they were
+            # hydrated from — the same lossless-by-construction rule eviction
+            # follows.
+            self.working_log.release_projections()
         await self._flush_usage_log_on_shutdown()
         if self.holds_pg_pool and self.pg_pool is not None:
             from maistro.persistence import forget_pool, release_pool
@@ -448,30 +585,47 @@ class Container:
                 self.pg_pool = None
                 self.holds_pg_pool = False
         if self.holds_db_pool:
-            # Three connections, one ownership decision (#327, #1199): the
-            # session and schedule stores' connections were opened by the same
-            # `_wire_sqlite_backend` call, so the same flag governs all of
-            # them. A close that raises must not strand the others -- the pg
-            # block above exists because a shutdown that stops at the first
-            # failure leaves the rest unreleased -- and must not leave the
-            # container looking open, though `closed` is already True, so no
-            # retry re-enters here.
-            for connection in (self.db_pool, self.session_conn, self.schedule_conn):
-                if connection is None:
-                    continue
-                try:
-                    # Drains queued operations before releasing: writes the
-                    # stores already issued complete (aiosqlite, Connection.close).
-                    await connection.close()
-                except Exception:
-                    logger.exception("container: the SQLite connection did not close cleanly")
-            # Gone either way: aiosqlite's close() spends the connection even
-            # when it raises, so a field still naming it would advertise a
-            # connection the next user would find dead.
-            self.db_pool = None
-            self.session_conn = None
-            self.schedule_conn = None
-            self.holds_db_pool = False
+            await self._close_owned_sqlite_connections()
+
+    async def _close_owned_sqlite_connections(self) -> None:
+        """Close the four SQLite connections this container opened.
+
+        Four connections, one ownership decision (#327, #1199, #101): the
+        session, schedule and history stores' connections were opened by
+        the same `_wire_sqlite_backend` call, so one flag governs all of
+        them. A close that raises must not strand the others, and must not
+        leave the container looking open (``closed`` is already True, so no
+        retry re-enters).
+        """
+        for connection in (
+            self.db_pool,
+            self.session_conn,
+            self.schedule_conn,
+            self.history_conn,
+        ):
+            if connection is None:
+                continue
+            try:
+                # Drains queued operations before releasing: writes the
+                # stores already issued complete (aiosqlite, Connection.close).
+                await connection.close()
+            except Exception:
+                logger.exception("container: the SQLite connection did not close cleanly")
+        # Gone either way: aiosqlite's close() spends the connection even
+        # when it raises, so a field still naming it would advertise a
+        # connection the next user would find dead.
+        self.db_pool = None
+        self.session_conn = None
+        self.schedule_conn = None
+        self.history_conn = None
+        self.holds_db_pool = False
+
+    @staticmethod
+    def _chat_actor_principal(auth: Any) -> str | None:
+        principal = getattr(auth, "user_id", None) or getattr(auth, "username", None) or None
+        if principal is not None:
+            principal = str(principal).strip() or None
+        return principal
 
     def _resolve_chat_auth(self, auth: Any) -> Any:
         """Evaluate an identity-free turn as the role-less anonymous principal.
@@ -525,12 +679,29 @@ class Container:
                 dispatch_pending=True,
             )
 
+        # Working memory (#776): the turn's Run names its Workspace, so the
+        # graph-backed context block is projected from that Workspace's own
+        # projection and from nowhere else. It rides in as a system message
+        # ahead of the turn — never a user turn, so it is not Warden-scanned
+        # as input, not session-transcribed, and never replaces the client's
+        # message shape. It is context for the answering agent only: the
+        # Conduit passes it around the gate scan and the classifier, so
+        # projected memory neither becomes scanned input nor reclassifies the
+        # turn (#142). Degradation is rendered into the block, so the agent
+        # sees the state of its working memory instead of a confident blank;
+        # durable truth is untouched either way.
+        working_block = await working_memory_context_message(
+            self.working_memory, run.workspace_id, messages
+        )
+        context_messages = (working_block,) if working_block is not None else ()
+
         async def _dispatch() -> dict[str, Any]:
             dispatched: dict[str, Any] = await self.conduit.route_request(
                 messages,
                 auth=auth,
                 session_id=session_id,
                 intent_hint=intent_hint,
+                context_messages=context_messages,
                 # The Run names this turn for the session store, so a second
                 # Attempt under the same Run appends nothing rather than
                 # writing the user's message again (#327, ADR-083026-5fab).
@@ -675,7 +846,9 @@ class Container:
         A turn that cannot get its canonical Run -- no admitter wired, or
         admission failing -- raises `ChatTurnRefused` so the door answers a
         retryable 503 and nothing reaches the model (owner decision
-        2026-09-23, amending ADR-082326-c126). Whatever admission already
+        2026-09-23, amending ADR-082326-c126). A full active-Run ceiling
+        (#1182) is re-raised as `RunConcurrencyExceeded` instead: that is
+        backpressure, which the door answers with 429. Whatever admission already
         persisted is compensated first, so the refusal strands nothing.
 
         `dispatch_pending` says a dispatch follows in this process: the Run is
@@ -687,16 +860,34 @@ class Container:
         """
         if self.chat_admitter is None:
             raise ChatTurnRefused("no chat admitter is wired, so the turn cannot get a Run")
+        auth = self._resolve_chat_auth(auth)
         run: Run | None = None
         try:
-            run = await self.chat_admitter.admit(
-                messages,
-                session_id=session_id,
-                request_id=request_id,
-                intent_hint=intent_hint,
-                known_task_types=self.config.task_types,
-                actor_principal_id=getattr(auth, "user_id", None) or None,
-            )
+            admitter = self.chat_admitter
+            principal = self._chat_actor_principal(auth)
+            try:
+                run = await admitter.admit(
+                    messages,
+                    session_id=session_id,
+                    request_id=request_id,
+                    intent_hint=intent_hint,
+                    known_task_types=self.config.task_types,
+                    actor_principal_id=principal,
+                )
+            except RunConcurrencyExceeded:
+                # The slots may be held by turns a crashed process left behind,
+                # which no successful admission will ever sweep. Reclaim once,
+                # then ask again; a ceiling still full of live turns refuses.
+                if not await self._reclaim_stranded_chat_slots():
+                    raise
+                run = await admitter.admit(
+                    messages,
+                    session_id=session_id,
+                    request_id=request_id,
+                    intent_hint=intent_hint,
+                    known_task_types=self.config.task_types,
+                    actor_principal_id=principal,
+                )
             # Two hops: a Run is born CREATED and the lifecycle has no edge
             # from there to RUNNING. Queued is momentarily true here — the turn
             # is admitted and about to be dispatched — rather than a fiction
@@ -720,11 +911,34 @@ class Container:
             await asyncio.shield(self._cancel_incomplete_admission(run))
             self._release_chat_dispatch(run)
             raise
+        except RunConcurrencyExceeded:
+            # Backpressure, not an admission outage (#1182): the door answers
+            # it with 429, not the 503 a `ChatTurnRefused` gets.
+            raise
         except Exception as exc:
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)
             await self._cancel_incomplete_admission(run)
             self._release_chat_dispatch(run)
             raise ChatTurnRefused("chat turn could not be admitted as a Run") from exc
+
+    async def _reclaim_stranded_chat_slots(self) -> int:
+        """Free active root-Run slots held by dead turns (#1182); say how many.
+
+        The recovery halves of the two ticks an operator schedules, run on
+        demand when a chat turn meets a full ceiling -- a deployment that
+        schedules neither (maistro-server) would otherwise stay locked out for
+        good. Both are bounded, idempotent and judged by a lease or an age,
+        never by this request, so a live turn on another replica is never
+        reclaimed. Recovery is housekeeping: its failure leaves the refusal
+        standing.
+        """
+        try:
+            return await self._reclaim_abandoned_attempts(
+                now=None, limit=_CHAT_SLOT_RECLAIM_LIMIT
+            ) + await self._recover_stranded_chat_runs(now=None, limit=_CHAT_SLOT_RECLAIM_LIMIT)
+        except Exception:
+            logger.warning("chat slot reclamation failed", exc_info=True)
+            return 0
 
     async def _cancel_incomplete_admission(self, run: Run | None) -> None:
         """Compensate a chat Run whose admission never reached RUNNING (#338).
@@ -908,7 +1122,7 @@ class Container:
         batch = await process_events_batch(
             self.durable_event_log,
             self.trigger_store,
-            self.invocation_store,
+            self.handler_invocation_store,
             self.handler_caller,
             after_id=lease.position,
             limit=limit,
@@ -997,8 +1211,20 @@ class Container:
         from maistro.observability.metrics import (
             non_terminal_runs,
             oldest_non_terminal_run_age_seconds,
-            recovered_attempts_total,
         )
+
+        reclaimed = await self._reclaim_abandoned_attempts(now=now, limit=limit)
+        reconciled = await self._reconcile_unreconciled_terminal_attempts(now=now, limit=limit)
+        open_runs, oldest_created_at = await self.run_store.non_terminal_run_stats()
+        non_terminal_runs.set(open_runs)
+        moment = now if now is not None else datetime.now(UTC)
+        age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
+        oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
+        return reclaimed + reconciled
+
+    async def _reclaim_abandoned_attempts(self, *, now: datetime | None, limit: int) -> int:
+        """Settle Attempts whose lease lapsed; the recovery half of the tick."""
+        from maistro.observability.metrics import recovered_attempts_total
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
 
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
@@ -1025,18 +1251,138 @@ class Container:
                     )
             recovered_attempts_total.inc(len(reclaimed))
             logger.info("recovered %d abandoned Attempt(s)", len(reclaimed))
-
-        open_runs, oldest_created_at = await self.run_store.non_terminal_run_stats()
-        non_terminal_runs.set(open_runs)
-        moment = now if now is not None else datetime.now(UTC)
-        age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
-        oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
         return len(reclaimed)
+
+    async def _latest_reconcilable_completed_attempt(
+        self, node_run_id: str, *, moment: datetime
+    ) -> Attempt | None:
+        """The latest COMPLETED Attempt of this NodeRun, if recovery may settle it.
+
+        A terminal Attempt a crash interrupted is recoverable only when no
+        sibling Attempt still executes the NodeRun under an unexpired lease --
+        otherwise this sweep would overwrite an outcome a live walker is about
+        to write itself.
+        """
+        from maistro.runs.lifecycle import has_live_execution_lease
+
+        attempts = await self.run_store.list_attempts(node_run_id)
+        if has_live_execution_lease(attempts, moment):
+            return None
+        return next(
+            (
+                attempt
+                for attempt in reversed(attempts)
+                if attempt.status is AttemptStatus.COMPLETED
+            ),
+            None,
+        )
+
+    async def _reconcile_run_terminal_attempts(
+        self,
+        run_id: str,
+        *,
+        reconciler: AttemptLifecycleReconciler,
+        moment: datetime,
+        remaining: int,
+    ) -> int:
+        """Replay interrupted terminal Attempts of one RUNNING Run; returns the count.
+
+        ``remaining`` bounds this Run's share of the sweep's ``limit``: the
+        caller passes the room it has left, so a Run early in the page cannot
+        spend the whole budget a second time. Only observed persisted progress
+        (an accepted outcome or a Run settlement) charges the budget (#1850).
+        """
+        from maistro.runs.store import RunIntegrityError
+
+        done = 0
+        for node_run in await self.run_store.list_node_runs(run_id):
+            if done >= remaining:
+                break
+            completed = await self._latest_reconcilable_completed_attempt(
+                node_run.node_run_id, moment=moment
+            )
+            if completed is None:
+                continue
+            try:
+                if await self._reconcile_terminal_attempt_progress(completed, reconciler):
+                    done += 1
+            except RunIntegrityError:
+                logger.warning(
+                    "terminal Attempt %s could not be reconciled",
+                    completed.attempt_id,
+                    exc_info=True,
+                )
+                continue
+        return done
+
+    async def _reconcile_unreconciled_terminal_attempts(
+        self, *, now: datetime | None, limit: int
+    ) -> int:
+        """Replay reconciliation for terminal Attempts a crash interrupted (#804)."""
+        from maistro.runs.model import RunStatus
+        from maistro.runs.reconciliation import AttemptLifecycleReconciler
+        from maistro.runs.store import run_cursor_key
+
+        moment = now if now is not None else datetime.now(UTC)
+        reconciler = AttemptLifecycleReconciler(
+            self.run_store,
+            events=self.event_bus,
+            source="maistro.container.recover_abandoned_attempts",
+        )
+        reconciled = 0
+        after = None
+        while reconciled < limit:
+            page = await self.run_store.list_by_status(
+                RunStatus.RUNNING,
+                limit=limit - reconciled,
+                after=after,
+            )
+            if not page:
+                break
+            for run in page:
+                after = run_cursor_key(run)
+                reconciled += await self._reconcile_run_terminal_attempts(
+                    run.run_id,
+                    reconciler=reconciler,
+                    moment=moment,
+                    remaining=limit - reconciled,
+                )
+            if len(page) < limit - reconciled:
+                break
+        if reconciled:
+            logger.info("reconciled %d unreconciled terminal Attempt(s)", reconciled)
+        return reconciled
+
+    async def _reconcile_terminal_attempt_progress(
+        self, attempt: Attempt, reconciler: AttemptLifecycleReconciler
+    ) -> bool:
+        """Observe acceptance/settlement, not exclusive ownership of a repair.
+
+        Store transitions return records, not a won-write flag. A peer may make
+        progress between these reads; counting that observation is conservative
+        for this tick's budget. Replaying unchanged facts on the next tick must
+        not charge again. Timestamps and other incidental changes do not count.
+        """
+        before_node = await self.run_store.get_node_run(attempt.node_run_id)
+        if before_node is None:
+            raise RunIntegrityError("terminal replay is missing its NodeRun")
+        before_run = await self.run_store.get_run(before_node.run_id)
+        if before_run is None:
+            raise RunIntegrityError("terminal replay is missing its Run")
+        reconciled = await reconciler.reconcile(attempt)
+        after_run = await self.run_store.get_run(before_node.run_id)
+        accepted = before_node.accepted_outcome is None and reconciled.accepted_outcome is not None
+        settled = (
+            before_run.status not in TERMINAL_RUN_STATUSES
+            and after_run is not None
+            and after_run.status in TERMINAL_RUN_STATUSES
+        )
+        return accepted or settled
 
     async def recover_stranded_chat_admissions(
         self, *, now: datetime | None = None, limit: int = 100
     ) -> int:
-        """Compensate a chat Run that reached RUNNING but never got a NodeRun (#338).
+        """Compensate a chat Run stranded before its turn got a NodeRun (#338).
 
         `_admit_chat_turn` persists RUNNING durably before returning, and only
         then does `_execute_chat_turn` construct `ChatAttemptExecutor` and call
@@ -1053,16 +1399,39 @@ class Container:
         with RUNNING (#251), so "RUNNING with no NodeRun" is a defect only
         chat's two-step admission can produce.
 
+        A crash one step earlier -- between `create_run` and the RUNNING
+        write -- leaves the Run CREATED or QUEUED, and those are swept on the
+        same terms (#1182). Harmless bookkeeping once, they now each hold an
+        active root-Run slot, so without this a handful of crashes would lock
+        a principal, or chat's whole Workspace, out of new turns for good.
+
         `limit` bounds recoveries, not visibility into RUNNING, the same
         contract `execute_admitted_runs` documents for the same reason: a page
         of RUNNING Runs that are all ineligible must not stall the tick before
         it reaches the one that is not.
         """
+        return await self._recover_stranded_chat_runs(now=now, limit=limit)
+
+    async def _recover_stranded_chat_runs(self, *, now: datetime | None, limit: int) -> int:
+        """Every stranded status's walk for `recover_stranded_chat_admissions`."""
+        moment = now if now is not None else datetime.now(UTC)
+        cutoff = moment - DEFAULT_STRANDED_ADMISSION_AGE
+        recovered = 0
+        for status in (RunStatus.RUNNING, RunStatus.QUEUED, RunStatus.CREATED):
+            if recovered >= limit:
+                break
+            recovered += await self._recover_stranded_chat_runs_in(
+                status, cutoff=cutoff, limit=limit - recovered
+            )
+        return recovered
+
+    async def _recover_stranded_chat_runs_in(
+        self, status: RunStatus, *, cutoff: datetime, limit: int
+    ) -> int:
+        """One status's page walk for `recover_stranded_chat_admissions`."""
         from maistro.runs.sources import CHAT_SOURCE
         from maistro.runs.store import run_cursor_key
 
-        moment = now if now is not None else datetime.now(UTC)
-        cutoff = moment - DEFAULT_STRANDED_ADMISSION_AGE
         recovered = 0
         after = None
         while recovered < limit:
@@ -1075,7 +1444,7 @@ class Container:
             # it does not replace the per-candidate check, which still
             # re-derives eligibility from the record it is handed.
             page = await self.run_store.list_by_status(
-                RunStatus.RUNNING,
+                status,
                 limit=limit,
                 after=after,
                 admission_source=CHAT_SOURCE,
@@ -1114,7 +1483,13 @@ class Container:
             await self.run_store.transition_run(
                 run.run_id,
                 RunStatus.CANCELLED,
-                error=EXECUTION_NEVER_STARTED,
+                # Never reached RUNNING: the same word the in-request
+                # compensation uses for an admission that did not finish.
+                error=(
+                    EXECUTION_NEVER_STARTED
+                    if run.status is RunStatus.RUNNING
+                    else ADMISSION_INCOMPLETE
+                ),
             )
         except RunNotFound:
             # The Run vanished between the page that listed it and this lookup:
@@ -1149,13 +1524,28 @@ class Container:
         RUNNING Run, RUNNING NodeRun, and a leased CREATED Attempt; the Run row
         is the cross-process mutex and the Attempt lease is the recovery proof.
         A node failure is parked by the reconciler and never silently retried.
+
+        The return is the *attempted* count — claimed and driven to a
+        disposition, failures included (#849). Callers that need to know how
+        many actually succeeded must read `execute_admitted_runs_accounting`;
+        presenting this number as successes let an all-failing batch present as
+        a full executed batch.
         """
-        from maistro.runs.consumer_claim import ConsumerClaimLost
+        accounting = await self.execute_admitted_runs_accounting(limit=limit)
+        return accounting.attempted
+
+    async def execute_admitted_runs_accounting(self, *, limit: int = 100) -> TickAccounting:
+        """`execute_admitted_runs` with the honest breakdown (#849).
+
+        One inner loop, two answers: the tick distinguishes what it attempted,
+        what succeeded, what failed and what it skipped, so a caught failure is
+        never counted as successful execution and a caller can say truthfully
+        what one tick did.
+        """
         from maistro.runs.consumption import (
             ScheduleAttemptExecutor,
+            TickAccounting,
             consumer_owns,
-            executable_by_consumer,
-            unresolvable_reason,
         )
         from maistro.runs.store import run_cursor_key
 
@@ -1170,8 +1560,8 @@ class Container:
         # admitted. Building it per tick rather than per Run keeps the cost off
         # the loop while still reading whatever this Container was wired with.
         executor = ScheduleAttemptExecutor(self.run_store, node_resolver=self.node_resolver())
-        executed = 0
-        while executed < limit:
+        attempted = succeeded = failed = parked = skipped = 0
+        while attempted < limit:
             queued = await self.run_store.list_by_status(RunStatus.QUEUED, limit=limit, after=after)
             if not queued:
                 break
@@ -1179,31 +1569,75 @@ class Container:
                 after = run_cursor_key(run)
                 if not consumer_owns(run):
                     continue
-                # Owned and impossible: no later tick makes an unregistered kind
-                # appear, so this Run is disposed of rather than left QUEUED
-                # forever. A multi-node Run reaches neither branch — it is owed to
-                # the durable Graph traversal (#44/#34) and waits for it.
-                unresolvable = unresolvable_reason(run)
-                if unresolvable is not None:
-                    await self._fail_unresolvable_run(run.run_id, unresolvable)
+                settled, exc = await self._consume_or_skip(executor, run)
+                if settled is None and exc is None:
+                    # Not this tick's to run: unresolvable (disposed of by
+                    # `_consume_or_skip`), ineligible, or a lost claim race.
+                    skipped += 1
                     continue
-                if not executable_by_consumer(run):
-                    continue
-                try:
-                    await executor.execute(run)
-                except ConsumerClaimLost:
-                    # Another tick won the atomic Run + NodeRun + Attempt claim.
-                    continue
-                except Exception:
-                    # Any execution that got past claim owns leased physical
-                    # evidence, so ordinary recovery owns a process loss here.
+                if settled is None:
+                    # Got past the claim, so leased physical evidence exists
+                    # and ordinary recovery owns a process loss; the attempt
+                    # counts, and as a failure: a caught exception must never
+                    # present as successful execution.
+                    failed += 1
                     logger.warning(
-                        "admitted Run %s failed during consumption", run.run_id, exc_info=True
+                        "admitted Run %s failed during consumption",
+                        run.run_id,
+                        exc_info=exc,
                     )
-                executed += 1
-                if executed >= limit:
+                elif settled.status is RunStatus.COMPLETED:
+                    succeeded += 1
+                else:
+                    # Settled non-terminal: a failed Attempt's park or a
+                    # re-entry's re-yield. Durable, visible, recovery-owned --
+                    # and deliberately not called a success.
+                    parked += 1
+                attempted += 1
+                if attempted >= limit:
                     break
-        return executed
+        return TickAccounting(
+            attempted=attempted,
+            succeeded=succeeded,
+            failed=failed,
+            parked=parked,
+            skipped=skipped,
+        )
+
+    async def _consume_or_skip(
+        self, executor: Any, run: Any
+    ) -> tuple[Any | None, BaseException | None]:
+        """Drive one queued Run, or refuse it. (settled Run, caught exception)
+
+        Returns `(settled_run, None)` when the Run executed to a disposition,
+        `(None, exc)` when the execution call raised — `exc` preserved for the
+        tick's warning — and `(None, None)` when this tick must skip: an
+        unresolvable kind (disposed of here, failed visibly on the Run), an
+        ineligible Run, or a lost atomic claim. Keeping the classification out
+        of the tick loop is what keeps the loop itself readable; the
+        accounting (#849) reads the disposition, nothing else.
+        """
+        from maistro.runs.consumer_claim import ConsumerClaimLost
+        from maistro.runs.consumption import executable_by_consumer, unresolvable_reason
+
+        # Owned and impossible: no later tick makes an unregistered kind
+        # appear, so this Run is disposed of rather than left QUEUED
+        # forever. A multi-node Run reaches neither branch — it is owed to
+        # the durable Graph traversal (#44/#34) and waits for it.
+        unresolvable = unresolvable_reason(run)
+        if unresolvable is not None:
+            await self._fail_unresolvable_run(run.run_id, unresolvable)
+            return None, None
+        if not executable_by_consumer(run):
+            return None, None
+        try:
+            return await executor.execute(run), None
+        except ConsumerClaimLost:
+            # Another tick won the atomic Run + NodeRun + Attempt claim — a
+            # skip, not an attempt: this tick touched no state.
+            return None, None
+        except Exception as exc:
+            return None, exc
 
     async def resume_parked_runs(self, *, limit: int = 100, now: datetime | None = None) -> int:
         """Tick the consumer for parked Runs whose wait is over (#641). Returns how many resumed.
@@ -1226,9 +1660,28 @@ class Container:
         operator-scheduled, never self-starting (ADR-019). The claim is the
         parked→RUNNING transition itself, so a concurrent tick's loser skips
         rather than resuming the same Run twice.
+
+        The return is the *attempted* count — re-entered and driven to a
+        disposition, a caught resume failure included (#849). Read
+        `resume_parked_runs_accounting` for the succeeded/failed/skipped
+        breakdown instead of presenting this number as successes.
+        """
+        accounting = await self.resume_parked_runs_accounting(limit=limit, now=now)
+        return accounting.attempted
+
+    async def resume_parked_runs_accounting(
+        self, *, limit: int = 100, now: datetime | None = None
+    ) -> TickAccounting:
+        """`resume_parked_runs` with the honest breakdown (#849).
+
+        The resume tick counted a caught failure as a resumed Run — the same
+        accounting defect the consumption tick had — so a tick that re-entered
+        three polls and blew up on all three reported three resumed. One inner
+        loop, two answers: attempted, succeeded, failed, skipped.
         """
         from maistro.runs.consumption import (
             ScheduleAttemptExecutor,
+            TickAccounting,
             resumable_by_consumer,
         )
 
@@ -1236,39 +1689,83 @@ class Container:
         parked = await self._parked_candidates()
 
         executor = ScheduleAttemptExecutor(self.run_store, node_resolver=self.node_resolver())
-        resumed = 0
+        attempted = succeeded = failed = parked_count = skipped = 0
         for run in parked:
-            if resumed >= limit:
+            if attempted >= limit:
                 break
-            if not resumable_by_consumer(run):
+            outcome = await self._resume_one_parked(
+                run, executor=executor, moment=moment, resumable=resumable_by_consumer(run)
+            )
+            if outcome == "skipped":
+                skipped += 1
                 continue
-            pause = await self._resumable_pause_for(run, moment)
-            if pause is None:
-                continue
-            try:
-                claimed = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
-            except Exception:
-                # Another tick won the claim, or the Run moved on. Not ours.
-                continue
-            # Re-read the pause now the claim is ours (#666 review). The read
-            # above happened before it: between the two, another replica can
-            # have resumed this Run, yielded again with a later `resume_at`,
-            # and parked it back to the status this transition then found. The
-            # claim succeeds, and resuming on the pause read beforehand polls
-            # immediately instead of honouring the delay just recorded -- every
-            # replica collapsing the interval into a burst, which is the one
-            # thing a poll deadline exists to prevent.
-            fresh = await self._resumable_pause_for(claimed, moment)
-            if fresh is None:
-                await self._repark_after_failed_resume(run.run_id, pause.node_run_id, run.status)
-                continue
-            try:
-                await executor.resume(claimed, fresh)
-            except Exception:
-                logger.warning("parked Run %s failed during resume", run.run_id, exc_info=True)
-                await self._repark_after_failed_resume(run.run_id, fresh.node_run_id, run.status)
-            resumed += 1
-        return resumed
+            # Re-entered and driven to a disposition -- a caught resume failure
+            # included (#849). Only "skipped" means the Run was left alone.
+            attempted += 1
+            if outcome == "succeeded":
+                succeeded += 1
+            elif outcome == "failed":
+                failed += 1
+            else:
+                parked_count += 1
+        return TickAccounting(
+            attempted=attempted,
+            succeeded=succeeded,
+            failed=failed,
+            parked=parked_count,
+            skipped=skipped,
+        )
+
+    async def _resume_one_parked(
+        self,
+        run: Run,
+        *,
+        executor: Any,
+        moment: datetime,
+        resumable: bool,
+    ) -> ParkedResumeOutcome:
+        """Claim one parked Run and drive it to a disposition (#849).
+
+        Returns the outcome the accounting loop counts. "skipped" means the Run
+        was never re-entered: ineligible, its pause unreadable or no longer
+        elapsed, or a claim another tick won. The other three are all
+        *attempted* — driven past the claim to a durable disposition, a caught
+        resume failure included.
+        """
+        if not resumable:
+            return "skipped"
+        pause = await self._resumable_pause_for(run, moment)
+        if pause is None:
+            return "skipped"
+        try:
+            claimed = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        except Exception:
+            # Another tick won the claim, or the Run moved on. Not ours.
+            return "skipped"
+        # Re-read the pause now the claim is ours (#666 review). The read
+        # above happened before it: between the two, another replica can
+        # have resumed this Run, yielded again with a later `resume_at`,
+        # and parked it back to the status this transition then found. The
+        # claim succeeds, and resuming on the pause read beforehand polls
+        # immediately instead of honouring the delay just recorded -- every
+        # replica collapsing the interval into a burst, which is the one
+        # thing a poll deadline exists to prevent.
+        fresh = await self._resumable_pause_for(claimed, moment)
+        if fresh is None:
+            await self._repark_after_failed_resume(run.run_id, pause.node_run_id, run.status)
+            return "skipped"
+        try:
+            settled = await executor.resume(claimed, fresh)
+        except Exception:
+            logger.warning("parked Run %s failed during resume", run.run_id, exc_info=True)
+            await self._repark_after_failed_resume(run.run_id, fresh.node_run_id, run.status)
+            return "failed"
+        if settled is not None and settled.status is RunStatus.COMPLETED:
+            return "succeeded"
+        # Re-entered and parked again: a fresh elapsed poll recorded by the
+        # node, or a failed Attempt's park. Durable, visible, recovery-owned --
+        # and deliberately not called a success.
+        return "parked"
 
     async def _parked_candidates(self) -> list[Run]:
         """Every parked Run this tick will consider, oldest first.
@@ -1404,7 +1901,7 @@ class Container:
 
     async def durable_invocations_for(self, event_id: int) -> list[Any]:
         """Handler invocations recorded for one durable event (delivery audit)."""
-        return list(await self.invocation_store.list_for_event(event_id))
+        return list(await self.handler_invocation_store.list_for_event(event_id))
 
     async def select_model(self, task: Any, budget: Any = None) -> Any:
         """Budget-constrained model selection via the wired cost-aware router."""
@@ -1539,6 +2036,41 @@ class Container:
             id_token_verifier=default_id_token_verifier(),
         )
 
+    def ensure_extension_install_service(self) -> ExtensionInstallService:
+        """Return the governed extension install lifecycle service (#953).
+
+        Lazily built over the process-lifetime in-memory store. The activation
+        loader is deliberately unwired at this layer: a deployment without an
+        activation substrate can inspect and decide, but installation fails
+        closed with a clear error instead of improvising code execution. Hosts
+        that own activation replace ``extension_install_service`` with one
+        built over their own loader.
+        """
+        from maistro.extensions.service import ExtensionInstallService, UnwiredExtensionLoader
+        from maistro.extensions.store import InMemoryExtensionStore
+
+        if self.extension_install_service is None:
+            self.extension_install_service = ExtensionInstallService(
+                self.extension_install_store or InMemoryExtensionStore(),
+                loader=UnwiredExtensionLoader(),
+            )
+        return self.extension_install_service
+
+    def ensure_catalog_service(self) -> CatalogService:
+        """Return the private organizational extension catalog service (#979).
+
+        Lazily built over the process-lifetime in-memory store. The store is
+        cached back onto the container so callers that bypass the service see
+        the same snapshot the API serves.
+        """
+        from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
+
+        if self.catalog_service is None:
+            store = self.catalog_store or InMemoryCatalogStore()
+            self.catalog_store = store
+            self.catalog_service = CatalogService(store)
+        return self.catalog_service
+
 
 def _wire_schedule_admission(
     run_store: RunStore,
@@ -1585,12 +2117,33 @@ def _identity_lifecycle_stores() -> tuple[
     return InMemoryIdentityStore(), InMemoryTokenStore(), InMemorySecretStore()
 
 
+async def _wire_campaign_backend(db_pool: Any) -> CampaignStore:
+    """The campaign backend follows the SQLite pool; without one, the
+    in-memory fallback (whose wiring logs the durability cost) stands in."""
+    if db_pool is not None:
+        return await wire_campaign_store(db_pool)
+    return wire_in_memory_campaign_store()
+
+
+async def _wire_working_memory_backend(db_pool: Any) -> WorkingMemoryManager:
+    """Working memory follows the SQLite pool for the same reason campaigns
+    do (#301): the observation log is only lossless if it outlives the
+    process, and the in-memory fallback says so loudly when there is no pool."""
+    if db_pool is not None:
+        return await wire_working_memory(db_pool)
+    return wire_in_memory_working_memory()
+
+
 async def create_container(
     config: AgentConfig,
     *,
     harness_adapters: dict[str, HarnessAdapter] | None = None,
     embeddings: EmbeddingClient | None = None,
     pg_pool: Any = None,
+    effect_context: CapabilityEffectContext | None = None,
+    capability_bindings: Iterable[Binding] = (),
+    capability_credentials: CredentialRouter | None = None,
+    provider_adapter_catalog: ProviderAdapterCatalog | None = None,
 ) -> Container:
     """Wire all dependencies and create the container.
 
@@ -1627,6 +2180,18 @@ async def create_container(
     more specific than a string saying which server to reach, and silently
     opening a second pool while the given one sat unused is the shape of bug
     that reads as "PostgreSQL is configured and nothing is durable".
+
+    `capability_bindings` and `capability_credentials` are the explicit
+    Workspace provisioning seam for retained external-effect nodes. They never
+    accept secret values in Graph input; omitted provisioning leaves the
+    canonical Binding authority empty and therefore fails closed.
+
+    `provider_adapter_catalog` is the out-of-tree provider seam (M9-E1, #961):
+    a host that registered third-party adapters through
+    `register_adapter_models` on its own catalog hands that catalog here, and
+    every `AgentConfig.provider_adapters` entry wired against those ids
+    resolves. Omitted, the container composes a fresh catalog (reference
+    adapter only) — the pre-SDK behavior.
     """
     if not config.router_api_key:
         msg = "ROUTER_API_KEY is required."
@@ -1645,6 +2210,11 @@ async def create_container(
 
     warden = Warden()
     learning_extractor = ToolCorrectionExtractor()
+    # The deployment's declared memory posture (ADR-057 / SPEC-062126-6a31).
+    # Every store this container builds receives it; the stores themselves stay
+    # fail-closed when constructed without one, so a store built outside this
+    # wiring cannot mutate memory silently.
+    exposure_mode: MemoryExposureMode = config.memory.exposure_mode
     # Two different handles, deliberately not one. `db_pool` is the SQLite
     # connection the durable-event stores are written against; `pg_pool` is an
     # asyncpg pool. Collapsing them into one `Any` was how the durable-event
@@ -1652,6 +2222,7 @@ async def create_container(
     db_pool: Any = None
     session_conn: Any = None
     schedule_conn: Any = None
+    history_conn: Any = None
     # Held aside before the URL branch runs, because that branch rebinds
     # `pg_pool`. Rebinding it unconditionally — which is what merging #122 into
     # #135 first did — drops the parameter on the floor, and a caller-supplied
@@ -1663,17 +2234,23 @@ async def create_container(
     holds_db_pool = False
     usage_log = get_default_usage_log()
     usage_log_persistence: Any = None
+    stores_memory_backed = False
     if config.database_url.startswith("sqlite:"):
+        # A pathless `sqlite://` selects SQLite's in-memory database: the
+        # store classes are the durable twins, but nothing survives restart.
+        # Recorded so health reports the real disposition (#72).
+        stores_memory_backed = _sqlite_database_path(config.database_url) == ":memory:"
         (
             db_pool,
             session_conn,
             schedule_conn,
+            history_conn,
             quota_tracker,
             learning_store,
             outcome_store,
             session_store,
-        ) = await _wire_sqlite_backend(config.database_url)
-        # All three connections were opened for this container (#1161);
+        ) = await _wire_sqlite_backend(config.database_url, exposure_mode=exposure_mode)
+        # All four connections were opened for this container (#1161);
         # `aclose` closes them. The pg branch below sets its flag for the same
         # reason.
         holds_db_pool = True
@@ -1690,16 +2267,31 @@ async def create_container(
             outcome_store,
             session_store,
         ) = await _wire_postgres_backend(
-            config.database_url, embeddings, supplied_pool=supplied_pg_pool
+            config.database_url,
+            embeddings,
+            supplied_pool=supplied_pg_pool,
+            exposure_mode=exposure_mode,
         )
         holds_pg_pool = supplied_pg_pool is None
     else:
         _require_ephemeral_is_deliberate(config.database_url)
         quota_tracker = InMemoryQuotaTracker()
-        learning_store = InMemoryLearningStore()
-        outcome_store = InMemoryOutcomeStore()
+        learning_store = InMemoryLearningStore(exposure_mode=exposure_mode)
+        outcome_store = InMemoryOutcomeStore(exposure_mode=exposure_mode)
         session_store = InMemorySessionStore()
     pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
+
+    # The Container is the process's one composition root, so its ledger is
+    # the process default (#718): the conductor's raw-gateway fallback — the
+    # single call class that crosses no canonical Invocation authority —
+    # marks its ungoverned evidence there instead of leaving a
+    # ledger-carrying process presenting complete quota percentages while
+    # omitting that call. Authoritative recording stays on the canonical
+    # effect path above; this default only receives the fallback's
+    # non-Invocation evidence.
+    set_default_quota_tracker(quota_tracker)
+
+    usage_log, usage_log_persistence = await _wire_usage_log(db_pool)
 
     # Prompt persistence is selected by the same backend decision as the
     # rest of the Container, but kept out of this composition function so adding a
@@ -1707,7 +2299,10 @@ async def create_container(
     prompt_manager = await _wire_prompt_manager(pg_pool=pg_pool, db_pool=db_pool)
 
     episodic_store = await _wire_episodic_store(
-        database_url=config.database_url, pg_pool=pg_pool, db_pool=db_pool
+        database_url=config.database_url,
+        pg_pool=pg_pool,
+        db_pool=db_pool,
+        exposure_mode=exposure_mode,
     )
     archive_store = build_archive_store(config.archive_url)
     # Built here rather than below, because the admission seam routes on it: a
@@ -1742,6 +2337,16 @@ async def create_container(
         project_store=project_scope_store,
         pg_pool=pg_pool,
     )
+    backlog_history_store = await wire_backlog_history_store(
+        history_conn,
+        project_store=project_scope_store,
+        pg_pool=pg_pool,
+    )
+    # Campaigns ride the SQLite pool when there is one; a PostgreSQL
+    # deployment gets the in-memory fallback plus a startup warning naming
+    # the cost, rather than a silent durability lie (#103, AC-5).
+    campaign_store: CampaignStore | None = await _wire_campaign_backend(db_pool)
+    working_log = await _wire_working_memory_backend(db_pool)
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     # Same backend the spine just chose (#1176): claims beside the Runs they
     # reconcile, or the tiers cannot answer a restart the same way.
@@ -1753,6 +2358,19 @@ async def create_container(
         workspace_id=config.workspace_id,
         intents=intent_registry,
     )
+    # Per-Workspace working-memory projection (ADR-082226-5104 §5): a lazy,
+    # evictable, disposable hot layer hydrated from the authoritative
+    # episodic store. The manager is bound to this instance's Workspace —
+    # one instance is one Workspace — so the policy's Layer 1/Layer 4 can
+    # never address another Workspace's graph, structurally. Backs Layer 1
+    # indexed recall (BM25 + stored embeddings) and the Layer 4 entity
+    # graph; every failure degrades loudly to the durable path.
+    hot_working_memory = HotWorkingMemoryManager(
+        workspace_id=config.workspace_id,
+        episodic_store=episodic_store,
+        # The same client #188 wires for durable memory similarity.
+        embedding_client=embeddings,
+    )
     context_assembly_policy = DefaultContextAssemblyPolicy(
         episodic_store=episodic_store,
         outcome_store=outcome_store,
@@ -1760,9 +2378,20 @@ async def create_container(
         # The same client #188 wires for durable memory similarity. Absent, the
         # hybrid score is its lexical term alone rather than a second formula.
         embedding_client=embeddings,
+        working_memory=hot_working_memory,
+    )
+    # The per-Workspace working-memory projection (#776), over the same
+    # durable stores everything else in this container reads: episodic memory
+    # through each Workspace's own Project tree, Run provenance through the
+    # Run store's workspace axis. The projection is disposable process-local
+    # state and holds no durable truth, so it needs no shutdown write.
+    working_memory = build_workspace_working_memory(
+        episodic=episodic_store,
+        projects=project_scope_store,
+        runs=run_store,
     )
 
-    router = RouterEngine(quota_tracker)
+    router = RouterEngine()
     classifier = ClassifierEngine()
     context_builder = ContextBuilder()
 
@@ -1776,7 +2405,6 @@ async def create_container(
         build_permission_table,
         describe_permission_table,
     )
-    from maistro.security.sentinel.elevation import InMemoryElevationStore
     from maistro.security.sentinel.policy import Sentinel
 
     audit_log = await _wire_audit_log(pg_pool=pg_pool, db_pool=db_pool)
@@ -1795,7 +2423,7 @@ async def create_container(
     # the budget check and the BLOCKED check have all already passed -- a grant
     # can therefore never flip authorized False -> True, only needs
     # "self_elevation"/"scoped_2fa" -> "none".
-    elevation_store = InMemoryElevationStore()
+    elevation_store = await _wire_elevation_store(pg_pool=pg_pool, db_pool=db_pool)
     # Canonical capability state is created BEFORE Sentinel so the permission
     # source can hold the same registry the container exposes (#1165,
     # ADR-072726-0d6b): a runtime capability disable (set_enabled) must reach
@@ -1836,7 +2464,7 @@ async def create_container(
 
     durable_event_log: EventLogStore
     trigger_store: TriggerStore
-    invocation_store: InvocationStore
+    handler_invocation_store: InvocationStore
     consumer_cursor_store: ConsumerCursorStore
     # PostgreSQL first: a caller who supplied a pool asked for the durable
     # backend, and `db_pool` (SQLite) may be set at the same time because the
@@ -1847,32 +2475,21 @@ async def create_container(
         (
             durable_event_log,
             trigger_store,
-            invocation_store,
+            handler_invocation_store,
             consumer_cursor_store,
         ) = await _wire_pg_durable_events(pg_pool)
     elif db_pool is not None:
         (
             durable_event_log,
             trigger_store,
-            invocation_store,
+            handler_invocation_store,
             consumer_cursor_store,
         ) = await _wire_sqlite_durable_events(db_pool)
     else:
         durable_event_log = InMemoryEventLog()
         trigger_store = InMemoryTriggerStore()
-        invocation_store = InMemoryInvocationStore()
+        handler_invocation_store = InMemoryInvocationStore()
         consumer_cursor_store = InMemoryConsumerCursorStore()
-        if pg_pool is not None:
-            # The durable-event stores (ADR-086) have a SQLite implementation
-            # and no PostgreSQL one, so a PostgreSQL deployment gets in-memory
-            # here even though it configured a durable database. Saying so is
-            # the whole point of #122: the operator learns it now rather than
-            # after a restart drops the event log, triggers and invocations.
-            logger.warning(
-                "Durable events are in-memory despite a PostgreSQL backend: the event log, "
-                "triggers and invocations are lost on restart. No PostgreSQL implementation "
-                "exists yet (#135)."
-            )
     handler_caller = HTTPHandlerCaller()
 
     event_bus = EventBus()
@@ -1919,15 +2536,56 @@ async def create_container(
     # --- Hierarchical orchestration (ADR-101) ------------------------------
     harness_registry, hierarchy = _wire_hierarchy(agents, skill_registry)
 
+    # --- Canonical capability effects (#55/#1133) --------------------------
+    # Use the same database authority as the Container so a recovered Attempt
+    # cannot repeat an effect merely because this process restarted. A caller
+    # may inject a fully composed context when its deployment owns the stores.
+    capability_effects = await _wire_capability_effects(
+        effect_context=effect_context,
+        pg_pool=pg_pool,
+        db_pool=db_pool,
+        database_url=config.database_url,
+        capability_bindings=capability_bindings,
+        capability_credentials=capability_credentials,
+        quota_tracker=quota_tracker,
+        usage_log=usage_log,
+        provider_registry=provider_registry,
+    )
+    configure_default_effect_context(capability_effects)
+
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    capability_invocation_store = await _wire_capability_invocations(
-        pg_pool=pg_pool, db_pool=db_pool
-    )
-    capability_effects = new_effect_context(invocation_store=capability_invocation_store)
+    # Operator-declared model.chat Bindings (#1079/#1522) load into the same
+    # canonical Binding authority the provisioning seam above built, so model
+    # egress and PM polling egress share one fail-closed door.
     from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
 
     await bootstrap_model_bindings(config, capability_effects)
+    # Registered provider-adapter packages (M9-E1, #961) join the same door:
+    # each configured entry registers its models into the canonical registry
+    # (so the cost-aware router selects them without a core routing edit),
+    # provisions its operator-supplied credential into the scoped pool, and
+    # loads its own model.chat Binding. The catalog publishes as the process
+    # default so every governed model egress — agents, graph nodes, server —
+    # resolves adapter models without a second wiring path; an unconfigured
+    # deployment keeps the gateway-only behavior exactly as before.
+    from maistro.capabilities.provider_adapters import (
+        ProviderAdapterCatalog,
+        bootstrap_provider_adapters,
+        configure_default_adapter_catalog,
+    )
+
+    # A host-supplied catalog carries its already-registered out-of-tree
+    # adapters; a fresh one self-registers only the reference adapter.
+    adapter_catalog = (
+        provider_adapter_catalog
+        if provider_adapter_catalog is not None
+        else ProviderAdapterCatalog()
+    )
+    await bootstrap_provider_adapters(
+        config, capability_effects, provider_registry, adapter_catalog
+    )
+    configure_default_adapter_catalog(adapter_catalog)
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
@@ -1971,7 +2629,11 @@ async def create_container(
         project_store=project_scope_store,
         project_scope_store=project_scope_store,
         workspace_store=workspace_store,
+        backlog_history_store=backlog_history_store,
+        campaign_store=campaign_store,
+        working_log=working_log,
         run_store=run_store,
+        run_reader=ScopedRunReader(run_store, workspace_store, project_scope_store),
         task_admitter=task_admitter,
         chat_admitter=chat_admitter,
         template_store=graph_template_store,
@@ -1981,21 +2643,25 @@ async def create_container(
         schedule_admitter=schedule_admitter,
         task_idempotency=task_idempotency,
         context_assembly_policy=context_assembly_policy,
+        working_memory=working_memory,
         agents=agents,
         audit_log=audit_log,
         db_pool=db_pool,
-        usage_log=usage_log,
-        usage_log_persistence=usage_log_persistence,
         session_conn=session_conn,
         schedule_conn=schedule_conn,
+        history_conn=history_conn,
         pg_pool=pg_pool,
         holds_pg_pool=holds_pg_pool,
         holds_db_pool=holds_db_pool,
+        usage_log=usage_log,
+        usage_log_persistence=usage_log_persistence,
+        stores_memory_backed=stores_memory_backed,
         resilience_policies=resilience_policies,
         event_bus=event_bus,
         durable_event_log=durable_event_log,
         trigger_store=trigger_store,
-        invocation_store=invocation_store,
+        invocation_store=capability_effects.invocation_store,
+        handler_invocation_store=handler_invocation_store,
         handler_caller=handler_caller,
         consumer_cursor_store=consumer_cursor_store,
         provider_registry=provider_registry,
@@ -2010,6 +2676,7 @@ async def create_container(
         harness_adapters=wired_harness_adapters,
         spawn_harness_node=spawn_harness_node,
         capability_effects=capability_effects,
+        provider_adapter_catalog=adapter_catalog,
         golden_record_store=golden_record_store,
         skill_registry=skill_registry,
         policy_attachment_store=policy_attachment_store,
@@ -2042,7 +2709,9 @@ async def create_container(
     return container
 
 
-async def _wire_episodic_store(*, database_url: str, pg_pool: Any, db_pool: Any) -> EpisodicStore:
+async def _wire_episodic_store(
+    *, database_url: str, pg_pool: Any, db_pool: Any, exposure_mode: MemoryExposureMode
+) -> EpisodicStore:
     """Select the episodic store from the configured relational backend.
 
     Kept out of `create_container` for the reason `_wire_prompt_manager` states:
@@ -2064,16 +2733,16 @@ async def _wire_episodic_store(*, database_url: str, pg_pool: Any, db_pool: Any)
     if pg_pool is not None and database_url.startswith(POSTGRES_SCHEMES):
         from maistro.persistence.pg_episodic import PgEpisodicStore
 
-        store = PgEpisodicStore(pg_pool)
+        store = PgEpisodicStore(pg_pool, exposure_mode=exposure_mode)
         await store.ensure_schema()
         return store
     if db_pool is not None:
         from maistro.persistence.sqlite_episodic import SqliteEpisodicStore
 
-        sqlite_store = SqliteEpisodicStore(db_pool)
+        sqlite_store = SqliteEpisodicStore(db_pool, exposure_mode=exposure_mode)
         await sqlite_store.ensure_schema()
         return sqlite_store
-    return InMemoryEpisodicStore()
+    return InMemoryEpisodicStore(exposure_mode=exposure_mode)
 
 
 async def _wire_prompt_manager(*, pg_pool: Any, db_pool: Any) -> PromptManager:
@@ -2115,6 +2784,30 @@ async def _wire_audit_log(*, pg_pool: Any, db_pool: Any) -> Any:
     from maistro.security.sentinel.audit import InMemoryAuditLog
 
     return InMemoryAuditLog()
+
+
+async def _wire_usage_log(db_pool: Any) -> tuple[InMemoryUsageLog, Any]:
+    """Restore SQLite rate-accounting events without changing hot-path reads."""
+    if db_pool is None:
+        return get_default_usage_log(), None
+    import importlib
+
+    SqliteUsageLog = importlib.import_module("maistro.quota.sqlite_usage_log").SqliteUsageLog
+    persistence = SqliteUsageLog(db_pool)
+    await persistence.ensure_schema()
+    return await persistence.restore(), persistence
+
+
+async def _wire_elevation_store(*, pg_pool: Any, db_pool: Any) -> ElevationStore:
+    """Keep grants beside the audit and enforcement state they authorize."""
+    from maistro.security.sentinel.elevation_durable import build_elevation_store
+
+    return await build_elevation_store(pg_pool=pg_pool, db_pool=db_pool)
+
+
+def _sqlite_database_path(database_url: str) -> str:
+    """Map a ``sqlite:`` URL to the database file it names; pathless is memory."""
+    return database_url.removeprefix("sqlite:///").removeprefix("sqlite://") or ":memory:"
 
 
 def _configure_strike_recovery_policy() -> dict[tuple[str, str], Any]:
@@ -2215,6 +2908,7 @@ _REQUIRED_PG_TABLES: Final = (
     "learnings",
     "outcomes",
     "quota_usage",
+    "quota_invocation_evidence",
     "quota_usage_events",
     "sessions",
     # A turn's at-most-once marker, a row of its own since 023 (#327). Listed
@@ -2247,6 +2941,7 @@ _REQUIRED_PG_TABLES: Final = (
     "security_strikes",
     "security_violations",
     "security_rate_limits",
+    "elevation_grants",
     # The canonical Workspace (#516). Same reasoning as the spine's tables: a
     # `postgresql://` deployment that skipped `alembic upgrade head` should hear
     # about it once, at startup, naming every table it lacks.
@@ -2326,6 +3021,7 @@ async def _wire_postgres_backend(
     embeddings: EmbeddingClient | None = None,
     *,
     supplied_pool: Any = None,
+    exposure_mode: MemoryExposureMode = MemoryExposureMode.AGENT_MANAGED,
 ) -> tuple[
     Any,
     QuotaTracker,
@@ -2388,7 +3084,7 @@ async def _wire_postgres_backend(
             await close_pool(dsn)
         raise
 
-    pg_learning_store = PgLearningStore(pool)
+    pg_learning_store = PgLearningStore(pool, exposure_mode=exposure_mode)
     # The one store with an ensure_schema: an idempotent ALTER that adds the
     # scope column its queries name. Harmless once the migration has run.
     await pg_learning_store.ensure_schema()
@@ -2404,7 +3100,7 @@ async def _wire_postgres_backend(
         if embeddings is not None
         else pg_learning_store
     )
-    outcome_store: OutcomeStore = PgOutcomeStore(pool)
+    outcome_store: OutcomeStore = PgOutcomeStore(pool, exposure_mode=exposure_mode)
     session_store: SessionStore = PgSessionStore(pool)
 
     return pool, quota_tracker, learning_store, outcome_store, session_store
@@ -2485,7 +3181,10 @@ def _require_ephemeral_is_deliberate(database_url: str) -> None:
 
 async def _wire_sqlite_backend(
     database_url: str,
+    *,
+    exposure_mode: MemoryExposureMode = MemoryExposureMode.AGENT_MANAGED,
 ) -> tuple[
+    Any,
     Any,
     Any,
     Any,
@@ -2500,9 +3199,11 @@ async def _wire_sqlite_backend(
     ``sqlite://`` for an in-memory DB) selects this backend instead of the
     default in-memory stores — no Postgres server required.
 
-    Returns the shared connection first and the session store's own connection
-    second (#327), so `create_container` can hold both and record ownership of
-    them: `aclose` closes what this function opened (#1161).
+    Returns the shared connection first, the session store's own connection
+    second (#327), the schedule store's third (#1199) and the history
+    journal's fourth (#101), so `create_container` can hold them all and
+    record ownership of them: `aclose` closes what this function opened
+    (#1161).
     """
     import aiosqlite  # type: ignore[import-not-found, unused-ignore]
 
@@ -2511,7 +3212,7 @@ async def _wire_sqlite_backend(
     from maistro.persistence.sqlite_quota import SqliteQuotaTracker
     from maistro.persistence.sqlite_sessions import SqliteSessionStore
 
-    path = database_url.removeprefix("sqlite:///").removeprefix("sqlite://") or ":memory:"
+    path = _sqlite_database_path(database_url)
     if path == ":memory:":
         # A pathless `sqlite://` is a real SQLite backend and a legitimate dev
         # choice, so it is allowed — but warned, unlike `memory://`. `memory://`
@@ -2547,10 +3248,19 @@ async def _wire_sqlite_backend(
     # on their own cadence. Same pathless-`sqlite://` caveat as above: only
     # the schedule store reads `schedules`.
     schedule_conn = await aiosqlite.connect(path)
+    # The BacklogItem history journal's, for the same reason (#101): its
+    # `append` holds `BEGIN IMMEDIATE` across its sequence read and its
+    # insert, and the spine stores it would otherwise share `conn` with --
+    # `ClaimingSqliteRunStore` foremost -- hold transactions of their own
+    # under their own locks, so a sibling's commit or rollback would land
+    # inside the journal's while `append` reported success. Same
+    # pathless-`sqlite://` caveat as above: only the journal reads
+    # `workspace_backlog_history`.
+    history_conn = await aiosqlite.connect(path)
 
     sqlite_quota_tracker = SqliteQuotaTracker(conn)
-    sqlite_learning_store = SqliteLearningStore(conn)
-    sqlite_outcome_store = SqliteOutcomeStore(conn)
+    sqlite_learning_store = SqliteLearningStore(conn, exposure_mode=exposure_mode)
+    sqlite_outcome_store = SqliteOutcomeStore(conn, exposure_mode=exposure_mode)
     sqlite_session_store = SqliteSessionStore(session_conn)
     await sqlite_quota_tracker.ensure_schema()
     await sqlite_learning_store.ensure_schema()
@@ -2566,11 +3276,160 @@ async def _wire_sqlite_backend(
         conn,
         session_conn,
         schedule_conn,
+        history_conn,
         quota_tracker,
         learning_store,
         outcome_store,
         session_store,
     )
+
+
+async def _wire_capability_effects(
+    *,
+    pg_pool: Any,
+    db_pool: Any,
+    # Optional because only the SQLite quota door reads it: a caller that has
+    # no file-backed database has no durable place to hold a reservation, and
+    # an absent URL says exactly that rather than forcing every caller to
+    # invent one.
+    database_url: str = "",
+    effect_context: CapabilityEffectContext | None = None,
+    capability_bindings: Iterable[Binding] = (),
+    capability_credentials: CredentialRouter | None = None,
+    quota_tracker: QuotaTracker | None = None,
+    usage_log: InMemoryUsageLog | None = None,
+    provider_registry: Any = None,
+) -> CapabilityEffectContext:
+    """Compose the sole governed effect context from the selected backend.
+
+    Invocation rows stay on the canonical capability Invocation store. Quota
+    admission and usage recording are collaborators of that service, not a
+    second executor. Binding, approval, and canonical Event stores follow the
+    same backend so a durable deployment cannot silently keep an in-memory door.
+
+    The default quota estimator only bounds request count. ``provider_registry``
+    remains accepted for composition compatibility, but its prices and output
+    defaults cannot establish a provider-enforced, full-request usage ceiling.
+    Numeric-budget deployments need a trusted adapter-backed estimator in an
+    explicitly composed ``effect_context``; an unknown ceiling refuses spend.
+    """
+    from maistro.capabilities.invocation import Invocation
+    from maistro.events.wiring import wire_canonical_events
+    from maistro.quota.invocation_quota import QuotaEstimate
+
+    # A deployment that owns its stores hands in a composed context; building a
+    # second one here would give the Container an Invocation authority nobody
+    # else holds. Returned before any store is opened, so the injected context
+    # is not shadowed by schema work it never asked for.
+    if effect_context is not None:
+        for binding in capability_bindings:
+            await effect_context.bindings.put(binding)
+        return effect_context
+    if quota_tracker is None:
+        quota_tracker = InMemoryQuotaTracker()
+    if usage_log is None:
+        usage_log = get_default_usage_log()
+    canonical_events = await wire_canonical_events(pg_pool=pg_pool, db_pool=db_pool)
+    invocation_store = await _wire_capability_invocations(pg_pool=pg_pool, db_pool=db_pool)
+
+    async def estimate(invocation: Invocation, _binding: Any) -> QuotaEstimate:
+        # A registry price is not a physical usage bound. The gateway accepts
+        # arbitrary model aliases, full message fields, tools, response schemas
+        # and multimodal input; neither character counts nor an assumed chat
+        # framing constant bounds their billed tokens. Missing max_tokens also
+        # leaves output unbounded, never free. Until the selected adapter can
+        # prove/enforce bounds for the entire physical request, numeric units
+        # must remain unknown (quota.invocation_quota's contract, #1196).
+        # QuotaEstimate.maximum("requests") still returns one. Unconfigured
+        # quota doors still admit; applicable token/money policies fail closed.
+        return QuotaEstimate(principal_id=invocation.actor_id or "system")
+
+    bindings, approvals, quota = await _select_effect_backend(
+        pg_pool=pg_pool, db_pool=db_pool, database_url=database_url, estimate=estimate
+    )
+
+    context = new_effect_context(
+        invocation_store=invocation_store,
+        binding_store=bindings,
+        event_store=canonical_events.store,
+        approval_store=approvals,
+        quota=quota,
+        usage_log=usage_log,
+        quota_tracker=quota_tracker,
+        credentials=capability_credentials,
+        # The container is an explicit composition root. Bare contexts remain
+        # read-only until an application supplies policy authority.
+        policy_evaluator=binding_scope_policy,
+    )
+    # Operator-declared Bindings go into the store this context actually uses,
+    # not a second one registered beside it, so model egress and PM polling
+    # resolve through the same fail-closed door (#1079/#1522).
+    for binding in capability_bindings:
+        await context.bindings.put(binding)
+    return context
+
+
+async def _select_effect_backend(
+    *,
+    pg_pool: Any,
+    db_pool: Any,
+    database_url: str,
+    estimate: Any,
+) -> tuple[Any, Any, Any]:
+    """Pick the Binding, approval and quota stores for the configured backend.
+
+    Split from `_wire_capability_effects` so the composition root reads as one
+    sequence -- events, ledger, stores, context -- rather than three nested
+    backend decisions. The quota door is optional on purpose: an in-memory
+    deployment and a `:memory:` SQLite one have nowhere durable to hold a
+    reservation, and a quota that forgets its holds on restart would admit
+    work a real ceiling had already refused.
+    """
+
+    from maistro.capabilities.approval_store import (
+        ApprovalStore,
+        InMemoryApprovalStore,
+        PgApprovalStore,
+        SqliteApprovalStore,
+    )
+    from maistro.capabilities.binding_store import (
+        InMemoryBindingStore,
+        PgBindingStore,
+        RevocableBindingStore,
+        SqliteBindingStore,
+    )
+    from maistro.capabilities.invocation import InvocationQuota
+
+    # Named by contract, not by the first branch taken: each backend assigns
+    # its own implementation, and `ensure_schema` is called on the concrete
+    # object that has it rather than through the protocol, which does not.
+    bindings: RevocableBindingStore
+    approvals: ApprovalStore
+    quota: InvocationQuota | None = None
+    if pg_pool is not None:
+        from maistro.quota.pg_invocation_quota import PgInvocationQuota
+
+        pg_approvals = PgApprovalStore(pg_pool)
+        pg_quota = PgInvocationQuota(pg_pool, estimate=estimate)
+        await pg_quota.ensure_schema()
+        await pg_approvals.ensure_schema()
+        bindings, approvals, quota = PgBindingStore(pg_pool), pg_approvals, pg_quota
+    elif db_pool is not None:
+        sqlite_bindings = SqliteBindingStore(db_pool)
+        sqlite_approvals = SqliteApprovalStore(db_pool)
+        await sqlite_bindings.ensure_schema()
+        await sqlite_approvals.ensure_schema()
+        bindings, approvals = sqlite_bindings, sqlite_approvals
+        sqlite_path = database_url.removeprefix("sqlite:///").removeprefix("sqlite://")
+        if sqlite_path and sqlite_path != ":memory:":
+            from maistro.quota.sqlite_invocation_quota import SqliteInvocationQuota
+
+            sqlite_quota = SqliteInvocationQuota(sqlite_path, estimate=estimate)
+            await sqlite_quota.ensure_schema()
+            quota = sqlite_quota
+    else:
+        bindings, approvals = InMemoryBindingStore(), InMemoryApprovalStore()
+    return bindings, approvals, quota
 
 
 async def _wire_capability_invocations(
@@ -2579,19 +3438,22 @@ async def _wire_capability_invocations(
     db_pool: Any,
 ) -> CapabilityInvocationStore:
     """Select the canonical effect ledger from the container's durable backend."""
-    store: CapabilityInvocationStore
+    # Each branch binds its concrete store first: ``ensure_schema`` is a
+    # wiring concern the ``InvocationStore`` protocol deliberately does not
+    # carry, so it must be called on the concrete class before returning the
+    # store as the protocol type.
     if pg_pool is not None:
         from maistro.capabilities.pg_invocation_store import PgInvocationStore
 
-        store = PgInvocationStore(pg_pool)
-        await store.ensure_schema()
-        return store
+        pg_store = PgInvocationStore(pg_pool)
+        await pg_store.ensure_schema()
+        return pg_store
     if db_pool is not None:
         from maistro.capabilities.invocation_store import SqliteInvocationStore
 
-        store = SqliteInvocationStore(db_pool)
-        await store.ensure_schema()
-        return store
+        sqlite_store = SqliteInvocationStore(db_pool)
+        await sqlite_store.ensure_schema()
+        return sqlite_store
     from maistro.capabilities.invocation import InMemoryInvocationStore
 
     return InMemoryInvocationStore()

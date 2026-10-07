@@ -1,6 +1,9 @@
 """Tests for routes/dashboard_layout.py — per-user widget layout persistence."""
 
+from pathlib import Path
 from typing import Any
+
+import pytest
 
 
 class TestDashboardLayout:
@@ -69,7 +72,7 @@ def _ui_principal(authed_client: Any) -> str:
 
 
 class TestAgentWidgetEditIsRevisionChecked:
-    """#1048: the Agent's widget edit and a UI save must not silently erase each other."""
+    """#1048: the Agent's widget edit must not erase a UI save that wins the race."""
 
     def _ui_saves_between_read_and_write(
         self, authed_client: Any, monkeypatch: Any, times: int
@@ -141,6 +144,7 @@ class TestAgentWidgetEditIsRevisionChecked:
 
         assert result["created"] is False
         assert "kept changing" in result["error"]
+        assert len(ui_ids) == 2, "retry exactly once, rather than looping while edits continue"
         ids = _widget_ids(dashboard_layouts.load(principal).layout)
         assert set(ui_ids) <= ids
         assert not any(i.startswith("w-") for i in ids)
@@ -177,3 +181,132 @@ def test_with_widget_falls_back_to_the_first_tab_when_active_tab_is_not_one() ->
         assert result["tabs"][1]["widgets"] == [], active
     named = with_widget({"tabs": tabs, "activeTab": 0}, widget, "b")
     assert named["tabs"][1]["widgets"] == [widget]
+
+
+@pytest.mark.parametrize("conflicts,refuse_retry", [(1, False), (2, False), (1, True)])
+def test_agent_revision_race_preserves_full_layout_after_sqlite_restart(
+    authed_client: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    conflicts: int,
+    refuse_retry: bool,
+) -> None:
+    """Drive API/Agent composition through the production SQLite stores, then reopen."""
+    import asyncio
+    from copy import deepcopy
+
+    import stores
+    from services import dashboard_layouts
+    from services.chat_completion import _tool_create_dashboard_widget
+    from services.model_store import JsonStore
+
+    from maistro.state import PersistedStore, State
+
+    database = tmp_path / "dashboard.db"
+    state = State(db_path=str(database))
+    persisted = PersistedStore(state)
+    persisted.initialize()
+    store = JsonStore("dashboard_layouts", persisted)
+    store.initialize()
+    with monkeypatch.context() as patch:
+        patch.setattr(stores, "dashboard_layouts", store)
+        try:
+            principal = _ui_principal(authed_client)
+            start_revision = dashboard_layouts.load(principal).revision
+            real_effective = dashboard_layouts.effective
+            attempts = 0
+            ui_layout: dict[str, Any] = {}
+            preserved = {
+                "id": "existing",
+                "type": "kpi",
+                "title": "Preserved widget",
+                "size": "4",
+                "config": {"field": "cost", "display_options": {"precision": 2}},
+            }
+
+            def effective_then_ui_save(key: str) -> Any:
+                nonlocal attempts, ui_layout
+                record = real_effective(key)
+                attempts += 1
+                if attempts <= conflicts:
+                    response = authed_client.put(
+                        "/v1/dashboard/layout",
+                        json={
+                            "tabs": [
+                                {"name": "Overview", "widgets": [preserved]},
+                                {
+                                    "name": "Ops",
+                                    "widgets": [
+                                        {
+                                            "id": "ui",
+                                            "type": "kpi",
+                                            "title": f"UI edit {attempts}",
+                                            "size": "3",
+                                            "config": {"field": "tasks", "theme": "blue"},
+                                        }
+                                    ],
+                                },
+                            ],
+                            "activeTab": 1,
+                            "theme": "dark",
+                            "expectedRevision": record.revision,
+                        },
+                    )
+                    assert response.status_code == 200
+                    ui_layout = deepcopy(dashboard_layouts.load(key).layout)
+                    if refuse_retry:
+
+                        def refuse(*args: Any, **kwargs: Any) -> None:
+                            raise OSError("disk is full")
+
+                        patch.setattr(persisted, "put_raw", refuse)
+                return record
+
+            patch.setattr(dashboard_layouts, "effective", effective_then_ui_save)
+            config = {"field": "runs", "display_options": {"precision": 1}}
+            result = asyncio.run(
+                _tool_create_dashboard_widget(
+                    {"type": "kpi", "title": "Agent", "size": "2", "config": config},
+                    principal,
+                    None,
+                )
+            )
+            assert attempts == 2
+            created = conflicts == 1 and not refuse_retry
+            assert result["created"] is created
+            expected_layout = deepcopy(ui_layout)
+            if created:
+                expected_layout["tabs"][1]["widgets"].append(
+                    {
+                        "id": result["widget_id"],
+                        "type": "kpi",
+                        "title": "Agent",
+                        "size": "2",
+                        "config": config,
+                    }
+                )
+            else:
+                expected_error = "not saved" if refuse_retry else "kept changing"
+                assert expected_error in result["error"]
+            expected_revision = start_revision + conflicts + int(created)
+            stored = dashboard_layouts.load(principal)
+            assert stored.revision == expected_revision
+            assert stored.layout == expected_layout
+        finally:
+            state.close()
+
+    restarted = State(db_path=str(database))
+    try:
+        reopened_backend = PersistedStore(restarted)
+        reopened_backend.initialize()
+        reopened = JsonStore("dashboard_layouts", reopened_backend)
+        reopened.initialize()
+        with monkeypatch.context() as patch:
+            patch.setattr(stores, "dashboard_layouts", reopened)
+            reloaded = dashboard_layouts.load(principal)
+            assert reloaded == stored
+            served = authed_client.get("/v1/dashboard/layout")
+            assert served.status_code == 200
+            assert served.json() == {**expected_layout, "revision": expected_revision}
+    finally:
+        restarted.close()

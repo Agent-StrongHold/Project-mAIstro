@@ -30,10 +30,12 @@ what let the original bug survive, so the CI wiring is the part that matters.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -56,10 +58,32 @@ EXPECTED_TABLES = frozenset(
         "asset_sheets",
         "audit_log",
         "books",
+        # The canonical Workspace BacklogItem work-source (#98/#102): the
+        # item/board state, its append-only event history, the imported
+        # document records and the claim leases (054), plus the authority
+        # ledger that records which work source is authoritative (055).
+        "backlog_authority",
+        "backlog_claims",
+        "backlog_documents",
+        "backlog_events",
+        "backlog_items",
+        # The Canvas store's own tables (044), created outside the repository
+        # until #286 put them in the chain.
+        "canvas_blobs",
+        "canvases",
+        "composite_records",
+        "generation_jobs",
+        "layers",
         # The canonical governed-capability boundary (039, renumbered from 032
         # after a collision with 032_asset_instance_org_scope; #1079).
         # Bindings and Invocations are separate tables: Bindings are immutable
         # authorization records, Invocations the logical effect ledger.
+        "capability_approvals",
+        # The tombstone half of the same authority (047). Separate from
+        # `capability_bindings` because revoking deletes the binding row,
+        # so a `revoked_at` column would be deleted along with the thing
+        # it forbids and the id could be registered again (#846).
+        "capability_binding_revocations",
         "capability_bindings",
         "capability_invocations",
         "consumer_cursors",
@@ -76,21 +100,53 @@ EXPECTED_TABLES = frozenset(
         "canonical_project_resources",
         "canonical_projects",
         "canonical_runs",
+        # Eval scores as durable Run evidence on the spine (051, #792): a
+        # score names the Run, NodeRun and Attempt it scored, so it is
+        # execution evidence, not a sidecar lifecycle.
+        "canonical_run_eval_scores",
         # The Workspace those Projects and Runs belong to (#516). Their
         # `workspace_id` columns were bare Text with nothing to reference
         # until migration 019 gave the Workspace a table of its own.
         "canonical_workspaces",
         "canonical_workspace_memberships",
+        # NOTE: tables the runtime provisions at wire time (capability
+        # approvals/bindings/invocation effects, canonical_workspace_lifecycle)
+        # are deliberately absent: they are not chain-owned, and a clean
+        # database upgraded through the chain alone must not be expected to
+        # hold them.
         "child_profiles",
+        # The versioned creative artifact state (#780, 049): the append-only
+        # version ledger, its explicit user locks, durable project guidance,
+        # and per-branch control rows projected onto canonical execution.
+        "design_artifact_versions",
+        "design_artifact_locks",
+        "design_branch_controls",
+        "design_project_guidance",
+        # Versioned CreativeBrief lineages (#774, 050) — the immutable creative
+        # provenance Runs/artifacts cite; append-only by contract.
+        "design_creative_briefs",
         "design_outputs",
         "design_projects",
+        # Short-lived elevation grants (#72): durable so a grant issued before
+        # a restart still answers `find_valid` instead of silently failing
+        # closed and re-prompting. Lives at the end of the chain (039).
+        "elevation_grants",
         "episodic_memories",
         "event_log",
         "graph_continuations",
         "graph_templates",
         "handler_invocations",
+        "invocation_quota_allocations",
+        "invocation_quota_budgets",
+        "invocation_quota_evidence",
+        "invocation_quota_reservations",
         "knowledge_nodes",
         "learnings",
+        # The append-only provenance ledger for the knowledge-stage ladder
+        # (049, M4-B1/ADR-103): one row per accepted MEMORY → LEARNING →
+        # VALIDATED → REPERTOIRE transition, written in the same transaction
+        # as the stage update itself.
+        "learning_stage_transitions",
         "memory_entries",
         # The NodeTemplate half of the reusable-definition model (020). Its
         # GraphTemplate sibling has been durable since 014; without this one a
@@ -104,6 +160,12 @@ EXPECTED_TABLES = frozenset(
         "prompt_labels",
         "prompts",
         "quota_usage",
+        # One immutable evidence row per canonical physical Invocation (041,
+        # #718): at-most-once quota accounting and explicit unreported usage
+        # evidence, projected into `quota_usage`.
+        "quota_invocation_evidence",
+        # Durable per-event identities that make `record_usage` retries and
+        # crash-ambiguous commits harmless (#1204).
         "quota_usage_events",
         # Schedule definitions and their fire cursors (016). Durable so that a
         # cursor survives a restart and two scheduler replicas share one rather
@@ -117,11 +179,17 @@ EXPECTED_TABLES = frozenset(
         # live on the message table (#327).
         "session_turns",
         "sessions",
-        # Admission claims for task submission (037). Durable and replica-shareable
+        # Admission claims for task submission (038). Durable and replica-shareable
         # so a retried submit resolves to the original receipt rather than minting
         # a second Run (#1176).
         "task_idempotency",
         "tasks",
+        # The durable cross-Workspace user model (#1047, 056, re-parented past
+        # develop's 054 and 055): one row per fact
+        # revision, plus the owner-bound statement keys that keep a tombstone
+        # blocking every wording its lineage ever held.
+        "user_model_facts",
+        "user_model_statement_keys",
         "trigger_definitions",
     }
 )
@@ -142,6 +210,24 @@ def _alembic(*args: str) -> subprocess.CompletedProcess[str]:
         timeout=180,
         check=False,
     )
+
+
+def _head_revision() -> str:
+    """The chain's single head, as alembic itself resolves it.
+
+    Spelled as a query instead of a literal because a tip literal here already
+    rotted once: `038` was head when the adoption tests below were written, and
+    the reconciliation onto develop's chain (`039` -> `040` ->
+    `036_audit_log_org_scope`) moved the tip without touching what those tests
+    actually verify — that an upgrade from below head reaches head, not any
+    particular revision id. Comparing against `alembic heads` keeps the
+    assertion about the stamp, not about a number that belongs to history.
+    """
+    result = _alembic("heads")
+    assert result.returncode == 0, result.stderr
+    revisions = [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
+    assert len(revisions) == 1, f"expected exactly one head, found: {revisions}"
+    return revisions[0]
 
 
 def _query(sql: str, params: tuple[object, ...] = ()) -> list[tuple[object, ...]]:
@@ -172,12 +258,35 @@ def _tables() -> set[str]:
     }
 
 
+def _drop_all_tables() -> None:
+    """Empty `public` entirely, not only the chain's own tables.
+
+    `downgrade base` unwinds only what the chain created, but standalone-path
+    stores bootstrap their tables with `CREATE TABLE IF NOT EXISTS` outside the
+    chain — `pg_strikes._SCHEMA` among them — and the strike conformance suite
+    exercises exactly that path. One suite then poisoned the next: the raw
+    `security_strikes` survived the downgrade, `alembic_version` sat at base,
+    and `upgrade head` died in 005 with `relation security_strikes already
+    exists` (reproduced by running the strike suite against this shared DB
+    before this suite). Dropping everything is what this fixture's name
+    promises, and it cannot strand a later suite: runtime stores recreate
+    their own tables on connect, and a chain table is one `upgrade head` away.
+    """
+    for (name,) in _query("select tablename from pg_tables where schemaname = 'public'"):
+        # Identifiers come from the catalog, not users; still quote them so a
+        # mixed-case or reserved name cannot turn the drop into something else.
+        quoted = str(name).replace('"', '""')
+        _execute(f'drop table if exists "{quoted}" cascade')
+
+
 @pytest.fixture
 def empty_database():
     """Start each test from `base`, so one failure cannot cascade into the next."""
     _alembic("downgrade", "base")
+    _drop_all_tables()
     yield
     _alembic("downgrade", "base")
+    _drop_all_tables()
 
 
 class TestTheChainApplies:
@@ -233,6 +342,73 @@ class TestTheChainApplies:
         assert _alembic("upgrade", "head").returncode == 0
         assert _tables() == first
 
+    def test_reapplying_the_chain_over_an_already_migrated_schema_is_adopted(
+        self, empty_database
+    ) -> None:
+        """Stamp-back + re-upgrade is the repair path a live database takes.
+
+        The Canvas store conformance suite drives exactly this scenario over
+        the shared chain (#286): upgrade head, stamp to 044's parent, upgrade
+        head again. A revision whose DDL assumes a fresh database — a bare
+        ``ADD COLUMN``, say — fails that re-application with ``DuplicateColumn``
+        even though the schema it would build is the schema that already
+        exists (#1194's 045 broke CI's coverage (PostgreSQL) leg exactly this
+        way). Adoption-unchanged is the contract 044 states for the chain;
+        this pins the same contract at the chain level, against the live
+        catalog, with a pre-existing row that must survive untouched.
+        """
+        assert _alembic("upgrade", "head").returncode == 0
+        _execute(
+            """
+            insert into capability_invocations
+                (invocation_id, run_id, node_run_id, attempt_id, binding_id,
+                 effect_key, status, created_at, payload, logical_effect)
+            values ('inv-adopted', 'run-adopted', 'node-1', 'att-1', 'bind-1',
+                    'effect-1', 'completed', 0.0, '{}', true)
+            """
+        )
+        # 044's parent: the re-application walks 044, 043, 045 and 046 over
+        # the existing schema — the exact walk the Canvas conformance suite
+        # drives.
+        assert _alembic("stamp", "039_quota_usage_event_identity").returncode == 0
+        result = _alembic("upgrade", "head")
+        assert result.returncode == 0, result.stderr
+        # The adopted column and its Run-scoped admission index exist exactly
+        # once, and the pre-existing row kept its flagged value rather than
+        # being rewritten by the re-run default.
+        assert _query(
+            "select count(*) from information_schema.columns "
+            "where table_name = 'capability_invocations' "
+            "and column_name = 'logical_effect'"
+        ) == [(1,)]
+        assert _query(
+            "select count(*) from pg_indexes where tablename = 'capability_invocations' "
+            "and indexname = 'uq_capability_invocation_active_logical_effect'"
+        ) == [(1,)]
+        assert _query(
+            "select logical_effect from capability_invocations where invocation_id = 'inv-adopted'"
+        ) == [(True,)]
+
+
+class TestTaskIdentityMigration:
+    def test_pre_provenance_receipts_become_explicit_system_work(self, empty_database) -> None:
+        """Migration 041 must not invent an empty user actor for old receipts.
+
+        This uses the live PostgreSQL schema rather than inspecting migration
+        source, because the relevant contract is the value an upgrade writes
+        into an existing task row.
+        """
+        assert _alembic("upgrade", "034").returncode == 0
+        _execute(
+            "insert into tasks (id, status, description, workspace) values (%s, %s, %s, %s)",
+            ("legacy-task", "queued", "legacy work", "/tmp/maistro-workspace"),
+        )
+
+        assert _alembic("upgrade", "041_task_identity_provenance").returncode == 0
+        assert _query("select user_id, actor_kind from tasks where id = %s", ("legacy-task",)) == [
+            ("system", "system")
+        ]
+
 
 class TestIndexIntent:
     def test_the_recency_indexes_are_actually_descending(self, empty_database) -> None:
@@ -257,6 +433,171 @@ class TestIndexIntent:
         assert set(definitions) == set(descending), f"missing: {set(descending) - set(definitions)}"
         for name, definition in definitions.items():
             assert "created_at DESC" in definition, f"{name} is not descending: {definition}"
+
+
+class TestTheChainSurvivesRuntimeSelfProvisioning:
+    """The claims table has two owners (#1176): this chain, and the runtime —
+    `PgTaskIdempotencyStore.ensure_schema` provisions it at wire time, before
+    the chain has necessarily reached 038. The first cut of the migration met
+    that table and died on `DuplicateTable`, so `alembic upgrade head` — the
+    command every documented Postgres setup path runs — exited 1 on exactly
+    the deployments that provisioned early. The upgrade now adopts a table
+    carrying the columns it owns, and refuses a foreign shape loudly."""
+
+    CLAIM_COLUMNS: ClassVar[set[str]] = {
+        "scope_key",
+        "claim_token",
+        "fingerprint",
+        "request",
+        "task_id",
+        "run_id",
+        "completed_at",
+        "created_at",
+        "expires_at",
+        "lease_expires_at",
+    }
+    FORWARD_GENERATION_COLUMNS: ClassVar[set[str]] = {
+        "format_version",
+        "generation_id",
+        "workspace_id",
+        "project_id",
+        "origin_principal_id",
+        "actor_principal_id",
+        "action",
+        "receipt_id",
+        "receipt_snapshot",
+        "provenance_snapshot",
+        "acknowledged_at",
+    }
+
+    def _provision_at_runtime(self) -> None:
+        """What wiring does on a spine-ready pool below head: the real
+        `ensure_schema`, not a re-spelling of its DDL."""
+
+        async def provision() -> None:
+            import asyncpg
+
+            from maistro.tasks.idempotency import PgTaskIdempotencyStore
+
+            pool = await asyncpg.create_pool(dsn=DATABASE_URL, min_size=1, max_size=1)
+            try:
+                await PgTaskIdempotencyStore(pool).ensure_schema()
+            finally:
+                await pool.close()
+
+        asyncio.run(provision())
+
+    def _claim_columns(self) -> set[str]:
+        return {
+            str(row[0])
+            for row in _query(
+                "select column_name from information_schema.columns "
+                "where table_name = 'task_idempotency'"
+            )
+        }
+
+    def test_upgrade_head_adopts_the_runtime_provisioned_table(self, empty_database) -> None:
+        _alembic("upgrade", "033")
+        self._provision_at_runtime()
+        assert "claim_token" in self._claim_columns(), "provisioning did not run"
+
+        result = _alembic("upgrade", "head")
+        assert result.returncode == 0, result.stderr
+        assert self._claim_columns() == self.CLAIM_COLUMNS | self.FORWARD_GENERATION_COLUMNS
+        assert "ix_task_idempotency_expires" in {
+            str(row[0])
+            for row in _query(
+                "select indexname from pg_indexes where tablename = 'task_idempotency'"
+            )
+        }
+        assert _query("select version_num from alembic_version") == [(_head_revision(),)]
+
+    def test_adopts_runtime_provisioned_table_without_a_primary_key(self, empty_database) -> None:
+        """A provisioning that predates the PRIMARY KEY in ensure_schema leaves
+        a column-complete table with no unique constraint — adopting it as-is
+        would stamp head over a shape the store's ON CONFLICT cannot use. The
+        migration must reconstruct the PK, or refuse."""
+        _alembic("upgrade", "033")
+        # All ten columns, but no PK — the shape the prior finding reported:
+        # the store's INSERT ... ON CONFLICT(scope_key) failed because no
+        # unique constraint existed.
+        _execute(
+            "create table task_idempotency ("
+            "scope_key text not null,"
+            "claim_token text not null,"
+            "fingerprint text not null,"
+            "request text not null,"
+            "task_id text,"
+            "run_id text,"
+            "completed_at bigint not null default 0,"
+            "created_at bigint not null,"
+            "expires_at bigint not null,"
+            "lease_expires_at bigint not null"
+            ")"
+        )
+        try:
+            result = _alembic("upgrade", "head")
+            assert result.returncode == 0, result.stderr
+            assert _query("select version_num from alembic_version") == [(_head_revision(),)]
+            pks = {
+                str(row[0])
+                for row in _query(
+                    "select a.attname from pg_index i "
+                    "join pg_attribute a on a.attnum = any(i.indkey) and a.attrelid = i.indrelid "
+                    "where i.indrelid = 'task_idempotency'::regclass and i.indisprimary"
+                )
+            }
+            assert pks == {"scope_key"}, f"primary key missing or wrong: {pks}"
+        finally:
+            _execute("drop table task_idempotency")
+
+    def test_upgrade_refuses_incompatible_column_definitions(self, empty_database) -> None:
+        """Column names alone do not prove the runtime can use the table."""
+        _alembic("upgrade", "033")
+        _execute(
+            "create table task_idempotency ("
+            "scope_key text primary key,"
+            "claim_token text not null,"
+            "fingerprint text not null,"
+            "request text not null,"
+            "task_id text,"
+            "run_id text,"
+            "completed_at text not null default '0',"
+            "created_at bigint not null,"
+            "expires_at bigint not null,"
+            "lease_expires_at bigint not null"
+            ")"
+        )
+        try:
+            result = _alembic("upgrade", "head")
+            assert result.returncode != 0
+            assert "incompatible" in result.stderr
+            assert _query("select version_num from alembic_version") == [("033",)]
+        finally:
+            _execute("drop table task_idempotency")
+
+    def test_upgrade_refuses_to_stamp_over_a_foreign_table_shape(self, empty_database) -> None:
+        """A table under the claims name WITHOUT the columns migration 038
+        owns is not the runtime's provisioning, and stamping head over a shape
+        the store cannot read would hide the damage behind a green upgrade."""
+        _alembic("upgrade", "033")
+        _execute("create table task_idempotency (scope_key text primary key)")
+        try:
+            result = _alembic("upgrade", "head")
+
+            assert result.returncode != 0
+            assert "missing" in result.stderr
+            assert _query("select version_num from alembic_version") == [("033",)]
+            # And the foreign table was left exactly as found — visible, not
+            # silently adopted or dropped.
+            assert self._claim_columns() == {"scope_key"}
+        finally:
+            # The refusal leaves the foreign table standing by design; the
+            # `empty_database` fixture can only downgrade what the chain owns,
+            # so the foreign table is removed here — leaving it would poison
+            # every later test's `upgrade head` exactly the way the refusal
+            # just proved it poisons the chain.
+            _execute("drop table task_idempotency")
 
 
 class TestADesignProjectIsWritableOnACleanDatabase:

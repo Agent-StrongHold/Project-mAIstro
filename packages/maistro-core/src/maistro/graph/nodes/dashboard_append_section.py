@@ -15,7 +15,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from . import register_node
-from .base import BaseNode, NodeContext
+from .base import BaseNode, NodeContext, ReplaySemantics
 
 
 class DashboardAppendIn(BaseModel):
@@ -41,7 +41,7 @@ class DashboardAppendSectionNode(BaseNode[DashboardAppendIn, DashboardAppendOut]
     input_schema: ClassVar[type[BaseModel]] = DashboardAppendIn
     output_schema: ClassVar[type[BaseModel]] = DashboardAppendOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.IDEMPOTENT
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Dashboard: append section"
     description: ClassVar[str] = (

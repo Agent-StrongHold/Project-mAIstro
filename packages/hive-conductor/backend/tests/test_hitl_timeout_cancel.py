@@ -14,6 +14,7 @@ from maistro.graph.durable_runs import InMemoryDurableRunStore
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.lifecycle import transition_node_run, transition_run
 from maistro.runs.model import GraphSnapshot, NodeRun, Run, RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
@@ -52,6 +53,7 @@ def _paused_record(
         workspace_id=graph.workspace_id,
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     run = transition_run(run, RunStatus.QUEUED)
     run = transition_run(run, RunStatus.RUNNING)

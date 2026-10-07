@@ -14,14 +14,21 @@ import pytest
 
 from maistro.graph.nodes import NodeContext, get_node, list_kinds
 
+_CTX_CALLS = 0
+
 
 def _ctx(**overrides: Any) -> NodeContext:
+    global _CTX_CALLS
+    _CTX_CALLS += 1
     base = {
-        "run_id": "r1",
+        "run_id": f"r1-{_CTX_CALLS}",
         "dag_id": "d1",
         "node_id": "n1",
         "user_id": "u1",
+        "workspace_id": "w1",
         "project_id": "p1",
+        "node_run_id": "nr1",
+        "attempt_id": "a1",
     }
     base.update(overrides)
     return NodeContext(**base)
@@ -136,10 +143,8 @@ async def test_wait_for_subtasks_short_circuits_when_no_subtasks(
     Node = get_node("jira.wait_for_subtasks")
     result = await Node().run(
         {
-            "base_url": "https://jira.example.com",
+            "binding_id": "test-jira-subtasks-binding",
             "parent_key": "PROJ-100",
-            "pat": "pat",
-            "flavor": "server",
             "target_statuses": ["Done"],
         },
         _ctx(),
@@ -167,10 +172,8 @@ async def test_wait_for_subtasks_all_done_returns_completed(
     Node = get_node("jira.wait_for_subtasks")
     result = await Node().run(
         {
-            "base_url": "https://jira.example.com",
+            "binding_id": "test-jira-subtasks-binding",
             "parent_key": "PROJ-100",
-            "pat": "pat",
-            "flavor": "server",
             "target_statuses": ["Done", "Closed"],
         },
         _ctx(),
@@ -197,9 +200,8 @@ async def test_wait_for_subtasks_some_open_pauses_for_poll_interval(
     Node = get_node("jira.wait_for_subtasks")
     result = await Node().run(
         {
-            "base_url": "https://jira.example.com",
+            "binding_id": "test-jira-subtasks-binding",
             "parent_key": "PROJ-100",
-            "pat": "pat",
             "target_statuses": ["Done"],
             "poll_interval_seconds": 60,
         },
@@ -227,11 +229,11 @@ async def test_wait_for_subtasks_timeout_returns_timed_out(
     ctx.metadata[f"wait_first_seen:{ctx.node_id}"] = one_hour_ago
     result = await Node().run(
         {
-            "base_url": "https://jira.example.com",
+            "binding_id": "test-jira-subtasks-binding",
             "parent_key": "PROJ-100",
-            "pat": "pat",
             "target_statuses": ["Done"],
             "timeout_seconds": 60,
+            "poll_interval_seconds": 60,
         },
         ctx,
     )
@@ -270,6 +272,92 @@ async def test_compliance_block_writes_penalty_to_blackboard() -> None:
     assert p["evidence"] == {"matched": "alice@example.com"}
     # No halt requested
     assert "halt_requested" not in bb.metadata
+
+
+async def test_dashboard_append_section_replay_upserts_one_section() -> None:
+    """An idempotent node's repeated invocation has one durable blackboard effect."""
+    from maistro.graph.types import GraphBlackboard
+
+    bb = GraphBlackboard(task_objective="x", workspace="")
+    ctx = NodeContext(run_id="r1", dag_id="d1", node_id="section-1", blackboard=bb)
+    Node = get_node("dashboard.append_section")
+    inputs = {
+        "dashboard_id": "daily-status",
+        "section_title": "Jira",
+        "markdown": "ready",
+    }
+
+    first = await Node().run(inputs, ctx)
+    second = await Node().run(inputs, ctx)
+
+    assert first.success and second.success
+    assert first.output.section_id == second.output.section_id
+    assert bb.metadata["dashboard:daily-status"]["sections"] == [
+        {"id": "daily-status/Jira", "title": "Jira", "markdown": "ready", "order": 0}
+    ]
+
+
+async def test_compliance_block_replay_upserts_one_logical_penalty() -> None:
+    """The idempotent conformance case uses the same logical context twice."""
+    from maistro.graph.types import GraphBlackboard
+
+    bb = GraphBlackboard(task_objective="x", workspace="")
+    ctx = NodeContext(
+        run_id="r1",
+        dag_id="d1",
+        node_id="block-1",
+        node_run_id="node-run-retry-2",
+        blackboard=bb,
+    )
+    Node = get_node("compliance.block")
+    inputs = {
+        "rule_id": "pii.email_in_summary",
+        "severity": 3.0,
+        "reason": "contains an email",
+        "evidence": {"matched": "alice@example.com"},
+    }
+
+    first = await Node().run(inputs, ctx)
+    second = await Node().run(inputs, ctx)
+
+    assert first.success and second.success
+    assert first.output.penalty_id == second.output.penalty_id
+    assert len(bb.metadata["penalties"]) == 1
+
+
+async def test_compliance_block_replay_replaces_only_its_own_penalty() -> None:
+    """Replay reconciles the node's own logical effect without touching others."""
+    from maistro.graph.types import GraphBlackboard
+
+    bb = GraphBlackboard(task_objective="x", workspace="")
+    ctx = NodeContext(run_id="r1", dag_id="d1", node_id="block-1", blackboard=bb)
+    Node = get_node("compliance.block")
+    other = {
+        "id": "compliance.block:r1:other-node:abc",
+        "node_id": "other-node",
+        "rule_id": "policy.other",
+        "severity": 1.0,
+        "reason": "unrelated signal",
+        "evidence": {},
+        "halt_run": False,
+    }
+    bb.metadata["penalties"] = [dict(other)]
+    inputs = {
+        "rule_id": "pii.email_in_summary",
+        "severity": 3.0,
+        "reason": "contains an email",
+        "evidence": {"matched": "alice@example.com"},
+    }
+
+    first = await Node().run(inputs, ctx)
+    second = await Node().run(inputs, ctx)
+
+    penalties = bb.metadata["penalties"]
+    assert first.success and second.success
+    assert first.output.penalty_id == second.output.penalty_id
+    assert len(penalties) == 2, "replay appended a duplicate or dropped a foreign penalty"
+    assert penalties[0] == other, "an unrelated penalty was overwritten"
+    assert penalties[1]["id"] == first.output.penalty_id
 
 
 async def test_compliance_block_with_halt_sets_halt_flag() -> None:

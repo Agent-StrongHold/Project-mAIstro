@@ -1,8 +1,8 @@
 # Workspace Cutover Plan
 
-**Status:** draft for review — planning surface, not a decision record (no registry front matter on purpose)
+**Status:** active cutover plan — v1.0 amendments ratified 2026-10-01 (see §9); release contract in [ROADMAP.md](../../ROADMAP.md)
 **Owners:** #1046 (Adaptive Workspace), #804 (Persistent Workspace Agent), #53 (Conductor onto Conduit + canonical Runs), #65 (Workspace-centric inspection), #82 (Workspace backlog)
-**Companion policy:** [M1-CONVERGENCE-FREEZE.md](M1-CONVERGENCE-FREEZE.md) · [CONVERGENCE-MATRIX.md](CONVERGENCE-MATRIX.md) · [KNOWN-GAPS.md](../../KNOWN-GAPS.md)
+**Companion policy:** [M1-CONVERGENCE-FREEZE.md](M1-CONVERGENCE-FREEZE.md) · [CONVERGENCE-MATRIX.md](CONVERGENCE-MATRIX.md) · [KNOWN-GAPS.md](../../KNOWN-GAPS.md) · [BACKLOG.md](../../BACKLOG.md) `[conductor-402]`–`[conductor-413]`
 
 ## Why this document exists
 
@@ -25,6 +25,10 @@ Two rules follow from the freeze policy and are the spine of this plan:
 2. **Parity, then delete, ledger-enforced.** Every legacy page, router and store is listed
    with a disposition and a delete-by milestone; the ledger only shrinks; nothing new may
    import a listed module. Same mechanism as `quality/model-egress.json`.
+
+The per-feature Workspace-UI/API/CLI entry-point inventory that this plan's "parity"
+evidence plugs into is [FEATURE-PARITY-MATRIX.md](FEATURE-PARITY-MATRIX.md) (#1874); it
+also records the approved v1.2 Evolution staging (§9) as a preserved decision.
 
 ## What the cutover deprecates, and what it does not
 
@@ -49,6 +53,28 @@ are. They get issues of their own (§7) and Phase 0 blocks on A.
 Each item is an invariant with a check that is **red on develop today** and must be green
 before the item closes. Land the check first, failing, with a baseline; then make it pass.
 
+**Landing a check that starts with debt takes two merges.** Under
+[RATCHET-PROVENANCE.md](../ci/RATCHET-PROVENANCE.md) a checker reads its tolerated set and
+its grants in `quality/ratchet-authorizations.json` from the trusted merge base, never
+from the change under review. A ledger that does not exist at the base tolerates nothing,
+so a check cannot introduce its own baseline. The first PR grants each starting entry under
+the ratchet's name; the second, stackable on it, adds the checker and a ledger matching
+those grants. Each checker gets a row in RATCHET-PROVENANCE.md's inventory in the same
+PR. Once the second PR banks the ledger, **delete those starting-debt grants from the
+candidate tree in the same PR.** Permission is read from the trusted base, so the deletion
+does not remove the authorization for banking; leaving the grants in place would let a later
+change re-bank the same debt without a new review ([`SPEC-082926-6f49`](../specs/SPEC-082926-6f49-authorized-floor-fall-for-a-corrected-measurement.md)
+spent-grant bookkeeping; cutover S1.0 lands the grants in
+[#1804](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1804)).
+
+**Acceptance criteria are registered in SPEC-100126-c041**
+(`docs/specs/SPEC-100126-c041-workspace-cutover-phase-0-contract.md`, PR [#1768](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1768)). The
+acceptance-state checker accepts numeric IDs only, so plan label AC-P*n* is
+`SPEC-100126-c041/AC-n`: a test proving AC-P1 carries
+`@pytest.mark.ac("SPEC-100126-c041/AC-1")`, and the PR that proves it deletes that
+criterion's `ac-state: unproven` comment from the spec. P0.6 had no AC line here; the
+spec derives AC-6 from P0.6's invariant and check.
+
 ### P0.1 One principal
 
 **Invariant.** Exactly one principal type crosses a service boundary. It lives in
@@ -60,11 +86,21 @@ hive `HiveUser` → `request.state.user` dict (`middleware/auth.py:296`), Turing
 `dict` **or** `ServiceIdentity`, canvas `CurrentUser`, core `AuthContext`, core `UserInfo`.
 maistro-server bridges by hand at `api/chat_completions.py:187`.
 
-**Check.** `packages/maistro-core/tests/fitness/test_principal_identity.py`: AST scan of
-`packages/*/src` and `packages/hive-conductor/backend` — any route handler, middleware or
-service reading `request.state.user[...]`, or any class named `*Principal`/`*User`/
-`*Identity` with a `role`/`roles` attribute outside `maistro.identity.principal`, fails.
-Baseline ledger `quality/principal-identity-baseline.json`, ratchet to zero.
+**Check.** `scripts/check-principal-identity.py`, run in `quality.yml`, with
+`packages/maistro-core/tests/fitness/test_principal_identity.py` asserting the ledger
+matches the tree. An AST scan of `packages/*/src` and the hive and Turing backends records
+two kinds of entry: each file that touches `<x>.state.user`, directly or through
+`getattr`/`setattr`/`hasattr`, and each class named `*Principal`/`*User`/`*Identity` with
+a `role`/`roles` field outside the listed owner modules. Baseline ledger
+`quality/principal-identity-baseline.json`, ratchet to zero.
+
+**Measured starting debt (2026-10-01): 32 entries.** Four parallel principal classes —
+maistro-server `AuthenticatedPrincipal` (`api/principal.py`), hive `HiveUser`
+(`models/schemas.py`), canvas `CurrentUser` (`auth.py`) and core `_SubsystemIdentity`
+(`privilege.py`) — and 28 files reading dict-shaped `state.user`:
+23 hive routes, 2 hive services, hive and Turing auth middleware, and Turing
+`security.py`. Most hive reads go through `getattr(request.state, "user", ...)`, which an
+attribute-only scan misses (a first draft of the check counted 3).
 
 **AC text (for #53).** "AC-P1: every authenticated request in maistro-server, hive-conductor
 and the Turing backend yields one `maistro.identity.Principal`; no handler reads a
@@ -76,22 +112,39 @@ dict-shaped user; the fitness ledger is empty."
 reviewed reason it has none. Unmatched is denied, not allowed. One vocabulary
 (`scope.verb`) is shared by the middleware, `Principal.scopes`, and Binding `policy_refs`.
 
-**Today.** `middleware/auth.py:377-380` returns `None` for unmatched prefixes and
+**Today.** `middleware/auth.py:411-464` returns `None` for unmatched prefixes and
 `dispatch` forwards; 18 routers (`/v1/tasks`, `/v1/memory`, `/v1/quotas`, `/v1/work-items`,
-`/v1/program`, `/v1/dag-runs`, …) have no entry; `endswith("/invoke")` and
-`endswith("/feedback")` exempt any future route with that suffix (#403 covers `/invoke`).
+`/v1/program`, `/v1/dag-runs`, …) have no entry; the `endswith("/invoke")`
+suffix exemption was removed by #403 — elevation binds to registered
+capability identifiers, not URL naming, and any future route with that
+suffix needs an explicit reviewed policy like every other route — leaving
+`endswith("/feedback")` as the only suffix exemption.
 `PrivilegeMiddleware` is a no-op.
 
-**Check.** Extend `scripts/check-public-routes.py` (already bound to this middleware) with a
-second registry, `quality/route-permissions.json`: every prefix from `app.routes` must
-appear with a permission or an `exempt_reason` + owner + expiry, exactly the shape
-`quality/public-routes.json` already uses for unauthenticated paths. Suffix exemptions are
-listed as exact paths, not suffixes. Baseline = today's 18; ratchet to zero exemptions
+**Check.** `scripts/check-route-permissions.py`, a sibling of `check-public-routes.py`
+rather than an extension of it: it imports the hive app to read the mounted `/v1/{segment}`
+prefixes, so it runs in `quality.yml` beside `check_enumerations.py`, not in the
+bare-`python3` lint job. Before judging prefixes it reads `app.state.optional_routers` and
+refuses when any optional router (`routes.design`, `routes.canvas`, `routes.evolution`,
+`routes.rsi`) failed to import — the same completeness rule as
+`scripts/check-frontend-api-routes.py`, so a missing package cannot produce a partial census
+that pre-approves or omits production routes. Registry `quality/route-permissions.json`: every mounted prefix
+not public by `quality/public-routes.json` must appear with exactly one of a permission or
+an `exempt_reason`, plus owner, disposition and reason; a temporary entry also needs an
+issue and an unexpired date — the shape `public-routes.json` already uses. A registry entry
+for a prefix nobody mounts fails, because it would pre-approve a future route. Suffix
+exemptions are listed as exact paths, not suffixes. Undeclared prefixes are ledgered in
+`quality/route-permissions-baseline.json`; ratchet to zero, and to zero exemptions
 without an expiry.
 
-**AC text (for #53 / #373).** "AC-P2: `check-public-routes.py` proves every registered
-Conductor route is either scoped, public-by-declaration, or exempt-by-declaration; an
-undeclared route fails CI; `PrivilegeMiddleware` is deleted or enforces its table."
+**Measured starting debt (2026-10-01): 40 prefixes**, not the 18 counted by hand — every
+authenticated `/v1` prefix the hive app mounts, since the registry starts empty.
+
+**AC text (for #53 / #373).** "AC-P2: `check-route-permissions.py` proves every registered
+Conductor route is either scoped, public-by-declaration (via
+`quality/public-routes.json`), or exempt-by-declaration (via
+`quality/route-permissions.json`); an undeclared route fails CI;
+`PrivilegeMiddleware` is deleted or enforces its table."
 
 ### P0.3 Typed API contract, one client
 
@@ -144,9 +197,14 @@ through the core `AuditLog` on the configured backend; `routes/audit.py` reads f
 `memory://`. One effect context per process — `default_effect_context()` is the Container's
 instance, not a second `lru_cache`d one.
 
-**Today.** `container.py:1443 capability_effects = new_in_memory_effect_context()`
-unconditionally; `approval_store=None`; `SqliteInvocationStore`/`SqliteApprovalStore` exist
-with no constructor call; no PostgreSQL implementation.
+**Today (2026-10-02, after #1321/#1760).** Backend selection exists:
+`container._wire_capability_effects` builds `new_sqlite_effect_context` with a SQLite pool,
+`new_postgres_effect_context` with a PostgreSQL pool, and the in-memory context otherwise,
+then registers boot Bindings on whichever store it chose. Two halves of the invariant are
+still open. `CapabilityEffectContext` carries no Approval store, so an approval is not
+durable on any backend. And `effect_context.default_effect_context()` is still its own
+`lru_cache`d in-memory context — the fallback registry-constructed effect nodes use — not
+the Container's instance.
 
 **Check.** `packages/maistro-core/tests/test_container_postgres.py` sibling asserting the
 store classes by backend; `test_effect_context_identity.py` asserting
@@ -301,7 +359,8 @@ PROJECT onto canonical services and re-register under the declared permission ta
 `/v1/memory`, `/v1/messages`, `/v1/quotas`, `/v1/widgets`, `dashboard_layout`,
 `/v1/topology`, `/v1/eval-judge`, `/v1/cli`, `/v1/setup-checklist`.
 RETIRED: `/v1/confirms` (#48) — unreachable process-local HA confirmation store; human
-approval is a waiting human NodeRun answered through `/v1/hitl`.
+approval is a waiting human NodeRun answered through `/v1/hitl`. It has no router module
+left, so it has no ledger row. `/v1/dag-metrics` is served by `routes/metrics.py`.
 KEEP with scoped entries: `/v1/auth`, `/v1/setup`, `/v1/install`, `/v1/hitl` (scoping via
 #1058/#1110), `/v1/workspaces`, `/v1/dags`, `/v1/schedules`, `/v1/credentials`,
 `/v1/capabilities`, `/v1/providers`, `/v1/harness`, `/v1/ws`, `/v1/profile`, `/v1/audit`
@@ -325,9 +384,27 @@ the P0.1 identity store. `audit_log` retires under P0.4. `dag_runs` and
 ## 6. Guards that keep the plan honest
 
 **Epic closure by evidence, not keyword.** `scripts/check-closure-targets.py`: parse the
-PR body for `Closes/Fixes/Resolves #N`; fail if the target's title starts with `[EPIC]`,
-`[MILESTONE]`, `[INITIATIVE]`, or the target has sub-issues. Epics close by hand when
-`check-ac-state` reports every criterion `reachable`. This is the #56 hole.
+PR body for `Closes/Fixes/Resolves #N`; fail if the target's leading bracketed tag contains
+the word EPIC, MILESTONE or INITIATIVE, or the target has open direct children (sub-issues
+whose state is `open`). The tag test, not a
+literal `[EPIC]` prefix, because real titles qualify the tag: `[EPIC M1-B]`,
+`[MILESTONE M4]`, `[MASTER INITIATIVE]`. Epics close by hand when `check-ac-state` reports
+every criterion `reachable`. This is the #56 hole. The workflow triggers on `opened`,
+`reopened`, `synchronize` and `edited`, and the script reads the body from the event
+payload, so a body edit re-runs the check against the body as it now stands. Triggering
+only on opened/reopened/synchronize is not enough: a `Closes #N` appended after the final
+push would ride a green check (vouching for the old body) straight into the merge.
+
+**Leaf closure by acceptance record, not diff (#1141).** The same check also refuses a
+closing keyword against an open leaf whose body registers acceptance criteria as checkbox
+items under an acceptance heading while any box is still unticked — the tick is the
+issue's closeout record, and #76 was closed completed with every box unticked. A criterion
+claimed on the closing line itself (`Closes #76 AC-2`) must be ticked in that record. The
+verdict reads the PR body and the target's issue state only, never the PR diff: a PR may
+prove a criterion through tests, config, removal or migration without touching the file
+the prose cites, and touching a cited file proves nothing. A closed target is skipped (a
+keyword cannot close it again); an open leaf with every box ticked stays eligible for
+useful auto-close.
 
 **Freeze extended to surfaces.** Add to `quality/m1-convergence-freeze.json` (or an M3
 sibling) a rule: a new file under `frontend/src/pages` that declares a backend entity type
@@ -362,5 +439,110 @@ fails startup (#122 fixed this for the memory stores; P0.5 extends it to the eff
 ## 8. Order of operations, one line
 
 Open §7 issues → land P0 checks red with baselines → P0.1–P0.4 green → A green → P0.5
-green → Phase 1 steps 1–7, each PR retiring its ledger row → Phase 2 deletes → epics close
-by ac-state, never by keyword.
+green → **M1 RunStore unification (#251)** → Phase 1 steps 1–6 (step 7 deferred v1.1), each PR
+retiring its ledger row → Phase 2 deletes → epics close by ac-state, never by keyword.
+
+### Phase 0 progress (2026-10-02)
+
+| Item | State |
+|---|---|
+| §5 retirement ledger + gate | in review, [#1766](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1766); delete-by values follow the §9 v1.0 amendments |
+| §6 epic-closure guard | in review, [#1765](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1765) |
+| AC-P1–P9 registration | in review, [#1768](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1768) |
+| P0.1, P0.2 grants | in review, [#1804](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1804); 31 and 40 entries, re-measured on `develop` at `8ccab2c9` |
+| P0.1, P0.2 checks | in review, [#1805](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1805); red until #1804 is in its merge base |
+| P0.3 check | in review; 64 raw fetch + 142 hand-typed declarations banked |
+| P0.4, P0.6–P0.9 checks | not started |
+| P0.5 | backend selection landed with #1321 (see P0.5 "Today"); durable approvals and one process-wide context remain; the check is not started |
+
+An early draft of the P0.1/P0.2 checks reached `develop` without review on 2026-10-01 and
+was reverted by [#1769](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1769); the
+checks described in P0.1 and P0.2 above are the corrected design.
+
+### Landed elsewhere that moves this plan
+
+Work merged outside the cutover PRs, and which item it advances. Re-read before starting
+the item; none of these closes a cutover criterion on its own.
+
+| PR | What landed | Plan item |
+|---|---|---|
+| [#1321](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1321) | `new_sqlite_effect_context` / `new_postgres_effect_context` give a configured database durable Binding, Invocation and event authority; SQLite Invocation claim is atomic; `check_direct_effects.py` fails closed on dynamic-URL graph-node HTTP | §7 prerequisite A (durable Binding/Invocation; Approval store not covered) → P0.5 |
+| [#1760](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1760) | boot Bindings register on durable stores, so persistence no longer disables `self_repair` and `/v1/harness` | §7 A; #1133 (closes #1759) |
+| [#1795](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1795) | dead PostgreSQL-event warning removed | #1133 AC-15 |
+| [#1617](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1617) | ADR-082326-c126 accepted: one Run per chat turn, admitter-bounded retention, a turn without a Run is refused (closes #131) | Phase 1 step 3; P0.7 |
+| [#1618](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1618) | adversarial kill-recovery evidence pack (closed #62 on 2026-09-27) | P0.7: build the crash-window check on this evidence; #804 remains the open owner |
+| [#1555](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1555) | stable Workspace Agent identity and per-user default Workspace (closed #1037 on 2026-09-23) | Phase 1 step 3 and AC-P9 cite #1037, which is closed; their open owner is #804 |
+| [#1735](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1735) | durable, recoverable task queue (#91) | #251 RunStore unification (the queue is what creates canonical Runs) |
+| [#1718](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1718) | EngineService startup atomic and health-visible on partial failure (#1181) | §6 "fallback construction is a second authority" |
+| [#1670](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1670) | Canvas API/store/lease path operable and restart-safe (#851) | v1.0 Canvas blocker (§9 issue cross-reference) |
+
+## 9. v1.0 stakeholder amendments (2026-10-01)
+
+Ratified decisions that tighten this plan for the v1.0 tag. Item IDs: [BACKLOG.md](../../BACKLOG.md).
+
+**Verdict:** directionally aligned; v1.0 is **stricter** — delete legacy pages (not PROJECT-to-M3), unify run store before step 2, Canvas/Design Studio are blockers, Evolution hidden until v1.2.
+
+### Critical path
+
+```text
+Phase 0 (contract)  →  M1 RunStore (#251)  →  Phase 1 steps 1–6  →  M2 security on Workspace Agent (#1037)  →  v1.0 tag
+```
+
+M2 security (#66) runs **after** Workspace Agent exists — not on legacy `Chat.tsx`.
+
+### Phase 1 step mapping (v1.0 blockers)
+
+| Step | Issue | v1.0? |
+|------|-------|-------|
+| 1 Workspace Home | #1048 | Yes |
+| 2 Goal/Run inspection | #65, #1036 | Yes — requires RunStore unification first |
+| 3 Workspace Agent chat | #1037 | Yes |
+| 4 Backlog / work items | #82 | Yes |
+| 5 Attention + settings | #1049, #1050 | Yes (Attention); settings partial OK |
+| 6 Memory / user model | #776, #1047 | Yes — workspace + user + global; team deferred v1.1 |
+| 7 Proactive curation | #1051 | **Deferred v1.1** |
+
+### Explicit v1.0 wiring
+
+| Module | v1.0 |
+|--------|------|
+| `tool_binding.py` dispatch | Yes |
+| `repo_scanner`, `pipeline_orchestrator`, `chatbot_integration` | Yes |
+| repertoire → Capabilities (#59) | Yes |
+| builders → Backlog (#49) | Yes |
+| delivery gateway (#57) | Yes |
+
+### Retirement ledger amendments
+
+| Page | Prior disposition | v1.0 amendment |
+|------|-------------------|----------------|
+| Dashboard.tsx | PROJECT, delete M3-E | **DELETE v1.0** (Home replaces) |
+| Chat.tsx | PROJECT, delete M3-D | **DELETE v1.0** |
+| Agents/Skills/MCP/Topology | PROJECT, delete M3 | **DELETE v1.0** (Capabilities) |
+| Memory/KnowledgeBase | PROJECT, delete M3-E | **DELETE v1.0** |
+| Missions/WorkItems | MERGE backlog M3-C | **DELETE v1.0** (Backlog) |
+| Evolution.tsx | PROJECT M4/M5 | **DELETE/HIDE v1.0** (restore v1.2) |
+| CLI.tsx | RETIRE unless contract | **PROJECT v1.0** (#292 implement) |
+| Containers.tsx | RETIRE unless contract | **PROJECT v1.0** (#382 implement) |
+| DesignStudio.tsx | KEEP | **PROJECT v1.0** (blocker scope) |
+| Login/Setup | KEEP | KEEP |
+
+### Run store
+
+Step 2 AC requires a **single run browser** — no new callers of `DurableRunStore` / `dag_run_store`. Aligns with #251 and P0.7 crash-window work.
+
+### Memory scopes
+
+Workspace + user + **global** for v1.0. Team axis returns `NotImplemented` or hidden in UI until v1.1.
+
+### Issue cross-reference
+
+| Workstream | Issues |
+|------------|--------|
+| Cutover epic | #1046, #804, #53, #65, #82 |
+| Phase 0 | #53, #373, #325, #364, #1082 |
+| Workspace UI | #1048, #1037, #1049, #776 |
+| Run unification | #251, #736, #1036 |
+| Canvas | #735, #851, #93 |
+| Capabilities | #59, #848 |
+| Security on Agent | #66, #1171, #1202 |

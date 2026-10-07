@@ -1,4 +1,6 @@
-FROM mcr.microsoft.com/playwright:v1.52.0-noble
+# Digest-pinned (#349): v1.52.0-noble index digest resolved 2026-09-30; the tag
+# stays as the human-readable version annotation, the digest is the authority.
+FROM mcr.microsoft.com/playwright:v1.52.0-noble@sha256:a021500a801bab0611049217ffad6b9697d827205c15babb86a53bc1a61c02d5
 WORKDIR /tests
 # `@axe-core/playwright` is what makes the accessibility assertions in
 # `modal-a11y.spec.ts` a scan rather than a hand-written checklist (#371).
@@ -32,6 +34,7 @@ COPY frontend/src/pages/Dashboard.tsx /tests/frontend/src/pages/Dashboard.tsx
 COPY frontend/src/lib/widgetCapabilities.ts /tests/frontend/src/lib/widgetCapabilities.ts
 COPY frontend/src/components/SetupChecklist.tsx /tests/frontend/src/components/SetupChecklist.tsx
 COPY frontend/src/components/TemplatePicker.tsx /tests/frontend/src/components/TemplatePicker.tsx
+COPY frontend/src/components/RichTooltip.tsx /tests/frontend/src/components/RichTooltip.tsx
 COPY frontend/src/lib/api.ts /tests/frontend/src/lib/api.ts
 COPY frontend/src/lib/debug.ts /tests/frontend/src/lib/debug.ts
 CMD ["npx", "playwright", "test", "--config=tests/e2e/playwright.config.ts"]

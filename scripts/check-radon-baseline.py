@@ -179,8 +179,28 @@ def _print_details(result: Comparison) -> None:
             print(f"  {key}", file=sys.stderr)
 
 
+#: Every shipped package's source, not just maistro-core. The gate watched one
+#: package while canvas, evolve, rsi and the rest carried every D and E block in
+#: production code -- the ledger read clean because nothing was looking. Vendored
+#: third-party source stays out: it is kept byte-faithful on purpose and is not
+#: this repository's complexity to ratchet.
+DEFAULT_SCAN = [
+    "-i",
+    "third_party",
+    "packages/maistro-bootstrap/src",
+    "packages/maistro-canvas/src",
+    "packages/maistro-core/src",
+    "packages/maistro-design/src",
+    "packages/maistro-evolve/src",
+    "packages/maistro-registry/src",
+    "packages/maistro-rsi/src",
+    "packages/maistro-server/src",
+    "packages/maistro-turing/src",
+]
+
+
 def main(argv: list[str]) -> int:
-    scan_args = argv or ["packages/maistro-core/src"]
+    scan_args = argv or list(DEFAULT_SCAN)
     candidate_loaded = _load_baseline()
     candidate = _entries(candidate_loaded)
     findings = [block for block in _run_radon(scan_args) if block.rank not in PASSING_RANKS]

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import Any
 
 import stores
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -180,19 +179,27 @@ async def _stream_dag_run(
 async def _stream_canonical_run(
     websocket: WebSocket, *, dag_id: str, scope: DagExecutionScope
 ) -> None:
-    """Stream one canonical Run and record the projection POST /v1/dags/{id}/run records."""
+    """Stream one canonical Run live and record the projection POST /v1/dags/{id}/run records.
+
+    The projection is recorded incrementally (#1183): every node transition is
+    appended to the run store (with its sequence number) before its frame is
+    sent, so a client that disappears mid-Run leaves durable progress behind,
+    and the SSE stream over the same run id delivers the same events live.
+    """
+    from services.dag_run_live import LiveRunProjection
     from services.graph_runner import execute_dag_streaming
 
     from routes.audit import log_audit
-    from routes.dags import _record_run_projection
 
     log_audit("dag_run", scope.user_id, target=dag_id)
 
-    async def project(result: dict[str, Any]) -> None:
-        await _record_run_projection(dag_id=dag_id, user_id=scope.user_id, result=result)
-
+    recorder = LiveRunProjection(dag_id=dag_id, scope=scope)
     async for event in execute_dag_streaming(
-        stores.dags[dag_id], scope=scope, execution_mode="interactive", on_result=project
+        stores.dags[dag_id],
+        scope=scope,
+        execution_mode="interactive",
+        on_event=recorder.record_event,
+        on_result=recorder.record_result,
     ):
         await websocket.send_json(event)
         if event.get("status") in ("completed", "failed"):
