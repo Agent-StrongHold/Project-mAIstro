@@ -19,7 +19,7 @@ threshold. Nothing here introduces one.
 | Where observations are retrieved | `GET /v1/rum/events?limit=N` (raw ring, newest last) and `GET /v1/rum/events/summary` (grouped aggregation with percentiles). |
 | Enable/disable | Two independent switches, both default **off**: the SPA collects only when its build set `VITE_RUM_ENABLED=true`; the backend stores only when `RUM_INGEST_ENABLED=true`. Either side alone produces nothing — an enabled client facing a disabled collector gets a bounded `202` and discards. There is no runtime way for a page to switch collection on. |
 | Sampling | Per page-load session, Bernoulli at `VITE_RUM_SAMPLE_RATE` (default `1.0`, clamped to `[0,1]`). A sampled-out session buffers nothing and sends nothing. The server does no further sampling. |
-| Batch/flush limits | Buffer flushes at 10 s intervals, when 25 events accumulate, and on the `pagehide`/hidden lifecycle (beacon). One request carries at most 25 events; the server refuses more (422). |
+| Batch/flush limits | Buffer flushes at 10 s intervals, when 25 events accumulate, and on the `pagehide`/hidden lifecycle (beacon). One request carries at most 25 events; the server refuses more (422). The server also refuses a raw body over 64 KiB (413) before parsing it, so the bound holds even for a client that pads unknown fields (`extra="ignore"` cannot bound bytes). |
 | Retry policy | None. A failed send is dropped, never retried. Three consecutive failures disable the reporter for the rest of the session and clear the buffer. Bounded by construction. |
 | Retention / deletion | In-memory ring bounded by `RUM_MAX_EVENTS` (default 500, clamped to `[50, 10000]`), oldest evicted first. Nothing is written to disk; a restart is the deletion policy. |
 | Build/route identification | `build_id` comes from `VITE_RUM_BUILD_ID` at build time (CI should stamp the short commit sha); routes are normalized templates (below), never URLs. |
@@ -44,7 +44,7 @@ Envelope:
 {
   "schema": "hive.rum.v1",
   "build_id": "<short build identifier, [A-Za-z0-9._-]{1,64}>",
-  "session_id": "<12 hex chars, random per page load, never persisted>",
+  "session_id": "<12 hex chars, random per page load; kept only in the collector's in-memory ring>",
   "events": [ { ... }, ... ]
 }
 ```
@@ -57,7 +57,7 @@ Envelope:
 | `name` | `"LCP" \| "load"` | which load metric |
 | `value_ms` | finite float ≥ 0 | the timing, in milliseconds |
 | `route` | string ≤ 80 chars | normalized page-route template, e.g. `/dashboard` |
-| `ts` | epoch ms | when it was recorded |
+| `ts` | finite epoch ms ≥ 0 | when it was recorded; the server refuses NaN/Infinity/negative (Python's JSON parser would otherwise accept them) |
 
 `api_request` event — exactly these fields:
 
@@ -70,10 +70,15 @@ Envelope:
 | `outcome` | `ok \| http_error \| timeout \| network_error` | outcome class |
 | `duration_ms` | finite float ≥ 0 | request duration in ms |
 | `request_id` | string or null | the response's `X-Request-ID`, re-validated client-side against the backend middleware's own charset (`[A-Za-z0-9._-]{1,128}`, ≥1 alphanumeric); null when the server sent none |
-| `ts` | epoch ms | when it was recorded |
+| `ts` | finite epoch ms ≥ 0 | when it was recorded; same refusal rule as the web-vital `ts` |
 
-The server store adds one field on receipt (`received_at`, server clock) for
-latency-of-delivery debugging. That is the only field that is not client-sent.
+The server store adds the envelope's `build_id` and `session_id` to every
+stored observation (re-validated against the same charsets the route
+enforces), plus one server-clock field on receipt (`received_at`) for
+latency-of-delivery debugging. Those are the only fields that are not
+client-sent event fields. Retaining the identifiers is what lets the raw
+read-back and the summary distinguish observations while several builds
+share the ring.
 
 ### Route templates
 
@@ -116,6 +121,8 @@ own responses carry the header too, so even the ingest call can be correlated.
 - Buffer ≤ 25 events before a flush is forced; a failed batch is dropped.
 - One ingest request ≤ 25 events and each field is length-capped, so a
   request is bounded at a few tens of kilobytes regardless of the client.
+  The route enforces this twice: per-field caps in the schema, and a 64 KiB
+  cap on the raw body — enforced before JSON parsing, while enabled or not.
 - Server ring ≤ `RUM_MAX_EVENTS` events; oldest evicted; nothing on disk.
 - Collector down or rejecting: the reporter counts the failure, drops the
   batch, and after 3 consecutive failures turns itself off for the session.
@@ -150,11 +157,17 @@ grouping — no console.log, no dev server, no synthetic number.
 ### Comparing a load metric across builds or time windows
 
 Stamp `VITE_RUM_BUILD_ID=<short sha>` per build. `GET /v1/rum/events/summary`
-groups `count / min / p50 / p95 / max` by `(type, metric, route, outcome,
-status_class)`; `window_events` reports the retained window the percentiles
-were computed over (the ring is a trailing window, not history). To compare
-build A against build B, ingest A's traffic, record the summary rows against
-the build id, then let B's traffic flow and diff the same rows. For
+groups `count / min / p50 / p95 / max` by `(build_id, type, metric, route,
+outcome, status_class)`, so builds A and B resident in the ring at the same
+time land in separate rows. Percentiles are nearest-rank: the p-value reported
+is the smallest observed value at or above that fraction of the group
+(`ceil(p·n) - 1`, 0-indexed) — for 20 samples, p95 is the 19th ordered value,
+not the maximum, and an even-sized p50 is the lower middle.
+`window_events` reports the retained window the
+percentiles were computed over (the ring is a trailing window, not history).
+To compare build A against build B, ingest A's traffic and read its summary
+rows, then let B's traffic flow and diff the rows sharing A's build ids —
+no manual note-taking against an unlabelled aggregate is required. For
 longitudinal analysis beyond the ring, an operator can poll the summary (or
 raw `GET /v1/rum/events`) into their own log aggregation — the schema is
 stable and versioned precisely so that stays possible.

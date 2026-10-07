@@ -1244,6 +1244,16 @@
       "effect_owner": "maistro-rsi service"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/rum.py",
+      "method": "POST",
+      "route": "/events",
+      "handler": "ingest_events",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "perceived-load telemetry ingest (#1420): appends the reporter's own schema-projected timings to the bounded in-memory ring; off unless RUM_INGEST_ENABLED, capped per body and per event count, projected onto the hive.rum.v1 allowlist before storage",
+      "effect_owner": "services/rum_store.py RumStore.ingest (bounded in-memory ring)"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/schedules.py",
       "method": "DELETE",
       "route": "/{schedule_id}",

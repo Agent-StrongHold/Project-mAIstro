@@ -26,6 +26,7 @@ to `POST /v1/rum/events`; this suite pins the receiving side's behavior:
 
 from __future__ import annotations
 
+import json as jsonlib
 import pathlib
 import sys
 from typing import Any
@@ -143,8 +144,21 @@ def test_enabled_collector_stores_and_serves_observations(
     assert api["duration_ms"] == 33.25
     assert api["request_id"] == "abc123def456"
     # The stored field set is exactly the approved one — no extra key a
-    # client may have attached survived into the operator's read-back.
-    assert set(vital) == {"type", "name", "value_ms", "route", "ts", "received_at"}
+    # client may have attached survived into the operator's read-back. The
+    # envelope's identifiers ride along on every observation so the ring can
+    # tell builds (and sessions) apart.
+    assert vital["build_id"] == "build-test-1"
+    assert vital["session_id"] == "sess01aaaaaa"
+    assert set(vital) == {
+        "type",
+        "name",
+        "value_ms",
+        "route",
+        "ts",
+        "build_id",
+        "session_id",
+        "received_at",
+    }
     assert set(api) == {
         "type",
         "method",
@@ -154,6 +168,8 @@ def test_enabled_collector_stores_and_serves_observations(
         "duration_ms",
         "request_id",
         "ts",
+        "build_id",
+        "session_id",
         "received_at",
     }
 
@@ -175,22 +191,124 @@ def test_summary_groups_by_metric_route_and_outcome(
     summary = authed_client.get(f"{RUM_URL}/summary").json()
     assert summary["window_events"] == 4
     groups = {
-        (g["type"], g["metric"], g["route"], g["outcome"] or "", g["status_class"]): g
+        (
+            g["build_id"],
+            g["type"],
+            g["metric"],
+            g["route"],
+            g["outcome"] or "",
+            g["status_class"],
+        ): g
         for g in summary["groups"]
     }
-    vital = groups[("web_vital", "LCP", "/dashboard", "", 0)]
+    vital = groups[("build-test-1", "web_vital", "LCP", "/dashboard", "", 0)]
     assert vital["count"] == 2
     assert vital["min_ms"] == 100.0
-    assert vital["p50_ms"] == 300.0
+    # Nearest-rank p50 of [100, 300] is the lower middle (rank ceil(0.5*2)-1).
+    assert vital["p50_ms"] == 100.0
     assert vital["max_ms"] == 300.0
-    errors = groups[("api_request", "GET", "/v1/agents/*", "http_error", 5)]
+    errors = groups[("build-test-1", "api_request", "GET", "/v1/agents/*", "http_error", 5)]
     assert errors["count"] == 1
     assert errors["p95_ms"] == 900.0
-    ok = groups[("api_request", "GET", "/v1/agents/*", "ok", 2)]
+    ok = groups[("build-test-1", "api_request", "GET", "/v1/agents/*", "ok", 2)]
     assert ok["count"] == 1 and ok["p50_ms"] == 50.0
 
 
+def test_summary_groups_are_split_per_build(
+    authed_client: Any, rum_store: Any, ingest_enabled: None
+) -> None:
+    """Two builds resident in the ring produce separate summary rows per
+    (build, metric, route) — the build-over-build comparison the ring exists
+    to serve; raw read-back carries `build_id` on every event too."""
+    authed_client.post(RUM_URL, json=_envelope([_web_vital(value_ms=100.0)], build_id="build-a"))
+    authed_client.post(RUM_URL, json=_envelope([_web_vital(value_ms=250.0)], build_id="build-b"))
+    listing = authed_client.get(RUM_URL).json()
+    assert {event["build_id"] for event in listing["events"]} == {"build-a", "build-b"}
+    summary = authed_client.get(f"{RUM_URL}/summary").json()
+    rows = {(g["build_id"], g["metric"], g["route"]): g for g in summary["groups"]}
+    assert set(rows) == {
+        ("build-a", "LCP", "/dashboard"),
+        ("build-b", "LCP", "/dashboard"),
+    }
+    assert rows[("build-a", "LCP", "/dashboard")]["p50_ms"] == 100.0
+    assert rows[("build-b", "LCP", "/dashboard")]["p50_ms"] == 250.0
+
+
 # --- schema enforcement (server-side redaction, defense in depth) ------------
+
+
+def test_non_finite_and_negative_timestamps_are_refused(
+    authed_client: Any, rum_store: Any, ingest_enabled: None
+) -> None:
+    """`ts` is a finite, non-negative epoch in milliseconds. Python's JSON
+    parser accepts NaN/Infinity literals, and a retained non-finite value
+    would break the read-back endpoint's own serialization until eviction —
+    so the schema refuses them (and any negative stamp) outright."""
+    for bad_ts in (float("nan"), float("inf"), float("-inf"), -1.0):
+        # Raw content, not json=: Python's json.dumps emits the NaN/Infinity
+        # literals the server's json.loads would otherwise accept.
+        raw = jsonlib.dumps(_envelope([_web_vital(ts=bad_ts)]))
+        r = authed_client.post(
+            RUM_URL, content=raw.encode(), headers={"Content-Type": "application/json"}
+        )
+        assert r.status_code == 422, bad_ts
+        raw = jsonlib.dumps(_envelope([_api_event(ts=bad_ts)]))
+        r = authed_client.post(
+            RUM_URL, content=raw.encode(), headers={"Content-Type": "application/json"}
+        )
+        assert r.status_code == 422, bad_ts
+    assert rum_store.list_events()["total"] == 0
+
+
+def test_oversized_body_is_refused_before_parsing_even_while_disabled(
+    authed_client: Any, rum_store: Any
+) -> None:
+    """`extra="ignore"` cannot bound the bytes the body reader would receive,
+    so the route caps the raw body itself — before JSON parsing, and while
+    disabled too: the memory bound must not depend on configuration."""
+    from routes.rum import MAX_BATCH_BYTES
+
+    padded = _envelope([_web_vital()])
+    padded["padding"] = "x" * (MAX_BATCH_BYTES + 1)  # unknown top-level field
+    r = authed_client.post(
+        RUM_URL,
+        content=jsonlib.dumps(padded).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 413
+    assert rum_store.list_events()["total"] == 0
+
+
+def test_oversized_body_is_refused_while_enabled_too(
+    authed_client: Any, rum_store: Any, ingest_enabled: None
+) -> None:
+    from routes.rum import MAX_BATCH_BYTES
+
+    padded = _envelope([_web_vital()])
+    padded["padding"] = "x" * (MAX_BATCH_BYTES + 1)
+    r = authed_client.post(
+        RUM_URL,
+        content=jsonlib.dumps(padded).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 413
+    assert rum_store.list_events()["total"] == 0
+
+
+def test_percentiles_are_nearest_rank(
+    authed_client: Any, rum_store: Any, ingest_enabled: None
+) -> None:
+    """The advertised comparison output uses nearest-rank percentiles: for 20
+    samples the p95 rank is the 19th ordered value (not the maximum, which
+    `int(n * 0.95)` selects), and an even-sized p50 is the lower middle."""
+    events = [_api_event(duration_ms=float(i)) for i in range(1, 21)]  # 1..20 ms
+    authed_client.post(RUM_URL, json=_envelope(events))
+    group = authed_client.get(f"{RUM_URL}/summary").json()["groups"][0]
+    assert group["count"] == 20
+    assert group["min_ms"] == 1.0
+    assert group["p50_ms"] == 10.0  # ceil(0.5*20) - 1 = rank 10
+    assert group["p95_ms"] == 19.0  # ceil(0.95*20) - 1 = rank 19, not the max
+    assert group["max_ms"] == 20.0
 
 
 def test_oversized_batch_is_refused_before_the_store(
@@ -241,7 +359,6 @@ def test_extra_fields_are_not_stored_and_secrets_do_not_leak(
     r = authed_client.post(RUM_URL, json=_envelope([sneaky]))
     assert r.status_code == 200, r.text
     assert r.json()["accepted"] == 1
-    import json as jsonlib
 
     dump = jsonlib.dumps(authed_client.get(RUM_URL).json())
     for secret in ("supersecret-token", "hunter2", "the user's entire chat history", "agent-77"):
@@ -328,6 +445,72 @@ def test_max_events_setting_is_clamped_to_a_bounded_sink() -> None:
 
     assert RumStore(max_events=1).max_events == MIN_MAX_EVENTS
     assert RumStore(max_events=10**9).max_events == MAX_MAX_EVENTS
+
+
+def test_store_rejects_wholesale_when_envelope_identifiers_fail_the_charset() -> None:
+    """The route validates build/session ids, but the store re-validates as
+    defense in depth: a batch whose identifiers fail the charset is rejected
+    wholesale — the identifiers describe the batch, not one event."""
+    from services.rum_store import RumStore
+
+    store = RumStore(max_events=50)
+    assert store.ingest([_web_vital(ts=1.0)], build_id="bad id", session_id="ok") == 0
+    assert store.ingest([_web_vital(ts=1.0)], build_id="ok", session_id="has;semi") == 0
+    assert store.rejected_events == 2
+    assert store.list_events()["total"] == 0
+    # A compliant batch is accepted and both identifiers are stamped on the
+    # stored observation.
+    assert store.ingest([_web_vital(ts=2.0)], build_id="build-1", session_id="sess01aaaaaa") == 1
+    stored = store.list_events()["events"][0]
+    assert stored["build_id"] == "build-1"
+    assert stored["session_id"] == "sess01aaaaaa"
+
+
+def test_concurrent_first_requests_construct_exactly_one_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FastAPI runs sync handlers in worker threads: two concurrent first
+    requests must not each build a store (the loser's first batch would
+    vanish when the global reference is overwritten). Construction is
+    single-flight even while the first caller is still inside
+    `get_settings()` — the deterministic version of the reviewed race."""
+    import threading
+    from types import SimpleNamespace
+
+    from services import rum_store as rum_store_mod
+
+    constructed: list[object] = []
+
+    class CountingStore(rum_store_mod.RumStore):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            constructed.append(self)
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_settings() -> Any:
+        # The first caller stops inside get_settings() while still holding
+        # the construction lock, so the second caller must queue behind it.
+        entered.set()
+        release.wait(timeout=30)
+        return SimpleNamespace(rum_max_events=50)
+
+    monkeypatch.setattr(rum_store_mod, "_singleton", None)
+    monkeypatch.setattr(rum_store_mod, "RumStore", CountingStore)
+    monkeypatch.setattr(rum_store_mod, "get_settings", slow_settings)
+
+    first = threading.Thread(target=lambda: rum_store_mod.get_store())
+    first.start()
+    assert entered.wait(timeout=30)
+    second = threading.Thread(target=lambda: rum_store_mod.get_store())
+    second.start()
+    # Only now may the first call finish constructing.
+    release.set()
+    first.join(timeout=30)
+    second.join(timeout=30)
+    assert not first.is_alive() and not second.is_alive()
+    assert len(constructed) == 1, "each concurrent first request built its own store"
 
 
 def test_batch_size_caps_match_the_frontend_contract() -> None:

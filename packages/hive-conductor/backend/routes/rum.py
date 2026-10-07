@@ -12,10 +12,14 @@ this module is their HTTP face:
 
 - Ingest is fail-closed: with `RUM_INGEST_ENABLED` unset (the default) the
   POST answers 202 and discards, so an enabled client can never turn
-  collection on by itself.
-- A batch is bounded twice — by the event count (client and server agree on
-  25) and by per-field length caps — so one request can carry at most a few
-  tens of kilobytes no matter what the client sends.
+  collection on by itself. A payload that fails schema validation is still
+  refused 422 even then — fail-closed in both directions (nothing stored,
+  and an invalid batch never gets a fake ack).
+- A batch is bounded three times — by the event count (client and server
+  agree on 25), by per-field length caps, and by a 64 KiB cap enforced on
+  the raw body (Content-Length header and streaming byte count) before any
+  JSON parsing — so one request can never make the backend buffer or parse
+  more than a few tens of kilobytes, no matter what the client sends.
 - Only fields the `hive.rum.v1` schema names are read; FastAPI is told to
   ignore extras and the store projects each event onto approved fields, so
   neither an over-eager client nor a crafted payload can widen what is
@@ -28,11 +32,12 @@ an unauthenticated write path.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Literal
 
-from fastapi import APIRouter, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from fastapi import APIRouter, HTTPException, Query, Request, Response
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from services.rum_store import (
     MAX_MAX_EVENTS,
     RUM_SCHEMA,
@@ -46,6 +51,13 @@ from services.rum_store import (
 #: would be nicer; two files and a test pinning them together is the price
 #: of a browser bundle that cannot import Python.
 MAX_BATCH_EVENTS = 25
+
+#: Hard ceiling on the encoded batch. 25 events x a few hundred bounded
+#: bytes plus the envelope identifiers sits well under this, so it never
+#: rejects a real reporter, but it bounds what the backend will read and
+#: parse before the schema (`extra="ignore"` is applied only afterwards and
+#: cannot bound the bytes FastAPI would otherwise receive in full).
+MAX_BATCH_BYTES = 64 * 1024
 
 REQUEST_ID_VALUE_RE = re.compile(r"[A-Za-z0-9._-]{1,128}")
 REQUEST_ID_ALNUM_RE = re.compile(r"[A-Za-z0-9]")
@@ -63,7 +75,10 @@ class WebVitalEventIn(BaseModel):
     name: WebVitalName
     value_ms: float = Field(ge=0, allow_inf_nan=False)
     route: str = Field(min_length=1, max_length=80)
-    ts: float
+    # Epoch milliseconds. Finite and non-negative: Python's JSON parser
+    # accepts NaN/Infinity literals, and a retained non-finite value would
+    # break the read-back endpoint's own serialization until eviction.
+    ts: float = Field(ge=0, allow_inf_nan=False)
 
     @field_validator("route")
     @classmethod
@@ -90,7 +105,8 @@ class ApiRequestEventIn(BaseModel):
     outcome: ApiOutcome
     duration_ms: float = Field(ge=0, allow_inf_nan=False)
     request_id: str | None = Field(default=None, max_length=128)
-    ts: float
+    # Same contract as the web-vital timestamp above.
+    ts: float = Field(ge=0, allow_inf_nan=False)
 
     @field_validator("method")
     @classmethod
@@ -148,14 +164,55 @@ class RumBatchIn(BaseModel):
 
 
 @router.post("/events")
-def ingest_events(batch: RumBatchIn, request: Request, response: Response) -> dict[str, Any]:
-    del request  # session context comes from AuthMiddleware upstream
+async def ingest_events(request: Request, response: Response) -> dict[str, Any]:
+    # Session context comes from AuthMiddleware upstream; the body is read
+    # manually (not as a Pydantic parameter) so the byte cap below applies
+    # before anything is buffered or parsed. The enabled check comes AFTER
+    # read+validate on purpose: bytes are capped before parsing in every
+    # state (the bound must not depend on configuration), while the pinned
+    # fail-closed contract keeps a schema-invalid batch refused 422 even
+    # while disabled — only a *valid* batch is acknowledged-and-discarded.
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared = int(content_length)
+        except ValueError:
+            declared = 0
+        if declared > MAX_BATCH_BYTES:
+            raise HTTPException(status_code=413, detail="rum batch exceeds byte limit")
+
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in request.stream():
+        received += len(chunk)
+        if received > MAX_BATCH_BYTES:
+            # Covers missing/spoofed Content-Length and chunked transfer
+            # encoding: the cap holds even when the header lies.
+            raise HTTPException(status_code=413, detail="rum batch exceeds byte limit")
+        chunks.append(chunk)
+    body = b"".join(chunks)
+
+    try:
+        payload = json.loads(body)
+        batch = RumBatchIn.model_validate(payload)
+    except (ValueError, ValidationError):
+        # Same 422 FastAPI's envelope validation produced before this route
+        # took over body parsing.
+        raise HTTPException(status_code=422, detail="invalid rum batch") from None
+
     if not rum_ingest_enabled():
         # Explicitly disabled: acknowledge (202) so the reporter does not
         # churn, store nothing. An enabled client cannot switch collection on.
         response.status_code = 202
         return {"accepted": 0, "enabled": False}
-    accepted = get_store().ingest([event.model_dump() for event in batch.events])
+
+    # The envelope's identifiers ride along: without them the ring could not
+    # tell builds (or sessions) apart once more than one is resident.
+    accepted = get_store().ingest(
+        [event.model_dump() for event in batch.events],
+        build_id=batch.build_id,
+        session_id=batch.session_id,
+    )
     return {"accepted": accepted, "enabled": True}
 
 

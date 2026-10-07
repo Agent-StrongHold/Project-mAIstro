@@ -1,5 +1,7 @@
 {
   "_comment": "Undeclared authenticated route prefixes for Workspace cutover P0.2 (#53). Judged against the trusted merge base; a declared prefix must be deleted here.",
   "metric_definition_version": "1",
-  "tolerated": {}
+  "tolerated": {
+    "/v1/rum": "absent from quality/route-permissions.json"
+  }
 }

@@ -34,6 +34,7 @@ import {
   normalizePageRoute,
   type ApiOutcome,
   type RumEvent,
+  sanitizeRequestId,
 } from "./rumSchema";
 
 interface RumEnv {
@@ -90,7 +91,14 @@ type Reporter = {
   disabled: boolean;
   timer: number | undefined;
   latestLcpMs: number | null;
+  lcpSent: boolean;
+  lcpObserver: PerformanceObserver | null;
   loadSent: boolean;
+  /** The page route this document navigation started on. Both load metrics
+   * describe that navigation, so their route is fixed once at init — not
+   * re-read from the mutable location at flush time, where an SPA route
+   * change would misattribute the document's own load timing. */
+  readonly navigationRoute: string;
 };
 
 let reporter: Reporter | null = null;
@@ -121,18 +129,25 @@ function navigationLoadMs(): number | null {
   return null;
 }
 
-/** LCP via buffered PerformanceObserver; null where unsupported (Firefox). */
-function observeLcp(onValue: (ms: number) => void): void {
+/**
+ * LCP via buffered PerformanceObserver; null where unsupported (Firefox).
+ * The observer stays active until first input, so candidates can keep
+ * arriving; callers must hold the latest candidate and finalize at a
+ * lifecycle boundary, never on a timer flush.
+ */
+function observeLcp(onValue: (ms: number) => void): PerformanceObserver | null {
   try {
-    if (typeof PerformanceObserver === "undefined") return;
+    if (typeof PerformanceObserver === "undefined") return null;
     const observer = new PerformanceObserver((list) => {
       const entries = list.getEntries();
       const last = entries[entries.length - 1];
       if (last) onValue(last.startTime);
     });
     observer.observe({ type: "largest-contentful-paint", buffered: true } as PerformanceObserverInit);
+    return observer;
   } catch {
     // No LCP support (e.g. Firefox): the `load` fallback metric still ships.
+    return null;
   }
 }
 
@@ -143,29 +158,45 @@ function recordEvent(event: RumEvent | null): void {
   if (rep.buffer.length >= MAX_BATCH_EVENTS) void flush("batch-full");
 }
 
+/**
+ * Ship the LCP candidate exactly once, at a lifecycle boundary (first user
+ * input or pagehide) — the point at which the browser stops producing LCP
+ * candidates and the value is final. Interval flushes deliberately never
+ * touch it: clearing the candidate on a timer would emit a premature value
+ * and, if a later paint arrived, a second nominal LCP for one navigation.
+ */
+function finalizeLcp(rep: Reporter): void {
+  if (rep.lcpSent || rep.latestLcpMs === null) return;
+  const lcpEvent = buildWebVitalEvent({
+    name: "LCP",
+    value_ms: rep.latestLcpMs,
+    route: rep.navigationRoute,
+    ts: nowMs(),
+  });
+  rep.lcpSent = true;
+  rep.latestLcpMs = null;
+  try {
+    rep.lcpObserver?.disconnect();
+  } catch {
+    // A dead observer must not break the report it finalized.
+  }
+  if (lcpEvent) rep.buffer.unshift(lcpEvent);
+}
+
 async function flush(reason: "interval" | "pagehide" | "batch-full"): Promise<void> {
   const rep = reporter;
   if (!rep || rep.disabled) return;
-  // Finalize the load metrics once: the first flush after (a) the load event
-  // fired and (b) at least one LCP candidate was observed ships them. LCP
-  // keeps updating until first input, so the value reported is the latest
-  // candidate seen up to this flush — the boundary docs/RUM.md describes.
-  if (rep.latestLcpMs !== null) {
-    const lcpEvent = buildWebVitalEvent({
-      name: "LCP",
-      value_ms: rep.latestLcpMs,
-      route: currentPageRoute(),
-      ts: nowMs(),
-    });
-    rep.latestLcpMs = null;
-    if (lcpEvent) rep.buffer.unshift(lcpEvent);
-  }
+  // Ship the load metric once: the first flush after the load event fired
+  // sends its finalized value. LCP is not handled here — it finalizes only
+  // at the first-input/pagehide boundary (see finalizeLcp). Both describe
+  // the document navigation, so both carry the route captured at init —
+  // never wherever the SPA happens to be navigating at flush time.
   const loadMs = navigationLoadMs();
   if (loadMs !== null && !rep.loadSent) {
     const event = buildWebVitalEvent({
       name: "load",
       value_ms: loadMs,
-      route: currentPageRoute(),
+      route: rep.navigationRoute,
       ts: nowMs(),
     });
     if (event) {
@@ -268,6 +299,43 @@ export function rumApiRequest(fields: {
 }
 
 /**
+ * `fetch` wrapped with the same measurement the shared client gets (#1420):
+ * duration, outcome class and the response's validated `X-Request-ID` are
+ * reported as an `api_request` event; the Response (or error) itself is
+ * returned/thrown untouched, so callers keep their own semantics. GET-only
+ * by contract — the boot-time probes that gate first content (AuthGuard's
+ * setup/whoami) are reads; anything else goes through `lib/api.ts`. Lives
+ * in `lib/` with the other shared HTTP helpers because that is where the
+ * typed-client ratchet expects shared transport code.
+ */
+export async function instrumentedGet(path: string): Promise<Response> {
+  const started = performance.now();
+  try {
+    const res = await fetch(path, { credentials: "same-origin" });
+    rumApiRequest({
+      method: "GET",
+      path,
+      status: res.status,
+      outcome: res.ok ? "ok" : "http_error",
+      durationMs: performance.now() - started,
+      rawRequestId: sanitizeRequestId(res.headers.get("X-Request-ID")),
+    });
+    return res;
+  } catch (err) {
+    const timedOut = err instanceof DOMException && err.name === "AbortError";
+    rumApiRequest({
+      method: "GET",
+      path,
+      status: 0,
+      outcome: timedOut ? "timeout" : "network_error",
+      durationMs: performance.now() - started,
+      rawRequestId: null,
+    });
+    throw err;
+  }
+}
+
+/**
  * Initialize collection for this page load. Called once from `main.tsx`.
  * A no-op unless the build enabled collection AND this session was sampled
  * in — after which nothing can switch it off except the failure breaker.
@@ -286,26 +354,32 @@ export function initRum(): void {
     disabled: false,
     timer: undefined,
     latestLcpMs: null,
+    lcpSent: false,
+    lcpObserver: null,
     loadSent: false,
+    navigationRoute: currentPageRoute(),
   };
   reporter = rep;
 
-  observeLcp((ms) => {
+  rep.lcpObserver = observeLcp((ms) => {
     // LCP candidates keep arriving until the first user input; keep only
-    // the latest so the reported value is the finalized largest paint.
+    // the latest so the finalized value is the largest paint. Held until
+    // the boundary below — never cleared by an interval flush.
     rep.latestLcpMs = ms;
   });
 
+  const onLcpBoundary = () => {
+    finalizeLcp(rep);
+    void flush("pagehide");
+  };
   rep.timer = window.setInterval(() => void flush("interval"), FLUSH_INTERVAL_MS);
-  window.addEventListener(
-    "pagehide",
-    () => {
-      void flush("pagehide");
-    },
-    { once: true },
-  );
+  // First input finalizes LCP (the browser stops producing candidates);
+  // flush so the final value leaves with the interaction batch.
+  window.addEventListener("pointerdown", onLcpBoundary, { once: true });
+  window.addEventListener("keydown", onLcpBoundary, { once: true });
+  window.addEventListener("pagehide", onLcpBoundary, { once: true });
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") void flush("pagehide");
+    if (document.visibilityState === "hidden") onLcpBoundary();
   });
 }
 

@@ -166,6 +166,7 @@ ROUTE_EXEMPT = {
     "/v1/cli": "creates an in-memory CLI session record only — no command execution in this router",
     "/v1/pm-fleet/distill": "telemetry recording; tool EXECUTION is scoped at /v1/pm-fleet/tools",
     "/v1/pm-fleet/topk": "telemetry recording",
+    "/v1/rum": "perceived-load telemetry recording (#1420): ingest appends only the reporter's own schema-projected timings to the instance's in-memory ring, bounded per field and per body, and the read-back/summary endpoints are reads for the same authenticated operator; no elevation, no cross-principal or host-infrastructure mutation",
 }
 
 

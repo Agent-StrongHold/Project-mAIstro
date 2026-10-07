@@ -27,10 +27,14 @@ The decisions this encodes are the ones #1420 requires be explicit:
  *store* a field the schema does not name. A request id failing the same
   charset `RequestIDMiddleware` enforces is treated as absent, so the
   collector cannot become a laundering path for arbitrary header values.
+  The envelope's `build_id` / `session_id` are re-validated against the same
+  charset the route enforces and stamped onto each stored observation: the
+  build-over-build comparison the summary exists for needs them retained.
 """
 
 from __future__ import annotations
 
+import math
 import re
 import threading
 import time
@@ -45,6 +49,9 @@ RUM_SCHEMA = "hive.rum.v1"
 #: Mirrors `maistro.observability.middleware`'s accepted request-ID charset.
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
+#: Same charset the ingest route enforces for the envelope identifiers.
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
 #: Storage bound clamps — an operator cannot configure an unbounded sink.
 MIN_MAX_EVENTS = 50
 MAX_MAX_EVENTS = 10_000
@@ -56,6 +63,15 @@ ApiOutcome = Literal["ok", "http_error", "timeout", "network_error"]
 
 def _finite_non_negative(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+
+
+def _nearest_rank(ordered: list[float], percentile: float) -> float:
+    """Nearest-rank percentile: the smallest value at or above ``percentile``
+    of the data (0-indexed rank ``ceil(p * n) - 1``). For 20 samples the p95
+    rank is the 19th ordered value — not the maximum, which ``int(n * 0.95)``
+    would select — and an even-sized p50 takes the lower middle."""
+    rank = math.ceil(percentile * len(ordered)) - 1
+    return ordered[max(0, rank)]
 
 
 def _bounded_str(
@@ -174,20 +190,41 @@ class RumStore:
         self.received_batches = 0
         self.rejected_events = 0
 
-    def ingest(self, events: list[Any]) -> int:
+    def ingest(
+        self,
+        events: list[Any],
+        *,
+        build_id: str | None = None,
+        session_id: str | None = None,
+    ) -> int:
         """Project and store one client batch; return how many were kept.
+
+        The envelope's `build_id` / `session_id` are stamped onto every kept
+        observation (re-validated here as defense in depth); a batch whose
+        identifiers fail the charset is rejected wholesale — a value the
+        ingest route would have refused must not enter the store, and the
+        identifiers describe the batch, not a single event.
 
         Invalid events count as rejected and are dropped — a malformed batch
         is never an error the client must handle.
         """
+        safe_build = _bounded_str(build_id, max_length=64, pattern=_IDENTIFIER_RE)
+        safe_session = _bounded_str(session_id, max_length=64, pattern=_IDENTIFIER_RE)
         kept = 0
         with self._lock:
             self.received_batches += 1
+            if (build_id is not None and safe_build is None) or (
+                session_id is not None and safe_session is None
+            ):
+                self.rejected_events += len(events)
+                return 0
             for event in events:
                 projected = project_web_vital(event) or project_api_request(event)
                 if projected is None:
                     self.rejected_events += 1
                     continue
+                projected["build_id"] = safe_build
+                projected["session_id"] = safe_session
                 projected["received_at"] = time.time()
                 self._events.append(projected)
                 kept += 1
@@ -204,12 +241,14 @@ class RumStore:
         return {"events": events[-limit:], "total": len(events), "truncated": truncated}
 
     def summary(self) -> dict[str, Any]:
-        """Group the ring by (type, metric, route, outcome, status class).
+        """Group the ring by (build, type, metric, route, outcome, status class).
 
         Deliberately coarse: the grouping dimensions are exactly the ones
-        #1420 names for spotting a regression — metric, normalized route,
-        outcome, status class. Request ids are NOT a group key (they would
-        fragment aggregation into one group per request); correlate an id
+        #1420 names for spotting a regression — build, metric, normalized
+        route, outcome, status class. Splitting by build is what makes the
+        build-over-build comparison possible while several builds share the
+        ring. Request and session ids are NOT group keys (they would
+        fragment aggregation into one group per id); correlate either
         through `GET /v1/rum/events` instead. Percentiles are computed over
         the retained window only, which `window_events` reports so nobody
         reads p95 as a forever number.
@@ -219,9 +258,17 @@ class RumStore:
             events = list(self._events)
         for event in events:
             if event["type"] == "web_vital":
-                key = (event["type"], event["name"], event["route"], "", 0)
+                key = (
+                    event["build_id"],
+                    event["type"],
+                    event["name"],
+                    event["route"],
+                    "",
+                    0,
+                )
             else:
                 key = (
+                    event["build_id"],
                     event["type"],
                     event["method"],
                     event["route"],
@@ -235,15 +282,16 @@ class RumStore:
             ordered = sorted(values)
             summarized.append(
                 {
-                    "type": key[0],
-                    "metric": key[1],
-                    "route": key[2],
-                    "outcome": key[3] or None,
-                    "status_class": key[4],
+                    "build_id": key[0],
+                    "type": key[1],
+                    "metric": key[2],
+                    "route": key[3],
+                    "outcome": key[4] or None,
+                    "status_class": key[5],
                     "count": len(values),
                     "min_ms": ordered[0],
-                    "p50_ms": ordered[len(ordered) // 2],
-                    "p95_ms": ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))],
+                    "p50_ms": _nearest_rank(ordered, 0.5),
+                    "p95_ms": _nearest_rank(ordered, 0.95),
                     "max_ms": ordered[-1],
                 }
             )
@@ -263,17 +311,24 @@ class RumStore:
 
 
 _singleton: RumStore | None = None
+#: Guards first construction. FastAPI runs these sync handlers in worker
+#: threads, and an unlocked check-then-assign lets the first two concurrent
+#: RUM requests each build a store — one batch would vanish when the global
+#: reference is overwritten. Single-flight construction instead.
+_singleton_lock = threading.Lock()
 
 
 def get_store() -> RumStore:
     """The process-wide store, sized once from settings."""
     global _singleton
     if _singleton is None:
-        try:
-            configured = get_settings().rum_max_events
-        except Exception:
-            configured = DEFAULT_MAX_EVENTS
-        _singleton = RumStore(max_events=configured)
+        with _singleton_lock:
+            if _singleton is None:
+                try:
+                    configured = get_settings().rum_max_events
+                except Exception:
+                    configured = DEFAULT_MAX_EVENTS
+                _singleton = RumStore(max_events=configured)
     return _singleton
 
 
