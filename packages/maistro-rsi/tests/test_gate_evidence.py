@@ -155,14 +155,19 @@ class TestRequiredToolFailClosed:
         explain = sc.explain()
         assert "NOT RUN (blocking)" in explain
         assert "no_bandit_high" in explain
+        assert sc.accepted is False
 
-    def test_unavailable_gate_is_named_in_explain(self) -> None:
+    def test_unavailable_gate_is_non_blocking_and_named_in_explain(self) -> None:
+        """An optional signal that never executed is reportable but never a
+        veto: acceptance reads the resolved state, not the legacy boolean."""
         sc = Scorecard(
             gates=[
                 GateResult("optional_probe", False, "measured nothing", state=GateState.UNAVAILABLE)
             ]
         )
         assert "[UNAVAILABLE] optional_probe" in sc.explain()
+        assert sc.gates_passed is True
+        assert sc.accepted is True
 
 
 # ---------------------------------------------------------------------------

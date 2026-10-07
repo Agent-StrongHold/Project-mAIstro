@@ -152,7 +152,15 @@ class Scorecard:
 
     @property
     def gates_passed(self) -> bool:
-        return all(g.passed for g in self.gates)
+        # Acceptance resolves the gate's state (#304), never the legacy boolean
+        # alone: UNAVAILABLE marks an optional signal that never executed and is
+        # non-blocking by contract, so only FAILED/NOT_RUN veto. Gates built
+        # without a state resolve PASSED/FAILED from ``passed`` (see
+        # GateResult.resolved_state), so historical behaviour is unchanged.
+        return all(
+            g.resolved_state() in (GateState.PASSED, GateState.UNAVAILABLE)
+            for g in self.gates
+        )
 
     @property
     def composite(self) -> float:
