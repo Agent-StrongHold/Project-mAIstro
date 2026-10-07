@@ -132,7 +132,22 @@ class TaskAdmitter(Protocol):
         ...
 
     async def cancel_run(self, run_id: str) -> bool:
-        """Cancel the canonical Run and signal its physical Attempt owner."""
+        """Cancel the canonical Run and signal its physical Attempt owner.
+
+        Returns True only when the Run itself reached CANCELLED through the
+        canonical Run/Attempt service — a local no-op is not a cancellation.
+
+        Compatibility (#1338): this member joined the protocol after ``admit``
+        and ``record_transition``, so a downstream adapter compiled against
+        the earlier two-method shape remains a valid *runtime* citizen. The
+        queue probes the capability with ``getattr`` and, for an adapter
+        without it, refuses to cancel that adapter's admitted work — the
+        receipt stays open, the Run keeps its owner, and the refusal is
+        logged — rather than raising ``AttributeError`` or terminalizing
+        work nothing signalled. Implement the member to make cancellation
+        physically reach admitted Runs; leaving it absent opts out of
+        physical cancellation, visibly (cancel refuses), never silently.
+        """
         ...
 
 
