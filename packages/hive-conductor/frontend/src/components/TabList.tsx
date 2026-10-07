@@ -67,7 +67,7 @@ export function TabList<T extends string>({ label, idPrefix, tabs, selected, onS
  */
 export function TabPanel({ idPrefix, id, selected, children }: { idPrefix: string; id: string; selected: boolean; children: ReactNode }) {
   return (
-    <div role="tabpanel" id={panelId(idPrefix, id)} aria-labelledby={tabId(idPrefix, id)} hidden={!selected}>
+    <div role="tabpanel" id={panelId(idPrefix, id)} aria-labelledby={tabId(idPrefix, id)} hidden={!selected} tabIndex={selected ? 0 : -1}>
       {selected && children}
     </div>
   );

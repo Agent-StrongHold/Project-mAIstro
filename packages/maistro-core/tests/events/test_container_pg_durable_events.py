@@ -76,8 +76,7 @@ async def wire():
         yield _build
     finally:
         for container in built:
-            if container.db_pool is not None:
-                await container.db_pool.close()
+            await container.aclose()
 
 
 @pytest.fixture
@@ -99,7 +98,7 @@ class TestPoolSelectsThePostgresStores:
 
         assert isinstance(container.durable_event_log, PgEventLog)
         assert isinstance(container.trigger_store, PgTriggerStore)
-        assert isinstance(container.invocation_store, PgInvocationStore)
+        assert isinstance(container.handler_invocation_store, PgInvocationStore)
 
     async def test_the_wired_stores_reach_the_server(self, pg_pool, wire):
         """Types alone would pass against a store holding a dead pool."""
@@ -123,8 +122,8 @@ class TestPoolSelectsThePostgresStores:
         )
         container = await wire(_config(), pg_pool=pg_pool)
 
-        await container.invocation_store.get_or_create("t1", 1)
-        assert len(await container.invocation_store.list_for_event(1)) == 1
+        await container.handler_invocation_store.get_or_create("t1", 1)
+        assert len(await container.handler_invocation_store.list_for_event(1)) == 1
 
 
 class TestTheOtherTwoBackendsAreUnchanged:
@@ -135,14 +134,14 @@ class TestTheOtherTwoBackendsAreUnchanged:
 
         assert isinstance(container.durable_event_log, InMemoryEventLog)
         assert isinstance(container.trigger_store, InMemoryTriggerStore)
-        assert isinstance(container.invocation_store, InMemoryInvocationStore)
+        assert isinstance(container.handler_invocation_store, InMemoryInvocationStore)
 
     async def test_a_sqlite_url_and_no_pool_stays_on_sqlite(self, wire):
         container = await wire(_config("sqlite://"))
 
         assert isinstance(container.durable_event_log, SqliteEventLog)
         assert isinstance(container.trigger_store, SqliteTriggerStore)
-        assert isinstance(container.invocation_store, SqliteInvocationStore)
+        assert isinstance(container.handler_invocation_store, SqliteInvocationStore)
 
     async def test_a_pool_wins_over_a_sqlite_connection(self, pg_pool, wire):
         """Both can be set at once — they cover different stores. Preferring

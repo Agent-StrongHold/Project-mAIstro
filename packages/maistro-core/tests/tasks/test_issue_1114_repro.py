@@ -24,6 +24,7 @@ from maistro.runs.store import InMemoryRunStore
 from maistro.tasks.admission import TASK_QUEUE_SOURCE, TaskRunAdmitter
 from maistro.tasks.models import TaskStatus
 from maistro.tasks.queue import TaskQueue
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 @pytest.fixture
@@ -50,6 +51,7 @@ async def durable_run():
         status=TaskStatus.QUEUED,
         description="durable-only dispatch after restart",
         workspace="w1",
+        user_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         tier=2,
         created_at=datetime.now(UTC),
     )

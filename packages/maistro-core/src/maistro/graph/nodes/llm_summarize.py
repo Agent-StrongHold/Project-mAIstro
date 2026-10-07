@@ -34,7 +34,7 @@ from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
 
 from . import register_node
-from .base import BaseNode, NodeContext
+from .base import BaseNode, NodeContext, ReplaySemantics
 
 if TYPE_CHECKING:
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
@@ -101,7 +101,9 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
     input_schema: ClassVar[type[BaseModel]] = LlmSummarizeIn
     output_schema: ClassVar[type[BaseModel]] = LlmSummarizeOut
     cost_hint: ClassVar[float] = 3.0  # billable LLM call
-    idempotent: ClassVar[bool] = False  # LLM output varies; not safe to retry blindly
+    replay_semantics: ClassVar[ReplaySemantics] = (
+        ReplaySemantics.NON_RETRYABLE
+    )  # LLM output varies; not safe to retry blindly
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "LLM: summarize"
     description: ClassVar[str] = (
@@ -127,56 +129,17 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         self._router: LLMRouter = router if router is not None else CostAwareRouter(self._registry)
 
     async def _execute(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> LlmSummarizeOut:
-        # LLM gateway endpoint + key — pulled from env (maistro config layer
-        # already loads these). The node never hardcodes credentials.
-        base_url = (
-            os.environ.get("MAISTRO_LLM_BASE_URL")
-            or os.environ.get("LITELLM_URL")
-            or os.environ.get("LITELLM_API_BASE")
-            or ""
-        ).rstrip("/")
-        api_key = (
-            os.environ.get("MAISTRO_LLM_API_KEY")
-            or os.environ.get("LITELLM_API_KEY")
-            or os.environ.get("LITELLM_MASTER_KEY")
-            or ""
-        )
-        if not base_url:
-            raise RuntimeError("llm.summarize: no LLM base URL configured")
-
-        if not inputs.binding_id.strip():
-            raise BindingNotFound(
-                "llm.summarize requires a pre-authorized model.chat binding_id "
-                "before any model call"
-            )
-        binding = await self._effects.bindings.resolve(
-            inputs.binding_id,
-            workspace_id=str(ctx.workspace_id or ""),
-            project_id=str(ctx.project_id or ""),
-            node_id=ctx.node_id,
-            capability=MODEL_CHAT_CAPABILITY,
-        )
-
-        sys_prompt = _STYLE_PROMPTS.get(inputs.style, _STYLE_PROMPTS["bullet"])
-        if inputs.system_prompt_extra:
-            sys_prompt = sys_prompt + "\n\n" + inputs.system_prompt_extra
-
-        request = ModelChatRequest(
-            model=inputs.model,
-            messages=[
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": inputs.text},
-            ],
-            temperature=inputs.temperature,
-            max_tokens=inputs.max_tokens,
-        )
+        # Gateway configuration is read before the Binding is resolved, as it
+        # always was: a deployment with no gateway configured should be told
+        # that, not told its Binding is missing. Extracting these two steps
+        # for the complexity ratchet must not reorder them.
+        endpoint = _gateway_endpoint(timeout_s=inputs.timeout_s)
+        binding = await self._authorized_binding(inputs, ctx)
         egress = ModelChatEgress(
             self._effects,
             registry=self._registry,
             router=self._router,
-            endpoint=GatewayEndpoint(
-                base_url=base_url, api_key=api_key, timeout_s=inputs.timeout_s
-            ),
+            endpoint=endpoint,
         )
         result = await egress.complete(
             binding=binding,
@@ -184,15 +147,81 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
             node_run_id=ctx.node_run_id,
             attempt_id=ctx.attempt_id,
             effect_key=f"llm.summarize.complete:{inputs.model}",
-            request=request,
+            request=ModelChatRequest(
+                model=inputs.model,
+                messages=[
+                    {"role": "system", "content": _system_prompt(inputs)},
+                    {"role": "user", "content": inputs.text},
+                ],
+                temperature=inputs.temperature,
+                max_tokens=inputs.max_tokens,
+            ),
+            actor_id=str(ctx.user_id or ""),
+        )
+        return _summarized(result.body, fallback_model=inputs.model)
+
+    async def _authorized_binding(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> Any:
+        """The model.chat Binding this call runs under, refused before any call."""
+
+        if not inputs.binding_id.strip():
+            raise BindingNotFound(
+                "llm.summarize requires a pre-authorized model.chat binding_id "
+                "before any model call"
+            )
+        return await self._effects.bindings.resolve(
+            inputs.binding_id,
+            workspace_id=str(ctx.workspace_id or ""),
+            project_id=str(ctx.project_id or ""),
+            node_id=ctx.node_id,
+            capability=MODEL_CHAT_CAPABILITY,
         )
 
-        data: dict[str, Any] = result.body
-        text = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "") or ""
-        usage = data.get("usage", {}) or {}
-        return LlmSummarizeOut(
-            summary=text.strip(),
-            model_used=str(data.get("model") or inputs.model),
-            tokens_in=int(usage.get("prompt_tokens") or 0),
-            tokens_out=int(usage.get("completion_tokens") or 0),
-        )
+
+def _env_first(*names: str) -> str:
+    """The first of these environment variables that is set and non-empty."""
+
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return ""
+
+
+def _gateway_endpoint(*, timeout_s: float) -> GatewayEndpoint:
+    """The gateway this node calls, from env; it never hardcodes credentials.
+
+    The maistro config layer already loads these, so reading them here is
+    reading configuration, not inventing it. No base URL is a refusal: a node
+    that silently called nothing would report an empty summary as a success.
+    """
+
+    base_url = _env_first("MAISTRO_LLM_BASE_URL", "LITELLM_URL", "LITELLM_API_BASE").rstrip("/")
+    if not base_url:
+        raise RuntimeError("llm.summarize: no LLM base URL configured")
+    return GatewayEndpoint(
+        base_url=base_url,
+        api_key=_env_first("MAISTRO_LLM_API_KEY", "LITELLM_API_KEY", "LITELLM_MASTER_KEY"),
+        timeout_s=timeout_s,
+    )
+
+
+def _system_prompt(inputs: LlmSummarizeIn) -> str:
+    """The style prompt, with the caller's extra instructions appended."""
+
+    prompt = _STYLE_PROMPTS.get(inputs.style, _STYLE_PROMPTS["bullet"])
+    if inputs.system_prompt_extra:
+        return prompt + "\n\n" + inputs.system_prompt_extra
+    return prompt
+
+
+def _summarized(data: dict[str, Any], *, fallback_model: str) -> LlmSummarizeOut:
+    """Read the gateway's response shape into this node's output."""
+
+    text = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "") or ""
+    usage = data.get("usage", {}) or {}
+    return LlmSummarizeOut(
+        summary=text.strip(),
+        model_used=str(data.get("model") or fallback_model),
+        tokens_in=int(usage.get("prompt_tokens") or 0),
+        tokens_out=int(usage.get("completion_tokens") or 0),
+    )

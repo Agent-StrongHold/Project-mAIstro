@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
 import { Hex, PageHeader, StatCard, ConfirmDialog, useToast } from "../components/shared";
 import { useWorkspaces } from "../context/WorkspaceContext";
@@ -32,6 +32,12 @@ export default function Schedules() {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [tab, setTab] = useState<"schedules" | "history">("schedules");
   const [creating, setCreating] = useState(false);
+  const createNameRef = useRef<HTMLInputElement>(null);
+  // Focus only when opening the form. Returning from History remounts its
+  // content, but must leave focus on the keyboard-operated view tab.
+  useEffect(() => {
+    if (creating) createNameRef.current?.focus();
+  }, [creating]);
   const [editing, setEditing] = useState<Schedule | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Schedule | null>(null);
   const [form, setForm] = useState({ name: "", description: "", cron_expression: "0 * * * *", mission_template_id: "" });
@@ -115,7 +121,7 @@ export default function Schedules() {
           {creating && (
             <div className="card" style={{ borderLeft: "3px solid var(--accent)" }}>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <input className="input-field" placeholder="schedule name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus />
+                <input ref={createNameRef} className="input-field" placeholder="schedule name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
                 <input className="input-field" placeholder="description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
                 <div>
                   <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>PRESETS</div>

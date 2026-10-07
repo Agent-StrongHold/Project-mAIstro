@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from maistro.container import Container, create_container
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 PERSONA_YAML = Path(__file__).parent / "personas" / "fixtures" / "plant_wellness_local_seller.yaml"
@@ -59,11 +60,36 @@ async def test_container_exposes_all_new_subsystems() -> None:
 
 async def test_sqlite_backend_wires_sqlite_durable_event_stores() -> None:
     container = await _container(database_url="sqlite://")
+    assert container.stores_memory_backed is True
+    assert type(container.elevation_store).__name__ == "SqliteElevationStore"
+    assert type(container.usage_log_persistence).__name__ == "SqliteUsageLog"
     assert type(container.durable_event_log).__name__ == "SqliteEventLog"
     assert type(container.trigger_store).__name__ == "SqliteTriggerStore"
     assert type(container.invocation_store).__name__ == "SqliteInvocationStore"
     event = await container.durable_event_log.append("task.created", source="test")
     assert (await container.durable_event_log.get(event.id)) is not None
+    container.usage_log.record("provider:model", input_tokens=7, now=1000.0)
+    await container.flush_usage_log()
+    restored = await container.usage_log_persistence.restore()
+    from maistro.quota.rate_profile import LimitUnit
+
+    assert restored.tokens_since("provider:model", 3600, LimitUnit.INPUT_TOKENS, now=1000.0) == 7
+
+
+async def test_flush_usage_log_is_a_noop_without_persistence() -> None:
+    """`None` persistence is the explicit ephemeral profile (#72).
+
+    Callers own the response boundary and call `flush_usage_log()`
+    unconditionally, so an ephemeral container absorbs the call instead of
+    making every boundary probe `usage_log_persistence` first — the same
+    contract `aclose()` already relies on at shutdown.
+    """
+    container = await _container()
+
+    assert container.usage_log_persistence is None
+    container.usage_log.record("provider:model", input_tokens=3, now=1000.0)
+    await container.flush_usage_log()  # must not raise
+    assert container.usage_log.events_for("provider:model") != ()
 
 
 async def test_context_assembly_uses_the_canonical_scope_store() -> None:
@@ -72,6 +98,26 @@ async def test_context_assembly_uses_the_canonical_scope_store() -> None:
     assert container.project_store is container.project_scope_store
     root = await container.project_scope_store.create_root("context-wiring")
     assert await container.context_assembly_policy.layer0(root.project_id) == ""
+
+
+async def test_aclose_releases_working_memory_projections_but_never_the_log() -> None:
+    """The graphs are process-local caches over the durable log (#301).
+
+    Shutdown releases what the container took — the live projections — and
+    the observation log they were hydrated from stays exactly where it is.
+    """
+    container = await _container(database_url="sqlite://")
+    manager = container.working_log
+    assert manager is not None
+    await manager.observe("ws-shutdown", cycle=1, text="durable across shutdown")
+    await manager.projection("ws-shutdown")
+    assert manager.hot("ws-shutdown") is not None
+    # The entry is in the log, not only in the graph.
+    assert len(await manager.store.list_entries("ws-shutdown")) == 1
+
+    await container.aclose()
+
+    assert manager.hot("ws-shutdown") is None
 
 
 # --- Resilience (ADR-066) ----------------------------------------------------
@@ -656,8 +702,18 @@ def test_build_node_resolver_resolves_spawn_harness_with_injected_adapters() -> 
     from maistro.container import build_node_resolver
     from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
 
-    fake_adapter = object()
-    resolver = build_node_resolver(harness_adapters={"rsi_cycle": fake_adapter})  # type: ignore[arg-type]
+    # The node shape-validates its adapter map at construction (#1613), so the
+    # identity sentinel must satisfy the HarnessAdapter protocol — unchanged
+    # by the wrapping, which is exactly what the equality asserts.
+    class _StubHarnessAdapter:
+        async def dispatch(self, request: object) -> object: ...
+
+        async def poll(self, handle: object) -> object: ...
+
+        async def cancel(self, handle: object) -> None: ...
+
+    fake_adapter = _StubHarnessAdapter()
+    resolver = build_node_resolver(harness_adapters={"rsi_cycle": fake_adapter})
 
     dag = {"nodes": [{"id": "n1", "kind": "agent.spawn_harness"}]}
     node = resolver("n1", dag)
@@ -813,7 +869,7 @@ async def test_the_container_sweeps_abandoned_attempts() -> None:
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")
@@ -861,7 +917,7 @@ async def test_the_sweep_parks_the_reclaimed_attempts_logical_records() -> None:
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")
@@ -923,7 +979,7 @@ async def test_the_sweep_survives_an_attempt_it_cannot_reconcile(
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")

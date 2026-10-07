@@ -89,7 +89,7 @@ test.beforeAll(async ({ browser }) => {
 });
 
 test.afterAll(async () => {
-  await context.close();
+  await context?.close();
 });
 
 async function isFocused(target: Locator) {
@@ -101,6 +101,17 @@ async function tabTo(target: Locator, limit = 80) {
     await page.keyboard.press("Tab");
   }
   await expect(target).toBeFocused();
+}
+
+async function expectVisibleFocus(target: Locator) {
+  await expect(target).toBeFocused();
+  const outline = await target.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { style: style.outlineStyle, width: parseFloat(style.outlineWidth), color: style.outlineColor };
+  });
+  expect(outline.style).not.toBe("none");
+  expect(outline.width).toBeGreaterThanOrEqual(2);
+  expect(outline.color).not.toBe("rgba(0, 0, 0, 0)");
 }
 
 async function expectNoAxeViolations() {
@@ -132,6 +143,14 @@ test("a schedule can be viewed, disabled and given a preset from the keyboard", 
   await expect(schedulesTab).toHaveAttribute("aria-selected", "false");
   const historyPanel = page.getByRole("tabpanel", { name: "History" });
   await expect(historyPanel).toContainText("execution history will appear here");
+  // Text-only panels need a tab stop so keyboard users can enter their content.
+  await page.keyboard.press("Tab");
+  await expect(historyPanel).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(historyTab).toBeFocused();
+  await page.keyboard.press("Control+ArrowLeft");
+  await expect(historyTab).toBeFocused();
+  await expect(historyTab).toHaveAttribute("aria-selected", "true");
 
   await page.keyboard.press("Home");
   await expect(schedulesTab).toBeFocused();
@@ -145,6 +164,7 @@ test("a schedule can be viewed, disabled and given a preset from the keyboard", 
   const enable = page.getByRole("switch", { name: `Enable schedule ${schedule.name}` });
   await tabTo(enable, 12);
   await expect(enable).toHaveAttribute("aria-checked", "true");
+  await expectVisibleFocus(enable);
   const [write] = await Promise.all([
     page.waitForRequest((r) => r.url().includes(`/v1/schedules/${schedule.id}`) && r.method() === "PUT"),
     page.keyboard.press("Space"),
@@ -153,6 +173,10 @@ test("a schedule can be viewed, disabled and given a preset from the keyboard", 
   await expect(enable).toHaveAttribute("aria-checked", "false");
   expect(scheduleWrites).toEqual([{ enabled: false }]);
   await expect(page.locator(".card", { hasText: schedule.name }).getByText("off", { exact: true })).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(enable).toHaveAttribute("aria-checked", "true");
+  expect(scheduleWrites).toEqual([{ enabled: false }, { enabled: true }]);
+  await expect(enable).toBeFocused();
 
   const create = page.getByRole("button", { name: "+ new" });
   for (let step = 0; step < 12 && !(await isFocused(create)); step += 1) {
@@ -169,9 +193,41 @@ test("a schedule can be viewed, disabled and given a preset from the keyboard", 
   await page.keyboard.press("Enter");
   await expect(page.getByRole("textbox", { name: "Cron expression" })).toHaveValue("0 */6 * * *");
   await expect(sixHourly).toHaveAttribute("aria-pressed", "true");
+  await expectVisibleFocus(sixHourly);
   await expect(hourly).toHaveAttribute("aria-pressed", "false");
+  await page.keyboard.press("Shift+Tab");
+  await expect(hourly).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(hourly).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("textbox", { name: "Cron expression" })).toHaveValue("0 * * * *");
 
+  // An empty name keeps Create disabled and out of the tab sequence.
+  const submit = page.getByRole("button", { name: "create", exact: true });
+  await expect(submit).toBeDisabled();
+  const template = page.getByPlaceholder("mission template ID (optional)");
+  await tabTo(template, 10);
+  await page.keyboard.press("Tab");
+  const cancel = page.getByRole("button", { name: "cancel", exact: true });
+  await expect(cancel).toBeFocused();
+
+  // Returning to a still-open form must not let its mount autofocus steal
+  // focus from the tab and break subsequent arrow-key navigation.
+  await tabTo(schedulesTab);
+  await page.keyboard.press("ArrowRight");
+  await expect(historyTab).toBeFocused();
+  await expect(page.getByPlaceholder("schedule name", { exact: true })).toBeHidden();
+  await page.keyboard.press("ArrowLeft");
+  await expect(schedulesTab).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(historyTab).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(schedulesTab).toBeFocused();
+  await expectVisibleFocus(schedulesTab);
+  await expect(page.getByPlaceholder("schedule name", { exact: true })).toBeVisible();
   await expectNoAxeViolations();
+  await tabTo(cancel, 15);
+  await page.keyboard.press("Enter");
+  await expect(page.getByPlaceholder("schedule name", { exact: true })).toBeHidden();
 });
 
 test("MCP tools are reachable and a server expands from the keyboard", async () => {
@@ -186,7 +242,12 @@ test("MCP tools are reachable and a server expands from the keyboard", async () 
   await page.keyboard.press("ArrowRight");
   await expect(toolsTab).toBeFocused();
   await expect(toolsTab).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByRole("tabpanel", { name: "Tools" }).getByText(tool.name)).toBeVisible();
+  const toolsPanel = page.getByRole("tabpanel", { name: "Tools" });
+  await expect(toolsPanel.getByText(tool.name)).toBeVisible();
+  await page.keyboard.press("Tab");
+  await expect(toolsPanel).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(toolsTab).toBeFocused();
 
   await page.keyboard.press("ArrowLeft");
   await expect(serversTab).toHaveAttribute("aria-selected", "true");
@@ -194,6 +255,7 @@ test("MCP tools are reachable and a server expands from the keyboard", async () 
   const disclosure = page.getByRole("button", { name: new RegExp(`^${server.name}`) });
   await tabTo(disclosure, 6);
   await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+  await expectVisibleFocus(disclosure);
   const detailsId = await disclosure.getAttribute("aria-controls");
   expect(detailsId).toBeTruthy();
   const details = page.locator(`[id="${detailsId}"]`);

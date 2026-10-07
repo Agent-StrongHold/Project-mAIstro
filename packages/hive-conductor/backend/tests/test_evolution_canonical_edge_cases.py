@@ -30,6 +30,7 @@ from services.evolution_graph import (
 )
 
 from maistro.graph.nodes.base import NodeContext
+from maistro.identity import Principal
 
 
 def _evolution_test_app():
@@ -44,9 +45,18 @@ def _evolution_test_app():
 def test_actor_provenance_and_cycle_run_id_projection(monkeypatch: pytest.MonkeyPatch) -> None:
     requests = [
         (SimpleNamespace(state=SimpleNamespace(user_id="principal-1", user={})), "principal-1"),
-        (SimpleNamespace(state=SimpleNamespace(user_id=None, user={"id": "user-1"})), "user-1"),
         (
-            SimpleNamespace(state=SimpleNamespace(user_id=None, user={"username": "alice"})),
+            SimpleNamespace(
+                state=SimpleNamespace(user_id=None, principal=Principal(user_id="user-1"))
+            ),
+            "user-1",
+        ),
+        (
+            SimpleNamespace(
+                state=SimpleNamespace(
+                    user_id=None, principal=Principal(user_id="", username="alice")
+                )
+            ),
             "alice",
         ),
         (SimpleNamespace(state=SimpleNamespace(user_id=None, user="not-a-dict")), None),
@@ -129,6 +139,43 @@ def test_run_one_cycle_rejects_half_initialized_domain_state(
 
     with pytest.raises(RuntimeError, match="population is not initialized"):
         asyncio.run(service._run_one_cycle())
+
+
+def test_cycle_route_with_healthy_owner_but_missing_domain_state_is_503_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The #1331 scenario end to end: the canonical engine owner is healthy,
+    but `initialize_domain_state` never produced a population/tournament.
+    `trigger_cycle` must answer with the availability-shaped 503, not the
+    generic 500 the route's fallback handler gives a bare RuntimeError — so
+    this pins the raise through the *real* service, where a regression from
+    `EvolutionUnavailableError` back to `RuntimeError` stays visible."""
+    import services.evolution as evolution_service
+    import services.evolution_graph as evolution_graph
+
+    owner = SimpleNamespace(
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
+    )
+    monkeypatch.setattr(
+        evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
+    )
+    service = _EvolutionService()
+    assert service.population is None
+    assert service.tournament is None
+    monkeypatch.setattr(evolution_service, "get_evolution_service", lambda: service)
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(trigger_cycle(SimpleNamespace(state=SimpleNamespace())))
+
+    assert caught.value.status_code == 503
+    assert caught.value.detail["code"] == "evolution_unavailable"
+    assert caught.value.detail["availability"] == "unavailable"
+    assert "population is not initialized" in caught.value.detail["message"]
+    # The same projection is what gates the cadence task and the frontend's
+    # Run Cycle button, so it must agree with the route's answer.
+    projection = service.status()
+    assert projection["running"] is False
+    assert projection["execution_available"] is False
 
 
 def test_cycle_route_when_service_is_not_started_is_explicitly_unavailable(
