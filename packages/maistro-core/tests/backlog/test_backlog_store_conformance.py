@@ -529,6 +529,69 @@ async def test_history_is_durably_tailed(backend) -> None:
     ]
 
 
+async def test_dependencies_origin_and_priority_roundtrip(backend) -> None:
+    """The #102 migration fields survive every backend, including a restart
+    on the durable legs: stable ids carry dependencies, import provenance and
+    the SPEC-092626-1831 priority/rank vocabulary without loss."""
+    from maistro.backlog.model import BacklogOrigin
+
+    store = await backend.store()
+    workspace = uuid.uuid4().hex[:12]
+    origin = BacklogOrigin(
+        document="BACKLOG.md",
+        section="Substrate items (`engine-NNN`)",
+        subsection="Foundation (M1 - weeks 1-4)",
+        order=7,
+        status_word="Proposed",
+        gap_marker="gap-impl",
+        milestone_text="v1.0 M1",
+        header_suffix=" — Blocked-by: `[engine-001]`",
+        body=("- Blocked-by: `engine-001`",),
+    )
+    created = await store.create_item(
+        workspace_id=workspace,
+        title="Imported item",
+        actor="backlog-cutover",
+        dependencies=("engine-001", "engine-002"),
+        origin=origin,
+        priority=1,
+        rank=42.0,
+        item_id="engine-042",
+    )
+    assert created.dependencies == ("engine-001", "engine-002")
+    assert created.origin == origin
+    assert created.priority == 1 and created.rank == 42.0
+
+    # Edit through the update path; stale-version edits stay refused.
+    updated = await store.update_item(
+        created.item_id,
+        expected_version=1,
+        actor="backlog-cutover",
+        dependencies=("engine-001",),
+        priority=2,
+    )
+    assert updated.dependencies == ("engine-001",)
+    assert updated.priority == 2 and updated.rank == 42.0
+    assert updated.origin == origin  # untouched when not named
+
+    with pytest.raises(BacklogVersionConflict):
+        await store.update_item(
+            created.item_id,
+            expected_version=1,
+            actor="backlog-cutover",
+            dependencies=(),
+        )
+
+    if not backend.durable:
+        pytest.skip("the reference has no substrate to reopen")
+    fresh = await backend.store()
+    reread = await fresh.get_item("engine-042")
+    assert reread is not None
+    assert reread.dependencies == ("engine-001",)
+    assert reread.origin == origin
+    assert (reread.priority, reread.rank) == (2, 42.0)
+
+
 async def test_backlog_stores_import_no_rsi(backend) -> None:
     """The work-source service is backend-independent Workspace substrate:
     importing it must not import RSI (#82 exit condition)."""

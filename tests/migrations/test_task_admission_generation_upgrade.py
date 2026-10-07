@@ -1,6 +1,6 @@
 """The forward admission-generation representation on task_idempotency (#1892).
 
-Revision 056 gives the claim table a durable shape for immutable admission
+Revision 055 gives the claim table a durable shape for immutable admission
 generations (format_version 2) without touching a single legacy row: every
 preexisting claim stays byte-for-byte in its original columns, keeps
 ``format_version = 1`` by default, and is admitted by the v2 CHECK exactly as
@@ -377,7 +377,7 @@ class TestTheForwardUpgrade:
 
     def test_unknown_shape_does_not_advance_revision(self, empty_database) -> None:
         """A claim table whose shape is not the shipped one refuses to be
-        stamped forward: revision 056 validates before it writes, the upgrade
+        stamped forward: revision 055 validates before it writes, the upgrade
         aborts, and the stamp stays at the last good revision with no forward
         DDL applied."""
         # A real chain history, then a corruption the shipped chain never
@@ -389,9 +389,9 @@ class TestTheForwardUpgrade:
         result = _alembic("upgrade", "head")
 
         assert result.returncode != 0, "a wrong-typed claim table upgraded cleanly"
-        # The upgrade run is one transaction: develop's 054 (learning-lifecycle
-        # columns on `learnings`) and 055 (learning applicability, #119) roll
-        # back together with the refusing 056, so
+        # The upgrade run is one transaction: develop's 053 (learning-lifecycle
+        # columns on `learnings`) and this branch's 054 (learning
+        # applicability, #119) roll back together with the refusing 055, so
         # the stamp stays at the last good revision, 052.
         assert _stamped_version() == "052", "the revision advanced over an unknown shape"
         # The refusal names the incompatible shape rather than dying quietly.
@@ -402,7 +402,7 @@ class TestTheForwardUpgrade:
     def test_malformed_key_or_index_does_not_advance_revision(self, empty_database) -> None:
         """The same refusal for the key and index halves of the shape: no
         primary key on scope_key (the key IS the claim), or a lost expiry
-        index (the purge scan bound), and revision 056 will not stamp."""
+        index (the purge scan bound), and revision 055 will not stamp."""
         assert _alembic("upgrade", "052").returncode == 0
 
         # Phase 1: the primary key is gone.
@@ -587,12 +587,15 @@ class TestTheDowngrade:
         # moves off whatever head it started from. The assertion tracks the
         # head, not a fixed literal — every develop collision re-parents the
         # chain tip, and the invariant under test is that the refused
-        # downgrade leaves the stamp AT HEAD. The literal drifted twice
-        # already (043_invocation_quota_door, 055, 056), and the a8258ee24
-        # sync moved it once more — develop's Gauntlet provenance (#118,
-        # M4-B2) landed on `057` as `058`, and this branch's #82 backlog work
-        # source re-parented past it as `059` — so the head is read from the
-        # same version files the upgrade above ran.
+        # downgrade leaves the stamp AT HEAD. Develop's quota door
+        # (#1196/#718) landed on `055` as `043_invocation_quota_door`;
+        # develop's trunk then landed `056_user_model_facts` (#1047) on that
+        # quota-door parent with #863's planner-stability revision on top as
+        # `057`, and the backlog authority-cutover pair (#98/#102) re-parents
+        # past each incoming develop tip in turn — `058`/`059`, then `059`/
+        # `060` once develop's `058_learning_validation_provenance` claimed
+        # `058`. The literal has drifted once per landing, so the head is now
+        # read from the same version files the upgrade above ran.
         assert _stamped_version() == _chain_head()
         assert _query("select * from task_idempotency order by scope_key") == before
         assert "generation_id" in _v2_columns()

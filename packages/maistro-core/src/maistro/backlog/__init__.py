@@ -16,6 +16,7 @@ from maistro.backlog.model import (
     BacklogItem,
     BacklogItemNotFound,
     BacklogItemStatus,
+    BacklogOrigin,
     BacklogVersionConflict,
 )
 from maistro.backlog.store import (
@@ -37,6 +38,7 @@ __all__ = [
     "BacklogItem",
     "BacklogItemNotFound",
     "BacklogItemStatus",
+    "BacklogOrigin",
     "BacklogStore",
     "BacklogVersionConflict",
     "InMemoryBacklogStore",

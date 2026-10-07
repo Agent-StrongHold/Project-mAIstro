@@ -1,30 +1,22 @@
 """Durable tables for the canonical Workspace BacklogItem work-source (#82).
 
-Attaches after the trunk chain tip per the convention 046 records: the
-id/parent numbering tracks the chain, not the issue number, so the chain stays
-linear with exactly one head. Originally filed as ``048`` alongside develop's
-``048_canvas_job_retry_backoff`` -- the same two-head collision #1341 removed --
-and renumbered to ``049``; when develop then landed its own ``049``
-(``049_canonical_run_eval_scores``) and ``050`` through the 045cfdfbe sync, this
-migration re-attached after that tip as ``051`` so the chain again keeps exactly
-one head; and when the 829de3dac sync brought develop's renumbered
-``051_canonical_run_eval_scores`` (which had re-parented onto develop's own
-``050``) onto the same parent this migration had taken, it collided with the
-``051`` this branch already held and re-attached after that tip as ``052`` --
-the same move one more time; and when the a58656017 sync brought develop's
-knowledge-stage ladder -- numbered ``048`` when written, re-parented onto the
-same chain tip as ``052_learning_stage_ladder`` (M4-B1, ADR-103) -- it collided
-with the ``052`` this migration already held, so it re-attached after that tip
-as ``053``, keeping exactly one head. The 56332162c sync then delivered
-develop's originals of every revision this branch had been carrying renumbered
--- ``053_learning_lifecycle_columns``, ``054_learning_applicability_epistemics``,
-``055_task_admission_generations``, ``056_user_model_facts`` and
-``057_run_store_planner_stability`` -- so the branch-side duplicates were dropped
-and this migration, the one genuinely-new branch revision left, re-attached
-after that ``057`` tip as ``058``. The a8258ee24 sync then delivered develop's
-``058_learning_validation_provenance`` (Gauntlet validation provenance, M4-B2
-#118) onto the same ``057`` parent, colliding a fourth time, so this migration
-re-attached after that ``058`` tip as ``059`` -- keeping exactly one head.
+Attaches after develop's trunk chain tip, `043_invocation_quota_door`
+(#1196/#718, itself continuing `055_task_admission_generations`, which
+follows `054_learning_applicability_epistemics` and
+`053_learning_lifecycle_columns`) per the convention 046 records: the
+branch's original `048`/`049` slots were renumbered after develop landed its
+own `048` (and later `049`-`051`), then onto `054`/`055` after develop
+claimed `052` (`052_learning_stage_ladder`, ADR-103) and `053`
+(`053_learning_lifecycle_columns`), then onto `056`/`057` after develop
+claimed `054` (M4-B3, #119) and `055` (#1892) and re-parented its quota door
+onto that tip, then onto `058`/`059` after develop's trunk landed
+`056_user_model_facts` (#1047) on the same quota-door parent with #863's
+planner-stability revision on top as `057_run_store_planner_stability`, and
+now onto `059`/`060` after develop's Gauntlet provenance ledger (#118,
+M4-B2) landed on that tip as `058_learning_validation_provenance`. Because a
+landed trunk migration never moves, the branch-side pair re-parents past the
+incoming develop tip — the numbering tracks the chain, not the issue number,
+so the chain stays linear with exactly one head.
 
 The DDL is guarded (`CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT
 EXISTS`), matching the SQLite twin's `ensure_schema`

@@ -29,7 +29,7 @@ module knows about; hard tenant isolation stays with the importing product
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Final, Protocol, runtime_checkable
+from typing import Any, Final, Protocol, cast, runtime_checkable
 
 from maistro.backlog.model import (
     _MUTABLE_STATUSES,
@@ -43,7 +43,9 @@ from maistro.backlog.model import (
     BacklogItem,
     BacklogItemNotFound,
     BacklogItemStatus,
+    BacklogOrigin,
     BacklogVersionConflict,
+    status_is_terminal,
 )
 
 #: Sentinel for "leave this clearable field unchanged" in ``update_item``.
@@ -78,6 +80,10 @@ class BacklogStore(Protocol):
         goal_id: str | None = None,
         goal_revision: int | None = None,
         source: str = "human",
+        dependencies: tuple[str, ...] = (),
+        origin: BacklogOrigin | None = None,
+        priority: int = 3,
+        rank: float = 1000.0,
         item_id: str | None = None,
         at: datetime | None = None,
     ) -> BacklogItem: ...
@@ -99,7 +105,11 @@ class BacklogStore(Protocol):
         parent_id: str | None | object = UNSET,
         goal_id: str | None | object = UNSET,
         goal_revision: int | None | object = UNSET,
-        status: BacklogItemStatus | None = None,
+        status: str | None = None,
+        dependencies: tuple[str, ...] | None = None,
+        origin: BacklogOrigin | None | object = UNSET,
+        priority: int | None = None,
+        rank: float | None = None,
         at: datetime | None = None,
     ) -> BacklogItem: ...
 
@@ -109,7 +119,7 @@ class BacklogStore(Protocol):
         *,
         expected_version: int,
         actor: str,
-        outcome: BacklogItemStatus,
+        outcome: str,
         closure_summary: str,
         evidence_refs: tuple[str, ...],
         at: datetime | None = None,
@@ -128,7 +138,7 @@ class BacklogStore(Protocol):
         self,
         workspace_id: str,
         *,
-        status: BacklogItemStatus | None = None,
+        status: str | None = None,
         tag: str | None = None,
         parent_id: str | None = None,
         roots_only: bool = False,
@@ -179,8 +189,8 @@ def _require_fresh_version(item: BacklogItem, expected_version: int) -> None:
         raise BacklogVersionConflict(item.item_id, item.version)
 
 
-def _require_valid_outcome(outcome: BacklogItemStatus) -> None:
-    if not outcome.is_terminal:
+def _require_valid_outcome(outcome: str) -> None:
+    if not status_is_terminal(outcome):
         raise BacklogClosureError(str(outcome), f"{outcome!r} is not a terminal outcome")
 
 
@@ -196,7 +206,11 @@ def _plan_changes(
     parent_id: str | None | object,
     goal_id: str | None | object,
     goal_revision: int | None | object,
-    status: BacklogItemStatus | None,
+    status: str | None,
+    dependencies: tuple[str, ...] | None,
+    origin: BacklogOrigin | None | object,
+    priority: int | None,
+    rank: float | None,
 ) -> dict[str, object]:
     """Compute the changed fields for ``update_item``, or ``{}`` for a no-op.
 
@@ -212,6 +226,11 @@ def _plan_changes(
         "details": details,
         "risk_notes": risk_notes,
         "tags": tags,
+        # "no opinion" semantics for dependencies too: an empty tuple is a
+        # real state (no blockers), so absence of the argument cannot clear.
+        "dependencies": dependencies,
+        "priority": priority,
+        "rank": rank,
     }
     changes.update({field: value for field, value in provided.items() if value is not None})
     clearable = (
@@ -220,6 +239,7 @@ def _plan_changes(
         ("parent_id", parent_id),
         ("goal_id", goal_id),
         ("goal_revision", goal_revision),
+        ("origin", origin),
     )
     for field, value in clearable:
         if value is not UNSET and value != getattr(item, field):
@@ -234,6 +254,34 @@ def _plan_changes(
     return changes
 
 
+def _listable(
+    item: BacklogItem,
+    workspace_id: str,
+    *,
+    status: str | None,
+    tag: str | None,
+    parent_id: str | None,
+    roots_only: bool,
+) -> bool:
+    """Whether one stored item matches the list filter, evaluated per row.
+
+    Every optional filter must hold for the item to be listed; ``None`` (and
+    ``roots_only=False``) means "no opinion". Splitting the predicate out of
+    the comprehension keeps the reference store's one-pass filter readable
+    without growing a C block, and the row is still deep-copied by the caller
+    so no listed item aliases store state.
+    """
+    if item.workspace_id != workspace_id:
+        return False
+    if status is not None and item.status is not status:
+        return False
+    if tag is not None and tag not in item.tags:
+        return False
+    if parent_id is not None and item.parent_id != parent_id:
+        return False
+    return not roots_only or item.parent_id is None
+
+
 class InMemoryBacklogStore:
     """The reference. The other two stores are read against it."""
 
@@ -244,32 +292,6 @@ class InMemoryBacklogStore:
 
     # -- reads ----------------------------------------------------------
 
-    @staticmethod
-    def _matches_filter(
-        item: BacklogItem,
-        *,
-        workspace_id: str,
-        status: BacklogItemStatus | None,
-        tag: str | None,
-        parent_id: str | None,
-        roots_only: bool,
-    ) -> bool:
-        """The one list_items predicate, spelled out so each clause reads alone.
-
-        `status` compares by identity (`is`), matching the enum semantics the
-        SQLite and PostgreSQL legs implement; the sqlite/pg stores mirror this
-        helper's clauses in SQL WHERE terms.
-        """
-        if item.workspace_id != workspace_id:
-            return False
-        if status is not None and item.status is not status:
-            return False
-        if tag is not None and tag not in item.tags:
-            return False
-        if parent_id is not None and item.parent_id != parent_id:
-            return False
-        return not (roots_only and item.parent_id is not None)
-
     async def get_item(self, item_id: str) -> BacklogItem | None:
         item = self._items.get(item_id)
         return item.model_copy(deep=True) if item is not None else None
@@ -278,7 +300,7 @@ class InMemoryBacklogStore:
         self,
         workspace_id: str,
         *,
-        status: BacklogItemStatus | None = None,
+        status: str | None = None,
         tag: str | None = None,
         parent_id: str | None = None,
         roots_only: bool = False,
@@ -286,9 +308,9 @@ class InMemoryBacklogStore:
         found = [
             item.model_copy(deep=True)
             for item in self._items.values()
-            if self._matches_filter(
+            if _listable(
                 item,
-                workspace_id=workspace_id,
+                workspace_id,
                 status=status,
                 tag=tag,
                 parent_id=parent_id,
@@ -329,6 +351,10 @@ class InMemoryBacklogStore:
         goal_id: str | None = None,
         goal_revision: int | None = None,
         source: str = "human",
+        dependencies: tuple[str, ...] = (),
+        origin: BacklogOrigin | None = None,
+        priority: int = 3,
+        rank: float = 1000.0,
         item_id: str | None = None,
         at: datetime | None = None,
     ) -> BacklogItem:
@@ -345,7 +371,11 @@ class InMemoryBacklogStore:
             goal_id=goal_id,
             goal_revision=goal_revision,
             source=source,
-            **({"item_id": item_id} if item_id is not None else {}),
+            dependencies=dependencies,
+            origin=origin,
+            priority=priority,
+            rank=rank,
+            **(cast(dict[str, Any], {"item_id": item_id} if item_id is not None else {})),
         )
         if item.item_id in self._items:
             raise ValueError(f"BacklogItem {item.item_id!r} already exists")
@@ -359,7 +389,7 @@ class InMemoryBacklogStore:
                 kind=BacklogEventKind.CREATED,
                 item_version=item.version,
                 payload={"title": item.title, "parent_id": parent_id},
-                **({"at": at} if at is not None else {}),
+                **(cast(dict[str, Any], {"at": at} if at is not None else {})),
             )
         ]
         if parent_id is not None:
@@ -371,7 +401,7 @@ class InMemoryBacklogStore:
                     kind=BacklogEventKind.DECOMPOSED,
                     item_version=parent.version,
                     payload={"child_id": item.item_id, "child_title": item.title},
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 )
             )
         return item.model_copy(deep=True)
@@ -391,7 +421,11 @@ class InMemoryBacklogStore:
         parent_id: str | None | object = UNSET,
         goal_id: str | None | object = UNSET,
         goal_revision: int | None | object = UNSET,
-        status: BacklogItemStatus | None = None,
+        status: str | None = None,
+        dependencies: tuple[str, ...] | None = None,
+        origin: BacklogOrigin | None | object = UNSET,
+        priority: int | None = None,
+        rank: float | None = None,
         at: datetime | None = None,
     ) -> BacklogItem:
         item = self._require_item(item_id)
@@ -408,6 +442,10 @@ class InMemoryBacklogStore:
             goal_id=goal_id,
             goal_revision=goal_revision,
             status=status,
+            dependencies=dependencies,
+            origin=origin,
+            priority=priority,
+            rank=rank,
         )
         if "parent_id" in changes and changes["parent_id"] is not None:
             new_parent = str(changes["parent_id"])
@@ -434,7 +472,7 @@ class InMemoryBacklogStore:
                 else BacklogEventKind.UPDATED,
                 item_version=updated.version,
                 payload=dict(changes),
-                **({"at": at} if at is not None else {}),
+                **(cast(dict[str, Any], {"at": at} if at is not None else {})),
             ),
         )
         return updated.model_copy(deep=True)
@@ -445,7 +483,7 @@ class InMemoryBacklogStore:
         *,
         expected_version: int,
         actor: str,
-        outcome: BacklogItemStatus,
+        outcome: str,
         closure_summary: str,
         evidence_refs: tuple[str, ...],
         at: datetime | None = None,
@@ -454,8 +492,8 @@ class InMemoryBacklogStore:
         self._require_fresh_version(item, expected_version)
         if outcome not in _TERMINAL_STATUSES:
             raise BacklogClosureError(item_id, f"{outcome!r} is not a terminal outcome")
-        if item.status.is_terminal:
-            raise BacklogClosureError(item_id, f"item is already closed ({item.status.value})")
+        if status_is_terminal(item.status):
+            raise BacklogClosureError(item_id, f"item is already closed ({item.status})")
         try:
             closure = BacklogClosure(
                 summary=closure_summary,
@@ -467,7 +505,7 @@ class InMemoryBacklogStore:
         open_children = [
             child.item_id
             for child in self._items.values()
-            if child.parent_id == item_id and not child.status.is_terminal
+            if child.parent_id == item_id and not status_is_terminal(child.status)
         ]
         if open_children:
             raise BacklogClosureError(
@@ -492,11 +530,11 @@ class InMemoryBacklogStore:
                 kind=BacklogEventKind.CLOSED,
                 item_version=updated.version,
                 payload={
-                    "outcome": outcome.value,
+                    "outcome": outcome,
                     "closure_summary": closure.summary,
                     "evidence_refs": list(closure.evidence_refs),
                 },
-                **({"at": at} if at is not None else {}),
+                **(cast(dict[str, Any], {"at": at} if at is not None else {})),
             ),
         )
         return updated.model_copy(deep=True)
@@ -511,8 +549,8 @@ class InMemoryBacklogStore:
     ) -> BacklogItem:
         item = self._require_item(item_id)
         self._require_fresh_version(item, expected_version)
-        if not item.status.is_terminal:
-            raise BacklogClosureError(item_id, f"item is not closed (status {item.status.value})")
+        if not status_is_terminal(item.status):
+            raise BacklogClosureError(item_id, f"item is not closed (status {item.status})")
         updated = item.model_copy(
             update={
                 "status": BacklogItemStatus.OPEN,
@@ -529,8 +567,8 @@ class InMemoryBacklogStore:
                 actor=actor,
                 kind=BacklogEventKind.REOPENED,
                 item_version=updated.version,
-                payload={"previous_status": item.status.value},
-                **({"at": at} if at is not None else {}),
+                payload={"previous_status": item.status},
+                **(cast(dict[str, Any], {"at": at} if at is not None else {})),
             ),
         )
         return updated.model_copy(deep=True)
@@ -545,10 +583,8 @@ class InMemoryBacklogStore:
     ) -> BacklogClaim:
         item = self._require_item(item_id)
         now = _now(at)
-        if item.status.is_terminal:
-            raise BacklogClosureError(
-                item_id, f"a closed item ({item.status.value}) cannot be claimed"
-            )
+        if status_is_terminal(item.status):
+            raise BacklogClosureError(item_id, f"a closed item ({item.status}) cannot be claimed")
         existing = self._claims.get(item_id)
         if existing is not None and existing.is_active(at=now):
             raise BacklogClaimError(item_id, existing)
@@ -572,7 +608,7 @@ class InMemoryBacklogStore:
                     "claim_id": claim.claim_id,
                     "lease_expires_at": claim.lease_expires_at.isoformat(),
                 },
-                **({"at": at} if at is not None else {}),
+                **(cast(dict[str, Any], {"at": at} if at is not None else {})),
             ),
         )
         return claim.model_copy(deep=True)
@@ -610,7 +646,7 @@ class InMemoryBacklogStore:
                     "claim_id": claim_id,
                     "lease_expires_at": extended.lease_expires_at.isoformat(),
                 },
-                **({"at": at} if at is not None else {}),
+                **(cast(dict[str, Any], {"at": at} if at is not None else {})),
             ),
         )
         return extended.model_copy(deep=True)
@@ -638,7 +674,7 @@ class InMemoryBacklogStore:
                 kind=BacklogEventKind.CLAIM_RELEASED,
                 item_version=item.version,
                 payload={"claim_id": claim_id},
-                **({"at": at} if at is not None else {}),
+                **(cast(dict[str, Any], {"at": at} if at is not None else {})),
             ),
         )
 
@@ -667,7 +703,7 @@ class InMemoryBacklogStore:
             raise BacklogItemNotFound(parent_id)
         if parent.workspace_id != child.workspace_id:
             raise ValueError("a child item must live in its parent's Workspace")
-        if parent.status.is_terminal:
+        if status_is_terminal(parent.status):
             raise BacklogClosureError(parent_id, "cannot decompose a closed item")
         # Refuse cycles: walking up from the new parent must never reach the child.
         walker = parent

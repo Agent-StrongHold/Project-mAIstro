@@ -27,7 +27,7 @@ cutover will migrate into.
 Three store implementations share one contract: the in-memory reference in
 ``maistro.backlog.store`` and its durable SQLite/PostgreSQL twins, read
 against the same conformance suite. PostgreSQL tables are owned by Alembic
-migration ``058_backlog_work_source`` -- a durable store never creates its own
+migration ``059_backlog_work_source`` -- a durable store never creates its own
 schema (one schema owner; see ``maistro.workspaces.wiring``).
 """
 
@@ -36,6 +36,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -51,24 +52,40 @@ def _naive_as_utc(value: datetime) -> datetime:
     return value if value.utcoffset() is not None else value.replace(tzinfo=UTC)
 
 
-class BacklogItemStatus(StrEnum):
-    """Portfolio state of one work item.
+class BacklogItemStatus:
+    """Portfolio state vocabulary of one work item.
+
+    Deliberately NOT a typed Literal/Enum work-state ladder (#101 convention;
+    same resolution the Conductor backlog surface took in #99): the documented
+    legend is the vocabulary and code carries it as boundary-validated opaque
+    strings, so a planning surface cannot fork a second execution lifecycle —
+    the execution-lifecycles ledger counts this as zero new vocabularies.
+    Membership is fail-closed at the boundary: the ``status`` field validator
+    on :class:`BacklogItem`, :func:`require_valid_status` and the stores' own
+    status filters refuse unknown values, which is the enforcement an Enum
+    provided without the second vocabulary.
 
     Distinct from any claim/lease state and from canonical Goal state: an
     item may be ``in_progress`` with no live claim (progress paused) and a
     claimed item's linked Goal is untouched.
     """
 
-    OPEN = "open"
-    IN_PROGRESS = "in_progress"
-    BLOCKED = "blocked"
-    DONE = "done"
-    REJECTED = "rejected"
+    OPEN: Final = "open"
+    IN_PROGRESS: Final = "in_progress"
+    BLOCKED: Final = "blocked"
+    DONE: Final = "done"
+    REJECTED: Final = "rejected"
 
-    @property
-    def is_terminal(self) -> bool:
-        return self in _TERMINAL_STATUSES
 
+_ALL_STATUSES = frozenset(
+    {
+        BacklogItemStatus.OPEN,
+        BacklogItemStatus.IN_PROGRESS,
+        BacklogItemStatus.BLOCKED,
+        BacklogItemStatus.DONE,
+        BacklogItemStatus.REJECTED,
+    }
+)
 
 _TERMINAL_STATUSES = frozenset({BacklogItemStatus.DONE, BacklogItemStatus.REJECTED})
 
@@ -78,6 +95,21 @@ _TERMINAL_STATUSES = frozenset({BacklogItemStatus.DONE, BacklogItemStatus.REJECT
 _MUTABLE_STATUSES = frozenset(
     {BacklogItemStatus.OPEN, BacklogItemStatus.IN_PROGRESS, BacklogItemStatus.BLOCKED}
 )
+
+
+def status_is_terminal(status: str) -> bool:
+    """Whether ``status`` is a terminal outcome (entered only via close_item)."""
+    return status in _TERMINAL_STATUSES
+
+
+def require_valid_status(status: str) -> str:
+    """Fail closed on a status the documented vocabulary does not define."""
+    if status not in _ALL_STATUSES:
+        raise ValueError(
+            f"unknown backlog status {status!r}; expected one of: "
+            + ", ".join(sorted(_ALL_STATUSES))
+        )
+    return status
 
 
 class BacklogEventKind(StrEnum):
@@ -133,6 +165,56 @@ class BacklogClosure(BaseModel):
         return self
 
 
+class BacklogOrigin(BaseModel):
+    """Provenance of an item imported from the Markdown backlog (#102).
+
+    The root ``BACKLOG.md`` is the hand-maintained authority until the
+    cutover; after it, the database is authoritative and the Markdown file is
+    generated. ``BacklogOrigin`` is what makes that reversible and the export
+    deterministic: it carries the item's position in the document and the
+    Markdown-vocabulary status word verbatim, so the generated file renders
+    every imported item exactly as it was written, while ``BacklogItem.status``
+    carries the structured open/closed projection.
+
+    ``body`` lines are stored verbatim (whitespace included): they are the
+    item's acceptance criteria, evidence and prose as written, and the export
+    must not editorialize them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Which document the item was imported from (e.g. ``BACKLOG.md``).
+    document: str
+    #: The top-level ``## `` heading the item sits under.
+    section: str
+    #: The ``### `` heading, when the section has one.
+    subsection: str | None = None
+    #: Position of the item among the document's items (0-based, import order).
+    order: int = Field(ge=0)
+    #: The status legend word, verbatim ("Proposed", "Implemented", ...).
+    status_word: str
+    #: The ``gap-*`` marker from the status, when present.
+    gap_marker: str | None = None
+    #: The milestone suffix, when present.
+    milestone_text: str | None = None
+    #: Text after the closing ``**`` on the header line (e.g. a trailing
+    #: "Blocked-by" annotation). It renders back on the header line.
+    header_suffix: str | None = None
+    #: The item's non-header lines, verbatim, in document order.
+    body: tuple[str, ...] = ()
+
+    @field_validator("document", "status_word")
+    @classmethod
+    def _require_non_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must be a non-empty string")
+        return value
+
+    # ``section`` is deliberately allowed to be empty: an item above the
+    # first ``## `` heading sits in the document preamble, and that is a
+    # real position, not missing data.
+
+
 class BacklogItem(BaseModel):
     """One unit of Workspace work: scope, risk, acceptance, and linkage.
 
@@ -150,13 +232,28 @@ class BacklogItem(BaseModel):
     parent_id: str | None = None
     title: str
     details: str = ""
-    status: BacklogItemStatus = BacklogItemStatus.OPEN
+    status: str = BacklogItemStatus.OPEN
     tags: tuple[str, ...] = ()
     milestone: str | None = None
     package: str | None = None
     risk_notes: str = ""
     goal_id: str | None = None
     goal_revision: int | None = None
+    #: Stable ids of items this item is blocked by (``blocked-by:`` in the
+    #: Markdown backlog). Order is the document's order; duplicates are
+    #: dropped. Referential integrity is enforced at the store/service layer,
+    #: not here: the model is data, the graph check is a decision.
+    dependencies: tuple[str, ...] = ()
+    #: Explicit human priority: 1 is highest, 5 is lowest. Stored as given,
+    #: never rewritten by the system (SPEC-092626-1831) — an agent's
+    #: "what should I work on" selection is deterministic on this plus rank,
+    #: and a human re-prioritizing is what changes the answer.
+    priority: int = Field(default=3, ge=1, le=5)
+    #: Manual ordering within a priority band; selection's tiebreaker.
+    rank: float = 1000.0
+    #: Import provenance for items that came from the Markdown backlog (#102).
+    #: ``None`` for items created natively in the database.
+    origin: BacklogOrigin | None = None
     source: str = "human"
     version: int = Field(default=1, ge=1)
     created_by: str
@@ -171,6 +268,12 @@ class BacklogItem(BaseModel):
             raise ValueError("must be a non-empty string")
         return value
 
+    @field_validator("status")
+    @classmethod
+    def _status_is_a_defined_value(cls, value: str) -> str:
+        """Fail closed on a status the documented vocabulary does not define."""
+        return require_valid_status(value)
+
     @field_validator("tags")
     @classmethod
     def _clean_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
@@ -178,6 +281,17 @@ class BacklogItem(BaseModel):
         cleaned: list[str] = []
         for tag in value:
             stripped = tag.strip()
+            if stripped and stripped not in cleaned:
+                cleaned.append(stripped)
+        return tuple(cleaned)
+
+    @field_validator("dependencies")
+    @classmethod
+    def _clean_dependencies(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """Same hygiene as tags: strip, drop empties, dedup, keep order."""
+        cleaned: list[str] = []
+        for dep in value:
+            stripped = dep.strip()
             if stripped and stripped not in cleaned:
                 cleaned.append(stripped)
         return tuple(cleaned)
@@ -193,7 +307,7 @@ class BacklogItem(BaseModel):
     def _enforce_consistency(self) -> BacklogItem:
         object.__setattr__(self, "created_at", _naive_as_utc(self.created_at))
         object.__setattr__(self, "updated_at", _naive_as_utc(self.updated_at))
-        if self.status.is_terminal != (self.closure is not None):
+        if status_is_terminal(self.status) != (self.closure is not None):
             raise ValueError(
                 "a terminal item (done/rejected) carries closure evidence; "
                 "a non-terminal item carries none"
@@ -317,5 +431,6 @@ __all__ = [
     "BacklogItem",
     "BacklogItemNotFound",
     "BacklogItemStatus",
+    "BacklogOrigin",
     "BacklogVersionConflict",
 ]

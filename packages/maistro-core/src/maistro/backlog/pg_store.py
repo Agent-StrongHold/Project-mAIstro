@@ -16,7 +16,7 @@ codec (`maistro.persistence._register_json_codecs`). That is why this reads
 binds a payload casts the parameter `$n::text::jsonb` (see `json_of`).
 
 **No `ensure_schema`.** These tables come from Alembic migration
-`058_backlog_work_source`. A store that quietly created its own would be a
+`059_backlog_work_source`. A store that quietly created its own would be a
 second schema owner and a second thing to keep in step -- the defect migration
 003 left behind and #178 had to undo. `wire_workspace_store` documents the
 same refusal for Workspaces.
@@ -29,9 +29,11 @@ crash.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+from maistro.backlog.cutover import AuthorityRecord, BacklogAuthority
 from maistro.backlog.model import (
     BacklogClaim,
     BacklogClaimError,
@@ -42,6 +44,8 @@ from maistro.backlog.model import (
     BacklogItem,
     BacklogItemNotFound,
     BacklogItemStatus,
+    BacklogOrigin,
+    status_is_terminal,
 )
 from maistro.backlog.store import (
     DEFAULT_LEASE_SECONDS,
@@ -51,17 +55,25 @@ from maistro.backlog.store import (
     _require_fresh_version,
     _require_valid_outcome,
 )
-from maistro.runs.evidence_json import json_of, model_of
+from maistro.runs.evidence_json import decode_payload, json_of, model_of
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
 
 #: Tables the PostgreSQL backlog store needs before it may be used.
-#: Migration `058_backlog_work_source` owns them.
+#: Migration `059_backlog_work_source` owns them.
 BACKLOG_PG_TABLES: tuple[str, ...] = (
     "backlog_items",
     "backlog_claims",
     "backlog_events",
+)
+
+#: Tables the cutover control stores (#102) need before they may be used.
+#: Migration `060_backlog_authority_cutover` owns them, with the same guarded
+#: DDL the SQLite twins create in `maistro.backlog.cutover`.
+PG_CUTOVER_TABLES: tuple[str, ...] = (
+    "backlog_authority",
+    "backlog_documents",
 )
 
 
@@ -85,7 +97,7 @@ class PgBacklogStore:
         self,
         workspace_id: str,
         *,
-        status: BacklogItemStatus | None = None,
+        status: str | None = None,
         tag: str | None = None,
         parent_id: str | None = None,
         roots_only: bool = False,
@@ -94,7 +106,7 @@ class PgBacklogStore:
         params: list[object] = [workspace_id]
         if status is not None:
             clauses.append(f"status = ${len(params) + 1}")
-            params.append(status.value)
+            params.append(status)
         if tag is not None:
             clauses.append(f"tags @> ${len(params) + 1}::jsonb")
             params.append(json.dumps([tag]))
@@ -161,6 +173,10 @@ class PgBacklogStore:
         goal_id: str | None = None,
         goal_revision: int | None = None,
         source: str = "human",
+        dependencies: tuple[str, ...] = (),
+        origin: BacklogOrigin | None = None,
+        priority: int = 3,
+        rank: float = 1000.0,
         item_id: str | None = None,
         at: datetime | None = None,
     ) -> BacklogItem:
@@ -177,7 +193,11 @@ class PgBacklogStore:
             goal_id=goal_id,
             goal_revision=goal_revision,
             source=source,
-            **({"item_id": item_id} if item_id is not None else {}),
+            dependencies=dependencies,
+            origin=origin,
+            priority=priority,
+            rank=rank,
+            **(cast(dict[str, Any], {"item_id": item_id} if item_id is not None else {})),
         )
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
@@ -195,7 +215,7 @@ class PgBacklogStore:
                 item.item_id,
                 item.workspace_id,
                 item.parent_id,
-                item.status.value,
+                item.status,
                 _tags_json(item),
                 item.created_at,
                 item.updated_at,
@@ -210,7 +230,7 @@ class PgBacklogStore:
                     kind=BacklogEventKind.CREATED,
                     item_version=item.version,
                     payload={"title": item.title, "parent_id": parent_id},
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             if parent_id is not None:
@@ -223,7 +243,7 @@ class PgBacklogStore:
                         kind=BacklogEventKind.DECOMPOSED,
                         item_version=parent.version,
                         payload={"child_id": item.item_id, "child_title": item.title},
-                        **({"at": at} if at is not None else {}),
+                        **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                     ),
                 )
         return item
@@ -243,7 +263,11 @@ class PgBacklogStore:
         parent_id: str | None | object = UNSET,
         goal_id: str | None | object = UNSET,
         goal_revision: int | None | object = UNSET,
-        status: BacklogItemStatus | None = None,
+        status: str | None = None,
+        dependencies: tuple[str, ...] | None = None,
+        origin: BacklogOrigin | None | object = UNSET,
+        priority: int | None = None,
+        rank: float | None = None,
         at: datetime | None = None,
     ) -> BacklogItem:
         async with self._pool.acquire() as conn, conn.transaction():
@@ -261,6 +285,10 @@ class PgBacklogStore:
                 goal_id=goal_id,
                 goal_revision=goal_revision,
                 status=status,
+                dependencies=dependencies,
+                origin=origin,
+                priority=priority,
+                rank=rank,
             )
             if not changes:
                 return item
@@ -282,7 +310,7 @@ class PgBacklogStore:
                         WHERE item_id = $1""",
                 updated.item_id,
                 updated.parent_id,
-                updated.status.value,
+                updated.status,
                 _tags_json(updated),
                 updated.updated_at,
                 updated.version,
@@ -298,7 +326,7 @@ class PgBacklogStore:
                     else BacklogEventKind.UPDATED,
                     item_version=updated.version,
                     payload=_jsonable_changes(changes),
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return updated
@@ -309,7 +337,7 @@ class PgBacklogStore:
         *,
         expected_version: int,
         actor: str,
-        outcome: BacklogItemStatus,
+        outcome: str,
         closure_summary: str,
         evidence_refs: tuple[str, ...],
         at: datetime | None = None,
@@ -318,8 +346,8 @@ class PgBacklogStore:
             item = await self._fetch_item_for_update(conn, item_id)
             _require_fresh_version(item, expected_version)
             _require_valid_outcome(outcome)
-            if item.status.is_terminal:
-                raise BacklogClosureError(item_id, f"item is already closed ({item.status.value})")
+            if status_is_terminal(item.status):
+                raise BacklogClosureError(item_id, f"item is already closed ({item.status})")
             try:
                 closure = BacklogClosure(
                     summary=closure_summary,
@@ -355,11 +383,11 @@ class PgBacklogStore:
                     kind=BacklogEventKind.CLOSED,
                     item_version=updated.version,
                     payload={
-                        "outcome": outcome.value,
+                        "outcome": outcome,
                         "closure_summary": closure.summary,
                         "evidence_refs": list(closure.evidence_refs),
                     },
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return updated
@@ -375,10 +403,8 @@ class PgBacklogStore:
         async with self._pool.acquire() as conn, conn.transaction():
             item = await self._fetch_item_for_update(conn, item_id)
             _require_fresh_version(item, expected_version)
-            if not item.status.is_terminal:
-                raise BacklogClosureError(
-                    item_id, f"item is not closed (status {item.status.value})"
-                )
+            if not status_is_terminal(item.status):
+                raise BacklogClosureError(item_id, f"item is not closed (status {item.status})")
             updated = item.model_copy(
                 update={
                     "status": BacklogItemStatus.OPEN,
@@ -395,8 +421,8 @@ class PgBacklogStore:
                     actor=actor,
                     kind=BacklogEventKind.REOPENED,
                     item_version=updated.version,
-                    payload={"previous_status": item.status.value},
-                    **({"at": at} if at is not None else {}),
+                    payload={"previous_status": item.status},
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return updated
@@ -413,9 +439,9 @@ class PgBacklogStore:
             raise ValueError("lease_seconds must be positive")
         async with self._pool.acquire() as conn, conn.transaction():
             item = await self._fetch_item_for_update(conn, item_id)
-            if item.status.is_terminal:
+            if status_is_terminal(item.status):
                 raise BacklogClosureError(
-                    item_id, f"a closed item ({item.status.value}) cannot be claimed"
+                    item_id, f"a closed item ({item.status}) cannot be claimed"
                 )
             now = _now(at)
             existing = await self._claim_row(conn, item_id)
@@ -455,7 +481,7 @@ class PgBacklogStore:
                         "claim_id": claim.claim_id,
                         "lease_expires_at": claim.lease_expires_at.isoformat(),
                     },
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return claim
@@ -498,7 +524,7 @@ class PgBacklogStore:
                         "claim_id": claim_id,
                         "lease_expires_at": extended.lease_expires_at.isoformat(),
                     },
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return extended
@@ -532,7 +558,7 @@ class PgBacklogStore:
                     kind=BacklogEventKind.CLAIM_RELEASED,
                     item_version=item.version,
                     payload={"claim_id": claim_id},
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
 
@@ -587,7 +613,7 @@ class PgBacklogStore:
                       version = $5, payload = $6::text::jsonb
                 WHERE item_id = $1""",
             item.item_id,
-            item.status.value,
+            item.status,
             _tags_json(item),
             item.updated_at,
             item.version,
@@ -612,10 +638,14 @@ class PgBacklogStore:
     async def _require_decomposable_parent(
         self, conn: Any, parent_id: str, *, child: BacklogItem
     ) -> None:
-        parent = await self._fetch_item(conn, parent_id)
+        # Lock the parent with FOR UPDATE so attaching a child serializes
+        # against close_item on the same row; otherwise a concurrent close
+        # could see no open child while this transaction still sees the
+        # parent open, committing a terminal parent with an open child.
+        parent = await self._fetch_item_for_update(conn, parent_id)
         if parent.workspace_id != child.workspace_id:
             raise ValueError("a child item must live in its parent's Workspace")
-        if parent.status.is_terminal:
+        if status_is_terminal(parent.status):
             raise BacklogClosureError(parent_id, "cannot decompose a closed item")
         walker = parent
         seen: set[str] = set()
@@ -650,11 +680,148 @@ def _payload_dict(payload: object) -> dict[str, object]:
 
 
 def _jsonable_changes(changes: dict[str, object]) -> dict[str, object]:
-    """Event-payload form of a change plan (StrEnum values as plain strings)."""
-    return {
-        key: value.value if isinstance(value, BacklogItemStatus) else value
-        for key, value in changes.items()
-    }
+    """Event-payload form of a change plan.
+
+    Item statuses are boundary-validated plain strings (#101 convention), so
+    the plan is already payload-shaped; the copy keeps callers from sharing
+    the mutable event payload with the change plan.
+    """
+    return dict(changes)
 
 
-__all__ = ["BACKLOG_PG_TABLES", "PgBacklogStore"]
+async def _require_tables(pool: asyncpg.Pool, tables: tuple[str, ...], migration: str) -> None:
+    """Refuse to run against a database the owning migration has not touched.
+
+    The DDL belongs to Alembic alone (see the module docstring), so instead of
+    quietly creating anything the stores probe for their tables and name the
+    migration that must run — an operator mistake made explicit beats a second
+    schema owner.
+    """
+    missing = [
+        table
+        for table in tables
+        if not await pool.fetchval("SELECT to_regclass($1) IS NOT NULL", f"public.{table}")
+    ]
+    if missing:
+        msg = (
+            f"PostgreSQL database is missing the backlog tables ({', '.join(missing)}); "
+            f"run `alembic upgrade {migration}` against it before using these stores"
+        )
+        raise RuntimeError(msg)
+
+
+class PgAuthorityLedger:
+    """The authority ledger on the Alembic-managed `backlog_authority` table.
+
+    The durable twin of `SqliteAuthorityLedger`, reading the same
+    `AuthorityRecord` rows. Appends are one `INSERT ... RETURNING`, so the
+    revision the BIGSERIAL assigned and the row it annotates come back from a
+    single statement — no lock and no read-after-write window to lose a race
+    in, which is what the SQLite twin's `BEGIN IMMEDIATE` buys there.
+    """
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def ensure_schema(self) -> None:
+        await _require_tables(self._pool, PG_CUTOVER_TABLES, "head")
+
+    async def current(self) -> AuthorityRecord | None:
+        row = await self._pool.fetchrow(
+            "SELECT revision, authority, actor, at, note FROM backlog_authority "
+            "ORDER BY revision DESC LIMIT 1"
+        )
+        return AuthorityRecord.from_row(row) if row is not None else None
+
+    async def append(
+        self,
+        *,
+        authority: BacklogAuthority,
+        actor: str,
+        note: str,
+        at: datetime | None = None,
+    ) -> AuthorityRecord:
+        row = await self._pool.fetchrow(
+            "INSERT INTO backlog_authority (authority, actor, at, note) "
+            "VALUES ($1, $2, $3, $4) "
+            "RETURNING revision, authority, actor, at, note",
+            authority.value,
+            actor,
+            _now(at),
+            note,
+        )
+        if row is None:  # pragma: no cover - RETURNING always yields the row
+            msg = "authority append did not persist"
+            raise RuntimeError(msg)
+        return AuthorityRecord.from_row(row)
+
+    async def history(self) -> list[AuthorityRecord]:
+        rows = await self._pool.fetch(
+            "SELECT revision, authority, actor, at, note FROM backlog_authority "
+            "ORDER BY revision ASC"
+        )
+        return [AuthorityRecord.from_row(row) for row in rows]
+
+
+class PgDocumentState:
+    """The token-stream store on the Alembic-managed `backlog_documents` table.
+
+    The durable twin of `SqliteDocumentState`; the JSONB column carries the
+    same `[[kind, value], ...]` shape, read back through the pool's JSON codec
+    (`maistro.persistence._register_json_codecs`).
+    """
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def ensure_schema(self) -> None:
+        await _require_tables(self._pool, PG_CUTOVER_TABLES, "head")
+
+    async def get_tokens(self, document_id: str) -> tuple[tuple[str, str], ...] | None:
+        row = await self._pool.fetchrow(
+            "SELECT tokens FROM backlog_documents WHERE document_id = $1",
+            document_id,
+        )
+        if row is None:
+            return None
+        return _token_pairs(row[0])
+
+    async def put_tokens(self, document_id: str, tokens: Sequence[tuple[str, str]]) -> None:
+        payload = json.dumps([[kind, value] for kind, value in tokens])
+        await self._pool.execute(
+            "INSERT INTO backlog_documents (document_id, tokens, updated_at) "
+            "VALUES ($1, $2::text::jsonb, $3) "
+            "ON CONFLICT (document_id) DO UPDATE "
+            "SET tokens = excluded.tokens, updated_at = excluded.updated_at",
+            document_id,
+            payload,
+            _now(None),
+        )
+
+
+def _token_pairs(payload: object) -> tuple[tuple[str, str], ...]:
+    """Stored document tokens as pairs, however the driver handed them over.
+
+    The same pool-independence rule `decode_payload` states for spine payloads:
+    `maistro.persistence.get_pool` registers a JSON codec, so a pooled read of
+    the jsonb `tokens` column returns the decoded array, while a raw
+    `asyncpg.create_pool` (conformance tests, tools) leaves the default `str`
+    codec in place and returns text. A store whose correctness depends on how
+    somebody else constructed the pool is the hidden coupling
+    `pg_learnings._load_keys` names — decode defensively and be right either
+    way.
+    """
+    decoded = decode_payload(payload)
+    if not isinstance(decoded, list):
+        msg = f"backlog document tokens must be a jsonb array, got {type(decoded).__name__}"
+        raise TypeError(msg)
+    return tuple((str(kind), str(value)) for kind, value in decoded)
+
+
+__all__ = [
+    "BACKLOG_PG_TABLES",
+    "PG_CUTOVER_TABLES",
+    "PgAuthorityLedger",
+    "PgBacklogStore",
+    "PgDocumentState",
+]

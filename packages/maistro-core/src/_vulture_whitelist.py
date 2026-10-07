@@ -9,17 +9,23 @@ Invocation execution API.
 
 from maistro import identity as identity_package
 from maistro.a2a.external import ExternalAgentRegistry
+from maistro.backlog.markdown_io import ParsedItem
 from maistro.backlog.model import (
     BacklogClaim,
     BacklogClosure,
     BacklogEvent,
     BacklogItem,
+    BacklogOrigin,
 )
 from maistro.backlog.pg_store import PgBacklogStore
 from maistro.backlog.sqlite_store import SqliteBacklogStore
 from maistro.backlog.store import BacklogStore, InMemoryBacklogStore
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
+from maistro.cli._backlog import RoleChoice
+from maistro.cli._backlog import cutover as backlog_cutover_command
+from maistro.cli._backlog import import_cmd as backlog_import_command
+from maistro.cli._backlog import revert as backlog_revert_command
 from maistro.cli._connectors import connectors_describe, connectors_verify
 from maistro.cli._extensions import (
     extensions_compat,
@@ -136,6 +142,45 @@ _VULTURE_WHITELIST = (
     # this `packages/*/src` scan does not walk.
     Container.run_reader,
     ScopedRunReader.get_runs,
+    # --- #102 backlog work-source (maistro.backlog) -----------------------
+    # Pydantic invokes these field/model validators at runtime; static import
+    # scanning cannot see decorator-based dispatch (same shape as
+    # Binding._validate_binding above).
+    BacklogClosure._require_non_blank_summary,
+    BacklogClosure._require_resolvable_refs,
+    BacklogClosure._normalize_closed_at,
+    BacklogOrigin._require_non_blank,
+    BacklogItem._require_non_blank,
+    BacklogItem._status_is_a_defined_value,
+    BacklogItem._clean_tags,
+    BacklogItem._clean_dependencies,
+    BacklogItem._require_positive_revision,
+    BacklogItem._enforce_consistency,
+    BacklogClaim._require_non_blank_identity,
+    BacklogClaim._normalize_timestamps,
+    BacklogEvent._require_non_blank_identity,
+    BacklogEvent._normalize_at,
+    # Declarative model field on BacklogItem: written by every store
+    # (created_by=actor), validated at the boundary and serialized into the
+    # item/event tables; vulture cannot count model_dump/INSERT serialization
+    # as a read (same shape as ResolvedBinding.provider_trust_tier above).
+    BacklogItem.created_by,
+    # BacklogStore.extend_claim is the port's lease-extension operation,
+    # conformance-pinned across all three backends
+    # (packages/maistro-core/tests/backlog/test_backlog_store_conformance.py
+    # :: expired-lease reclaim and claim exclusivity). Its production
+    # consumers are the downstream agent/RSI loops the surface exists for;
+    # within this repository no process entry point extends a lease yet.
+    BacklogStore.extend_claim,
+    InMemoryBacklogStore.extend_claim,
+    SqliteBacklogStore.extend_claim,
+    PgBacklogStore.extend_claim,
+    # ParsedItem.written_block is the parse-record accessor the migration
+    # round-trip suite asserts verbatim reconstruction with
+    # (test_markdown_migration.py); it is the import-side twin of the
+    # exporter's _render_header and is consumed outside the scanned tree by
+    # the migration test suite and downstream import tooling.
+    ParsedItem.written_block,
     # Workspace work campaigns (#103, SPEC-092626-1831). Pydantic invokes the
     # validators; the Actor-valued fields are serialization surface written
     # through model_dump_json and read by consumers outside this scan (the
@@ -275,65 +320,6 @@ _VULTURE_WHITELIST = (
     RubricStore.instantiate_from_catalog,
     RubricStore.record_run_binding,
     RubricStore.binding_for_run,
-    # Canonical Workspace BacklogItem work source (#98, EPIC M3-C). The
-    # store CRUD/claim verbs are the #98 service contract: their in-tree
-    # consumers are the three-backend conformance suite, and the #99 Conductor
-    # UI, the #102 BACKLOG.md cutover and the #804 persistent Agent wire them
-    # next — the same "contract ships first by design" posture as
-    # CampaignSelector and the eval-score seam above. The model validators are
-    # Pydantic-dispatched (`@field_validator` / `@model_validator`), invoked
-    # implicitly at construction — the same posture as CampaignDefinition,
-    # RunEvalScore and the Rubric models above.
-    BacklogStore.create_item,
-    BacklogStore.get_item,
-    BacklogStore.update_item,
-    BacklogStore.close_item,
-    BacklogStore.reopen_item,
-    BacklogStore.list_items,
-    BacklogStore.claim_item,
-    BacklogStore.extend_claim,
-    BacklogStore.release_claim,
-    BacklogStore.active_claim,
-    InMemoryBacklogStore.create_item,
-    InMemoryBacklogStore.get_item,
-    InMemoryBacklogStore.update_item,
-    InMemoryBacklogStore.close_item,
-    InMemoryBacklogStore.reopen_item,
-    InMemoryBacklogStore.list_items,
-    InMemoryBacklogStore.claim_item,
-    InMemoryBacklogStore.extend_claim,
-    InMemoryBacklogStore.release_claim,
-    InMemoryBacklogStore.active_claim,
-    SqliteBacklogStore.create_item,
-    SqliteBacklogStore.get_item,
-    SqliteBacklogStore.update_item,
-    SqliteBacklogStore.close_item,
-    SqliteBacklogStore.reopen_item,
-    SqliteBacklogStore.list_items,
-    SqliteBacklogStore.claim_item,
-    SqliteBacklogStore.extend_claim,
-    SqliteBacklogStore.release_claim,
-    SqliteBacklogStore.active_claim,
-    PgBacklogStore.create_item,
-    PgBacklogStore.get_item,
-    PgBacklogStore.update_item,
-    PgBacklogStore.close_item,
-    PgBacklogStore.reopen_item,
-    PgBacklogStore.list_items,
-    PgBacklogStore.claim_item,
-    PgBacklogStore.extend_claim,
-    PgBacklogStore.release_claim,
-    PgBacklogStore.active_claim,
-    BacklogClosure._require_non_blank_summary,
-    BacklogClosure._require_resolvable_refs,
-    BacklogClosure._normalize_closed_at,
-    BacklogItem._clean_tags,
-    BacklogItem._require_positive_revision,
-    BacklogItem._enforce_consistency,
-    BacklogClaim._require_non_blank_identity,
-    BacklogClaim._normalize_timestamps,
-    BacklogEvent._require_non_blank_identity,
-    BacklogEvent._normalize_at,
     # The one governed promotion contract (M4-A9, #116; ADR/SPEC-100126-a9c4).
     # The contract ships first by design, the same posture as
     # CampaignSelector and the learning lifecycle above: its in-tree consumers
@@ -399,6 +385,16 @@ _VULTURE_WHITELIST = (
     extensions_history,
     extensions_preflight,
     extensions_show,
+    # The `maistro backlog` cutover lifecycle commands are invoked through
+    # typer dispatch (#102), the same surface the ledger's
+    # maistro-cli-command-surface rule classifies; the StrEnum members are
+    # typer's --role choices, consumed by option parsing.
+    backlog_import_command,
+    backlog_cutover_command,
+    backlog_revert_command,
+    RoleChoice.viewer,
+    RoleChoice.editor,
+    RoleChoice.owner,
     # Deterministic extension dependency resolution (M9-C2, #956). The two
     # `maistro extensions` lock commands are typer-dispatched like the read
     # commands above. `identity_keys` is the restart-equality seam the #953

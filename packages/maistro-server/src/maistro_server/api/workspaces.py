@@ -20,7 +20,7 @@ from maistro.workspaces import (
     WorkspaceRole,
     WorkspaceStore,
 )
-from maistro_server.api import backlog_history, backlog_items, campaigns, projects
+from maistro_server.api import backlog_history, campaigns, projects
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.workspace_access import (
     configure_workspace_store,
@@ -35,11 +35,6 @@ from maistro_server.api.workspace_access import (
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 router.include_router(projects.router)
 router.include_router(backlog_history.router)
-# The canonical BacklogItem work-source (#98): create/edit/close and
-# claim/lease over the one `maistro.backlog` store the Container selected.
-# Included here because an item is scoped to the Workspace it files under, so
-# its routes share this prefix and its membership boundary.
-router.include_router(backlog_items.router)
 # Workspace work campaigns (#103): operator controls under
 # /{workspace_id}/campaigns. Included here because a campaign is scoped to
 # the Workspace its operators steer, so its routes share this prefix and its

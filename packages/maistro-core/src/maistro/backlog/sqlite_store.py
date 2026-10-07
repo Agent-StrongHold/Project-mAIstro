@@ -26,7 +26,7 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from maistro.backlog.model import (
     BacklogClaim,
@@ -38,6 +38,8 @@ from maistro.backlog.model import (
     BacklogItem,
     BacklogItemNotFound,
     BacklogItemStatus,
+    BacklogOrigin,
+    status_is_terminal,
 )
 from maistro.backlog.store import (
     DEFAULT_LEASE_SECONDS,
@@ -125,19 +127,12 @@ class SqliteBacklogStore:
                 await self._conn.commit()
 
     # -- reads ----------------------------------------------------------
-    # Reads take `_write_lock` too: the store uses one shared connection, so
-    # an unguarded read would run *inside* another task's open write
-    # transaction (aiosqlite interleaves per statement) and could observe an
-    # item mutation before its provenance event is appended.
 
     async def get_item(self, item_id: str) -> BacklogItem | None:
-        async with (
-            self._write_lock,
-            self._conn.execute(
-                "SELECT payload FROM backlog_items WHERE item_id = ?",
-                (item_id,),
-            ) as cursor,
-        ):
+        async with self._conn.execute(
+            "SELECT payload FROM backlog_items WHERE item_id = ?",
+            (item_id,),
+        ) as cursor:
             row = await cursor.fetchone()
         return BacklogItem.model_validate_json(row[0]) if row is not None else None
 
@@ -145,7 +140,7 @@ class SqliteBacklogStore:
         self,
         workspace_id: str,
         *,
-        status: BacklogItemStatus | None = None,
+        status: str | None = None,
         tag: str | None = None,
         parent_id: str | None = None,
         roots_only: bool = False,
@@ -154,7 +149,7 @@ class SqliteBacklogStore:
         params: list[object] = [workspace_id]
         if status is not None:
             clauses.append("status = ?")
-            params.append(status.value)
+            params.append(status)
         if tag is not None:
             clauses.append("tags LIKE ?")
             params.append(f'%"{tag}"%')
@@ -168,30 +163,28 @@ class SqliteBacklogStore:
             + " AND ".join(clauses)
             + " ORDER BY created_at, item_id"
         )
-        async with self._write_lock, self._conn.execute(query, tuple(params)) as cursor:
+        async with self._conn.execute(query, tuple(params)) as cursor:
             rows = await cursor.fetchall()
         return [BacklogItem.model_validate_json(row[0]) for row in rows]
 
     async def active_claim(
         self, item_id: str, *, at: datetime | None = None
     ) -> BacklogClaim | None:
-        async with self._write_lock:
-            await self._require_item(item_id)
-            now = _now(at)
-            claim = await self._claim_row(item_id)
-            if claim is not None and claim.is_active(at=now):
-                return claim
+        await self._require_item(item_id)
+        now = _now(at)
+        claim = await self._claim_row(item_id)
+        if claim is not None and claim.is_active(at=now):
+            return claim
         return None
 
     async def events(self, item_id: str) -> list[BacklogEvent]:
-        async with self._write_lock:
-            await self._require_item(item_id)
-            async with self._conn.execute(
-                """SELECT event_id, item_id, at, actor, kind, item_version, payload
-                     FROM backlog_events WHERE item_id = ? ORDER BY seq""",
-                (item_id,),
-            ) as cursor:
-                rows = await cursor.fetchall()
+        await self._require_item(item_id)
+        async with self._conn.execute(
+            """SELECT event_id, item_id, at, actor, kind, item_version, payload
+                 FROM backlog_events WHERE item_id = ? ORDER BY seq""",
+            (item_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
         return [
             BacklogEvent(
                 event_id=row[0],
@@ -222,6 +215,10 @@ class SqliteBacklogStore:
         goal_id: str | None = None,
         goal_revision: int | None = None,
         source: str = "human",
+        dependencies: tuple[str, ...] = (),
+        origin: BacklogOrigin | None = None,
+        priority: int = 3,
+        rank: float = 1000.0,
         item_id: str | None = None,
         at: datetime | None = None,
     ) -> BacklogItem:
@@ -238,7 +235,11 @@ class SqliteBacklogStore:
             goal_id=goal_id,
             goal_revision=goal_revision,
             source=source,
-            **({"item_id": item_id} if item_id is not None else {}),
+            dependencies=dependencies,
+            origin=origin,
+            priority=priority,
+            rank=rank,
+            **(cast(dict[str, Any], {"item_id": item_id} if item_id is not None else {})),
         )
         async with self._write() as conn:
             if await self._item_row_exists(conn, item.item_id):
@@ -254,7 +255,7 @@ class SqliteBacklogStore:
                     kind=BacklogEventKind.CREATED,
                     item_version=item.version,
                     payload={"title": item.title, "parent_id": parent_id},
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             if parent_id is not None:
@@ -267,7 +268,7 @@ class SqliteBacklogStore:
                         kind=BacklogEventKind.DECOMPOSED,
                         item_version=parent.version,
                         payload={"child_id": item.item_id, "child_title": item.title},
-                        **({"at": at} if at is not None else {}),
+                        **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                     ),
                 )
         return item
@@ -287,7 +288,11 @@ class SqliteBacklogStore:
         parent_id: str | None | object = UNSET,
         goal_id: str | None | object = UNSET,
         goal_revision: int | None | object = UNSET,
-        status: BacklogItemStatus | None = None,
+        status: str | None = None,
+        dependencies: tuple[str, ...] | None = None,
+        origin: BacklogOrigin | None | object = UNSET,
+        priority: int | None = None,
+        rank: float | None = None,
         at: datetime | None = None,
     ) -> BacklogItem:
         async with self._write() as conn:
@@ -305,6 +310,10 @@ class SqliteBacklogStore:
                 goal_id=goal_id,
                 goal_revision=goal_revision,
                 status=status,
+                dependencies=dependencies,
+                origin=origin,
+                priority=priority,
+                rank=rank,
             )
             if not changes:
                 return item
@@ -321,7 +330,7 @@ class SqliteBacklogStore:
                     else BacklogEventKind.UPDATED,
                     item_version=updated.version,
                     payload=dict(changes.items()),
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return updated
@@ -332,7 +341,7 @@ class SqliteBacklogStore:
         *,
         expected_version: int,
         actor: str,
-        outcome: BacklogItemStatus,
+        outcome: str,
         closure_summary: str,
         evidence_refs: tuple[str, ...],
         at: datetime | None = None,
@@ -341,8 +350,8 @@ class SqliteBacklogStore:
             item = await self._fetch_item(conn, item_id)
             _require_fresh_version(item, expected_version)
             _require_valid_outcome(outcome)
-            if item.status.is_terminal:
-                raise BacklogClosureError(item_id, f"item is already closed ({item.status.value})")
+            if status_is_terminal(item.status):
+                raise BacklogClosureError(item_id, f"item is already closed ({item.status})")
             try:
                 closure = BacklogClosure(
                     summary=closure_summary,
@@ -378,11 +387,11 @@ class SqliteBacklogStore:
                     kind=BacklogEventKind.CLOSED,
                     item_version=updated.version,
                     payload={
-                        "outcome": outcome.value,
+                        "outcome": outcome,
                         "closure_summary": closure.summary,
                         "evidence_refs": list(closure.evidence_refs),
                     },
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return updated
@@ -398,10 +407,8 @@ class SqliteBacklogStore:
         async with self._write() as conn:
             item = await self._fetch_item(conn, item_id)
             _require_fresh_version(item, expected_version)
-            if not item.status.is_terminal:
-                raise BacklogClosureError(
-                    item_id, f"item is not closed (status {item.status.value})"
-                )
+            if not status_is_terminal(item.status):
+                raise BacklogClosureError(item_id, f"item is not closed (status {item.status})")
             updated = item.model_copy(
                 update={
                     "status": BacklogItemStatus.OPEN,
@@ -418,8 +425,8 @@ class SqliteBacklogStore:
                     actor=actor,
                     kind=BacklogEventKind.REOPENED,
                     item_version=updated.version,
-                    payload={"previous_status": item.status.value},
-                    **({"at": at} if at is not None else {}),
+                    payload={"previous_status": item.status},
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return updated
@@ -436,9 +443,9 @@ class SqliteBacklogStore:
             raise ValueError("lease_seconds must be positive")
         async with self._write() as conn:
             item = await self._fetch_item(conn, item_id)
-            if item.status.is_terminal:
+            if status_is_terminal(item.status):
                 raise BacklogClosureError(
-                    item_id, f"a closed item ({item.status.value}) cannot be claimed"
+                    item_id, f"a closed item ({item.status}) cannot be claimed"
                 )
             now = _now(at)
             existing = await self._claim_row(item_id)
@@ -479,7 +486,7 @@ class SqliteBacklogStore:
                         "claim_id": claim.claim_id,
                         "lease_expires_at": claim.lease_expires_at.isoformat(),
                     },
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return claim
@@ -521,7 +528,7 @@ class SqliteBacklogStore:
                         "claim_id": claim_id,
                         "lease_expires_at": extended.lease_expires_at.isoformat(),
                     },
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
             return extended
@@ -554,7 +561,7 @@ class SqliteBacklogStore:
                     kind=BacklogEventKind.CLAIM_RELEASED,
                     item_version=item.version,
                     payload={"claim_id": claim_id},
-                    **({"at": at} if at is not None else {}),
+                    **(cast(dict[str, Any], {"at": at} if at is not None else {})),
                 ),
             )
 
@@ -607,7 +614,7 @@ class SqliteBacklogStore:
                 item.item_id,
                 item.workspace_id,
                 item.parent_id,
-                item.status.value,
+                item.status,
                 json.dumps(list(item.tags)),
                 item.created_at.isoformat(),
                 item.updated_at.isoformat(),
@@ -622,7 +629,7 @@ class SqliteBacklogStore:
                   SET status = ?, tags = ?, updated_at = ?, version = ?, payload = ?
                 WHERE item_id = ?""",
             (
-                item.status.value,
+                item.status,
                 json.dumps(list(item.tags)),
                 item.updated_at.isoformat(),
                 item.version,
@@ -653,7 +660,7 @@ class SqliteBacklogStore:
         parent = await self._fetch_item(conn, parent_id)
         if parent.workspace_id != child.workspace_id:
             raise ValueError("a child item must live in its parent's Workspace")
-        if parent.status.is_terminal:
+        if status_is_terminal(parent.status):
             raise BacklogClosureError(parent_id, "cannot decompose a closed item")
         walker = parent
         seen: set[str] = set()
@@ -681,14 +688,14 @@ async def _apply_changes(
     # Revalidate: the model guards status/closure pairing and field shape.
     updated = BacklogItem.model_validate(updated.model_dump())
     # Keep the filter/order columns in step with the payload, or `list_items`
-    # would answer from a status or hierarchy the payload no longer holds.
+    # would answer from a status the payload no longer holds.
     await conn.execute(
         """UPDATE backlog_items
               SET parent_id = ?, status = ?, tags = ?, updated_at = ?, version = ?, payload = ?
             WHERE item_id = ?""",
         (
             updated.parent_id,
-            updated.status.value,
+            updated.status,
             json.dumps(list(updated.tags)),
             updated.updated_at.isoformat(),
             updated.version,
