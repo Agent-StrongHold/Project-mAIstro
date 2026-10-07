@@ -41,6 +41,8 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
+from maistro.identity import Principal
+
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -51,11 +53,11 @@ _AUTHED_USER_ID = "user"  # the session conftest seeds
 
 
 class _ScopedRequest:
-    """Just what the dag-runs handlers read off a request: `state.user` and
+    """Just what the dag-runs handlers read off a request: `state.principal` and
     `is_disconnected()` (the SSE generator's cancel check)."""
 
     def __init__(self, user_id: str) -> None:
-        self.state = SimpleNamespace(user={"id": user_id, "username": user_id})
+        self.state = SimpleNamespace(principal=Principal(user_id=user_id, username=user_id))
 
     async def is_disconnected(self) -> bool:  # pragma: no cover - cancel check
         return False
@@ -381,7 +383,7 @@ def test_unauthenticated_reads_are_refused_before_any_existence_signal(
 def test_dag_run_handlers_fail_closed_without_a_principal() -> None:
     """The 401s pinned above are served by AuthMiddleware; this pins the
     handlers' OWN refusal of a principal-less request (#1174). Through the
-    app that arc is unreachable — middleware always sets `state.user` on
+    app that arc is unreachable — middleware always sets `state.principal` on
     /v1/ — so it is driven at handler level (the fabricated-Request style
     this suite already uses for the SSE half): if a request without a
     principal ever reaches a route — middleware misconfigured, the router
@@ -393,7 +395,7 @@ def test_dag_run_handlers_fail_closed_without_a_principal() -> None:
 
     _seed_run("r-anon", workspace_id="ws-exists")
 
-    request = SimpleNamespace(state=SimpleNamespace())  # no `user` attribute
+    request = SimpleNamespace(state=SimpleNamespace())  # no `principal` attribute
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(dag_runs.list_runs(request))
     assert excinfo.value.status_code == 401
@@ -660,7 +662,7 @@ async def test_a_record_without_any_run_identity_is_returned_verbatim() -> None:
     from services.dag_run_inspection import _canonical_projection
 
     record = {"status": "running", "name": "Local only"}
-    assert await _canonical_projection(dict(record)) == record
+    assert await _canonical_projection(dict(record), "user") == record
 
 
 async def test_projection_reads_stay_local_when_the_spine_has_no_store(
@@ -669,10 +671,10 @@ async def test_projection_reads_stay_local_when_the_spine_has_no_store(
     import services.engine as engine_mod
     from services.dag_run_inspection import _canonical_projection
 
-    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=None))
+    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_reader=None))
     record = {"id": "r-standalone", "status": "running"}
 
-    assert await _canonical_projection(dict(record)) == record
+    assert await _canonical_projection(dict(record), "user") == record
 
 
 async def test_projection_never_invents_a_run_the_spine_never_saw(
@@ -681,14 +683,11 @@ async def test_projection_never_invents_a_run_the_spine_never_saw(
     import services.engine as engine_mod
     from services.dag_run_inspection import _canonical_projection
 
-    from maistro.projects.scope_store import InMemoryProjectScopeStore
-    from maistro.runs import InMemoryRunStore
-
-    empty = InMemoryRunStore(project_store=InMemoryProjectScopeStore())
-    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=empty))
+    reader, _runs, _workspaces = _canonical_spine()
+    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_reader=reader))
     record = {"id": "r-ghost", "canonical_run_id": "canonical-never-was", "status": "running"}
 
-    assert await _canonical_projection(dict(record)) == record
+    assert await _canonical_projection(dict(record), "user") == record
 
 
 async def test_projection_reads_stay_local_when_the_spine_is_down(
@@ -709,4 +708,179 @@ async def test_projection_reads_stay_local_when_the_spine_is_down(
     monkeypatch.setattr(engine_mod, "get_engine", _engine_down)
     record = {"id": "r-spine-down", "status": "running"}
 
-    assert await _canonical_projection(dict(record)) == record
+    assert await _canonical_projection(dict(record), "user") == record
+
+
+def _canonical_spine() -> tuple[Any, Any, Any]:
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs import InMemoryRunStore
+    from maistro.runs.scoped_reads import ScopedRunReader
+    from maistro.workspaces import InMemoryWorkspaceStore
+
+    projects = InMemoryProjectScopeStore()
+    runs = InMemoryRunStore(project_store=projects)
+    workspaces = InMemoryWorkspaceStore(project_store=projects)
+    return ScopedRunReader(runs, workspaces, projects), runs, workspaces
+
+
+async def _cancelled_canonical_run(runs: Any, workspaces: Any, owner: str) -> Any:
+    from maistro.graph import Graph, Node
+    from maistro.runs.model import RunStatus
+
+    workspace = await workspaces.create(creator_user_id=owner, name=owner)
+    root = await workspaces.project_store.root_for_workspace(workspace.workspace_id)
+    graph = Graph(
+        workspace_id=workspace.workspace_id,
+        project_id=root.project_id,
+        name="overlay",
+        nodes=[Node(node_id="n", node_type="agent")],
+    )
+    run = await runs.create_run(graph, actor_principal_id=owner)
+    return await runs.transition_run(run.run_id, RunStatus.CANCELLED, error="stopped")
+
+
+async def test_projection_overlays_a_canonical_run_the_caller_may_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.engine as engine_mod
+    from services.dag_run_inspection import _canonical_projection
+
+    reader, runs, workspaces = _canonical_spine()
+    run = await _cancelled_canonical_run(runs, workspaces, "user")
+    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_reader=reader))
+    record = {
+        "id": "r-mine",
+        "canonical_run_id": run.run_id,
+        "workspace_id": run.workspace_id,
+        "status": "running",
+    }
+
+    projected = await _canonical_projection(dict(record), "user")
+
+    assert projected["status"] == "cancelled"
+    assert projected["error"] == "stopped"
+
+
+async def test_projection_never_overlays_a_foreign_canonical_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A projection row naming another Workspace's canonical Run gets none of
+    its status, result or error: the overlay reads through the same
+    membership-scoped seam as every other canonical Run read (#1152)."""
+    import services.engine as engine_mod
+    from services.dag_run_inspection import _canonical_projection
+
+    reader, runs, workspaces = _canonical_spine()
+    await workspaces.create(creator_user_id="user", name="mine")
+    foreign = await _cancelled_canonical_run(runs, workspaces, "someone-else")
+    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_reader=reader))
+    record = {"id": "r-mine", "canonical_run_id": foreign.run_id, "status": "running"}
+
+    assert await _canonical_projection(dict(record), "user") == record
+
+
+async def test_projection_never_overlays_a_canonical_run_from_another_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller who can read both Workspaces still gets no overlay when the
+    projection row and its canonical Run are filed in different ones: the
+    cross-link is not that row's lifecycle truth (#1152)."""
+    import services.engine as engine_mod
+    from services.dag_run_inspection import _canonical_projection
+
+    from maistro.workspaces import WorkspaceRole
+
+    reader, runs, workspaces = _canonical_spine()
+    mine = await workspaces.create(creator_user_id="user", name="mine")
+    other = await _cancelled_canonical_run(runs, workspaces, "someone-else")
+    await workspaces.set_membership(other.workspace_id, user_id="user", role=WorkspaceRole.MEMBER)
+    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_reader=reader))
+    assert await reader.get_run(other.run_id, principal_id="user")
+    record = {
+        "id": "r-mine",
+        "canonical_run_id": other.run_id,
+        "workspace_id": mine.workspace_id,
+        "status": "running",
+    }
+
+    assert await _canonical_projection(dict(record), "user") == record
+
+
+# ─── stream continuity: seq cursors + resync markers (#1183) ────────────────
+
+
+async def _stream_frames(run_id: str, limit: int) -> list[str]:
+    from routes.dag_runs import stream_run_events
+
+    response = await stream_run_events(run_id, _ScopedRequest(_AUTHED_USER_ID))
+    iterator = response.body_iterator
+    frames: list[str] = []
+    try:
+        for _ in range(limit):
+            frames.append(await anext(iterator))
+    except StopAsyncIteration:
+        pass
+    finally:
+        await iterator.aclose()
+    return frames
+
+
+@pytest.mark.asyncio
+async def test_sse_events_carry_their_projection_seq(authed_client: Any) -> None:
+    """#1183: every streamed event carries the projection's per-run sequence
+    number — the cursor a consumer resumes and gap-detects against."""
+    ws = _workspace(authed_client, "Seq cursor")
+    await _seed_run_async("r-seq", workspace_id=ws)
+    from services.dag_run_store import get_dag_run_store
+
+    await get_dag_run_store().append_event(
+        "r-seq", event_type="pm_node_completed", role="intake", capability="create_initiative"
+    )
+
+    frames = await _stream_frames("r-seq", limit=2)
+    assert ": connected" in frames[0]
+    assert '"seq": 1' in frames[1]
+
+
+@pytest.mark.asyncio
+async def test_sse_does_not_mark_resync_for_contiguous_history(authed_client: Any) -> None:
+    """A replay that starts at seq 1 is contiguous: no resync marker."""
+    ws = _workspace(authed_client, "Contiguous")
+    await _seed_run_async("r-contig", workspace_id=ws)
+
+    frames = await _stream_frames("r-contig", limit=2)
+    assert ": connected" in frames[0]
+    assert "pm_resync" not in frames[1]
+    assert "pm_node_started" in frames[1]
+
+
+@pytest.mark.asyncio
+async def test_sse_marks_resync_when_replayed_history_was_trimmed(authed_client: Any) -> None:
+    """#1183: a bounded history that lost its oldest events must not reach a
+    reconnecting consumer as silence — the stream announces the discontinuity
+    and points at the durable record before the first replayed event."""
+    ws = _workspace(authed_client, "Trimmed")
+    await _seed_run_async("r-trimmed", workspace_id=ws)
+    from services.dag_run_store import MAX_EVENTS_PER_RUN, get_dag_run_store
+
+    store = get_dag_run_store()
+    for _ in range(MAX_EVENTS_PER_RUN + 3):
+        await store.append_event(
+            "r-trimmed", event_type="pm_node_started", role="intake", capability="c"
+        )
+
+    frames = await _stream_frames("r-trimmed", limit=3)
+    assert ": connected" in frames[0]
+    # 1 seeded event + (MAX+3) appended = MAX+4 total; the buffer keeps the
+    # last MAX, so replay begins at seq 5.
+    total_events = MAX_EVENTS_PER_RUN + 4
+    first_surviving = total_events - MAX_EVENTS_PER_RUN + 1
+    # First delivered frame: the explicit resync, before any event data.
+    assert "event: pm_resync" in frames[1]
+    assert '"last_seq": 0' in frames[1]
+    assert f'"resumed_at": {first_surviving}' in frames[1]
+    assert f'"missed": {first_surviving - 1}' in frames[1]
+    assert "GET /v1/dag-runs/r-trimmed" in frames[1]
+    # Then the replayed events, starting at the first surviving seq.
+    assert "pm_node_started" in frames[2]
+    assert f'"seq": {first_surviving}' in frames[2]

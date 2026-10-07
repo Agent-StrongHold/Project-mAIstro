@@ -1,10 +1,14 @@
 """In-memory ``Ontology`` implementation.
 
-Intended for tests and engine boot. Production uses
-``PostgresOntology`` (deferred to a follow-up commit on this branch).
+The only implementation of the ``Ontology`` Protocol — there is no
+durable, SQLAlchemy-backed ontology store. Exercised by the ontology
+tests; no production caller resolves semantic objects through it yet.
 
-Thread-safety: not thread-safe. Wrap with a lock or use the Postgres
-implementation for concurrent access.
+Thread-safety: not thread-safe. Wrap with a lock for concurrent access.
+
+Connecting this subsystem to a consumer is tracked by #34, which the
+reachability ledger records as the CONNECT disposition for
+``maistro.ontology``.
 """
 
 from __future__ import annotations

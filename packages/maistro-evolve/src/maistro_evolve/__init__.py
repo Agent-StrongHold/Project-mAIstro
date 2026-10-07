@@ -7,14 +7,20 @@ fitness scoring) that runs against seven named benchmarks — ``ifeval``,
 (``osworld`` is defined but not runnable; it has no scoring implementation).
 None of the seven run the official published benchmark harness against the
 official dataset — all score real model output at a small, handcrafted
-scale. Fidelity within that scale is NOT uniform: only ``swebench``/
+scale. Fidelity within that scale is NOT uniform: ``swebench``/
 ``terminalbench`` (real sandboxed execution) and ``ifeval`` (real
-per-instruction rule checks) are cleanly structural. ``bfcl``, ``gaia``, and
-``tau_bench`` each carry a real text-mention or fuzzy-substring fallback
-that materially weakens their fidelity; ``ragas`` is primarily a
-keyword-overlap heuristic. Full per-benchmark detail — including the exact
-degenerate cases — lives in this package's ``CLAUDE.md``; do not trust this
-paragraph's summary over that detail.
+per-instruction rule checks) are cleanly structural. The historical
+text-mention / fuzzy-substring fallbacks are gone — ``bfcl`` and
+``tau_bench`` were reduced to structured-call matching (#852), ``gaia`` and
+``ragas`` lost their fuzzy tiers to #384 (exact-match-or-verified-judge
+only) — and every score now carries evidence provenance
+(``EvalResult.metadata["evidence"]``, folded into ``PipelineGenome.eval_evidence``
+and surfaced by ``PopulationStore.champion_provenance()``).
+``benchmarks/calibration.py`` measures each scorer's narration
+false-positive rate against held-out adversarial fixtures. Full
+per-benchmark detail — including what each scorer is still NOT (the official
+corpus, the official methodology) — lives in this package's ``CLAUDE.md``;
+do not trust this paragraph's summary over that detail.
 
 **Governance note, not resolved here:** ``docs/adr/ADR-088-maistro-evolve-experimental.md``
 is Accepted and states this package "is EXPERIMENTAL... has no stability
@@ -37,3 +43,29 @@ try:
     __version__ = importlib.metadata.version("maistro-evolve")
 except importlib.metadata.PackageNotFoundError:  # pragma: no cover - editable/unbuilt checkout
     __version__ = "0.9.0-dev"
+
+# Shipped measurement surface (SPEC-282 / M4-D #24): the bounded curriculum
+# lane comparison is part of this package's public API — a consumer imports
+# it from the package root exactly like any other library capability. The
+# eager re-export is also what keeps the module on a real import path from
+# every ``maistro_evolve`` entry point: importing any submodule executes this
+# ``__init__``, so the reachability ratchet sees the module wired, not dead.
+# ADR-088 still governs: experimental package, API not locked.
+from .lane_comparison import (
+    CURRICULUM_ENABLED_LANE,
+    EXTERNAL_ONLY_LANE,
+    LaneBudget,
+    LaneComparisonReport,
+    LaneMeasurement,
+    compare_lanes,
+)
+
+__all__ = [
+    "CURRICULUM_ENABLED_LANE",
+    "EXTERNAL_ONLY_LANE",
+    "LaneBudget",
+    "LaneComparisonReport",
+    "LaneMeasurement",
+    "__version__",
+    "compare_lanes",
+]

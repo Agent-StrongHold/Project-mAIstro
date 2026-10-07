@@ -8,8 +8,9 @@ from maistro.memory.episodic.ranking import rank
 from maistro.memory.episodic.tiers import clamp_weight
 from maistro.memory.episodic.tiers import reinforce as _reinforce
 from maistro.memory.episodic.tiers import tick_decay as _tick_decay
+from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
 from maistro.memory.scopes import build_scope_filter, matches_scope
-from maistro.memory.types import REINFORCE_DELTA, DecaySweep, EpisodicMemory
+from maistro.memory.types import REINFORCE_DELTA, DecaySweep, EpisodicMemory, MemoryScope
 from maistro.observability.correlation import observed_provenance
 
 
@@ -30,7 +31,13 @@ def _selected(
     """
     if memory.deleted:
         return False
-    if not no_scope_filter and not matches_scope(memory, scope_filters):
+    # No caller identity: project changelog recall keeps non-global rows, but
+    # an org-bound global is still not public. `matches_scope` on the global
+    # filter is that rule; skipping it here was the #1247 leak.
+    if no_scope_filter:
+        if memory.scope == MemoryScope.GLOBAL and not matches_scope(memory, scope_filters):
+            return False
+    elif not matches_scope(memory, scope_filters):
         return False
     if memory.weight < min_weight:
         return False
@@ -48,10 +55,11 @@ class InMemoryEpisodicStore:
     this one is what a `memory://` deployment gets, deliberately.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, exposure_mode: MemoryExposureMode | None = None) -> None:
         self._memories: list[EpisodicMemory] = []
+        self._exposure_mode = exposure_mode
 
-    async def store(self, memory: EpisodicMemory) -> str:
+    async def store(self, memory: EpisodicMemory, *, actor: Actor = Actor.AGENT) -> str:
         """Store a memory, naming the execution that produced it.
 
         The volatile store fills provenance too, for the reason
@@ -59,7 +67,12 @@ class InMemoryEpisodicStore:
         and test, so a store that skipped this would let every behavioural
         test pass while only the durable ones did the work. Assigned onto the
         object because this store keeps the caller's instance (#64).
+
+        The write-authority gate is the first statement (ADR-057): an undeclared
+        mode refuses every write, and an agent write under `SYSTEM_MANAGED` is
+        denied before the list is touched.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         provenance = observed_provenance(
             run_id=memory.run_id,
             node_run_id=memory.node_run_id,
@@ -141,6 +154,8 @@ class InMemoryEpisodicStore:
         )
         # No agent/user/team/org filter given: project_id alone selects memories
         # (e.g. project changelog recall), independent of scope hierarchy.
+        # Org-bound globals stay on the scope rule anyway (#1247): a missing
+        # caller org must not publish them.
         no_scope_filter = not (agent_id or user_id or team_id or org_id)
         matched = [
             mem

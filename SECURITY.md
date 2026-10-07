@@ -242,7 +242,10 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    the transport for each one; the browser seam re-validates per hop the same way, because
    Chromium consults the route handler for every navigation, redirect and subresource before the
    network stack connects. `tasks/progress_webhook` and `integrations/ntfy` built private
-   clients and were moved onto the pool so the seam actually reaches them.
+   clients and were moved onto the pool so the seam actually reaches them. The connector/source
+   SDK joins the census the same way: `connectors/sync.py` imports `httpx` to normalize upstream
+   failures at the engine boundary, and every request it drives rides the pooled session the
+   host hands the connector, so the seam reaches it without its own client.
 
    The last private client was `cli/_approvals.py`, a *synchronous* `httpx.Client` the async-only
    pool had nothing to lend. It now builds through `maistro.http::sync_client`, whose transports

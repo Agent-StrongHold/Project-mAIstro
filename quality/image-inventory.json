@@ -1,5 +1,5 @@
 {
-  "_comment": "One disposition and one owner for every Dockerfile in the repository (#346). PUBLISHED = pushed to a registry by release.yml. DISTRIBUTED = built from this repo by an operator or a shipped script, and possibly pushed to the operator's own registry, but never published by us. INTERNAL = built only by this repository's own CI or test tooling and never run outside it; must justify itself in prose. RETIRED = superseded; names what replaced_by it and the issue that owns its removal. PUBLISHED and DISTRIBUTED must name `built_by` and `scanned_by` jobs that exist, OR carry a `coverage_exception` naming an owner, an issue and a reason -- version-scoped and owned, per #346's AC-4, because an exception nobody owns is just an exemption. Checked by scripts/check-image-inventory.py: every Dockerfile on disk appears exactly once, no entry names a Dockerfile that is gone, and adding an image without its jobs (or an owned exception) fails CI -- that is the point. What the gate does NOT verify: that release.yml publishes the digest security.yml scanned. security.yml builds local candidate tags and release.yml rebuilds independently, so mutable bases and dependency resolution can make the released artifact differ from the scanned one. That is #346's AC-5 and it is not closed here (Codex, #593).",
+  "_comment": "One disposition and one owner for every Dockerfile in the repository (#346). PUBLISHED = pushed to a registry by release.yml. DISTRIBUTED = built from this repo by an operator or a shipped script, and possibly pushed to the operator's own registry, but never published by us. INTERNAL = built only by this repository's own CI or test tooling and never run outside it; must justify itself in prose. RETIRED = superseded; names what replaced_by it and the issue that owns its removal. PUBLISHED and DISTRIBUTED must name `built_by` and `scanned_by` jobs that exist, OR carry a `coverage_exception` naming an owner, an issue and a reason -- version-scoped and owned, per #346's AC-4, because an exception nobody owns is just an exemption. Checked by scripts/check-image-inventory.py: every Dockerfile on disk appears exactly once, no entry names a Dockerfile that is gone, and adding an image without its jobs (or an owned exception) fails CI -- that is the point. A PUBLISHED entry claiming `published_digest_verified: true` is machine-checked against the publishing job's wiring (#611, #346 AC-5): release.yml's images job must build each image exactly once into its `-rc` quarantine repository, scan the candidate digest with Trivy (HIGH/CRITICAL, exit-code 1) and Grype (--fail-on high --only-fixed) -- the same policy security.yml enforces on PRs and nightlies -- apply the release tags (version, X.Y, latest) to that scanned digest via `docker buildx imagetools create` only after both scans pass, and cosign-sign that same digest, so the digest the scans admit is the digest the release publishes and the signature attests. History: #593 recorded this gap as `published_digest_verified: false` because release.yml rebuilt independently of security.yml's scanned candidates; #349 had already closed the mutable-base half (every base/tool image reference is digest-pinned in quality/image-pins.json, checked by scripts/check-image-pins.py, and release.yml's images job refuses a release whose provenance attestation does not name every pinned base digest); #611 closed the rebuild half by making the release path single-build. Both flags above were flipped only together with that re-wiring, and the gate re-reads the wiring on every run -- re-introducing a second build, a pre-scan release tag, an unsigned digest or a scan that never admits the published digest flips the claim back to what it would then honestly be: a failure.",
   "images": [
     {
       "id": "maistro-engine",
@@ -12,10 +12,11 @@
         ".github/workflows/release.yml:images"
       ],
       "scanned_by": [
-        ".github/workflows/security.yml:containers"
+        ".github/workflows/security.yml:containers",
+        ".github/workflows/release.yml:images"
       ],
       "published_by": ".github/workflows/release.yml:images",
-      "published_digest_verified": false
+      "published_digest_verified": true
     },
     {
       "id": "hive-conductor",
@@ -28,10 +29,11 @@
         ".github/workflows/release.yml:images"
       ],
       "scanned_by": [
-        ".github/workflows/security.yml:containers"
+        ".github/workflows/security.yml:containers",
+        ".github/workflows/release.yml:images"
       ],
       "published_by": ".github/workflows/release.yml:images",
-      "published_digest_verified": false
+      "published_digest_verified": true
     },
     {
       "id": "maistro-engine-research",
