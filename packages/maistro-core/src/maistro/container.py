@@ -24,6 +24,8 @@ from maistro.a2a.guest_peers import GuestPeerManager
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
+from maistro.backlog.store import BacklogStore
+from maistro.backlog.wiring import wire_backlog_store
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
@@ -254,6 +256,11 @@ class Container:
     #: Append-only BacklogItem history (#101), on the Project store's backend.
     #: References canonical Goals/Runs; never an execution authority itself.
     backlog_history_store: BacklogHistoryStore = None  # type: ignore[assignment]
+    #: The one BacklogItem work-source store (#98), on the Project store's
+    #: backend. Portfolio/acceptance/control-plane state served by the
+    #: Workspace backlog routes; a claim coordinates who may progress an item
+    #: now and never reassigns Goal ownership.
+    backlog_store: BacklogStore = None  # type: ignore[assignment]
     #: Durable home for Workspace work campaigns and their operator controls
     #: (#103, SPEC-092626-1831). SQLite-backed when the deployment selected
     #: SQLite, so pin-next / pause / exclude / human-only survive a restart
@@ -359,6 +366,14 @@ class Container:
     #: transaction paused between read and insert would be committed or
     #: discarded by a sibling while `append` reported success.
     history_conn: Any = None
+    #: The BacklogItem work-source store's own SQLite connection (#98), on the
+    #: same terms as `session_conn` and `schedule_conn`: the store holds a
+    #: `BEGIN IMMEDIATE` across each state change and its provenance event
+    #: append, and the spine stores sharing `db_pool` commit and roll back on
+    #: their own locks' cadence, so a sibling's commit could land inside the
+    #: store's transaction and publish an item mutation whose event row never
+    #: existed.
+    backlog_conn: Any = None
     #: The asyncpg pool, when PostgreSQL is selected. Separate from `db_pool`
     #: because the two are different objects with different APIs, and code that
     #: branches on "is a database configured" needs to know which.
@@ -536,10 +551,11 @@ class Container:
 
         SQLite follows the same ownership rule (#1161): the connections this
         container opened -- `db_pool`, the session store's `session_conn`, the
-        schedule store's `schedule_conn` and the history journal's
-        `history_conn`, all from one `_wire_sqlite_backend` call -- are closed
-        here, each exactly once, and a connection the caller supplied stays
-        the caller's.
+        schedule store's `schedule_conn`, the history journal's
+        `history_conn` and the backlog work-source store's `backlog_conn`,
+        all from one `_wire_sqlite_backend` call -- are closed here, each
+        exactly once, and a connection the caller supplied stays the
+        caller's.
         aiosqlite's `close()` drains the operations still queued on its worker
         thread before releasing the database, so a durable write a store has
         already issued completes rather than being dropped by the shutdown;
@@ -588,20 +604,21 @@ class Container:
             await self._close_owned_sqlite_connections()
 
     async def _close_owned_sqlite_connections(self) -> None:
-        """Close the four SQLite connections this container opened.
+        """Close the five SQLite connections this container opened.
 
-        Four connections, one ownership decision (#327, #1199, #101): the
-        session, schedule and history stores' connections were opened by
-        the same `_wire_sqlite_backend` call, so one flag governs all of
-        them. A close that raises must not strand the others, and must not
-        leave the container looking open (``closed`` is already True, so no
-        retry re-enters).
+        Five connections, one ownership decision (#327, #1199, #101, #98):
+        the session, schedule, history and backlog stores' connections were
+        opened by the same `_wire_sqlite_backend` call, so one flag governs
+        all of them. A close that raises must not strand the others, and must
+        not leave the container looking open (``closed`` is already True, so
+        no retry re-enters).
         """
         for connection in (
             self.db_pool,
             self.session_conn,
             self.schedule_conn,
             self.history_conn,
+            self.backlog_conn,
         ):
             if connection is None:
                 continue
@@ -618,6 +635,7 @@ class Container:
         self.session_conn = None
         self.schedule_conn = None
         self.history_conn = None
+        self.backlog_conn = None
         self.holds_db_pool = False
 
     @staticmethod
@@ -2223,6 +2241,7 @@ async def create_container(
     session_conn: Any = None
     schedule_conn: Any = None
     history_conn: Any = None
+    backlog_conn: Any = None
     # Held aside before the URL branch runs, because that branch rebinds
     # `pg_pool`. Rebinding it unconditionally — which is what merging #122 into
     # #135 first did — drops the parameter on the floor, and a caller-supplied
@@ -2245,12 +2264,13 @@ async def create_container(
             session_conn,
             schedule_conn,
             history_conn,
+            backlog_conn,
             quota_tracker,
             learning_store,
             outcome_store,
             session_store,
         ) = await _wire_sqlite_backend(config.database_url, exposure_mode=exposure_mode)
-        # All four connections were opened for this container (#1161);
+        # All five connections were opened for this container (#1161);
         # `aclose` closes them. The pg branch below sets its flag for the same
         # reason.
         holds_db_pool = True
@@ -2339,6 +2359,15 @@ async def create_container(
     )
     backlog_history_store = await wire_backlog_history_store(
         history_conn,
+        project_store=project_scope_store,
+        pg_pool=pg_pool,
+    )
+    # The BacklogItem work-source rides the Project store's backend too, but
+    # owns its connection (SQLite) or the shared pool (PostgreSQL): unlike the
+    # history journal it has all three backends, and PostgreSQL ships its
+    # tables as Alembic revision 059 (#98).
+    backlog_store = await wire_backlog_store(
+        backlog_conn,
         project_store=project_scope_store,
         pg_pool=pg_pool,
     )
@@ -2630,6 +2659,7 @@ async def create_container(
         project_scope_store=project_scope_store,
         workspace_store=workspace_store,
         backlog_history_store=backlog_history_store,
+        backlog_store=backlog_store,
         campaign_store=campaign_store,
         working_log=working_log,
         run_store=run_store,
@@ -2650,6 +2680,7 @@ async def create_container(
         session_conn=session_conn,
         schedule_conn=schedule_conn,
         history_conn=history_conn,
+        backlog_conn=backlog_conn,
         pg_pool=pg_pool,
         holds_pg_pool=holds_pg_pool,
         holds_db_pool=holds_db_pool,
@@ -3188,6 +3219,7 @@ async def _wire_sqlite_backend(
     Any,
     Any,
     Any,
+    Any,
     QuotaTracker,
     LearningStore,
     OutcomeStore,
@@ -3200,10 +3232,10 @@ async def _wire_sqlite_backend(
     default in-memory stores — no Postgres server required.
 
     Returns the shared connection first, the session store's own connection
-    second (#327), the schedule store's third (#1199) and the history
-    journal's fourth (#101), so `create_container` can hold them all and
-    record ownership of them: `aclose` closes what this function opened
-    (#1161).
+    second (#327), the schedule store's third (#1199), the history journal's
+    fourth (#101) and the backlog work-source store's fifth (#98), so
+    `create_container` can hold them all and record ownership of them:
+    `aclose` closes what this function opened (#1161).
     """
     import aiosqlite  # type: ignore[import-not-found, unused-ignore]
 
@@ -3257,6 +3289,12 @@ async def _wire_sqlite_backend(
     # pathless-`sqlite://` caveat as above: only the journal reads
     # `workspace_backlog_history`.
     history_conn = await aiosqlite.connect(path)
+    # The BacklogItem work-source store's, for the same reason (#98): every
+    # mutation holds `BEGIN IMMEDIATE` across the state change and its
+    # provenance event append, so a sibling writer's commit or rollback must
+    # never land inside it. Same pathless-`sqlite://` caveat as above: only
+    # the store reads `backlog_items`.
+    backlog_conn = await aiosqlite.connect(path)
 
     sqlite_quota_tracker = SqliteQuotaTracker(conn)
     sqlite_learning_store = SqliteLearningStore(conn, exposure_mode=exposure_mode)
@@ -3277,6 +3315,7 @@ async def _wire_sqlite_backend(
         session_conn,
         schedule_conn,
         history_conn,
+        backlog_conn,
         quota_tracker,
         learning_store,
         outcome_store,

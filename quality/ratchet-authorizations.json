@@ -62,31 +62,6 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1154",
       "reason": "Holds GraphRun, the ADR-062 Graph-domain traversal (phase machine, iteration budget, beam scoring). Its only src importer is maistro.testing.harness, the shipped test harness of ADR-065 / SPEC-224. The canonical durable executor in maistro.graph.durable_runs never imported it -- the two executors shared a name, not code -- so retiring run_graph in #1154 removes the single import edge that made this module reachable. Traversal semantics are still exercised by packages/maistro-core/tests/graph/; canonical execution coverage is separate and untouched."
-    },
-    "maistro.backlog": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#98",
-      "reason": "maistro.backlog ships the #82/#98 canonical DB-backed Workspace BacklogItem work-source as a published maistro-core surface, behavior-pinned by the three-backend conformance suite. No process entry point imports it yet: the server wiring is deliberate later epic scope, not an oversight - #99 exposes the Conductor backlog UI over this store, #102 migrates root BACKLOG.md into it, and #103/#804 consume campaigns/claims. quality/reachability-dispositions.json records the CONNECT disposition with that named root; all five modules leave the baseline together when the server imports the store."
-    },
-    "maistro.backlog.model": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#98",
-      "reason": "maistro.backlog ships the #82/#98 canonical DB-backed Workspace BacklogItem work-source as a published maistro-core surface, behavior-pinned by the three-backend conformance suite. No process entry point imports it yet: the server wiring is deliberate later epic scope, not an oversight - #99 exposes the Conductor backlog UI over this store, #102 migrates root BACKLOG.md into it, and #103/#804 consume campaigns/claims. quality/reachability-dispositions.json records the CONNECT disposition with that named root; all five modules leave the baseline together when the server imports the store."
-    },
-    "maistro.backlog.pg_store": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#98",
-      "reason": "maistro.backlog ships the #82/#98 canonical DB-backed Workspace BacklogItem work-source as a published maistro-core surface, behavior-pinned by the three-backend conformance suite. No process entry point imports it yet: the server wiring is deliberate later epic scope, not an oversight - #99 exposes the Conductor backlog UI over this store, #102 migrates root BACKLOG.md into it, and #103/#804 consume campaigns/claims. quality/reachability-dispositions.json records the CONNECT disposition with that named root; all five modules leave the baseline together when the server imports the store."
-    },
-    "maistro.backlog.sqlite_store": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#98",
-      "reason": "maistro.backlog ships the #82/#98 canonical DB-backed Workspace BacklogItem work-source as a published maistro-core surface, behavior-pinned by the three-backend conformance suite. No process entry point imports it yet: the server wiring is deliberate later epic scope, not an oversight - #99 exposes the Conductor backlog UI over this store, #102 migrates root BACKLOG.md into it, and #103/#804 consume campaigns/claims. quality/reachability-dispositions.json records the CONNECT disposition with that named root; all five modules leave the baseline together when the server imports the store."
-    },
-    "maistro.backlog.store": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#98",
-      "reason": "maistro.backlog ships the #82/#98 canonical DB-backed Workspace BacklogItem work-source as a published maistro-core surface, behavior-pinned by the three-backend conformance suite. No process entry point imports it yet: the server wiring is deliberate later epic scope, not an oversight - #99 exposes the Conductor backlog UI over this store, #102 migrates root BACKLOG.md into it, and #103/#804 consume campaigns/claims. quality/reachability-dispositions.json records the CONNECT disposition with that named root; all five modules leave the baseline together when the server imports the store."
     }
   },
   "vulture": {
