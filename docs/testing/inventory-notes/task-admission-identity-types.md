@@ -12,12 +12,13 @@ production caller, RunStore change, task-idempotency change, SQL, or runtime
 wiring.
 
 `uv run pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q -x`
-collected and passed 76 cases. `uv run python scripts/check-suite-inventory.py
---suite packages/maistro-core/tests` collected 13,366 node IDs. The +76 delta
-is the focused file, including the module-local export and enum-shape contract
-check plus canonical JSON preservation of valid escaped lone surrogates and
-normalization of excessive nesting failures to ValueError;
-it is unchanged by unrelated test additions in the integration branch.
+collects and passes 79 cases at this leaf head. `uv run python
+scripts/check-suite-inventory.py --suite packages/maistro-core/tests` collects
+15,377 node IDs. The front-matter +79 delta is the focused file, including the
+module-local export and enum-shape contract check plus canonical JSON
+preservation of valid escaped lone surrogates and normalization of excessive
+nesting failures to ValueError; it is unchanged by unrelated test additions in
+the integration branch.
 
 ## Security-signature revalidation
 
