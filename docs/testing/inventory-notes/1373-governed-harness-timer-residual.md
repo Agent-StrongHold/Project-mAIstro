@@ -219,7 +219,8 @@ Fresh local verification of this integrated tree:
   found no blocking defect in this bounded residual.
 - Exact-base diff coverage: all four changed measured source files meet the
   unchanged **90% line / 80% branch-arc** floors.
-- Repository Ruff and format checks, strict Core mypy (766 source files),
+- Repository Ruff and format checks, strict mypy (868 source files across the
+  configured package roots),
   Radon, exact Vulture, release consistency and candidate diff checks pass.
 - Inventory: **15,174 Core / 3,443 Hive backend**; all 17 suites match the
   recorded inventory (28,664 unique identities, no duplicate evidence).
