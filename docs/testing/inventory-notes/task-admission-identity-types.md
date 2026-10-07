@@ -1207,8 +1207,69 @@ baseline entry, grant, suppression, or caller to evade that.
   `packages/maistro-core/tests` suite 14,012 passed / 965 skipped / 1
   xfailed; full `check-suite-inventory.py` ok (17 suites match); full
   `check-suite-inventory.py --suite packages/maistro-core/tests` collected
-  14,876 node IDs, expected = baseline + Σ deltas, ok; `check-test-duplicates.py`
-  ok (1,500 unique files).
+  14,978 node IDs, expected = baseline + Σ deltas, ok; `check-test-duplicates.py`
+  ok (1,500 unique files). [Figure corrected in round-15: this bullet's own
+  pytest totals 14,012 + 965 + 1 = 14,978 and the two focused tests added on
+  top of this head (1d3fe03 measures 14,980) force 14,978 here; the earlier
+  14,876 was a transcription error.]
+
+## 2026-10-07 round-15 write-authorized repair: figure correction and exact-debt-ledger dissection at 1d3fe03
+
+Round-15 executes the repair the round-14 verify round deferred for lack of
+write authorization, plus the lane-assigned CI-repair pass on the
+`exact-debt-ledger` job, all re-measured first-hand at `1d3fe03ce47a`
+(trusted base `9bd1a93eefc4`, unchanged on the remote):
+
+- **Inventory-figure repair.** The round-14 bullet above recorded "14,876
+  node IDs" for `check-suite-inventory.py --suite packages/maistro-core/tests`
+  at merged head `11bcd0e09`; corrected to 14,978. Proof chain, each link
+  executed this round: the driver's inventory run at `1d3fe03` collected
+  14,980 node IDs (re-run locally, ok); `git diff 11bcd0e09..1d3fe03` adds
+  exactly two test functions to the focused file; therefore `11bcd0e09`
+  collected 14,980 − 2 = 14,978, independently corroborated by the same
+  bullet's pytest totals 14,012 passed + 965 skipped + 1 xfailed = 14,978.
+  No other figure in this note was contradicted by re-measurement.
+- **`exact-debt-ledger` dissection (all three job steps executed with CI's
+  exact argv, RATCHET_BASE_REV=origin/develop).** `check-shipped-surface-truth.py`
+  rc=0. `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` rc=1 on exactly the five NEW identities
+  `admission_identity.py:515-520` (`MISMATCH`, `REPLAYED`, `TAKEOVER`,
+  `REPLACE_EXPIRED`, `LEGACY_UNRESOLVED` — the issue-mandated
+  `AdmissionAssessment` members), with the candidate-ledger bookkeeping half
+  clean: the sanctioned round-13 +5 rows bank every current finding, the
+  scan reports 1,333 findings against 1,333 banked identities, and no
+  candidate-delta or unclassified/never-allowlist section prints. The sole
+  residual is the trusted-base authorization half: `unauthorized =
+  trusted_added − load_authorizations(base=trusted_ref.base_sha)`
+  (scripts/check-vulture-baseline.py), and grants are read from the merge
+  base only, so per the two-merge rule no candidate-side edit can turn this
+  gate green — the gate says so verbatim ("Running --update in this branch
+  cannot authorize it; land a reviewed grant first"). The five members are
+  not genuinely dead (they are the leaf's fixed contract, exercised by the
+  focused suite) and no candidate fix eliminates them, so the round's
+  "remove identities your fix eliminated" clause has an empty set.
+  `check-ratchet-provenance.py` rc=1 solely via its reachability sub-gate
+  (`maistro.runs.admission_identity` NEW unreachable and missing from the
+  candidate reachability baseline — a ledger this round is explicitly not
+  authorized to touch); its vulture leg is clean.
+- **Structural companions re-measured.** `check-reachability.py` rc=1 with
+  exactly one NEWLY UNREACHABLE module; `check-reachability-dispositions.py`
+  rc=0; `check-promotion-surface.py` rc=0; `ruff check .` and
+  `ruff format --check .` clean; module `mypy` clean; focused suite 79
+  passed; `check-suite-inventory.py --suite packages/maistro-core/tests` ok
+  at 14,980 (front-matter +79 unchanged). The root-suite reachability
+  self-checks measured **three** failures at this head
+  (`test_reachability_baseline_identity.py::
+  test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `::test_the_baseline_is_exactly_the_unreachable_set`,
+  `test_check_reachability.py::test_baseline_matches_the_tree`), all
+  printing the single error `New unreachable modules:
+  maistro.runs.admission_identity` — confirming round-14's three-failure
+  attribution of the CI `test` job to the same structural root.
+- **No gate, ledger, grant, or source file changed this round.** The only
+  edit is this note (the figure correction and this section);
+  `quality/vulture-baseline.json` already carries the exact sanctioned
+  amendment, and `git diff 9bd1a93e..HEAD` remains the four manifest files.
 - **Coverage completion (evidence-backed, not cosmetic).** CI's own coverage
   report named `admission_identity.py:139` as the module's only missed
   statement — the success path of the `_parse_finite_float` hook, whose
