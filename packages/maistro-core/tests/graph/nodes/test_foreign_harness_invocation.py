@@ -409,7 +409,7 @@ class TestProvidersThroughInvocationPath:
         with pytest.raises(TypeError, match="HarnessAdapter or a HarnessRunner"):
             AgentSpawnHarnessNode(adapters={"junk": object()})  # type: ignore[dict-item]
 
-    async def test_resume_prefers_the_provider_poll_evidence(self) -> None:
+    async def test_legacy_terminal_answer_does_not_trigger_an_ungoverned_poll(self) -> None:
         runner = _ScriptedRunner()
         effects = await _effects_with_binding(provider_name="scripted")
         node = AgentSpawnHarnessNode(
@@ -430,9 +430,10 @@ class TestProvidersThroughInvocationPath:
             }
         }
         result = await node.run(inputs, ctx)
-        # the adapter's own poll evidence won over the transported answer
-        assert result.output.output == "task done"
-        assert result.output.metadata["session_id"] == "scripted-session-1"
+        # A direct legacy answer is a domain projection, not authority for
+        # provider I/O. Canonical timer observations are tested separately.
+        assert result.output.output == "stale transported answer"
+        assert result.output.metadata == {}
 
     async def test_resume_falls_back_to_the_answer_without_an_adapter(self) -> None:
         node = AgentSpawnHarnessNode()
@@ -448,14 +449,14 @@ class TestProvidersThroughInvocationPath:
         assert result.output.output == "recorded answer"
 
     @pytest.mark.parametrize("poll_mode", ["running", "failed", "raises"])
-    async def test_resume_keeps_the_recorded_answer_when_poll_brings_nothing(
+    async def test_legacy_answer_never_polls_an_unbound_provider(
         self,
         poll_mode: str,
     ) -> None:
-        """A lost/failed/running poll never blocks or edits the answer path.
+        """A typed compatibility answer grants no remote-read authority.
 
-        Pins the degenerate halves of the poll-evidence overlay: only a
-        *successful* poll result may overwrite the transported answer.
+        Provider behavior is irrelevant: no Binding or canonical continuation
+        authorizes a physical observation on this direct-call legacy path.
         """
         if poll_mode == "raises":
             adapter: _PollingStubAdapter = _PollingStubAdapter(raise_on_poll=True)
@@ -484,9 +485,9 @@ class TestProvidersThroughInvocationPath:
         assert result.output.output == "recorded answer"
         assert result.output.metadata == {"who": "waker"}
         assert result.output.status == "completed"
-        assert adapter.polls == 1  # the poll was attempted, not skipped
+        assert adapter.polls == 0
 
-    async def test_poll_evidence_extends_rather_than_replaces_answer_metadata(
+    async def test_legacy_answer_metadata_is_not_overlaid_by_an_unbound_provider(
         self,
     ) -> None:
         adapter = _PollingStubAdapter(
@@ -508,11 +509,11 @@ class TestProvidersThroughInvocationPath:
             }
         }
         result = await node.run({"harness_type": "stub", "task": "x"}, ctx)
-        # provider output wins; poll metadata overrides colliding keys while
-        # answer-only keys survive the merge
-        assert result.output.output == "fresh from the provider"
-        assert result.output.metadata == {"who": "waker", "session_id": "s-9"}
+        # The provider result is never read without the canonical poll seam.
+        assert result.output.output == "stale transported answer"
+        assert result.output.metadata == {"who": "waker", "session_id": "transported"}
         assert result.output.status == "completed"
+        assert adapter.polls == 0
 
 
 # --- one parent Run over one native node + one foreign-harness node -------------
