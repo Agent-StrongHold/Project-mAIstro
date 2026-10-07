@@ -161,6 +161,14 @@ or placeholder-only section.
 
 ### Security
 
+- **Boot Agent model tools retain governed admission and logical identity** (#1954 follow-up; [review finding](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1954#discussion_r4189499393)).
+  Clarification and model-fallback search use the persisted Run actor/scope and
+  configured model Binding through the existing Provider/Invocation boundary.
+  Agent, delegation, response-round and ToolCall identity distinguish intentional
+  calls while preserving replay. Ambiguous outcomes stop the strategy. The tool
+  deadline also bounds third-party adapters, without replacing their catalog or
+  retry authority. Hive's configured API prefix and omitted sampling are retained.
+
 - **Hive DAG model-backed tools use governed model egress (#1085, #1370).**
   `clarify` and the model fallback of `web_search` require a configured
   `model.chat` Binding referenced by the DAG node's `model_binding_id`
@@ -299,6 +307,15 @@ or placeholder-only section.
   for tool …` and logs why. The standalone ReAct and Artificer strategy paths
   apply the same rule. Callers that construct Agents directly must wire a
   Sentinel whose permission table grants the tools they need.
+- **Layer-1 episodic recall is scoped to the current Project (#1047,
+  partial).** `DefaultContextAssemblyPolicy.layer1` filtered by `agent_id`
+  only, so an agent id used in two Projects/Workspaces recalled Project A's
+  AGENT-scope memories inside Project B. `layer1` (and the
+  `ContextAssemblyPolicy` protocol) now take a keyword-only `project_id`,
+  which `assemble` passes through to the working-memory hot projection and
+  both ranked and unranked durable fallback reads; a memory with no project
+  is not guessed into one. An empty `project_id` keeps the agent-wide recall;
+  nonempty values, including whitespace, remain exact filters.
 
 - **Retired the process-local Home Assistant confirmation store and
   `/v1/confirms` (#48, partial).** `GET /v1/confirms`, `GET
