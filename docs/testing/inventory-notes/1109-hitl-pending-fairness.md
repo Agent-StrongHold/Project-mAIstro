@@ -50,3 +50,27 @@ and upgrading): the PostgreSQL parametrizations of the new suite pass, and
 `packages/maistro-core/tests/graph/durable_runs` +
 `packages/maistro-core/tests/runs` are green with the PG legs enabled
 (2067 passed, 3 skipped).
+
+## CI-repair round: adoption-safe DDL for migration 059
+
+The first CI evaluation of this branch failed `postgres (pg17/pg18)`,
+`coverage (PostgreSQL)`, `test`, and (by aggregation) `integration-scope` on
+one root cause: 059's bare `ADD COLUMN`/`CREATE INDEX` assumed a fresh
+database, so the chain re-application path (`stamp` to 039's parent, then
+`upgrade head` — the repair walk `test_migration_chain.py` pins) died on
+`DuplicateColumn: column "has_hitl_pause" ... already exists`, and the root
+suite's chain-tip pin still named `058`. The repair makes 059's DDL guarded
+(`ADD COLUMN IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS`, the contract 045
+states for the chain; the backfill re-runs safely because it recomputes the
+projection from canonical pause entries with the runtime's own policy) and
+re-points the tip pin to `059`. No test was added or removed: the delta above
+is unchanged, and the regression evidence is the pre-existing chain-level
+adoption test, which failed before the repair and passes after.
+
+Repair verified against a real PostgreSQL 18.6 server: the full `postgres`
+job sequence (chain tests, `upgrade head`, `downgrade base` + `upgrade head`,
+persistence 809, container_postgres 15, workspaces with
+`MAISTRO_REQUIRE_PG_LEGS=1` 328, canvas supported path 7), the full
+`tests/migrations` suite under coverage on an unmigrated database (157
+passed), and the `coverage (PostgreSQL)` producer's core suites (5610
+passed).

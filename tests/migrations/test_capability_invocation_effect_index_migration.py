@@ -93,9 +93,10 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # most recently past develop's `053_learning_lifecycle_columns` —
     # re-parented onto that quota-door tip `056` as `057_learning_
     # validation_provenance` and now re-parents onto the planner-stability
-    # tip as `058_learning_validation_provenance`. The single linear head
-    # is `058`.
-    walked = {item.revision for item in directory.walk_revisions("base", "058")}
+    # tip as `058_learning_validation_provenance`. #1109's pause-kind
+    # projection (M1-B8) then continued that tip as
+    # `059_hitl_pause_kind_index`. The single linear head is `059`.
+    walked = {item.revision for item in directory.walk_revisions("base", "059")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -114,7 +115,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "043_invocation_quota_door" in walked
     assert "057" in walked
     assert "058" in walked
-    assert directory.get_heads() == ["058"]
+    assert "059" in walked
+    assert directory.get_heads() == ["059"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

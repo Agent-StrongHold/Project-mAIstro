@@ -12,6 +12,16 @@ is revalidated against it at read time.
 Revision ID: 059
 Revises: 058
 Create Date: 2026-10-06
+
+The DDL is guarded (``ADD COLUMN IF NOT EXISTS`` / ``CREATE INDEX IF NOT
+EXISTS``), matching the runtime stores' own DDL and the adoption rule 044
+states for the chain: re-applying the chain over a schema that already
+carries the projection -- stamped back and re-upgraded, the repair path
+tests/migrations/test_migration_chain.py pins -- must adopt it untouched
+instead of failing on ``DuplicateColumn`` (#1194's 045 made the same point
+for the same reason). Re-running the backfill is safe by construction: it
+recomputes the projection from the canonical pause entries with the
+runtime's own policy, so it lands on the values the store maintains anyway.
 """
 
 from __future__ import annotations
@@ -26,14 +36,9 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "graph_continuations",
-        sa.Column(
-            "has_hitl_pause",
-            sa.Boolean(),
-            nullable=False,
-            server_default=sa.false(),
-        ),
+    op.execute(
+        "ALTER TABLE graph_continuations "
+        "ADD COLUMN IF NOT EXISTS has_hitl_pause BOOLEAN NOT NULL DEFAULT FALSE"
     )
     # The pause entry remains authoritative; this projection only makes human
     # eligibility selectable without reading a bounded PAUSED prefix first.
@@ -62,10 +67,9 @@ def upgrade() -> None:
             """
         )
     )
-    op.create_index(
-        "ix_graph_continuations_hitl_paused",
-        "graph_continuations",
-        ["status", "has_hitl_pause", "created_at", "run_id"],
+    op.execute(
+        """CREATE INDEX IF NOT EXISTS ix_graph_continuations_hitl_paused
+           ON graph_continuations (status, has_hitl_pause, created_at, run_id)"""
     )
 
 
