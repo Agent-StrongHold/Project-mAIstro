@@ -1409,3 +1409,62 @@ erases it: the reviewed vulture + reachability grant pair must land on the
 integration base, or the parent #1845 integration must supply the runtime
 consumer that reads the five members and imports the module. Handoff only;
 no integration approval; stack stays unmerged per the issue.
+
+## 2026-10-07 round-18 re-execution at the advanced evaluation head
+
+Two repair attempts at `453c92a8` were lost to provider errors before writing
+a result record (`020fd504`, and the job before it); their local driver checks
+(sync, ruff check/format, focused pytest, per-suite inventory) had all passed.
+This round independently re-executed the full battery at the dispatched exact
+head `453c92a8` — the merge of `origin/develop` `e1b13dcd` into the branch —
+with `RATCHET_BASE_REV=origin/develop` (trusted base resolves to merge-base
+`e1b13dcd`), confirming round-17's prediction that the develop sync cures
+nothing:
+
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI argv): rc=1 with exactly the five NEW unauthorized
+  identities `admission_identity.py:515-520` (MISMATCH, REPLAYED, TAKEOVER,
+  REPLACE_EXPIRED, LEGACY_UNRESOLVED) against the trusted base; the
+  candidate-banking half is clean (1,328 reviewed identities -> 1,333
+  findings, no candidate-bookkeeping delta). The trusted-base ledger carries
+  1,328 identities and zero `admission_identity` rows; its
+  `ratchet-authorizations.json` has 61 vulture grants, none for this module.
+  `git diff --numstat origin/develop -- quality/` remains exactly +5 in
+  `vulture-baseline.json` (the round-13 sanctioned rows; the image/workflow
+  inventory deltas are absorbed develop state, and both gates pass), so no
+  merge dropped ledger rows. Nothing is genuinely dead to eliminate: the five
+  members are the issue-mandated `AdmissionAssessment` pairs, consumed by no
+  production code in this leaf by design.
+- `check-ratchet-provenance.py` (exact-debt-ledger job step 1): rc=1, solely
+  `check-reachability-provenance.py: trusted-base gate returned 1` — the same
+  deliberately unreachable module against the grant-free base. The job
+  therefore carries two independent reds rooted in one cause.
+- `check-reachability.py` (Quality gate): rc=1, 1,359 production modules /
+  170 unreachable, exactly one NEWLY UNREACHABLE
+  (`maistro.runs.admission_identity`, issue-predicted).
+- Every other locally runnable Quality-gate step is green at this head:
+  ruff check/format tree-wide, radon ratchet, xenon (140 <= 145, no module/
+  average violations), version/release consistency, doc links, enumerations,
+  workspace retirement, route permissions, principal identity, frontend
+  typed client, wiring reads, agent store writes, contract markers,
+  convergence matrix, reachability dispositions (147 CONNECT / 20 LIBRARY /
+  2 RETIRE), security inventory, image inventory, image pins, workflow
+  inventory, backlog consistency, execution lifecycles, model egress,
+  foreign-harness egress, promotion surface, shipped-surface truth,
+  credential authority, interrogate (core 58.2% >= 46), architecture
+  fitness (23 passed), and the full suite inventory (17 suites, 28,745 node
+  IDs; per-suite `packages/maistro-core/tests` 15,222 — both match).
+- Focused acceptance unchanged and green: 79 pytest cases passed; ruff
+  check/format clean on module+tests; module mypy clean; `__all__` = the 21
+  mandated names; no `maistro.runs` export and zero production importers of
+  the module (grep-verified at this head). #1841 security signature intact:
+  `require_admitted_actor(actor_principal_id: str | None) -> str`
+  (`store_boundary.py:56`), `RunStore.get_run(..., principal_id=...)`
+  (`store.py:496`), and `actor_principal_id: str | None = None` retained on
+  `create_run`/`claim_run_by_effect`.
+
+The blocker and resolution are unchanged and remain outside this leaf's
+authority: land the reviewed vulture + reachability grant pair on the
+integration base first (two-merge rule), or let the parent #1845 integration
+supply the runtime consumer. Handoff only; no integration approval; stack
+stays unmerged per the issue.
