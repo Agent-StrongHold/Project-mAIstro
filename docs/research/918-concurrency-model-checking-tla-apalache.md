@@ -76,4 +76,4 @@ Experimental model checking outputs are evidence, not authorization. Nothing in 
 
 ## Dispositions
 
-- **WATCH** — exploratory harness created (explicit-state checker + hand-checked occurrence-claim model, 37 checks); no Apalache/TLA+ run and no real-subsystem abstraction yet. Move to INCUBATE on a successful abstraction of a real MAIstro subsystem with non-spurious counterexamples (checker or Apalache). Move to GRADUATE if model checking finds bugs that, when fixed, reduce escape defects in representative MAIstro workloads with acceptable engineering cost.
+- **WATCH** — exploratory harness created (explicit-state checker + hand-checked occurrence-claim model, 40 checks); no Apalache/TLA+ run and no real-subsystem abstraction yet. Move to INCUBATE on a successful abstraction of a real MAIstro subsystem with non-spurious counterexamples (checker or Apalache). Move to GRADUATE if model checking finds bugs that, when fixed, reduce escape defects in representative MAIstro workloads with acceptable engineering cost.

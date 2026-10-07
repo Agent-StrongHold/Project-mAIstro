@@ -53,6 +53,7 @@ import dataclasses
 from collections import deque
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 
 #: Explicit evidence-only contract marker. Asserted by a test so it cannot
@@ -96,15 +97,22 @@ class SafetyViolation:
 
 @dataclass(frozen=True)
 class LivenessViolation:
-    """A sticky bad cycle: a reachable cycle (or terminal state, which stutters
-    forever) on which the ``eventually`` target never holds, plus a shortest
-    path from an initial state to the cycle. This is the standard finite-graph
-    counterexample to ``<>Q`` — an execution may loop in the cycle forever."""
+    """A sticky bad cycle: a cycle (or terminal state, which stutters
+    forever) reachable from an initial state by a path that never satisfies
+    the ``eventually`` target, plus that shortest target-avoiding path. This
+    is the standard finite-graph counterexample to ``<>Q`` — an execution may
+    loop in the cycle forever.
+
+    ``cycle`` holds the *labeled* edges of the loop, starting at the cycle's
+    entry state and closing back to it, so ``path + cycle`` is a replayable
+    lasso against the concrete model. It is empty for a terminal bad state,
+    whose infinite suffix is TLA+ stuttering and needs no model edge.
+    """
 
     property: str
     initial: State
     path: tuple[tuple[str, State], ...]
-    cycle: tuple[State, ...]
+    cycle: tuple[tuple[str, State], ...]
 
 
 @dataclass(frozen=True)
@@ -244,11 +252,15 @@ def check_eventually(
     max_states: int | None = None,
 ) -> LivenessResult:
     """Check ``<>target`` ("eventually") over the reachable graph: the finite
-    form of a leads-to liveness property. Violated iff some reachable state can
-    stutter/cycle forever without reaching ``target`` — a reachable bad cycle,
-    or a reachable terminal state (stuttering semantics, as in TLA+). Terminal
-    bad states are reported first (deterministically, sorted), then bad cycles
-    via a deterministic depth-first search."""
+    form of a leads-to liveness property. Violated iff some execution that
+    never reaches ``target`` can stutter/cycle forever — a bad cycle or a
+    reachable terminal state (stuttering semantics, as in TLA+) lying on a
+    path from an initial state that avoids ``target`` entirely. Executions
+    that have already hit the target satisfy ``<>target`` no matter what
+    happens afterwards, so states reachable only *through* a target state are
+    excluded from the counterexample search. Terminal bad states are reported
+    first (deterministically, sorted), then bad cycles via a deterministic
+    depth-first search."""
     name = property_name or getattr(target, "__name__", "<property>")
     parents, truncated = _reach(initials, actions, max_states)
     graph = {state: _successors(state, actions) for state in parents}
@@ -256,24 +268,32 @@ def check_eventually(
     def succ(state: State) -> list[State]:
         return sorted({nxt for _, nxt in graph[state]})
 
+    def edge_label(state: State, nxt: State) -> str:
+        # First labeled edge from ``state`` to ``nxt`` in action order, so the
+        # reported cycle is deterministic and replayable step by step.
+        for label, to in graph[state]:
+            if to == nxt:
+                return label
+        raise AssertionError(f"{nxt!r} is not a successor of {state!r}")
+
     violation: LivenessViolation | None = None
     if truncated:
         return LivenessResult(explored=len(parents), truncated=True, violation=None)
-    bad = sorted(state for state in parents if not target(state))
-    # A terminal bad state stutters forever without reaching the target.
-    for state in bad:
-        if not succ(state):
-            violation = LivenessViolation(
-                property=name,
-                initial=initial_state_of(parents, state),
-                path=_path_to(parents, state),
-                cycle=(state,),
-            )
-            break
-    if violation is None:
-        cycle = _find_bad_cycle(bad, succ)
+    bad = sorted(_live_avoiding_target(initials, target, succ))
+    # A terminal bad state stutters forever without reaching the target; its
+    # infinite suffix needs no model edge, so the lasso's cycle is empty.
+    terminal = _terminal_bad_state(bad, succ)
+    if terminal is not None:
+        violation = LivenessViolation(
+            property=name,
+            initial=initial_state_of(parents, terminal),
+            path=_path_to(parents, terminal),
+            cycle=(),
+        )
+    else:
+        cycle = _find_bad_cycle(bad, succ, edge_label)
         if cycle is not None:
-            entry = cycle[0]
+            entry = cycle[-1][1]  # the last labeled edge closes onto the entry state
             violation = LivenessViolation(
                 property=name,
                 initial=initial_state_of(parents, entry),
@@ -291,12 +311,54 @@ def initial_state_of(parents: dict[State, tuple[State, str] | None], state: Stat
     return cur
 
 
+def _live_avoiding_target(
+    initials: tuple[State, ...] | list[State],
+    target: Callable[[State], bool],
+    succ: Callable[[State], list[State]],
+) -> set[State]:
+    """Non-target states reachable from an initial state without ever crossing
+    a target state. ``<>target`` is violated only by executions that never
+    reach the target, so only this subgraph can contain a counterexample:
+    target states are not expanded, because everything after the first visit
+    already satisfies the property."""
+    live: set[State] = set()
+    live_queue: deque[State] = deque()
+    for initial in initials:
+        if initial not in live and not target(initial):
+            live.add(initial)
+            live_queue.append(initial)
+    while live_queue:
+        current = live_queue.popleft()
+        for nxt in succ(current):
+            if nxt not in live and not target(nxt):
+                live.add(nxt)
+                live_queue.append(nxt)
+    return live
+
+
+def _terminal_bad_state(
+    bad: list[State],
+    succ: Callable[[State], list[State]],
+) -> State | None:
+    """The first (sorted) bad state with no successors. It stutters forever
+    without reaching the target, and its infinite suffix needs no model edge,
+    so the lasso's cycle is empty."""
+    for state in bad:
+        if not succ(state):
+            return state
+    return None
+
+
 def _find_bad_cycle(
-    bad: list[State], succ: Callable[[State], list[State]]
-) -> tuple[State, ...] | None:
+    bad: list[State],
+    succ: Callable[[State], list[State]],
+    edge_label: Callable[[State, State], str],
+) -> tuple[tuple[str, State], ...] | None:
     """Deterministic DFS over the bad subgraph; a gray re-encounter (back edge)
-    yields the cycle currently on the stack. ``bad`` must be sorted and ``succ``
-    deterministic for reproducible counterexamples."""
+    yields the cycle currently on the stack, as labeled edges that start and
+    end at the cycle's entry state so ``path + cycle`` is a replayable lasso.
+    ``bad`` must be sorted and ``succ``/``edge_label`` deterministic for
+    reproducible counterexamples."""
     color: dict[State, int] = {}  # 1 = gray (on stack), 2 = black (done)
     for root in bad:
         if color.get(root) == 2:
@@ -319,7 +381,12 @@ def _find_bad_cycle(
                 nodes.append(nxt)
                 iters.append(iter(succ(nxt)))
             elif seen == 1:
-                return tuple(nodes[nodes.index(nxt) :])
+                loop = nodes[nodes.index(nxt) :]
+                edges = [
+                    (edge_label(cur, following), following) for cur, following in pairwise(loop)
+                ]
+                edges.append((edge_label(loop[-1], nxt), nxt))  # close the loop
+                return tuple(edges)
     return None
 
 
@@ -367,9 +434,11 @@ def replay_steps(
     actions: tuple[Action, ...] | list[Action],
 ) -> tuple[bool, str]:
     """Validate a counterexample trace against a (concrete) model: the start
-    state must be an initial state and every step must be an enabled, labelled
-    transition of the model. Used to test whether an abstract counterexample is
-    concretizable or spurious."""
+    state must be an initial state and every labeled step must be an enabled
+    transition of the model. Used to test whether an abstract counterexample
+    is concretizable or spurious; for liveness counterexamples, pass the full
+    lasso (``violation.path + violation.cycle``) so the loop itself is judged,
+    not just its stem."""
     if initial not in initials:
         return False, f"start state {initial!r} is not an initial state"
     current = initial
@@ -387,8 +456,13 @@ def counterexample_spuriousness(
     actions: tuple[Action, ...] | list[Action],
 ) -> tuple[bool, str]:
     """Is a counterexample produced against an abstract model concretizable on
-    the concrete model? ``False`` means the abstraction is too coarse — the
-    counterexample is spurious and must not be reported as a real finding."""
+    the concrete model? Safety counterexamples replay their path; liveness
+    counterexamples must replay the full lasso — stem *and* labeled cycle —
+    since a coarse abstraction can keep the prefix real while inventing the
+    loop. ``False`` means the abstraction is too coarse — the counterexample
+    is spurious and must not be reported as a real finding."""
+    if isinstance(violation, LivenessViolation):
+        return replay_steps(violation.initial, violation.path + violation.cycle, initials, actions)
     return replay_steps(violation.initial, violation.path, initials, actions)
 
 
@@ -610,6 +684,21 @@ def concrete_eventual_model() -> tuple[tuple[State, ...], tuple[Action, ...]]:
     return (("p0", 0),), (step,)
 
 
+def concrete_model_plus_invented_retry() -> tuple[tuple[State, ...], tuple[Action, ...]]:
+    """The concrete chain lifted through a state-preserving abstraction, plus
+    an abstraction artifact: an unguarded ``retry`` self-loop on the middle
+    state that the concrete model does not have. The counterexample's stem is
+    fully concrete; only the invented cycle is spurious."""
+
+    initials, actions = concrete_eventual_model()
+    lifted_initials, lifted_actions = abstract_model(initials, actions, lambda s: s)
+
+    def retry(state: State) -> list[tuple[str, State]]:
+        return [("retry", ("p1", 0))] if state == ("p1", 0) else []
+
+    return lifted_initials, (*lifted_actions, retry)
+
+
 # ---------------------------------------------------------------------------
 # Tests — checker mechanics on hand-checked fixtures
 # ---------------------------------------------------------------------------
@@ -780,7 +869,7 @@ def test_eventually_flags_a_self_loop_trap() -> None:
     violation = result.violation
     assert violation.property == "reaches_s1"
     assert violation.path == ()
-    assert violation.cycle == (("s0",),)
+    assert violation.cycle == (("loop", ("s0",)),)
     assert violation.initial == ("s0",)
 
 
@@ -789,19 +878,49 @@ def test_eventually_finds_the_bad_cycle_in_a_ring() -> None:
     result = check_eventually(initials, actions, lambda s: s == ("z",))
     assert result.violation is not None
     violation = result.violation
-    assert violation.cycle == (("b",), ("c",))
+    assert violation.cycle == (("go", ("c",)), ("go", ("b",)))
     assert [label for label, _ in violation.path] == ["go"]
-    ok, reason = replay_steps(violation.initial, violation.path, initials, actions)
+    ok, reason = counterexample_spuriousness(violation, initials, actions)
     assert ok, reason
+
+
+def test_post_target_states_do_not_violate_eventual_reachability() -> None:
+    # start -> target -> bad_self_loop: every execution reaches the target,
+    # so <>target holds even though a bad cycle exists *after* the target.
+    def go(state: State) -> list[tuple[str, State]]:
+        edges = {("s0",): ("s1",), ("s1",): ("bad",), ("bad",): ("bad",)}
+        nxt = edges.get(state)
+        return [("go", nxt)] if nxt else []
+
+    result = check_eventually((("s0",),), (go,), lambda s: s == ("s1",))
+    assert result.truncated is False
+    assert result.violation is None
+
+
+def test_bad_cycle_before_the_target_still_violates() -> None:
+    # The fix must not overcorrect: start -> bad_self_loop -> target is a real
+    # counterexample because the loop can be taken forever, never reaching it.
+    def go(state: State) -> list[tuple[str, State]]:
+        edges = {("s0",): ("bad",), ("bad",): ("bad",)}
+        return [("go", edges[state])] if state in edges else []
+
+    result = check_eventually((("s0",),), (go,), lambda s: s == ("s1",))
+    assert result.violation is not None
+    assert result.violation.cycle == (("go", ("bad",)),)
+    ok, reason = counterexample_spuriousness(result.violation, (("s0",),), (go,))
+    assert ok, reason  # a REAL lasso replays concretely, loop included
 
 
 def test_terminal_states_stutter_so_incompleteness_is_a_violation() -> None:
     # TLA+ stuttering semantics: a stopped execution repeats its last state
-    # forever, so a dead end short of the target is a liveness violation.
+    # forever, so a dead end short of the target is a liveness violation. The
+    # stutter suffix needs no model edge, so the lasso's cycle is empty.
     initials, actions = chain_model()
     result = check_eventually(initials, actions, lambda s: s == ("s9",))
     assert result.violation is not None
-    assert result.violation.cycle == (("s1",),)
+    assert result.violation.cycle == ()
+    ok, reason = counterexample_spuriousness(result.violation, initials, actions)
+    assert ok, reason
 
 
 # ---------------------------------------------------------------------------
@@ -893,7 +1012,7 @@ def test_crash_short_of_the_run_is_a_liveness_violation_in_this_model() -> None:
     result = check_eventually(initials, actions, lambda s: s[-2] >= 1, property_name="run_exists")
     assert result.violation is not None
     violation = result.violation
-    assert violation.cycle == ((_CRASHED, False, 0, False),)
+    assert violation.cycle == ()
     assert [label for label, _ in violation.path] == ["t0.crash"]
 
 
@@ -934,7 +1053,7 @@ def test_coarse_abstraction_invents_a_liveness_violation() -> None:
     abstract_initials, abstract_actions = coarse_abstract_chain()
     result = check_eventually(abstract_initials, abstract_actions, lambda s: s == ("p2",))
     assert result.violation is not None
-    assert result.violation.cycle == (("p1",),)
+    assert result.violation.cycle == (("retry", ("p1",)),)
 
 
 def test_concrete_model_of_the_same_system_has_no_violation() -> None:
@@ -953,7 +1072,33 @@ def test_spurious_abstract_counterexample_is_flagged_by_replay() -> None:
         result.violation, concrete_initials, concrete_actions
     )
     assert concretizable is False
-    assert "not enabled" in reason or "not an initial state" in reason
+    # The projection also renames the states, so replay fails on the stem.
+    assert "not an initial state" in reason
+
+
+def test_spurious_cycle_is_caught_even_when_the_stem_replays_concretely() -> None:
+    # A coarse abstraction can preserve the concrete prefix exactly while
+    # inventing the loop: here the lifted model keeps the concrete states and
+    # 'advance' edges but adds a phantom unguarded 'retry' self-loop. The
+    # stem alone replays concretely; only full-lasso replay sees that the
+    # cycle — the part that makes the liveness counterexample infinite — does
+    # not exist in the concrete model.
+    abstract_initials, abstract_actions = concrete_model_plus_invented_retry()
+    result = check_eventually(abstract_initials, abstract_actions, lambda s: s == ("p2", 0))
+    assert result.violation is not None
+    violation = result.violation
+    assert violation.initial == ("p0", 0)
+    assert violation.cycle == (("retry", ("p1", 0)),)
+    concrete_initials, concrete_actions = concrete_eventual_model()
+    stem_ok, stem_reason = replay_steps(
+        violation.initial, violation.path, concrete_initials, concrete_actions
+    )
+    assert stem_ok, stem_reason  # the prefix exists concretely...
+    concretizable, reason = counterexample_spuriousness(
+        violation, concrete_initials, concrete_actions
+    )
+    assert concretizable is False  # ...but the invented cycle does not
+    assert "not enabled" in reason and "'retry'" in reason
 
 
 def test_real_counterexample_replays_concretely() -> None:
