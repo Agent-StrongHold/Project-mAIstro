@@ -66,9 +66,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, NoReturn, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from pydantic import ValidationError
+
+if TYPE_CHECKING:
+    # Annotation-only: the runtime import is deferred into ``_probe_persona``
+    # (see the comment there) so this module never closes the
+    # ``maistro.agents.recipes`` ↔ ``maistro.personas`` import cycle.
+    from maistro.personas.model import Persona
 
 from maistro.extensions.compatibility import (
     CompatibilityPolicy,
@@ -90,7 +96,6 @@ from maistro.ontology.rubric import (
     RubricSemantic,
     ScoringMethod,
 )
-from maistro.personas.model import Persona
 
 __all__ = [
     "SUPPORTED_PACK_MANIFEST_VERSION",
@@ -805,6 +810,15 @@ def _persona_constructor_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def _probe_persona(definition: PackPersonaDefinition) -> Persona:
     """A scratch Persona: canonical identity/surface validation."""
+    # Deferred import: ``maistro.agents.recipes`` imports ``maistro.graph``,
+    # whose node package auto-imports every node module, reaching
+    # ``maistro.runs`` → ``maistro.runtime`` → ``maistro.extensions`` (this
+    # package). A module-level ``maistro.personas`` import here closes that
+    # cycle: personas.expander imports ``maistro.agents.recipes`` back while
+    # it is still mid-initialization. Persona is constructed at call time
+    # only, so the import can live inside the function.
+    from maistro.personas.model import Persona
+
     return Persona(
         **{
             **_persona_constructor_fields(definition.payload),

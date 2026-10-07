@@ -33,6 +33,8 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import subprocess
+import sys
 from collections.abc import Callable
 from typing import Any, ClassVar
 
@@ -1712,3 +1714,40 @@ class TestInstantiationInputValidation:
                 authored_by="principal-1",
                 rubric_id="   ",
             )
+
+
+class TestModuleImportPosture:
+    """The pack module must not close the recipes ↔ personas import cycle.
+
+    Regression: ``packs.py`` originally imported ``Persona`` at module level,
+    which closed the cycle
+    ``maistro.agents.recipes → maistro.graph → (node auto-import) →
+    maistro.runs → maistro.runtime → maistro.extensions → packs.py →
+    maistro.personas → personas.expander → maistro.agents.recipes`` and made
+    a bare ``import maistro.agents.recipes`` fail with
+    ``ImportError: cannot import name 'AgentRecipe' from partially initialized
+    module`` whenever the interpreter reached ``recipes`` first (e.g. the
+    ``tests/agents/recipes`` suite collecting before anything imported
+    personas). The runtime import now lives inside ``_probe_persona``; this
+    test pins both import orders in fresh interpreters, where prior-module
+    import order inside the test process cannot mask the cycle.
+    """
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    @pytest.mark.parametrize("first", ["maistro.agents.recipes", "maistro.personas"])
+    def test_both_import_orders_reach_the_pack_module(self, first: str) -> None:
+        code = (
+            "import importlib\n"
+            f"importlib.import_module({first!r})\n"
+            "import maistro.extensions.packs\n"
+            "import maistro.agents.recipes\n"
+            "import maistro.personas\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert proc.returncode == 0, proc.stderr

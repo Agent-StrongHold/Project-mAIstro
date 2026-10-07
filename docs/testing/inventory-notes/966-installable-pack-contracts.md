@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +123
+  packages/maistro-core/tests: +125
 ---
 
 # 966 — Installable domain-pack contracts over canonical objects (M9-F1)
@@ -248,6 +248,57 @@ with CI's exact sequence (`uv pip freeze --exclude-editable`,
 `pip-audit --strict --format=json`, `scripts/pip_audit_gate.py`): only the
 triaged `ecdsa PYSEC-2026-1325` remains, gate exit 0. No other test-count
 change; +62 is the suite truth.
+
+## Repair round 7: develop sync e1b13dcd1 + import-cycle fix (+2)
+
+`origin/develop` advanced 5 commits past round 6's df00785bb line (M9-G2
+sandbox profiles #970, M3 no-auth rate-limit bucket, #1331 readiness-route
+pin, #1047 Project-scoped episodic recall, #2045 governed dispatch); merged
+as 8b87b9404. One conflict, again in `packages/maistro-core/src/_vulture_whitelist.py`,
+resolved as the union of the #966 `InstallablePackRegistry` rows and
+develop's #970 `SandboxViolationLog` row (same shape as rounds 3/6).
+`quality/` is row-identical to origin/develop except this branch's
+`quality/ac-state-notes/auto-966.json` (`git diff --numstat origin/develop --
+quality/`: 17 insertions, 0 deletions — no row lost).
+
+Real cross-lane collision, found by the suite-inventory gate screaming
+(a collection error, not drift): develop's M9-G2 work extends the import
+chain `maistro.agents.recipes → maistro.graph → (node package auto-import)
+→ maistro.runs → maistro.runtime → maistro.extensions`, and this branch's
+module-level `from maistro.personas.model import Persona` in `packs.py`
+closed the cycle (personas.expander imports `maistro.agents.recipes` back
+while it is still mid-initialization), so a bare `import
+maistro.agents.recipes` — e.g. collecting `tests/agents/recipes/` first —
+failed with `ImportError: cannot import name 'AgentRecipe' from partially
+initialized module`. Fixed exactly like the existing `maistro/tasks/idempotency.py`
+precedent: the `Persona` import is deferred into `_probe_persona` (the only
+call-time constructor), with a `TYPE_CHECKING` block for the three return
+annotations. No public surface, ledger, or canonical-model change.
+
+Two new parametrized regression tests (`TestModuleImportPosture`) import the
+pack module in fresh interpreters with either `maistro.agents.recipes` or
+`maistro.personas` first, where in-process import order cannot mask the
+cycle; the `maistro.agents.recipes`-first case fails against the
+pre-fix module (re-proven by stashing the fix). `packages/maistro-core/tests`
+delta +123 → +125; `scripts/check-suite-inventory.py` now matches on all 17
+suites (28791 unique node IDs, 0 duplicates).
+
+Gate battery re-proven on merge head 8b87b9404 with CI's exact arguments:
+`ruff check .` + `ruff format --check .` clean; `mypy --strict
+packages/maistro-core/src` clean (769 files, with the workflow's
+`uv sync --locked --all-extras` — an under-synced venv phantom-counts missing
+optional imports); `check-radon-baseline.py` and
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` both exit 0 against base e1b13dcd1 (vulture 1328 = 1328
+reviewed identities — the union resolution above is exactly what keeps the
+count equal on both sides); xenon 140 blocks ≤ 145, 0 module-rank and 0
+average violations; the sixteen deterministic quality gates (version,
+release-consistency, doc-links, enumerations, workspace-retirement,
+route-permissions, principal-identity, frontend-typed-client, reachability,
+credential-authority, wiring-reads, agent-store-writes, contract-markers,
+convergence-matrix, reachability-dispositions, security/image/workflow
+inventory, backlog-consistency, execution-lifecycles, model-egress,
+foreign-harness-egress) all exit 0; the core fitness suite passes 23/23.
 
 ## Repair round 6: full develop-tip sync + gate battery re-proof (this note carries the round)
 
