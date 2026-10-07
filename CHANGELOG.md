@@ -1132,6 +1132,13 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Mission detail does not name an agent the Run did not record (no linked issue: task detail must not name an agent a Run never had).** Hive mission
+  rows are a queue, not a Run. Seeded missions and steps named `agent-1`, and
+  the stub create path stored `assigned_agents` from the request, which the
+  Missions page rendered as an assignment and offered an Assign Agent control
+  for. List, detail, steps, status, and create now report no agent, the seed
+  names none, and Assign Agent is disabled with that reason. This does not
+  read a canonical Run agent; nothing is shown until a response does.
 - **Schedules and MCP work from the keyboard alone (#370, partial).** The
   Schedules and MCP view tabs are now ARIA tabs (arrow keys, Home and End); a
   schedule's enable toggle is a labelled switch, so a keyboard user can enable
