@@ -1,29 +1,35 @@
 import { Fragment, useEffect, useState } from "react";
+import type { AuditEntry, AuthenticatedUser, ChatSessionSummary, MemoryEntry, WhoamiResponse } from "../api/entities";
+import { apiGet } from "../lib/api";
 import { useToast } from "../components/shared";
 import { claimUiState, clearUiState, storedUiState } from "../lib/uiState";
 
 export default function Profile() {
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<AuthenticatedUser | null>(null);
   const [summary, setSummary] = useState<string>("");
   const [summaryLoading, setSummaryLoading] = useState(true);
-  const [activity, setActivity] = useState<any[]>([]);
-  const [sessions, setSessions] = useState<any[]>([]);
+  const [activity, setActivity] = useState<AuditEntry[]>([]);
+  const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
   const toast = useToast();
   const [stored, setStored] = useState(() => storedUiState());
 
   useEffect(() => {
-    fetch("/v1/auth/whoami", { credentials: "same-origin" })
-      .then(r => r.json())
-      .then(d => { if (d.user) setUser(d.user); });
+    apiGet<WhoamiResponse>("/v1/auth/whoami")
+      .then((d) => {
+        if (d && typeof d === "object" && "user" in d && d.user) {
+          setUser(d.user as AuthenticatedUser);
+        }
+      });
 
-    // Fetch memories and generate summary
-    fetch("/v1/memory/entries", { credentials: "same-origin" })
-      .then(r => r.json())
+    apiGet<MemoryEntry[]>("/v1/memory/entries")
       .then(async (memories) => {
         const memoryContext = Array.isArray(memories)
-          ? memories.map((m: any) => `[${m.namespace}] ${m.key}: ${m.value}`).join("\n")
+          ? memories.map((m) => `[${m.namespace}] ${m.key}: ${m.value}`).join("\n")
           : "No memories stored yet.";
 
+        // Streaming chat stays on raw fetch — api client has a 30s body timeout
+        // and no SSE helper (#1423).
+        // frontend-typed-client: allow SSE stream — shared api client times out on long bodies
         const r = await fetch("/v1/chat/stream", {
           method: "POST", credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
@@ -59,16 +65,12 @@ export default function Profile() {
       })
       .catch(() => { setSummary("Could not load memories."); setSummaryLoading(false); });
 
-    // Recent audit activity
-    fetch("/v1/audit", { credentials: "same-origin" })
-      .then(r => r.json())
-      .then(d => setActivity(Array.isArray(d) ? d.slice(0, 10) : []))
+    apiGet<AuditEntry[]>("/v1/audit")
+      .then((d) => setActivity(Array.isArray(d) ? d.slice(0, 10) : []))
       .catch(() => {});
 
-    // Recent chat sessions
-    fetch("/v1/chat/sessions", { credentials: "same-origin" })
-      .then(r => r.json())
-      .then(d => setSessions(Array.isArray(d) ? d.slice(0, 5) : []))
+    apiGet<ChatSessionSummary[]>("/v1/chat/sessions")
+      .then((d) => setSessions(Array.isArray(d) ? d.slice(0, 5) : []))
       .catch(() => {});
   }, []);
 
@@ -103,8 +105,6 @@ export default function Profile() {
           </div>
         </div>
       )}
-      {/* What this browser keeps for this account (#1418, #1419): the four
-          conveniences, their current values, and a way to forget them. */}
       <div className="card" style={{ marginBottom: 12 }}>
         <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 8 }}>
           STORED IN THIS BROWSER
@@ -138,7 +138,6 @@ export default function Profile() {
         </button>
       </div>
 
-      {/* AI Summary */}
       <div className="card" style={{ marginBottom: 12, borderLeft: "3px solid var(--accent)" }}>
         <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--accent)", marginBottom: 8 }}>WHAT I KNOW ABOUT YOU</div>
         <div style={{ fontFamily: "var(--hand)", fontSize: 14, lineHeight: 1.6, color: "var(--ink)" }}>
@@ -146,11 +145,10 @@ export default function Profile() {
         </div>
       </div>
 
-      {/* Recent Sessions */}
       {sessions.length > 0 && (
         <div className="card" style={{ marginBottom: 12 }}>
           <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 8 }}>RECENT CONVERSATIONS</div>
-          {sessions.map((s: any) => (
+          {sessions.map((s) => (
             <div key={s.id} style={{ padding: "6px 0", borderBottom: "1px dotted var(--rule)", fontFamily: "var(--mono)", fontSize: 12, display: "flex", justifyContent: "space-between" }}>
               <span>{s.title || "Untitled"}</span>
               <span style={{ color: "var(--pencil)", fontSize: 12 }}>{s.message_count || 0} msgs</span>
@@ -159,11 +157,10 @@ export default function Profile() {
         </div>
       )}
 
-      {/* Recent Activity */}
       {activity.length > 0 && (
         <div className="card">
           <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 8 }}>RECENT ACTIVITY</div>
-          {activity.map((a: any, i: number) => (
+          {activity.map((a, i) => (
             <div key={i} style={{ padding: "4px 0", borderBottom: "1px dotted var(--rule)", fontFamily: "var(--mono)", fontSize: 12, display: "flex", gap: 8 }}>
               <span style={{ color: "var(--accent)", minWidth: 80 }}>{a.action}</span>
               <span style={{ color: "var(--pencil)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.target || ""}</span>
