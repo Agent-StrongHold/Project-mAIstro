@@ -13,6 +13,7 @@ Subcommands:
     maistro extensions       Inspect install records; preflight contract compat
     maistro connectors       Verify a connector against the shared conformance suite
     maistro sandbox          Report the isolation this host can provide
+    maistro backlog          Backlog authority cutover and agent work surface
 
 Config via env: MAISTRO_API_URL (default http://127.0.0.1:8101),
 MAISTRO_API_TOKEN (bearer session token).
@@ -31,6 +32,7 @@ app = Typer(
 
 from maistro.cli._approvals import app as _approvals_app  # noqa: E402
 from maistro.cli._archive import app as _archive_app  # noqa: E402
+from maistro.cli._backlog import app as _backlog_app  # noqa: E402
 from maistro.cli._builders import app as _builders_app  # noqa: E402
 from maistro.cli._connectors import app as _connectors_app  # noqa: E402
 from maistro.cli._eval_workspace import app as _eval_workspace_app  # noqa: E402
@@ -56,6 +58,7 @@ app.add_typer(_connectors_app, name="connectors")
 app.add_typer(_sandbox_app, name="sandbox")
 app.add_typer(_eval_workspace_app, name="eval-workspace")
 app.add_typer(_repair_app, name="repair")
+app.add_typer(_backlog_app, name="backlog")
 
 
 def main() -> None:

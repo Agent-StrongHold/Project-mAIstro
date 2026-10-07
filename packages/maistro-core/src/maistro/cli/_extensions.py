@@ -1,11 +1,14 @@
-"""`maistro extensions` subcommand — inspect install records, preflight compat.
+"""`maistro extensions` subcommand — inspect records, contracts, compat.
 
-Read-only throughout, like `maistro archive`: the history/show commands open
-the SQLite install-record store in read-only mode and report what was
-installed, by whom, from which catalog, with which digest, and with what
-trust evidence. They never verify, never import, and never write — the
-install flow that produces records lands with #953, and these records
-outlive it either way.
+Read-only throughout, like `maistro archive`: `history`/`show` open the SQLite
+install-record store in read-only mode and report what was installed, by whom,
+from which catalog, with which digest, and with what trust evidence. They never
+verify, never import, and never write — the install flow that produces records
+lands with #953, and these records outlive it either way.
+
+`contract` (M9-E3, #964) validates a package's tool/Skill manifest against the
+published closed vocabularies and reports the host classification — without
+importing the manifest's entrypoint module.
 
 `preflight` evaluates those same records against a *target* host release
 (#957): which installed extensions are compatible, deprecated,
@@ -26,6 +29,7 @@ so it runs before any extension code import by construction.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sqlite3
 from collections.abc import Sequence
@@ -58,6 +62,7 @@ from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Awaitable, Callable
 
+    from maistro.extensions.tool_skill import ExtensionContract
     from maistro.extensions.types import InstallRecord
 
 console = Console()
@@ -252,6 +257,73 @@ def extensions_show(
             f"by key {_short_digest(record.evidence.verifier_key_fingerprint)} "
             f"at {_short_timestamp(record.evidence.verified_at.isoformat())}"
         )
+
+
+@app.command("contract")
+def extensions_contract(
+    manifest_path: Annotated[Path, Argument(help="Path to an extension.json manifest.")],
+) -> None:
+    """Validate a tool/Skill manifest and show the host classification (M9-E3).
+
+    Reads the manifest file, validates it against the published closed
+    vocabularies, and reports the canonical capability/effect classification
+    the host will hold the package to — the ADR-050 reversibility tier and
+    the effect floor derived from the manifest's declared effects AND
+    requested capabilities. Data-only: the manifest's entrypoint module is
+    never imported here.
+    """
+    loaded = _load_manifest_contract(manifest_path)
+    if loaded is None:
+        raise Exit(code=1)
+    _print_manifest_contract(*loaded)
+
+
+def _load_manifest_contract(
+    manifest_path: Path,
+) -> tuple[ExtensionContract, str] | None:
+    """Read and validate one manifest; report and return ``None`` on failure."""
+    from maistro.extensions.tool_skill import ExtensionContract
+
+    try:
+        body = manifest_path.read_bytes()
+        manifest = json.loads(body)
+    except OSError as exc:
+        console.print(f"[red]Cannot read {manifest_path}: {exc}[/red]")
+        return None
+    except json.JSONDecodeError as exc:
+        console.print(f"[red]{manifest_path} is not valid JSON: {exc}[/red]")
+        return None
+    if not isinstance(manifest, dict):
+        console.print(f"[red]{manifest_path} does not contain a JSON object.[/red]")
+        return None
+    digest = hashlib.sha256(body).hexdigest()
+    try:
+        return ExtensionContract.from_manifest(manifest, digest=digest), digest
+    except Exception as exc:
+        console.print(f"[red]{manifest_path}: {exc}[/red]")
+        return None
+
+
+def _print_manifest_contract(contract: ExtensionContract, digest: str) -> None:
+    """Render one validated contract and its host classification."""
+    console.print(f"[bold]{contract.extension_id}@{contract.version}[/bold]")
+    console.print(f"  family:        {contract.family}")
+    console.print(f"  contract:      {contract.contract_range}")
+    console.print(f"  manifest:      sha256:{digest}")
+    console.print(f"  entrypoint:    {contract.entrypoint.module}:{contract.entrypoint.object}")
+    console.print(f"  capabilities:  {', '.join(contract.capabilities) or '—'}")
+    console.print(f"  effects:       {', '.join(e.value for e in contract.effects) or '—'}")
+    console.print(f"  data scopes:   {', '.join(contract.data_scopes) or '—'}")
+    console.print(
+        f"  network:       {', '.join(contract.network_allow) or '—'}"
+        f" ports {contract.network_ports or '—'}"
+    )
+    console.print(f"  secret refs:   {', '.join(contract.secret_refs) or '—'}")
+    console.print(
+        f"  [bold]host classification[/bold]: effect floor "
+        f"[bold]{contract.effect_floor.value}[/bold] -> reversibility "
+        f"[bold]{contract.reversibility.value}[/bold] (ADR-050)"
+    )
 
 
 def _load_compat_metadata(metadata_path: Path) -> ExtensionCompatMetadata:

@@ -628,6 +628,15 @@ def test_a_bare_filename_resolves_recursively(gate):
     assert findings.unresolved_paths == []
 
 
+# One whole-tree scan plus a re-walk of every sibling src root — measured at
+# ~10-11s locally under `coverage --source=scripts` (the fetch-helper scan is
+# 0.3s of that; the cost is the census walks over thousands of files), against
+# the suite's 30s default. The first PR to state that margin got it wrong: on
+# a merge-queue runner that ran the identical root suite 1.7x slower than
+# develop's passing run, this test caught a CPU-contention burst and red at
+# >30s with nothing wrong in the tree (#964, run 37498676474). 120s states
+# the margin instead, same shape as test_check_cross_package_imports.py's
+# whole-tree scans.
 @pytest.mark.timeout(120)
 def test_the_shipped_document_passes(gate):
     """The gate is only worth wiring into CI if the document it guards is

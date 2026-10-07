@@ -50,7 +50,13 @@ from maistro_registry.retrieval import (
 from maistro_registry.schema import FrontMatter
 from maistro_registry.test_paths import TestPathProblem, check_test_paths
 from maistro_registry.validator import ValidationResult, validate_file
-from maistro_registry.walk import declared_ids
+
+# The walk — recursive discovery and the total declared disposition surface —
+# lives in `maistro_registry.walk`, shared with `FilesystemResolver` so the
+# walk cannot fork (#814). NON_RECORD_FILES and disposition are re-exported
+# here because the CLI remains the surface corpus tooling and the #813
+# contract tests consume them from.
+from maistro_registry.walk import NON_RECORD_FILES, declared_ids, disposition  # noqa: F401
 from maistro_registry.walk import walk_repo as _walk
 
 
