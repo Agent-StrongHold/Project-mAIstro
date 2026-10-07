@@ -17,6 +17,10 @@ blocks: []
 blocked-by: []
 contracts:
   - boundary
+tests:
+  - packages/maistro-core/tests/api_versioning/test_middleware.py
+  - packages/maistro-server/tests/api/test_version_negotiation.py
+  - packages/hive-conductor/backend/tests/test_version_negotiation.py
 layer: UserClient
 owners:
   - '@BlakeMatthews-dev'
