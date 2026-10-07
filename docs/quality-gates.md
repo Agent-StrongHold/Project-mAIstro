@@ -35,6 +35,18 @@ A **floor** is a fixed minimum/maximum threshold. A **ratchet** records reviewed
 | execution lifecycles | identity ratchet | `quality/execution-lifecycles.json` | a new work-state Enum or status-shaped Literal alias/field vocabulary nobody classified, or an entry left behind after its identity was deleted |
 | model egress | identity ratchet | `quality/model-egress.json` | a new module calling a model endpoint directly, or an entry left behind after one was migrated |
 
+Ruff lint and formatting have one owner per workflow event (#1357, #1610).
+The required Quality gate runs both root commands for ordinary PR activities
+(`opened`, `reopened`, `synchronize`), merge groups, shared protected pushes,
+and accepted topic-branch pushes. CI retains both commands for the two event
+profiles it alone receives: PR `edited` and pushes to
+`merge/main-into-integration`. Both owners use the shared pinned uv setup and
+locked root environment; the rule set, source scope and failure behavior are
+unchanged. `tests/test_ci_ruff_ownership.py` checks the event matrix and rejects
+narrowed, tolerated or duplicated owners. Local contribution checks still run
+both commands. This removes a duplicate lint/format pair on common events;
+it is not a measured whole-CI speedup.
+
 The lifecycle-discovery contract, shared dispositions, metric version, prior-authorization
 boundary and explicit static-analysis limits are recorded in
 [ADR-032 section 7](adr/ADR-032-contracts-as-acceptance-criteria.md#7-static-lifecycle-discovery-contract-1136).
