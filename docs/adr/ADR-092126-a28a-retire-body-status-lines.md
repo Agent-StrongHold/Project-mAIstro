@@ -95,7 +95,13 @@ duplication and are not retired.
 The ledger and its provenance wiring stay. It remains the reviewed escape
 hatch, and `check-adr-status-language-provenance.py`, the entry in
 `quality/branch-independence.json` and the `check-ratchet-provenance.py`
-registration all continue to apply unchanged.
+registration all continue to apply. Metric definition v2 records the absence
+rule, recursive discovery, and normal Markdown indentation. The candidate
+ledger explicitly records v2; the provenance adapter validates recorded
+versions and rejects mismatches. The existing unversioned ledger is empty, so
+its deliberate migration preserves zero tolerated findings. A nonempty or
+malformed unversioned ledger cannot use this transition, and every expansion
+still requires an already-landed grant.
 
 ## Consequences
 

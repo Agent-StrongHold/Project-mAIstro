@@ -66,6 +66,7 @@ from maistro_registry.validator import validate_file  # noqa: E402
 
 DOC_ROOTS = (ROOT / "docs" / "adr", ROOT / "docs" / "specs")
 LEDGER = ROOT / "quality" / "adr-status-language-baseline.json"
+METRIC_DEFINITION_VERSION = "2"
 
 #: A body status line, bare or as a Markdown list item (`- **Status:** X`).
 #: Both spellings are retired (ADR-092126-a28a), so the *value* is never
@@ -199,6 +200,7 @@ def _load_baseline() -> frozenset[str]:
 
 def _write_baseline(problems: list[StatusProblem]) -> None:
     payload = {
+        "metric_definition_version": METRIC_DEFINITION_VERSION,
         "_comment": (
             "Legacy body '**Status:**' lines written before front matter was canonical (#379). "
             "Body status language is checked per-identity (#387): a new contradiction fails, "

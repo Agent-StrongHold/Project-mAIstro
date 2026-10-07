@@ -1,10 +1,11 @@
 ---
 inventory-delta:
-  tests/: +36
+  tests/: +52
 ---
 # retire-body-status-lines
 
-Net +36 in `tests/test_check_adr_status_language.py`, and the net hides a
+Net +52 across `tests/test_check_adr_status_language.py` (+36) and
+`tests/test_check_adr_status_language_provenance.py` (+16). The net hides a
 larger reshuffle that is worth stating, because ADR-092126-a28a changed what
 the first category *is*. It used to check that a body `**Status:**` line
 agreed with front matter; it now checks that no such line exists at all.
@@ -51,3 +52,8 @@ nonrecursive checker. The checker and corpus assertion now recurse together.
 Hosted review adds 24 collected agreeing-line cases for one-to-three leading
 Markdown spaces across both roots and all four spellings, plus two cases
 keeping four-space code blocks outside the declaration grammar.
+
+Metric v2 adds 16 adapter cases: nested-only measurement; candidate/trusted
+version rejection; explicit migration of only a structurally empty unversioned
+ledger; malformed/nonempty legacy rejection; unchanged prior-base authorization
+and first-introduction rules. The checker writer records the shared version.

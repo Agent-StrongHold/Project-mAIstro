@@ -465,6 +465,7 @@ def test_update_banks_the_current_state_and_then_passes(sandbox, capsys) -> None
     assert f"{len(found)} known contradiction" in out
 
     payload = json.loads(sandbox.LEDGER.read_text())
+    assert payload["metric_definition_version"] == sandbox.METRIC_DEFINITION_VERSION == "2"
     assert set(payload["known"]) == found
 
     assert sandbox.main([]) == 0
