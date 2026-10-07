@@ -605,11 +605,17 @@ jobs:
           # without naming that file here the module's changed lines measure
           # 0% in this producer and the diff-coverage gate fails on tests
           # that exist and pass but were never pointed at this --source.
-          # Same shape as #812: the CLI's cited-test-path lint and the
-          # validator's test-evidence debts are exercised by root tests under
-          # tests/tools/registry/ (this package's own suite has no cli or
-          # validator cases), so those two files are named here or the changed
-          # lines measure 0% and the diff-coverage gate rejects the commit.
+          # The same holds for the #813 walk/disposition logic in
+          # maistro_registry.cli: its tests live in the root suite's
+          # tests/tools/registry/test_cli.py, and the root producer measures
+          # --source=scripts only, so cli.py's changed lines scored 0% here
+          # until that file was named in this producer's pytest args too.
+          # Same shape as #812 (merged from develop): the CLI's
+          # cited-test-path lint and the validator's test-evidence debts are
+          # exercised by root tests under tests/tools/registry/ (this
+          # package's own suite has no cli or validator cases), so those two
+          # files are named here or the changed lines measure 0% and the
+          # diff-coverage gate rejects the commit.
           uv run coverage run --append --branch --source=packages/maistro-registry/src/maistro_registry \
             -m pytest packages/maistro-registry/tests tests/test_check_citation_status.py \
               tests/tools/registry/test_cli.py tests/tools/registry/test_validator.py --timeout=30 -q
