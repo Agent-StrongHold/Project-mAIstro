@@ -1,16 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
+import type { Schedule } from "../api/models";
 import { Hex, PageHeader, StatCard, ConfirmDialog, useToast } from "../components/shared";
 import { useWorkspaces } from "../context/WorkspaceContext";
 import { Switch } from "../components/Switch";
 import { TabList, TabPanel } from "../components/TabList";
 
-type Schedule = {
-  id: string; name: string; description: string; cron_expression: string;
-  mission_template_id: string | null; enabled: boolean;
-  last_run: string | null; next_run: string | null;
-  created_at: string; updated_at: string;
-};
 
 const CRON_PRESETS = [
   { label: "Every hour", cron: "0 * * * *" },

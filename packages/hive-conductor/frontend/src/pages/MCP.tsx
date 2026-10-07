@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost, apiDelete } from "../lib/api";
+import type { MCPServer as Server, MCPTool as Tool } from "../api/models";
 import { Hex, PageHeader, StatCard, ConfirmDialog, useToast } from "../components/shared";
 import { TabList, TabPanel } from "../components/TabList";
 const ROVO_MCP_URL = "https://mcp.atlassian.com/v1/mcp/authv2";
@@ -12,16 +13,6 @@ const DISCLOSURE_STYLE = {
   font: "inherit", color: "inherit", textAlign: "left", cursor: "pointer",
 } as const;
 
-type Server = {
-  id: string; name: string; description: string; url: string;
-  status: string; tools_count: number; last_ping: string | null;
-  version: string | null; capabilities: string[];
-};
-
-type Tool = {
-  id: string; server_id: string; name: string; description: string;
-  input_schema: Record<string, unknown>; category: string | null;
-};
 
 export default function MCP() {
   const toast = useToast();
@@ -175,11 +166,11 @@ export default function MCP() {
                     <StatCard label="Last Ping" value={s.last_ping ? new Date(s.last_ping).toLocaleTimeString() : "never"} />
                     <StatCard label="Tools" value={`${s.tools_count}`} />
                   </div>
-                  {s.capabilities.length > 0 && (
+                  {(s.capabilities?.length ?? 0) > 0 && (
                     <div style={{ marginBottom: 8 }}>
                       <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>CAPABILITIES</div>
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                        {s.capabilities.map((c) => <Hex key={c}>{c}</Hex>)}
+                        {s.capabilities?.map((c) => <Hex key={c}>{c}</Hex>)}
                       </div>
                     </div>
                   )}

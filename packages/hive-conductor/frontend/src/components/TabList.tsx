@@ -1,7 +1,5 @@
 import { useRef, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 
-type Tab<T extends string> = { id: T; label: string };
-
 const tabId = (idPrefix: string, id: string) => `${idPrefix}-tab-${id}`;
 const panelId = (idPrefix: string, id: string) => `${idPrefix}-panel-${id}`;
 
@@ -18,7 +16,7 @@ const TAB_STYLE: CSSProperties = {
 export function TabList<T extends string>({ label, idPrefix, tabs, selected, onSelect, style }: {
   label: string;
   idPrefix: string;
-  tabs: readonly Tab<T>[];
+  tabs: readonly { id: T; label: string }[];
   selected: T;
   onSelect: (id: T) => void;
   style?: CSSProperties;
