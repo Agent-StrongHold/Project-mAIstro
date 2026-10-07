@@ -17,6 +17,7 @@ import logging
 from typing import Any, Final
 
 from maistro.goals.store import GoalStore, InMemoryGoalStore
+from maistro.types.errors import ConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -29,21 +30,19 @@ GOAL_PG_TABLES: Final = (
 )
 
 
-async def _goals_are_migrated(pg_pool: Any) -> bool:
+async def _require_goal_schema(pg_pool: Any) -> None:
     missing = [
         table
         for table in GOAL_PG_TABLES
         if not await pg_pool.fetchval("SELECT to_regclass($1) IS NOT NULL", f"public.{table}")
     ]
-    if not missing:
-        return True
-    logger.warning(
-        "PostgreSQL pool is missing the canonical Goal tables (%s), so Goals are "
-        "in-process and lost on restart. Run `alembic upgrade head` against this "
-        "database to make them durable (#1572).",
-        ", ".join(missing),
-    )
-    return False
+    if missing:
+        msg = (
+            f"PostgreSQL pool is missing the canonical Goal tables ({', '.join(missing)}). "
+            "Refusing to store Goals on a different backend. Run `alembic upgrade head` "
+            "against this database before starting the Container (#1572)."
+        )
+        raise ConfigError(msg)
 
 
 async def wire_goal_store(
@@ -54,14 +53,15 @@ async def wire_goal_store(
     """Return the Goal store on the deployment's selected database backend.
 
     ``conn`` is the aiosqlite pool the SQLite tier shares, ``pg_pool`` the
-    asyncpg pool when the deployment selected PostgreSQL. PostgreSQL wins when
-    a pool is present *and* migrated; an unmigrated pool falls through to
-    SQLite-or-memory with the warning, never to a PostgreSQL store querying
-    tables that do not exist.
+    asyncpg pool when the deployment selected PostgreSQL. A supplied pool
+    always selects PostgreSQL; missing Goal tables refuse startup rather than
+    splitting Goals from the deployment's durable Workspace/Run authority.
+    Only deployments without a PostgreSQL pool may select SQLite or memory.
     """
-    if pg_pool is not None and await _goals_are_migrated(pg_pool):
+    if pg_pool is not None:
         from maistro.goals.pg_store import PgGoalStore
 
+        await _require_goal_schema(pg_pool)
         return PgGoalStore(pg_pool)
     if conn is not None:
         from maistro.goals.sqlite_store import SqliteGoalStore

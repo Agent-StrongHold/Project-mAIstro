@@ -7,7 +7,7 @@ a library, not composition. So this file proves three claims:
 
 * **Backend selection** — `wire_goal_store` picks the durable twin over the
   SQLite pool the deployment already has, the PostgreSQL store over a pool
-  whose migration-058 tables exist, and refuses to answer an *unmigrated*
+  whose migration-061 tables exist, and refuses to answer an *unmigrated*
   PostgreSQL pool with an in-process store that merely looks the same (the
   split-backend defect the Workspace wiring documents). No database at all
   means the in-memory reference — loudly, since canonical Goals that die with
@@ -34,8 +34,10 @@ from maistro.goals import (
     InMemoryGoalStore,
     ScopedGoalStore,
 )
+from maistro.goals.wiring import GOAL_PG_TABLES
 from maistro.testing.postgres import postgres_dsn
 from maistro.types.config import AgentConfig
+from maistro.types.errors import ConfigError
 
 
 async def test_container_exposes_the_goal_store_and_its_seam() -> None:
@@ -82,35 +84,59 @@ async def test_wire_goal_store_falls_back_to_memory_loudly(caplog) -> None:
     )
 
 
-class _UnmigratedPool:
-    """A PostgreSQL pool whose schema predates migration 061.
+class _SchemaPool:
+    """Answer only the PostgreSQL schema probe; never substitute Goal storage."""
 
-    `fetchval` answers the wiring's `to_regclass` probe with False, which is
-    all the wiring may know about it.
-    """
-
-    def __init__(self) -> None:
+    def __init__(self, missing: tuple[str, ...]) -> None:
+        self.missing = missing
         self.probes: list[str] = []
 
-    async def fetchval(self, sql: str, *args: object) -> bool:
-        self.probes.append(str(args[0]))
-        return False
+    async def fetchval(self, sql: str, table: str) -> bool:
+        assert sql == "SELECT to_regclass($1) IS NOT NULL"
+        self.probes.append(table)
+        return table not in {f"public.{name}" for name in self.missing}
 
 
-async def test_wire_goal_store_refuses_an_unmigrated_pg_pool_as_memory(caplog) -> None:
-    """A PostgreSQL pool without the Goal tables must not be answered with an
-    in-process store that silently looks like one — it falls back loudly, so
-    the operator runs `alembic upgrade head` instead of losing Goals."""
-    from maistro.goals.wiring import GOAL_PG_TABLES, wire_goal_store
+@pytest.fixture(params=[False, True], ids=["no-sqlite", "sqlite-available"])
+async def optional_sqlite(request, tmp_path):
+    if not request.param:
+        yield None
+        return
+    import aiosqlite
 
-    pool = _UnmigratedPool()
-    with caplog.at_level(logging.WARNING):
-        store = await wire_goal_store(None, pg_pool=pool)
-    assert isinstance(store, InMemoryGoalStore)
-    assert pool.probes == [f"public.{table}" for table in GOAL_PG_TABLES], (
-        "every migration-058 table is probed, not just the first"
-    )
-    assert any("alembic upgrade head" in record.message for record in caplog.records)
+    async with aiosqlite.connect(tmp_path / "fallback.db") as conn:
+        yield conn
+
+
+@pytest.mark.parametrize("missing", [GOAL_PG_TABLES, *((table,) for table in GOAL_PG_TABLES)])
+async def test_wire_goal_store_refuses_an_unmigrated_pg_pool_as_memory(
+    optional_sqlite, missing
+) -> None:
+    """Neither an absent nor partially migrated schema may split Goals from PG."""
+    from maistro.goals.wiring import wire_goal_store
+
+    pool = _SchemaPool(missing)
+    with pytest.raises(ConfigError, match="alembic upgrade head") as exc:
+        await wire_goal_store(optional_sqlite, pg_pool=pool)
+    for table in missing:
+        assert table in str(exc.value)
+    assert pool.probes == [f"public.{table}" for table in GOAL_PG_TABLES]
+    if optional_sqlite is not None:
+        async with optional_sqlite.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ) as cursor:
+            assert await cursor.fetchall() == [], "refusal must not initialize a fallback store"
+
+
+async def test_wire_goal_store_keeps_a_migrated_pg_pool_even_with_sqlite(optional_sqlite) -> None:
+    """Exercise backend selection without claiming this stub is a live PG test."""
+    from maistro.goals.pg_store import PgGoalStore
+    from maistro.goals.wiring import wire_goal_store
+
+    pool = _SchemaPool(())
+    store = await wire_goal_store(optional_sqlite, pg_pool=pool)
+    assert isinstance(store, PgGoalStore)
+    assert pool.probes == [f"public.{table}" for table in GOAL_PG_TABLES]
 
 
 async def test_wire_goal_store_selects_postgres_over_a_migrated_pool() -> None:
