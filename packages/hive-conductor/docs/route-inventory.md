@@ -11,8 +11,8 @@ Sources of truth:
 - Entry points: `frontend/src/components/AppShell.tsx` (`fullNav`, rendered as
   both the desktop icon rail and the narrow-screen drawer), the drawer user
   chip, and contextual links inside pages.
-- Dispositions: [WORKSPACE-CUTOVER-PLAN.md](../../docs/architecture/WORKSPACE-CUTOVER-PLAN.md)
-  §5 retirement ledger and §9 v1.0 stakeholder amendments; [ROADMAP.md](../../ROADMAP.md).
+- Dispositions: [WORKSPACE-CUTOVER-PLAN.md](../../../docs/architecture/WORKSPACE-CUTOVER-PLAN.md)
+  §5 retirement ledger and §9 v1.0 stakeholder amendments; [ROADMAP.md](../../../ROADMAP.md).
 
 ## Change made by #1417
 
@@ -38,7 +38,7 @@ narrow-screen drawer (asserted by
 | `/design-studio` | Design Studio | Design Studio | KEEP / PROJECT v1.0 (blocker) | #95, #286, #773 |
 | `/dags` | DAG Builder | DAG Builder | PROJECT → Graph editing over canonical Graph | #65/#1036 |
 | `/dag-runs` | DAG Runs | DAG Runs | PROJECT → Goal/Run inspection | #65/#1036, #251 |
-| `/schedules` | Schedules | Schedules | PROJECT → canonical `ScheduleStore` | #92 (M3-B) |
+| `/schedules` | Schedules | Schedules (shown only with `schedules.write`, below) | PROJECT → canonical `ScheduleStore` | #92 (M3-B) |
 | `/missions` | Missions | Missions | MERGE → Workspace backlog (DELETE v1.0) | #82 (M3-C) |
 | `/backlog` | Backlog | Backlog | Workspace backlog (canonical) | #82 |
 | `/agents` | Agents | Agents | DELETE v1.0 → Capabilities projection | #59, #848 |
@@ -49,7 +49,7 @@ narrow-screen drawer (asserted by
 | `/knowledge` | KnowledgeBase | Inner Temple | DELETE v1.0 → Workspace/user memory | #776, #1047 (M3-E) |
 | `/rsi` | RSI | RSI | PROJECT → Evolve/RSI Run inspection | #51/#50 (M4/M5) |
 | `/mcp` | MCP | Integrations | DELETE v1.0 → Capabilities projection | #59, #848 |
-| `/containers` | Containers | Containers | PROJECT v1.0 (retained contract) | #382 |
+| `/containers` | Containers | Containers (shown only with `containers.control`, below) | PROJECT v1.0 (retained contract) | #382 |
 | `/cli` | CLI | CLI | PROJECT v1.0 (retained contract) | #292 |
 | `/credentials` | Credentials | Credentials | PROJECT → credential router consumers | #58 |
 | `/audit` | Audit Log | Audit | PROJECT → core audit store | P0.4 (§5) |
@@ -104,23 +104,47 @@ One canonical entry per destination; no duplicate menu items.
 
 ## Permission contract check
 
-All six routers behind the newly linked pages (`/v1/schedules`,
-`/v1/messages`, `/v1/quotas`, `/v1/containers`, `/v1/cli`, `/v1/audit`) are
-available to every authenticated principal: they carry no admin or elevation
-dependency (the only `require_admin` checks in the backend are user-management
-endpoints in `routes/auth.py`), so the unconditional nav entries imply no
-access an ordinary principal lacks. Scoped-principal navigation filtering is
-the #1048 navigation work; nothing here substitutes for backend
-authorization, and no entry was added for a surface a principal class cannot
-reach.
+Reading any of the six newly linked pages is authenticated-only: no `GET`
+under `/v1/schedules`, `/v1/messages`, `/v1/quotas`, `/v1/containers`,
+`/v1/cli` or `/v1/audit` carries a permission, so every authenticated
+principal can load every surface. Their *mutations* are scope-gated in
+`backend/middleware/auth.py` (`_PROTECTED_OPS`): schedules take
+`schedules.write`, containers take `containers.control`, audit writes take
+`audit.write` (the app writes audit entries in-process, so the page itself is
+read-only for a principal without it).
+
+The shell therefore mirrors the mutation scope on exactly the two entries
+whose pages are wall-to-wall gated forms — Schedules (`schedules.write`) and
+Containers (`containers.control`) — via `visibleNav` in `AppShell.tsx`: the
+setup wizard's daily user is provisioned with only `dags.write`
+(`routes/setup.py` `_DEFAULT_DAILY_USER_PERMISSIONS`), and without the filter
+it would land on screens where every control 403s. `visibleNav` reproduces
+`principal_has_permission`'s shape: admin sees every entry; a non-admin sees
+an entry when the session holds the scope's base grant (elevation for the
+mutation itself is the existing `/v1/auth/elevate` flow). Full
+Principal-aware navigation, including per-entry elevated-state awareness,
+remains the #1048 navigation work — hiding a link substitutes for nothing:
+backend authorization is unchanged, and no entry exists for a surface a
+principal class cannot reach. The message-board, quota, CLI and audit entries
+carry no scope because their surfaces' reads (and the CLI proxy) are
+authenticated-only.
+
+`tests/e2e/navigation-coverage.spec.ts` exercises both principal states: the
+daily user walks every unscoped entry and asserts the two scoped rows are
+absent from both the rail and the drawer; the admin account (every
+permission, per `principal_has_permission`) walks the two scoped rows from
+both chrome modes.
 
 ## Verification
 
 - `tests/e2e/navigation-coverage.spec.ts` — every nav row above is reached
   from the rail (desktop, keyboard activation) and the drawer (narrow
-  viewport, keyboard activation + dismissal); each lands with exactly one
-  active rail entry carrying the destination's accessible name; back/forward
-  returns canonical surfaces; the two aliases/redirects resolve to their
-  canonical destination; the four URL-only rows render while staying unlinked.
+  viewport, keyboard activation + dismissal) by a principal that may see it:
+  the daily user walks the unscoped rows, the admin account walks the
+  `schedules.write`/`containers.control` rows (see the permission contract
+  above); each landing leaves exactly one active rail entry carrying the
+  destination's accessible name; back/forward returns canonical surfaces; the
+  two aliases/redirects resolve to their canonical destination; the four
+  URL-only rows render while staying unlinked.
 - `tests/e2e/design-studio-truthfulness.spec.ts` — `/cli/canvas` compatibility
   redirect preserved.
