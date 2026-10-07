@@ -942,3 +942,70 @@ demonstrated the grant route inert from a candidate branch. Merge blocker
 unchanged: parent #1845 integration must supply the real reviewed consumer
 (or the orchestrator must land a base-side reachability authorization first).
 This leaf stays unmerged per its staging constraint.
+
+## 2026-10-07 round-11 revalidation at the develop-merge head
+
+Round 10 validated `643cc2b22f1e`; this lane's dispatch head is
+`621419fd2fc8` — develop `0df275362d28` merged into the branch (plus round
+10's own note commit). Merge-neutrality re-measured:
+`git diff 643cc2b22..621419fd2` over the module, the focused test file, and
+`_vulture_whitelist.py` is empty; the only leaf-tree change in the range is
+round 10's own 83 inventory-note lines.
+
+Local re-execution at `621419fd2fc8` (base resolves to `0df275362d28`,
+`uv sync --locked --extra dev`):
+
+- `check-ratchet-provenance.py`: rc=1 via the reachability sub-ratchet only
+  (`maistro.runs.admission_identity`: NEW unreachable absent from trusted
+  base, not previously authorized; 170 -> 171 of 1,342 modules; also "current
+  unreachable module missing from candidate baseline"). The other nine
+  sub-ratchets OK. `check-reachability.py` rc=1 (captured unpiped) with
+  exactly that one NEW unreachable module.
+- Named-gate components stay green: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` rc=0 (1,332 -> 1,332);
+  `check-shipped-surface-truth.py` rc=0; `check-reachability-dispositions.py`
+  rc=0 (49 groups / 170 modules); `check-promotion-surface.py` rc=0;
+  `check-radon-baseline.py` rc=0 (138 -> 138); xenon with the workflow's exact
+  argv (xenon installed per the workflow's `uv pip install` step) = 140 blocks
+  <= 145 baseline, 0 module-rank, 0 average, no finding naming
+  `admission_identity`.
+- Tests: focused suite 77 passed; full `packages/maistro-core/tests`
+  13,791 passed / 940 skipped / 1 xfailed; root
+  `tests/test_reachability_baseline_identity.py` reproduces the same
+  structural red (2 failed — the two baseline-equals-tree identity tests).
+  Full `check-suite-inventory.py` rc=0 (17 suites, 28,179 unique node IDs, no
+  duplicate evidence; scoped core count 14,732 per the lane driver log); the
+  leaf delta is unchanged at +77. Focused and repository-wide ruff
+  check/format clean; module mypy clean.
+- Whitelist reference burden, measured: `uv run vulture
+  packages/maistro-core/src/maistro/runs/admission_identity.py
+  --min-confidence 60` (rc=3) reports exactly ten module-local findings. In
+  the full-tree scan the in-tree whitelist references mute precisely the five
+  unique-name enum members (`MISMATCH`, `REPLAYED`, `TAKEOVER`,
+  `REPLACE_EXPIRED`, `LEGACY_UNRESOLVED`); `PENDING`, `format_version`, and
+  `admitted` are masked by unrelated in-tree name matches, so the whitelist
+  does not affect them. The whitelist confers no reachability (the walker
+  still reports the module NEW unreachable) and no ledger row (vulture
+  identities unchanged at 1,332), so the leaf is not independently green —
+  the empirical basis for round 6's precedent-based rationale, now with hard
+  numbers.
+- `quality/` remains byte-identical to the develop base
+  (`git diff --numstat 0df275362d..HEAD -- quality/` empty). The #1841
+  prerequisite signatures (`require_admitted_actor(actor_principal_id:
+  str | None) -> str`, `get_run(*, principal_id=...)`, the create/claim
+  `actor_principal_id` guards, `Run.actor_principal_id`) re-confirmed at this
+  head. PR #1936's body says "Refs #1851"; no commit subject or body in
+  `0df275362d..HEAD` carries a closure keyword.
+- Hosted CI at `621419fd2fc8` was queued/in_progress at capture (26 of 29
+  check runs unfinished, `exact-debt-ledger` among them); no completed
+  required check exists for this head, so hosted status stays UNVERIFIED here
+  and is never inferred from the snapshot.
+
+Round-11 verdict: unchanged in substance. The leaf's scoped acceptance
+criteria are fully proven at the exact dispatch head; the sole red everywhere
+it appears is the issue-predicted, in-leaf-uncurable reachability
+new-unreachable of the deliberately unwired module. Merge blocker unchanged:
+parent #1845 integration must supply the reviewed runtime consumer and
+wiring, or the orchestrator must land a base-side reachability authorization
+first. This leaf stays unmerged per its staging constraint; handoff only, no
+integration approval.
