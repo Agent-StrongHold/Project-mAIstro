@@ -297,6 +297,27 @@ def test_the_explicit_no_issue_exclusion_is_accepted(gate, tmp_path) -> None:
     assert gate.check() == []
 
 
+def test_an_empty_no_issue_exclusion_is_rejected(gate, tmp_path) -> None:
+    """A no-issue annotation with no reason is no annotation at all.
+
+    The closing delimiter is content to a naive presence check, so
+    `(no linked issue: )` would otherwise satisfy it and bypass traceability
+    (#1102).
+    """
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n"
+            "- **Typo (no linked issue: ).** Empty.\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    problems = gate.check()
+
+    assert any("links no issue or PR" in p for p in problems)
+
+
 def test_an_entry_outside_a_category_fails(gate, tmp_path) -> None:
     _write(
         gate,

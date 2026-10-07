@@ -146,8 +146,21 @@ UNRELEASED_CATEGORIES: frozenset[str] = frozenset(
 _ISSUE_LINK_RE = re.compile(r"\(#\d+")
 
 #: The explicit exclusion for an entry with no tracked issue. An annotation,
-#: not a pattern: the reason is part of the text.
-_NO_ISSUE_RE = re.compile(r"\(no linked issue: \s*\S", re.I)
+#: not a pattern: the reason is part of the text. The annotation must be a
+#: complete, balanced `(...)` whose reason holds at least one character that
+#: is neither whitespace nor a delimiter — so a bare `)` cannot pose as the
+#: reason and `(no linked issue: )` is rejected, not silently exempted
+#: (#1102). One nesting level is allowed so reasons can name tools like
+#: `(pip-audit)`; deeper parens fall back to the rejection, which is the
+#: safe direction.
+_NO_ISSUE_RE = re.compile(
+    r"\(no linked issue:"       # the annotation opener
+    r"(?:[^()]|\([^()]*\))*?"   # balanced reason: flat prose or one nested pair
+    r"[^()\s]"                  # ≥1 char that is neither whitespace nor a delimiter
+    r"(?:[^()]|\([^()]*\))*?"   # rest of the reason
+    r"\)",                      # complete, balanced close
+    re.I,
+)
 
 #: Words that read as content to a presence check and mean nothing. An
 #: Unreleased section made only of these is *worse* than an empty one: it
