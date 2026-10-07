@@ -114,6 +114,7 @@ Claim(c) ==
   /\ UNCHANGED <<aliveSet, clock, dispatched, pending, violations>>
 
 Renew(c) ==
+  /\ c \in aliveSet
   /\ HasOpen
   /\ OpenAttempt.holder = c
   /\ OpenAttempt.expires > clock
@@ -131,6 +132,7 @@ Crash(c) ==
   /\ UNCHANGED <<run, attempts, clock, fence, dispatched, pending, violations>>
 
 Dispatch(c) ==
+  /\ c \in aliveSet
   /\ HasOpen
   /\ OpenAttempt.holder = c
   /\ OpenAttempt.token = fence

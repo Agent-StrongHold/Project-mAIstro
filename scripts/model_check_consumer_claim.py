@@ -22,8 +22,9 @@ of them:
 
 * `_settle_provider_success` reads the Run, then writes the Attempt
   (#1335): modeled as `begin_commit` (the read) followed by `land_commit`
-  (the write). The shipped guard converts the landing write to CANCELLED
-  when the Run terminalized inside the window.
+  (the write). The shipped store re-reads the Run inside the write and
+  refuses a stale success outright when the Run terminalized inside the
+  window, leaving the Attempt open for recovery.
 * the `accept_outcome` projection (ADR-082426-e3ff): modeled as `accept`,
   which in the shipped protocol carries the live fencing token and is
   refused for a superseded holder.
@@ -59,7 +60,11 @@ RUN_QUEUED = "queued"
 RUN_RUNNING = "running"
 RUN_COMPLETED = "completed"
 RUN_CANCELLED = "cancelled"
-RUN_TERMINAL = frozenset({RUN_COMPLETED, RUN_CANCELLED})
+#: The fold's exhausted-failure rule: a NON_RETRYABLE node whose prior
+#: Attempt never completed fails the Run (RunStatus.FAILED) instead of
+#: re-executing the ambiguous effect (#1194's ReplayRefused disposition).
+RUN_FAILED = "failed"
+RUN_TERMINAL = frozenset({RUN_COMPLETED, RUN_CANCELLED, RUN_FAILED})
 
 ATT_RUNNING = "running"
 ATT_COMPLETED = "completed"
@@ -90,7 +95,7 @@ class Spec:
     semantics: str = "once"
     #: ADR-082426-e3ff: acceptance carries the live fencing token.
     fenced_acceptance: bool = True
-    #: #1335: the landing commit re-reads the Run and refuses/converts.
+    #: #1335: the landing commit re-reads the Run and refuses a stale success.
     terminal_run_refusal: bool = True
 
     def __post_init__(self) -> None:
@@ -272,7 +277,9 @@ def act_spawn(spec: Spec, state: State, consumer: int) -> tuple[str, State] | No
 def act_dispatch(spec: Spec, state: State, consumer: int) -> tuple[str, State] | None:
     """The physical effect starts. The live-lease + fence guard is the
     ADR-081626-f383 / ADR-082426-e3ff discipline: a stale worker may not start
-    work either. A `once` node never dispatches twice (ReplayRefused, #1194)."""
+    work either. A `once` node never dispatches twice (ReplayRefused, #1194):
+    the refusal is not silent — it is the shipped `_replay_refused`
+    disposition, modeled as `replay_refused` below."""
     attempt = open_attempt(state)
     if attempt is None or attempt.holder != consumer or attempt.dispatched:
         return None
@@ -310,12 +317,14 @@ def act_begin_commit(spec: Spec, state: State, consumer: int) -> tuple[str, Stat
 def act_land_commit(spec: Spec, state: State, consumer: int) -> tuple[str, State] | None:
     """`_settle_provider_success` step 2: write the Attempt.
 
-    Shipped (#1335): the write re-checks the Run inside the same transaction.
-    A Run that terminalized inside the window converts the stale success into
-    a CANCELLED Attempt; a Run still RUNNING accepts COMPLETED. Unguarded
-    (pre-fix): whatever the window observed or suffered, the success lands.
-    The write itself still obeys the Attempt transition table — a landing
-    against an Attempt recovery already settled is refused outright.
+    Shipped (#1335): the write re-reads the Run inside the same transaction.
+    A Run that terminalized inside the window makes
+    `refuse_completion_under_terminal_run` raise *before* any Attempt row is
+    written — the stale success is refused, not converted; the Attempt stays
+    RUNNING and crash reclamation (recover) settles it afterwards. Unguarded
+    (pre-fix): whatever the window observed, the success lands. The write
+    itself still obeys the Attempt transition table — a landing against an
+    Attempt recovery already settled is refused outright.
     """
     if state.pending is None:
         return None
@@ -326,14 +335,14 @@ def act_land_commit(spec: Spec, state: State, consumer: int) -> tuple[str, State
     if attempt is None or attempt.status != ATT_RUNNING:
         return None
     if _refuse_under_cancelled_run(spec, state):
-        landed = replace(attempt, status=ATT_CANCELLED, cause=CAUSE_REQUESTED)
-        label = f"land_commit->cancelled(c{consumer})"
-    else:
-        landed = replace(attempt, status=ATT_COMPLETED)
-        label = f"land_commit(c{consumer})"
+        # Store raises InvalidLifecycleTransition before writing: no Attempt
+        # write lands, the pending window just closes. The still-RUNNING
+        # Attempt is exactly what recover/retry see afterwards.
+        return f"land_commit->refused(c{consumer})", replace(state, pending=None)
+    landed = replace(attempt, status=ATT_COMPLETED)
     attempts = tuple(landed if a.ordinal == ordinal else a for a in state.attempts)
     run = state.run if state.run in RUN_TERMINAL else RUN_RUNNING
-    return label, replace(state, attempts=attempts, run=run, pending=None)
+    return f"land_commit(c{consumer})", replace(state, attempts=attempts, run=run, pending=None)
 
 
 def act_accept(spec: Spec, state: State, consumer: int) -> tuple[str, State] | None:
@@ -352,9 +361,7 @@ def act_accept(spec: Spec, state: State, consumer: int) -> tuple[str, State] | N
         latest = state.attempts[-1]
         if attempt.ordinal != latest.ordinal or attempt.token != state.fence:
             return None
-    return f"accept(c{consumer})", replace(
-        state, run=RUN_COMPLETED, accepted=attempt.ordinal
-    )
+    return f"accept(c{consumer})", replace(state, run=RUN_COMPLETED, accepted=attempt.ordinal)
 
 
 def act_cancel(spec: Spec, state: State) -> tuple[str, State] | None:
@@ -396,9 +403,11 @@ def act_retry(spec: Spec, state: State, consumer: int) -> tuple[str, State] | No
     consults only {CREATED, RUNNING} attempts), and the last Attempt's cause
     authorizes the retry — RECOVERED, or (pre-fix era) a completed-but-
     unaccepted Attempt whose node recovery had parked. A `once` node whose
-    effect already ran never re-executes it: the fresh Attempt may exist, but
-    `dispatch` refuses it (ReplayRefused), which is why that guard lives in
-    dispatch."""
+    effect already ran may still be retried (the canonical recovery rotation,
+    ADR-082826-08f0), but the fresh Attempt never re-executes: the shipped
+    `_replay_refused` disposition — modeled as `replay_refused` below —
+    settles that Attempt and fails the Run, which is why `dispatch` keeps
+    its guard."""
     if state.run != RUN_RUNNING or not state.attempts:
         return None
     if len(state.attempts) >= spec.max_attempts:
@@ -422,6 +431,26 @@ def act_retry(spec: Spec, state: State, consumer: int) -> tuple[str, State] | No
         f"retry(c{consumer})",
         replace(state, attempts=(*state.attempts, attempt), fence=state.fence + 1),
     )
+
+
+def act_replay_refused(spec: Spec, state: State) -> tuple[str, State] | None:
+    """The shipped #1194 disposition for a `once` node's fresh recovery
+    Attempt (`_replay_refused`): the node body is never invoked — the fresh
+    Attempt records the refusal as its own durable result (COMPLETED carrying
+    the failed NodeResult, per the canonical ADR-082826-08f0 rotation the
+    shipped test pins as [CANCELLED, COMPLETED]) and the fold's
+    exhausted-failure rule terminalizes the Run FAILED. Guards: `once`
+    semantics, some prior Attempt did dispatch (the ambiguity is real), and
+    the one open Attempt is *not* itself the dispatched one — a still-claimed
+    in-flight Attempt is live work, never silently failed."""
+    if spec.semantics != "once" or not state.dispatched or state.run != RUN_RUNNING:
+        return None
+    attempt = open_attempt(state)
+    if attempt is None or attempt.ordinal in state.dispatched:
+        return None
+    settled = replace(attempt, status=ATT_COMPLETED)
+    attempts = tuple(settled if a.ordinal == attempt.ordinal else a for a in state.attempts)
+    return "replay_refused", replace(state, attempts=attempts, run=RUN_FAILED)
 
 
 # ---------------------------------------------------------------------------
@@ -448,7 +477,7 @@ def successors(spec: Spec, state: State) -> list[tuple[str, State]]:
             step = action(spec, state, consumer)
             if step is not None:
                 out.append(step)
-    for action in (act_tick, act_cancel, act_recover):
+    for action in (act_tick, act_cancel, act_recover, act_replay_refused):
         step = action(spec, state)
         if step is not None:
             out.append(step)
@@ -495,8 +524,8 @@ def edge_violations(prev: State, nxt: State) -> list[str]:
     """Transition properties, checked on every edge (they need both ends).
 
     S4_no_completion_under_terminal_run — a COMPLETED Attempt write never
-        lands once the Run is terminal (#1335's refusal; the guarded
-        landing converts instead).
+        lands once the Run is terminal (#1335's refusal; the guarded landing
+        writes nothing and leaves the Attempt RUNNING for recovery).
     S5_terminal_no_regress — terminal statuses are absorbing.
     """
     violations: list[str] = []
@@ -619,7 +648,10 @@ def check_progress(spec: Spec, safety_keys: set[tuple], consumers: int = 2) -> b
     tick budget remaining (clock < horizon) reaches — without any `cancel`
     and without assuming any current holder keeps running — either a
     terminal Run or live ownership (an open Attempt whose lease is unexpired
-    and whose holder is alive). Fairness assumptions carried by the graph:
+    and whose holder is alive). For `once` semantics the terminal Run is
+    reached through the shipped #1194 disposition itself: the fresh recovery
+    Attempt settles `replay_refused` and the Run fails — the checker explores
+    that edge, not a stranded RUNNING Attempt. Fairness assumptions carried by the graph:
     the clock advances (`tick`), the sweep eventually runs (`recover`), and
     crashed workers are eventually replaced (`spawn`). Cancellation is a
     person's action, not a fairness assumption, so its edges carry no
@@ -723,6 +755,7 @@ def conformance_with_shipped_tables() -> list[str]:
     model_run_moves = {
         (RUN_QUEUED, RUN_RUNNING),
         (RUN_RUNNING, RUN_COMPLETED),
+        (RUN_RUNNING, RUN_FAILED),
         (RUN_QUEUED, RUN_CANCELLED),
         (RUN_RUNNING, RUN_CANCELLED),
     }
