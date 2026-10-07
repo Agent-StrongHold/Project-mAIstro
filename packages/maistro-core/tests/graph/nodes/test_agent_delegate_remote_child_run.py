@@ -21,6 +21,7 @@ foreign one is refused rather than filed.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -46,6 +47,9 @@ from maistro.http import set_test_transport
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore, RunStatus
 from maistro.runs.store import RunIntegrityError
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+
+from ._delegation_governance import delegation_effects, guest_peers_with_hub
 
 
 async def _spine(
@@ -113,7 +117,8 @@ class TestDelegationFilesAChildRun:
     ) -> None:
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
@@ -136,12 +141,99 @@ class TestDelegationFilesAChildRun:
         assert child.workspace_id == parent.workspace_id
         assert child.project_id == parent.project_id
 
+    async def test_replaying_the_same_logical_delegation_reuses_the_child_and_task(
+        self,
+    ) -> None:
+        """A lease-loss retry cannot turn one logical delegation into two tasks."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        delegator = _delegator()
+        node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
+        context = _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id)
+        inputs = {"from_agent": "planner", "task": "research X", "to_agent": "researcher"}
+
+        first = await node.run(inputs, context)
+        retry_context = context.model_copy(update={"node_run_id": "node-run-retry-3"})
+        second = await node.run(inputs, retry_context)
+
+        assert first.status == second.status == "paused"
+        assert first.metadata["run_id"] == second.metadata["run_id"]
+        assert first.metadata["task_id"] == second.metadata["task_id"]
+        assert len(delegator._tasks) == 1
+        child = await store.find_run_by_effect(
+            node.replay_effect_key(node.input_schema.model_validate(inputs), context)
+        )
+        assert child is not None
+        # The replayed child Run stays bound to the delegating parent's scope.
+        assert child.parent_run_id == parent.run_id
+        assert child.workspace_id == parent.workspace_id
+        assert child.project_id == parent.project_id
+
+    async def test_independent_worker_reuses_receipt_without_local_task_deduplication(self) -> None:
+        """The durable claim, not a worker-local A2A queue, is the authority."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        first_worker = AgentDelegateRemoteNode(
+            a2a_delegator=_delegator(),
+            run_store=store,
+        )
+        inputs = {"from_agent": "planner", "task": "research X", "to_agent": "researcher"}
+        context = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
+
+        first = await first_worker.run(inputs, context)
+        second_delegator = _delegator()
+        second_worker = AgentDelegateRemoteNode(
+            a2a_delegator=second_delegator,
+            run_store=store,
+        )
+        second = await second_worker.run(
+            inputs,
+            context.model_copy(update={"node_run_id": "lease-loss-retry"}),
+        )
+
+        assert first.status == second.status == "paused"
+        assert first.metadata["run_id"] == second.metadata["run_id"]
+        assert first.metadata["task_id"] == second.metadata["task_id"]
+        assert len(second_delegator._tasks) == 0
+        assert len(first_worker._a2a_delegator._tasks) == 1  # type: ignore[union-attr]
+
+    async def test_concurrent_workers_atomically_claim_one_child_and_task(self) -> None:
+        """Lease-loss overlap cannot admit two canonical children."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        delegator = _delegator()
+        node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
+        inputs = {"from_agent": "planner", "task": "research X", "to_agent": "researcher"}
+
+        results = await asyncio.gather(
+            node.run(inputs, _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)),
+            node.run(inputs, _ctx(run_id=parent.run_id, node_run_id="lease-loss-retry")),
+        )
+
+        assert [result.status for result in results] == ["paused", "paused"]
+        children = [run for run in store._runs.values() if run.parent_run_id == parent.run_id]  # type: ignore[attr-defined]
+        assert len(children) == 1
+        assert len(delegator._tasks) == 1
+
     async def test_the_child_run_provenance_names_the_task_the_mode_and_both_agents(
         self,
     ) -> None:
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
@@ -171,7 +263,8 @@ class TestDelegationFilesAChildRun:
         """
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
@@ -192,7 +285,8 @@ class TestTheEscapeGuardsFire:
     async def test_a_delegation_naming_a_foreign_workspace_is_refused(self) -> None:
         store, project_store, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         # A real second Workspace, so the refusal is about crossing rather than
         # about the destination not existing.
@@ -227,7 +321,8 @@ class TestTheEscapeGuardsFire:
             name="Sibling",
         )
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
         node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
@@ -246,6 +341,51 @@ class TestTheEscapeGuardsFire:
         assert "Project boundaries" in (result.error_message or "")
 
 
+class TestParentageIsVerifiedBeforeAdmission:
+    """The child Run binds to the physical NodeRun that admitted it.
+
+    The binding is the #1194 correlation contract: a lease-loss retry arrives
+    with a fresh NodeRun identity, and adoption of the existing reservation is
+    what keeps it one logical delegation. A ctx whose ``node_run_id`` names a
+    NodeRun of a *different* Run is not a retry -- it is uncorrelatable
+    parentage, and reserving a child under it would file delegated work no
+    resume could ever trace back to the delegating node.
+    """
+
+    async def test_a_delegation_binding_another_runs_node_run_is_refused(self) -> None:
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        # A real NodeRun, belonging to a different Run.
+        stranger = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        foreign_node_run = await store.create_node_run(stranger.run_id, node_id="delegate-1")
+
+        delegator = _delegator()
+        node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=foreign_node_run.node_run_id),
+        )
+
+        assert result.status == "failed"
+        assert result.error_code == "RunIntegrityError"
+        assert "does not belong" in (result.error_message or "")
+        # The refusal precedes admission: no child Run under the delegating
+        # parent, and nothing reached the A2A transport.
+        children = [
+            run
+            for run in store._runs.values()
+            if run.parent_run_id == parent.run_id  # type: ignore[attr-defined]
+        ]
+        assert children == []
+        assert len(delegator._tasks) == 0
+
+
 class TestInterruptedChildAdmission:
     """Reservation is two durable stages; a death between them must neither
     pause the parent on an unanswerable child nor strand one nothing revisits.
@@ -260,7 +400,8 @@ class TestInterruptedChildAdmission:
     @staticmethod
     async def _parent(store: InMemoryRunStore, project: Any) -> tuple[Any, Any]:
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         return parent, parent_node_run
@@ -368,6 +509,7 @@ class TestInterruptedChildAdmission:
                 "delegation_key": node._delegation_key(inputs, ctx),
                 "delegation_mode": "in_process",
             },
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
         first = await node.run(inputs, ctx)
@@ -457,7 +599,8 @@ class TestTheReceiptIsAttemptOwnedIdentity:
     async def test_the_reservation_attempt_records_no_receipt_placeholder(self) -> None:
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
@@ -479,7 +622,8 @@ class TestTheReceiptIsAttemptOwnedIdentity:
     async def test_the_settling_attempt_names_the_transport_receipt(self) -> None:
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
@@ -521,7 +665,8 @@ class TestTheReceiptIsAttemptOwnedIdentity:
     async def test_an_answer_without_a_receipt_records_no_placeholder(self) -> None:
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
@@ -633,26 +778,57 @@ class TestCrossInstanceDelegationFilesAChildRun:
         task_id: str = "remote-1",
     ) -> GuestPeerManager:
         guest_peers = GuestPeerManager()
+        guest_peers.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub"))
         guest_peers.delegate = AsyncMock(  # type: ignore[method-assign]
             return_value=DelegationResult(
-                task_id=task_id, peer_name="hub", status=status, error=error
+                task_id=task_id,
+                peer_name="hub",
+                status=status,
+                error=error,
+                peer_url="http://hub" if status == "submitted" else "",
             )
         )
         return guest_peers
+
+    async def _governed(
+        self,
+        store: InMemoryRunStore,
+        project_id: str,
+        peers: GuestPeerManager,
+    ) -> AgentDelegateRemoteNode:
+        """The node with the issue #959 wiring: run store, Binding, effects."""
+        effects = await delegation_effects(workspace_id="workspace-1", project_id=project_id)
+        return AgentDelegateRemoteNode(guest_peers=peers, run_store=store, effect_context=effects)
+
+    @staticmethod
+    def _inputs() -> dict[str, Any]:
+        return {
+            "from_agent": "planner",
+            "task": "research X",
+            "peer_name": "hub",
+            "binding_id": "binding-hub",
+        }
+
+    @staticmethod
+    def _attempt_ctx(run_id: str, node_run_id: str) -> NodeContext:
+        return _ctx(run_id=run_id, node_run_id=node_run_id).model_copy(
+            update={"attempt_id": "attempt-1", "workspace_id": "workspace-1"}
+        )
 
     async def test_a_cross_instance_delegation_creates_a_child_of_the_delegating_node_run(
         self,
     ) -> None:
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
-        node = AgentDelegateRemoteNode(guest_peers=self._peers(), run_store=store)
+        node = await self._governed(store, project.project_id, self._peers())
         result = await node.run(
-            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
-            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+            self._inputs(),
+            self._attempt_ctx(parent.run_id, parent_node_run.node_run_id),
         )
 
         assert result.status == "paused"
@@ -670,7 +846,8 @@ class TestCrossInstanceDelegationFilesAChildRun:
         """Exercise the node through GuestPeerManager's real HTTP seam."""
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         seen: dict[str, Any] = {}
@@ -681,13 +858,12 @@ class TestCrossInstanceDelegationFilesAChildRun:
             return httpx.Response(200, json={"task_id": "http-remote-1"})
 
         set_test_transport(httpx.MockTransport(handler))
-        peers = GuestPeerManager()
-        peers.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub"))
-        node = AgentDelegateRemoteNode(guest_peers=peers, run_store=store)
+        peers = guest_peers_with_hub()
+        node = await self._governed(store, project.project_id, peers)
 
         result = await node.run(
-            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
-            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+            self._inputs(),
+            self._attempt_ctx(parent.run_id, parent_node_run.node_run_id),
         )
 
         assert result.status == "paused"
@@ -704,18 +880,19 @@ class TestCrossInstanceDelegationFilesAChildRun:
         """A peer answer settles canonical evidence, not the Run directly."""
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
-        node = AgentDelegateRemoteNode(guest_peers=self._peers(), run_store=store)
+        node = await self._governed(store, project.project_id, self._peers())
         first = await node.run(
-            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
-            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+            self._inputs(),
+            self._attempt_ctx(parent.run_id, parent_node_run.node_run_id),
         )
         child_run_id = first.metadata["run_id"]
 
         await node.run(
-            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            self._inputs(),
             _ctx(
                 run_id=parent.run_id,
                 node_run_id=parent_node_run.node_run_id,
@@ -748,14 +925,15 @@ class TestCrossInstanceDelegationFilesAChildRun:
         Run rather than the only record of the delegation."""
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
-        node = AgentDelegateRemoteNode(guest_peers=self._peers(), run_store=store)
+        node = await self._governed(store, project.project_id, self._peers())
         result = await node.run(
-            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
-            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+            self._inputs(),
+            self._attempt_ctx(parent.run_id, parent_node_run.node_run_id),
         )
 
         child = await store.get_run(result.metadata["run_id"])
@@ -773,16 +951,17 @@ class TestCrossInstanceDelegationFilesAChildRun:
         to — the same rule the in-process rejection follows."""
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
-        node = AgentDelegateRemoteNode(
-            guest_peers=self._peers(status="rejected", error="peer not found"), run_store=store
+        node = await self._governed(
+            store, project.project_id, self._peers(status="rejected", error="peer not found")
         )
         result = await node.run(
-            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
-            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+            self._inputs(),
+            self._attempt_ctx(parent.run_id, parent_node_run.node_run_id),
         )
 
         assert result.status == "completed"
@@ -800,14 +979,15 @@ class TestCrossInstanceDelegationFilesAChildRun:
         """An uncertain transport keeps its reserved child and polls for its receipt."""
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
-        node = AgentDelegateRemoteNode(guest_peers=self._peers(task_id=""), run_store=store)
+        node = await self._governed(store, project.project_id, self._peers(task_id=""))
         result = await node.run(
-            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
-            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+            self._inputs(),
+            self._attempt_ctx(parent.run_id, parent_node_run.node_run_id),
         )
 
         assert result.status == "paused"
@@ -843,7 +1023,9 @@ class TestCrossInstanceDelegationFilesAChildRun:
                 )
             ],
         )
-        parent = await run_store.create_run(graph)
+        parent = await run_store.create_run(
+            graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await run_store.transition_run(parent.run_id, RunStatus.QUEUED)
         durable = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
         node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=run_store)

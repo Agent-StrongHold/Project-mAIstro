@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import re
 import time
+import urllib.parse
 from typing import Annotated, Any
 
 from fastmcp import FastMCP
@@ -24,12 +26,189 @@ mcp = FastMCP("git", instructions="Git and GitHub operations")
 
 GIT_CLONE_TIMEOUT = 300
 
-# Schemes legitimate callers actually use (github_create_pr/selfbranch clone
-# over https; ssh/git are kept for parity with normal git usage). Anything
-# else — notably a bare `-`-prefixed string, which `argv` would otherwise
-# hand straight to git as a flag — is rejected before the subprocess runs.
-_ALLOWED_CLONE_SCHEMES = ("https://", "git://", "ssh://")
+# Clone-source policy (#404). Anything this tool clones is candidate source
+# the RSI cycle branches, patches, builds and tests, so the gate is an
+# allowlist of authenticated transports — not a blocklist:
+#
+# * `git://` is unauthenticated and unencrypted — no transport integrity, no
+#   server identity — so an on-path attacker can substitute repository
+#   content. It gets its own error code so the policy violation is
+#   distinguishable from a typo, and the check is case-insensitive because
+#   git parses remote schemes per RFC 3986 (`GIT://` names the same
+#   transport). The verdict is not overridable by the `_ALLOWED_CLONE_SCHEMES`
+#   test knob, which exists only to admit `file://` hermetic origins.
+# * The scheme allowlist admits `https://` and `ssh://` only. Any other
+#   scheme — including scp-style `git@host:path` remotes and a bare
+#   `-`-prefixed string, which `argv` would otherwise hand to git as a flag —
+#   is rejected before the subprocess runs.
+# * Hosts: an https/ssh URL must also name a host on the explicit source
+#   allowlist (`_ALLOWED_CLONE_HOSTS`; deployments override with
+#   `MAISTRO_GIT_CLONE_ALLOWED_HOSTS`, comma-separated). The *repository*
+#   half of the source policy is always a commit digest pin: a caller-supplied
+#   `git_clone(commit=...)` digest is used as-is, while an omitted pin is
+#   resolved from the vetted remote before clone. Whatever is checked out is
+#   then proven to be that requested object, so a moved ref or hostile mirror
+#   cannot substitute content.
+# * Local paths are "verified local sources" only when they pass the same
+#   workspace-root validation the destination already undergoes.
+#
+# The argv carries two `-c` pins that make the redirect/submodule arguments
+# executable instead of architectural (verified against real git):
+# * `protocol.git.allow=never` — git itself refuses the git:// transport
+#   ("fatal: transport 'git' not allowed") even when a URL re-introduces it
+#   via a redirect or a `.gitmodules` entry. Proven below: under this pin,
+#   `git submodule update` against a `git://` URL fails in transport
+#   selection, before any connection.
+# * `http.followRedirects=false` — git refuses to follow redirects at all, so
+#   no server response can move the fetch to a URL the scheme/host policy
+#   never vetted. git's default (`initial`) still follows the initial
+#   request's redirect even to a different host, which would let an allowed
+#   host's open redirect pick the real source; `false` closes that, at the
+#   price of failing loudly on moved-repo redirects (retry with the canonical
+#   URL, which passes policy itself). This server never runs `git submodule
+#   update`; the pin above means even a hypothetical submodule fetch over
+#   git:// dies in transport selection.
+#
+# Signature policy (#404 AC3's "identity/signature policy" clause): the
+# deployment names its trust anchor in `MAISTRO_GIT_CLONE_TRUSTED_SIGNERS`
+# (comma-separated full OpenPGP key fingerprints; the corresponding public
+# keys must be in the runner's keyring, which is what `git log %G?` consults).
+# With the anchor set, every clone must land on a commit whose signature is
+# cryptographically good (`%G?` G, or U — good but locally untrusted) and made
+# by a trusted key (`%GP`/`%GF` fingerprint match); anything else fails with
+# its own error code. Without the anchor the policy stays digest-identity over
+# authenticated transport (`commit=` pin + host allowlist) — that default is
+# documented here, not silent: a deployment that wants provenance signs its
+# candidate sources and configures the anchor.
+# Executable #404 enforcement, one tuple for every git transport this module
+# spawns — the initial clone *and* any later network fetch into a cloned
+# workspace (the digest-pin fetch below). Carrying the pins in each argv —
+# not relying on the config the clone happens to persist into the new
+# repository — is the standard the module committed to: a second fetch added
+# tomorrow, or a workspace whose .git/config was not written by this clone
+# path, must not silently lose the enforcement.
+_ENFORCEMENT_CONFIG = ("protocol.git.allow=never", "http.followRedirects=false")
+# The same pins pre-expanded into argv fragments for the direct subprocess
+# spawns below (clone, ls-remote); `_git(config=...)` expands the pairs
+# itself for in-workspace commands.
+_ENFORCEMENT_ARGV = tuple(part for pair in _ENFORCEMENT_CONFIG for part in ("-c", pair))
+_ALLOWED_CLONE_SCHEMES = ("https://", "ssh://")
+_DEFAULT_ALLOWED_CLONE_HOSTS = ("github.com", "gitlab.com", "bitbucket.org", "ssh.github.com")
+_ALLOWED_CLONE_HOSTS: tuple[str, ...] = _DEFAULT_ALLOWED_CLONE_HOSTS
+# A pin is only a pin if it names an object, not a label a remote can repoint:
+# full sha1/sha256 hex digests only — no short shas, no ref names.
+_COMMIT_DIGEST_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 _BRANCH_NAME_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+class ClonePolicyError(ValueError):
+    """A clone source failed the #404 transport/host policy."""
+
+    def __init__(self, message: str, error_code: str, suggested_action: str) -> None:
+        super().__init__(message)
+        self.message = message
+        self.error_code = error_code
+        self.suggested_action = suggested_action
+
+
+def _clone_policy_hosts() -> tuple[str, ...]:
+    """Hosts allowed as clone sources: the deployment's env override when
+    set, else the module allowlist (which hermetic tests monkeypatch)."""
+    override = os.environ.get("MAISTRO_GIT_CLONE_ALLOWED_HOSTS", "")
+    hosts = tuple(host.strip().lower() for host in override.split(",") if host.strip())
+    return hosts or _ALLOWED_CLONE_HOSTS
+
+
+# #404 AC3 signature trust anchor: full OpenPGP fingerprints (40/64 hex,
+# spaces allowed) this deployment trusts to sign candidate clone sources.
+_TRUSTED_SIGNERS_ENV = "MAISTRO_GIT_CLONE_TRUSTED_SIGNERS"
+# git log %G? verdicts that mean "cryptographically good signature": G is
+# good; U is good with unknown *local* keyring trust, which is a keyring
+# setting, not a cryptographic verdict, and must not fail a policy whose
+# anchor is the fingerprint allowlist anyway.
+_GOOD_SIGNATURE_STATUSES = frozenset({"G", "U"})
+
+
+def _trusted_signature_fprs() -> frozenset[str]:
+    """Normalized (space-stripped, lowercased) signer key fingerprints from
+    `MAISTRO_GIT_CLONE_TRUSTED_SIGNERS`. Empty frozenset — no signature
+    requirement — when the deployment has not configured the anchor."""
+    raw = os.environ.get(_TRUSTED_SIGNERS_ENV, "")
+    return frozenset(fpr.replace(" ", "").lower() for fpr in raw.split(",") if fpr.strip())
+
+
+def _url_host(url: str) -> str | None:
+    """Lowercased hostname of a schemed URL, or None if it has none.
+
+    urlsplit puts everything before the last `@` of the authority into
+    user-info, so `https://github.com@evil.com/x` is host evil.com (refused)
+    and `https://evil@github.com/x` is host github.com (allowed) — matching
+    what git/curl will actually connect to.
+    """
+    try:
+        host = urllib.parse.urlsplit(url).hostname
+    except ValueError:
+        return None
+    return host.lower() if host else None
+
+
+def validate_clone_source(url: str) -> None:
+    """Raise :class:`ClonePolicyError` unless `url` names a source the #404
+    clone policy allows.
+
+    One function, every surface: the MCP tool below and the RSI harvest cloud
+    path (`maistro_rsi.__main__`) both gate through this, so a URL rejected
+    here is rejected there — there is no second policy to drift.
+    """
+    lowered = url.lower()
+    if lowered.startswith("git://"):
+        raise ClonePolicyError(
+            f"Blocked: unauthenticated transport: {url}",
+            "blocked_unauthenticated_transport",
+            "Use https:// or ssh:// — the git:// protocol provides no "
+            "transport encryption or server authentication (#404).",
+        )
+    if url.startswith(_ALLOWED_CLONE_SCHEMES):
+        if lowered.startswith(("https://", "ssh://")):
+            host = _url_host(url)
+            if host is None or host not in _clone_policy_hosts():
+                raise ClonePolicyError(
+                    f"Blocked: clone host is not on the source allowlist: {url}",
+                    "blocked_clone_host",
+                    "Clone from a host on MAISTRO_GIT_CLONE_ALLOWED_HOSTS "
+                    f"(default: {_DEFAULT_ALLOWED_CLONE_HOSTS}), or set that "
+                    "variable for this deployment.",
+                )
+        return
+    _raise_for_unvetted_source_spelling(url)
+
+
+def _raise_for_unvetted_source_spelling(url: str) -> None:
+    """Refuse the source forms the allowlist never named, and vet bare paths
+    as the one remaining door (verified local sources)."""
+    # A schemed URL that missed the allowlist is refused as a scheme; so is
+    # scp-style `git@host:path` syntax, which git would silently treat as
+    # ssh:// — a source form the policy above never names.
+    if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", url) or (
+        "@" in url and ":" in url.split("@", 1)[1] and "://" not in url
+    ):
+        raise ClonePolicyError(
+            f"Blocked: url scheme is not allowed: {url}",
+            "blocked_url_scheme",
+            f"Use a URL starting with one of {_ALLOWED_CLONE_SCHEMES}.",
+        )
+    # Last door: a verified local source — same workspace-root validation the
+    # destination must pass.
+    try:
+        validate_workspace_path(url)
+    except ValueError as exc:
+        raise ClonePolicyError(
+            f"Blocked: {exc}",
+            "blocked_url_scheme",
+            f"Use a URL starting with one of {_ALLOWED_CLONE_SCHEMES}, or a path "
+            "inside an allowed workspace root.",
+        ) from None
+
 
 # In-memory dedup for PR creation, keyed by a content hash rather than a
 # model-supplied key — retries with identical args return the original
@@ -60,15 +239,24 @@ def _pr_cache_key(repo: str, branch: str, title: str, body: str, base: str) -> s
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-async def _git(workspace: str, *args: str, timeout: int = 60) -> dict[str, Any]:
-    """Run a git command in the given workspace. Returns structured result."""
+async def _git(
+    workspace: str, *args: str, timeout: int = 60, config: tuple[str, ...] = ()
+) -> dict[str, Any]:
+    """Run a git command in the given workspace. Returns structured result.
+
+    `config` names `-c key=value` pairs inserted before the command — the
+    executable enforcement pins network operations must carry (see
+    `_ENFORCEMENT_CONFIG`).
+    """
     try:
         workspace = _validate_git_workspace(workspace)
     except ValueError:
         return _blocked_workspace_result(workspace)
+    config_argv = [part for pair in config for part in ("-c", pair)]
     try:
         proc = await asyncio.create_subprocess_exec(
             "git",
+            *config_argv,
             "-C",
             workspace,
             *args,
@@ -115,22 +303,76 @@ def _parse_log_lines(output: str) -> list[dict[str, str]]:
 
 @mcp.tool()
 async def git_clone(
-    url: str, dest: str, timeout: Annotated[int, Field(ge=1, le=900)] = GIT_CLONE_TIMEOUT
+    url: str,
+    dest: str,
+    timeout: Annotated[int, Field(ge=1, le=900)] = GIT_CLONE_TIMEOUT,
+    commit: str | None = None,
 ) -> dict[str, Any]:
-    """Clone a git repository (shallow, depth=1)."""
-    if not url.startswith(_ALLOWED_CLONE_SCHEMES):
+    """Clone a git repository (shallow, depth=1).
+
+    Only authenticated, policy-vetted sources are accepted (#404): https:// or
+    ssh:// to a host on the clone-source allowlist, or a verified local path.
+    `git://` has its own rejection — it provides neither encryption nor server
+    authentication, and anything it clones is candidate source the RSI
+    self-modification cycle may execute.
+
+    Pass `commit` (full 40- or 64-hex digest) to pin the checkout: the digest —
+    not a ref name — is fetched directly and `rev-parse HEAD` must equal it
+    after every fetch, so a ref that moves mid-clone (TOCTOU) cannot change
+    what the caller receives. When omitted, the policy first resolves the
+    vetted remote's HEAD to a full digest, then applies the same pinned
+    checkout; no successful clone is unpinned. The checkout is exactly the
+    requested or resolved digest or the call fails.
+
+    Signature policy (#404): when the deployment sets
+    `MAISTRO_GIT_CLONE_TRUSTED_SIGNERS` (comma-separated OpenPGP key
+    fingerprints), the landed HEAD commit must additionally carry a
+    cryptographically good signature by one of those keys; the result then
+    reports `signature_verified: True`. Without the anchor, transport
+    authentication plus the digest pin is the policy.
+    """
+    try:
+        validate_clone_source(url)
+    except ClonePolicyError as exc:
         return fail(
-            stdout=f"Blocked: url scheme is not allowed: {url}",
-            error_code="blocked_url_scheme",
-            suggested_action=f"Use a URL starting with one of {_ALLOWED_CLONE_SCHEMES}.",
+            stdout=exc.message,
+            error_code=exc.error_code,
+            suggested_action=exc.suggested_action,
         )
+    if commit is not None:
+        if not _COMMIT_DIGEST_RE.match(commit):
+            return fail(
+                stdout=f"Blocked: commit pin must be a full 40- or 64-hex digest: {commit}",
+                error_code="blocked_commit_digest",
+                suggested_action=(
+                    "Pass the full digest (git rev-parse <ref>). A short sha or a "
+                    "ref name can be repointed by the remote; a digest cannot."
+                ),
+            )
+        commit = commit.lower()
     try:
         dest = _validate_git_workspace(dest)
     except ValueError:
         return _blocked_workspace_result(dest)
+    if commit is None:
+        resolved = await git_remote_tip(url, timeout=timeout)
+        if not resolved["success"]:
+            return resolved
+        commit = str(resolved["commit"])
+    return await _clone_and_maybe_pin(url, dest, commit, timeout)
+
+
+async def _clone_and_maybe_pin(
+    url: str, dest: str, commit: str | None, timeout: int
+) -> dict[str, Any]:
+    """Run the policy-pinned clone subprocess; verify the digest pin if set."""
     try:
+        # Executable #404 enforcement (see the constant block above): git
+        # itself refuses the git:// transport and refuses to follow
+        # redirects, whatever a URL or .gitmodules entry asks for.
         proc = await asyncio.create_subprocess_exec(
             "git",
+            *_ENFORCEMENT_ARGV,
             "clone",
             "--depth=1",
             "--",
@@ -142,8 +384,13 @@ async def git_clone(
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         output = stdout.decode() if stdout else "Cloned"
         code = proc.returncode or 0
+        if code == 0 and commit is not None:
+            pinned = await _verify_pinned_checkout(dest, commit, timeout, output)
+            if not pinned["success"]:
+                return pinned
+            return await _enforce_signature_policy(dest, pinned, timeout)
         if code == 0:
-            return ok(stdout=output, exit_code=code)
+            return await _enforce_signature_policy(dest, ok(stdout=output, exit_code=code), timeout)
         return fail(
             stdout=output,
             exit_code=code,
@@ -165,6 +412,226 @@ async def git_clone(
             recoverable=True,
             suggested_action="Retry with a longer timeout, or check repo size/network conditions.",
         )
+
+
+async def _enforce_signature_policy(
+    dest: str, result: dict[str, Any], timeout: int
+) -> dict[str, Any]:
+    """Apply the #404 AC3 signature policy to a finished, identity-verified
+    clone.
+
+    No-op unless the deployment configured a trust anchor
+    (`MAISTRO_GIT_CLONE_TRUSTED_SIGNERS`): the default policy is digest
+    identity over authenticated transport, documented in the module header.
+    With the anchor set, HEAD's signature must be cryptographically good
+    (`%G?` G or U) and made by a trusted key (`%GP`/`%GF` fingerprint match) —
+    the checked-out commit is the object the caller receives, so its
+    signature is the provenance being attested.
+    """
+    trusted = _trusted_signature_fprs()
+    if not trusted:
+        return result
+    status = await _git(dest, "log", "-1", "--pretty=format:%G?", timeout=timeout)
+    verdict = status["stdout"].strip() if status["success"] else ""
+    if verdict == "N" or not verdict:
+        return _signature_policy_failure(
+            result,
+            "commit_signature_missing",
+            f"HEAD is not signed ({verdict or 'unreadable'})",
+            f"{_TRUSTED_SIGNERS_ENV} requires signed candidate sources; the "
+            "cloned HEAD carries no valid OpenPGP signature. Do not use this "
+            "workspace.",
+        )
+    if verdict not in _GOOD_SIGNATURE_STATUSES:
+        return _signature_policy_failure(
+            result,
+            "commit_signature_invalid",
+            f"HEAD signature is not good ({verdict})",
+            f"{_TRUSTED_SIGNERS_ENV} is set, so the cloned HEAD must carry a "
+            f"good signature; git reports {verdict!r}. The source or the local "
+            "keyring is wrong — do not use this workspace.",
+        )
+    fprs = await _git(dest, "log", "-1", "--pretty=format:%GF%n%GP", timeout=timeout)
+    landed = _landed_signer_fprs(fprs)
+    if not landed & trusted:
+        return _signature_policy_failure(
+            result,
+            "commit_signature_untrusted",
+            f"signer {sorted(landed) or 'unknown'} is not on the trusted-signer allowlist",
+            f"The signature is good but the key is not one of the fingerprints "
+            f"in {_TRUSTED_SIGNERS_ENV}. Do not use this workspace.",
+        )
+    augmented = dict(result)
+    augmented["signature_verified"] = True
+    return augmented
+
+
+def _landed_signer_fprs(fprs: dict[str, Any]) -> set[str]:
+    """Normalized (space-stripped, lowercased) signer fingerprints reported
+    by `git log %GF%n%GP`; empty when the read itself failed."""
+    if not fprs["success"]:
+        return set()
+    return {
+        line.strip().replace(" ", "").lower()
+        for line in fprs["stdout"].splitlines()
+        if line.strip()
+    }
+
+
+def _signature_policy_failure(
+    result: dict[str, Any], error_code: str, detail: str, suggested_action: str
+) -> dict[str, Any]:
+    """Fail a finished clone whose HEAD violated the signature trust anchor,
+    keeping the clone's own stdout (and the verdict) in the audit trail."""
+    return fail(
+        stdout=(result.get("stdout", "") or "") + f"\ncommit signature policy: {detail}",
+        error_code=error_code,
+        suggested_action=suggested_action,
+    )
+
+
+async def _verify_pinned_checkout(
+    dest: str, commit: str, timeout: int, clone_output: str
+) -> dict[str, Any]:
+    """Pin a finished clone to `commit` and prove the checkout IS that object.
+
+    The digest is fetched directly (no ref name is ever trusted), and the
+    final `rev-parse HEAD` verdict runs after all fetching — if a ref moved at
+    any point (TOCTOU), the mismatch fails the call instead of silently
+    handing the caller different content than the digest they audited.
+    """
+    head = await _git(dest, "rev-parse", "HEAD", timeout=timeout)
+    if head["success"] and head["stdout"].strip() == commit:
+        # Fast path: the pinned digest is the default branch's tip, which the
+        # clone already fetched — the checkout already IS the object.
+        return ok(
+            stdout=f"{clone_output}Pinned to commit {commit} (verified)\n",
+            exit_code=0,
+            pinned_commit=commit,
+        )
+    # The fetch-by-digest is a second network operation against the remote,
+    # so it carries the same executable enforcement pins as the clone — git
+    # refuses the git:// transport and refuses redirects for this fetch too,
+    # whatever the (allowed) origin's response asks for.
+    fetch = await _git(
+        dest,
+        "fetch",
+        "--depth=1",
+        "origin",
+        commit,
+        timeout=timeout,
+        config=_ENFORCEMENT_CONFIG,
+    )
+    if not fetch["success"]:
+        return fail(
+            stdout=fetch["stdout"],
+            exit_code=fetch.get("exit_code", 1),
+            error_code="commit_fetch_failed",
+            recoverable=True,
+            suggested_action=(
+                f"Could not fetch the pinned digest {commit}: verify it exists on "
+                "the remote and that the remote permits fetch-by-sha. The clone "
+                "was not verified — do not use the workspace."
+            ),
+        )
+    checkout = await _git(dest, "checkout", "--detach", "FETCH_HEAD", timeout=timeout)
+    if not checkout["success"]:
+        return fail(
+            stdout=checkout["stdout"],
+            exit_code=checkout.get("exit_code", 1),
+            error_code="git_command_failed",
+            recoverable=True,
+            suggested_action="Inspect stdout; the pinned checkout could not be made.",
+        )
+    verify = await _git(dest, "rev-parse", "HEAD", timeout=timeout)
+    verified = verify["stdout"].strip() if verify["success"] else ""
+    if verified != commit:
+        return fail(
+            stdout=f"pinned {commit} but checkout is {verified or 'unknown'}",
+            error_code="commit_identity_mismatch",
+            suggested_action=(
+                "The fetched content does not match the pinned digest; the source "
+                "moved or lied mid-fetch. Do not use this workspace."
+            ),
+        )
+    return ok(
+        stdout=f"{clone_output}Pinned to commit {commit} (verified)\n",
+        exit_code=0,
+        pinned_commit=commit,
+    )
+
+
+async def git_remote_tip(url: str, timeout: int = 60) -> dict[str, Any]:
+    """Resolve a policy-vetted remote's HEAD to a full commit digest (#404 AC3).
+
+    The one network read a caller needs to turn "clone whatever the tip is
+    right now" into a verified digest pin: the returned digest feeds
+    `git_clone(commit=...)`, whose fetch-by-digest and post-fetch `rev-parse`
+    verdict then prove the checkout IS that object. `ls-remote` is itself a
+    network transport, so it gates through `validate_clone_source` first — a
+    refused URL spawns no subprocess — and carries the same executable
+    enforcement pins as every other transport this module spawns.
+    """
+    try:
+        validate_clone_source(url)
+    except ClonePolicyError as exc:
+        return fail(
+            stdout=exc.message,
+            error_code=exc.error_code,
+            suggested_action=exc.suggested_action,
+        )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            *_ENFORCEMENT_ARGV,
+            "ls-remote",
+            "--",
+            url,
+            "HEAD",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        output = stdout.decode("utf-8", errors="replace") if stdout else ""
+    except FileNotFoundError:
+        return fail(
+            stdout="git binary not found",
+            error_code="git_not_found",
+            suggested_action="Ensure git is installed in the execution environment.",
+        )
+    except TimeoutError:
+        return fail(
+            stdout=f"git ls-remote timed out after {timeout}s",
+            exit_code=124,
+            error_code="git_timeout",
+            recoverable=True,
+            suggested_action="Retry with a longer timeout, or check network conditions.",
+        )
+    if proc.returncode != 0:
+        return fail(
+            stdout=output,
+            exit_code=proc.returncode or 1,
+            error_code="remote_tip_unresolved",
+            recoverable=True,
+            suggested_action=(
+                "Could not read the remote's HEAD digest; verify the source is "
+                "reachable and pass the digest to clone explicitly instead."
+            ),
+        )
+    digest = output.split()[0] if output.split() else ""
+    # Never trust a resolution that is not itself a digest: the whole point of
+    # the resolution is to feed an immutable pin, not a repointable name.
+    if not _COMMIT_DIGEST_RE.match(digest):
+        return fail(
+            stdout=output,
+            error_code="remote_tip_unresolved",
+            suggested_action=(
+                "The remote's HEAD did not resolve to a full 40/64-hex digest; "
+                "resolve it manually (git ls-remote) and pass the digest to "
+                "clone explicitly instead."
+            ),
+        )
+    return ok(stdout=output, commit=digest.lower())
 
 
 @mcp.tool()

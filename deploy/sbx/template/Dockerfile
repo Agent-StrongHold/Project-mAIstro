@@ -7,7 +7,7 @@
 # Base: shell-docker = Docker's arbitrary-code sandbox template WITH a private
 # Docker daemon inside the microVM — required because RSI's nested test
 # sandbox (maistro.tools.sandbox.docker) shells out to `docker run`.
-FROM docker/sandbox-templates:shell-docker
+FROM docker/sandbox-templates:shell-docker@sha256:1560168ac5fb9ce23d413c878349334c5845c07e264cd675d7867f0c78ad1761
 
 USER root
 
@@ -20,7 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git gh python3 python3-venv python-is-python3 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# uv installer image digest-pinned to the 0.12.21 release (#349); `:latest`
+# could swap the installer under every build with no repository diff.
+COPY --from=ghcr.io/astral-sh/uv:0.12.21@sha256:a7aed3216253ee804de3e2d8afa5073baa1a177335345d43845cd4165e43b711 /uv /usr/local/bin/uv
 
 # Install the maistro packages from this repo's source, system-wide so they
 # are on the builders _SAFE_ENV PATH. pytest/ruff are what the agent's

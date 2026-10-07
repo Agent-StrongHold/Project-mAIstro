@@ -200,6 +200,7 @@ coordinator importing the sandbox/git chain.
 | coordinator-3 | The `HtrContext` passed to the executor carries `distilled_insights` for the acted-on node's lineage, so a child attempt sees its ancestors' recorded lessons. |
 | coordinator-4 | Each executor `ExecutionReport` is recorded against its node (evidence, artifacts, insight), so after the run the tree's statuses/scores reflect every step and `CoordinatorResult.best` is the tree's best node. |
 | coordinator-5 | `report_from_cycle_result` maps an `RsiCycleResult` into an `ExecutionReport` — `tests_passed`/`benchmarks_won`/`battles`/`improved` evidence plus `diff`/`pr_url`/`run_id` artifacts — and importing `coordinator` does not import the runner/sandbox chain. |
+| coordinator-6 | With an `InterventionPolicy`, every cycle's `improved` outcome is folded into the policy; when the configured stall threshold is reached the coordinator logs `htr_stall_detected` (carrying the configured `stall_threshold` and the consecutive non-improving count) and performs exactly one intervention per stall, appended to `CoordinatorResult.interventions`. Without a policy the coordinator behaves exactly as coordinator-1..5 specify. |
 
 ---
 
@@ -250,3 +251,37 @@ as a PR.
 | autorun-10 | Every executed cycle appends its node's distilled insight to the `LearningsLedger` (repo url, run id, hypothesis, insight, improved, tests_passed, score) — append-only, one JSON line per cycle. |
 | autorun-11 | **Retained learnings:** prior insights recalled from the ledger are injected into the proposer and experiment-prompt context on every start — including a `fresh` run with a brand-new tree — with insights from experiments that `improved` preferred first, recency breaking ties, duplicates dropped, and repo-scoped filtering. Learnings survive tree disposal. |
 | autorun-12 | The ledger is corruption-tolerant: corrupt or partial lines are skipped with a warning (never raise) and a missing file reads as an empty ledger — a damaged memory degrades recall, never the run. |
+| autorun-13 | `run_autonomous` wires an `InterventionPolicy` configured from `AutorunConfig` (`stall_threshold`, `direction_count`, `park_after` — CLI `--stall-threshold`/`--direction-count`/`--park-after`) into its coordinator, and the returned `CoordinatorResult` accumulates every intervention performed during the run. |
+| autorun-14 | When the policy parks the objective (`ObjectiveParked`), `run_autonomous` stops cleanly — logged, and an `objective.parked` record (objective plus every intervention's lineage review, returned directions, cost, and measured subsequent gain) is appended to the audit trail as the hand-off to the backlog policy. |
+| autorun-15 | `make_llm_lineage_reviewer` grounds the reviewer in the full stalled lineage/evidence and the archived promising candidates, scans both the outbound review context and the returned directions through the Warden harvest boundary, honors `SEED=<node_id>` prefixes naming archived candidates (a bare `SEED=<id>` with no direction text carries no reseedable idea and is dropped), and degrades to the deterministic template reviewer on any failure or refusal — a stalled loop is never left with nothing to reseed from. |
+
+---
+
+## 11. Stall intervention policy (`intervention.py`)
+
+**Spec:** A hypothesis loop that stops improving is spending real agent and
+test cycles to re-derive the same dead end. Following the M5-B stall policy,
+`intervention.py` detects N consecutive non-improving cycles (configurable,
+logged by the coordinator at fire time), invokes an injectable reviewer over
+the *actual candidate lineage/evidence* — the stalled node's full root-to-node
+chain with every ancestor's recorded evidence and distilled insight, plus the
+tree's archive of promising EXPLORED candidates, never only the latest failed
+candidate — and reseeds the frontier from the K *materially distinct*
+directions it returns, branching each from the archived candidate it names (an
+older promising node, not only the champion/latest seed). Every intervention
+is a measurable `Intervention` record: provenance (lineage snapshot, returned
+directions verbatim, seed node ids, reseeded-node artifacts), cost (stalled
+cycles, reviewer wall-clock), and subsequent gain (best-score delta measured
+after reseeding). After `park_after` interventions with no gain the objective
+is parked: `ObjectiveParked` stops the loop and hands the objective, with full
+intervention provenance, back to the caller's backlog policy.
+
+| AC | Criterion |
+|----|----------|
+| intervention-1 | `StallTracker` rejects a non-positive threshold at construction; `record` counts consecutive non-improving cycles, returns `True` exactly when the threshold is reached by that cycle (fires once per stall), and resets to zero on an improving cycle or an explicit `reset()`. |
+| intervention-2 | `review_context` presents the stalled node's **full** root-to-failure lineage with each ancestor's hypothesis, status, evidence, and insight (never only the latest failed candidate) plus the tree's archived promising EXPLORED candidates (most-promising first, bounded by `archive_limit`) — so an older promising archived node is always available as a reseed branch point. |
+| intervention-3 | `materially_distinct` drops directions that are blank, duplicate another surviving direction, or merely reword a hypothesis already on the presented lineage (case-, punctuation-, and whitespace-insensitive); surviving directions keep their seed binding. |
+| intervention-4 | `intervene` reseeds each surviving direction as an OPEN child of the archived candidate it names — an older promising node rather than only the champion/latest — falling back to the tree's own most promising seed when the direction names none, an unknown, or an ABANDONED node; every reseeded node records its `intervention_id` artifact and the `Intervention` record preserves the returned directions verbatim, the seed node ids, the lineage/archive snapshot, and the cost (`stalled_cycles`, `reviewer_seconds`). |
+| intervention-5 | Every post-intervention cycle re-measures the latest intervention's `subsequent_gain` as the current best-score delta from `best_score_at_trigger` (still `None` until then) — every intervention is measurable for both cost and subsequent gain. |
+| intervention-6 | Once `park_after` interventions have produced no gain, the next stall raises `ObjectiveParked` — carrying the objective (root hypothesis) and every `Intervention` record — instead of intervening again, so repeated intervention without improvement parks the objective and returns it to the caller's backlog policy. |
+| intervention-7 | `template_lineage_reviewer` deterministically returns one archive-grounded, seed-bound direction per archived candidate (degrading to the failed node when the archive is empty); `InterventionConfig` validates every knob is positive at construction. |

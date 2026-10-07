@@ -22,3 +22,8 @@ The third goes through `TaskQueue.submit`, the POST /tasks path, to show that
 admission alone purges the table. One PostgreSQL-only test checks that a purge
 does not delete a claim another connection renewed while the purge waited on
 its row lock. That makes 22 node IDs in all. Nothing was moved or removed.
+
+Merged into `auto-41` alongside #1176's claimant fencing, the three
+`complete(...)` calls were adapted to the fenced API: each captures the
+`Claimed` outcome and passes its `token`, since a claimant-owned write
+without the fence token now (correctly) refuses.

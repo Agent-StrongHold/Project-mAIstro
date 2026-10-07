@@ -19,6 +19,7 @@ from maistro.graph.nodes.base import (
     PAUSE_WAITING_ON_JIRA_SUBTASKS,
 )
 from maistro.runs import GraphSnapshot, NodeRun, Run
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 def _record(*, status: RunStatus = RunStatus.WAITING, answered: bool = False) -> DurableRunRecord:
@@ -36,6 +37,7 @@ def _record(*, status: RunStatus = RunStatus.WAITING, answered: bool = False) ->
             project_id=graph.project_id,
             graph=GraphSnapshot.from_graph(graph),
             status=status,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         ),
         graph_state=GraphExecutionState(
             run_id="answer-recovery-run",

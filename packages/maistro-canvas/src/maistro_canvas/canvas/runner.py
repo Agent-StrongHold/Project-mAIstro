@@ -11,11 +11,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
+
+from maistro_canvas.canvas.retry_policy import (
+    DEFAULT_RETRY_BACKOFF,
+    PERMANENT_FAILURE_CLASSES,
+    RetryBackoff,
+    classify_failure,
+)
 
 if TYPE_CHECKING:
     from maistro_canvas.canvas.executor import CanvasExecutor
+    from maistro_canvas.protocols import CanvasJobStore
     from maistro_canvas.types import GenerationJobRecord
 
 logger = logging.getLogger("maistro.canvas.runner")
@@ -32,13 +40,14 @@ class CanvasJobRunner:
     def __init__(
         self,
         *,
-        store: Any,
+        store: CanvasJobStore,
         executor: CanvasExecutor,
         worker_id: str = "canvas-worker-1",
         lease_seconds: int = 300,
         poll_interval: float = 1.0,
         reap_interval: float = 30.0,
         max_execution_seconds: float = 1800.0,
+        retry_backoff: RetryBackoff = DEFAULT_RETRY_BACKOFF,
     ) -> None:
         if max_execution_seconds <= 0:
             raise ValueError("max_execution_seconds must be positive")
@@ -49,6 +58,7 @@ class CanvasJobRunner:
         self._poll_interval = poll_interval
         self._reap_interval = reap_interval
         self._max_execution_seconds = max_execution_seconds
+        self._retry_backoff = retry_backoff
         self._running = False
 
     async def start(self) -> None:
@@ -162,18 +172,41 @@ class CanvasJobRunner:
             await self._execute_claimed_with_lease_renewal(job)
             job.status = JobStatus.DONE
             job.completed_at = datetime.now(UTC)
+            job.next_retry_at = None
             job.leased_by = None
             job.lease_expires_at = None
         except Exception as exc:
             logger.warning("canvas_job_failed job=%s error=%s", job.id, str(exc)[:200])
-            if job.attempts < job.max_attempts:
+            failure_class = classify_failure(exc)
+            if job.attempts < job.max_attempts and failure_class not in PERMANENT_FAILURE_CLASSES:
                 # The canonical Attempt has already failed and parked its
                 # NodeRun. Requeueing is a Canvas retry-policy decision; the
-                # next claim calls retry_node under that same NodeRun.
+                # next claim calls retry_node under that same NodeRun. The
+                # requeue carries the shared backoff schedule on the durable
+                # row (#398): ``claim_next_pending`` refuses the receipt until
+                # ``next_retry_at``, so a failing job cannot hammer the
+                # provider in a tight claim loop. A zero delay means no gate:
+                # NULL, never now-plus-epsilon that the claim's ``<= now()``
+                # would then refuse.
                 job.status = JobStatus.PENDING
+                delay = self._retry_backoff.delay_for_attempt(job.attempts)
+                job.next_retry_at = (
+                    datetime.now(UTC) + timedelta(seconds=delay) if delay > 0 else None
+                )
                 job.leased_by = None
                 job.lease_expires_at = None
             else:
+                # Two ways here, one terminal write: the retry ceiling is
+                # exhausted, or the failure class is permanent (a poison job —
+                # an auth fault can never succeed, so spending the remaining
+                # budget would only delay the same receipt reaching FAILED).
+                if failure_class in PERMANENT_FAILURE_CLASSES:
+                    logger.warning(
+                        "canvas_job_poison_failure job=%s class=%s; terminalizing without"
+                        " further retries",
+                        job.id,
+                        failure_class.name,
+                    )
                 terminal_failure = getattr(self._executor, "fail_job_execution", None)
                 if terminal_failure is not None:
                     job.error_message = await terminal_failure(job, exc)
@@ -184,6 +217,7 @@ class CanvasJobRunner:
                     job.error_message = f"Generation failed: {str(exc)[:500]}"
                 job.status = JobStatus.FAILED
                 job.completed_at = datetime.now(UTC)
+                job.next_retry_at = None
                 job.leased_by = None
                 job.lease_expires_at = None
 
