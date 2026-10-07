@@ -15496,3 +15496,73 @@ sync, which this round performed as a genuine merge of the new `1df433bf5`
 rather than a re-check. No lawful repair for #777 exists until
 #804/#805/#806 (+#774/#776) land upstream: the issue is a declared consumer of
 those APIs and its stop condition forbids a Design-Studio-private substitute.
+
+## Round 237 (job `f96b97c71ed44f0886fcbee6e312c254`, head `41ee8229`)
+
+Documentation-only verifier note. No production or test code changed.
+
+Job dir has no `check-*.log` (manifest `checks=[]` — verifier ran no
+deterministic checks this round). Prior job `75f24405b04c` died with a provider
+timeout (`failure_kind: provider_error`, "Request timed out") **before any
+work**: worktree was clean at the exact starting head `41ee8229e0af`, nothing
+to salvage. The lane brief's "Prior findings" pointer to job `53d5e08bf027`'s
+`check-2.log` is a stale `ruff format --check` failure on
+`packages/maistro-bootstrap/src/maistro_bootstrap/builders/agent_loop.py`;
+re-verified fixed at this head (battery below).
+
+### Develop sync re-verified as already discharged
+
+`git fetch origin` EXIT 0; `origin/develop` = `1df433bf5ece` = this round's
+manifest base; `git rev-list HEAD..origin/develop --count` = 0 and
+`git merge-base --is-ancestor origin/develop HEAD` true (merge committed as
+`954baaac7` in Round 236, docs commit `41ee8229e0af` on top). Nothing to merge.
+
+### AC prerequisites re-proven absent at HEAD `41ee8229e0af` (this round's own greps)
+
+- `GoalReconciler|delegate_goal`: 0 hits in `packages/*/src`.
+- `packages/maistro-core/src/maistro/goals/`: does not exist.
+- `goal.reconcil|WorkspaceAgentReconciler` (case-insensitive): 0 hits.
+- `ControlMode.COLLABORATIVE`: declared-only at
+  `packages/maistro-design/src/maistro_design/versions.py:81`; sole
+  non-declaration use is the `_vulture_artifact_version_contract_usage`
+  TYPE_CHECKING no-op at `:1064` (visibility shim, not behavior).
+- `GoalRevisionCatalog`: Protocol-only
+  (`packages/maistro-core/src/maistro/projects/rubric_store.py:71`), no Goal
+  store.
+
+### Frozen capture (2026-10-07T02:04Z, 61 sources, complete_for_scope)
+
+#777 open (248 comments, newest = automated attempt markers, no maintainer
+guidance); body gate verbatim "Depends on: #804/#805/#806 persistent Workspace
+Agent + Goal reconciliation; …" + stop condition "Do not create a
+Design-Studio-private Agent runtime, Goal owner, reconciliation loop, … Consume
+#804 and the canonical owners." **#804/#805/#806/#774/#776/#53 OPEN;
+#775/#39/#458 closed.** GitHub-native `blocked_by` = [] (body-text gate
+governs). PR #1660 open draft, head `78f8f6476466` unchanged, not merged; its
+16 files are already carried by this branch (branch diff vs base = exactly the
+16 manifest surfaces).
+
+### Battery at HEAD `41ee8229e0af`
+
+- `uv run ruff check .` EXIT 0 ("All checks passed!").
+- `uv run ruff format --check .` EXIT 0 (3110 files already formatted).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` EXIT 0 (base `1df433bf5ece`
+  = new origin/develop, candidate `41ee8229e0af`, 1332 -> 1331, no amendment).
+- `uv run python scripts/check-suite-inventory.py` EXIT 0 (17 suites, 28106
+  unique identities, 0 duplicates).
+- `uv run python scripts/check-backlog-consistency.py` EXIT 0 (167 items).
+- `uv run pytest tests/test_check_closure_targets.py -q` -> 63 passed.
+- `uv run pytest packages/hive-conductor/backend/tests -k 'design or
+  workspace' -q` -> 374 passed, 5 skipped.
+- `uv run pytest packages/maistro-design/tests packages/maistro-bootstrap/tests
+  -q` -> 804 passed, 7 skipped.
+
+### Verdict
+
+Verdict: **BLOCKED** (dependency-blocking, fifty-fourth consecutive round with
+fresh evidence). All round actionable items discharged; the develop sync was
+re-verified as merged rather than merely checked. No lawful repair for #777
+exists until #804/#805/#806 (+#774/#776) land upstream: the issue is a declared
+consumer of those APIs and its stop condition forbids a Design-Studio-private
+substitute, so every acceptance criterion remains unsatisfiable at this head.
