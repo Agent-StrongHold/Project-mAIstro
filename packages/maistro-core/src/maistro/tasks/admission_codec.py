@@ -55,9 +55,11 @@ behavior.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal, DecimalException
 from enum import StrEnum
 from typing import Literal, TypeGuard
 from uuid import UUID
@@ -370,8 +372,11 @@ def _parse_snapshot(row: Mapping[str, object], column: str, scope_key: str) -> C
     these columns would hand back a decoded object, and silently accepting it
     would make decoding depend on how somebody else built the pool.
     Duplicate keys, non-object roots, bare non-finite tokens and overflowing
-    numbers are all rejected by the :class:`CanonicalJsonObject` constructor;
-    the underlying parse exception is suppressed, never exposed.
+    numbers are all rejected by the :class:`CanonicalJsonObject` constructor.
+    Its float-based normalization must also preserve the original decimal
+    values, including nested evidence: compare exact numbers before accepting
+    the snapshot, never silently pair rounded data with the old fingerprint.
+    The underlying parse exception is suppressed, never exposed.
     """
     value = row[column]
     if not isinstance(value, str):
@@ -381,8 +386,11 @@ def _parse_snapshot(row: Mapping[str, object], column: str, scope_key: str) -> C
             scope_key=scope_key,
         ) from None
     try:
-        return CanonicalJsonObject(value)
-    except (ValueError, RecursionError):
+        snapshot = CanonicalJsonObject(value)
+        if json.loads(value, parse_float=Decimal) != json.loads(snapshot.text, parse_float=Decimal):
+            raise ValueError("snapshot normalization changed numeric evidence")
+        return snapshot
+    except (ValueError, RecursionError, DecimalException):
         raise AdmissionRowDecodeError(
             f"{column} is not exactly one canonical JSON object",
             code=AdmissionDecodeCode.INVALID_SNAPSHOT,

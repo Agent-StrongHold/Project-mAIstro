@@ -324,6 +324,52 @@ def test_excessive_snapshot_nesting_is_a_safe_typed_failure(version: int, column
     assert decode_admission_header(row) == header
 
 
+@pytest.mark.parametrize(
+    ("version", "column"),
+    [(1, "request"), (2, "request"), (2, "receipt_snapshot"), (2, "provenance_snapshot")],
+)
+@pytest.mark.parametrize(
+    "number",
+    ["9007199254740993.0", "0.1234567890123456789", "1e-400", "1e-9999999999999999999999"],
+)
+def test_lossy_snapshot_numbers_are_safe_typed_failures(
+    version: int, column: str, number: str
+) -> None:
+    # Inject storage TEXT, not a CanonicalJsonObject fixture which has already
+    # rounded the evidence before the decoder ever sees it.
+    row = _legacy_row() if version == 1 else _v2_row()
+    original = '{"program_context":{"private-reading":[' + number + "]}}"
+    row[column] = original
+    header = decode_admission_header(row)
+
+    with pytest.raises(AdmissionRowDecodeError) as excinfo:
+        decode_admission_record(row, header=header)
+
+    error = excinfo.value
+    assert error.code is AdmissionDecodeCode.INVALID_SNAPSHOT
+    assert error.scope_key == _SCOPE
+    assert error.__cause__ is None and error.__suppress_context__ is True
+    assert "private-reading" not in str(error) and number not in str(error)
+    assert row[column] == original
+    assert decode_admission_header(row) == header
+
+
+@pytest.mark.parametrize("number", ["0.1", "1.2300e2", "9007199254740993", "5e-324"])
+def test_exact_snapshot_numbers_survive_normalization(number: str) -> None:
+    from decimal import Decimal
+
+    row = _v2_row()
+    original = '{ "program_context": {"readings": [' + number + "]} }"
+    row["request"] = original
+    record = _decode_full(row)
+    encoded = encode_admission_record(record)
+
+    assert json.loads(encoded["request"], parse_float=Decimal) == json.loads(
+        original, parse_float=Decimal
+    )
+    assert encoded["fingerprint"] == row["fingerprint"]
+
+
 def test_text_snapshots_reject_predecoded_values() -> None:
     # This is the value-level half of the real-pool contrast below: snapshots
     # are TEXT, so a value which a JSON codec had decoded must not be silently
