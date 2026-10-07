@@ -1763,8 +1763,17 @@ class TaskQueue:
         try:
             yield task
         except BaseException as exc:
-            await self.update_status(task_id, TaskStatus.FAILED)
-            self.set_result(task_id, TaskResult(error=str(exc)))
+            # A cancellation is not a failure the receipt may write here
+            # (#1337): `update_status(FAILED)` on a Run the cancel already
+            # fenced CANCELLED is refused, and the unconditional result write
+            # that followed clobbered the reconciled projection with
+            # `str(CancelledError)` — an empty error — under a cancelled
+            # status. The runner's CancelledError handler owns the whole
+            # cancellation disposition; every other exception keeps the
+            # fail-fast disposition below.
+            if not isinstance(exc, asyncio.CancelledError):
+                await self.update_status(task_id, TaskStatus.FAILED)
+                self.set_result(task_id, TaskResult(error=str(exc)))
             await logger.aexception("task_failed", task_id=task_id)
             raise
         finally:
