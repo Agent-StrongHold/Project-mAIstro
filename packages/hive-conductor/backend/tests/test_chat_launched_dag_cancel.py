@@ -28,6 +28,7 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
+from maistro.graph.definitions import Graph
 from maistro.graph.durable_runs import InMemoryDurableRunStore
 from maistro.identity import Principal
 from maistro.runs import InMemoryRunStore
@@ -610,3 +611,97 @@ class TestRecordCanonicalRun:
         # side must not manufacture one.
         assert await store.record_canonical_run("exec-1", canonical_run_id="run-b") is False
         assert store.list_runs()[0]["canonical_run_id"] == "run-a"
+
+
+class TestTheCancellationAnswer:
+    """`_cancellation_answer` follows only a cancellation the spine recorded.
+
+    The CancelledError inside `_tool_run_workflow` also arrives when the chat
+    task itself is torn down (a disconnect) with the canonical Run untouched,
+    so the answer -- and the cancelled row it stamps -- requires the spine's
+    own cancel fence (#1332).
+    """
+
+    async def test_a_spine_without_a_run_store_never_mirrors_a_cancellation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No engine run store: nothing to mirror, so the answer is no."""
+        import services.engine as engine_mod
+        from services.chat_completion import _canonical_run_was_cancelled
+
+        monkeypatch.setattr(
+            engine_mod, "_singleton", SimpleNamespace(run_store=None, run_reader=None)
+        )
+        assert await _canonical_run_was_cancelled("run-never-admitted") is False
+
+    async def test_an_answer_requires_the_spines_own_cancel_fence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A correlated row whose canonical Run was never cancelled re-raises.
+
+        The chat-disconnect shape: the projection names a canonical Run, but
+        the spine never fenced it CANCELLED, so the cancellation is the task
+        teardown's -- re-raised unchanged, and the row stays running.
+        """
+        from services.chat_completion import _cancellation_answer
+        from services.dag_run_store import get_dag_run_store
+
+        _install_empty_spine(monkeypatch)
+        store = get_dag_run_store()
+        await store.start_run(run_id="exec-teardown", workspace_id="ws-1")
+        await store.record_canonical_run("exec-teardown", canonical_run_id="run-never-cancelled")
+
+        with pytest.raises(asyncio.CancelledError):
+            await _cancellation_answer(asyncio.CancelledError(), "exec-teardown", _DAG_ID)
+
+        assert store.get_run("exec-teardown")["status"] == "running"
+
+    async def test_a_failed_cancellation_stamp_does_not_mask_the_spines_truth(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A history write failing during the cancelled stamp changes nothing.
+
+        The spine fenced the Run CANCELLED; a projection write that raises in
+        the stamp must not turn the answered cancellation into an escaping
+        error -- the turn still follows the spine's own truth.
+        """
+        import services.engine as engine_mod
+        from services.chat_completion import _cancellation_answer
+        from services.dag_run_store import DagRunStore, get_dag_run_store
+
+        from maistro.runs import RunStatus
+
+        view = await _owned_workspace()
+        root = await _owned_workspace_root_project(view)
+        canonical = _canonical_run_store()
+        monkeypatch.setattr(
+            engine_mod, "_singleton", SimpleNamespace(run_store=canonical, run_reader=None)
+        )
+        # The real spine fence: the same QUEUED -> CANCELLED transition
+        # `RunExecutionService.cancel_run` persists, over a real admitted Run
+        # in the caller's own Workspace.
+        admitted = await canonical.create_run(
+            Graph(workspace_id=view.id, project_id=root.project_id, name=_DAG_ID),
+            initial_status=RunStatus.QUEUED,
+            actor_principal_id=_USER_ID,
+        )
+        await canonical.transition_run(
+            admitted.run_id, RunStatus.CANCELLED, error="execution cancelled"
+        )
+
+        store = get_dag_run_store()
+        await store.start_run(run_id="exec-stamp-fail", workspace_id=view.id)
+        await store.record_canonical_run("exec-stamp-fail", canonical_run_id=admitted.run_id)
+
+        async def _raising_finish(*args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("history write failed")
+
+        monkeypatch.setattr(DagRunStore, "finish_run", _raising_finish)
+
+        answer = await _cancellation_answer(asyncio.CancelledError(), "exec-stamp-fail", _DAG_ID)
+        assert answer == {
+            "run_id": "exec-stamp-fail",
+            "dag_id": _DAG_ID,
+            "status": "cancelled",
+            "cancelled": True,
+        }

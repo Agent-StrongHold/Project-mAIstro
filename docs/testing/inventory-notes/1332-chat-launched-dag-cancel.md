@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +12
+  packages/hive-conductor/backend/tests: +15
 ---
 
 # #1332 Chat-launched DAG runs are cancellable: correlation at canonical admission
@@ -15,7 +15,7 @@ wins, persisted), and a producer-side cancellation path that follows the
 canonical cancel fence without mistaking a chat-disconnect teardown for a DAG
 cancellation.
 
-+12 collected node IDs on `packages/hive-conductor/backend/tests`
++15 collected node IDs on `packages/hive-conductor/backend/tests`
 (`test_chat_launched_dag_cancel.py`):
 
 - the production-path regression: a real chat-launched DAG held in flight after
@@ -32,7 +32,12 @@ cancellation.
   Run is still QUEUED, never invoked without a canonical store, and a raising
   sink never fails an execution the spine already admitted;
 - `record_canonical_run` unit behavior: persisted, reopen-stable, missing-row
-  and empty-id refusals, idempotent same-id, first-link-wins.
+  and empty-id refusals, idempotent same-id, first-link-wins;
+- the cancellation answer's honesty paths: a spine without a run store never
+  mirrors a cancellation, a correlated row whose canonical Run the spine never
+  fenced CANCELLED re-raises (the chat-disconnect teardown, row left running),
+  and a history write failing during the cancelled stamp does not mask the
+  spine's truth — the turn still follows the canonical fence.
 
 The main regression was shown to fail against the pre-fix producer (the
 projection write suppressed): it times out on "chat-launched row never
