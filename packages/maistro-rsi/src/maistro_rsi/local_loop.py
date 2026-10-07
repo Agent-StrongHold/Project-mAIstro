@@ -53,7 +53,7 @@ from maistro_evolve._candidate_env import candidate_env
 from maistro_evolve.improvement import BudgetTier, ImprovementKind
 from maistro_rsi.competitors import Competitor
 from maistro_rsi.contained_validation import (
-    ContainmentUnavailable,
+    ContainedEvaluation,
     run_validation_in_container,
 )
 from maistro_rsi.harvest_boundary import (
@@ -2551,6 +2551,11 @@ class LocalRsiLoop:
         ⇒ behavior contract). ``evaluator_evidence`` is the precomputed (#109)
         integrity verdict ``(mutations, trusted_digest)``; when absent it is
         resolved here, so merge-dir re-scoring gets the same oracle immunity.
+
+        Under `isolation="container"` the whole evaluation runs inside ONE
+        sandbox seeded from the candidate directory (#614): a sandbox that
+        cannot be established raises `ContainmentUnavailable`, so a decision is
+        never composed from signals that could not run safely.
         """
         from maistro_rsi.candidate_fitness import evaluate_candidate
 
@@ -2558,25 +2563,48 @@ class LocalRsiLoop:
             evaluator_evidence = self._evaluator_integrity(cycle_dir)
         evaluator_mutations, evaluator_digest = evaluator_evidence
 
-        scorecard = evaluate_candidate(
-            cycle_dir,
-            changed_files,
-            test_command=self._config.test_command,
-            test_argv=self._config.test_argv,
-            coverage_source=self._config.coverage_source,
-            coverage_pytest_args=self._config.coverage_pytest_args,
-            baseline_coverage=self._baseline_coverage(),
-            baseline_ref=self._config.baseline_branch,
-            timeout=self._config.test_timeout,
-            regression_judge_fn=self._judge_regression if self._config.regression_judge else None,
-            target=target,
-            baseline_inventory=self._baseline_test_inventory(),
-            allow_test_inventory_shrink=self._config.allow_test_inventory_shrink,
-            declared_kind=kind,
-            evaluator_digest=evaluator_digest,
-            evaluator_mutations=evaluator_mutations,
-            evaluator_mutation_authorized=self._config.allow_evaluator_mutation,
-        )
+        def _score(contained: ContainedEvaluation | None) -> Any:
+            return evaluate_candidate(
+                cycle_dir,
+                changed_files,
+                test_command=self._config.test_command,
+                test_argv=self._config.test_argv,
+                coverage_source=self._config.coverage_source,
+                coverage_pytest_args=self._config.coverage_pytest_args,
+                baseline_coverage=self._baseline_coverage(),
+                baseline_ref=self._config.baseline_branch,
+                timeout=self._config.test_timeout,
+                regression_judge_fn=(
+                    self._judge_regression if self._config.regression_judge else None
+                ),
+                target=target,
+                baseline_inventory=self._baseline_test_inventory(),
+                allow_test_inventory_shrink=self._config.allow_test_inventory_shrink,
+                declared_kind=kind,
+                evaluator_digest=evaluator_digest,
+                evaluator_mutations=evaluator_mutations,
+                evaluator_mutation_authorized=self._config.allow_evaluator_mutation,
+                contained=contained,
+            )
+
+        # Under container isolation the evaluation opens ONE sandbox seeded
+        # from the candidate directory and every executing signal runs inside
+        # it (#614) — the same containment `_run_tests` applies, extended to
+        # the coverage run, the red/green replay, the mutation probe's reruns,
+        # per-file collection and the static tools. A sandbox that cannot be
+        # established raises `ContainmentUnavailable` here: no Scorecard is
+        # produced from signals that could not run safely. Local isolation
+        # passes `contained=None` and evaluates on the host, as before — an
+        # operator's own machine is the one place that was never the problem.
+        if self._config.isolation == "container":
+            with ContainedEvaluation(
+                cycle_dir,
+                image=self._config.sandbox_image,
+                timeout=self._config.test_timeout,
+            ) as contained:
+                scorecard = _score(contained)
+        else:
+            scorecard = _score(None)
         logger.info(
             "rsi_local_scorecard",
             index=index,
@@ -2701,29 +2729,6 @@ class LocalRsiLoop:
             return _NoHostExecSandbox(cycle_dir)
         return LocalSandbox(cycle_dir)
 
-    def _require_contained_signals(self) -> None:
-        """Refuse a configuration whose signals would execute on the host (#305).
-
-        `use_fitness` composes its Scorecard from signals that each run the
-        candidate's own code where the loop runs: `evaluate_candidate` invokes
-        the test vector, a coverage run, the red/green evidence replay and the
-        static tools, all with `cwd` pointing at the candidate worktree. Under
-        `isolation="container"` that is the same escape `_run_tests` just
-        closed, spread across six call sites instead of one.
-
-        Refused rather than silently downgraded to the bare test gate: a run
-        that scored a candidate on fewer signals than the operator asked for,
-        and said so nowhere, is how a promotion decision quietly changes
-        meaning. Containing those signals is #614.
-        """
-        if self._config.isolation == "container" and self._config.use_fitness:
-            raise ContainmentUnavailable(
-                "fitness scoring runs the candidate's coverage, red/green and "
-                "static-tool signals on the host, which container isolation "
-                "forbids (#614). Run with fitness disabled, or on the local "
-                "isolation an operator has chosen for their own machine."
-            )
-
     def _run_tests(self, cycle_dir: Path) -> bool:
         if self._config.isolation == "container":
             # `cycle_dir` holds the candidate's edits. An argument vector is not
@@ -2773,7 +2778,6 @@ class LocalRsiLoop:
         return proc.returncode == 0
 
     def run(self) -> LocalRsiResult:
-        self._require_contained_signals()
         self._setup_baseline()
         self._load_saved_patches()  # resume from a prior run by reapplying saved patches
         # Review starts AFTER any resume commit: a resumed patch is already-

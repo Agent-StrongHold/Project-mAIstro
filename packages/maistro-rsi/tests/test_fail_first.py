@@ -345,10 +345,16 @@ def test_related_detection_matches_changed_module_imports(tmp_path: Path) -> Non
     (tmp_path / "test_mod.py").write_text(
         "from helper import g\n\ndef test_g():\n    assert g() == 5\n", encoding="utf-8"
     )
-    assert fail_first._has_related_failure(tmp_path, ["test_mod.py::test_g"], ["pkg/sub/helper.py"])
+
+    def _host_read(rel: str) -> str:
+        return (tmp_path / rel).read_text(encoding="utf-8")
+
+    assert fail_first._has_related_failure(
+        _host_read, ["test_mod.py::test_g"], ["pkg/sub/helper.py"]
+    )
     # No reference to the changed module anywhere → unrelated.
     assert not fail_first._has_related_failure(
-        tmp_path, ["test_mod.py::test_g"], ["completely/other.py"]
+        _host_read, ["test_mod.py::test_g"], ["completely/other.py"]
     )
 
 
@@ -456,7 +462,15 @@ def test_probe_flags_flaky_red_as_non_reproducible(tmp_path: Path, monkeypatch) 
     _commit_candidate(repo)
     calls = {"n": 0}
 
-    def fake_run(repo_dir: object, selectors: object, *, timeout: int = 600, extra_args=()):
+    def fake_run(
+        repo_dir: object,
+        selectors: object,
+        *,
+        timeout: int = 600,
+        extra_args=(),
+        interpreter=None,
+        execute=None,
+    ):
         calls["n"] += 1
         if calls["n"] == 1:
             return 0, ""  # candidate: green
@@ -479,7 +493,15 @@ def test_probe_skips_second_run_when_already_passing(tmp_path: Path, monkeypatch
     _commit_candidate(repo)
     calls = {"n": 0}
 
-    def fake_run(repo_dir: object, selectors: object, *, timeout: int = 600, extra_args=()):
+    def fake_run(
+        repo_dir: object,
+        selectors: object,
+        *,
+        timeout: int = 600,
+        extra_args=(),
+        interpreter=None,
+        execute=None,
+    ):
         calls["n"] += 1
         return 0, ""  # green everywhere: a characterization snapshot
 

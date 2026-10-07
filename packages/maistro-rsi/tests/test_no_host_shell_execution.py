@@ -10,13 +10,62 @@ caller that configures it.
 
 from __future__ import annotations
 
+import importlib
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
+from maistro_rsi.contained_validation import ContainmentUnavailable
 from maistro_rsi.local_loop import LocalRsiConfig, LocalRsiLoop, LocalSandbox
+
+
+class _FakeContainedSandbox:
+    """Stand-in for `ContainerBuilderSandbox` with the surface the contained
+    evaluation consumes — enough to prove WHERE each signal ran, without a
+    Docker daemon (the real-backend behavior is covered docker-gated in
+    `test_contained_fitness.py`)."""
+
+    instances: ClassVar[list[_FakeContainedSandbox]] = []
+
+    def __init__(self, repo_root: Path, *, image: str = "maistro-builders:latest") -> None:
+        self.repo_root = repo_root
+        self.image = image
+        self.argvs: list[list[str]] = []
+        self.stream_argvs: list[list[str]] = []
+        self.entered = 0
+        self.exited = False
+        _FakeContainedSandbox.instances.append(self)
+
+    def __enter__(self) -> _FakeContainedSandbox:
+        self.entered += 1
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.exited = True
+
+    def run_argv_status(self, argv: list[str], *, timeout: int) -> tuple[int, str]:
+        self.argvs.append(list(argv))
+        # A bare image has no coverage module: an empty report reads as the
+        # signal being unavailable, exactly as a real missing tool would.
+        if "coverage" in argv[:3]:
+            return (0, "")
+        return (0, "")
+
+    def run_argv_streams(self, argv: list[str], *, timeout: int) -> tuple[int, str, str]:
+        self.stream_argvs.append(list(argv))
+        tool = next((tok for tok in argv[1:4] if tok in {"ruff", "mypy", "bandit"}), None)
+        if tool is not None:
+            return (1, "", f"No module named {tool}")  # unenforced, never a false pass
+        return (0, "", "")
+
+    def read_file(self, path: str) -> str:
+        raise FileNotFoundError(path)
+
+    def write_file(self, path: str, content: str) -> None:
+        self.written = getattr(self, "written", [])
+        self.written.append((path, content))
 
 
 def _config(tmp_path: Path, **overrides: Any) -> LocalRsiConfig:
@@ -232,7 +281,9 @@ class TestTheFitnessScorecardsOwnTestGate:
 
         seen: list[dict[str, Any]] = []
 
-        def _fake_run(cmd: str, cwd: Path, timeout: int = 900, argv: tuple = ()) -> tuple:
+        def _fake_run(
+            cmd: str, cwd: Path, timeout: int = 900, argv: tuple = (), execute=None
+        ) -> tuple:
             seen.append({"cmd": cmd, "argv": argv})
             return True, "exit 0"
 
@@ -257,7 +308,9 @@ class TestTheFitnessScorecardsOwnTestGate:
 
         seen: list[dict[str, Any]] = []
 
-        def _fake_run(cmd: str, cwd: Path, timeout: int = 900, argv: tuple = ()) -> tuple:
+        def _fake_run(
+            cmd: str, cwd: Path, timeout: int = 900, argv: tuple = (), execute=None
+        ) -> tuple:
             seen.append({"cmd": cmd, "argv": argv})
             return True, "exit 0"
 
@@ -362,48 +415,175 @@ class TestValidationRunsWhereTheEditsDo:
         assert calls == [["pytest", "-q"]]
 
 
-class TestFitnessScoringIsRefusedRatherThanRunOnTheHost:
-    """`evaluate_candidate` runs the candidate's coverage, red/green replay and
-    static tools with `cwd` at the candidate worktree — the same escape
-    `_run_tests` just closed, spread across six call sites (#614)."""
+class TestFitnessScoringIsContained:
+    """#614 removes #496's refusal by CONTAINING the signals, not by weakening
+    it. `evaluate_candidate` composes its Scorecard from signals that each run
+    the candidate's own code where the loop runs — the test vector, the
+    coverage run, the red/green replay, the mutation probe's reruns, per-file
+    collection and the static tools. Under `isolation="container"` all of them
+    run inside the ONE sandbox the evaluation opens, and results come back as
+    data; nothing re-executes on the host to obtain them."""
 
-    @pytest.mark.ac("SPEC-082926-a6ab/AC-6")
-    def test_container_isolation_plus_fitness_is_refused(self, tmp_path: Path) -> None:
-        from maistro_rsi.contained_validation import ContainmentUnavailable
+    @pytest.fixture
+    def contained_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> type[_FakeContainedSandbox]:
+        module = pytest.importorskip("maistro_bootstrap.builders.container_sandbox")
+        monkeypatch.setattr(module, "ContainerBuilderSandbox", _FakeContainedSandbox)
+        _FakeContainedSandbox.instances = []
+        return _FakeContainedSandbox
 
+    @pytest.fixture
+    def no_host_subprocess(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Any host-side subprocess during the evaluation is the escape this
+        class exists to prevent (#614): signals either run inside the sandbox
+        or the evaluation refuses — they never run here."""
+
+        def _refuse(*_a: Any, **_kw: Any) -> Any:
+            raise AssertionError("a fitness signal attempted to run on the host")
+
+        for mod in ("maistro_rsi.candidate_fitness", "maistro_rsi.fail_first"):
+            module = importlib.import_module(mod)
+            monkeypatch.setattr(module.subprocess, "run", _refuse)
+
+    def _fitness_loop(self, tmp_path: Path, **overrides: Any) -> LocalRsiLoop:
         loop = _loop(
             _config(
                 tmp_path,
                 isolation="container",
                 use_fitness=True,
-                test_argv=("pytest",),
+                test_argv=("python", "-m", "pytest", "-q"),
+                regression_judge=False,
+                **overrides,
             )
         )
-
-        with pytest.raises(ContainmentUnavailable, match="#614"):
-            loop._require_contained_signals()
+        loop._baseline_coverage = lambda: None  # type: ignore[method-assign]
+        loop._baseline_test_inventory = lambda: None  # type: ignore[method-assign]
+        return loop
 
     @pytest.mark.ac("SPEC-082926-a6ab/AC-6")
-    def test_the_refusal_names_both_ways_out(self, tmp_path: Path) -> None:
-        """A refusal an operator cannot act on is a dead end, not a guard."""
-        from maistro_rsi.contained_validation import ContainmentUnavailable
-
-        loop = _loop(_config(tmp_path, isolation="container", use_fitness=True))
-
-        with pytest.raises(ContainmentUnavailable) as raised:
-            loop._require_contained_signals()
-
-        assert "fitness disabled" in str(raised.value)
-        assert "local" in str(raised.value)
-
-    @pytest.mark.parametrize(
-        ("isolation", "use_fitness"),
-        [("container", False), ("local", True), ("local", False)],
-    )
-    @pytest.mark.ac("SPEC-082926-a6ab/AC-6")
-    def test_every_other_combination_is_allowed(
-        self, tmp_path: Path, isolation: str, use_fitness: bool
+    def test_fitness_under_container_isolation_produces_a_scorecard(
+        self,
+        tmp_path: Path,
+        contained_sandbox: type[_FakeContainedSandbox],
+        no_host_subprocess: None,
     ) -> None:
-        loop = _loop(_config(tmp_path, isolation=isolation, use_fitness=use_fitness))
+        """The #496 refusal is gone because the reason for it is gone: a
+        container-isolated fitness run now evaluates the candidate end to end
+        and returns a decision — no ContainmentUnavailable, no downgrade."""
+        decision = self._fitness_loop(tmp_path)._fitness_decision(
+            1, tmp_path, [], evaluator_evidence=([], None)
+        )
 
-        assert loop._require_contained_signals() is None
+        _accepted, _composite, _reason, tests_passed, _judge, trace = decision
+        assert tests_passed is True
+        assert "tests_pass" in trace["gates"]
+        assert trace["gates"]["tests_pass"] is True
+
+    @pytest.mark.ac("SPEC-082926-a6ab/AC-6")
+    def test_every_executing_signal_ran_inside_the_sandbox(
+        self,
+        tmp_path: Path,
+        contained_sandbox: type[_FakeContainedSandbox],
+        no_host_subprocess: None,
+    ) -> None:
+        """The test vector, the coverage run, collection and the static tools
+        all cross the sandbox boundary — the fake records each argv, and the
+        no-host-subprocess guard proves nothing ran locally instead."""
+        self._fitness_loop(tmp_path)._fitness_decision(
+            1, tmp_path, [], evaluator_evidence=([], None)
+        )
+
+        sandbox = contained_sandbox.instances[0]
+        assert sandbox.argvs, "no signal ran at all"
+        assert sandbox.stream_argvs, "parsing signals must read streams back as data"
+        first = sandbox.argvs[0]
+        assert first == ["python", "-m", "pytest", "-q"]
+
+    @pytest.mark.ac("SPEC-082926-a6ab/AC-6")
+    def test_one_container_per_evaluation_not_one_per_signal(
+        self,
+        tmp_path: Path,
+        contained_sandbox: type[_FakeContainedSandbox],
+        no_host_subprocess: None,
+    ) -> None:
+        """A per-signal container would multiply a multi-cycle run's cost by
+        the number of gates. One decision, one sandbox, entered once."""
+        self._fitness_loop(tmp_path)._fitness_decision(
+            1, tmp_path, [], evaluator_evidence=([], None)
+        )
+
+        assert len(contained_sandbox.instances) == 1
+        assert contained_sandbox.instances[0].entered == 1
+
+    def test_the_sandbox_is_built_from_the_configured_image_and_seeded_from_the_candidate(
+        self,
+        tmp_path: Path,
+        contained_sandbox: type[_FakeContainedSandbox],
+        no_host_subprocess: None,
+    ) -> None:
+        cycle = tmp_path / "cycle-2"
+        cycle.mkdir()
+        self._fitness_loop(tmp_path, sandbox_image="maistro-builders:pinned")._fitness_decision(
+            1, cycle, [], evaluator_evidence=([], None)
+        )
+
+        sandbox = contained_sandbox.instances[0]
+        assert sandbox.repo_root == cycle
+        assert sandbox.image == "maistro-builders:pinned"
+
+    @pytest.mark.ac("SPEC-082926-a6ab/AC-5")
+    def test_a_sandbox_that_cannot_open_refuses_rather_than_degrades(
+        self,
+        tmp_path: Path,
+        contained_sandbox: type[_FakeContainedSandbox],
+        no_host_subprocess: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A missing image (or daemon, or failed seed) must not yield a
+        Scorecard scored on nothing: the refusal names the sandbox, and the
+        decision the caller gets is an error, never a verdict."""
+
+        def _broken(repo_root: Any, *, image: str = "") -> Any:
+            raise RuntimeError("docker run failed: no such image")
+
+        import maistro_bootstrap.builders.container_sandbox as sandbox_module
+
+        monkeypatch.setattr(sandbox_module, "ContainerBuilderSandbox", _broken)
+
+        with pytest.raises(ContainmentUnavailable, match="no such image"):
+            self._fitness_loop(tmp_path)._fitness_decision(
+                1, tmp_path, [], evaluator_evidence=([], None)
+            )
+
+    @pytest.mark.ac("SPEC-082926-a6ab/AC-3")
+    def test_local_isolation_still_evaluates_without_a_sandbox(
+        self,
+        tmp_path: Path,
+        contained_sandbox: type[_FakeContainedSandbox],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The other half of the routing decision: an operator's own machine
+        is the one place host evaluation was never a problem, and a loop that
+        contained everything anyway would have broken it."""
+        import maistro_bootstrap.builders.container_sandbox as sandbox_module
+
+        def _refuse(*_a: Any, **_kw: Any) -> Any:
+            raise AssertionError("local isolation must not open a sandbox")
+
+        monkeypatch.setattr(sandbox_module, "ContainerBuilderSandbox", _refuse)
+        import sys
+
+        loop = _loop(
+            _config(
+                tmp_path,
+                isolation="local",
+                use_fitness=True,
+                test_argv=(sys.executable, "-c", "import sys; sys.exit(0)"),
+                regression_judge=False,
+            )
+        )
+        loop._baseline_coverage = lambda: None  # type: ignore[method-assign]
+        loop._baseline_test_inventory = lambda: None  # type: ignore[method-assign]
+
+        decision = loop._fitness_decision(1, tmp_path, [], evaluator_evidence=([], None))
+
+        assert decision[3] is True  # tests_passed: the host run answered

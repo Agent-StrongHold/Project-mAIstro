@@ -41,7 +41,7 @@ from maistro_evolve.coverage_gate import (
 )
 from maistro_evolve.doc_regression import doc_regressions
 from maistro_evolve.improvement import ImprovementKind
-from maistro_evolve.mutation_probe import MutationProbe, probe_diff_mutations
+from maistro_evolve.mutation_probe import MutationProbe, MutationRunner, probe_diff_mutations
 from maistro_evolve.scenario_objective import (
     CorrectnessResult,
     ScenarioEvaluation,
@@ -66,9 +66,15 @@ from maistro_evolve.tdd_gate import (
     new_test_signal,
     red_green_signal,
 )
+from maistro_rsi.contained_validation import (
+    CONTAINED_PYTHON,
+    ContainedEvaluation,
+    ContainmentUnavailable,
+)
 from maistro_rsi.fail_first import (
     EvidenceContract,
     FailFirstEvidence,
+    ProbeExecutor,
     collect_fail_first_evidence,
     fail_first_gate,
     resolve_contract,
@@ -113,6 +119,91 @@ def _is_test(path: str) -> bool:
     return any(h in path.replace("\\", "/") for h in _TEST_HINTS)
 
 
+def _signal_routing(contained: ContainedEvaluation | None) -> _SignalRouting:
+    """Where each executing signal runs (#614): the host process tree, or the
+    one sandbox the evaluation opened. The routing decision is made ONCE, here,
+    so `evaluate_candidate` reads as measurement intake and no signal can grow
+    a host-side fallback of its own."""
+    if contained is None:
+        return _HOST_ROUTING
+    return _SignalRouting(
+        test_run=contained.run_argv,
+        interpreter=CONTAINED_PYTHON,
+        coverage_execute=contained.run_argv_streams,
+        lint_execute=contained.run_argv_streams,
+        probe_executor=_ContainedProbeExecutor(contained),
+        mutation_runner=contained,
+        collect_execute=contained.run_argv_streams,
+    )
+
+
+@dataclass(frozen=True)
+class _SignalRouting:
+    """The per-signal execution channels (see `_signal_routing`). `None` means
+    the host default for that signal; a contained evaluation fills every
+    channel — nothing stays on the host."""
+
+    test_run: Callable[[list[str]], tuple[int, str]] | None = None
+    interpreter: str | None = None
+    coverage_execute: Callable[[list[str]], tuple[int, str, str]] | None = None
+    lint_execute: Callable[[list[str]], tuple[int, str, str]] | None = None
+    probe_executor: ProbeExecutor | None = None
+    mutation_runner: MutationRunner | None = None
+    collect_execute: Callable[[list[str]], tuple[int, str, str]] | None = None
+
+
+_HOST_ROUTING = _SignalRouting()
+
+
+class _ContainedProbeExecutor:
+    """The fail-first probe's steps, executed inside the evaluation sandbox (#614).
+
+    The probe REPLAYS the candidate's changed tests against the baseline —
+    candidate-authored code, so every probe run happens where the candidate's
+    edits live, through the one sandbox the evaluation opened. Git plumbing
+    (rev-parse, cat-file, checkout) and reads move recorded contents around;
+    they execute nothing the candidate wrote, but they must run against the
+    same tree the probes see, so they go through the sandbox too.
+    """
+
+    def __init__(self, contained: ContainedEvaluation) -> None:
+        self._c = contained
+
+    def rev_parse(self, ref: str) -> str:
+        code, out = self._c.run_argv(["git", "rev-parse", ref], timeout=30)
+        return out.strip() if code == 0 else ""
+
+    def base_has(self, ref: str, rel: str) -> bool:
+        code, _out = self._c.run_argv(["git", "cat-file", "-e", f"{ref}:{rel}"], timeout=30)
+        return code == 0
+
+    def checkout(self, ref: str, rel: str) -> None:
+        self._c.run_argv(["git", "checkout", ref, "--", rel], timeout=60)
+
+    def remove(self, rel: str) -> None:
+        self._c.run_argv(["rm", "-f", rel], timeout=30)
+
+    def probe(self, tests: list[str], timeout: int) -> tuple[int, str]:
+        # The SAME selection argv run_test_selection composes on the host —
+        # one shape, so a contained replay cannot drift from the host one.
+        return self._c.run_argv(
+            [
+                CONTAINED_PYTHON,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "no:cacheprovider",
+                "-rfE",
+                *tests,
+            ],
+            timeout=timeout,
+        )
+
+    def read_text(self, rel: str) -> str:
+        return self._c.read_file(rel)
+
+
 def _syntax_check(cwd: Path, py_files: list[str]) -> list[str]:
     """Every changed ``.py`` file must at least parse — test or source, in or
     out of the configured test roots. A file that can't be collected by the
@@ -151,7 +242,12 @@ def _parse_test_roots(pytest_args: str) -> list[str]:
 
 
 def _uncollectable_tests(
-    cwd: Path, test_files: list[str], valid_roots: list[str], src_files: list[str] | None = None
+    cwd: Path,
+    test_files: list[str],
+    valid_roots: list[str],
+    src_files: list[str] | None = None,
+    execute: Callable[[list[str]], tuple[int, str, str]] | None = None,
+    interpreter: str | None = None,
 ) -> list[str]:
     """New/changed test files that the harness's own scoped pytest invocation
     would never run: either the path falls outside every configured test root,
@@ -190,22 +286,42 @@ def _uncollectable_tests(
         if not (cwd / rel).is_file():
             continue
         try:
-            proc = subprocess.run(
-                [sys.executable, "-m", "pytest", "--collect-only", "-q", rel],
-                cwd=str(cwd),
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
+            returncode = _collect_one(cwd, rel, execute=execute, interpreter=interpreter)
         except (OSError, subprocess.TimeoutExpired):
             reasons.append(f"{rel}: collection timed out or errored")
             continue
-        if proc.returncode != 0:
+        if returncode != 0:
             # 0 = collected >=1 item; 5 = "no tests collected"; anything else =
             # a collection error (e.g. import failure) — all three mean this
             # file contributes nothing the harness will ever run.
-            reasons.append(f"{rel}: pytest could not collect it (exit {proc.returncode})")
+            reasons.append(f"{rel}: pytest could not collect it (exit {returncode})")
     return reasons
+
+
+def _collect_one(
+    cwd: Path,
+    rel: str,
+    *,
+    execute: Callable[[list[str]], tuple[int, str, str]] | None = None,
+    interpreter: str | None = None,
+) -> int:
+    """One per-file ``pytest --collect-only`` exit code, for
+    `_uncollectable_tests`. ``execute`` routes the import through the
+    evaluation sandbox (#614); the host default is this process tree. Raises
+    OSError/TimeoutExpired — the caller formats the refusal-shaped reason."""
+    if execute is not None:
+        rc, _out, _err = execute(
+            [interpreter or sys.executable, "-m", "pytest", "--collect-only", "-q", rel]
+        )
+        return rc
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", rel],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return proc.returncode
 
 
 @dataclass
@@ -783,7 +899,13 @@ def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None)
     return scorecard
 
 
-def _run(cmd: str, cwd: Path, timeout: int = 900, argv: tuple[str, ...] = ()) -> tuple[bool, str]:
+def _run(
+    cmd: str,
+    cwd: Path,
+    timeout: int = 900,
+    argv: tuple[str, ...] = (),
+    execute: Callable[[list[str]], tuple[int, str]] | None = None,
+) -> tuple[bool, str]:
     """Run the candidate's test command, preferring an argument vector (#305).
 
     `argv` is what every non-terminal caller supplies: the Conductor resolves it
@@ -795,12 +917,25 @@ def _run(cmd: str, cwd: Path, timeout: int = 900, argv: tuple[str, ...] = ()) ->
     re-split into two arguments, so the thing that ran would not be the thing
     the policy named.
 
-    Both paths run behind the credential boundary (#78): the command imports
-    and executes candidate code, so it gets the minimal base environment —
-    never the harness's ambient credentials.
+    ``execute`` is the containment seam (#614): when given, the vector runs
+    inside the evaluation sandbox and only its exit status and output come
+    back. An empty vector with no host fallback is a refusal — see
+    `ContainedEvaluation.run_argv`.
+
+    Both host paths run behind the credential boundary (#78): the command
+    imports and executes candidate code, so it gets the minimal base
+    environment — never the harness's ambient credentials.
     """
     try:
-        if argv:
+        if execute is not None:
+            if not argv:
+                raise ContainmentUnavailable(
+                    "container isolation requires an argument vector: there is no shell "
+                    "inside the sandbox to hand a command string to, and running the "
+                    "command on the host instead is the failure this exists to prevent"
+                )
+            code, output = execute(list(argv))
+        elif argv:
             proc = subprocess.run(
                 list(argv),
                 cwd=str(cwd),
@@ -809,6 +944,7 @@ def _run(cmd: str, cwd: Path, timeout: int = 900, argv: tuple[str, ...] = ()) ->
                 timeout=timeout,
                 env=candidate_env(),
             )
+            code, output = proc.returncode, proc.stdout + proc.stderr
         else:
             # shell=True: the CLI path, where `cmd` is what an operator typed.
             proc = subprocess.run(  # nosemgrep
@@ -820,26 +956,41 @@ def _run(cmd: str, cwd: Path, timeout: int = 900, argv: tuple[str, ...] = ()) ->
                 timeout=timeout,
                 env=candidate_env(),
             )
+            code, output = proc.returncode, proc.stdout + proc.stderr
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"test command errored: {exc}"
-    tail = (proc.stdout + proc.stderr).strip()[-200:]
+    tail = output.strip()[-200:]
     return (
-        proc.returncode == 0,
-        f"exit {proc.returncode}: {tail}" if tail else f"exit {proc.returncode}",
+        code == 0,
+        f"exit {code}: {tail}" if tail else f"exit {code}",
     )
 
 
 _LINT_TIMEOUT = 120
 
 
-def _run_lint_tool(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str] | None:
+def _run_lint_tool(
+    argv: list[str],
+    cwd: Path,
+    execute: Callable[[list[str]], tuple[int, str, str]] | None = None,
+) -> subprocess.CompletedProcess[str] | None:
     """Run a static tool, bounded by a timeout. Returns None if the tool is
     missing or wedges — so the gate is treated as unavailable (not a false
-    rejection, and never an indefinite hang of LocalRsiLoop.run())."""
+    rejection, and never an indefinite hang of LocalRsiLoop.run()).
+
+    ``execute`` routes the same tool through the evaluation sandbox (#614):
+    argv[0] is swapped for the interpreter the image provides (the host's
+    `sys.executable` is a host path a container may not have), and the streams
+    come back separated so report parsing cannot be corrupted by interleaved
+    stderr."""
     try:
-        proc = subprocess.run(
-            argv, cwd=str(cwd), capture_output=True, text=True, timeout=_LINT_TIMEOUT
-        )
+        if execute is not None:
+            rc, out, err = execute([CONTAINED_PYTHON, *argv[1:]])
+            proc = subprocess.CompletedProcess(argv, rc, stdout=out, stderr=err)
+        else:
+            proc = subprocess.run(
+                argv, cwd=str(cwd), capture_output=True, text=True, timeout=_LINT_TIMEOUT
+            )
     except (OSError, subprocess.TimeoutExpired):
         return None
     if "No module named" in proc.stderr:
@@ -847,15 +998,21 @@ def _run_lint_tool(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[st
     return proc
 
 
-def _lint_gates(cwd: Path, src_files: list[str]) -> list[GateResult]:
+def _lint_gates(
+    cwd: Path,
+    src_files: list[str],
+    execute: Callable[[list[str]], tuple[int, str, str]] | None = None,
+) -> list[GateResult]:
     """ruff / mypy / bandit-HIGH on the changed source files. A missing, errored,
-    or timed-out tool yields no gate (unenforced) rather than a false rejection."""
+    or timed-out tool yields no gate (unenforced) rather than a false rejection.
+    ``execute`` (the contained evaluation, #614) runs each tool inside the
+    sandbox and reads its report back as data."""
     if not src_files:
         return []
     gates: list[GateResult] = []
 
     ruff = _run_lint_tool(
-        [sys.executable, "-m", "ruff", "check", "--output-format", "json", *src_files], cwd
+        [sys.executable, "-m", "ruff", "check", "--output-format", "json", *src_files], cwd, execute
     )
     if ruff is not None:
         try:
@@ -877,12 +1034,15 @@ def _lint_gates(cwd: Path, src_files: list[str]) -> list[GateResult]:
             *src_files,
         ],
         cwd,
+        execute,
     )
     if mypy is not None:
         errs = sum(1 for ln in mypy.stdout.splitlines() if ": error:" in ln)
         gates.append(GateResult("mypy_clean", errs == 0, f"{errs} type error(s)"))
 
-    bandit = _run_lint_tool([sys.executable, "-m", "bandit", "-f", "json", "-q", *src_files], cwd)
+    bandit = _run_lint_tool(
+        [sys.executable, "-m", "bandit", "-f", "json", "-q", *src_files], cwd, execute
+    )
     if bandit is not None:
         try:
             results = json.loads(bandit.stdout or "{}").get("results", [])
@@ -1045,13 +1205,16 @@ def _resolve_tdd_evidence(
     timeout: int,
     config_changed: list[str],
     tdd: TddEvidence | None,
+    executor: ProbeExecutor | None = None,
 ) -> tuple[TddEvidence, FailFirstEvidence | None]:
     """The #392 evidence contract's collection step: when the caller supplies
     no ``tdd`` view, probe the base revision for fail-first evidence (a source
     change owes a changed test that is red on the exact base for the intended
     reason). Returns ``(tdd, fail_first)`` — the probe record is None when no
     probe ran, which the fail-first gate treats as missing evidence (fail
-    closed) under the behavior contract."""
+    closed) under the behavior contract. ``executor`` routes the probe's test
+    runs (#614): the replay imports candidate test code, so a contained
+    evaluation runs it inside the sandbox."""
     if tdd is not None:
         return tdd, None
     if not (baseline_ref and tests):
@@ -1063,6 +1226,7 @@ def _resolve_tdd_evidence(
         tests,
         timeout,
         config_files_changed=config_changed,
+        executor=executor,
     )
     if fail_first is None:
         return TddEvidence(changed_tests=tests), None
@@ -1077,13 +1241,15 @@ def _stage_mutation_probe(
     tests: list[str],
     timeout: int,
     weights: FitnessWeights | None,
+    runner: MutationRunner | None = None,
 ) -> Scorecard | None:
     """Run the diff-mutation probe once the cheap gates cleared.
 
     Cost-layered after the cheap gates: mutation runs the changed tests once
     per mutant, so a candidate already doomed on tests/coverage/syntax never
     pays for it. Only meaningful when the diff added source lines AND changed
-    tests exist to catch mutations of them.
+    tests exist to catch mutations of them. ``runner`` (#614) writes each
+    mutant into — and reruns the tests inside — the evaluation sandbox.
 
     Returns the staged, gate-failing Scorecard when the probe vetoes the
     candidate, else ``None`` (probe absent or passed).
@@ -1091,7 +1257,7 @@ def _stage_mutation_probe(
     if not (baseline_ref and new_src_lines and tests):
         return None
     inputs.mutation_probe = probe_diff_mutations(
-        cwd, new_src_lines, tests, timeout=timeout, max_mutants=_MUTATION_MAX_MUTANTS
+        cwd, new_src_lines, tests, timeout=timeout, max_mutants=_MUTATION_MAX_MUTANTS, runner=runner
     )
     staged = compose_scorecard(inputs, weights)
     if staged.gates_passed:
@@ -1157,6 +1323,7 @@ def evaluate_candidate(
     scenario_proven_scores: dict[str, float] | None = None,
     scenario_candidate_scores: dict[str, float] | None = None,
     scenario_correctness: CorrectnessResult | None = None,
+    contained: ContainedEvaluation | None = None,
 ) -> Scorecard:
     """Run the local signals for a candidate and compose the Scorecard.
 
@@ -1188,6 +1355,17 @@ def evaluate_candidate(
     closed, #307) — the score of a judge that never ruled is None, not a
     number.
 
+    ``contained`` is the evaluation sandbox (#614): when given, every signal
+    that executes candidate code — the test run, the coverage run, the
+    red/green replay, the mutation probe's reruns, per-file collection and
+    the static tools — runs inside it, and results come back as data (exit
+    codes, parsed reports, file contents read on demand). No signal falls
+    back to the host, and a sandbox that cannot establish or execute raises
+    `ContainmentUnavailable` instead of producing a Scorecard: "the tests
+    failed" and "the tests could not be run safely" are different facts.
+    One sandbox serves the whole evaluation — a per-signal container would
+    multiply a multi-cycle run's cost by the number of gates.
+
     Evaluator-oracle integrity (#109): with a ``baseline_ref`` and no explicit
     ``evaluator_mutations``, the candidate's diff is checked against the
     score-defining artifact surface BEFORE any oracle run — a candidate that
@@ -1200,6 +1378,13 @@ def evaluate_candidate(
     evaluator version that judged it.
     """
     cwd = Path(candidate_dir)
+    # The containment routing decision (#614), made once: when a sandbox was
+    # handed in, every executing signal below routes through it and none may
+    # fall back to the host. The AST/file-content analysis that only PARSES
+    # candidate bytes (syntax check, quality/assertion scores, doc regression,
+    # inventory diffing) stays a host-side computation over data either way.
+    routing = _signal_routing(contained)
+    run_tests = routing.test_run
     src = [f for f in changed_files if f.endswith(".py") and not _is_test(f)]
     tests = changed_test_paths(changed_files)
     all_py = [f for f in changed_files if f.endswith(".py")]
@@ -1233,9 +1418,13 @@ def evaluate_candidate(
     if withheld is not None:
         return withheld
 
-    tests_passed, test_reason = _run(test_command, cwd, timeout, argv=test_argv)
+    tests_passed, test_reason = _run(test_command, cwd, timeout, argv=test_argv, execute=run_tests)
     cand_cov, missing = measure_coverage_detailed(
-        cwd, source=coverage_source, pytest_args=coverage_pytest_args
+        cwd,
+        source=coverage_source,
+        pytest_args=coverage_pytest_args,
+        interpreter=routing.interpreter,
+        execute=routing.coverage_execute,
     )
     cq, cq_detail = _mean_quality(cwd, src)
     astr, astr_detail = _mean_assertion(cwd, tests)
@@ -1247,6 +1436,7 @@ def evaluate_candidate(
         timeout=timeout,
         config_changed=config_changed,
         tdd=tdd,
+        executor=routing.probe_executor,
     )
     net_new = count_net_new_tests(cwd, baseline_ref, tests) if (baseline_ref and tests) else 0
     doc_reasons = _doc_regressions(cwd, baseline_ref, src) if baseline_ref else []
@@ -1257,7 +1447,14 @@ def evaluate_candidate(
 
     syntax_reasons = _syntax_check(cwd, all_py)
     valid_roots = _parse_test_roots(coverage_pytest_args)
-    uncollectable = _uncollectable_tests(cwd, tests, valid_roots, src_files=src)
+    uncollectable = _uncollectable_tests(
+        cwd,
+        tests,
+        valid_roots,
+        src_files=src,
+        execute=routing.collect_execute,
+        interpreter=routing.interpreter,
+    )
     new_src_lines = new_source_lines(cwd, baseline_ref, src) if (baseline_ref and src) else {}
     uncovered_new = uncovered_new_lines(new_src_lines, missing) if new_src_lines else {}
     vacuous_reasons = _vacuous_test_reasons(src, tests, tdd)
@@ -1268,7 +1465,12 @@ def evaluate_candidate(
     # a shrinking candidate is vetoed in ``prelim`` and never pays for the
     # mutation probe or the LLM judge.
     inventory_evidence = InventoryEvidence(
-        candidate=collect_inventory(cwd, shlex.split(coverage_pytest_args)),
+        candidate=collect_inventory(
+            cwd,
+            shlex.split(coverage_pytest_args),
+            execute=routing.collect_execute,
+            interpreter=routing.interpreter,
+        ),
         base=baseline_inventory,
         config_files_changed=config_changed,
         allow_shrink=allow_test_inventory_shrink,
@@ -1284,7 +1486,7 @@ def evaluate_candidate(
         assertion_score=astr,
         assertion_detail=astr_detail,
         tdd=tdd,
-        lint_gates=_lint_gates(cwd, src),
+        lint_gates=_lint_gates(cwd, src, routing.lint_execute),
         capability=capability,
         architecture_fit=architecture_fit,
         net_new_tests=net_new,
@@ -1316,7 +1518,14 @@ def evaluate_candidate(
         return prelim
 
     staged = _stage_mutation_probe(
-        inputs, cwd, baseline_ref, new_src_lines, tests, timeout, weights
+        inputs,
+        cwd,
+        baseline_ref,
+        new_src_lines,
+        tests,
+        timeout,
+        weights,
+        routing.mutation_runner,
     )
     if staged is not None:
         return staged
