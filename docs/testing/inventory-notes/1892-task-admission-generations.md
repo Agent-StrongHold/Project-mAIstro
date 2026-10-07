@@ -93,15 +93,35 @@ one transaction, so a refusing 055 rolls 053 and 054 back with it (stamp
 stays `052`), and a refused downgrade leaves the stamp at head `055`. No
 test added or removed — delta above unchanged.
 
-Repair at this lane (develop sync, third landing, #1047 re-parents past the tip):
-the next develop sync (`cd5618223`) brought develop's
-`054_learning_applicability_epistemics` (#119) plus the admission tip renumbered
-to `055_task_admission_generations`, colliding with this branch's
-`055_user_model_facts` (#1047) on the same parent. Per the chain's collision
-convention the #1047 revision — landing third — re-parents onto the admission
-tip as `056_user_model_facts` (`down_revision = "055"`). The chain sentinel
-walks to head `056`; the refusal-path stamp assertions hold unchanged: the
-upgrade run is one transaction, so a refusing 055 rolls 053 and 054 back with
-it (stamp stays `052`), and a refused downgrade leaves the stamp at head `056`
-(the previously head-pinned assertion tracks the new tip). No test added or
-removed — delta above unchanged.
+Repair at this lane (develop sync, #102 backlog pair, third landing): the
+auto-102 sync that merged `origin/develop` `b672b799a` re-parented the
+backlog work-source/authority-cutover pair (#98/#102) after this revision's
+chain — the quota door `043_invocation_quota_door` (parent `055`) is the
+merged tip, and the backlog pair attached after it as `056` and `057`. The
+revision itself is untouched (`055`, parent `054`).
+
+Repair at this lane (develop sync, fourth landing, #1047 lands on the tip): the
+next develop sync (`c560d4cca`) landed #1047's user-model tables on develop's
+trunk as `056_user_model_facts` on the same quota-door parent as the backlog
+pair. per the chain's convention — a landed trunk migration never moves; the
+branch-side pair re-parents onto the incoming develop tip — the backlog
+work-source/authority-cutover pair renumbers to `058_backlog_work_source` and
+`059_backlog_authority_cutover`, with develop's #863 planner-stability
+revision landing between them as `057_run_store_planner_stability`. The chain
+sentinel now walks to head `059`, and the refused-downgrade stamp assertion
+pins that head by the same head-artifact reasoning as the rounds above. No
+test added or removed — delta above unchanged.
+
+Repair at this lane (develop sync, fifth landing, the Gauntlet provenance
+ledger takes `058`): the next develop sync (`11376c7bef`) landed #118's
+M4-B2 Gauntlet validation provenance on develop's trunk as
+`058_learning_validation_provenance` (parent `057`), colliding with this
+branch's `058_backlog_work_source` on the same parent. Per the chain's
+convention — a landed trunk migration never moves; the branch-side pair
+re-parents onto the incoming develop tip — the backlog pair renumbers to
+`059_backlog_work_source` and `060_backlog_authority_cutover`. The chain
+sentinel now walks to head `060` (asserting `056`/`057`/`058`/`059`/`060`),
+and the refused-downgrade stamp assertion — previously head-pinned — reads
+the head dynamically (`_chain_head()`) from the same version files the
+upgrade ran, so this and future collisions cannot stale-pin it. No test
+added or removed — delta above unchanged.

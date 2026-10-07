@@ -55,10 +55,12 @@ def _claim(
     fingerprint: str = "fp", *, task_id: str | None = None, run_id: str | None = None
 ) -> AdmissionRecord:
     return AdmissionRecord(
+        claim_token="claim-token",
         fingerprint=fingerprint,
         request="{}",
         task_id=task_id,
         run_id=run_id,
+        completed_at_us=1 if task_id is not None else 0,
         created_at_us=_T0_US,
         expires_at_us=_T0_US + int(DEFAULT_REPLAY_WINDOW.total_seconds()) * _US,
         lease_expires_at_us=_T0_US + int(PENDING_LEASE.total_seconds()) * _US,
@@ -68,10 +70,12 @@ def _claim(
 def _row(record: AdmissionRecord, *, scope: str = "scope") -> tuple[Any, ...]:
     return (
         scope,
+        record.claim_token,
         record.fingerprint,
         record.request,
         record.task_id,
         record.run_id,
+        record.completed_at_us,
         record.created_at_us,
         record.expires_at_us,
         record.lease_expires_at_us,
@@ -83,10 +87,12 @@ def _successor(now_offset_seconds: int = 1) -> AdmissionRecord:
     base = _claim()
     created = _T0_US + now_offset_seconds * _US
     return AdmissionRecord(
+        claim_token="successor-token",
         fingerprint=base.fingerprint,
         request=base.request,
         task_id=None,
         run_id=None,
+        completed_at_us=0,
         created_at_us=created,
         expires_at_us=created + int(DEFAULT_REPLAY_WINDOW.total_seconds()) * _US,
         lease_expires_at_us=created + int(PENDING_LEASE.total_seconds()) * _US,
@@ -129,11 +135,15 @@ class _Acquire:
         self._pool = pool
 
     async def __aenter__(self) -> _Conn:
+        if self._pool.reject_concurrent_acquire and self._pool.active_acquires:
+            raise RuntimeError("cannot acquire a second connection before releasing the first")
+        self._pool.active_acquires += 1
         conn = _Conn(self._pool)
         self._pool.conns.append(conn)
         return conn
 
     async def __aexit__(self, *exc: Any) -> bool:
+        self._pool.active_acquires -= 1
         return False
 
 
@@ -146,6 +156,8 @@ class _Pool:
         self.execute_tags: list[str] = []
         self.conns: list[_Conn] = []
         self.transactions: list[_Txn] = []
+        self.active_acquires = 0
+        self.reject_concurrent_acquire = False
 
     def acquire(self) -> _Acquire:
         return _Acquire(self)
@@ -274,6 +286,10 @@ async def test_a_missing_row_sends_the_caller_back_to_claim() -> None:
 
 async def test_an_ambiguous_commit_rereads_and_replays_when_bound() -> None:
     pool = _Pool()
+    # A bounded production pool may have one connection available. The
+    # unknown-COMMIT read must happen only after returning the failed one;
+    # otherwise recovery deadlocks waiting on itself.
+    pool.reject_concurrent_acquire = True
     inserts = _Inserts()
     inserts.raise_after = 0  # the write lands, then the connection dies
     pool.row_results.append(_row(_claim()))
@@ -326,8 +342,13 @@ async def test_release_claim_is_fenced_to_the_callers_own_generation() -> None:
     assert await coordinator.release_claim("scope", _claim()) is True
     sql, args = pool.conns[0].executes[0]
     assert sql.strip().startswith("DELETE FROM task_idempotency")
-    assert "task_id IS NULL" in sql
-    assert args == ("scope", _T0_US, _T0_US + int(PENDING_LEASE.total_seconds()) * _US)
+    assert "completed_at = 0" in sql
+    assert args == (
+        "scope",
+        "claim-token",
+        _T0_US,
+        _T0_US + int(PENDING_LEASE.total_seconds()) * _US,
+    )
 
     pool.execute_tags.append("DELETE 0")
     assert await coordinator.release_claim("scope", _claim()) is False
