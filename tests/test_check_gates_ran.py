@@ -586,9 +586,7 @@ class TestTheCliScopeEnvelope:
         shutil.which("node") is None,
         reason="node executes the workflow's github-script collection step",
     )
-    def test_the_collection_script_emits_both_paths_for_a_rename(
-        self, tmp_path: Path
-    ) -> None:
+    def test_the_collection_script_emits_both_paths_for_a_rename(self, tmp_path: Path) -> None:
         """The envelope tests above hand-craft `changed-files.json`, so they
         cannot catch a collector that drops `previous_filename`. This one
         executes the actual collection `script:` from gates-ran.yml against a
