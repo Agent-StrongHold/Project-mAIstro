@@ -138,6 +138,10 @@ class State:
     #: #1335 window: a commit has READ the Run and not yet landed its write,
     #: as (ordinal, holder, token, observed_run).
     pending: tuple[int, int, int, str] | None
+    #: Ordinal of the Attempt whose acceptance terminalized the Run (None
+    #: until `act_accept` fires) — the identity S3 compares against the
+    #: latest Attempt, so a stale acceptance cannot hide behind a newer one.
+    accepted: int | None = None
 
     def key(self) -> tuple:
         return (
@@ -148,6 +152,7 @@ class State:
             self.fence,
             self.dispatched,
             self.pending,
+            self.accepted,
         )
 
 
@@ -161,6 +166,7 @@ def initial_state(consumers: int) -> State:
         fence=0,
         dispatched=(),
         pending=None,
+        accepted=None,
     )
 
 
@@ -346,7 +352,9 @@ def act_accept(spec: Spec, state: State, consumer: int) -> tuple[str, State] | N
         latest = state.attempts[-1]
         if attempt.ordinal != latest.ordinal or attempt.token != state.fence:
             return None
-    return f"accept(c{consumer})", replace(state, run=RUN_COMPLETED)
+    return f"accept(c{consumer})", replace(
+        state, run=RUN_COMPLETED, accepted=attempt.ordinal
+    )
 
 
 def act_cancel(spec: Spec, state: State) -> tuple[str, State] | None:
@@ -453,7 +461,11 @@ def check_invariants(state: State) -> list[str]:
     S1_single_owner — at most one active Attempt owns the node.
     S2_effect_once  — a `once` node's physical effect runs at most once.
     S3_acceptance_is_current — the acceptance that terminalized the Run came
-        from the latest Attempt (ADR-082426-e3ff's stale acceptance).
+        from the latest Attempt (ADR-082426-e3ff's stale acceptance). The
+        state records the *accepted* ordinal, so this compares the identity
+        of the attempt that actually accepted, not merely "some attempt is
+        completed" — two completed attempts from one consumer (retryable
+        semantics) cannot mask a stale acceptance.
 
     S4 and S5 are transition (edge) properties, checked in `edge_violations`:
     they are about *writes landing*, not states coexisting. In particular,
@@ -468,7 +480,9 @@ def check_invariants(state: State) -> list[str]:
         violations.append("S1_single_owner")
     if len(state.dispatched) > 1:
         violations.append("S2_effect_once")
-    if state.run == RUN_COMPLETED and state.attempts[-1].status != ATT_COMPLETED:
+    if state.run == RUN_COMPLETED and (
+        state.accepted is None or state.accepted != state.attempts[-1].ordinal
+    ):
         violations.append("S3_acceptance_is_current")
     return violations
 
