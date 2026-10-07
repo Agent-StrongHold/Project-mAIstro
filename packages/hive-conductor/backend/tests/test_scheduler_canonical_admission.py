@@ -254,6 +254,9 @@ def test_scheduler_tick_executes_the_admitted_run_to_completion(
             _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
         )
         try:
+            from services.scheduler import backfill_canonical_definitions
+
+            await backfill_canonical_definitions()
             await _ScheduleRunner()._tick()
             recorded = await container.schedule_store.get("s-1")
             assert recorded is not None and recorded.last_run_id
@@ -278,7 +281,7 @@ def test_scheduler_tick_logs_consumer_failure(
     from services.scheduler import _ScheduleRunner
 
     class _FailingContainer:
-        async def execute_admitted_runs(self) -> int:
+        async def execute_admitted_runs_accounting(self) -> int:
             raise RuntimeError("consumer unavailable")
 
     async def scenario() -> None:
@@ -298,11 +301,16 @@ def test_scheduler_tick_skips_missing_or_empty_consumer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Standalone ticks and empty consumer queues remain successful no-ops."""
+    from types import SimpleNamespace
+
     from services.scheduler import _ScheduleRunner
 
+    def _quiet() -> SimpleNamespace:
+        return SimpleNamespace(attempted=0, succeeded=0, failed=0, skipped=0)
+
     class _EmptyContainer:
-        async def execute_admitted_runs(self) -> int:
-            return 0
+        async def execute_admitted_runs_accounting(self) -> SimpleNamespace:
+            return _quiet()
 
     async def scenario() -> None:
         monkeypatch.setattr(_ScheduleRunner, "_canonical_container", staticmethod(lambda: None))
@@ -544,6 +552,7 @@ async def _put_hourly(
             cron="0 * * * *",
             timezone="UTC",
             graph_template_id=_DUE_TEMPLATE,
+            actor_principal_id="user-1",
             enabled=True,
             last_fired_at=last_fired_at,
             next_due_at=next_due_at,
@@ -667,7 +676,7 @@ def test_a_bad_hive_row_does_not_block_due_admission(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Projecting one Hive row that cannot be scoped must not skip real due work."""
+    """A malformed legacy projection cannot participate in canonical due selection."""
     from services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
@@ -685,7 +694,7 @@ def test_a_bad_hive_row_does_not_block_due_admission(
         try:
             with caplog.at_level("WARNING", logger="services.scheduler"):
                 await _ScheduleRunner()._tick()
-            assert "Failed to project schedule s-bad-scope" in caplog.text
+            assert await container.schedule_store.get("s-bad-scope") is None
             runs = await _runs_in(container.run_store)
             assert len(runs) == 1
             assert runs[0].provenance["schedule_id"] == "s-due"
@@ -752,10 +761,12 @@ def test_restart_executes_the_queued_run_once(
         first, root = await _wired_container(url)
         _use_container(monkeypatch, first)
 
-        async def _defer_consumer() -> int:
-            return 0
+        async def _defer_consumer() -> Any:
+            from maistro.runs.consumption import TickAccounting
 
-        first.execute_admitted_runs = _defer_consumer
+            return TickAccounting(attempted=0, succeeded=0, failed=0, parked=0, skipped=0)
+
+        first.execute_admitted_runs_accounting = _defer_consumer
         await _put_hourly(
             first,
             root.project_id,

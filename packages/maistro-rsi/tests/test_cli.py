@@ -179,14 +179,16 @@ class TestCliWiringSmoke:
         workspace_root = tmp_path / "maistro-workspace"
         monkeypatch.setattr("maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS", (workspace_root,))
         # The scrub hardened `git_clone` with a scheme allowlist so an agent
-        # cannot hand git a local path or a `-`-prefixed flag. Production
-        # clones over https; a hermetic test of *real* git needs a local
-        # origin, so it opts into `file://` here rather than the allowlist
-        # being widened for everyone -- the same shape as the
+        # cannot hand git a local path or a `-`-prefixed flag, and #404
+        # dropped `git://` outright: the git protocol is unauthenticated and
+        # unencrypted, so no caller -- and no test knob -- may reintroduce it.
+        # Production clones over https; a hermetic test of *real* git needs a
+        # local origin, so it opts into `file://` here rather than the
+        # allowlist being widened for everyone -- the same shape as the
         # ALLOWED_HOST_ROOTS relaxation just above.
         monkeypatch.setattr(
             "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES",
-            ("https://", "git://", "ssh://", "file://"),
+            ("https://", "ssh://", "file://"),
         )
 
         async def fake_create_rsi_sandbox(workspace, settings=None, env=None, backend=None):
@@ -308,3 +310,60 @@ class TestCliNewWiring:
         )
         assert code == 2
         assert "quarantine" in capsys.readouterr().err
+
+
+class TestTestArgv:
+    """`--test-argv` carries the vector a dispatching caller already resolved
+    against the policy (#305, consumed by the #509 container dispatch). The
+    launcher must refuse anything else loudly and early: a malformed vector is
+    a caller bug, and quietly falling back to the shell string would re-open
+    the exact door the vector exists to close."""
+
+    def test_empty_means_no_vector(self):
+        from maistro_rsi.__main__ import _test_argv
+
+        assert _test_argv("") == ()
+
+    def test_a_json_array_of_strings_becomes_a_tuple(self):
+        from maistro_rsi.__main__ import _test_argv
+
+        assert _test_argv('["python", "-m", "pytest", "-q"]') == (
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+        )
+
+    def test_malformed_json_refuses_at_exit_2(self, capsys):
+        from maistro_rsi.__main__ import _test_argv
+
+        with pytest.raises(SystemExit) as excinfo:
+            _test_argv("python -m pytest")
+
+        assert excinfo.value.code == 2
+        assert "JSON array of strings" in capsys.readouterr().err
+
+    def test_a_non_array_refuses_at_exit_2(self, capsys):
+        from maistro_rsi.__main__ import _test_argv
+
+        with pytest.raises(SystemExit) as excinfo:
+            _test_argv('"python -m pytest"')
+
+        assert excinfo.value.code == 2
+        assert "non-empty strings" in capsys.readouterr().err
+
+    def test_non_string_entries_refuse_at_exit_2(self, capsys):
+        from maistro_rsi.__main__ import _test_argv
+
+        with pytest.raises(SystemExit) as excinfo:
+            _test_argv('["python", 3]')
+
+        assert excinfo.value.code == 2
+
+    def test_empty_string_entries_refuse_at_exit_2(self, capsys):
+        from maistro_rsi.__main__ import _test_argv
+
+        with pytest.raises(SystemExit) as excinfo:
+            _test_argv('["python", ""]')
+
+        assert excinfo.value.code == 2

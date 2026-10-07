@@ -31,6 +31,7 @@ from maistro.runs.chat_admission import (
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro.runs.task_kinds import DELEGATE_NODE_KIND
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 @pytest.fixture
@@ -57,7 +58,7 @@ async def test_a_turn_is_admitted_as_a_run_in_the_workspaces_project(spine) -> N
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
 
-    run = await admitter.admit(_turn())
+    run = await admitter.admit(_turn(), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
 
     stored = await runs.get_run(run.run_id)
     assert stored is not None
@@ -70,20 +71,30 @@ async def test_the_run_names_chat_as_what_admitted_it(spine) -> None:
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
 
-    run = await admitter.admit(_turn(), session_id="sess-1", request_id="req-1")
+    run = await admitter.admit(
+        _turn(),
+        session_id="sess-1",
+        request_id="req-1",
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     assert run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
     assert run.provenance[SESSION_ID_KEY] == "sess-1"
     assert run.provenance[REQUEST_ID_KEY] == "req-1"
 
 
+@pytest.mark.ac("ADR-082326-c126/AC-1")
 async def test_two_turns_in_one_session_are_two_runs(spine) -> None:
     """The decision, held directly: a Run is a turn, not a conversation."""
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
 
-    first = await admitter.admit(_turn("one"), session_id="sess-1")
-    second = await admitter.admit(_turn("two"), session_id="sess-1")
+    first = await admitter.admit(
+        _turn("one"), session_id="sess-1", actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+    second = await admitter.admit(
+        _turn("two"), session_id="sess-1", actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     assert first.run_id != second.run_id
     assert first.provenance[SESSION_ID_KEY] == second.provenance[SESSION_ID_KEY] == "sess-1"
@@ -93,7 +104,9 @@ async def test_the_runs_graph_is_the_one_node_a_turn_can_execute(spine) -> None:
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
 
-    run = await admitter.admit(_turn("What broke the parser?"))
+    run = await admitter.admit(
+        _turn("What broke the parser?"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     nodes = run.graph.materialize().nodes
     assert len(nodes) == 1
@@ -105,7 +118,9 @@ async def test_a_turn_with_no_user_message_still_admits(spine) -> None:
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
 
-    run = await admitter.admit([{"role": "system", "content": "hello"}])
+    run = await admitter.admit(
+        [{"role": "system", "content": "hello"}], actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     assert run.graph.materialize().nodes[0].name == DEFAULT_TURN_NAME
 
@@ -119,13 +134,16 @@ def test_the_last_user_message_is_the_last_one() -> None:
 # --- the bound ------------------------------------------------------------
 
 
+@pytest.mark.ac("ADR-082326-c126/AC-2")
 async def test_terminal_chat_runs_are_swept_behind_the_window(spine) -> None:
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=3)
     admitted = []
 
     for index in range(10):
-        run = await admitter.admit(_turn(f"turn {index}"))
+        run = await admitter.admit(
+            _turn(f"turn {index}"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await runs.transition_run(run.run_id, RunStatus.QUEUED)
         await runs.transition_run(run.run_id, RunStatus.RUNNING)
         await runs.transition_run(run.run_id, RunStatus.COMPLETED)
@@ -149,7 +167,9 @@ async def test_an_executing_turn_is_never_swept(spine) -> None:
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=2)
 
-    live = await admitter.admit(_turn("still going"))
+    live = await admitter.admit(
+        _turn("still going"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await runs.transition_run(live.run_id, RunStatus.QUEUED)
     await runs.transition_run(live.run_id, RunStatus.RUNNING)
     node_run = await runs.create_node_run(
@@ -159,7 +179,9 @@ async def test_an_executing_turn_is_never_swept(spine) -> None:
         node_run.node_run_id, lease_holder="chat", lease_ttl=timedelta(seconds=30)
     )
     for index in range(8):
-        done = await admitter.admit(_turn(f"turn {index}"))
+        done = await admitter.admit(
+            _turn(f"turn {index}"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await runs.transition_run(done.run_id, RunStatus.QUEUED)
         await runs.transition_run(done.run_id, RunStatus.CANCELLED)
 
@@ -179,7 +201,9 @@ async def test_stalled_turns_cannot_grow_the_store_past_the_window(spine) -> Non
 
     admitted = []
     for index in range(3):
-        run = await admitter.admit(_turn(f"turn {index}"))
+        run = await admitter.admit(
+            _turn(f"turn {index}"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await runs.transition_run(run.run_id, RunStatus.QUEUED)
         await runs.transition_run(run.run_id, RunStatus.RUNNING)
         admitted.append(run.run_id)
@@ -194,7 +218,9 @@ async def test_an_attempt_whose_lease_lapsed_no_longer_shields_its_run(spine) ->
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=1)
 
-    stalled = await admitter.admit(_turn("holder died"))
+    stalled = await admitter.admit(
+        _turn("holder died"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await runs.transition_run(stalled.run_id, RunStatus.QUEUED)
     await runs.transition_run(stalled.run_id, RunStatus.RUNNING)
     node_run = await runs.create_node_run(
@@ -204,7 +230,9 @@ async def test_an_attempt_whose_lease_lapsed_no_longer_shields_its_run(spine) ->
         node_run.node_run_id, lease_holder="chat", lease_ttl=timedelta(microseconds=1)
     )
 
-    later = await admitter.admit(_turn("next turn"))
+    later = await admitter.admit(
+        _turn("next turn"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     assert await runs.get_run(stalled.run_id) is None
     assert await runs.get_run(later.run_id) is not None
@@ -215,7 +243,9 @@ async def test_a_finished_attempt_under_an_open_run_does_not_shield_it(spine) ->
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=1)
 
-    stalled = await admitter.admit(_turn("executor died at the close"))
+    stalled = await admitter.admit(
+        _turn("executor died at the close"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await runs.transition_run(stalled.run_id, RunStatus.QUEUED)
     await runs.transition_run(stalled.run_id, RunStatus.RUNNING)
     node_run = await runs.create_node_run(
@@ -225,7 +255,9 @@ async def test_a_finished_attempt_under_an_open_run_does_not_shield_it(spine) ->
     await runs.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
     await runs.transition_attempt(attempt.attempt_id, AttemptStatus.COMPLETED)
 
-    later = await admitter.admit(_turn("next turn"))
+    later = await admitter.admit(
+        _turn("next turn"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     assert await runs.get_run(stalled.run_id) is None
     assert await runs.get_run(later.run_id) is not None
@@ -244,13 +276,16 @@ async def test_the_sweep_does_not_touch_a_task_run(spine) -> None:
         name="a task",
         source="task_queue",
         parameters={"from_agent": "", "task": "a task", "to_agent": "coder"},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     await runs.transition_run(task_run.run_id, RunStatus.QUEUED)
     await runs.transition_run(task_run.run_id, RunStatus.CANCELLED)
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=1)
 
     for index in range(20):
-        run = await admitter.admit(_turn(f"turn {index}"))
+        run = await admitter.admit(
+            _turn(f"turn {index}"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await runs.transition_run(run.run_id, RunStatus.QUEUED)
         await runs.transition_run(run.run_id, RunStatus.CANCELLED)
 
@@ -261,12 +296,12 @@ async def test_a_run_already_gone_leaves_the_window(spine) -> None:
     """The store's own bound may have taken it first; that is not an error."""
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=1)
-    first = await admitter.admit(_turn("one"))
+    first = await admitter.admit(_turn("one"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     await runs.transition_run(first.run_id, RunStatus.QUEUED)
     await runs.transition_run(first.run_id, RunStatus.CANCELLED)
     await runs.delete_run(first.run_id)
 
-    second = await admitter.admit(_turn("two"))
+    second = await admitter.admit(_turn("two"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
 
     assert admitter.retained == 1
     assert await runs.get_run(second.run_id) is not None
@@ -292,7 +327,7 @@ async def test_the_root_project_resolves_lazily(spine) -> None:
     projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_store=projects)
 
-    run = await admitter.admit(_turn())
+    run = await admitter.admit(_turn(), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
 
     assert run.project_id == root.project_id
 
@@ -303,7 +338,7 @@ async def test_the_root_project_resolves_lazily(spine) -> None:
 async def test_deleting_a_live_run_is_refused(spine) -> None:
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
-    run = await admitter.admit(_turn())
+    run = await admitter.admit(_turn(), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     await runs.transition_run(run.run_id, RunStatus.QUEUED)
 
     with pytest.raises(RunIntegrityError):
@@ -319,7 +354,7 @@ async def test_deleting_an_unknown_run_says_so_rather_than_raising(spine) -> Non
 async def test_deleting_a_run_takes_its_node_runs_and_attempts(spine) -> None:
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
-    run = await admitter.admit(_turn())
+    run = await admitter.admit(_turn(), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     await runs.transition_run(run.run_id, RunStatus.QUEUED)
     await runs.transition_run(run.run_id, RunStatus.RUNNING)
     node_id = run.graph.materialize().nodes[0].node_id
@@ -360,6 +395,7 @@ async def test_chat_admission_does_not_evict_task_runs(spine) -> None:
             name=f"task {index}",
             source="task_queue",
             parameters={"from_agent": "", "task": "t", "to_agent": "coder"},
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         await runs.transition_run(run.run_id, RunStatus.QUEUED)
         await runs.transition_run(run.run_id, RunStatus.CANCELLED)
@@ -369,7 +405,9 @@ async def test_chat_admission_does_not_evict_task_runs(spine) -> None:
         runs, workspace_id="w1", project_id=root.project_id, max_retained=100
     )
     for index in range(40):
-        run = await admitter.admit(_turn(f"turn {index}"))
+        run = await admitter.admit(
+            _turn(f"turn {index}"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await runs.transition_run(run.run_id, RunStatus.QUEUED)
         await runs.transition_run(run.run_id, RunStatus.CANCELLED)
 
@@ -394,6 +432,7 @@ async def test_the_store_still_evicts_when_only_task_runs_remain(spine) -> None:
             name=f"task {index}",
             source="task_queue",
             parameters={"from_agent": "", "task": "t", "to_agent": "coder"},
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         await runs.transition_run(run.run_id, RunStatus.QUEUED)
         await runs.transition_run(run.run_id, RunStatus.CANCELLED)
@@ -409,11 +448,18 @@ async def test_concurrent_admissions_sweep_without_colliding(spine) -> None:
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=2)
     for index in range(6):
-        run = await admitter.admit(_turn(f"seed {index}"))
+        run = await admitter.admit(
+            _turn(f"seed {index}"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await runs.transition_run(run.run_id, RunStatus.QUEUED)
         await runs.transition_run(run.run_id, RunStatus.CANCELLED)
 
-    admitted = await asyncio.gather(*(admitter.admit(_turn(f"race {i}")) for i in range(8)))
+    admitted = await asyncio.gather(
+        *(
+            admitter.admit(_turn(f"race {i}"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+            for i in range(8)
+        )
+    )
 
     assert len({run.run_id for run in admitted}) == 8
     for run in admitted:
@@ -432,7 +478,9 @@ async def test_a_turn_with_no_intent_hint_names_no_agent(spine) -> None:
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
 
-    run = await admitter.admit(_turn("what broke?"))
+    run = await admitter.admit(
+        _turn("what broke?"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     node = run.graph.materialize().nodes[0]
     assert node.parameters["to_agent"] == ""
@@ -445,7 +493,10 @@ async def test_a_known_intent_hint_does_name_its_agent(spine) -> None:
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
 
     run = await admitter.admit(
-        _turn("write the parser"), intent_hint="code", known_task_types={"code"}
+        _turn("write the parser"),
+        intent_hint="code",
+        known_task_types={"code"},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     node = run.graph.materialize().nodes[0]
@@ -458,7 +509,10 @@ async def test_an_unknown_intent_hint_names_no_agent_either(spine) -> None:
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
 
     run = await admitter.admit(
-        _turn("do a thing"), intent_hint="not-a-task-type", known_task_types={"code"}
+        _turn("do a thing"),
+        intent_hint="not-a-task-type",
+        known_task_types={"code"},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert run.graph.materialize().nodes[0].parameters["to_agent"] == ""
@@ -468,13 +522,17 @@ async def test_an_unknown_intent_hint_names_no_agent_either(spine) -> None:
 async def test_deleting_a_run_with_a_child_is_refused(spine) -> None:
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
-    parent = await admitter.admit(_turn("parent"))
+    parent = await admitter.admit(
+        _turn("parent"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await runs.transition_run(parent.run_id, RunStatus.QUEUED)
     await runs.transition_run(parent.run_id, RunStatus.RUNNING)
     child_graph = parent.graph.materialize().model_copy(
         update={"graph_id": "child-graph"}, deep=True
     )
-    await runs.create_run(child_graph, parent_run_id=parent.run_id)
+    await runs.create_run(
+        child_graph, parent_run_id=parent.run_id, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await runs.transition_run(parent.run_id, RunStatus.COMPLETED)
 
     with pytest.raises(RunIntegrityError, match="child Run"):
@@ -487,23 +545,29 @@ async def test_retention_walks_past_a_terminal_parent_with_a_child(spine) -> Non
     """One undeletable parent must not strand younger eligible chat Runs."""
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=2)
-    parent = await admitter.admit(_turn("parent"))
+    parent = await admitter.admit(
+        _turn("parent"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await runs.transition_run(parent.run_id, RunStatus.QUEUED)
     await runs.transition_run(parent.run_id, RunStatus.RUNNING)
     child_graph = parent.graph.materialize().model_copy(
         update={"graph_id": "child-graph"}, deep=True
     )
-    child = await runs.create_run(child_graph, parent_run_id=parent.run_id)
+    child = await runs.create_run(
+        child_graph, parent_run_id=parent.run_id, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await runs.transition_run(child.run_id, RunStatus.QUEUED)
     await runs.transition_run(child.run_id, RunStatus.RUNNING)
     await runs.transition_run(child.run_id, RunStatus.COMPLETED)
     await runs.transition_run(parent.run_id, RunStatus.COMPLETED)
 
-    second = await admitter.admit(_turn("second"))
+    second = await admitter.admit(
+        _turn("second"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await runs.transition_run(second.run_id, RunStatus.QUEUED)
     await runs.transition_run(second.run_id, RunStatus.RUNNING)
     await runs.transition_run(second.run_id, RunStatus.COMPLETED)
-    third = await admitter.admit(_turn("third"))
+    third = await admitter.admit(_turn("third"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
 
     assert admitter.retained == 2
     assert await runs.get_run(parent.run_id) is not None

@@ -26,13 +26,16 @@ from maistro.observability.correlation import (
     detached_execution_context,
 )
 from maistro.runs.model import TERMINAL_RUN_STATUSES
+from maistro.runs.sources import canonical_occurrence_instant
 from maistro.scheduling import FireDecision, OverlapPolicy, Schedule, evaluate
 from maistro.scheduling.admission import ScheduleRunAdmitter
+from maistro.scheduling.model import DEFAULT_CATCHUP_WINDOW_SECONDS
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEZONE = "UTC"
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_DEFAULT_CATCHUP_WINDOW_SECONDS = DEFAULT_CATCHUP_WINDOW_SECONDS
 
 _runner: _ScheduleRunner | None = None
 
@@ -85,64 +88,260 @@ async def fire_now(sid: str, *, fire_id: str | None = None) -> str:
     header at the route — so a retried or concurrent double submit of the same
     logical request reconciles to the Run the first call created instead of
     minting a fresh identity per call.  A call carrying no token gets a
-    server-minted one, making each request its own deliberate firing.
+    server-minted one, making each request's own deliberate firing.
+
+    Takes the same per-schedule ``definition_lock`` the routes and the tick
+    hold (Codex, #1199): without it, a manual fire that read the Hive row
+    before a concurrent DELETE released it would still call
+    ``_definition_for``, whose ``store.put`` would write the captured
+    definition back and could admit a Run for a schedule already gone.
     """
+    import stores
+
+    async with definition_lock(sid):
+        schedule = stores.schedules.get(sid)
+        if schedule is None:
+            raise ScheduleNotFireable(f"schedule {sid} does not exist")
+
+        runner = _runner or _ScheduleRunner()
+        container = runner._canonical_container()
+        admitter = runner._canonical_admitter(container)
+        if admitter is not None:
+            assert container is not None  # for the type checker; the gate proved it
+            token = fire_id if fire_id else uuid.uuid4().hex
+            return await runner._fire_manual_canonical(
+                sid, schedule, container=container, admitter=admitter, fire_id=token
+            )
+        if container is not None:
+            raise ScheduleAdmissionUnavailable(
+                f"schedule {sid} cannot be fired: the configured Container is missing its "
+                "run/template/schedule store wiring, so canonical schedule admission is unavailable"
+            )
+
+        store = runner._canonical_store()
+        definition = await runner._definition_for(sid, schedule, store=store)
+        if definition is None:
+            raise ScheduleNotFireable(
+                f"schedule {sid} names no mission template, so there is nothing to run"
+            )
+        if definition.exhausted:
+            raise ScheduleNotFireable(
+                f"schedule {sid} has used all {definition.max_runs} of its runs"
+            )
+
+        now = datetime.now(UTC)
+        # Captured here, at the one call site with a trustworthy ambient context
+        # (#1063): this coroutine runs inside the HTTP request RequestIDMiddleware
+        # already bound an id for, so forwarding it explicitly is what keeps the
+        # request/response and the resulting Run in the same trace.
+        # `_fire_schedule` never reads ambient context itself -- it is also
+        # reachable from the tick loop, which shares an event loop with whatever
+        # else is running and cannot make the same claim.
+        request_id = current_execution_context().request_id or None
+        run_id = await runner._fire_schedule(
+            sid, schedule, scheduled_for=now, catchup=False, request_id=request_id
+        )
+        if run_id is None:
+            raise ScheduleNotFireable(
+                f"schedule {sid} could not create a Run; its target may not be registered"
+            )
+
+        await runner._record_fire(
+            sid,
+            schedule,
+            definition,
+            store=store,
+            fire=FireDecision(scheduled_for=now, catchup=False),
+            run_id=run_id,
+        )
+        return run_id
+
+
+_definition_locks: dict[str, asyncio.Lock] = {}
+_definition_lock_refs: dict[str, int] = {}
+
+
+class _TrackedDefinitionLock:
+    """Proxy over one sid's ``asyncio.Lock`` that evicts it once idle.
+
+    ``_definition_locks`` is process-global and every schedule ID is a fresh
+    UUID, so without this create/delete churn grows the dict (and its Lock
+    objects) for the worker's lifetime (Codex, #1199). Attribute access
+    (``lock._waiters``, ``lock.locked()``) and identity across concurrent
+    ``async with definition_lock(sid):`` callers delegate to the one shared
+    ``asyncio.Lock`` per sid, so contention behaves exactly as before; only
+    the dict entry's lifetime changes. Refcounting is synchronous increment
+    on construction and decrement on ``__aexit__`` with no ``await`` between
+    a decrement and its eviction check, so no other coroutine can observe or
+    race an in-between state on this single-threaded event loop.
+    """
+
+    __slots__ = ("_lock", "_sid")
+
+    def __init__(self, sid: str, lock: asyncio.Lock) -> None:
+        self._sid = sid
+        self._lock = lock
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._lock, name)
+
+    async def __aenter__(self) -> None:
+        await self._lock.__aenter__()
+
+    async def __aexit__(self, *exc_info: Any) -> None:
+        try:
+            await self._lock.__aexit__(*exc_info)
+        finally:
+            _definition_lock_refs[self._sid] -= 1
+            if (
+                _definition_lock_refs[self._sid] <= 0
+                and _definition_locks.get(self._sid) is self._lock
+            ):
+                _definition_locks.pop(self._sid, None)
+                _definition_lock_refs.pop(self._sid, None)
+
+
+def definition_lock(sid: str) -> _TrackedDefinitionLock:
+    """Serialise the writers of one schedule's canonical definition and row.
+
+    Each writer builds the definition from the Hive row and then awaits the
+    store, so without this two edits could land canonically in the opposite
+    order to the row and leave the authority disagreeing with its projection.
+    """
+    lock = _definition_locks.setdefault(sid, asyncio.Lock())
+    _definition_lock_refs[sid] = _definition_lock_refs.get(sid, 0) + 1
+    return _TrackedDefinitionLock(sid, lock)
+
+
+def _definition_authority() -> tuple[_ScheduleRunner, Any] | None:
+    """The runner and Container that own canonical definitions, if configured.
+
+    ``None`` is standalone mode: no Container, and the Hive row is all there
+    is. A Container that cannot hold or scope a definition is a server
+    misconfiguration, refused as for manual fire rather than left to diverge.
+    """
+    runner = _runner or _ScheduleRunner()
+    container = runner._canonical_container()
+    if container is None:
+        return None
+    if getattr(container, "schedule_store", None) is None or (
+        getattr(container, "project_scope_store", None) is None
+    ):
+        raise ScheduleAdmissionUnavailable(
+            "the configured Container is missing its schedule/project store wiring, "
+            "so canonical schedule definitions cannot be written"
+        )
+    return runner, container
+
+
+async def _scoped_definition(
+    runner: _ScheduleRunner, sid: str, schedule: Any, container: Any
+) -> Schedule | None:
+    definition = runner._as_definition(sid, schedule)
+    if definition is None:
+        return None
+    workspace_id, project_id = await runner._canonical_scope(schedule, container)
+    return definition.model_copy(update={"workspace_id": workspace_id, "project_id": project_id})
+
+
+async def put_canonical_definition(sid: str, schedule: Any) -> None:
+    """Write the canonical definition a ``/v1/schedules`` row describes.
+
+    Called before the Hive row is written, so the canonical store is the
+    authority and the row its projection. ``put`` keeps recorded cursors and
+    clears ``next_due_at`` only on a cron/timezone change. A row naming no
+    template has no canonical definition, so any earlier one is removed.
+    Raises ``ValueError`` for a definition the canonical model refuses.
+    """
+    authority = _definition_authority()
+    if authority is None:
+        return
+    runner, container = authority
+    definition = await _scoped_definition(runner, sid, schedule, container)
+    if definition is None:
+        await container.schedule_store.delete(sid)
+        return
+    await container.schedule_store.put(definition)
+
+
+async def delete_canonical_definition(sid: str) -> None:
+    """Remove the canonical definition before its Hive projection goes."""
+    authority = _definition_authority()
+    if authority is None:
+        return
+    await authority[1].schedule_store.delete(sid)
+
+
+async def backfill_canonical_definitions() -> int:
+    """Put each Hive row missing or drifted from the canonical store; return how many.
+
+    One-shot, before the first tick. A row with no canonical counterpart is
+    a first put — created before the routes wrote canonically. A row that
+    already has one is reconciled only if its definition has drifted: the
+    old lazy tick wrote a canonical row only when a schedule was enabled, so
+    a Hive PUT that disabled (or otherwise edited) a schedule before this
+    deploy's routes existed to sync it can leave the canonical row stale
+    (Codex, #1199) — exactly the orphan `due()` would keep returning that
+    this PR exists to stop. Either way ``ScheduleStore.put`` keeps the
+    cursors ``record_fire`` recorded, so reconciling the definition never
+    rewinds them.
+    """
+    import stores
+
+    runner = _runner or _ScheduleRunner()
+    container = runner._canonical_container()
+    store = getattr(container, "schedule_store", None) if container is not None else None
+    if store is None or getattr(container, "project_scope_store", None) is None:
+        return 0
+    written = 0
+    for sid in list(stores.schedules.keys()):
+        try:
+            async with definition_lock(sid):
+                written += await _backfill_one(runner, sid, container)
+        except Exception as exc:
+            logger.warning("Failed to backfill canonical schedule %s: %s", sid, exc)
+    return written
+
+
+def _definition_drifted(existing: Schedule, definition: Schedule) -> bool:
+    """Whether ``existing``'s definition fields disagree with the Hive row's.
+
+    Compares only what ``_as_definition``/``_scoped_definition`` derive from
+    the Hive row — never the cursors ``record_fire`` owns (``runs_so_far``,
+    ``last_run_id``, ``next_due_at``, ``last_fired_at``,
+    ``recovered_occurrences``, ``pending_fires``) — so a schedule the tick
+    has since advanced is never flagged as drifted merely for having moved
+    past its Hive snapshot.
+    """
+    return (
+        existing.name != definition.name
+        or existing.cron != definition.cron
+        or existing.timezone != definition.timezone
+        or existing.graph_template_id != definition.graph_template_id
+        or existing.max_runs != definition.max_runs
+        # The window is a definition field the routes set (#1200); a PUT that
+        # changed it must reconcile the canonical row, not just the Hive one.
+        or existing.catchup_window_seconds != definition.catchup_window_seconds
+        or existing.enabled != definition.enabled
+        or existing.workspace_id != definition.workspace_id
+        or existing.project_id != definition.project_id
+    )
+
+
+async def _backfill_one(runner: _ScheduleRunner, sid: str, container: Any) -> int:
     import stores
 
     schedule = stores.schedules.get(sid)
     if schedule is None:
-        raise ScheduleNotFireable(f"schedule {sid} does not exist")
-
-    runner = _runner or _ScheduleRunner()
-    container = runner._canonical_container()
-    admitter = runner._canonical_admitter(container)
-    if admitter is not None:
-        assert container is not None  # for the type checker; the gate proved it
-        token = fire_id if fire_id else uuid.uuid4().hex
-        return await runner._fire_manual_canonical(
-            sid, schedule, container=container, admitter=admitter, fire_id=token
-        )
-    if container is not None:
-        raise ScheduleAdmissionUnavailable(
-            f"schedule {sid} cannot be fired: the configured Container is missing its "
-            "run/template/schedule store wiring, so canonical schedule admission is unavailable"
-        )
-
-    store = runner._canonical_store()
-    definition = await runner._definition_for(sid, schedule, store=store)
+        return 0
+    definition = await _scoped_definition(runner, sid, schedule, container)
     if definition is None:
-        raise ScheduleNotFireable(
-            f"schedule {sid} names no mission template, so there is nothing to run"
-        )
-    if definition.exhausted:
-        raise ScheduleNotFireable(f"schedule {sid} has used all {definition.max_runs} of its runs")
-
-    now = datetime.now(UTC)
-    # Captured here, at the one call site with a trustworthy ambient context
-    # (#1063): this coroutine runs inside the HTTP request RequestIDMiddleware
-    # already bound an id for, so forwarding it explicitly is what keeps the
-    # request/response and the resulting Run in the same trace.
-    # `_fire_schedule` never reads ambient context itself -- it is also
-    # reachable from the tick loop, which shares an event loop with whatever
-    # else is running and cannot make the same claim.
-    request_id = current_execution_context().request_id or None
-    run_id = await runner._fire_schedule(
-        sid, schedule, scheduled_for=now, catchup=False, request_id=request_id
-    )
-    if run_id is None:
-        raise ScheduleNotFireable(
-            f"schedule {sid} could not create a Run; its target may not be registered"
-        )
-
-    await runner._record_fire(
-        sid,
-        schedule,
-        definition,
-        store=store,
-        fire=FireDecision(scheduled_for=now, catchup=False),
-        run_id=run_id,
-    )
-    return run_id
+        return 0
+    existing = await container.schedule_store.get(sid)
+    if existing is not None and not _definition_drifted(existing, definition):
+        return 0
+    await container.schedule_store.put(definition)
+    return 1
 
 
 class _ScheduleRunner:
@@ -160,6 +359,7 @@ class _ScheduleRunner:
 
     async def run(self) -> None:
         self._last_check = datetime.now(UTC)
+        await backfill_canonical_definitions()
         while self._running:
             await asyncio.sleep(30)
             try:
@@ -193,10 +393,17 @@ class _ScheduleRunner:
         now = datetime.now(UTC)
         container = self._canonical_container()
         admitter = self._canonical_admitter(container)
-        if container is not None and admitter is not None:
-            # Due authority is the canonical store. The Hive dictionary cannot
-            # decide what fires, and it is not an execution lifecycle.
-            await self._tick_due(now, container, admitter)
+        if container is not None:
+            try:
+                if admitter is None:
+                    raise ScheduleAdmissionUnavailable(
+                        "configured Container is missing canonical schedule admission"
+                    )
+                await self._tick_due(now, container, admitter)
+            except Exception as exc:
+                # Selection and consumption are independent: a transient due
+                # read failure must not strand Runs that are already QUEUED.
+                logger.warning("Failed to select due canonical schedules: %s", exc)
         else:
             import stores
 
@@ -213,35 +420,24 @@ class _ScheduleRunner:
         # above cannot remain QUEUED merely because no task receipt exists.
         if container is not None:
             try:
-                executed = await container.execute_admitted_runs()
-                if executed:
-                    logger.info("Consumed %d admitted canonical Run(s)", executed)
+                accounting = await container.execute_admitted_runs_accounting()
+                if accounting.attempted or accounting.skipped:
+                    # The attempted count alone could present an all-failing
+                    # batch as a fully executed one (#849), so the tick's own
+                    # breakdown is what gets logged.
+                    logger.info(
+                        "Consumed %d admitted canonical Run(s) (succeeded=%d failed=%d "
+                        "parked=%d skipped=%d)",
+                        accounting.attempted,
+                        accounting.succeeded,
+                        accounting.failed,
+                        accounting.parked,
+                        accounting.skipped,
+                    )
             except Exception as exc:
                 logger.warning("Failed to consume admitted canonical Runs: %s", exc)
 
         self._last_check = now
-
-    async def _project_missing_definitions(self, container: Any) -> None:
-        """Insert Hive rows the canonical store has never seen.
-
-        One-way and insert-only. A row that already exists is the due
-        authority; rewriting it from the Hive copy would let that dictionary
-        re-enable, retarget, or rewind a cursor. Rows created before the
-        product routes write the canonical store still become selectable.
-        """
-        import stores
-
-        store = container.schedule_store
-        for sid, schedule in list(stores.schedules.items()):
-            try:
-                if await store.get(sid) is not None:
-                    continue
-                scope = await self._canonical_scope(schedule, container)
-                await self._definition_for(sid, schedule, store=store, scope=scope)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to project schedule %s into the canonical store: %s", sid, exc
-                )
 
     async def _tick_due(
         self,
@@ -257,29 +453,33 @@ class _ScheduleRunner:
         ``QUEUED`` is what ``execute_admitted_runs`` picks up — the schedule
         row only keeps the cursor.
         """
-        from types import SimpleNamespace
-
-        import stores
-
-        await self._project_missing_definitions(container)
-        for schedule in await container.schedule_store.due(now=now):
-            surface = stores.schedules.get(schedule.schedule_id)
-            if surface is None:
-                surface = SimpleNamespace(
-                    name=schedule.name,
-                    mission_template_id=schedule.graph_template_id,
-                )
+        for candidate in await container.schedule_store.due(now=now):
+            sid = candidate.schedule_id
             try:
-                await self._evaluate_canonical(
-                    schedule.schedule_id,
-                    surface,
-                    now=now,
-                    container=container,
-                    admitter=admitter,
-                    loaded=schedule,
-                )
+                # Selection can predate a route edit/delete or another fire.
+                # Re-read canonical truth under the lock those callers share;
+                # neither the selection snapshot nor the Hive projection may
+                # resurrect a deleted row or undo a newly persisted cursor.
+                async with definition_lock(sid):
+                    current = await container.schedule_store.get(sid)
+                    if current is None or not current.enabled:
+                        continue
+                    if (
+                        current.next_due_at is not None
+                        and current.next_due_at > now
+                        and not current.pending_fires
+                    ):
+                        continue
+                    await self._evaluate_canonical(
+                        sid,
+                        current,
+                        now=now,
+                        container=container,
+                        admitter=admitter,
+                        loaded=current,
+                    )
             except Exception as exc:
-                logger.warning("Failed to evaluate schedule %s: %s", schedule.schedule_id, exc)
+                logger.warning("Failed to evaluate schedule %s: %s", sid, exc)
 
     def _as_definition(self, sid: str, schedule: Any) -> Schedule | None:
         """Project the live ``/v1/schedules`` row onto the canonical definition.
@@ -301,6 +501,17 @@ class _ScheduleRunner:
             timezone=str(getattr(schedule, "timezone", None) or _DEFAULT_TIMEZONE),
             graph_template_id=template_id,
             max_runs=getattr(schedule, "max_runs", None),
+            # The row's own window, bounded at the routes (#1200); rows that
+            # predate the column fall back to the substrate default, exactly
+            # as they do for timezone. ``is not None``, not ``or``: zero is a
+            # legal window ("never backfill", which the routes admit) and a
+            # falsy-value fallback would silently turn it into an hour of
+            # backfill the client refused.
+            catchup_window_seconds=float(
+                row_window
+                if (row_window := getattr(schedule, "catchup_window_seconds", None)) is not None
+                else _DEFAULT_CATCHUP_WINDOW_SECONDS
+            ),
             enabled=bool(getattr(schedule, "enabled", True)),
             overlap_policy=OverlapPolicy.SKIP,
             last_fired_at=getattr(schedule, "last_run", None),
@@ -453,7 +664,7 @@ class _ScheduleRunner:
     async def _audit_canonical_admission(
         self,
         sid: str,
-        schedule: Any,
+        schedule: Schedule,
         admission: Any,
         container: Any,
     ) -> None:
@@ -482,7 +693,9 @@ class _ScheduleRunner:
                 "system",
                 target=sid,
                 detail={
-                    "dag_id": str(schedule.mission_template_id),
+                    "dag_id": (
+                        template.template_id if template is not None else schedule.graph_template_id
+                    ),
                     "run_id": run_id,
                     "status": run.status.value if run is not None else "unknown",
                     "template_version": (
@@ -496,7 +709,7 @@ class _ScheduleRunner:
                 "system",
                 target=sid,
                 detail={
-                    "dag_id": str(schedule.mission_template_id),
+                    "dag_id": schedule.graph_template_id,
                     "error": type(exc).__name__,
                 },
             )
@@ -513,7 +726,7 @@ class _ScheduleRunner:
     ) -> None:
         """Configured Hive path: one canonical scheduler authority.
 
-        ``loaded`` is a definition already read from ``ScheduleStore.due``.
+        ``loaded`` is canonical state re-read under the definition lock after due selection.
         When the tick has one, it is the authority and is not rebuilt from
         the Hive row — that rebuild is what let the product dictionary decide
         a schedule the store had already judged.
@@ -534,6 +747,30 @@ class _ScheduleRunner:
             now=now,
             active_run=await self._canonical_active_run(definition, container),
         )
+
+        # Operator visibility for the bounded-work contract (#1200): a walk
+        # that hit its budget or step bound ended the tick with backlog it
+        # never looked at — the due cursor was left alone, so the next tick
+        # re-examines it, but an operator watching backlog should see the
+        # tick say so rather than read a clean "nothing due". Same for a
+        # window the host clamped under the schedule's own. Read through
+        # getattr: `ScheduleAdmission` always carries these fields, but a
+        # host may surface a narrower admission object.
+        if getattr(admission, "enumeration_incomplete", False):
+            stopped_at = getattr(admission, "enumeration_stopped_at", None)
+            logger.warning(
+                "Schedule %s catch-up walk stopped at %s, before now=%s; the backlog past "
+                "that point was not examined this tick and is re-examined on the next one",
+                sid,
+                stopped_at.isoformat() if stopped_at is not None else "its budget",
+                now.isoformat(),
+            )
+        if getattr(admission, "window_clamped", False):
+            logger.info(
+                "Schedule %s catch-up window %ss is capped at the host bound this tick",
+                sid,
+                definition.catchup_window_seconds,
+            )
 
         for skipped in admission.skipped:
             logger.info(
@@ -561,7 +798,7 @@ class _ScheduleRunner:
         for exc in admission.failures:
             logger.warning("Schedule %s admission failed: %s", sid, exc)
 
-        await self._audit_canonical_admission(sid, schedule, admission, container)
+        await self._audit_canonical_admission(sid, definition, admission, container)
         recorded = await container.schedule_store.get(sid)
         if recorded is not None:
             self._project_cursor(sid, recorded)
@@ -668,7 +905,7 @@ class _ScheduleRunner:
 
         await self._audit_canonical_admission(
             sid,
-            schedule,
+            definition,
             ScheduleAdmission(run_ids=admission.run_ids),
             container,
         )
@@ -761,13 +998,22 @@ class _ScheduleRunner:
                     "configured Container is missing its run/template/schedule store wiring; "
                     "canonical schedule admission is unavailable"
                 )
-            await self._evaluate_canonical(
-                sid,
-                schedule,
-                now=now,
-                container=container,
-                admitter=admitter,
-            )
+            import stores
+
+            # The tick's snapshot may predate a route edit or delete; under the
+            # definition lock the current row decides, so a stale copy cannot
+            # re-enable or resurrect the canonical definition.
+            async with definition_lock(sid):
+                current = stores.schedules.get(sid)
+                if current is None or not getattr(current, "enabled", False):
+                    return
+                await self._evaluate_canonical(
+                    sid,
+                    current,
+                    now=now,
+                    container=container,
+                    admitter=admitter,
+                )
             return
 
         # Standalone/demo compatibility path. Production must never reach this
@@ -887,7 +1133,7 @@ class _ScheduleRunner:
             target=sid,
             detail={
                 "name": schedule.name,
-                "scheduled_for": (scheduled_for or t).isoformat(),
+                "scheduled_for": canonical_occurrence_instant(scheduled_for or t),
                 "catchup": catchup,
             },
         )
@@ -930,7 +1176,11 @@ class _ScheduleRunner:
                             "admission_source": "schedule",
                             "schedule_id": sid,
                             "schedule_name": schedule.name,
-                            "scheduled_for": (scheduled_for or t).isoformat(),
+                            # The instant in UTC (#850): this provenance forms
+                            # the occurrence claim the run stores compare as
+                            # text, and a wall-clock rendering would change
+                            # identity with the schedule's timezone.
+                            "scheduled_for": canonical_occurrence_instant(scheduled_for or t),
                             "catchup": catchup,
                             "request_id": effective_request_id,
                         },

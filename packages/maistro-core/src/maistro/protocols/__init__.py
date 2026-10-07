@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+# The archive boundary (#133, ADR-082226-f436) lives in its own module beside
+# the two implementations that share it, and is re-exported here so the DI
+# surface stays one place. The import is boto3-free by construction: the S3
+# backend is reached only through `maistro.archive`'s lazy attribute, so
+# `maistro.protocols` imports cleanly with the `[s3]` extra absent.
+from maistro.archive.protocols import ArchiveStore
 from maistro.protocols.agents import AgentStore
 from maistro.protocols.auth import AuthError, AuthProvider, CredentialNotApplicable
 from maistro.protocols.classifier import IntentClassifier
@@ -14,6 +20,7 @@ from maistro.protocols.memory import (
     DecayableEpisodicStore,
     EpisodicStore,
     LearningExtractor,
+    LearningLifecycleStore,
     LearningStore,
     OutcomeStore,
     RCAExtractor,
@@ -34,6 +41,7 @@ from maistro.protocols.tracing import Span, Trace, TracingBackend
 
 __all__ = [
     "AgentStore",
+    "ArchiveStore",
     "AuditLog",
     "AuthError",
     "AuthProvider",
@@ -46,6 +54,7 @@ __all__ = [
     "IntentClassifier",
     "LLMClient",
     "LearningExtractor",
+    "LearningLifecycleStore",
     "LearningStore",
     "ModelRouter",
     "Notification",

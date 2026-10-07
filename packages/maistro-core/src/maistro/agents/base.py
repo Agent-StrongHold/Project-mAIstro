@@ -11,11 +11,13 @@ from collections import deque
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from maistro.agents.tool_dispatch import ToolCallExecutor, dispatch_tool_call
 from maistro.observability.correlation import current_execution_context
 from maistro.security.normalize import to_scan_string
 from maistro.security.sentinel.pii_filter import scan_and_redact
 from maistro.security.warden.detector import WardenContext, prior_message_context
 from maistro.types.agent import AgentResponse
+from maistro.types.tool import ToolCall
 
 # Bounded tool-result analysis context. Tool output is untrusted; a payload
 # split across individually-benign results is only visible when the later
@@ -390,8 +392,14 @@ class Agent:
             auth, trace, status_callback, classified_task_type
         )
 
-        result = await self._run_strategy(
-            context_messages, model, tool_defs, strategy_kwargs, trace
+        result = await self._run_strategy_for_turn(
+            context_messages,
+            model,
+            tool_defs,
+            strategy_kwargs,
+            trace,
+            turn_id,
+            delegation_depth=_delegation_depth,
         )
         if result is None:
             # `_run_strategy` already caught and logged; mark it failed so this
@@ -442,9 +450,6 @@ class Agent:
 
         await self._extract_learnings(result, user_text, user_id, org_id, team_id, trace)
 
-        if self._learning_promoter and injected_learning_ids:
-            await self._learning_promoter.check_and_promote(org_id=org_id)
-
         await self._persist_run(
             result,
             auth=auth,
@@ -457,6 +462,14 @@ class Agent:
             injected_learning_ids=injected_learning_ids,
             turn_id=turn_id,
         )
+
+        # Promote only after the current Run's outcome is recorded:
+        # `_persist_run` -> `mark_outcome` updates the confidence counters this
+        # turn just paid for, and checking first would promote on the previous
+        # turn's evidence (e.g. promoting 3/4=0.75 at a 0.7 floor even though
+        # this turn's failure should have dropped it to 3/5).
+        if self._learning_promoter and injected_learning_ids:
+            await self._learning_promoter.check_and_promote(org_id=org_id)
 
         self._finalize_trace_if_present(
             trace, result, model, session_history_count, injected_learning_ids
@@ -560,6 +573,15 @@ class Agent:
                 success=not tool_had_failures,
                 org_id=org_id,
             )
+            if tool_had_failures and self._learning_promoter:
+                # Failure knowledge capture (#121, ADR-100126-8c2d): this turn's
+                # recorded failure is the evidence that just moved. When a
+                # learning's recorded failures now dominate its successes,
+                # the promoter reclassifies it as retained ANTI_PATTERN
+                # knowledge, so later Runs stop re-buying the failure.
+                # Reclassification is not validation: the repertoire still
+                # requires the Gauntlet like any other learning.
+                await self._learning_promoter.capture_anti_patterns(org_id)
 
     async def _prepare_user_input(
         self,
@@ -690,6 +712,35 @@ class Agent:
             )
         return context_messages, injected_learning_ids
 
+    async def _run_strategy_for_turn(
+        self,
+        context_messages: list[dict[str, Any]],
+        model: str,
+        tool_defs: list[dict[str, Any]] | None,
+        strategy_kwargs: dict[str, Any],
+        trace: Any,
+        turn_id: str | None,
+        *,
+        delegation_depth: int = 0,
+    ) -> Any:
+        """Set canonical LLM correlation for one turn, then clear it."""
+        set_turn = getattr(self._llm, "set_turn", None)
+        clear_turn = getattr(self._llm, "clear_turn", None)
+        if callable(set_turn):
+            set_turn(turn_id, agent_name=self.identity.name)
+        try:
+            return await self._run_strategy(
+                context_messages,
+                model,
+                tool_defs,
+                strategy_kwargs,
+                trace,
+                delegation_depth=delegation_depth,
+            )
+        finally:
+            if callable(clear_turn):
+                clear_turn()
+
     async def _run_strategy(
         self,
         context_messages: list[dict[str, Any]],
@@ -697,10 +748,14 @@ class Agent:
         tool_defs: list[dict[str, Any]] | None,
         strategy_kwargs: dict[str, Any],
         trace: Any,
+        *,
+        delegation_depth: int = 0,
     ) -> Any:
         """Run the reasoning strategy. Returns the result, or ``None`` on a
         handled error (caller returns a generic error response)."""
-        governed_executor = self._governed_tool_executor(tool_defs, strategy_kwargs)
+        governed_executor = self._governed_tool_executor(
+            tool_defs, strategy_kwargs, delegation_depth=delegation_depth
+        )
         try:
             if not trace:
                 return await self._strategy.reason(
@@ -757,7 +812,9 @@ class Agent:
         self,
         tool_defs: list[dict[str, Any]] | None,
         strategy_kwargs: dict[str, Any],
-    ) -> Any:
+        *,
+        delegation_depth: int = 0,
+    ) -> ToolCallExecutor:
         """Return the only executor a strategy can use at the effect boundary."""
         auth = strategy_kwargs.get("auth")
         # Analysis context of prior tool results, bounded by turns regardless
@@ -765,15 +822,27 @@ class Agent:
         # what flows back into model context, so that is what aggregates.
         tool_context: deque[WardenContext] = deque(maxlen=_TOOL_CONTEXT_MAX_TURNS)
 
-        async def execute(tool_name: str, tool_args: dict[str, Any]) -> str:
-            raw_result = await self._authorize_and_invoke(tool_name, tool_args, auth, tool_defs)
+        async def execute(
+            call: ToolCall, _agent_name: str, _delegation_depth: int, tool_round: int
+        ) -> str:
+            # Only the Agent owns its name and delegation depth. Hook callers
+            # cannot replace them with model arguments or strategy metadata.
+            raw_result = await self._authorize_and_invoke(
+                call.name,
+                call.arguments,
+                auth,
+                tool_defs,
+                tool_call_id=call.id,
+                delegation_depth=delegation_depth,
+                tool_round=tool_round,
+            )
             sanitized = await self._sanitize_tool_result(
-                tool_name, to_scan_string(raw_result), auth, context=list(tool_context)
+                call.name, to_scan_string(raw_result), auth, context=list(tool_context)
             )
             tool_context.append(WardenContext(sanitized))
             return sanitized
 
-        return execute
+        return ToolCallExecutor(execute)
 
     async def _authorize_and_invoke(
         self,
@@ -781,7 +850,17 @@ class Agent:
         tool_args: dict[str, Any],
         auth: Any,
         tool_defs: list[dict[str, Any]] | None,
+        *,
+        tool_call_id: str = "",
+        delegation_depth: int = 0,
+        tool_round: int = 0,
     ) -> Any:
+        # Declarations only narrow authority: a host Sentinel grant cannot
+        # expose an undeclared tool. Check the Agent-owned identity here,
+        # not the mutable tool schemas handed to strategy implementations.
+        # Model-selected and strategy-authored calls share this boundary.
+        if tool_name not in self.identity.tools:
+            return f"Error: Permission denied for undeclared tool '{tool_name}'"
         if self._sentinel is None or auth is None:
             _logging.getLogger("maistro.agent").warning(
                 "Denied tool '%s' for agent '%s': no %s to authorize it",
@@ -798,7 +877,13 @@ class Agent:
         if verdict.repaired_data:
             tool_args.clear()
             tool_args.update(verdict.repaired_data)
-        return await self._invoke_raw_tool(tool_name, tool_args)
+        return await self._invoke_raw_tool(
+            tool_name,
+            tool_args,
+            tool_call_id=tool_call_id,
+            delegation_depth=delegation_depth,
+            tool_round=tool_round,
+        )
 
     @staticmethod
     def _tool_schema(tool_name: str, tool_defs: list[dict[str, Any]] | None) -> dict[str, Any]:
@@ -809,10 +894,24 @@ class Agent:
                 return parameters if isinstance(parameters, dict) else {}
         return {}
 
-    async def _invoke_raw_tool(self, tool_name: str, tool_args: dict[str, Any]) -> Any:
+    async def _invoke_raw_tool(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        *,
+        tool_call_id: str = "",
+        delegation_depth: int = 0,
+        tool_round: int = 0,
+    ) -> Any:
         if not (self._tool_executor and callable(self._tool_executor)):
             return f"Tool '{tool_name}' not available"
-        return await self._tool_executor(tool_name, tool_args)
+        return await dispatch_tool_call(
+            self._tool_executor,
+            ToolCall(id=tool_call_id, name=tool_name, arguments=tool_args),
+            agent_name=self.identity.name,
+            delegation_depth=delegation_depth,
+            tool_round=tool_round,
+        )
 
     async def _sanitize_tool_result(
         self,

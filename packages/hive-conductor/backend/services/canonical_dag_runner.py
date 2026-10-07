@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from maistro.graph.conditions import CONDITION_OPERATORS
@@ -22,10 +22,12 @@ from maistro.graph.durable_runs import (
     resume_due_graph_runs,
     run_durable_graph,
 )
+from maistro.graph.policies import resolve_max_cycles, resolve_node_timeout_s
 from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, AgentRole
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
 from services.dag_agents import _container, get_run_store
 from services.dag_execution_scope import DagExecutionScope, DagWorkspaceSelectionError
+from services.governed_model import dag_node_runtime
 from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
 from services.node_metrics_store import record_run_completion
 from services.scan_continuations import scan_continuation
@@ -238,29 +240,71 @@ def _edge_metadata(raw: Mapping[str, Any]) -> dict[str, Any]:
     return metadata
 
 
+def _cycle_budget_metadata(dag_data: Mapping[str, Any]) -> dict[str, Any]:
+    """Translate the declared DAG cycle budget into canonical graph metadata.
+
+    ``DAGFile.max_cycles`` used to be accepted everywhere and read nowhere; it
+    now names the canonical frontier-wave budget the durable executor
+    enforces (``maistro.graph.policies``) — the incumbent ``GraphConfig``
+    cycle semantics. Both the declared and the effective value are recorded so
+    a clamped out-of-policy value is visible, not silent. A DAG that declares
+    nothing gets no budget key — the platform floors alone apply, exactly as
+    for any other canonical Graph.
+    """
+    declared = dag_data.get("max_cycles")
+    if declared is None:
+        return {}
+    return {
+        "max_cycles_declared": declared,
+        "max_cycles_effective": resolve_max_cycles(declared),
+    }
+
+
+def _node_budget(raw: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Lift a legacy node's declared timeout into canonical policy + provenance.
+
+    ``config.timeout_s`` becomes ``Node.policies["timeout_s"]`` — the field the
+    durable walker resolves into the Attempt's canonical ExecutionRuntime
+    deadline. The declared value stays in metadata so a clamp is explainable;
+    nodes that declare nothing keep the incumbent behavior untouched.
+    """
+    config = raw.get("config") if isinstance(raw.get("config"), Mapping) else {}
+    declared = config.get("timeout_s") if config else None
+    if declared is None:
+        return {}, {}
+    return (
+        {"timeout_s": resolve_node_timeout_s(declared)},
+        {"legacy_timeout_s_declared": declared},
+    )
+
+
 def graph_from_legacy_dag(
     dag_data: Mapping[str, Any], *, workspace_id: str, project_id: str
 ) -> Graph:
     """Translate one shipped legacy DAG into an immutable canonical Graph."""
     nodes, raw_edges, entry = _execution_shape(dag_data)
 
-    graph_nodes = [
-        Node(
-            node_id=str(raw["id"]),
-            node_type="hive.legacy_node",
-            name=str(raw.get("name") or raw["id"]),
-            metadata={
-                "role": str(raw.get("role") or "worker"),
-                "legacy_node": dict(raw),
-                **(
-                    {"compat_synthetic": str(raw["compat_synthetic"])}
-                    if raw.get("compat_synthetic")
-                    else {}
-                ),
-            },
+    graph_nodes = []
+    for raw in nodes:
+        policies, budget_metadata = _node_budget(raw)
+        graph_nodes.append(
+            Node(
+                node_id=str(raw["id"]),
+                node_type="hive.legacy_node",
+                name=str(raw.get("name") or raw["id"]),
+                policies=policies,
+                metadata={
+                    "role": str(raw.get("role") or "worker"),
+                    "legacy_node": dict(raw),
+                    **budget_metadata,
+                    **(
+                        {"compat_synthetic": str(raw["compat_synthetic"])}
+                        if raw.get("compat_synthetic")
+                        else {}
+                    ),
+                },
+            )
         )
-        for raw in nodes
-    ]
     graph_edges = [
         Edge(
             edge_id=str(raw["id"]),
@@ -286,6 +330,7 @@ def graph_from_legacy_dag(
             "source": "hive_legacy_dag",
             "legacy_dag_id": str(dag_data.get("id") or ""),
             "legacy_run_scout": bool(dag_data.get("run_scout")),
+            **_cycle_budget_metadata(dag_data),
         },
     }
     legacy_id = str(dag_data.get("id") or "").strip()
@@ -366,6 +411,8 @@ def _resolver(
     on_response: OnResponseHook | None,
     llm_builder: Callable[[OnResponseHook | None], Any] | None,
     effect_context: Any = None,
+    governed_runtime: Any = None,
+    progress: Any = None,
 ):
     def resolve(node_id: str, _graph: Graph) -> LegacyConductorNode:
         try:
@@ -380,6 +427,8 @@ def _resolver(
             on_response=on_response,
             llm_builder=llm_builder,
             effect_context=effect_context,
+            governed_runtime=governed_runtime,
+            progress=progress,
         )
 
     return resolve
@@ -401,6 +450,7 @@ def _recovery_resolver(run: Run):
     if execution_mode not in {"interactive", "autonomous"}:
         raise ValueError(f"Run {run.run_id!r} has invalid legacy execution_mode {execution_mode!r}")
     legacy_dag_id = str(graph.metadata.get("legacy_dag_id") or graph.graph_id)
+    container = _container()
     return _resolver(
         raw_by_id,
         task_desc=graph.description or graph.name,
@@ -415,9 +465,8 @@ def _recovery_resolver(run: Run):
         execution_mode=execution_mode,
         on_response=None,
         llm_builder=None,
-        effect_context=(
-            getattr(_container(), "capability_effects", None) if _container() else None
-        ),
+        effect_context=(getattr(container, "capability_effects", None) if container else None),
+        governed_runtime=dag_node_runtime(container),
     )
 
 
@@ -503,6 +552,15 @@ def _project(record: Any, raw_by_id: Mapping[str, dict[str, Any]]) -> dict[str, 
         "workspace_id": record.run.workspace_id,
         "project_id": record.run.project_id,
         "cycles": record.graph_state.cycle,
+        # The cycle budget the Run was admitted under, when the DAG declared
+        # one. Together with `cycles` and any budget error this explains a
+        # stop without re-deriving the policy (#1184).
+        **(
+            {"max_cycles_effective": provenance["max_cycles_effective"]}
+            if "max_cycles_effective"
+            in (provenance := getattr(record.run, "provenance", None) or {})
+            else {}
+        ),
         "node_results": node_results,
         "annotations": dict(record.graph_state.blackboard_snapshot.get("node_annotations") or {}),
         **({"error": str(error)} if error else {}),
@@ -516,12 +574,36 @@ async def execute_dag(
     user_credentials: dict[str, str] | None = None,
     execution_mode: str = "autonomous",
     on_response: OnResponseHook | None = None,
+    on_event: Callable[[dict[str, Any]], Any] | None = None,
     workspace_id: str | None = None,
     project_id: str | None = None,
     llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
     scope: DagExecutionScope | None = None,
+    on_admitted: Callable[[str], Awaitable[Any]] | None = None,
 ) -> dict[str, Any]:
-    """Run a shipped Hive DAG as one canonical durable Graph Run."""
+    """Run a shipped Hive DAG as one canonical durable Graph Run.
+
+    ``on_event`` (#1183) is an optional live per-node progress sink: it is
+    awaited with one event dict per node transition (``node_started`` /
+    ``node_completed`` / ``node_failed``) carrying the executing NodeRun's
+    canonical identity (``run_id``/``node_run_id``/``attempt_id``). It is a
+    presentation seam only -- it can neither change traversal nor outcomes,
+    and a raising sink is suppressed by the node adapter. Durable recovery
+    never attaches one: there is no live stream to serve.
+
+    ``on_admitted`` (#1332) is the admission seam for producers that opened a
+    projection row under their own execution id before calling this: it is
+    awaited exactly once with the admitted canonical Run id, after
+    ``create_run`` and BEFORE ``run_durable_graph`` starts any physical work,
+    so the producer can persist the projection -> canonical Run correlation
+    while the execution is still cancellable rather than after it settles.
+    Like ``on_event`` it is a presentation seam: a raising sink is suppressed
+    and logged, because the canonical Run is already admitted at that point
+    and aborting execution over a projection write would strand it QUEUED for
+    recovery while the caller is told the DAG failed. No canonical store (no
+    admission) means the sink never fires and the projection row keeps its
+    honest empty correlation.
+    """
     if scope is None:
         # Keep the user parameter only as a consistency check for old callers;
         # it is never an authorization source.
@@ -543,11 +625,15 @@ async def execute_dag(
     execution_nodes, _, _ = _execution_shape(dag_data)
     raw_by_id = {str(raw["id"]): raw for raw in execution_nodes}
     task_desc = str(dag_data.get("description") or dag_data.get("name") or "")
+    budget = _cycle_budget_metadata(dag_data)
     provenance = {
         "admission_source": "hive_legacy_dag",
         "legacy_dag_id": str(dag_data.get("id") or ""),
         "executor": "durable_graph",
         "execution_mode": execution_mode,
+        # Effective budgets ride the Run provenance so "why did the work
+        # stop" is answerable from the Run alone (#1184).
+        **budget,
     }
 
     admitted_run_id = None
@@ -559,11 +645,22 @@ async def execute_dag(
             provenance=provenance,
         )
         admitted_run_id = admitted.run_id
+        if on_admitted is not None:
+            try:
+                await on_admitted(admitted_run_id)
+            except Exception:
+                logger.warning(
+                    "dag_admission_sink_failed run_id=%s dag_id=%s",
+                    admitted_run_id,
+                    dag_data.get("id", ""),
+                    exc_info=True,
+                )
 
-    record = await run_durable_graph(
-        graph,
-        store=get_run_store(),
-        node_resolver=_resolver(
+    def _build_resolver() -> Any:
+        # One Container read per execution: the effect authority and the
+        # governed model runtime (#718) come from the same live composition.
+        container = _container()
+        return _resolver(
             raw_by_id,
             task_desc=task_desc,
             node_env=_node_env(
@@ -574,10 +671,15 @@ async def execute_dag(
             execution_mode=execution_mode,
             on_response=on_response,
             llm_builder=llm_builder,
-            effect_context=(
-                getattr(_container(), "capability_effects", None) if _container() else None
-            ),
-        ),
+            progress=on_event,
+            effect_context=(getattr(container, "capability_effects", None) if container else None),
+            governed_runtime=dag_node_runtime(container),
+        )
+
+    record = await run_durable_graph(
+        graph,
+        store=get_run_store(),
+        node_resolver=_build_resolver(),
         actor_principal_id=user_id or None,
         run_id=admitted_run_id,
         run_store=canonical_run_store,

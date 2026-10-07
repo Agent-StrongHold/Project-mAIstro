@@ -22,10 +22,12 @@ import aiosqlite
 import pytest
 
 from maistro.graph.definitions import GraphTemplate, Node
+from maistro.runs.sources import canonical_occurrence_instant
 from maistro.runs.store import RunStore
 from maistro.runs.wiring import wire_execution_spine
 from maistro.scheduling.admission import ScheduleAdmission, ScheduleRunAdmitter
-from maistro.scheduling.model import Schedule
+from maistro.scheduling.engine import FireDecision
+from maistro.scheduling.model import OverlapPolicy, Schedule
 from maistro.scheduling.pg_store import PgScheduleStore
 from maistro.scheduling.store import InMemoryScheduleStore, ScheduleStore, SqliteScheduleStore
 
@@ -46,6 +48,7 @@ class Backend:
     runs: RunStore
     schedules: ScheduleStore
     project_id: str
+    templates: Any
 
 
 @pytest.fixture(params=["memory", "sqlite", "postgres"])
@@ -97,7 +100,11 @@ async def backend(
             )
         )
         yield Backend(
-            ScheduleRunAdmitter(runs, templates, schedules), runs, schedules, project.project_id
+            ScheduleRunAdmitter(runs, templates, schedules),
+            runs,
+            schedules,
+            project.project_id,
+            templates,
         )
     finally:
         for c in conns:
@@ -151,6 +158,7 @@ async def test_enable_disable_and_max_runs_leave_identical_rows(backend: Backend
             name="hourly",
             cron="0 * * * *",
             graph_template_id=TEMPLATE_ID,
+            actor_principal_id="test-actor-principal",
             max_runs=2,
             created_at=NOON - timedelta(days=30),
             last_fired_at=NOON - timedelta(hours=1),
@@ -220,6 +228,7 @@ async def test_a_not_yet_due_schedule_records_its_cursor_and_leaves_due(
             name="hourly",
             cron="0 * * * *",
             graph_template_id=TEMPLATE_ID,
+            actor_principal_id="test-actor-principal",
             created_at=NOON + timedelta(seconds=1),
         )
     )
@@ -239,3 +248,87 @@ async def test_a_not_yet_due_schedule_records_its_cursor_and_leaves_due(
     assert [s.schedule_id for s in await backend.schedules.due(now=NOON + timedelta(hours=1))] == [
         SCHEDULE_ID
     ]
+
+
+async def test_a_timezone_edit_cannot_re_eligibil_an_already_claimed_instant(
+    backend: Backend,
+) -> None:
+    """The occurrence claim is the instant, not the wall clock (#850).
+
+    The claim every backend compares is the `scheduled_for` text, and the cron
+    walker renders moments in the schedule's timezone — so editing the timezone
+    re-rendered an already-claimed instant as different text, the lookup
+    missed, and the same firing was admitted a second time. A crashed winner's
+    claim must hold across the edit on every backend, and the canonical instant
+    must be what lands in each store's claim index.
+    """
+    schedule = await backend.schedules.put(
+        Schedule(
+            schedule_id=SCHEDULE_ID,
+            workspace_id=WORKSPACE,
+            project_id=backend.project_id,
+            name="hourly",
+            cron="0 * * * *",
+            graph_template_id=TEMPLATE_ID,
+            actor_principal_id="test-actor-principal",
+            overlap_policy=OverlapPolicy.ALLOW,
+            catchup_window_seconds=6 * 3600.0,
+            created_at=NOON - timedelta(days=30),
+            last_fired_at=NOON - timedelta(hours=1),
+        )
+    )
+    # Ticker A claims NOON and dies before `record_fire` — the state a crash
+    # between creating the Run and advancing the cursor leaves.
+    template = await backend.templates.get(TEMPLATE_ID)
+    assert template is not None
+    winner = await backend.admitter._admit_one(schedule, template, FireDecision(scheduled_for=NOON))
+
+    # The operator edits the timezone: the due cursor is cleared (the
+    # recurrence changed) while the enumeration cursor stays, so the next tick
+    # re-enumerates the owed occurrence — rendered in the new zone.
+    edited = await backend.schedules.put(schedule.model_copy(update={"timezone": "Europe/Berlin"}))
+    assert edited.next_due_at is None
+
+    [admission] = await _tick(backend, NOON + timedelta(hours=2))
+
+    assert NOON in admission.already_fired, "the claimed instant stayed claimed"
+    assert len(admission.run_ids) == 2, "the newer occurrences still fired"
+    assert admission.failures == ()
+    assert await _occurrence_run_ids(backend, NOON) == [winner]
+    assert await _row(backend) == {
+        "enabled": True,
+        "runs_so_far": 2,
+        "last_run_for": canonical_occurrence_instant(NOON + timedelta(hours=2)),
+        "last_fired_at": NOON + timedelta(hours=2),
+        "next_due_at": NOON + timedelta(hours=3),
+    }
+
+
+async def test_future_manual_markers_are_selected_without_changing_recurrence(
+    backend: Backend,
+) -> None:
+    future = NOON + timedelta(days=365)
+    schedule = await backend.schedules.put(
+        Schedule(
+            schedule_id=SCHEDULE_ID,
+            workspace_id=WORKSPACE,
+            project_id=backend.project_id,
+            name="pending manual",
+            cron="0 * * * *",
+            graph_template_id=TEMPLATE_ID,
+            actor_principal_id="test-actor-principal",
+            next_due_at=future,
+        )
+    )
+    assert await backend.schedules.due(now=NOON) == []
+    reserved = await backend.schedules.reserve_fire(SCHEDULE_ID, fire_id="pending")
+    assert reserved is not None and reserved.next_due_at == future
+    assert [row.schedule_id for row in await backend.schedules.due(now=NOON)] == [SCHEDULE_ID]
+    # Selection cannot itself spend/release a reservation or rewrite the cursor.
+    assert await backend.schedules.get(SCHEDULE_ID) == reserved
+    await backend.schedules.put(schedule.model_copy(update={"enabled": False}))
+    assert await backend.schedules.due(now=NOON) == []
+    await backend.schedules.put(schedule)
+    await backend.schedules.settle_pending_fire(SCHEDULE_ID, "pending", run_id=None)
+    assert await backend.schedules.due(now=NOON) == []
+    assert (await backend.schedules.get(SCHEDULE_ID)).next_due_at == future

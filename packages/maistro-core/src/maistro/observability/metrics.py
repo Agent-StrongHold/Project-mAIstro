@@ -566,6 +566,11 @@ maistro_security_block_total = registry.counter(
     "maistro_security_block_total",
     "Requests blocked at a security gate (ADR-037; labels: gate, reason)",
 )
+maistro_security_advisory_degraded_total = registry.counter(
+    "maistro_security_advisory_degraded_total",
+    "Advisory security layer unavailable, gate proceeded under its documented "
+    "degraded policy (#1191; labels: gate) — an availability alarm, not a block",
+)
 maistro_circuit_state = registry.gauge(
     "maistro_circuit_state",
     "Circuit state per dependency (ADR-037; 0=closed, 1=half-open, 2=open)",
@@ -602,6 +607,6 @@ retention_purged_total = registry.counter(
 )
 retention_backlog_remaining = registry.gauge(
     "maistro_retention_backlog_remaining",
-    "1 if the last completed retention sweep hit its batch limit before the scope "
-    "drained, else 0; by authorization mode (#1175)",
+    "Retention scopes whose last completed sweep hit its batch limit before the "
+    "scope drained; by authorization mode (#1175)",
 )
