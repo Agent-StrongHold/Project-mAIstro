@@ -2115,6 +2115,12 @@ or placeholder-only section.
   amendment recording the cursor's ownership, lease, fencing and gap
   semantics.
 
+- **Canvas retry-budget recovery regression coverage (#1550).** Exercise
+  repeated simulated pre-stage worker losses through the real executor,
+  canonical adapter and runner, including claim refusal, fenced reaper
+  terminalization and a fresh-job dispatch control. The existing retry and
+  lease-ownership behavior is unchanged.
+
 ## [1.0.0] - TBD
 
 First tagged release. Prior to this, the repository had no tags, no release
