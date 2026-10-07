@@ -34,7 +34,9 @@ from maistro.extensions.compat import (
     parse_contract_version,
     parse_feature_status,
 )
+from maistro.extensions.context import ExtensionCancellation, ExtensionConfigView, ExtensionContext
 from maistro.extensions.effective_authority import EffectiveAuthority
+from maistro.extensions.host import ExtensionHost
 from maistro.extensions.resolution import LockState
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
@@ -308,6 +310,21 @@ _VULTURE_WHITELIST = (
     PromotionContract.promote,
     PromotionLedger.attach_effect,
     PromotionLedger.mark_reversed,
+    # Canonical public extension contract (M9-A2, #950). The context/lifecycle
+    # SDK ships as the extension front door: its callers are external
+    # extensions and the conformance suites that pin the contract, both
+    # outside this `packages/*/src` scan — the same "contract ships first by
+    # design" posture as CampaignSelector and the learning lifecycle above.
+    # The runtime wiring that drives extensions from graph execution follows
+    # in later M9 work (#950 scope is the contract, not its graph integration).
+    ExtensionConfigView.as_dict,
+    ExtensionCancellation.from_predicate,
+    ExtensionCancellation.wait,
+    ExtensionContext.service,
+    ExtensionContext.invoke_effect,
+    ExtensionContext.report_progress,
+    ExtensionHost.activation_context,
+    ExtensionHost.invocation_context,
     # Governed extension registry persistence (M9-B1, #952). The write side of
     # the contract ships first by design: the inspect→authorize→install flow
     # that calls `register_publisher`/`record_install` is #953 and the
