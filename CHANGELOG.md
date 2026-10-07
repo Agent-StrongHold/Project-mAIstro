@@ -1132,6 +1132,13 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Schedules and MCP work from the keyboard alone (#370, partial).** The
+  Schedules and MCP view tabs are now ARIA tabs (arrow keys, Home and End); a
+  schedule's enable toggle is a labelled switch, so a keyboard user can enable
+  or disable a schedule; cron presets are toggle buttons; and an MCP server
+  expands through a disclosure button, with its remove button a separate
+  control. For pointer users, an MCP server now expands or collapses only
+  from its header row, not from its details area or the card's padding.
 - **The Agent's dashboard-widget edit no longer overwrites a concurrent UI save (#1048).**
   `create_dashboard_widget` now saves against the revision it read; on a conflict it
   re-reads and re-applies the insertion once (via the pure
