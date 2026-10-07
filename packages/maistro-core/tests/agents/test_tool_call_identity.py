@@ -23,7 +23,7 @@ from maistro.testing.faux_provider import FauxProvider, FauxResponse, ToolCallDe
 from maistro.types.agent import AgentIdentity
 from maistro.types.tool import ToolCall
 
-_AUTH = AuthContext(user_id="operator", roles=frozenset({"operator"}))
+_CALLER = AuthContext(user_id="operator", roles=frozenset({"operator"}))
 
 
 async def _no_sleep(_seconds: float) -> None:
@@ -108,7 +108,7 @@ async def test_real_loops_preserve_provider_id_agent_depth_and_response_round(
 
     response = await agent.handle(
         [{"role": "user", "content": "Search twice."}],
-        _AUTH,
+        _CALLER,
         _delegation_depth=depth,
     )
 
@@ -124,7 +124,7 @@ async def test_real_loops_preserve_provider_id_agent_depth_and_response_round(
     # identity. It must not pick up a process-local execution counter.
     provider.reset()
     await agent.handle(
-        [{"role": "user", "content": "Search twice."}], _AUTH, _delegation_depth=depth
+        [{"role": "user", "content": "Search twice."}], _CALLER, _delegation_depth=depth
     )
     assert executor.calls[2:] == executor.calls[:2]
 
@@ -136,7 +136,7 @@ async def test_agent_denial_precedes_identity_hook(
     executor = _RecordingExecutor()
     agent, provider = _agent(strategy_name, executor, monkeypatch, grant=False)
 
-    await agent.handle([{"role": "user", "content": "Search twice."}], _AUTH)
+    await agent.handle([{"role": "user", "content": "Search twice."}], _CALLER)
 
     assert executor.calls == []
     assert executor.legacy_calls == []
@@ -161,7 +161,7 @@ async def test_ordinary_two_argument_executors_keep_their_contract(
     executor = AsyncMock(side_effect=execute) if mock_executor else execute
     agent, _ = _agent(strategy_name, executor, monkeypatch)
 
-    response = await agent.handle([{"role": "user", "content": "Search twice."}], _AUTH)
+    response = await agent.handle([{"role": "user", "content": "Search twice."}], _CALLER)
 
     assert response.content.endswith("done")
     assert calls == [("lookup", {"query": "first"}), ("lookup", {"query": "second"})]
@@ -171,7 +171,7 @@ async def test_agent_overrides_supplied_identity_and_depth(monkeypatch: pytest.M
     executor = _RecordingExecutor()
     agent, _ = _agent("react", executor, monkeypatch, name="trusted-agent")
     governed = agent._governed_tool_executor(
-        None, {"auth": _AUTH, "delegation_depth": 99}, delegation_depth=2
+        None, {"auth": _CALLER, "delegation_depth": 99}, delegation_depth=2
     )
     call = ToolCall("provider-id", "lookup", {"agent_name": "forged", "delegation_depth": 99})
 
@@ -196,7 +196,7 @@ async def test_real_delegation_passes_child_name_and_incremented_depth(
         agent_resolver={"child": child},
     )
 
-    result = await parent.handle([{"role": "user", "content": "Search twice."}], _AUTH)
+    result = await parent.handle([{"role": "user", "content": "Search twice."}], _CALLER)
 
     assert result.content == "done"
     assert [(name, depth, round_num) for _, name, depth, round_num in executor.calls] == [
@@ -230,7 +230,7 @@ async def test_authorization_repairs_arguments_without_changing_provider_identit
         ),
         post_call=AsyncMock(return_value="safe result"),
     )
-    governed = agent._governed_tool_executor(None, {"auth": _AUTH}, delegation_depth=1)
+    governed = agent._governed_tool_executor(None, {"auth": _CALLER}, delegation_depth=1)
 
     result = await governed.execute_tool_call(
         ToolCall("provider-id", "lookup", {"query": 1}), tool_round=2
