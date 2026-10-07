@@ -587,3 +587,151 @@ class TestFitnessScoringIsContained:
         decision = loop._fitness_decision(1, tmp_path, [], evaluator_evidence=([], None))
 
         assert decision[3] is True  # tests_passed: the host run answered
+
+
+class TestBaselineMeasurementsAreContained:
+    """The baseline half of the fitness containment (#614).
+
+    `_baseline_coverage` executes the baseline's suite under coverage and
+    `_baseline_test_inventory` imports the baseline tree's conftest and test
+    modules — and from the second cycle on the baseline is the previously
+    PROMOTED candidate, so both run candidate-authored code. Under container
+    isolation they must cross a sandbox seeded from the baseline directory
+    (the same hardening the candidate evaluation gets), and a sandbox that
+    cannot open must refuse, never fall back to the host. Local isolation
+    measures on the host, unchanged.
+    """
+
+    @pytest.fixture
+    def contained_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> type[_FakeContainedSandbox]:
+        module = pytest.importorskip("maistro_bootstrap.builders.container_sandbox")
+        monkeypatch.setattr(module, "ContainerBuilderSandbox", _FakeContainedSandbox)
+        _FakeContainedSandbox.instances = []
+        return _FakeContainedSandbox
+
+    @pytest.fixture
+    def no_host_subprocess(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The two modules the baseline measurements shell out through are the
+        escape this class exists to prevent: under container isolation their
+        subprocesses must run inside the sandbox, never here."""
+
+        def _refuse(*_a: Any, **_kw: Any) -> Any:
+            raise AssertionError("a baseline measurement attempted to run on the host")
+
+        for mod in ("maistro_evolve.coverage_gate", "maistro_rsi.test_inventory"):
+            baseline_module = importlib.import_module(mod)
+            monkeypatch.setattr(baseline_module.subprocess, "run", _refuse)
+
+    def _baseline_loop(self, tmp_path: Path, **overrides: Any) -> LocalRsiLoop:
+        isolation = overrides.pop("isolation", "container")
+        baseline = tmp_path / "baseline"
+        baseline.mkdir(exist_ok=True)
+        loop = _loop(_config(tmp_path, isolation=isolation, use_fitness=True, **overrides))
+        loop._baseline = baseline  # type: ignore[attr-defined]
+        loop._baseline_cov = None  # type: ignore[attr-defined]
+        loop._baseline_missing = {}  # type: ignore[attr-defined]
+        loop._baseline_test_inventory_cache = None  # type: ignore[attr-defined]
+        return loop
+
+    @pytest.mark.ac("SPEC-082926-a6ab/AC-1")
+    def test_baseline_coverage_runs_in_a_sandbox_seeded_from_the_baseline(
+        self,
+        tmp_path: Path,
+        contained_sandbox: type[_FakeContainedSandbox],
+        no_host_subprocess: None,
+    ) -> None:
+        """The instrumented run crosses the boundary: the sandbox is seeded
+        from the BASELINE directory (not the candidate's, not the host cwd)
+        and the argv names the image's interpreter, not the host's."""
+        loop = self._baseline_loop(tmp_path)
+
+        loop._baseline_coverage()  # coverage is unavailable in a bare image: (None, {})
+
+        assert len(contained_sandbox.instances) == 1
+        sandbox = contained_sandbox.instances[0]
+        assert sandbox.repo_root == tmp_path / "baseline"
+        assert sandbox.stream_argvs, "coverage must cross as parsed streams"
+        run_argv = sandbox.stream_argvs[0]
+        assert run_argv[0] == "python", "the image's interpreter, never sys.executable"
+        assert run_argv[1:4] == ["-m", "coverage", "run"]
+        assert "-m" in run_argv and "pytest" in run_argv
+        assert sandbox.exited, "the measurement sandbox must be torn down"
+
+    @pytest.mark.ac("SPEC-082926-a6ab/AC-1")
+    def test_baseline_inventory_collection_runs_contained_too(
+        self,
+        tmp_path: Path,
+        contained_sandbox: type[_FakeContainedSandbox],
+        no_host_subprocess: None,
+    ) -> None:
+        """Collection executes no tests but IMPORTS the baseline tree's test
+        modules and conftest — candidate-authored code from cycle two on — so
+        it goes through the baseline sandbox like every other signal."""
+        loop = self._baseline_loop(tmp_path)
+
+        result = loop._baseline_test_inventory()
+
+        assert result is not None
+        assert len(contained_sandbox.instances) == 1
+        sandbox = contained_sandbox.instances[0]
+        assert sandbox.repo_root == tmp_path / "baseline"
+        assert sandbox.stream_argvs[0][0] == "python"
+        assert sandbox.stream_argvs[0][1:4] == ["-m", "pytest", "--collect-only"]
+
+    @pytest.mark.ac("SPEC-082926-a6ab/AC-3")
+    def test_a_baseline_sandbox_that_cannot_open_refuses_rather_than_degrades(
+        self,
+        tmp_path: Path,
+        no_host_subprocess: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A missing image or daemon at baseline-measurement time is the same
+        refusal the candidate evaluation raises — never a host fallback that
+        would quietly score the promoted candidate's code on the host."""
+
+        def _broken(repo_root: Any, *, image: str = "") -> Any:
+            raise RuntimeError("docker run failed: no such image")
+
+        import maistro_bootstrap.builders.container_sandbox as sandbox_module
+
+        monkeypatch.setattr(sandbox_module, "ContainerBuilderSandbox", _broken)
+        loop = self._baseline_loop(tmp_path)
+
+        with pytest.raises(ContainmentUnavailable, match="no such image"):
+            loop._baseline_coverage()
+        with pytest.raises(ContainmentUnavailable, match="no such image"):
+            loop._baseline_test_inventory()
+
+    def test_local_isolation_still_measures_the_baseline_on_the_host(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The other half of the routing decision: an operator's own machine
+        measures its own baseline directly, and no sandbox is opened for it."""
+        import sys
+
+        import maistro_bootstrap.builders.container_sandbox as sandbox_module
+
+        def _refuse(*_a: Any, **_kw: Any) -> Any:
+            raise AssertionError("local isolation must not open a baseline sandbox")
+
+        monkeypatch.setattr(sandbox_module, "ContainerBuilderSandbox", _refuse)
+        _FakeContainedSandbox.instances = []  # other tests' fakes are not mine
+        host_runs: list[list[str]] = []
+
+        def _host_run(argv: list[str], **_kw: Any) -> subprocess.CompletedProcess[str]:
+            host_runs.append(list(argv))
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+        for mod in ("maistro_evolve.coverage_gate", "maistro_rsi.test_inventory"):
+            baseline_module = importlib.import_module(mod)
+            monkeypatch.setattr(baseline_module.subprocess, "run", _host_run)
+        loop = self._baseline_loop(tmp_path, isolation="local")
+
+        assert loop._baseline_coverage() is None  # bare tree: no coverage data
+        assert loop._baseline_test_inventory() is not None
+
+        assert host_runs, "local isolation keeps the direct host measurement"
+        assert host_runs[0][0] == sys.executable
+        assert not _FakeContainedSandbox.instances

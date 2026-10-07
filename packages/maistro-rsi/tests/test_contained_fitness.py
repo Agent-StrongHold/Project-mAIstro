@@ -515,6 +515,174 @@ class TestEvaluateCandidateRoutesThroughTheSandbox:
         assert executor.probes == 3  # candidate green check + red + reproduce
 
 
+class TestTheRefusalArcsStayRefusals:
+    """Each fail-closed branch of the contained transport, exercised directly:
+    a sandbox that raises `ContainmentUnavailable` mid-flight must PASS IT
+    THROUGH (it is already the right answer), any other failure must CONVERT
+    to one, and every read/write must refuse workspace escapes (#614)."""
+
+    def test_a_factory_refusal_passes_through_unchanged(self, tmp_path: Path) -> None:
+        def _already_refusal_shaped() -> Any:
+            raise ContainmentUnavailable("refused at the source")
+
+        contained = ContainedEvaluation(
+            tmp_path, image="img", timeout=5, sandbox_factory=_already_refusal_shaped
+        )
+
+        with pytest.raises(ContainmentUnavailable, match="refused at the source"):
+            contained.__enter__()
+
+    def test_a_mid_stream_signal_refusal_passes_through_and_other_errors_convert(
+        self, sandbox_factory: list[_FakeSandbox], tmp_path: Path
+    ) -> None:
+        with ContainedEvaluation(tmp_path, image="img", timeout=5) as contained:
+            sandbox = contained._sandbox
+            assert sandbox is not None
+
+            def _refusal(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
+                raise ContainmentUnavailable("refused mid-stream")
+
+            def _broken(argv: list[str], *, timeout: int) -> tuple[int, str, str]:
+                raise RuntimeError("exec failed")
+
+            sandbox.run_argv_streams = _refusal  # type: ignore[method-assign]
+            with pytest.raises(ContainmentUnavailable, match="refused mid-stream"):
+                contained.run_argv_streams(["python", "-m", "pytest", "-q"])
+
+            sandbox.run_argv_streams = _broken  # type: ignore[method-assign]
+            with pytest.raises(ContainmentUnavailable, match="exec failed"):
+                contained.run_argv_streams(["python", "-m", "pytest", "-q"])
+
+            sandbox.run_argv_streams = _refusal  # type: ignore[method-assign]
+            with pytest.raises(ContainmentUnavailable, match="argument vector"):
+                contained.run_argv_streams([])
+
+    def test_data_transport_failures_refuse_and_stay_data_shaped_when_absent(
+        self, sandbox_factory: list[_FakeSandbox], tmp_path: Path
+    ) -> None:
+        with ContainedEvaluation(tmp_path, image="img", timeout=5) as contained:
+            sandbox = contained._sandbox
+            assert sandbox is not None
+
+            def _unreadable(path: str) -> str:
+                raise RuntimeError("cat failed")
+
+            sandbox.read_file = _unreadable  # type: ignore[method-assign]
+            with pytest.raises(ContainmentUnavailable, match="cat failed"):
+                contained.read_file("report.json")
+
+            def _unwritable(path: str, content: str) -> None:
+                raise RuntimeError("tee failed")
+
+            sandbox.write_file = _unwritable  # type: ignore[method-assign]
+            with pytest.raises(ContainmentUnavailable, match="tee failed"):
+                contained.write_file("pkg/mutant.py", "x = 1")
+
+            with pytest.raises(ContainmentUnavailable, match="escapes"):
+                contained.write_file("../escape.py", "x = 1")
+
+            # The MutationRunner aliases cross the same transport.
+            with pytest.raises(ContainmentUnavailable, match="cat failed"):
+                contained.read_text("report.json")
+            with pytest.raises(ContainmentUnavailable, match="tee failed"):
+                contained.write_text("pkg/mutant.py", "x = 1")
+
+
+class TestTheContainedProbeExecutor:
+    """The fail-first probe's git plumbing and reruns, step by step, through
+    the one sandbox — including the answers a green/absent/failed step each
+    produce (#614)."""
+
+    def _executor(self, tmp_path: Path, fake: _FakeSandbox) -> Any:
+        from maistro_rsi.candidate_fitness import _ContainedProbeExecutor
+
+        contained = ContainedEvaluation(
+            tmp_path, image="img", timeout=5, sandbox_factory=lambda: fake
+        ).__enter__()
+        return _ContainedProbeExecutor(contained), contained
+
+    def test_git_plumbing_reads_and_the_probe_rerun_cross_the_boundary(
+        self, tmp_path: Path
+    ) -> None:
+        fake = _FakeSandbox(tmp_path)
+        fake.responses["rev-parse"] = (0, "  abc123  \n", "")
+        fake.responses["cat-file"] = (1, "", "not in base")
+        fake.files["tests/test_gone.py"] = "def test_x():\n    assert True\n"
+        executor, contained = self._executor(tmp_path, fake)
+
+        assert executor.rev_parse("base") == "abc123"  # stripped, zero exit
+        assert executor.base_has("base", "src/mod.py") is False  # non-zero
+        executor.checkout("base", "src/mod.py")
+        executor.remove("tests/test_gone.py")
+        code, out = executor.probe(["tests/test_mod.py"], timeout=60)
+        assert (code, out) == (0, "")
+        assert executor.read_text("tests/test_gone.py").startswith("def test_x")
+
+        git_steps = [argv for argv in fake.status_argv if argv[0] == "git"]
+        assert [step[1] for step in git_steps] == [
+            "rev-parse",
+            "cat-file",
+            "checkout",
+        ]
+        # `remove` shells `rm`, not git — but it crossed the boundary too.
+        assert ["rm", "-f", "tests/test_gone.py"] in fake.status_argv
+        probe_argv = fake.status_argv[-1]
+        assert probe_argv[:7] == [
+            CONTAINED_PYTHON,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "-rfE",
+        ]
+        assert probe_argv[7:] == ["tests/test_mod.py"]
+        contained.__exit__(None, None, None)
+
+    def test_a_failed_rev_parse_answers_empty_not_an_error(self, tmp_path: Path) -> None:
+        fake = _FakeSandbox(tmp_path)
+        fake.responses["rev-parse"] = (128, "", "unknown revision")
+        executor, contained = self._executor(tmp_path, fake)
+
+        assert executor.rev_parse("missing-ref") == ""
+        contained.__exit__(None, None, None)
+
+    def test_the_test_vector_and_per_file_collection_refuse_or_cross(self, tmp_path: Path) -> None:
+        """`_run` with a contained executor refuses an empty vector (no host
+        fallback), and per-file collection runs the same argv inside the
+        sandbox that the host path would run on the host."""
+        from maistro_rsi.candidate_fitness import _uncollectable_tests
+
+        with pytest.raises(ContainmentUnavailable, match="argument vector"):
+            candidate_fitness._run(
+                "python -m pytest -q", tmp_path, 60, argv=(), execute=lambda a: (0, "")
+            )
+
+        seen: list[list[str]] = []
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_new.py").write_text(
+            "def test_one():\n    pass\n", encoding="utf-8"
+        )
+
+        def execute(argv: list[str]) -> tuple[int, str, str]:
+            seen.append(list(argv))
+            return 5, "", ""  # pytest's "no tests collected"
+
+        reasons = _uncollectable_tests(
+            tmp_path,
+            ["tests/test_new.py"],
+            ["tests"],
+            src_files=[],
+            execute=execute,
+            interpreter=CONTAINED_PYTHON,
+        )
+
+        assert reasons == ["tests/test_new.py: pytest could not collect it (exit 5)"]
+        assert seen == [
+            [CONTAINED_PYTHON, "-m", "pytest", "--collect-only", "-q", "tests/test_new.py"]
+        ]
+
+
 # --------------------------------------------------------------------------
 # Real-backend evidence (docker-gated): the same routing against the actual
 # ContainerBuilderSandbox, so the seam is exercised where the container really

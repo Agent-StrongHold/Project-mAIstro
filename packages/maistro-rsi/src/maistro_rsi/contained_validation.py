@@ -33,7 +33,7 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Callable, Sequence
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 import structlog
 
@@ -198,7 +198,13 @@ class ContainedEvaluation:
             )
         sandbox = self._require_sandbox()
         try:
-            return sandbox.run_argv_status(vector, timeout=timeout or self._timeout)
+            # The sandbox handle is typed Any (the backend is imported lazily,
+            # so maistro-rsi keeps no hard dependency on it); the concrete
+            # contract is ContainerBuilderSandbox.run_argv_status.
+            return cast(
+                "tuple[int, str]",
+                sandbox.run_argv_status(vector, timeout=timeout or self._timeout),
+            )
         except ContainmentUnavailable:
             raise
         except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
@@ -221,7 +227,10 @@ class ContainedEvaluation:
             )
         sandbox = self._require_sandbox()
         try:
-            return sandbox.run_argv_streams(vector, timeout=timeout or self._timeout)
+            return cast(
+                "tuple[int, str, str]",
+                sandbox.run_argv_streams(vector, timeout=timeout or self._timeout),
+            )
         except ContainmentUnavailable:
             raise
         except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
@@ -241,7 +250,7 @@ class ContainedEvaluation:
         if rel.is_absolute() or ".." in rel.parts:
             raise ContainmentUnavailable(f"path {path!r} escapes the sandbox workspace")
         try:
-            return sandbox.read_file(str(rel))
+            return cast("str", sandbox.read_file(str(rel)))
         except FileNotFoundError:
             raise
         except (OSError, RuntimeError, subprocess.SubprocessError) as exc:

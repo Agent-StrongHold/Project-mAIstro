@@ -166,7 +166,9 @@ def _mypy(path: Path, run_tool: ToolRunner = _run_tool) -> tuple[float | None, i
     return 1.0 / (1.0 + errors), errors
 
 
-def _radon(path: Path, run_tool: ToolRunner = _run_tool) -> tuple[float | None, float | None, float, float]:
+def _radon(
+    path: Path, run_tool: ToolRunner = _run_tool
+) -> tuple[float | None, float | None, float, float]:
     cc_out, cc_ok = run_tool(["radon", "cc", "-j", str(path)])
     mi_out, mi_ok = run_tool(["radon", "mi", "-j", str(path)])
     avg_cc = 0.0

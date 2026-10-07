@@ -358,6 +358,27 @@ def test_related_detection_matches_changed_module_imports(tmp_path: Path) -> Non
     )
 
 
+def test_related_detection_tolerates_transport_and_parse_failures() -> None:
+    """A contained read that dies mid-flight (Docker gone, exec timeout) is
+    'no import surface', never a crash (#614) — and unparsable test source
+    falls back to the textual import match instead of raising."""
+
+    def _unreadable(rel: str) -> str:
+        raise RuntimeError("sandbox transport died")
+
+    assert not fail_first._has_related_failure(_unreadable, ["test_mod.py::test_g"], ["helper.py"])
+
+    def _syntax_error(rel: str) -> str:
+        return "from helper import g\n def broken(:\n"
+
+    assert fail_first._has_related_failure(_syntax_error, ["test_mod.py::test_g"], ["helper.py"])
+
+    def _null_bytes(rel: str) -> str:
+        return "import helper\x00"
+
+    assert fail_first._has_related_failure(_null_bytes, ["test_mod.py::test_g"], ["helper.py"])
+
+
 def test_failure_digest_is_stable_and_identity_sensitive() -> None:
     a = failure_digest(["t.py::test_a", "t.py::test_b"])
     b = failure_digest(["t.py::test_b", "t.py::test_a"])

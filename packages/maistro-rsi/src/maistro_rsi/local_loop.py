@@ -33,6 +33,7 @@ native provider built here drops straight into `RsiCycle` later.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -41,6 +42,7 @@ import subprocess
 import time
 import uuid
 from collections import Counter
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,7 +55,9 @@ from maistro_evolve._candidate_env import candidate_env
 from maistro_evolve.improvement import BudgetTier, ImprovementKind
 from maistro_rsi.competitors import Competitor
 from maistro_rsi.contained_validation import (
+    CONTAINED_PYTHON,
     ContainedEvaluation,
+    ContainmentUnavailable,
     run_validation_in_container,
 )
 from maistro_rsi.harvest_boundary import (
@@ -1279,6 +1283,56 @@ class LocalRsiLoop:
             )
             self._elo = EloTournament()
 
+    @contextlib.contextmanager
+    def _contained_baseline(
+        self,
+    ) -> Iterator[tuple[Callable[[list[str]], tuple[int, str, str]] | None, str | None]]:
+        """Where baseline-tree measurements run (#614), yielded as
+        ``(execute, interpreter)`` for the fitness signals that read the
+        BASELINE worktree rather than the candidate's.
+
+        The baseline is not operator-owned code for long: from the second
+        cycle on it is the previously PROMOTED candidate, so its suite and
+        its conftest are candidate-authored. Under container isolation those
+        measurements therefore run inside a sandbox seeded from the baseline
+        directory — the same hardening the candidate evaluation gets — and a
+        sandbox that cannot be established raises `ContainmentUnavailable`,
+        never a host fallback. Local isolation yields ``(None, None)``: the
+        operator's own machine was never the problem. One sandbox per
+        measurement, and the measurement caches make that once per baseline
+        state — the same cost discipline as one sandbox per evaluation.
+        """
+        if self._config.isolation != "container":
+            yield (None, None)
+            return
+        try:
+            from maistro_bootstrap.builders.container_sandbox import (
+                ContainerBuilderSandbox,
+            )
+        except ImportError as exc:  # pragma: no cover - exercised by the import test
+            raise ContainmentUnavailable(
+                f"container isolation needs maistro-bootstrap's container sandbox: {exc}"
+            ) from exc
+        try:
+            with ContainerBuilderSandbox(
+                self._baseline, image=self._config.sandbox_image
+            ) as sandbox:
+                timeout = self._config.test_timeout
+
+                def execute(argv: list[str]) -> tuple[int, str, str]:
+                    # The configured test timeout, not the sandbox default —
+                    # the same contract `ContainedEvaluation` applies to the
+                    # candidate's signals.
+                    return sandbox.run_argv_streams(argv, timeout=timeout)
+
+                yield (execute, CONTAINED_PYTHON)
+        except ContainmentUnavailable:
+            raise
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            raise ContainmentUnavailable(
+                f"could not open the baseline measurement sandbox under container isolation: {exc}"
+            ) from exc
+
     def _baseline_coverage(self) -> float | None:
         if not self._config.use_fitness:
             return None
@@ -1287,27 +1341,41 @@ class LocalRsiLoop:
 
             # One instrumented run yields both the total (the gate) and each
             # file's missing lines (the scout's real targets) — no extra cost.
-            self._baseline_cov, self._baseline_missing = measure_coverage_detailed(
-                self._baseline,
-                source=self._config.coverage_source,
-                pytest_args=self._config.coverage_pytest_args,
-            )
+            # Under container isolation the run executes the baseline's own
+            # suite — candidate-authored code from the previous promotion —
+            # so it crosses the baseline sandbox boundary (#614); refusing
+            # beats a host fallback (see `_contained_baseline`).
+            with self._contained_baseline() as (execute, interpreter):
+                self._baseline_cov, self._baseline_missing = measure_coverage_detailed(
+                    self._baseline,
+                    source=self._config.coverage_source,
+                    pytest_args=self._config.coverage_pytest_args,
+                    interpreter=interpreter,
+                    execute=execute,
+                )
         return self._baseline_cov
 
     def _baseline_test_inventory(self) -> InventoryResult | None:
         """The baseline's protected test inventory (#306), cached per cycle.
 
-        Collection only — no test execution — computed once per baseline state
-        (mirroring ``_baseline_coverage``) and reused by every candidate this
-        cycle scores. None when fitness is off: the inventory gate lives in the
-        Scorecard, which only the fitness path composes.
+        Collection only — no test execution — but collection IMPORTS the
+        baseline tree's test modules and conftest, so under container
+        isolation it still runs inside the baseline sandbox (#614). Computed
+        once per baseline state (mirroring ``_baseline_coverage``) and reused
+        by every candidate this cycle scores. None when fitness is off: the
+        inventory gate lives in the Scorecard, which only the fitness path
+        composes.
         """
         if not self._config.use_fitness:
             return None
         if self._baseline_test_inventory_cache is None:
-            self._baseline_test_inventory_cache = collect_inventory(
-                self._baseline, shlex.split(self._config.coverage_pytest_args)
-            )
+            with self._contained_baseline() as (execute, interpreter):
+                self._baseline_test_inventory_cache = collect_inventory(
+                    self._baseline,
+                    shlex.split(self._config.coverage_pytest_args),
+                    execute=execute,
+                    interpreter=interpreter,
+                )
         return self._baseline_test_inventory_cache
 
     def _uncovered_for(self, target: str) -> list[int]:

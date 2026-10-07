@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -140,3 +141,53 @@ def test_windows_forwards_system_basics_by_name(
     env = ce.candidate_env()
     assert env["SYSTEMROOT"] == "C:\\Windows"
     assert "SECRET_HARNESS_KEY" not in env
+
+
+def test_run_test_selection_execute_seam_skips_the_host_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The containment seam (#614): a caller that supplies ``execute`` — the
+    RSI fitness path binds it to the evaluation sandbox — gets the result
+    back from that channel and never spawns a host child process."""
+    from maistro_evolve.tdd_gate import run_test_selection
+
+    def _refuse(*_a: Any, **_kw: Any) -> Any:
+        raise AssertionError("host subprocess spawned despite execute=")
+
+    monkeypatch.setattr(subprocess, "run", _refuse)
+    seen: list[list[str]] = []
+
+    def _execute(argv: list[str]) -> tuple[int, str]:
+        seen.append(list(argv))
+        return 1, "1 failed"
+
+    rc, output = run_test_selection(Path("."), ["tests/test_x.py"], execute=_execute)
+
+    assert (rc, output) == (1, "1 failed")
+    assert seen == [
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "tests/test_x.py",
+        ]
+    ]
+
+
+def test_measure_coverage_host_failure_is_unavailable_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The HOST path (no ``execute``) treats an unlaunchable run as 'coverage
+    unavailable' — (None, {}) — the same shape the contained path's refusals
+    deliberately do NOT take (those propagate, #614)."""
+    import maistro_evolve.coverage_gate as cg
+
+    def _broken(*_a: Any, **_kw: Any) -> Any:
+        raise OSError("pytest binary missing")
+
+    monkeypatch.setattr(cg.subprocess, "run", _broken)
+
+    assert cg.measure_coverage_detailed(".") == (None, {})

@@ -51,9 +51,7 @@ def test_perfect_code_scores_one(monkeypatch, tmp_path: Path) -> None:
     assert cq.score_path(f).composite == 1.0
 
 
-def test_run_tool_binds_every_launch_to_the_injected_channel(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_run_tool_binds_every_launch_to_the_injected_channel(monkeypatch, tmp_path: Path) -> None:
     """score_path(run_tool=...) launches every shelling helper through the
     injected channel and none on the host (#614): the RSI fitness path binds
     this runner to its sandbox, so with one injected, no quality subprocess
