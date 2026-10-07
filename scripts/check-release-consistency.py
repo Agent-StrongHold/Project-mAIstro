@@ -147,7 +147,7 @@ _ISSUE_LINK_RE = re.compile(r"\(#\d+")
 
 #: The explicit exclusion for an entry with no tracked issue. An annotation,
 #: not a pattern: the reason is part of the text.
-_NO_ISSUE_RE = re.compile(r"\(no linked issue: ", re.I)
+_NO_ISSUE_RE = re.compile(r"\(no linked issue: \s*\S", re.I)
 
 #: Words that read as content to a presence check and mean nothing. An
 #: Unreleased section made only of these is *worse* than an empty one: it
@@ -305,6 +305,8 @@ def _entries(body: str) -> list[tuple[int, str, str]]:
     for index, line in enumerate(body.splitlines()):
         heading = re.match(r"^###\s+(.+?)\s*$", line)
         if heading is not None:
+            if current is not None:
+                out.append((current[0], current[1], " ".join(current[2])))
             category = heading[1]
             current = None
             continue
@@ -339,6 +341,27 @@ def _placeholder_only(body: str) -> bool:
         for line in lines
     ]
     return bool(lines) and all(_PLACEHOLDER_RE.fullmatch(line) is not None for line in lines)
+
+
+def _body_has_meaningful_content(body: str) -> bool:
+    """Return True if the body has at least one non-placeholder, non-category-heading line.
+
+    Category heading lines are ignored, as they are structure, not content.
+    Entry lines have their marker stripped before the placeholder check.
+    """
+    lines = [
+        line.strip() for line in body.splitlines() if line.strip() and not re.match(r"^###\s", line)
+    ]
+    if not lines:
+        return False  # only category headings and/or empty lines
+    for line in lines:
+        # If it's an entry line, remove the marker
+        if _ENTRY_RE.match(line):
+            line = _ENTRY_RE.sub("", line, count=1).strip()
+        # Now check if the line is a placeholder
+        if not _PLACEHOLDER_RE.fullmatch(line):
+            return True  # found a non-placeholder line
+    return False  # all lines are placeholders
 
 
 def unreleased_problems(changelog: str) -> list[str]:
@@ -409,14 +432,27 @@ def _release_readiness_problems(changelog: str, releasing: str) -> list[str]:
     body = section_body(changelog, heading_re)
     if body is None:
         return []  # the heading's existence is release_guard's check
-    if body.strip() and not _placeholder_only(body):
-        return []
-    return [
-        f"CHANGELOG.md's '## [{version}]' section is {'placeholder-only' if body.strip() else 'empty'} "
-        f"and tag {releasing} is being cut against it. release_notes.py publishes exactly "
-        "this section; an empty or placeholder-only Unreleased cannot satisfy release "
-        "readiness (#385)."
-    ]
+    if not body.strip():
+        return [
+            f"CHANGELOG.md's '## [{version}]' section is empty and tag {releasing} is being cut against it. "
+            f"release_notes.py publishes exactly this section; an empty section cannot satisfy release "
+            f"readiness (#385)."
+        ]
+    if _placeholder_only(body):
+        return [
+            f"CHANGELOG.md's '## [{version}]' section is placeholder-only and tag {releasing} is being cut against it. "
+            f"release_notes.py publishes exactly this section; a placeholder-only section cannot satisfy release "
+            f"readiness (#385)."
+        ]
+    # Check if the body consists only of category headings
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    if lines and all(re.match(r"^###\s", line) for line in lines):
+        return [
+            f"CHANGELOG.md's '## [{version}]' section contains only category headings and tag {releasing} is being cut against it. "
+            f"release_notes.py publishes exactly this section; a heading-only section cannot satisfy release "
+            f"readiness (#385)."
+        ]
+    return []
 
 
 def list_release_tags() -> list[str]:
