@@ -483,6 +483,30 @@ def settle_open_node_run(
     )
 
 
+def refuse_completion_under_terminal_run(run_status: RunStatus, attempt_id: str) -> None:
+    """Refuse a COMPLETED Attempt whose Run is already terminal (#1335).
+
+    The executor's durable Run fence (`_settle_provider_success`) reads the
+    Run and then writes the Attempt -- two awaits with a window between them
+    that a concurrent cancellation can fill: the Run lands CANCELLED, and the
+    stale success used to land as a COMPLETED row underneath it. The
+    Attempt-level transition table cannot see the parent Run, so every store
+    now re-reads the parent *inside the same write lock / transaction that
+    writes the Attempt* and calls this -- the atomicity `transition_run`
+    already gives its own cascade (ADR-082426-a47f).
+
+    Only COMPLETED is refused. FAILED and TIMED_OUT record physical outcomes
+    that stay true after the Run terminalized (a sibling failure, the run
+    watchdog), and CANCELLED is how a run-level cancel and crash reclamation
+    settle the Attempts they find -- refusing those would turn true records
+    into raised errors inside the very handlers unwinding a cancellation.
+    """
+    if run_status in TERMINAL_RUN_STATUSES:
+        raise InvalidLifecycleTransition(
+            f"cannot complete Attempt {attempt_id!r} under a terminal Run ({run_status.value})"
+        )
+
+
 def transition_attempt(
     attempt: Attempt,
     target: AttemptStatus,
@@ -527,6 +551,7 @@ __all__ = [
     "lease_is_expired",
     "reclaim_attempt",
     "reclaimed_attempt_error",
+    "refuse_completion_under_terminal_run",
     "renew_attempt_lease",
     "renewed_lease",
     "settle_open_node_run",

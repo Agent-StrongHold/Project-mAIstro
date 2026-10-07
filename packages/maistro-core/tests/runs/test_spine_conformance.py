@@ -495,6 +495,92 @@ async def test_transitioning_an_unknown_attempt_raises(spine: Any) -> None:
         await store.transition_attempt("no-such-attempt", AttemptStatus.RUNNING)
 
 
+async def test_an_unknown_attempt_is_not_found_even_for_a_completed_target(
+    spine: Any,
+) -> None:
+    """An unknown attempt is not-found for every target, COMPLETED included (#1335).
+
+    The pg store's terminal-Run guard resolves the attempt's spine before it
+    looks at any parent status, so the COMPLETED target asks its first question
+    about an attempt that does not exist -- and must still answer not-found,
+    not fail some later way. On memory and sqlite the attempt lookup raises
+    before the guard; on postgres the guard's spine query is what raises.
+    """
+    store, _workspace, _project_id = spine
+
+    with pytest.raises(AttemptNotFound):
+        await store.transition_attempt("no-such-attempt", AttemptStatus.COMPLETED, result={})
+
+
+@pytest.mark.parametrize("terminal", [RunStatus.CANCELLED, RunStatus.FAILED, RunStatus.TIMED_OUT])
+async def test_a_completed_attempt_is_refused_under_a_terminal_run(
+    spine: Any, terminal: Any
+) -> None:
+    """No COMPLETED Attempt may be recorded under a terminal Run (#1335).
+
+    The executor's Run fence reads the Run, then writes the Attempt -- two
+    awaits a cancellation can walk between. The Attempt-level transition
+    table cannot see the parent Run, so each store re-checks it inside the
+    same write lock / transaction that writes the Attempt and refuses here:
+    the stale success of a provider that lost the race never reaches the
+    durable record at all, instead of landing as a COMPLETED row the
+    reconcile path then has to detect.
+
+    Only COMPLETED is refused. The same Attempt's CANCELLED edge must stay
+    open under the terminal Run -- that is how a run-level cancel and crash
+    reclamation settle the Attempts they find -- so the test pins both sides
+    of the rule on the same record.
+    """
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+    await store.transition_run(node_run.run_id, RunStatus.QUEUED)
+    await store.transition_run(node_run.run_id, RunStatus.RUNNING)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    attempt = await store.create_attempt(node_run.node_run_id)
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+    await store.transition_run(node_run.run_id, terminal)
+
+    with pytest.raises(InvalidLifecycleTransition, match="terminal Run"):
+        await store.transition_attempt(
+            attempt.attempt_id, AttemptStatus.COMPLETED, result={"stale": True}
+        )
+
+    # The refusal is a refusal, not a write that followed the raise: the
+    # Attempt is exactly where it was, still owing its disposition.
+    persisted = await store.get_attempt(attempt.attempt_id)
+    assert persisted is not None
+    assert persisted.status is AttemptStatus.RUNNING
+    assert persisted.result is None
+
+    # The cancelled side of the rule stays open on the same record: the
+    # run-level cancel path settles open Attempts after the Run landed, and
+    # a CANCELLED Attempt under a terminal Run is the honest record.
+    cancelled = await store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.CANCELLED, error="settled by the Run"
+    )
+    assert cancelled.status is AttemptStatus.CANCELLED
+
+
+async def test_a_completed_attempt_still_writes_under_a_live_run(spine: Any) -> None:
+    """The #1335 guard refuses stale success, not success (#1335)."""
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+    await store.transition_run(node_run.run_id, RunStatus.QUEUED)
+    await store.transition_run(node_run.run_id, RunStatus.RUNNING)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    attempt = await store.create_attempt(node_run.node_run_id)
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+
+    terminal = await store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.COMPLETED, result={"answer": "ok"}
+    )
+
+    assert terminal.status is AttemptStatus.COMPLETED
+    assert terminal.result == {"answer": "ok"}
+
+
 # ── ordinals ──────────────────────────────────────────────────────
 
 

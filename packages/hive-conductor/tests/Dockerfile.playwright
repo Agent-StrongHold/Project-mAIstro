@@ -34,6 +34,7 @@ COPY frontend/src/pages/Dashboard.tsx /tests/frontend/src/pages/Dashboard.tsx
 COPY frontend/src/lib/widgetCapabilities.ts /tests/frontend/src/lib/widgetCapabilities.ts
 COPY frontend/src/components/SetupChecklist.tsx /tests/frontend/src/components/SetupChecklist.tsx
 COPY frontend/src/components/TemplatePicker.tsx /tests/frontend/src/components/TemplatePicker.tsx
+COPY frontend/src/components/RichTooltip.tsx /tests/frontend/src/components/RichTooltip.tsx
 COPY frontend/src/lib/api.ts /tests/frontend/src/lib/api.ts
 COPY frontend/src/lib/debug.ts /tests/frontend/src/lib/debug.ts
 CMD ["npx", "playwright", "test", "--config=tests/e2e/playwright.config.ts"]
