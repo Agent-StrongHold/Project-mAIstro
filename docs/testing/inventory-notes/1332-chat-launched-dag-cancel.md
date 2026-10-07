@@ -42,3 +42,24 @@ cancellation.
 The main regression was shown to fail against the pre-fix producer (the
 projection write suppressed): it times out on "chat-launched row never
 recorded its canonical admission" instead of passing.
+
+## Repair-round evidence (2026-10-07, head `49e6ed376`)
+
+Independently re-executed at this head, not carried over from the earlier
+round:
+
+- regression-fails-pre-fix proof re-run via a `record_canonical_run` neutered
+to the pre-fix no-write behavior: the main regression fails with exactly
+"chat-launched row never recorded its canonical admission";
+- `test_chat_launched_dag_cancel.py` 15 passed; adjacent suites (cancel route,
+durability, store, scope, canonical runner, chat admission) 156 passed;
+full `packages/hive-conductor/backend/tests` 3428 passed, 6 skipped;
+- `ruff check` / `ruff format --check` clean;
+- `scripts/check-diff-coverage.py coverage.xml --base 0df275362` (CI's script,
+merge-base): ok, 3 changed source files >=90% lines / 80% branch arcs, test
+file exempt as evidence;
+- `scripts/check-suite-inventory.py`: ok, 17 suites match the recorded
+inventory (hive-conductor 3434 collected = 3428 + 6 skipped);
+- branch-side delta vs merge-base touches no route, scope, or maistro-core
+file, and `execute_dag`'s `on_admitted` defaults to `None`, so direct-DAG
+admission behavior is untouched.
