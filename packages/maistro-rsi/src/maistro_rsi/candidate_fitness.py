@@ -953,101 +953,124 @@ def _not_run_gate(name: str, dist: str, cause: str, provenance: dict[str, object
     )
 
 
-def _lint_gates(cwd: Path, src_files: list[str]) -> list[GateResult]:
-    """ruff / mypy / bandit-HIGH on the changed source files (#304).
+def _unreadable_output_gate(name: str, tool: str, provenance: dict[str, object]) -> GateResult:
+    """An executed tool whose stdout cannot be parsed, recorded FAILED —
+    unreadable evidence is not a green result."""
+    return GateResult(
+        name,
+        False,
+        f"unreadable {tool} output — recorded as failed, not clean",
+        detail=provenance,
+        state=GateState.FAILED,
+    )
+
+
+def _ruff_clean_gate(
+    proc: subprocess.CompletedProcess[str], provenance: dict[str, object]
+) -> GateResult:
+    """Gate on the count of ruff findings in the JSON report."""
+    try:
+        n = len(json.loads(proc.stdout or "[]"))
+    except json.JSONDecodeError:
+        return _unreadable_output_gate("ruff_clean", "ruff", provenance)
+    return GateResult(
+        "ruff_clean",
+        n == 0,
+        f"{n} lint violation(s)",
+        detail=provenance,
+        state=GateState.PASSED if n == 0 else GateState.FAILED,
+    )
+
+
+def _mypy_clean_gate(
+    proc: subprocess.CompletedProcess[str], provenance: dict[str, object]
+) -> GateResult:
+    """Gate on the count of ``: error:`` lines in mypy's output."""
+    errs = sum(1 for ln in proc.stdout.splitlines() if ": error:" in ln)
+    return GateResult(
+        "mypy_clean",
+        errs == 0,
+        f"{errs} type error(s)",
+        detail=provenance,
+        state=GateState.PASSED if errs == 0 else GateState.FAILED,
+    )
+
+
+def _bandit_high_gate(
+    proc: subprocess.CompletedProcess[str], provenance: dict[str, object]
+) -> GateResult:
+    """Gate on the count of HIGH-severity bandit findings."""
+    try:
+        results = json.loads(proc.stdout or "{}").get("results", [])
+    except json.JSONDecodeError:
+        return _unreadable_output_gate("no_bandit_high", "bandit", provenance)
+    high = [r for r in results if r.get("issue_severity") == "HIGH"]
+    return GateResult(
+        "no_bandit_high",
+        len(high) == 0,
+        f"{len(high)} HIGH-severity finding(s)",
+        detail=provenance,
+        state=GateState.PASSED if len(high) == 0 else GateState.FAILED,
+    )
+
+
+# Per-tool result builders for the executed-and-well-formed path, keyed by
+# gate name (the same names REQUIRED_LINT_TOOL_SPEC carries).
+_LINT_GATE_PARSERS: dict[
+    str, Callable[[subprocess.CompletedProcess[str], dict[str, object]], GateResult]
+] = {
+    "ruff_clean": _ruff_clean_gate,
+    "mypy_clean": _mypy_clean_gate,
+    "no_bandit_high": _bandit_high_gate,
+}
+
+
+def _lint_gate_result(
+    name: str,
+    dist: str,
+    proc: subprocess.CompletedProcess[str] | None,
+    cause: str | None,
+    provenance: dict[str, object],
+) -> GateResult:
+    """Classify one analyzer run into its gate result: ``not_run`` when the
+    tool never produced a result or died mid-execution, else the tool's
+    parser decides ``passed`` vs ``failed``.
 
     All three are REQUIRED gates: a tool that is missing, wedged, or times
     out yields a blocking ``not_run`` gate (``passed=False`` vetoes the
     candidate) that names the cause — never a silent omission a downstream
-    PR body could render as a pass. An executed gate carries its provenance
-    (command, tool version, candidate SHA, exit status, output digest) and
-    one of exactly two states: ``passed`` or ``failed``. Output that cannot
-    be parsed is a FAILED gate, not a clean one: unreadable evidence is not
-    a green result. Nor is an execution failure: exits 0 (clean) and 1
-    (findings) are the only analyzer-evidence codes — a tool that starts and
-    then dies with a usage/configuration/internal exit (2) yields a blocking
-    ``not_run`` gate, because empty stdout from a broken analyzer is not
-    evidence of clean code."""
+    PR body could render as a pass. Output that cannot be parsed is a FAILED
+    gate, not a clean one. Nor is an execution failure: exits 0 (clean) and
+    1 (findings) are the only analyzer-evidence codes — a tool that starts
+    and then dies with a usage/configuration/internal exit (2) yields a
+    blocking ``not_run`` gate, because empty stdout from a broken analyzer
+    is not evidence of clean code."""
+    if proc is None:
+        return _not_run_gate(name, dist, cause or "error", provenance)
+    if proc.returncode not in (0, 1):
+        # A findings exit is 0 or 1; anything else means the analyzer
+        # never evaluated the files. Reject before parsing so empty
+        # stdout (ruff "[]", mypy zero errors, bandit "{}") from a
+        # broken run cannot masquerade as a clean result.
+        return _not_run_gate(name, dist, f"execution error (exit {proc.returncode})", provenance)
+    return _LINT_GATE_PARSERS[name](proc, provenance)
+
+
+def _lint_gates(cwd: Path, src_files: list[str]) -> list[GateResult]:
+    """ruff / mypy / bandit-HIGH on the changed source files (#304).
+
+    An executed gate carries its provenance (command, tool version,
+    candidate SHA, exit status, output digest) and one of exactly two
+    states: ``passed`` or ``failed``; see ``_lint_gate_result`` for how a
+    non-execution is classified."""
     if not src_files:
         return []
     gates: list[GateResult] = []
-
     for name, dist, argv in REQUIRED_LINT_TOOL_SPEC:
         full_argv = [*argv, *src_files]
         proc, cause = _run_lint_tool(full_argv, cwd)
         provenance = _gate_provenance(cwd, full_argv, dist, proc)
-        if proc is None:
-            gates.append(_not_run_gate(name, dist, cause or "error", provenance))
-            continue
-        if proc.returncode not in (0, 1):
-            # A findings exit is 0 or 1; anything else means the analyzer
-            # never evaluated the files. Reject before parsing so empty
-            # stdout (ruff "[]", mypy zero errors, bandit "{}") from a
-            # broken run cannot masquerade as a clean result.
-            gates.append(
-                _not_run_gate(
-                    name, dist, f"execution error (exit {proc.returncode})", provenance
-                )
-            )
-            continue
-        if name == "ruff_clean":
-            try:
-                n = len(json.loads(proc.stdout or "[]"))
-            except json.JSONDecodeError:
-                gates.append(
-                    GateResult(
-                        name,
-                        False,
-                        "unreadable ruff output — recorded as failed, not clean",
-                        detail=provenance,
-                        state=GateState.FAILED,
-                    )
-                )
-                continue
-            gates.append(
-                GateResult(
-                    name,
-                    n == 0,
-                    f"{n} lint violation(s)",
-                    detail=provenance,
-                    state=GateState.PASSED if n == 0 else GateState.FAILED,
-                )
-            )
-        elif name == "mypy_clean":
-            errs = sum(1 for ln in proc.stdout.splitlines() if ": error:" in ln)
-            gates.append(
-                GateResult(
-                    name,
-                    errs == 0,
-                    f"{errs} type error(s)",
-                    detail=provenance,
-                    state=GateState.PASSED if errs == 0 else GateState.FAILED,
-                )
-            )
-        else:  # no_bandit_high
-            try:
-                results = json.loads(proc.stdout or "{}").get("results", [])
-            except json.JSONDecodeError:
-                gates.append(
-                    GateResult(
-                        name,
-                        False,
-                        "unreadable bandit output — recorded as failed, not clean",
-                        detail=provenance,
-                        state=GateState.FAILED,
-                    )
-                )
-                continue
-            high = [r for r in results if r.get("issue_severity") == "HIGH"]
-            gates.append(
-                GateResult(
-                    name,
-                    len(high) == 0,
-                    f"{len(high)} HIGH-severity finding(s)",
-                    detail=provenance,
-                    state=GateState.PASSED if len(high) == 0 else GateState.FAILED,
-                )
-            )
+        gates.append(_lint_gate_result(name, dist, proc, cause, provenance))
     return gates
 
 

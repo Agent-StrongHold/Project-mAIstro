@@ -616,11 +616,20 @@ class TestDefaultPrBodyIsEvidenceDerived:
     claims nothing about gates it never executed."""
 
     @staticmethod
-    async def _body(exit_code: int, test_output: str = "3 passed in 0.01s\n") -> str:
+    async def _body(
+        exit_code: int, test_output: str = "3 passed in 0.01s\n", source_pin: str | None = None
+    ) -> str:
         from maistro_rsi.selfbranch import _default_pr_body
 
         attempt = new_attempt("https://github.com/org/repo", "python -m pytest -q")
-        return _default_pr_body(attempt, test_output, exit_code)
+        return _default_pr_body(attempt, test_output, exit_code, source_pin)
+
+    async def test_names_the_resolved_source_pin_not_attempt_commit(self):
+        # Default `new_attempt()` carries commit=None; the body must name the
+        # digest the run resolved and verified, never the literal 'unresolved'.
+        body = await self._body(0, source_pin="a" * 40)
+        assert f"source pin {'a' * 40}" in body
+        assert "unresolved" not in body
 
     async def test_names_the_recorded_command_and_exit_status(self):
         body = await self._body(0)

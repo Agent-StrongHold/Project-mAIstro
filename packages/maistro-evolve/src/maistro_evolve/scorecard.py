@@ -158,8 +158,7 @@ class Scorecard:
         # without a state resolve PASSED/FAILED from ``passed`` (see
         # GateResult.resolved_state), so historical behaviour is unchanged.
         return all(
-            g.resolved_state() in (GateState.PASSED, GateState.UNAVAILABLE)
-            for g in self.gates
+            g.resolved_state() in (GateState.PASSED, GateState.UNAVAILABLE) for g in self.gates
         )
 
     @property
