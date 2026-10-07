@@ -68,12 +68,23 @@ DISPOSITIONS = ("PUBLISHED", "DISTRIBUTED", "INTERNAL", "RETIRED")
 
 # The publish-wiring vocabulary (#611). A PUBLISHED entry may only claim
 # `published_digest_verified: true` when the publishing job's steps show this
-# shape: a build-push step that exports a digest, a Trivy/Grype step consuming
-# that digest, a tag-application step consuming it after the scans, and a
-# cosign step consuming it. Steps are read as text, not through a YAML load,
-# for the same reason the job parser below avoids one.
+# shape: a build-push step that exports a digest, a blocking Trivy/Grype scan
+# consuming that digest, a tag-application step consuming it after the scans,
+# and a cosign step consuming it. Steps are read as text, not through a YAML
+# load, for the same reason the job parser below avoids one.
 BUILD_ACTION = "docker/build-push-action"
-SCANNERS = re.compile(r"\b(?:trivy|grype)\b", re.IGNORECASE)
+
+# A scan only gates when it is wired to fail: `trivy-action` with
+# `exit-code: "1"`, or a `run:` line that invokes trivy/grype with
+# `--exit-code 1` / `--fail-on <severity>` -- security.yml's policy. Merely
+# naming a scanner (a `Report Trivy target` step echoing the digest) or
+# configuring it not to fail (`exit-code: "0"`, no `--fail-on`,
+# `continue-on-error: true`) is reporting, and admits anything.
+SCAN_FAIL_FLAGS = re.compile(r"--exit-code[=\s]+[\"']?1(?!\d)|--fail-on\s+\S+", re.IGNORECASE)
+TRIVY_ACTION = re.compile(r"^\s*uses:\s*aquasecurity/trivy-action\b", re.MULTILINE)
+FAILING_EXIT_CODE = re.compile(r"^\s*exit-code:\s*[\"']?1[\"']?\s*(?:#.*)?$", re.MULTILINE)
+RUN_PREFIX = re.compile(r"^run:\s*>?-?\s*")
+SCANNER_COMMAND = re.compile(r"^(?:sudo\s+)?(?:trivy|grype)(?:\s|$)", re.IGNORECASE)
 
 
 def dockerfiles_on_disk() -> set[str]:
@@ -183,6 +194,27 @@ def steps_of_job(workflow: Path, job: str) -> list[tuple[int, str]]:
     return steps
 
 
+def _is_blocking_scan(step: str) -> bool:
+    """A scanner invocation carrying the repository's blocking policy.
+
+    The scanner vocabulary alone proves nothing: a step named `Report Trivy
+    target` that only echoes the digest mentions trivy and gates nothing, and
+    an invocation told not to fail (`exit-code: "0"`, no `--fail-on`,
+    `continue-on-error: true`) scans and admits whatever it finds. The scan a
+    `published_digest_verified: true` claim rests on must be trivy-action
+    with `exit-code: "1"`, or a `run:` line invoking trivy/grype with the
+    failing flag, and must not be permitted to fail.
+    """
+    if re.search(r"continue-on-error:\s*[\"']?true", step, re.IGNORECASE):
+        return False
+    if TRIVY_ACTION.search(step):
+        return FAILING_EXIT_CODE.search(step) is not None
+    invokes_scanner = any(
+        SCANNER_COMMAND.match(RUN_PREFIX.sub("", line.strip())) for line in step.splitlines()
+    )
+    return invokes_scanner and SCAN_FAIL_FLAGS.search(step) is not None
+
+
 def check_publish_wiring(workflow: Path, job: str, ident: str, failures: list[str]) -> None:
     """`published_digest_verified: true` must describe real wiring (#611).
 
@@ -191,7 +223,8 @@ def check_publish_wiring(workflow: Path, job: str, ident: str, failures: list[st
     job itself. For every `docker/build-push-action` step that pushes, the job
     must also contain, bound to that step's digest output:
 
-    - a Trivy or Grype step consuming the digest — the scan that admits it;
+    - a blocking Trivy or Grype scan consuming the digest — the scan that
+      admits it (see `_is_blocking_scan`);
     - an `imagetools create` step consuming it — release tags applied to the
       scanned digest, never rebuilt — and positioned AFTER the scans, so a
       finding at the gating severity fails before any release tag exists;
@@ -211,7 +244,7 @@ def check_publish_wiring(workflow: Path, job: str, ident: str, failures: list[st
         return
 
     builds = _pushed_build_steps(steps, ident, rel, job, failures)
-    scans = [(n, c) for n, c in steps if SCANNERS.search(c)]
+    scans = [(n, c) for n, c in steps if _is_blocking_scan(c)]
     promotes = [(n, c) for n, c in steps if "imagetools create" in c]
     signs = [(n, c) for n, c in steps if re.search(r"\bcosign sign\b", c)]
 
@@ -219,8 +252,9 @@ def check_publish_wiring(workflow: Path, job: str, ident: str, failures: list[st
         digest = f"steps.{build_id}.outputs.digest"
         if not any(digest in chunk for _, chunk in scans):
             failures.append(
-                f"{ident}: {rel} job {job!r} never scans `{digest}` with trivy or grype; "
-                "a claim that the published digest was scanned has nothing behind it"
+                f"{ident}: {rel} job {job!r} never scans `{digest}` with trivy or grype "
+                "wired to fail (exit-code 1 / --fail-on); a claim that the published "
+                "digest was scanned has nothing behind it"
             )
         if not any(digest in chunk for _, chunk in promotes):
             failures.append(

@@ -297,6 +297,71 @@ def test_true_without_a_scan_of_the_built_digest_fails(gate, tmp_path, monkeypat
     assert "never scans `steps.engine.outputs.digest`" in capsys.readouterr().out
 
 
+def test_true_with_a_reporting_step_that_merely_names_the_scanner_fails(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """Naming trivy is not scanning.
+
+    A step that echoes the digest under a `Report Trivy target` name checks
+    the vocabulary box while gating nothing; it must not stand in for the
+    scan that admits the digest.
+    """
+    scan_block = (
+        "      - name: Scan candidate\n"
+        "        uses: aquasecurity/trivy-action@ed142fd\n"
+        "        with:\n"
+        "          image-ref: ghcr.io/example/maistro-engine-rc@${{ steps.engine.outputs.digest }}\n"
+        '          exit-code: "1"\n'
+    )
+    report_block = (
+        "      - name: Report Trivy target\n"
+        '        run: echo "Trivy target: ${{ steps.engine.outputs.digest }}"\n'
+    )
+    tree = _release_tree(tmp_path, RELEASE_WIRING.replace(scan_block, report_block), True)
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "never scans `steps.engine.outputs.digest`" in capsys.readouterr().out
+
+
+def test_true_with_a_trivy_scan_configured_not_to_fail_fails(gate, tmp_path, monkeypatch, capsys):
+    """`exit-code: "0"` reports findings; it does not gate them."""
+    tree = _release_tree(tmp_path, RELEASE_WIRING.replace('exit-code: "1"', 'exit-code: "0"'), True)
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "never scans `steps.engine.outputs.digest`" in capsys.readouterr().out
+
+
+def test_true_with_a_scan_allowed_to_fail_fails(gate, tmp_path, monkeypatch, capsys):
+    """`continue-on-error: true` turns the gate into a note."""
+    tree = _release_tree(
+        tmp_path,
+        RELEASE_WIRING.replace(
+            "      - name: Scan candidate\n",
+            "      - name: Scan candidate\n        continue-on-error: true\n",
+        ),
+        True,
+    )
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "never scans `steps.engine.outputs.digest`" in capsys.readouterr().out
+
+
+def test_true_with_a_cli_scan_without_the_failing_flag_fails(gate, tmp_path, monkeypatch, capsys):
+    """A grype invocation without `--fail-on` scans and admits anything."""
+    scan_block = (
+        "      - name: Scan candidate\n"
+        "        uses: aquasecurity/trivy-action@ed142fd\n"
+        "        with:\n"
+        "          image-ref: ghcr.io/example/maistro-engine-rc@${{ steps.engine.outputs.digest }}\n"
+        '          exit-code: "1"\n'
+    )
+    grype_block = (
+        "      - name: Grype scan (report only)\n"
+        "        run: grype ghcr.io/example/maistro-engine-rc@${{ steps.engine.outputs.digest }}"
+        " --output table\n"
+    )
+    tree = _release_tree(tmp_path, RELEASE_WIRING.replace(scan_block, grype_block), True)
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "never scans `steps.engine.outputs.digest`" in capsys.readouterr().out
+
+
 def test_true_without_tag_application_fails(gate, tmp_path, monkeypatch, capsys):
     """Publishing tags that were never pointed at the scanned digest is the
     original gap: an image id in a job name proved nothing."""
