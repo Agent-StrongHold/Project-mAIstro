@@ -15281,3 +15281,66 @@ Verdict: **BLOCKED** (dependency-blocking, fiftieth consecutive round with
 fresh evidence). No lawful repair for #777 exists until #804/#805/#806
 (+#774/#776) land upstream: the issue is a declared consumer of those APIs and
 its stop condition forbids a Design-Studio-private substitute.
+
+## Round 234 — repair, job `ee1d4db16d29496280c92f09385d045d` (2026-10-07)
+
+Starting head `f4f5e756c` exactly as the manifest pins; tree clean. The prior
+result artifact (`fee9691747104261bc490369fd5e0f6a/result.json`) is a
+completed BLOCKED verdict with full evidence at this same head, so there was
+no uncommitted work to salvage. This job's manifest has `checks=[]` and the
+job directory contains **no `check-*.log` files**: the verifier ran no
+deterministic checks, so there is no verifier evidence to inspect and every
+acceptance item below was re-validated directly this round (nothing taken on
+trust from earlier rounds).
+
+Develop sync re-checked and already discharged: fetch EXIT 0;
+`HEAD..origin/develop` = **0 commits**; `origin/develop` = `51679882b` = this
+round's manifest base, already merged into the branch (verified
+`git merge-base --is-ancestor 51679882b HEAD` → ancestor). No merge needed.
+
+Fresh frozen capture `2026-10-07T00:52:25Z` (`complete_for_scope: true`, 61
+sources): issue #777 **open**, 242 comments — the newest four are automated
+attempt markers (`a7a8cd958372` blocked, `f88e1defc7e4` started,
+`fee969174710` started/blocked), **no maintainer guidance**; #804 (EPIC M3-D
+persistent Workspace Agent + Goal reconciliation), #805 (M3-D1), #806
+(M3-D2), #774 (CreativeBrief), #776 (Workspace Ladybug), #53, #93, #95 all
+**open**; #39/#458/#775 closed. PR #1660 open draft, unmerged, head
+`78f8f6476466` unchanged (check-runs 30 success + 1 skipped); that head **is
+an ancestor of this branch's HEAD**, so the branch already carries its 16
+files (salvage docs + `design_service.py` 1-line + `agent_loop.py` fix +
+vulture ledger amendment, no #804 consumption). GitHub-native `blocked_by` =
+`[]`; the body-text gate governs: "Depends on: #804/#805/#806 persistent
+Workspace Agent + Goal reconciliation …" + stop condition "Do not create a
+Design-Studio-private Agent runtime, Goal owner, reconciliation loop …
+Consume #804 and the canonical owners."
+
+AC prerequisites re-proven absent at HEAD `f4f5e756c` (this round's own
+greps, not inherited): `GoalReconciler|delegate_goal` **0** hits in
+`packages/*/src`; **no `maistro/goals` module**;
+`WorkspaceAgentReconciler|goal.reconcil` **0** hits;
+`ControlMode.COLLABORATIVE` declared-only (`maistro_design/versions.py:81`),
+sole non-declaration use the no-op `_ = ControlMode.COLLABORATIVE`
+(`versions.py:1064`); `GoalRevisionCatalog` Protocol-only
+(`maistro/projects/rubric_store.py:71` + re-export).
+
+Battery at HEAD `f4f5e756c`: `ruff check .` EXIT 0 (All checks passed);
+`ruff format --check .` EXIT 0 (3110 files); vulture CI-exact
+(`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'`) EXIT 0 — base `51679882bc59`, candidate
+`f4f5e756cea7`, 1332 reviewed identities → 1331 findings, no amendment;
+`scripts/check-suite-inventory.py` EXIT 0 (17 suites);
+`scripts/check-backlog-consistency.py` EXIT 0 (167 items). Targeted pytest at
+HEAD, repo-root invocation: `packages/hive-conductor/backend/tests +
+packages/hive-conductor/tests -k 'design or workspace'` **374 passed 8
+skipped** in 19.64s (correction to round-233's record: the passing 374 come
+from `backend/tests` — bare `packages/hive-conductor/tests` collects only the
+23-test e2e suite; the skip delta 5→8 is environment-dependent, passed count
+identical); `maistro-design/tests + maistro-bootstrap/tests` **804 passed 7
+skipped** in 23.28s.
+
+inventory-delta unchanged (**+0**: this lane added no tests this round).
+
+Verdict: **BLOCKED** (dependency-blocking, fifty-first consecutive round with
+fresh evidence). No lawful repair for #777 exists until #804/#805/#806
+(+#774/#776) land upstream: the issue is a declared consumer of those APIs and
+its stop condition forbids a Design-Studio-private substitute.
