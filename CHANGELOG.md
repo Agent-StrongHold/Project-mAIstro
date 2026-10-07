@@ -129,6 +129,11 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Canvas retry-budget recovery regression coverage (#1550).** Exercise
+  repeated simulated pre-stage worker losses through the real executor,
+  canonical adapter and runner, including claim refusal, fenced reaper
+  terminalization and a fresh-job dispatch control. The existing retry and
+  lease-ownership behavior is unchanged.
 - **Chat admission compensation is conditional on the unchanged, unstarted Run (#338).**
   A QUEUED or RUNNING write that commits but loses its response is compensated
   before the existing retryable refusal, without dispatching the turn. The
