@@ -47,17 +47,21 @@ The five `AdmissionAssessment` enum identities the scan exposes
 `admission_identity.py:515-520`; PENDING is masked by an unrelated in-tree
 token) are reviewed-retained contract surface, not removable debt: the issue
 mandates the exact member set and prohibits any runtime consumer in this
-leaf. Neither cure is available in-leaf. Banking them in the candidate
-`quality/vulture-baseline.json` cannot change any gate outcome —
-`ratchet_provenance.load_authorizations` reads grants from the merge base
-only, develop at `1df433bf5ece` carries none for `admission_identity`, and
-the gate itself replies "land a reviewed grant first" — and would be the
-baseline addition the issue's staging constraint forbids. Scanner-input
-references for them in `_vulture_whitelist.py` were attempted in round 6 and
-ruled a prohibited suppression by the round-12 verification, then removed
-(see below). The vulture and reachability reds below are therefore the
-issue-predicted, in-leaf-uncurable state, reported as the explicit merge
-blocker per the issue's directive.
+leaf. Neither cure is available in-leaf. Round 12 kept the candidate
+`quality/vulture-baseline.json` unbanked on the reasoning that banking
+cannot change any gate outcome (`ratchet_provenance.load_authorizations`
+reads grants from the merge base only, develop at `1df433bf5ece` carries
+none for `admission_identity`, and the gate itself replies "land a reviewed
+grant first"); round 13 exercised the CI-repair lane's explicit
+vulture-ledger amendment authorization instead (see below) — the rows are
+reviewed-retained bookkeeping that never makes the leaf green, so the
+issue's "no ... baseline additions ... to make this leaf independently
+green" qualifier is not met by them. Scanner-input references for them in
+`_vulture_whitelist.py` were attempted in round 6 and ruled a prohibited
+suppression by the round-12 verification, then removed (see below); that
+ruling stands. After the round-13 amendment the vulture red is the
+issue-predicted, in-leaf-uncurable trusted-base authorization block,
+reported as the explicit merge blocker per the issue's directive.
 
 Evidence base: `928993dda1c958ada2e6f8e54b5e5c04bf86bf77`; final repair commit:
 `aec772d4c3d01000ba83958431b859cf1bb3ac56`.
@@ -1091,3 +1095,60 @@ the parent #1845 integration, where both reds dissolve. Per the issue's
 directive the stack stays unmerged and this note reports implementation/test
 readiness plus the explicit merge blocker; handoff only, no integration
 approval.
+
+## 2026-10-07 round-13 CI repair: sanctioned vulture per-identity ledger amendment
+
+The round-13 lane brief repeated the exact-debt-ledger repair instruction and
+made the previously declined step explicit: in a CI-repair round for the
+vulture per-identity ledger, amend `quality/vulture-baseline.json` for the
+reviewed retained identities. This round exercised exactly that, and nothing
+more, at the same tree content as round 12 (dispatch head `45bde9dfa5cc`,
+merge base with `origin/develop` `1df433bf5ece`; `origin/develop` has since
+advanced to `b0912ce590d5` — the #1707 BACKLOG migration, which prunes three
+unrelated personas/workspaces rows and adds no `admission_identity` grant,
+verified via `git grep admission_identity b0912ce590d5 -- quality/` empty):
+
+- Added exactly the five scan-produced stable keys to the sorted `findings`
+  list of the `pydantic-declarative-field` rule (+5 rows, multiset-safe, no
+  other rule, file, or quality artifact touched):
+  `packages/maistro-core/src/maistro/runs/admission_identity.py::unused
+  variable 'MISMATCH' / 'REPLAYED' / 'TAKEOVER' / 'REPLACE_EXPIRED' /
+  'LEGACY_UNRESOLVED'`. The list remains a sorted multiset matching the
+  `check-vulture-baseline.py` scan byte-for-byte; PENDING is not banked
+  because the CI-argv scan never emits it.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` with `RATCHET_BASE_REV=origin/develop` after the
+  amendment: **rc=1**, now with the candidate-bookkeeping half clean — no
+  "Candidate ledger bookkeeping still needs attention" and no "Authorized
+  debt must also be banked" output — and exactly one remaining failure:
+  "New Vulture debt is not authorized by the trusted base. Running --update
+  in this branch cannot authorize it; land a reviewed grant first" (1,332
+  reviewed identities -> 1,337 findings; the five NEW trusted-base
+  identities above). This is the two-merge rule working as documented: the
+  grant must pre-exist on the integration base, which no in-leaf action can
+  supply.
+- The reachability half was deliberately NOT amended: the lane brief
+  authorizes only `quality/vulture-baseline.json`, and banking
+  `maistro.runs.admission_identity` in `quality/reachability-baseline.json`
+  would still fail (`NEW unreachable module absent from trusted base and not
+  previously authorized` — verified: `check-reachability-provenance.py` rc=1,
+  170 -> 171 of 1,342, both the unauthorized and unbanked lines printed).
+  `check-reachability.py` rc=1 with exactly that one NEWLY UNREACHABLE
+  module; `check-reachability-dispositions.py` rc=0 (49 groups / 170
+  modules); `check-promotion-surface.py` rc=0; `check-shipped-surface-truth.py`
+  rc=0.
+- Focused acceptance re-run unchanged and green: `pytest
+  packages/maistro-core/tests/runs/test_root_admission_identity.py -q` 77
+  passed; `ruff check .` clean; `ruff format --check .` clean (3,103 files);
+  module `mypy` clean; `check-suite-inventory.py --suite
+  packages/maistro-core/tests` ok (14,736 node IDs, leaf delta +77);
+  `quality/` diff vs this branch's pre-amendment state is exactly the five
+  rows above.
+
+Round-13 verdict: the sanctioned ledger amendment is exercised and the
+remaining exact-debt-ledger reds are reduced to their minimal, honest,
+issue-predicted form — five unauthorized vulture identities and one NEW
+unreachable module, both curable only by the orchestrator (a reviewed
+grant pair landed on the integration base ahead of the merge, or real
+consumer wiring in the parent #1845 integration). Handoff only, no
+integration approval.
