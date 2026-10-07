@@ -356,6 +356,24 @@ def _placeholder_only(body: str) -> bool:
     return bool(lines) and all(_PLACEHOLDER_RE.fullmatch(line) is not None for line in lines)
 
 
+def _drop_trailing_link_defs(body: str) -> str:
+    """Trim the Keep-a-Changelog link-reference block off the tail.
+
+    Mirrors `release_notes.py`'s normalization of the same name: the final
+    section is followed by `[1.0.0]: https://...` definitions with no further
+    `##` heading to stop at, so `section_body` sweeps them into the extracted
+    body — and `release_notes.build` discards them before publishing. Readiness
+    must judge the body that would actually be published, so it drops them too;
+    otherwise `### Added` plus trailing definitions looks like meaningful
+    content and the heading-only rejection never fires (#1102).
+    """
+    lines = body.split("\n")
+    link_def = re.compile(r"^\[[^\]]+\]:\s")
+    while lines and (not lines[-1].strip() or link_def.match(lines[-1])):
+        lines.pop()
+    return "\n".join(lines)
+
+
 def _body_has_meaningful_content(body: str) -> bool:
     """Return True if the body has at least one non-placeholder, non-category-heading line.
 
@@ -445,6 +463,7 @@ def _release_readiness_problems(changelog: str, releasing: str) -> list[str]:
     body = section_body(changelog, heading_re)
     if body is None:
         return []  # the heading's existence is release_guard's check
+    body = _drop_trailing_link_defs(body)
     if not body.strip():
         return [
             f"CHANGELOG.md's '## [{version}]' section is empty and tag {releasing} is being cut against it. "
@@ -460,8 +479,9 @@ def _release_readiness_problems(changelog: str, releasing: str) -> list[str]:
     if not _body_has_meaningful_content(body):
         # Empty and placeholder-only bodies returned above, so the only way a
         # nonempty body gets here is bare category headings: structure with no
-        # entry under any of them (#1102). Published verbatim, the notes would
-        # be headings alone.
+        # entry under any of them (#1102). The trailing link definitions
+        # `release_notes.py` strips before publishing are already gone, so
+        # what is left is exactly what would be published: headings alone.
         return [
             f"CHANGELOG.md's '## [{version}]' section contains only category headings and tag {releasing} is being cut against it. "
             f"release_notes.py publishes exactly this section; a heading-only section cannot satisfy release "

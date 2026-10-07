@@ -532,6 +532,33 @@ def test_releasing_against_a_heading_only_target_section_fails(gate, tmp_path) -
     assert any("only category headings" in p and "v1.0.0" in p for p in problems)
 
 
+def test_releasing_against_a_heading_plus_trailing_link_defs_target_fails(gate, tmp_path) -> None:
+    """Trailing Keep-a-Changelog definitions are not entries.
+
+    The last section's body sweeps up the file's `[x.y.z]: ...` definitions —
+    with no later `##` heading to stop at — and `release_notes.py` drops them
+    before publishing. Readiness normalizes identically, so `### Added` plus
+    those stray lines is still the heading-only section #1102 rejects, not
+    meaningful content that slips the check through.
+    """
+    _write(
+        gate,
+        tmp_path,
+        version="1.0.0",
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - TBD\n\n### Added\n\n"
+            "[0.9.0]: https://github.com/example/repo/compare/v0.8.0...v0.9.0\n"
+            "[1.0.0]: https://github.com/example/repo/compare/v0.9.0...v1.0.0\n"
+        ),
+        readme=f"{gate.README_BEGIN}\n{_status(current='1.0.0')}\n{gate.README_END}",
+        tags=["v1.0.0"],
+    )
+
+    problems = gate.check(releasing="v1.0.0")
+
+    assert any("only category headings" in p and "v1.0.0" in p for p in problems)
+
+
 def test_releasing_an_rc_checks_the_base_version_section(gate, tmp_path) -> None:
     """A candidate publishes the notes of the release it is a candidate for."""
     _write(

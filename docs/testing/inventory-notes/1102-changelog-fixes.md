@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +4
+  tests/: +5
 ---
 # 1102-changelog-fixes
 
@@ -26,10 +26,23 @@ Tests added to `tests/test_check_release_consistency.py`:
   flush does not over-reject a linked entry that closes its category.
 - `test_releasing_against_a_heading_only_target_section_fails` — pins the
   heading-only release-readiness escape.
+- `test_releasing_against_a_heading_plus_trailing_link_defs_target_fails` —
+  pins the heading-only escape's follow-up: when the target is the final
+  CHANGELOG section, `section_body` sweeps the file's trailing
+  Keep-a-Changelog definitions (`[1.0.0]: ...`) into the body, which made the
+  heading-only rejection see "meaningful content" and pass. Readiness now
+  drops those definitions first (`_drop_trailing_link_defs`), mirroring
+  `release_notes.py`'s identical normalization before it publishes, so a
+  `### Added` heading plus stray link definitions is still rejected.
 
 Mutation evidence: running the new tests against the pre-fix script
 (`git show 28614700bd9a:scripts/check-release-consistency.py`) reproduces
 each escape — the old `_entries` loses the `Untraceable` bullet, the old
 `_release_readiness_problems` passes a heading-only section, and the old
 `_NO_ISSUE_RE` accepts `(no linked issue: )` — so each test fails if its
-escape returns.
+escape returns. The link-definitions case was re-proven against the
+intermediate HEAD (92ae3a926, which has the heading-only rejection but not
+the normalization): `_release_readiness_problems` returns `[]` for
+`### Added` plus trailing `[0.9.0]:`/`[1.0.0]:` definitions there, while
+`release_notes.extract_section` publishes exactly `### Added` — the fixed
+check rejects it.
