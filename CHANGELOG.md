@@ -1132,6 +1132,14 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Turing chat retention uses the canonical admitter window (#131).**
+  The standalone Turing execution plane no longer keeps a private window
+  that skipped every non-terminal Run and swept only when the next turn
+  was admitted. Turns are tracked on `ChatRunAdmitter`: dispatch-pending,
+  CREATED/QUEUED, and an in-lease Attempt are the shields, and the bound
+  is re-applied when a turn terminalizes. Workspace-scoped admitters share
+  one process-wide `max_retained` budget; more users do not multiply it.
+  Tracking refuses foreign-Workspace and non-chat Runs.
 - **Schedules and MCP work from the keyboard alone (#370, partial).** The
   Schedules and MCP view tabs are now ARIA tabs (arrow keys, Home and End); a
   schedule's enable toggle is a labelled switch, so a keyboard user can enable
