@@ -75,3 +75,34 @@ persistence 809, container_postgres 15, workspaces with
 `tests/migrations` suite under coverage on an unmigrated database (157
 passed), and the `coverage (PostgreSQL)` producer's core suites (5610
 passed).
+
+## CI-repair round: committed OpenAPI types + the zero-limit guard's evidence
+
+The second CI evaluation (head 374a13a89) failed `test` and the diff-coverage
+half of the coverage gate on the implementation's own evidence, not its
+behavior. First, the rewritten `/v1/hitl/pending` docstring changed the
+endpoint's OpenAPI description, and the generated
+`packages/hive-conductor/frontend/src/api/types.gen.ts` was not regenerated —
+the `test` job's #1048 step diffs the two. The file is regenerated with the
+gate's own commands and committed. Second, the `limit <= 0` guard at
+`canonical_store.py:837` in `CanonicalDurableRunStore.list_hitl_paused` was
+the one changed line below the per-file 90% floor (83.3% of 6);
+`test_zero_limit_costs_zero_projection_reads` covers it and pins the guard's
+contract through a counting continuation store: a zero or negative limit
+answers before the pause-kind projection is consulted at all (zero reads),
+while the same store, asked for work, still returns the planted human pause
+(that second assertion is what keeps the empty answer from passing for a
+vacuous "nothing pending"). Mutation-checked: removing the guard fails the
+test (the projection is read twice).
+
+No delta change beyond +1 to `packages/maistro-core/tests` above. Repair
+verified locally at 315e07cb4: `dump-hive-openapi.py` + `gen:api` +
+`git diff --exit-code -- types.gen.ts` exits 0 on the committed tree; the
+core-graph producer with PostgreSQL legs enabled (1919 passed, 1 skipped) and
+the hive-conductor producer (3416 passed, 6 skipped) under coverage feed
+`check-diff-coverage.py coverage.xml --base 0df275362d2863d2d541866ffa2f67bb57986898`
+to `ok: every measured file this change touches is at or above 90% lines /
+80% branch arcs`; `check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` exits 0 with no ledger
+amendment (1332 reviewed = 1332 findings); `check-test-duplicates.py` and the
+suite-inventory check pass at the new counts.
