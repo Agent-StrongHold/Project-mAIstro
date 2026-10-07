@@ -15,7 +15,6 @@ from its own submodules is published in ``__all__``, and everything
 from __future__ import annotations
 
 import ast
-import importlib
 from pathlib import Path
 
 import maistro.extensions
