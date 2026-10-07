@@ -728,3 +728,148 @@ def test_real_container_refuses_when_the_image_is_missing(tmp_path: Path) -> Non
 
     with pytest.raises(ContainmentUnavailable):
         session.__enter__()
+
+
+def _fitness_toolchain_in_image() -> bool:
+    """The supported builders image must carry the fitness toolchain (#614
+    closeout): the vector and the red/green replay run `python -m pytest`, the
+    coverage signal runs `python -m coverage`, the lint gates run
+    `python -m ruff`. An image without them still exercises the smoke tests
+    above — and the gates renormalise by design — but the end-to-end proof
+    below needs the real signals to run for real, so it names the requirement
+    in its skip reason instead of silently weakening its assertions."""
+    if not _docker_ready():
+        return False
+    from maistro_bootstrap.builders.container_sandbox import DEFAULT_IMAGE
+
+    probe = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network=none",
+            DEFAULT_IMAGE,
+            "python",
+            "-c",
+            "import pytest, coverage, ruff",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    return probe.returncode == 0
+
+
+class _RecordingEvaluation(ContainedEvaluation):
+    """A real ContainedEvaluation that records every channel call, so the
+    end-to-end proof can assert WHICH signals crossed the sandbox boundary —
+    the same shape the host-side fake asserts, executed against the real
+    backend."""
+
+    def __init__(self, cycle_dir: Path, *, image: str, timeout: int) -> None:
+        super().__init__(cycle_dir, image=image, timeout=timeout)
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def run_argv(self, argv: Any, *, timeout: int | None = None) -> tuple[int, str]:
+        self.calls.append(("run_argv", tuple(argv)))
+        return super().run_argv(argv, timeout=timeout)
+
+    def run_argv_streams(self, argv: Any, *, timeout: int | None = None) -> tuple[int, str, str]:
+        self.calls.append(("run_argv_streams", tuple(argv)))
+        return super().run_argv_streams(argv, timeout=timeout)
+
+    def write_file(self, path: str, content: str) -> None:
+        self.calls.append(("write_file", (path,)))
+        return super().write_file(path, content)
+
+
+@pytest.mark.skipif(
+    not _fitness_toolchain_in_image(),
+    reason="docker daemon, or builders image without the fitness toolchain "
+    "(pytest/coverage/ruff), unavailable",
+)
+def test_real_evaluation_scores_every_signal_inside_one_container(
+    tmp_path: Path,
+) -> None:
+    """#614 closeout, against the REAL backend: `evaluate_candidate` under a
+    real ContainedEvaluation produces a Scorecard whose every executing
+    signal — vector, coverage run+report, red/green replay, static tools,
+    per-file collection, the mutation probe — ran inside the ONE container,
+    with the results crossing back as data and the host tree never touched."""
+    from maistro_bootstrap.builders.container_sandbox import DEFAULT_IMAGE
+    from maistro_rsi.candidate_fitness import evaluate_candidate
+
+    pkg, tests = tmp_path / "pkg", tmp_path / "tests"
+    pkg.mkdir()
+    tests.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    (tests / "test_calc.py").write_text(
+        "from pkg.calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+        encoding="utf-8",
+    )
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "add", "-A")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "baseline")
+    candidate_src = "def add(a, b):\n    return a + b\n\n\ndef multiply(a, b):\n    return a * b\n"
+    (pkg / "calc.py").write_text(candidate_src, encoding="utf-8")
+    (tests / "test_calc.py").write_text(
+        "from pkg.calc import add, multiply\n\n\n"
+        "def test_add():\n    assert add(2, 3) == 5\n\n"
+        "def test_multiply():\n    assert multiply(2, 3) == 6\n",
+        encoding="utf-8",
+    )
+    git("-c", "user.email=t@t", "-c", "user.name=t", "add", "-A")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "candidate")
+
+    contained = _RecordingEvaluation(tmp_path, image=DEFAULT_IMAGE, timeout=600)
+    with contained:
+        scorecard = evaluate_candidate(
+            tmp_path,
+            ["pkg/calc.py", "tests/test_calc.py"],
+            test_command="python -m pytest -q tests",
+            test_argv=("python", "-m", "pytest", "-q", "tests"),
+            coverage_source="pkg",
+            coverage_pytest_args="tests",
+            baseline_coverage=50.0,
+            baseline_ref="HEAD~1",
+            timeout=600,
+            contained=contained,
+        )
+
+    # A Scorecard WAS produced (the #496 refusal is gone) and the vector ran
+    # green inside the container.
+    gates = {gate.name: gate for gate in scorecard.gates}
+    assert gates["tests_pass"].passed
+
+    # AC-5 on the real backend: the coverage number came back as DATA from the
+    # container and drove an ENFORCED gate decision (baseline 50 was supplied,
+    # so "not enforced" would mean the transport failed).
+    assert gates["coverage_not_dropped"].passed
+    assert "not enforced" not in gates["coverage_not_dropped"].reason
+
+    # AC-1 on the real backend: every executing signal crossed the sandbox
+    # channel — nothing ran on the host.
+    statuses = [argv for kind, argv in contained.calls if kind == "run_argv"]
+    streams = [argv for kind, argv in contained.calls if kind == "run_argv_streams"]
+
+    def ran(prefix: tuple[str, ...], pool: list[tuple[str, ...]]) -> bool:
+        return any(argv[: len(prefix)] == prefix for argv in pool)
+
+    assert ran(("python", "-m", "pytest", "-q", "tests"), statuses)  # the vector
+    assert ran(("python", "-m", "coverage", "run"), streams)  # the coverage run
+    assert ran(("python", "-m", "coverage", "json"), streams)  # its report, as data
+    assert ran(
+        ("python", "-m", "pytest", "-q", "-p", "no:cacheprovider"), statuses
+    )  # the red/green replay + the probe's reruns
+    assert ran(("python", "-m", "pytest", "--collect-only"), streams)  # collection
+    assert ran(("python", "-m", "ruff"), streams)  # a static tool, in-image
+
+    # The mutation probe planted its mutant INSIDE the sandbox...
+    assert ("write_file", ("pkg/calc.py",)) in contained.calls
+    # ...and the host worktree was never the tree the mutant ran against.
+    assert (pkg / "calc.py").read_text(encoding="utf-8") == candidate_src

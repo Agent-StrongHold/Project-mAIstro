@@ -22,6 +22,7 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-rsi/tests/test_contained_validation.py
+  - packages/maistro-rsi/tests/test_contained_fitness.py
   - packages/maistro-rsi/tests/test_no_host_shell_execution.py
   - packages/hive-conductor/backend/tests/test_rsi_execution_containment.py
 source:
@@ -140,3 +141,31 @@ attestation: the sandbox must actually open, seed, and execute — every other
 failure raises `ContainmentUnavailable` (fail closed, ADR-093 decision 5).
 When #76 names its supported backend, this seam is the single integration
 point: swap the factory, keep the contract.
+
+### Closeout evidence (#614)
+
+The issue's closeout clause demands real-backend evidence for every signal in
+its AC-1 — "a locally skipped Docker test is not proof of the supported
+production path" — so the proof is executable, not prose:
+
+- `test_real_evaluation_scores_every_signal_inside_one_container`
+  (`packages/maistro-rsi/tests/test_contained_fitness.py`, docker-gated) runs
+  `evaluate_candidate` end-to-end under a real `ContainerBuilderSandbox` and
+  asserts per signal that it crossed the sandbox channel: the vector
+  (`python -m pytest -q <args>`), the coverage run and its report
+  (`python -m coverage run|json`), the red/green replay and the probe reruns
+  (`python -m pytest -q -p no:cacheprovider`), per-file collection
+  (`--collect-only`) and a static tool (`python -m ruff`). It also asserts
+  the closeout's data rule on the real backend — the coverage number came
+  back as data and drove an ENFORCED gate decision — and the mutation probe's
+  containment: the mutant is written inside the sandbox and the host worktree
+  is never the tree it ran against. Executed against a live daemon with a
+  `maistro-builders:latest` carrying the fitness toolchain: every gate green,
+  a Scorecard produced (the #496 refusal gone), host tree untouched.
+- The supported image must carry the fitness toolchain — the same list
+  `Dockerfile.rsi-runner` installs for the in-container loop (pytest,
+  coverage, ruff, mypy, bandit, radon, interrogate, vulture, pylint). An
+  image lacking a tool leaves that gate unenforced or its weight
+  renormalised by design (a missing tool is never a false pass), and the
+  end-to-end test names that requirement in its skip reason instead of
+  weakening its assertions.
