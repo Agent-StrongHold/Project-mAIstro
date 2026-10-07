@@ -129,6 +129,22 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Cancelling admitted work under a legacy two-method `TaskAdmitter` no longer
+  crashes, and no longer lies (#1338).** #1320 grew the protocol with
+  `cancel_run`, and `TaskQueue.cancel` called it unconditionally, so a
+  downstream adapter compiled against the earlier `admit`/`record_transition`
+  shape raised `AttributeError` on the first cancelled task. The queue now
+  probes the capability (`getattr`) — the Protocol is structural, so absence
+  is invisible to `isinstance`. An adapter without `cancel_run` keeps its
+  admitted work's receipt open and the refusal is logged as
+  `task_cancel_unsupported_by_admitter`: physical cancellation is genuinely
+  unavailable, and terminalizing the receipt CANCELLED over a Run nothing
+  signalled would make "stopped" mean "locally forgotten" (#1242). Work with
+  no canonical identity behind it (no admitter wired, no `run_id`) keeps its
+  documented receipt-only cancellation, visibly distinct from stopped physical
+  execution. Capable adapters still route cancellation through the canonical
+  Run/Attempt service unchanged.
+
 - **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
   always invokes Compose with explicit `-f` files, which disables Compose's own
   automatic override loading, so an override copied into the checkout was
@@ -144,6 +160,14 @@ or placeholder-only section.
   `MAISTRO_COMPOSE_PROFILES` activates profiles an override assigns.
 
 ### Security
+
+- **Boot Agent model tools retain governed admission and logical identity** (#1954 follow-up; [review finding](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1954#discussion_r4189499393)).
+  Clarification and model-fallback search use the persisted Run actor/scope and
+  configured model Binding through the existing Provider/Invocation boundary.
+  Agent, delegation, response-round and ToolCall identity distinguish intentional
+  calls while preserving replay. Ambiguous outcomes stop the strategy. The tool
+  deadline also bounds third-party adapters, without replacing their catalog or
+  retry authority. Hive's configured API prefix and omitted sampling are retained.
 
 - **Hive DAG model-backed tools use governed model egress (#1085, #1370).**
   `clarify` and the model fallback of `web_search` require a configured
@@ -283,6 +307,15 @@ or placeholder-only section.
   for tool …` and logs why. The standalone ReAct and Artificer strategy paths
   apply the same rule. Callers that construct Agents directly must wire a
   Sentinel whose permission table grants the tools they need.
+- **Layer-1 episodic recall is scoped to the current Project (#1047,
+  partial).** `DefaultContextAssemblyPolicy.layer1` filtered by `agent_id`
+  only, so an agent id used in two Projects/Workspaces recalled Project A's
+  AGENT-scope memories inside Project B. `layer1` (and the
+  `ContextAssemblyPolicy` protocol) now take a keyword-only `project_id`,
+  which `assemble` passes through to the working-memory hot projection and
+  both ranked and unranked durable fallback reads; a memory with no project
+  is not guessed into one. An empty `project_id` keeps the agent-wide recall;
+  nonempty values, including whitespace, remain exact filters.
 
 - **Retired the process-local Home Assistant confirmation store and
   `/v1/confirms` (#48, partial).** `GET /v1/confirms`, `GET
