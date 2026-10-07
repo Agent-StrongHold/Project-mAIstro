@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +15
+  packages/maistro-core/tests: +1
 ---
 
 # #1332 Chat-launched DAG runs are cancellable: correlation at canonical admission
@@ -61,5 +62,55 @@ file exempt as evidence;
 - `scripts/check-suite-inventory.py`: ok, 17 suites match the recorded
 inventory (hive-conductor 3434 collected = 3428 + 6 skipped);
 - branch-side delta vs merge-base touches no route, scope, or maistro-core
-file, and `execute_dag`'s `on_admitted` defaults to `None`, so direct-DAG
-admission behavior is untouched.
+  file, and `execute_dag`'s `on_admitted` defaults to `None`, so direct-DAG
+  admission behavior is untouched.
+
+## Repair-round evidence (2026-10-07, merge of develop `1df433bf5`)
+
+Merging develop (`#1334`, "route same-status evidence through the canonical
+NodeRun transition") broke the production-path regression at this head:
+`test_chat_launched_run_is_cancelled_by_projection_id_while_in_flight` failed
+with `RunIntegrityError: cannot transition NodeRun ...: Run ... is terminal
+(cancelled)` out of `POST /v1/dag-runs/{id}/cancel`.
+
+Root cause (reproduced at the adapter level, not inferred): the route fences
+the Run through the raw canonical store while the durable walk's registered
+executor holds the `DurableRunExecutionStore` adapter -- the production wiring
+(`get_engine().run_store` is `container.run_store`; the walk builds its own
+adapter). The canonical cascade therefore settles the NodeRun with the
+cascade's own error narrative while the durable projection still reads
+running; `_cancel_settled_node_runs` then replays the cancellation through the
+adapter with the caller's error text. `#1334`'s `error` clause in
+`_supplies_new_evidence` routed that same-status call to the canonical store,
+which can never accept it: `RUN_TRANSITIONS` has no same-status edges and
+`_refuse_under_terminal_run` freezes a closed Run's history. The replay raised
+AFTER the fence, aborting `cancel_run` -- on develop, for any durable-backed
+in-flight cancellation.
+
+Fix: `_supplies_new_evidence`
+(`packages/maistro-core/src/maistro/graph/durable_runs/execution_store.py`)
+now considers only an accepted outcome the row lacks -- the one same-status
+call the store can adjudicate (the legacy-completed migration `#1334` exists
+for). A differing `result`/`error` text is no longer routed; the replay
+converges the projection to canonical truth instead. All three `#1334`-pinned
+behaviors still hold (attaching legacy evidence reaches the store; a
+same-facts replay stays a no-op; conflicting evidence still raises from the
+migration validator).
+
+Independently executed at this head:
+
+- the new adapter regression
+  (`test_a_cancellation_replay_over_the_cascade_settled_row_converges`,
+  `packages/maistro-core/tests/graph/durable_runs/test_canonical_execution_store.py`)
+  was shown to FAIL against the restored defect (routing the differing error
+  text) with exactly the production `RunIntegrityError`, and to pass with the
+  fix;
+- `test_chat_launched_dag_cancel.py` 15 passed (was 14 passed + 1 failed
+  before the fix); `test_canonical_execution_store.py` 24 passed;
+- full `packages/maistro-core/tests` under CI's coverage producer: 13719
+  passed, 940 skipped, 1 xfailed; full
+  `packages/hive-conductor/backend/tests` under CI's producer: 3428 passed,
+  6 skipped;
+- `scripts/check-diff-coverage.py coverage.xml --base 1df433bf5` (CI's
+  script, develop merge-base, both producers combined): ok, changed source
+  files >=90% lines / 80% branch arcs, test files exempt as evidence.
