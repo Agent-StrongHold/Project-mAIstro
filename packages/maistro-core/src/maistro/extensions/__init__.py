@@ -25,6 +25,12 @@ Public surface of the ``maistro.extensions`` package, in three layers:
   reservation/refund/correction semantics, and aggregation by Workspace,
   extension, publisher, capability and time window. Attribution only: the
   canonical provider totals stay with ``maistro.quota``.
+- **M9-C3 preflight (issue #957)**: host-upgrade compatibility preflight —
+  :func:`run_preflight` evaluates the installed lock state against a target
+  host contract (:class:`TargetHostContract`) built from public manifest
+  metadata only, naming compatible, deprecated, migration-required and
+  blocking extensions before the upgrade is applied. The target release is
+  data, never imported code; nothing is activated.
 
 No layer executes extension code: verification, evaluation, authorization,
 resolution and metering all operate on declarations, identity and amounts
@@ -65,6 +71,13 @@ from maistro.extensions.metering import (
     ExtensionUsageConflict,
     ExtensionUsageEvent,
     UsageTotals,
+)
+from maistro.extensions.preflight import (
+    ExtensionStatus,
+    PreflightPolicy,
+    PreflightReport,
+    TargetHostContract,
+    run_preflight,
 )
 from maistro.extensions.resolution import (
     LOCK_FORMAT,
@@ -193,6 +206,7 @@ __all__ = [
     "ExtensionRegistryError",
     "ExtensionScope",
     "ExtensionState",
+    "ExtensionStatus",
     "ExtensionStore",
     "ExtensionTransition",
     "ExtensionUsageAmounts",
@@ -219,6 +233,8 @@ __all__ = [
     "PackageDigestMismatch",
     "PackageIdentity",
     "PackageSignatureInvalid",
+    "PreflightPolicy",
+    "PreflightReport",
     "PublisherIdentity",
     "PublisherKeyConflict",
     "RegistryProvenance",
@@ -230,6 +246,7 @@ __all__ = [
     "SemVer",
     "SkippedOptional",
     "SqliteExtensionInstallStore",
+    "TargetHostContract",
     "TrustClaim",
     "TrustEvidence",
     "TrustPolicy",
@@ -253,6 +270,7 @@ __all__ = [
     "normalize_permission",
     "parse_range",
     "resolve_lock",
+    "run_preflight",
     "sha256_hex",
     "verify_package_payload",
 ]
