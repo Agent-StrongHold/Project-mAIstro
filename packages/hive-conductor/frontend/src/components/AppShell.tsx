@@ -3,6 +3,7 @@ import { clearUiState } from "../lib/uiState";
 import { NavLink, Outlet } from "react-router-dom";
 import { useUser } from "../App";
 import { AppearanceToggle } from "./AppearanceToggle";
+import { DegradedBanner } from "./DegradedBanner";
 import { WorkspaceTabs } from "./WorkspaceTabs";
 import { WorkspaceShare } from "./WorkspaceShare";
 import { WorkspaceToolBindings } from "./WorkspaceToolBindings";
@@ -14,6 +15,7 @@ import {
   Brain,
   Plug,
   KeyRound,
+  Palette,
   Settings,
   Workflow,
   PlayCircle,
@@ -21,11 +23,17 @@ import {
   Network,
   Zap,
   Repeat,
+  ListTodo,
 } from "lucide-react";
 
 const fullNav = [
   { to: "/chat", icon: MessageCircle, label: "Chat" },
   { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
+  // #95: Design Studio is the parent creative-production surface, so it is a
+  // first-class nav destination at its canonical route. Canvas is a tool it
+  // consumes, not a sibling studio; the implementation-era /cli/canvas path is
+  // only a compatibility redirect (App.tsx).
+  { to: "/design-studio", icon: Palette, label: "Design Studio" },
   { to: "/dags", icon: Workflow, label: "DAG Builder" },
   { to: "/dag-runs", icon: PlayCircle, label: "DAG Runs" },
   // Missions was reachable only from `pocNav`, so retiring POC mode left a
@@ -33,6 +41,8 @@ const fullNav = [
   // renders, `App.tsx` still registers it, and a repo-wide search finds no
   // other Link or NavLink to it (#129).
   { to: "/missions", icon: Target, label: "Missions" },
+  // #99: editable backlog (board/list/detail) over the canonical service.
+  { to: "/backlog", icon: ListTodo, label: "Backlog" },
   { to: "/agents", icon: Bot, label: "Agents" },
   { to: "/topology", icon: Network, label: "Topology" },
   { to: "/optimizer", icon: Zap, label: "Optimizer" },
@@ -48,6 +58,7 @@ const fullNav = [
 
 async function logout() {
   try {
+    // frontend-typed-client: allow pre-existing banked raw fetch (was :60); line shifted by the #97 DegradedBanner import/render above.
     await fetch("/v1/auth/logout", { method: "POST", credentials: "same-origin" });
   } catch {
     // best effort — even if it fails, redirecting lets the user log in fresh.
@@ -182,6 +193,10 @@ export function AppShell({ children }: { children?: ReactNode }) {
         </button>
       </nav>
       <main className="main-content">
+        {/* M3-B7 (#97): degraded mode is a user-facing operating state —
+            the banner names every degraded optional capability from
+            /health and disappears on its own when they recover. */}
+        <DegradedBanner />
         <div className="workspace-toolbar">
           <WorkspaceTabs />
           <WorkspaceShare />

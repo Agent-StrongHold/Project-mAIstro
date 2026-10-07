@@ -1040,7 +1040,11 @@ class TestSetupGuardEdges:
 
     @pytest.mark.parametrize(
         "missing",
-        ["hardware_preset", "admin_password", "user_password"],
+        # hardware_preset used to be here, but #443 gave it the declared
+        # default ("auto"): the terminal path states the documented default
+        # and the SPA states its pick or the same default, so omitting it is
+        # no longer a contract violation. admin/user passwords stay required.
+        ["admin_password", "user_password"],
     )
     def test_missing_required_fields_are_refused_422(
         self, monkeypatch: pytest.MonkeyPatch, missing: str
@@ -1548,7 +1552,7 @@ class TestRestartDurability:
         first = State(db_path=db)
         persisted_first = PersistedStore(first)
         persisted_first.initialize()
-        rp.configure(store=rp.PersistedRegistrationRecordStore(persisted_first, first.flush))
+        rp.configure(store=rp.PersistedRegistrationRecordStore(persisted_first))
         invitations_first = JsonStore("registration_invitations", persisted=persisted_first)
         invitations_first.initialize()
         stores.registration_invitations = invitations_first
@@ -1561,7 +1565,7 @@ class TestRestartDurability:
         second = State(db_path=db)
         persisted_second = PersistedStore(second)
         persisted_second.initialize()
-        rp.configure(store=rp.PersistedRegistrationRecordStore(persisted_second, second.flush))
+        rp.configure(store=rp.PersistedRegistrationRecordStore(persisted_second))
         rehydrated = JsonStore("registration_invitations", persisted=persisted_second)
         rehydrated.initialize()
         stores.registration_invitations = rehydrated
@@ -1579,7 +1583,7 @@ class TestRestartDurability:
         third = State(db_path=db)
         persisted_third = PersistedStore(third)
         persisted_third.initialize()
-        rp.configure(store=rp.PersistedRegistrationRecordStore(persisted_third, third.flush))
+        rp.configure(store=rp.PersistedRegistrationRecordStore(persisted_third))
         closed_invitations = JsonStore("registration_invitations", persisted=persisted_third)
         closed_invitations.initialize()
         stores.registration_invitations = closed_invitations

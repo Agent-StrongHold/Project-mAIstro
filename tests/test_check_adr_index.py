@@ -64,6 +64,14 @@ def test_every_indexed_adr_exists() -> None:
     assert structural == []
 
 
+def test_every_adr_in_the_corpus_is_indexed() -> None:
+    """Completeness gate for [engine-113]: no ADR file without an index row."""
+    _problems, structural = _gate().audit()
+    missing = [item for item in structural if "missing from the index" in item]
+
+    assert missing == []
+
+
 # --- mutate the index --------------------------------------------------------
 
 
@@ -137,6 +145,101 @@ def test_a_created_date_change_in_front_matter_fails_the_index(sandbox) -> None:
     assert any(p.adr_id == "ADR-019" and p.field_name == "created" for p in problems)
 
 
+# --- nested discovery (#813 recursion reaches the index gate) -----------------
+#
+# The registry walks `docs/adr` recursively (#813), so a decision record may
+# live in a subdirectory; the index gate must see exactly the same corpus, or
+# a nested ADR could drift from its index row unseen. Each test below fails
+# against the pre-#813 non-recursive `glob` mutation: the corpus lookup then
+# finds no file at all, so the asserted disagreement/structure disappears.
+
+
+def test_a_nested_adr_cannot_disagree_with_the_index_unseen(sandbox) -> None:
+    adr = next(sandbox.ADR_DIR.glob("ADR-019-*.md"))
+    nested = sandbox.ADR_DIR / "nested"
+    nested.mkdir()
+    adr.rename(nested / adr.name)
+    moved = nested / adr.name
+    moved.write_text(moved.read_text().replace("status: Accepted", "status: Proposed", 1))
+
+    problems, structural = sandbox.audit()
+
+    assert any(p.adr_id == "ADR-019" and p.field_name == "status" for p in problems)
+    # Not "indexed but no ADR file carries that id": the file was found, and
+    # the failure is the disagreement itself.
+    assert structural == []
+
+
+def test_a_nested_adr_missing_from_the_index_is_structural(sandbox) -> None:
+    adr = next(sandbox.ADR_DIR.glob("ADR-019-*.md"))
+    nested = sandbox.ADR_DIR / "nested"
+    nested.mkdir()
+    adr.rename(nested / adr.name)
+    index = sandbox.INDEX
+    index.write_text(
+        "\n".join(
+            line for line in index.read_text().splitlines() if not line.startswith("| ADR-019 |")
+        )
+        + "\n"
+    )
+
+    _problems, structural = sandbox.audit()
+
+    assert "ADR-019: ADR exists but is missing from the index" in structural
+
+
+def test_add_missing_finds_a_nested_adr(sandbox, capsys: pytest.CaptureFixture[str]) -> None:
+    adr = next(sandbox.ADR_DIR.glob("ADR-019-*.md"))
+    nested = sandbox.ADR_DIR / "nested"
+    nested.mkdir()
+    adr.rename(nested / adr.name)
+    index = sandbox.INDEX
+    index.write_text(
+        "\n".join(
+            line for line in index.read_text().splitlines() if not line.startswith("| ADR-019 |")
+        )
+        + "\n"
+    )
+
+    assert sandbox.main(["--add-missing"]) == 0
+    assert "| ADR-019 |" in index.read_text()
+    assert "added 1 row(s)" in capsys.readouterr().out
+
+
+def test_an_exact_name_nested_adr_still_resolves(
+    sandbox, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The corpus lookup's second branch (#813 recursion reaches it too).
+
+    `_adr_path` prefers `ADR-NNN-<title>.md` but must also resolve a record
+    named exactly `ADR-NNN.md` — otherwise `--add-missing`/`rewrite` build the
+    row without git metadata and silently misplace the file. The branch was
+    the one changed line pair the recursive conversion left unexecuted: every
+    other test reaches it through the suffix form. Naming the file exactly and
+    nesting it exercises both dimensions of the lookup — exact-name fallback
+    and recursive discovery — so the pre-#813 non-recursive `glob` mutation
+    (no nested hit) and a removed fallback (no hit at all) both fail here.
+    """
+    adr = next(sandbox.ADR_DIR.glob("ADR-019-*.md"))
+    nested = sandbox.ADR_DIR / "nested"
+    nested.mkdir()
+    exact = nested / "ADR-019.md"
+    adr.rename(exact)
+
+    assert sandbox._adr_path("ADR-019") == exact
+
+    index = sandbox.INDEX
+    index.write_text(
+        "\n".join(
+            line for line in index.read_text().splitlines() if not line.startswith("| ADR-019 |")
+        )
+        + "\n"
+    )
+    assert sandbox.main(["--add-missing"]) == 0
+    assert "| ADR-019 |" in index.read_text()
+    assert "added 1 row(s)" in capsys.readouterr().out
+
+
 # --- the fix -----------------------------------------------------------------
 
 
@@ -175,10 +278,10 @@ def test_fix_leaves_the_reviewed_columns_alone(sandbox) -> None:
         if (m := row.match(line))
     }
     assert before == after
-    # 83 base rows + ADR-102 (this branch) + ADR-091626-ba4f + ADR-091726-7c2a
-    # + ADR-092326-97c4 + ADR-092526-4391 + ADR-092526-c41d... (develop merge):
-    # counted from the merged corpus, not asserted from either side alone.
-    assert len(after) == 89
+    # Row preservation, not a pinned corpus size: the corpus grows with every
+    # new ADR, and `before == after` already proves the reviewed columns
+    # survived; the count asserts no row vanished in the rewrite.
+    assert len(after) == len(before)
 
 
 def test_fix_is_idempotent(sandbox) -> None:

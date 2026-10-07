@@ -2,7 +2,7 @@
 #
 # Implements ADR-073126-c4e1 "Release and versioning process":
 #   §1 lockstep versioning from the root VERSION file,
-#   §2 annotated vX.Y.Z tags on `main` (rc exception: `integration`),
+#   §2 annotated vX.Y.Z tags on `main` (rc exception: `develop`, per ADR-095),
 #   §3 release.yml is the sole publish path — no local twine upload, no manual
 #      docker push,
 #   §4 the `release` GitHub environment approval is the publish gate: guard,
@@ -117,8 +117,9 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      # ADR §2: a final tag may only point at a commit on `main`; an rc is the
-      # sole exception and may point at `integration` so a candidate can soak.
+      # ADR §2 (as amended for ADR-095): a final tag may only point at a
+      # commit on `main`; an rc is the sole exception and may point at
+      # `develop`, the canonical integration branch, so a candidate can soak.
       # `merge-base --is-ancestor` accepts the branch tip itself, so "the tag
       # IS main's head" passes too.
       - name: Tag commit must descend from the release branch
@@ -131,7 +132,7 @@ jobs:
           if ! git merge-base --is-ancestor "${tag_sha}" "origin/${TARGET_BRANCH}"; then
             echo "::error::tag ${GITHUB_REF_NAME} (${tag_sha}) is not an ancestor of origin/${TARGET_BRANCH}."
             echo "::error::ADR-073126-c4e1 §2: a final vX.Y.Z tag may only point at a commit on main;"
-            echo "::error::an rc tag vX.Y.Z-rcN may point at integration. Tags are immutable — supersede"
+            echo "::error::an rc tag vX.Y.Z-rcN may point at develop. Tags are immutable — supersede"
             echo "::error::this one with a higher version rather than moving it."
             exit 1
           fi
@@ -214,10 +215,11 @@ jobs:
   # ---------------------------------------------------------------------------
   # wheels — build the publish set, twine check it, install+import it clean.
   #
-  # The publish set is FIVE packages. maistro-server, maistro-turing,
+  # The publish set is SIX packages. maistro-server, maistro-turing,
   # maistro-registry and maistro-design build in CI but are not published, and
   # hive-conductor is an application (no pyproject.toml) and is shipped as a
-  # container image, never as a wheel.
+  # container image, never as a wheel. maistro-ext-sdk joined with #949 —
+  # it is the surface external extension authors install.
   # ---------------------------------------------------------------------------
   wheels:
     name: Build + verify wheels
@@ -225,7 +227,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      PUBLISH_SET: "maistro-core maistro-canvas maistro-evolve maistro-rsi maistro-bootstrap"
+      PUBLISH_SET: "maistro-core maistro-canvas maistro-evolve maistro-rsi maistro-bootstrap maistro-ext-sdk"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -256,7 +258,7 @@ jobs:
 
       # Every artifact must be for exactly the version the tag names, and the
       # count must match the publish set — a silently skipped package would
-      # otherwise ship a release that is missing one of its five names.
+      # otherwise ship a release that is missing one of its six names.
       - name: Artifact filenames must match the tagged version
         env:
           VERSION: ${{ needs.guard.outputs.version }}
@@ -316,7 +318,7 @@ jobs:
   # when unconfigured) is a publish job that reports green having published
   # nothing, which is worse than a red one.
   #
-  # Required PyPI-side config, per package, for all five names:
+  # Required PyPI-side config, per package, for all six names:
   #   owner: Agent-StrongHold   repository: Project-mAIstro
   #   workflow: release.yml      environment: release
   # ---------------------------------------------------------------------------
@@ -424,7 +426,10 @@ jobs:
           file: Dockerfile
           push: true
           tags: ${{ steps.tags.outputs.maistro_engine }}
-          provenance: true
+          # mode=max, not the default min mode: the SLSA statement must name
+          # every base image it resolved, because the step below fails the
+          # release if any base digest is missing from the provenance (#349).
+          provenance: mode=max
           sbom: true
 
       - name: Build + push hive-conductor
@@ -435,7 +440,9 @@ jobs:
           file: packages/hive-conductor/Dockerfile
           push: true
           tags: ${{ steps.tags.outputs.hive_conductor }}
-          provenance: true
+          # Same as maistro-engine above: mode=max so base digests land in the
+          # SLSA statement the attestation check below demands (#349).
+          provenance: mode=max
           sbom: true
 
       # Pinned binary + hardcoded checksum, the same shape security.yml uses
@@ -492,6 +499,28 @@ jobs:
             echo "::endgroup::"
           done
 
+      # The released image's provenance must name every base digest its
+      # Dockerfile pins (#349). This is the check that stops the two from
+      # drifting apart silently: a base bumped in the Dockerfile without the
+      # build actually resolving it (or a provenance downgraded to min mode,
+      # which omits materials) fails the release here, before anything is
+      # announced. Digests come from scripts/check-image-pins.py --base-digests,
+      # the same registry quality/image-pins.json holds CI to.
+      - name: Provenance attestations must name every pinned base digest
+        env:
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
+          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign download attestation \
+            "${IMAGE_NAMESPACE}/maistro-engine@${ENGINE_DIGEST}" > engine.attestations.json
+          cosign download attestation \
+            "${IMAGE_NAMESPACE}/hive-conductor@${CONDUCTOR_DIGEST}" > conductor.attestations.json
+          python3 scripts/check-image-pins.py \
+            --verify-attestation engine.attestations.json --dockerfile Dockerfile
+          python3 scripts/check-image-pins.py \
+            --verify-attestation conductor.attestations.json --dockerfile packages/hive-conductor/Dockerfile
+
       - name: SBOMs for both images (syft, CycloneDX-JSON)
         env:
           ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
@@ -528,6 +557,12 @@ jobs:
             echo '```'
             echo "maistro-engine:  ${IMAGE_NAMESPACE}/maistro-engine@${ENGINE_DIGEST}"
             echo "hive-conductor:  ${IMAGE_NAMESPACE}/hive-conductor@${CONDUCTOR_DIGEST}"
+            echo '```'
+            echo
+            echo "### Pinned base/tool images (digest-pinned, #349)"
+            echo
+            echo '```'
+            python3 scripts/check-image-pins.py --base-digests Dockerfile packages/hive-conductor/Dockerfile
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
 
@@ -609,9 +644,9 @@ jobs:
 # Maintainer prerequisites — none of these can be done from inside this repo,
 # and the workflow fails loudly (never silently) without them:
 #
-#  1. PyPI + TestPyPI trusted publishers for all five publish-set names
+#  1. PyPI + TestPyPI trusted publishers for all six publish-set names
 #     (maistro-core, maistro-canvas, maistro-evolve, maistro-rsi,
-#     maistro-bootstrap), each configured with
+#     maistro-bootstrap, maistro-ext-sdk), each configured with
 #     owner Agent-StrongHold / repo Project-mAIstro / workflow release.yml /
 #     environment `release`. Until then the `pypi` job fails at upload.
 #  2. A GitHub environment named `release` with a required reviewer
@@ -620,7 +655,7 @@ jobs:
 #  3. ghcr.io packages for `maistro-engine` and `hive-conductor` must accept
 #     writes from GITHUB_TOKEN (the default for packages created by this repo;
 #     pre-existing packages may need the repo added under Package settings).
-#  4. `main` and `integration` branch protection, which §2 turns into a
+#  4. `develop` and `main` branch protection, which §2 turns into a
 #     release control: the ancestry guard is only as strong as the rules on
 #     the branch it checks against.
 # -----------------------------------------------------------------------------

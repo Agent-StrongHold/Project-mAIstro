@@ -77,7 +77,10 @@ class GovernedInvocationExecutionService:
     REQUIRE_APPROVAL is keyed to the logical effect so a later Attempt reuses
     the same durable human decision rather than manufacturing another request.
 
-    The container composes this wrapper for canonical effect consumers. Policy
+    The composition root installs this service for governed model effects and
+    for the rest of the canonical effect consumers, the retained PM polling
+    graph nodes among them, so policy decisions and terminal Invocation events
+    cover live provider calls rather than only direct test consumers. Policy
     events and approvals remain governed side effects; neither path may bypass
     the Invocation service or its effect identity.
     """
@@ -95,6 +98,17 @@ class GovernedInvocationExecutionService:
         self._policy = policy_evaluator
         self._approvals = approval_store
 
+    def with_policy_evaluator(
+        self, policy_evaluator: PolicyEvaluator
+    ) -> GovernedInvocationExecutionService:
+        """Share lifecycle/event authorities while narrowing policy for a consumer."""
+        return GovernedInvocationExecutionService(
+            invocation_service=self._invocations,
+            event_store=self._events,
+            policy_evaluator=policy_evaluator,
+            approval_store=self._approvals,
+        )
+
     async def latest_effect(
         self,
         *,
@@ -102,14 +116,22 @@ class GovernedInvocationExecutionService:
         run_id: str,
         node_run_id: str,
         effect_key: str,
+        logical_effect: bool = False,
     ) -> Invocation | None:
-        """Expose canonical effect history without bypassing governed execution."""
+        """Expose canonical effect history without bypassing governed execution.
+
+        ``logical_effect`` widens the read across NodeRuns, exactly as it does
+        on the service beneath. A caller that dispatched under an EFFECT_KEY
+        contract has to be able to ask the same question it was admitted
+        under, or the lookup silently misses its own completed effect.
+        """
 
         return await self._invocations.latest_effect(
             binding=binding,
             run_id=run_id,
             node_run_id=node_run_id,
             effect_key=effect_key,
+            logical_effect=logical_effect,
         )
 
     async def discover_ambiguous(self, *, stale_before: datetime) -> list[Invocation]:
@@ -197,6 +219,8 @@ class GovernedInvocationExecutionService:
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
+        actor_id: str = "",
+        logical_effect: bool = False,
     ) -> Invocation:
         context = InvocationPolicyContext(
             run_id=run_id,
@@ -204,7 +228,17 @@ class GovernedInvocationExecutionService:
             attempt_id=attempt_id,
             effect_key=effect_key,
         )
-        verdict = await self._policy(binding, request, context)
+        try:
+            verdict = await self._policy(binding, request, context)
+        except Exception:
+            # A policy dependency outage removes authority. Record the refusal
+            # through the same audit stream instead of falling through to a
+            # provider call or leaking a permissive default.
+            verdict = PolicyVerdict(
+                Decision.DENY,
+                reason="capability invocation policy unavailable",
+                rule="invocation.fail-closed",
+            )
         policy_event = await self._append_policy_event(
             binding=binding,
             context=context,
@@ -244,6 +278,8 @@ class GovernedInvocationExecutionService:
                 resolver=resolver,
                 executor=executor,
                 usage_from=usage_from,
+                actor_id=actor_id,
+                logical_effect=logical_effect,
             )
         except asyncio.CancelledError:
             await self._append_latest_terminal_event(

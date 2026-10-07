@@ -6,6 +6,8 @@ import pytest
 from models.schemas import ChatCompletionRequest
 from routes import chat, voice
 
+from maistro.identity import Principal
+
 # Model-reaching turns are admitted as canonical chat Runs (#1037).
 pytestmark = pytest.mark.usefixtures("chat_run_spine")
 
@@ -21,7 +23,7 @@ class FakeLLM:
 
 class FakeRequest:
     def __init__(self) -> None:
-        self.state = SimpleNamespace(user={"id": "user-1"})
+        self.state = SimpleNamespace(principal=Principal(user_id="user-1"))
 
 
 def test_conversation_boundary_strips_tools_and_extra_scope() -> None:

@@ -22,6 +22,7 @@ from maistro.memory.context_assembly import (
 from maistro.memory.episodic.ranking import keyword_overlap, score
 from maistro.memory.episodic.retrieval import ScoredEpisodicRetrieval
 from maistro.memory.episodic.store import InMemoryEpisodicStore
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier, Outcome
 from maistro.projects.store import InMemoryProjectStore
@@ -91,8 +92,8 @@ def _outcome(error: str, project_id: str) -> Outcome:
 @pytest.fixture
 def policy() -> DefaultContextAssemblyPolicy:
     return DefaultContextAssemblyPolicy(
-        episodic_store=InMemoryEpisodicStore(),
-        outcome_store=InMemoryOutcomeStore(),
+        episodic_store=InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+        outcome_store=InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
         project_store=InMemoryProjectStore(),
     )
 
@@ -169,7 +170,7 @@ class TestRankingGoesThroughTheProtocol:
         store = _ListOnlyEpisodicStore([_mem("deploy script", 0.4, "a")])
         policy = DefaultContextAssemblyPolicy(
             episodic_store=store,
-            outcome_store=InMemoryOutcomeStore(),
+            outcome_store=InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
             project_store=InMemoryProjectStore(),
         )
 
@@ -296,7 +297,7 @@ class TestOneFormula:
         """Weaker than the above and still worth having: the store ranks by the
         same shared function, so a store that stopped dropping non-matches, or
         sorted ascending, is caught here rather than in production."""
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         for row in (
             _mem("kubernetes ingress routing", 0.5, "irrelevant"),
             _mem("deploy the script", 0.5, "relevant"),

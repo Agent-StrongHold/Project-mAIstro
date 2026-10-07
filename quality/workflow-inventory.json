@@ -1,0 +1,212 @@
+{
+  "_comment": "One reviewed disposition for every GitHub workflow (#400). Until this inventory existed, `.github/workflows/` was governed only by the gates that happened to parse it: stream1-diagnostic.yml sat pinned to a branch deleted after #373 landed, swallowing every failure with `|| true`, unable to fail and reading to every agent as an active pattern. ACTIVE = event-triggered gate or automation; its trigger branches must be live remote refs (or reviewed retained_branches rows). MANUAL_DIAGNOSTIC = workflow_dispatch-only, an on-demand measurement an operator or agent invokes deliberately. RETIRED = removed; names `replaced_by` (what now covers its function), a `removal_owner` and a `removal_issue` -- a retirement is a decision, not permission to resurrect, so a RETIRED file that reappears on disk fails the gate. Checked by scripts/check-workflow-inventory.py in both directions (a workflow file with no entry fails; an entry naming no file fails), plus the three rots that let stream1 go unnoticed: dead trigger branches, pinned commits the repository no longer contains, and blanket error swallowing (`|| true`, `continue-on-error: true`) with no written reason within six lines. The gate does NOT verify that a workflow's declared job graph still does what its rationale says; rationales are reviewed prose, not proofs.",
+  "workflows": [
+    {
+      "id": "cage-guard",
+      "file": ".github/workflows/cage-guard.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["merge_group", "pull_request"],
+      "rationale": "Guards the workflow cage on PRs and merge-queue candidates: the write-safety and required-checks declarations must hold on the tree being merged."
+    },
+    {
+      "id": "ci",
+      "file": ".github/workflows/ci.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["merge_group", "pull_request", "push"],
+      "rationale": "The primary test gate: unit suites, service-backed suites (Postgres/MinIO), hive-conductor e2e, wheel imports and the docker build, on PRs, merge-queue candidates and pushes to the maintained branches."
+    },
+    {
+      "id": "codeql",
+      "file": ".github/workflows/codeql.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["pull_request", "push", "schedule"],
+      "rationale": "GitHub CodeQL static analysis over the Python code, on PRs, pushes to main and a weekly schedule."
+    },
+    {
+      "id": "compliance-evidence",
+      "file": ".github/workflows/compliance-evidence.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["push", "workflow_dispatch"],
+      "rationale": "Regenerates the compliance evidence bundle from quality/compliance-registry.json on pushes to the maintained branches; on-demand for evidence rebuilds."
+    },
+    {
+      "id": "devskim",
+      "file": ".github/workflows/devskim.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["pull_request", "push", "schedule"],
+      "rationale": "Microsoft DevSkim SAST on PRs, pushes to develop and a weekly schedule."
+    },
+    {
+      "id": "enqueue-merge-queue",
+      "file": ".github/workflows/enqueue-merge-queue.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["schedule", "workflow_dispatch", "workflow_run"],
+      "rationale": "Enqueues eligible PRs into the merge queue after a qualifying workflow_run, with a scheduled sweep and a manual entry point."
+    },
+    {
+      "id": "ethicalcheck",
+      "file": ".github/workflows/ethicalcheck.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "On-demand apisec ethicalcheck DAST probe against a deployed target; dispatch-only because it needs operator-supplied target input."
+    },
+    {
+      "id": "formal-conformance-nightly",
+      "file": ".github/workflows/formal-conformance-nightly.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["schedule", "workflow_dispatch"],
+      "rationale": "Nightly full Hypothesis property-conformance sweep on a schedule; dispatch for replaying a night on demand."
+    },
+    {
+      "id": "formal-conformance",
+      "file": ".github/workflows/formal-conformance.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["merge_group", "pull_request", "push"],
+      "rationale": "Property-based formal conformance on every PR, merge-queue candidate and push to the maintained branches."
+    },
+    {
+      "id": "gate-c",
+      "file": ".github/workflows/gate-c.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["merge_group", "pull_request", "push", "workflow_dispatch"],
+      "rationale": "Gateway smoke: installs through the documented path, proves the migration chain across the Postgres major upgrade, and tears down clean."
+    },
+    {
+      "id": "gates-ran",
+      "file": ".github/workflows/gates-ran.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["workflow_run"],
+      "rationale": "Execution-evidence publisher (#262 AC-2): after a CI/quality run, verifies every required check actually reported on the exact candidate head."
+    },
+    {
+      "id": "integration-scope",
+      "file": ".github/workflows/integration-scope.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["merge_group", "pull_request"],
+      "rationale": "Aggregate check for specialized integration evidence: every classifier-selected specialized job (services, e2e, containers) must have completed on the candidate."
+    },
+    {
+      "id": "merge-latency",
+      "file": ".github/workflows/merge-latency.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "On-demand merge-queue latency measurement over a caller-supplied window; a diagnostic, not a gate."
+    },
+    {
+      "id": "mutation",
+      "file": ".github/workflows/mutation.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "Full cosmic-ray mutation run on demand; the PR-blocking mutation subset lives in quality.yml, so this is the deep-measurement diagnostic."
+    },
+    {
+      "id": "quality",
+      "file": ".github/workflows/quality.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["merge_group", "pull_request", "push"],
+      "rationale": "The 8-pillar PR-blocking bag: coverage, property tests, code smells, types, mutation subset, contracts, architecture fitness, docstrings -- plus the repository's inventory and ratchet gates."
+    },
+    {
+      "id": "registry",
+      "file": ".github/workflows/registry.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["merge_group", "pull_request", "push"],
+      "rationale": "Spec/ADR registry conformance: the ADR and SPEC corpus must stay machine-checkable against the registry CLI."
+    },
+    {
+      "id": "release",
+      "file": ".github/workflows/release.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["push"],
+      "rationale": "Publishes the release on v* tags: builds the pinned images, scans, signs and pushes with provenance."
+    },
+    {
+      "id": "release-installer",
+      "file": ".github/workflows/release-installer.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["push", "workflow_dispatch"],
+      "rationale": "Builds and attaches the platform installers on v* tags (push) with a dispatch entry point for rebuilds."
+    },
+    {
+      "id": "rsi-harvest",
+      "file": ".github/workflows/rsi-harvest.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "On-demand RSI harvest over operator-supplied inputs; runs the self-improvement loop in its container boundary by explicit request only."
+    },
+    {
+      "id": "runner-cost",
+      "file": ".github/workflows/runner-cost.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "On-demand runner cost census over a caller-supplied window; a measurement diagnostic, never blocking."
+    },
+    {
+      "id": "security",
+      "file": ".github/workflows/security.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["merge_group", "pull_request", "push", "schedule"],
+      "rationale": "Security bag: Bandit, Semgrep, gitleaks, Trivy/Grype container scans, SBOM and signing on PRs, merge-queue candidates, maintained-branch pushes and a daily schedule."
+    },
+    {
+      "id": "vulture-ratchet",
+      "file": ".github/workflows/vulture-ratchet.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["merge_group", "pull_request", "push"],
+      "rationale": "Dead-code ratchet: vulture findings are held to the reviewed per-identity ledger in quality/vulture-baseline.json on every PR and merge-queue candidate."
+    },
+    {
+      "id": "stream1-diagnostic",
+      "file": ".github/workflows/stream1-diagnostic.yml",
+      "disposition": "RETIRED",
+      "removal_issue": 400,
+      "removal_owner": "@BlakeMatthews-dev",
+      "replaced_by": [
+        ".github/workflows/vulture-ratchet.yml (vulture delta, ratcheted against quality/vulture-baseline.json)",
+        "scripts/check-suite-inventory.py (collected node-ID inventory, stricter than the annotation scan)",
+        ".github/workflows/ci.yml and .github/workflows/quality.yml (root test failures are blocking, not advisory)"
+      ],
+      "rationale": "The 'Stream 1 Diagnostic' workflow triggered only on feat/execution-runtime-spine-373 -- a branch deleted after #373 landed -- and pinned a baseline commit that no longer exists, while every step ended in `|| true`. It could never run, and had it run it could never fail: the definition of an always-green precedent (#400). Removed; its three annotations are covered by blocking gates."
+    },
+    {
+      "id": "working-memory-bench",
+      "file": ".github/workflows/working-memory-bench.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "On-demand #301 / ADR-082226-5104 §8 working-memory projection benchmark (per-projection RAM, hydration cost, recall and traversal latency at caller-supplied concurrency); deterministic and offline, run when the memory substrate changes — a measurement, not a gate."
+    },
+    {
+      "id": "model-routing-bench",
+      "file": ".github/workflows/model-routing-bench.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "On-demand #914 / epic #900 M8-B1 model-routing benchmark (shipped CostAwareRouter vs task-conditioned candidate policies over one shared corpus and one shared, policy-independent outcome table); deterministic and offline, run when the router, the model catalog, or the outcome model changes — a measurement, not a gate. Wires no candidate policy into production; the research disposition lives in docs/research/914-task-conditioned-model-routing.md."
+    },
+    {
+      "id": "outcome-routing-bench",
+      "file": ".github/workflows/outcome-routing-bench.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "On-demand #916 (RESEARCH M8-B3) outcome-learned routing benchmark (scripts/bench_outcome_routing.py: contextual-bandit policies — shrunk contextual means, eps-greedy, LinUCB, contextual Thompson — vs the shipped static scorer under delayed, sparsified, nonstationary feedback, plus clipped-IPS/doubly-robust off-policy evaluation); deterministic and offline, re-measured when the router, the world model, or the policies change — a measurement, not a gate. Wires no learner into production; the research disposition lives in docs/research/916-contextual-bandit-model-routing.md."
+    },
+    {
+      "id": "speculative-parallel-bench",
+      "file": ".github/workflows/speculative-parallel-bench.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "On-demand #917 / epic #900 M8-B4 speculative-parallel model-call benchmark (serial-fallback vs single-strong vs parallel-early-stop vs parallel-verifier over the governed model seam); deterministic and offline, run when the candidate-policy assumptions change — a measurement, not a gate."
+    }
+  ],
+  "retained_branches": [
+    {
+      "branch": "integration",
+      "owner": "@BlakeMatthews-dev",
+      "reason": "Retired branch per .github/branch-protection.json ('The live topology is topic branches -> develop -> main.'), yet still named in the push.branches filter of ci/quality/security/formal-conformance/gate-c/registry/vulture-ratchet/compliance-evidence/devskim. Retained so the gate set still applies if the branch is ever re-created; deleting the retired triggers is owned cleanup, and this row is what makes the dead reference visible instead of silent (SPEC-231 records the four-tier model it belonged to)."
+    },
+    {
+      "branch": "merge/main-into-integration",
+      "owner": "@BlakeMatthews-dev",
+      "reason": "Transient maintenance branch of the retired integration flow, still named in ci.yml's push.branches (SPEC-231). Same retention rationale as `integration`: the trigger is a reviewed decision, and a push to a re-created branch must still receive the gate set."
+    }
+  ]
+}

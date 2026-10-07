@@ -15,7 +15,11 @@ first, deliberately small increment underneath it:
   - **Tests gate every promotion.** A cycle's candidate is promoted to the new
     baseline only if it (a) actually changed something and (b) the repo's own
     test command passes. This is the recursive ratchet — each accepted cycle
-    becomes the base the next cycle builds on.
+    becomes the base the next cycle builds on. Since #392, a source-touching
+    candidate must additionally prove fail-first: a changed test that fails on
+    the exact base revision for the intended reason and passes on the candidate
+    (see ``maistro_rsi.fail_first``); declared refactors/docs owe their explicit
+    alternative evidence instead.
   - **Fixed cap.** The loop runs at most ``max_cycles`` cycles, so a first run
     is observable and can't run away. (Quota-headroom pacing via
     `maistro_rsi.quota_burn` is the next increment, not this one.)
@@ -86,15 +90,21 @@ def _prompt_cache_enabled() -> bool:
 
 _DEFAULT_OBJECTIVE = (
     "Make exactly one small, safe, self-contained improvement to this codebase, "
-    "in priority order: fix a real bug (test-first: add the failing test, then the "
-    "fix), add a focused unit test for currently-untested behavior, strengthen a "
-    "weak test assertion — and only if the code is already well-tested, improve a "
-    "type hint or docstring. Read files before you edit them, keep the diff "
-    "minimal, and do not break existing behavior. "
-    "Use only the read_file, write_file and search tools — do NOT run git, "
-    "commit, or shell commands: the harness stages, commits, and runs the tests "
-    "for you after you finish. If you cannot find a safe improvement, make no "
-    "changes and stop."
+    "in priority order: fix a real bug, or strengthen a weak test assertion — "
+    "both test-first: add or extend a test that FAILS against the current code "
+    "for the exact reason your change cures, then make it pass; alternatively add "
+    "a focused unit test for currently-untested behavior WITHOUT touching source "
+    "code. Every source change REQUIRES that failing-first proof: the harness "
+    "reverts your source change and re-runs your test to verify it fails on the "
+    "base revision — a test that already passes before your change (a behavior "
+    "snapshot) is NOT improvement evidence, and a source change without such a "
+    "failing test is rejected, docstring/type-hint polish included. If the code "
+    "is already well-tested and correct, make no changes and stop. Read files "
+    "before you edit them, keep the diff minimal, and do not break existing "
+    "behavior. Use only the read_file, write_file and search tools — do NOT run "
+    "git, commit, or shell commands: the harness stages, commits, and runs the "
+    "tests for you after you finish. If you cannot find a safe improvement, make "
+    "no changes and stop."
 )
 
 
@@ -103,22 +113,34 @@ def _targeted_objective(path: str) -> str:
 
     Naming the file removes the discovery step that weak models fail at (they
     can't reliably search for a target), so each cycle is a concrete, bounded
-    edit of a known file. Test-first by default: substantive verification work
-    (a new test, a stronger assertion, a bug-fix) outranks docstring/type
-    polish, which is a fallback only — mirroring the fitness signals
-    (new_test/coverage-delta reward, doc-regression veto).
+    edit of a known file. Test-first with an enforced fail-first proof (#392):
+    every source change must be justified by a test that fails on the current
+    code and passes after — the harness reverts the source change and re-runs
+    the test to verify. Test-only work (new cases, stronger assertions on
+    correct code) stays welcome and is judged by coverage/assertion strength;
+    docstring/type polish is no longer offered as a source-editing fallback,
+    because it cannot carry that proof — if the module needs none of the
+    above, the agent makes no changes. Mirrors the fitness contract enforced
+    by ``fail_first_gate``.
     """
     return (
-        f"Improve the module `{path}`, in priority order: (1) add ONE focused unit test for "
-        f"currently-untested behavior in it — create or extend its test file — and make sure it "
-        f"passes; (2) fix a real bug if you find one, test-first (add the failing test, then the "
-        f"fix); (3) strengthen a test assertion that checks too little. Only if the module is "
-        f"already well-tested and correct, improve a type hint or docstring instead. First read "
-        f"`{path}` with the read_file tool; use edit_file for targeted exact-string changes and "
-        f"write_file only to create a new test file — do NOT rewrite existing files wholesale, "
-        f"and do not reformat or touch lines unrelated to your change. Keep the diff minimal and "
-        f"do not alter runtime behavior except to fix a bug. Edit only this module and its test "
-        f"file. Do not run git or shell commands."
+        f"Improve the module `{path}`, in priority order: (1) fix a real bug in it "
+        f"test-first — add or extend its test with a case that FAILS against the "
+        f"current code for the reason your fix cures, then make it pass; (2) "
+        f"strengthen a test assertion that checks too little, so it fails against "
+        f"the current code and passes after your strengthening; (3) add ONE focused "
+        f"unit test for currently-untested behavior — create or extend its test "
+        f"file — without changing any source file. Every change to source code "
+        f"REQUIRES that failing-first test: the harness reverts your source change "
+        f"and re-runs your test to prove it fails on the base revision; a test that "
+        f"already passes before your change does not count as evidence, and source "
+        f"edits without that proof (docstring or type-hint polish included) are "
+        f"rejected. First read `{path}` with the read_file tool; use edit_file for "
+        f"targeted exact-string changes and write_file only to create a new test "
+        f"file — do NOT rewrite existing files wholesale, and do not reformat or "
+        f"touch lines unrelated to your change. Keep the diff minimal and do not "
+        f"alter runtime behavior except to fix a bug. Edit only this module and its "
+        f"test file. Do not run git or shell commands."
     )
 
 
@@ -330,10 +352,32 @@ def _fixer_objective(path: str, kind: ImprovementKind, instruction: str) -> str:
             "compatibility unless the enhancement explicitly supersedes it. Use read_file, "
             "edit_file and write_file across the files involved. Do not run git or shell commands."
         )
+    if kind in (ImprovementKind.REFACTOR, ImprovementKind.DOC):
+        # Declared behavior-preserving polish (#392): the explicit ALTERNATIVE
+        # evidence contract — no failing test wanted (behavior must not move,
+        # so there is nothing to turn red), acceptance rides a measured
+        # code-quality improvement against the baseline plus the universal
+        # gates (all tests green, coverage not dropped).
+        return (
+            f"Improve this module WITHOUT changing behavior (`{path}`):\n  {instruction}\n"
+            "This is a declared refactor/polish: do NOT change what the code does, and "
+            "do not manufacture a failing test — none is wanted, because behavior must "
+            "not move and every existing test must stay green. Make the improvement "
+            "measurable: clearer names, less duplication, lower complexity, or more "
+            "precise docstrings/type hints — the harness accepts it only if the "
+            "module's static code-quality score measurably improves against the "
+            "baseline. Keep the diff minimal and focused on this one item — do not "
+            "reformat or touch unrelated lines. Edit only this module and its test "
+            "file, using read_file, edit_file and write_file. Do not run git or shell "
+            "commands."
+        )
     return (
         f"Implement this specific improvement to `{path}`:\n  {instruction}\n"
         "Work test-first: add or extend the test for this module (create or extend its test file) "
-        "so it fails against the current code, then change the code until it passes. Keep the diff "
+        "so it fails against the current code FOR THE REASON your change cures, then change the "
+        "code until it passes. The harness verifies the proof by reverting your source change "
+        "and re-running your test — a test that already passes before your change does not "
+        "count. Keep the diff "
         "minimal and focused on this one item — do not reformat or touch unrelated lines, and all "
         "existing tests must stay green. Edit only this module and its test file, using read_file, "
         "edit_file and write_file. Do not run git or shell commands."
@@ -926,6 +970,16 @@ class LocalRsiConfig:
     # change. Does NOT cover a test-config edit that shrinks the inventory
     # (that is presumed hiding and always vetoes).
     allow_test_inventory_shrink: bool = False
+    # Governance override for the evaluator-oracle veto (#109): when True, a
+    # candidate that mutated the score-defining artifacts (the scorer, its
+    # pinning tests, the scenario corpora, ratchet baselines, AC trees) is
+    # still scored — but never silently: the veto evidence (mutated paths plus
+    # the trusted base evaluator digest) rides the scorecard and the promotion
+    # record for human review. Default False: RSI may satisfy the oracle but
+    # may not edit it in the diff that is judged against it. This governs
+    # CANDIDATE diffs only — human edits to the oracle go through ordinary
+    # reviewed PRs and never pass through this loop.
+    allow_evaluator_mutation: bool = False
     # Checkpointing for long runs. Every ``report_every`` cycles (0 = only at the
     # end), write a progress report (markdown + JSON) into ``report_dir`` and
     # refresh a rolling, harvestable patch export of everything promoted so far.
@@ -1357,7 +1411,15 @@ class LocalRsiLoop:
         """
         self._last_scout_model = None
         target = self._target_for_cycle(index)
-        fallback = [(self._objective_for_cycle(index), BudgetTier.BOUNDED, ImprovementKind.DOC)]
+        # The generic slot is declared NEW_TEST, not DOC (#392): the targeted/
+        # generic objective's ladder is verification work (bug-fix → assertion →
+        # new test), and NEW_TEST resolves to the BEHAVIOR evidence contract, so
+        # a source-touching candidate under the default objective owes the same
+        # fail-first proof as the scout-typed fixer slots. DOC would resolve to
+        # the refactor contract and let the default objective dodge fail-first.
+        fallback = [
+            (self._objective_for_cycle(index), BudgetTier.BOUNDED, ImprovementKind.NEW_TEST)
+        ]
         if not (self._config.scout and target):
             return fallback
         try:
@@ -1616,6 +1678,61 @@ class LocalRsiLoop:
         status = _git(cwd, "status", "--porcelain")
         return [ln[3:].strip() for ln in status.stdout.splitlines() if ln.strip()]
 
+    def _evaluator_integrity(self, cycle_dir: Path) -> tuple[list[str], str | None]:
+        """(#109) Did this candidate's committed diff mutate the evaluator oracle?
+
+        Returns ``(mutations, trusted_digest)``: the oracle paths the candidate
+        touched (edits, deletes, renames/moves, symlink swaps, committed
+        generated artifacts) and the SHA-256 of the score-defining artifacts at
+        the trusted base revision. Fail-closed — a git failure counts as a
+        mutation, because an integrity check that can be broken is broken in
+        exactly the direction that hides an edit.
+        """
+        from maistro_rsi.evaluator_oracle import oracle_digest, oracle_mutations
+
+        try:
+            mutations = oracle_mutations(cycle_dir, self._config.baseline_branch)
+            digest: str | None = oracle_digest(cycle_dir, self._config.baseline_branch)
+        except Exception as exc:  # pragma: no cover — defensive, fail closed
+            return [f"<evaluator integrity check failed: {exc}>"], None
+        return mutations, digest
+
+    def _veto_evaluator_mutation(
+        self,
+        index: int,
+        r: _VariantResult,
+        mutations: list[str],
+        digest: str | None,
+    ) -> None:
+        """(#109) Reject a candidate whose diff mutated the scoring oracle, BEFORE
+        the mutated oracle can produce its acceptance evidence.
+
+        Both acceptance paths route through here: with ``use_fitness`` the
+        scorecard never runs against the mutated tree (``evaluate_candidate``
+        short-circuits on the same evidence), and without it the bare test
+        command — itself part of the oracle — never executes. ``accepted``
+        stays False, so the #302 promotion prerequisites can never be met from
+        oracle self-mutation.
+        """
+        r.accepted = False
+        r.tests_passed = False
+        r.composite = 0.0
+        r.trace = {
+            "evaluator": {
+                "verdict": "vetoed",
+                "mutations": mutations,
+                "evaluator_digest": digest,
+                "authorized": False,
+            }
+        }
+        r.note = "evaluator oracle mutated; scoring withheld (#109): " + "; ".join(mutations[:5])
+        logger.warning(
+            "rsi_local_evaluator_mutation_vetoed",
+            index=index,
+            variant=r.label,
+            mutations=mutations[:10],
+        )
+
     def _load_saved_patches(self) -> None:
         """Resume from a prior run: reapply all saved patches to the baseline.
 
@@ -1735,7 +1852,7 @@ class LocalRsiLoop:
         competitor: Competitor,
         objective: str,
         budget: BudgetTier = BudgetTier.BOUNDED,
-        kind: ImprovementKind = ImprovementKind.DOC,
+        kind: ImprovementKind = ImprovementKind.NEW_TEST,
     ) -> _VariantResult:
         """Run one competitor in its own worktree off the baseline and score it.
 
@@ -1774,19 +1891,17 @@ class LocalRsiLoop:
                 "-m",
                 f"RSI cycle {index} [{competitor.label}]: {objective[:50]}",
             )
-            if self._config.use_fitness:
-                (
-                    r.accepted,
-                    r.composite,
-                    r.note,
-                    r.tests_passed,
-                    r.regression_judge_score,
-                    r.trace,
-                ) = self._fitness_decision(index, cdir, r.changed_files, target=objective)
-            else:
-                r.tests_passed = self._run_tests(cdir)
-                r.accepted = r.tests_passed
-                r.note = "" if r.tests_passed else "test command failed"
+            # Evaluator-oracle immunity (#109): enforced BEFORE either scoring
+            # path runs. A candidate that mutated the score-defining artifacts
+            # is rejected without its modified oracle ever executing — the
+            # test command and the fitness gates ARE the oracle, so running
+            # either against the mutated tree would let the candidate judge
+            # its own diff.
+            mutations, oracle_digest_value = self._evaluator_integrity(cdir)
+            if mutations and not self._config.allow_evaluator_mutation:
+                self._veto_evaluator_mutation(index, r, mutations, oracle_digest_value)
+                return r
+            self._score_variant(r, index, cdir, objective, kind, mutations, oracle_digest_value)
         except Exception as exc:
             r.errored = True
             if _is_transient_provider_error(str(exc)):
@@ -1829,6 +1944,57 @@ class LocalRsiLoop:
             note=r.note,
         )
         return r
+
+    def _score_variant(
+        self,
+        r: _VariantResult,
+        index: int,
+        cdir: Path,
+        objective: str,
+        kind: ImprovementKind,
+        mutations: list[str],
+        oracle_digest_value: str | None,
+    ) -> None:
+        """Set acceptance evidence on ``r`` from the trusted scoring path.
+
+        One branch per scoring path, both fed the evaluator-oracle verdict
+        (#109): fitness derives its gate detail from it, and the bare test
+        command path — which has no scorecard — stashes the verdict in
+        ``r.trace`` for _annotate_promotion on EVERY bare-path decision, not
+        only authorized overrides: a promotion accepted by the trusted oracle
+        must still name the oracle version that judged it — digest,
+        possibly-empty mutation list, authorization — or the export manifest
+        emits a null evaluator_digest and the promotion can never be replayed
+        against the oracle that produced it.
+        """
+        if self._config.use_fitness:
+            (
+                r.accepted,
+                r.composite,
+                r.note,
+                r.tests_passed,
+                r.regression_judge_score,
+                r.trace,
+            ) = self._fitness_decision(
+                index,
+                cdir,
+                r.changed_files,
+                target=objective,
+                kind=kind,
+                evaluator_evidence=(mutations, oracle_digest_value),
+            )
+            return
+        r.trace = {
+            "evaluator": {
+                "verdict": "authorized" if mutations else "clean",
+                "mutations": mutations,
+                "evaluator_digest": oracle_digest_value,
+                "authorized": bool(mutations),
+            }
+        }
+        r.tests_passed = self._run_tests(cdir)
+        r.accepted = r.tests_passed
+        r.note = "" if r.tests_passed else "test command failed"
 
     def _apply_to_merge(self, merge_dir: Path, variant: _VariantResult) -> bool:
         patch = _git(
@@ -2063,9 +2229,18 @@ class LocalRsiLoop:
                         score_b=b.composite,
                     )
         for v in fought:
-            elo = self._elo.get_avg_elo(v.genome_id)
-            if elo > 0:
-                by_id[v.genome_id].harness_params["avg_elo"] = elo
+            # Battle-evidence gate (#853): fitness's Elo term needs elo_battles.
+            battles = self._elo.get_total_battles(v.genome_id)
+            if battles > 0:
+                genome = by_id[v.genome_id]
+                genome.harness_params["avg_elo"] = self._elo.get_avg_elo(v.genome_id)
+                genome.harness_params["elo_battles"] = battles
+                # Write-back is mandatory: a DB-backed store's list_all()
+                # deserializes fresh objects, so without add() the evidence
+                # above lands on a throwaway copy — invisible to every later
+                # get()/fitness reader and lost on restart. Same write-back
+                # _fold_cycle_scores performs for the same reason.
+                self._population.add(genome)
 
     def _refit_cull_breed(self) -> list[Any]:
         """Fitness (reliability-multiplied) → cull the weakest → breed one child.
@@ -2279,7 +2454,7 @@ class LocalRsiLoop:
         )
         if self._config.use_fitness:
             m_ok, m_comp, reason, _tp, m_judge, m_trace = self._fitness_decision(
-                index, merge_dir, changed_files
+                index, merge_dir, changed_files, kind=kept[0].kind
             )
             if not m_ok:
                 logger.info("rsi_local_merge_regressed", index=index, reason=reason)
@@ -2356,15 +2531,32 @@ class LocalRsiLoop:
         return verdict
 
     def _fitness_decision(
-        self, index: int, cycle_dir: Path, changed_files: list[str], *, target: str = ""
+        self,
+        index: int,
+        cycle_dir: Path,
+        changed_files: list[str],
+        *,
+        target: str = "",
+        kind: ImprovementKind | None = None,
+        evaluator_evidence: tuple[list[str], str | None] | None = None,
     ) -> tuple[bool, float, str, bool, float | None, dict[str, Any]]:
         """Build the multi-signal Scorecard for the candidate and return
         (accepted, composite, reject_reason, tests_passed, regression_judge_score,
         trace). Logs explain(). The judge score (None if the judge never ran)
         survives past its pass/fail gate so the checkpoint-time RLPHD reviewer can
         use it as prediction evidence, not just the boolean veto. ``trace`` is a
-        compact per-gate/reward bundle for the commit's git-notes record."""
+        compact per-gate/reward bundle for the commit's git-notes record.
+        ``kind`` is the slot's declared ImprovementKind — the fail-first contract's
+        declaration input (#392); None keeps the strict default (source-touching
+        ⇒ behavior contract). ``evaluator_evidence`` is the precomputed (#109)
+        integrity verdict ``(mutations, trusted_digest)``; when absent it is
+        resolved here, so merge-dir re-scoring gets the same oracle immunity.
+        """
         from maistro_rsi.candidate_fitness import evaluate_candidate
+
+        if evaluator_evidence is None:
+            evaluator_evidence = self._evaluator_integrity(cycle_dir)
+        evaluator_mutations, evaluator_digest = evaluator_evidence
 
         scorecard = evaluate_candidate(
             cycle_dir,
@@ -2380,6 +2572,10 @@ class LocalRsiLoop:
             target=target,
             baseline_inventory=self._baseline_test_inventory(),
             allow_test_inventory_shrink=self._config.allow_test_inventory_shrink,
+            declared_kind=kind,
+            evaluator_digest=evaluator_digest,
+            evaluator_mutations=evaluator_mutations,
+            evaluator_mutation_authorized=self._config.allow_evaluator_mutation,
         )
         logger.info(
             "rsi_local_scorecard",
@@ -2398,6 +2594,23 @@ class LocalRsiLoop:
         # None when the judge was unavailable (fail closed, #307). That None
         # must survive to the promotion evidence, never coerced to a number.
         judge_score = float(judge_raw) if isinstance(judge_raw, int | float) else None
+        trace = self._scorecard_trace(scorecard)
+        return (
+            scorecard.accepted,
+            scorecard.composite,
+            reason,
+            tests_passed,
+            judge_score,
+            trace,
+        )
+
+    @staticmethod
+    def _scorecard_trace(scorecard: Any) -> dict[str, Any]:
+        """The compact per-gate/reward bundle behind a fitness decision — the
+        promotion record's evidence payload. Gate details ride along in full
+        (never silent): the protected inventory (#306), the fail-first proof
+        (#392), and the evaluator-oracle verdict with its trusted digest
+        (#109)."""
         mut_raw = next(
             (g.detail.get("score") for g in scorecard.gates if g.name == "tests_pin_behavior"),
             None,
@@ -2407,22 +2620,16 @@ class LocalRsiLoop:
             "composite": scorecard.composite,
             "mutation_score": float(mut_raw) if isinstance(mut_raw, int | float) else None,
         }
-        # Inventory evidence rides the promotion record (#306): the gate's
-        # counts and (capped) deleted/added lists, including the override flag
-        # when a governance-authorized shrink passed — never silent.
-        inv_detail = next(
-            (g.detail for g in scorecard.gates if g.name == "protected_test_inventory"), None
+        evidence_keys = (
+            ("protected_test_inventory", "inventory"),
+            ("fail_first_evidence", "fail_first"),
+            ("evaluator_integrity", "evaluator"),
         )
-        if inv_detail:
-            trace["inventory"] = dict(inv_detail)
-        return (
-            scorecard.accepted,
-            scorecard.composite,
-            reason,
-            tests_passed,
-            judge_score,
-            trace,
-        )
+        for gate_name, trace_key in evidence_keys:
+            detail = next((g.detail for g in scorecard.gates if g.name == gate_name), None)
+            if detail:
+                trace[trace_key] = dict(detail)
+        return trace
 
     def _annotate_promotion(
         self,
@@ -2471,6 +2678,8 @@ class LocalRsiLoop:
             gates={str(k): bool(v) for k, v in gates.items()},
             note=summary,
             inventory=source.get("inventory"),
+            fail_first=source.get("fail_first"),
+            evaluator=source.get("evaluator"),
         )
         return write_trace_note(self._baseline, sha, trace_note)
 
@@ -2651,13 +2860,14 @@ class LocalRsiLoop:
             logger.warning("rsi_local_checkpoint_error", label=label, error=str(exc))
 
     def _review_promotions(self, result: LocalRsiResult, report_dir: Path) -> None:
-        """Checkpoint-time RLPHD gate (promotion_review.py / SPEC-248): any
-        promotion since the last review pass whose predicted approval
-        confidence falls below its action-class's adaptive theta is REVERTED
-        NOW — so nothing keeps building on top of it — but the original patch
-        is saved to ``report_dir/flagged/``, queued for a human decision that
-        feeds straight back into the same dual-signal, surprise-weighted
-        update RLPHD already uses for tool-call approval.
+        """Checkpoint-time review pass (#110 / M4-A3): promotions are split by
+        classification into the mechanical non-judgment path (quarantine-clean,
+        protected gates and ratchets green, decisive evidence — no LLM and no
+        human judge, kept with its evidence) and the judgment path (sensitive
+        surface, governance override, or weak evidence — RLPHD predicts, and a
+        low-confidence promotion is REVERTED NOW — so nothing keeps building
+        on top of it — with the original patch saved to ``report_dir/flagged/``
+        for a human approve/reject/revise/resume ruling).
 
         A promotion a LATER commit already depends on (touched the same file)
         is never reverted: supersession makes a clean revert impossible
@@ -2668,7 +2878,7 @@ class LocalRsiLoop:
         if not self._config.promotion_review or self._last_reviewed_ref is None:
             return
         try:
-            from maistro_rsi.promotion_review import RlphdStateStore
+            from maistro_rsi.promotion_review import RlphdStateStore, classify_promotion
 
             revs = _git(
                 self._baseline,
@@ -2699,12 +2909,37 @@ class LocalRsiLoop:
                 for later_sha in revs[i + 1 :]:
                     later_files |= files_by_sha.get(later_sha, set())
                 superseded = bool(files_by_sha[sha] & later_files)
-                self._review_one_promotion(outcome, sha, superseded, state, report_dir)
+                touched_paths = sorted(files_by_sha[sha])
+                classification = classify_promotion(
+                    touched_paths=touched_paths,
+                    judge_score=outcome.regression_judge_score,
+                    composite=outcome.composite,
+                    governance_override=self._promotion_override(sha),
+                )
+                self._review_one_promotion(
+                    outcome,
+                    sha,
+                    superseded,
+                    state,
+                    report_dir,
+                    classification=classification,
+                    touched_paths=touched_paths,
+                )
             self._last_reviewed_ref = _git(
                 self._baseline, "rev-parse", self._config.baseline_branch
             ).stdout.strip()
         except Exception as exc:
             logger.warning("rsi_local_review_error", error=str(exc))
+
+    def _promotion_override(self, sha: str) -> bool:
+        """Whether the promotion's trace note records an exercised
+        test-inventory governance override (#306 evidence rides the note)."""
+        from maistro_rsi.trace_notes import read_trace_note
+
+        note = read_trace_note(self._baseline, sha)
+        if note is None or note.inventory is None:
+            return False
+        return bool(note.inventory.get("override"))
 
     def _review_one_promotion(
         self,
@@ -2713,18 +2948,29 @@ class LocalRsiLoop:
         superseded: bool,
         state: Any,
         report_dir: Path,
+        *,
+        classification: Any,
+        touched_paths: list[str],
     ) -> None:
-        """One commit's RLPHD verdict: keep, observe-but-skip (superseded), or
-        revert-and-flag. Split out of _review_promotions to keep that method's
-        branching within the project's complexity budget."""
+        """One commit's review verdict: mechanical keep (no judge), observe-but-
+        skip (superseded), judgment keep, or revert-and-flag. Split out of
+        _review_promotions to keep that method's branching within the
+        project's complexity budget."""
+        from dataclasses import asdict
+
         from maistro_rsi.promotion_review import (
+            MECHANICAL_COMPOSITE_FLOOR,
             PendingReview,
+            PromotionRecord,
             action_class_for,
             extract_features,
             flag_for_review,
             now_iso,
+            promotions_dir,
             save_kept_review,
+            write_promotion_record,
         )
+        from maistro_rsi.trace_notes import read_trace_note
 
         action_class = action_class_for(outcome.kind)
         features = extract_features(
@@ -2732,6 +2978,84 @@ class LocalRsiLoop:
             composite=outcome.composite,
             kind=outcome.kind,
         )
+        note = read_trace_note(self._baseline, sha)
+
+        def _record(decision: dict[str, Any], resulting_ref: str) -> None:
+            """The promotion record binding candidate ↔ evaluation ↔ decision
+            ↔ version (#110) — written for every review outcome."""
+            built_on = ""
+            parent = _git(self._baseline, "rev-parse", f"{sha}^", check=False)
+            if parent.returncode == 0:
+                built_on = parent.stdout.strip()
+            write_promotion_record(
+                promotions_dir(report_dir),
+                PromotionRecord(
+                    candidate={
+                        "sha": sha,
+                        "cycle": outcome.index,
+                        "target": outcome.target,
+                        "kind": outcome.kind.value,
+                        "touched_paths": touched_paths,
+                    },
+                    evaluation={
+                        "gates": dict(note.gates) if note else {},
+                        "reward": asdict(note.reward) if note else {},
+                        "inventory": dict(note.inventory) if note and note.inventory else None,
+                        "model": note.model if note else "",
+                        "composite": outcome.composite,
+                        "judge_score": outcome.regression_judge_score,
+                        "source": "refs/notes/rsi trace note on the candidate commit",
+                    },
+                    classification={
+                        "review_path": classification.review_path,
+                        "reason": classification.reason,
+                        "sensitive_paths": list(classification.sensitive_paths),
+                        "governance_override": classification.governance_override,
+                    },
+                    decision=decision,
+                    version={"built_on": built_on, "resulting_ref": resulting_ref},
+                ),
+            )
+
+        if classification.review_path == "mechanical":
+            # The common safe path (#110): decisive deterministic evidence —
+            # no RLPHD prediction, no revert, no human. The review record is
+            # still saved (kept/) so a human can override after the fact.
+            kept_review = PendingReview(
+                sha=sha,
+                index=outcome.index,
+                target=outcome.target,
+                kind=outcome.kind.value,
+                action_class=action_class,
+                features=features,
+                predicted_p=1.0,
+                theta=MECHANICAL_COMPOSITE_FLOOR,
+                flagged_at=now_iso(),
+                note="mechanical non-judgment path: quarantine-clean, protected "
+                f"gates and ratchets green ({classification.reason}); no judge required",
+                review_path="mechanical",
+                classification_reason=classification.reason,
+            )
+            save_kept_review(
+                report_dir / "kept", kept_review, _git(self._baseline, "show", sha).stdout
+            )
+            _record(
+                {
+                    "outcome": "auto_keep_mechanical",
+                    "at": now_iso(),
+                    "reason": classification.reason,
+                    "rlphd_trained": False,
+                },
+                sha,
+            )
+            logger.info(
+                "rsi_local_review_mechanical_keep",
+                sha=sha,
+                index=outcome.index,
+                reason=classification.reason,
+            )
+            return
+
         p, theta = state.predict(action_class, features)
         if superseded:
             logger.info(
@@ -2741,6 +3065,16 @@ class LocalRsiLoop:
                 predicted_p=p,
                 theta=theta,
                 note="later work depends on this file — cannot cleanly revert",
+            )
+            _record(
+                {
+                    "outcome": "observed_superseded",
+                    "at": now_iso(),
+                    "predicted_p": p,
+                    "theta": theta,
+                    "rlphd_trained": False,
+                },
+                sha,
             )
             return
         if p >= theta:
@@ -2755,9 +3089,23 @@ class LocalRsiLoop:
                 theta=theta,
                 flagged_at=now_iso(),
                 note=f"auto-kept (p={p:.3f} >= theta={theta:.3f}); composite={outcome.composite} judge_score={outcome.regression_judge_score}",
+                review_path="judgment",
+                classification_reason=classification.reason,
+                sensitive_paths=list(classification.sensitive_paths),
+                governance_override=classification.governance_override,
             )
             save_kept_review(
                 report_dir / "kept", kept_review, _git(self._baseline, "show", sha).stdout
+            )
+            _record(
+                {
+                    "outcome": "auto_keep_judgment",
+                    "at": now_iso(),
+                    "predicted_p": p,
+                    "theta": theta,
+                    "rlphd_trained": False,
+                },
+                sha,
             )
             logger.info(
                 "rsi_local_review_kept", sha=sha, index=outcome.index, predicted_p=p, theta=theta
@@ -2793,8 +3141,22 @@ class LocalRsiLoop:
             theta=theta,
             flagged_at=now_iso(),
             note=f"composite={outcome.composite} judge_score={outcome.regression_judge_score}",
+            review_path="judgment",
+            classification_reason=classification.reason,
+            sensitive_paths=list(classification.sensitive_paths),
+            governance_override=classification.governance_override,
         )
         flag_for_review(report_dir / "flagged", review, patch_text)
+        _record(
+            {
+                "outcome": "escalated",
+                "at": now_iso(),
+                "predicted_p": p,
+                "theta": theta,
+                "rlphd_trained": False,
+            },
+            revert_sha,
+        )
         logger.warning(
             "rsi_local_review_reverted",
             sha=sha,
@@ -2802,6 +3164,7 @@ class LocalRsiLoop:
             target=outcome.target,
             predicted_p=p,
             theta=theta,
+            reason=classification.reason,
             note="reverted pending human review — patch saved, not discarded",
         )
 
@@ -2854,26 +3217,45 @@ class LocalRsiLoop:
             for stale in dest.glob("*.patch"):
                 stale.unlink()
             (dest / "manifest.json").unlink(missing_ok=True)
+
         rng = f"{self._start_ref}..{self._config.baseline_branch}"
         revs = [
             sha
             for sha in _git(self._baseline, "rev-list", "--reverse", rng).stdout.split()
             if sha not in self._excluded_from_export
         ]
-        manifest: list[dict[str, str]] = []
-        for i, sha in enumerate(revs, 1):
-            names = [
-                ln.strip()
-                for ln in _git(
-                    self._baseline, "show", "--name-only", "--pretty=format:", sha
-                ).stdout.splitlines()
-                if ln.strip()
-            ]
-            subject = _git(self._baseline, "show", "-s", "--pretty=format:%s", sha).stdout.strip()
-            patch_name = f"{i:04d}-{sha[:8]}.patch"
-            patch = _git(self._baseline, "format-patch", "-1", "--stdout", sha).stdout
-            (dest / patch_name).write_text(patch, encoding="utf-8")
-            src = next((n for n in names if n.endswith(".py")), names[0] if names else "")
-            manifest.append({"patch_file": patch_name, "file": src, "subject": subject})
+        manifest = [self._export_entry(dest, i, sha) for i, sha in enumerate(revs, 1)]
         (dest / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return len(manifest)
+
+    def _export_entry(self, dest: Path, position: int, sha: str) -> dict[str, object]:
+        """One promotion's manifest row: the git-am-able patch file, the file
+        it edits, the subject — and (#109) the evaluator provenance. The
+        harvest path opens PRs from these manifests, so each one names the
+        oracle version that accepted the promotion: a reviewer sees an
+        authorized oracle override before it merges, and a promotion accepted
+        under a mutated oracle can never masquerade as one judged by the
+        trusted base definition."""
+        names = [
+            ln.strip()
+            for ln in _git(
+                self._baseline, "show", "--name-only", "--pretty=format:", sha
+            ).stdout.splitlines()
+            if ln.strip()
+        ]
+        subject = _git(self._baseline, "show", "-s", "--pretty=format:%s", sha).stdout.strip()
+        patch_name = f"{position:04d}-{sha[:8]}.patch"
+        patch = _git(self._baseline, "format-patch", "-1", "--stdout", sha).stdout
+        (dest / patch_name).write_text(patch, encoding="utf-8")
+        from maistro_rsi.trace_notes import read_trace_note
+
+        note = read_trace_note(self._baseline, sha)
+        evaluator = (note.evaluator if note is not None else None) or {}
+        src = next((n for n in names if n.endswith(".py")), names[0] if names else "")
+        return {
+            "patch_file": patch_name,
+            "file": src,
+            "subject": subject,
+            "evaluator_digest": evaluator.get("evaluator_digest"),
+            "evaluator_authorized": bool(evaluator.get("authorized")),
+        }

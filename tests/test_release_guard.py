@@ -16,6 +16,7 @@ check against.)
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -95,8 +96,9 @@ def test_rc_tag_passes_against_the_final_version(release_tree, guard_mod):
     assert out["version"] == "1.0.0"
     assert out["prerelease"] == "true"
     assert out["rc"] == "1"
-    # ADR §2's sole exception: an rc may point at integration so it can soak.
-    assert out["target_branch"] == "integration"
+    # ADR §2 (as amended for ADR-095): an rc may point at develop, the
+    # canonical integration branch, so it can soak.
+    assert out["target_branch"] == "develop"
 
 
 def test_version_disagreeing_with_VERSION_is_rejected(release_tree, guard_mod):
@@ -238,3 +240,21 @@ def test_the_shipped_changelog_renders_for_its_own_release(notes_mod):
     assert "### API compatibility" in body
     assert body.count("### API compatibility") == 1
     assert "Verifying this release" in body
+
+
+def test_notes_name_every_package_the_release_publishes(notes_mod):
+    """The verification block must describe the artifact set release.yml
+    actually attaches. PUBLISH_SET in the workflow is the source of truth;
+    the notes hard-code the names beside it, so the two can drift — and a
+    consumer told the checksums cover five packages while the release ships
+    six has been misinstructed on exactly the step that catches tampering."""
+    workflow = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    publish_set = re.search(r"^\s*PUBLISH_SET:\s*\"([^\"]+)\"", workflow, re.MULTILINE)
+    assert publish_set, "PUBLISH_SET line not found in release.yml"
+    packages = publish_set.group(1).split()
+    assert len(packages) >= 6, f"unexpectedly small publish set: {packages}"
+    block = notes_mod._verification_block("v1.0.0")
+    for package in packages:
+        assert f"`{package}`" in block, (
+            f"release notes omit published package {package!r} from the artifact description"
+        )

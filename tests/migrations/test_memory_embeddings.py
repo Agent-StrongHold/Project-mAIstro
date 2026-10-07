@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.vectors import (
     EMBEDDING_DIMENSIONS,
     require_matching_dimension,
@@ -113,15 +114,14 @@ def _require_postgres() -> str:
 
 
 def _alembic_env(url: str) -> dict[str, str]:
-    """`DB_*` for alembic's `DatabaseSettings`, pointed at the scratch database.
+    """Point every database spelling at this suite's scratch database.
 
-    Not `DATABASE_URL`: on this branch `alembic/env.py` builds its URL from
-    `DatabaseSettings`, whose `env_prefix` is `DB_`, so a `DATABASE_URL` is
-    ignored and the run silently goes to `localhost:5432`. #187 makes one
-    resolver serve both; until that lands the sibling suites here spell it the
-    same way, and so does this one.
+    `DATABASE_URL` outranks `DB_*` in the shared resolver.  Leaving the
+    caller's service URL in place would migrate that database while this suite
+    queries the empty scratch database, so both forms must name the scratch.
     """
     parts = urlsplit(url)
+    scratch = urlsplit(url)._replace(path=f"/{SCRATCH_DB}").geturl()
     return {
         **os.environ,
         "DB_HOST": parts.hostname or "127.0.0.1",
@@ -129,6 +129,8 @@ def _alembic_env(url: str) -> dict[str, str]:
         "DB_NAME": SCRATCH_DB,
         "DB_USER": parts.username or "postgres",
         "DB_PASSWORD": parts.password or "",
+        "DATABASE_URL": scratch,
+        "MAISTRO_DATABASE_URL": scratch,
     }
 
 
@@ -183,7 +185,7 @@ async def store(migrated_url):
     assert pool is not None
     try:
         await pool.execute("TRUNCATE learnings")
-        yield PgLearningStore(pool)
+        yield PgLearningStore(pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     finally:
         await pool.close()
 

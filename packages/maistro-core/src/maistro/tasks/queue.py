@@ -7,13 +7,17 @@ Live task state is held in memory. When a database is configured
 fails because the database is unavailable. Writes for one task are chained so
 they land in the order the state changed. With no database the queue behaves
 exactly as before. Wired canonical Runs are the restart source (#1114); an
-unwired queue remains intentionally in-memory.
+unwired queue remains intentionally in-memory. A restart re-enqueues queued
+task Runs from the durable provenance payload committed at admission — the
+same snapshot that carries the originating-principal evidence (#1057) — so
+recovery never depends on a second handoff path the admission did not
+already commit.
 
 When an idempotency store is wired (#1176), ``submit()`` first claims stable
 admission identity for the request — supplied or payload-derived key, scoped
-to the principal and the effective Workspace — so a retry reconciles to the
-original admission instead of minting a second Run. The claim store is the
-admission contract; the queue stays the receipt's home. See
+to the principal and the effective Workspace and Project — so a retry
+reconciles to the original admission instead of minting a second Run. The
+claim store is the admission contract; the queue stays the receipt's home. See
 :mod:`maistro.tasks.idempotency` for the window, scope and concurrency
 semantics this thin integration relies on.
 """
@@ -54,6 +58,7 @@ from maistro.tasks.idempotency import (
     PENDING_POLL,
     TASK_SUBMIT_ACTION,
     AdmissionRecord,
+    Ambiguous,
     Claimed,
     IdempotencyPendingTimeout,
     Replayed,
@@ -63,10 +68,70 @@ from maistro.tasks.idempotency import (
     normalize_idempotency_key,
     request_fingerprint,
 )
-from maistro.tasks.models import TaskCreate, TaskProgress, TaskResponse, TaskResult, TaskStatus
+from maistro.tasks.models import (
+    TaskActorKind,
+    TaskCreate,
+    TaskProgress,
+    TaskResponse,
+    TaskResult,
+    TaskStatus,
+)
+from maistro.tasks.pg_admission import (
+    AdmissionAlreadyBound,
+    AdmissionBound,
+    AdmissionOutcome,
+    AdmissionRowMissing,
+    AdmissionRowReplaced,
+    PgRootAdmissionCoordinator,
+)
 from maistro.tasks.status import can_transition
 
 logger = structlog.get_logger()
+
+#: Bounded re-claim rounds after an atomic admission found its row missing or
+#: taken over (#1845). A successor's live claim is waited out inside
+#: ``_claim_until_resolved``; this bounds only the row-changed-under-us
+#: retries, which for an honest backend means a takeover race landed between
+#: two of this caller's steps.
+ADMISSION_REACQUIRE_ROUNDS = 4
+
+
+def _build_unpublished_task(
+    request: TaskCreate,
+    *,
+    task_id: str,
+    created_at: datetime,
+    user_id: str = "",
+    service_principal_id: str | None = None,
+    delegation_id: str | None = None,
+    actor_kind: TaskActorKind = "user",
+    idempotency_key: str | None = None,
+) -> TaskResponse:
+    """Build the queued receipt before canonical Run admission publishes it."""
+    return TaskResponse(
+        task_id=task_id,
+        status=TaskStatus.QUEUED,
+        description=request.description,
+        workspace=request.workspace,
+        user_id=user_id or request.user_id or "",
+        service_principal_id=service_principal_id,
+        delegation_id=delegation_id,
+        actor_kind=actor_kind,
+        task_type=request.task_type,
+        agent_id=request.agent_id,
+        capability=request.capability,
+        program_context=request.program_context,
+        branch=request.branch,
+        constraints=list(request.constraints),
+        tier=request.tier or 2,
+        lane=request.lane,
+        priority_tier=request.priority_tier,
+        session_id=request.session_id,
+        idempotency_key=idempotency_key,
+        phase="queued",
+        progress=TaskProgress(),
+        created_at=created_at,
+    )
 
 
 def _record_values(task: TaskResponse) -> dict[str, Any]:
@@ -75,6 +140,10 @@ def _record_values(task: TaskResponse) -> dict[str, Any]:
     return {
         "id": task.task_id,
         "run_id": task.run_id,
+        "user_id": task.user_id,
+        "service_principal_id": task.service_principal_id,
+        "delegation_id": task.delegation_id,
+        "actor_kind": task.actor_kind,
         "status": task.status.value,
         "description": task.description,
         "workspace": task.workspace,
@@ -84,6 +153,13 @@ def _record_values(task: TaskResponse) -> dict[str, Any]:
         "phase": task.phase,
         "progress": task.progress.model_dump(mode="json") if task.progress else None,
         "result": task.result.model_dump(mode="json") if task.result else None,
+        "task_type": task.task_type,
+        "agent_id": task.agent_id,
+        "capability": task.capability,
+        "program_context": task.program_context,
+        "lane": task.lane.value,
+        "priority_tier": task.priority_tier,
+        "session_id": task.session_id,
         "started_at": task.started_at,
         "completed_at": task.completed_at,
     }
@@ -125,6 +201,118 @@ PRUNE_TARGET = 8_000
 
 # Terminal statuses that can be pruned
 _TERMINAL = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED})
+
+#: The receipt's terminal reading of each terminal Run status (#849). TIMED_OUT
+#: is a canonical failure: the work did not finish, which is what the receipt
+#: must say. This is projection, not lifecycle — a receipt reconciled from its
+#: Run takes the Run's state verbatim rather than walking the task machine.
+_TERMINAL_TASK_STATUS_BY_RUN: dict[RunStatus, TaskStatus] = {
+    RunStatus.COMPLETED: TaskStatus.COMPLETED,
+    RunStatus.FAILED: TaskStatus.FAILED,
+    RunStatus.CANCELLED: TaskStatus.CANCELLED,
+    RunStatus.TIMED_OUT: TaskStatus.FAILED,
+}
+
+#: How long `drain_persistence` waits for in-flight receipt writes before
+#: cancelling them. Generous: these are single-row upserts, and shutdown only
+#: reaches the drain after in-flight tasks have already been settled.
+PERSIST_DRAIN_TIMEOUT = 10.0
+
+
+def _apply_status_effects(task: TaskResponse, status: TaskStatus) -> None:
+    """Timestamps and queue counters for one committed receipt transition.
+
+    The single source of the gauges' truth (#849): `update_status`'s ordinary
+    path and the canonical-refusal reconciliation both go through here, so an
+    exception before a later phase cannot leak a gauge — every route to a
+    terminal receipt decrements `active_tasks` exactly once, because both
+    routes are fenced by the task machine (or by the reconcile guard that the
+    receipt is not already terminal).
+    """
+    if status is TaskStatus.PLANNING:
+        task.started_at = datetime.now(UTC)
+    elif status in _TERMINAL:
+        task.completed_at = datetime.now(UTC)
+        active_tasks.dec()
+        if status is TaskStatus.COMPLETED:
+            tasks_completed_total.inc()
+        elif status is TaskStatus.FAILED:
+            tasks_failed_total.inc()
+
+
+def _receipt_result_for_run(run: Any, terminal: TaskStatus) -> TaskResult | None:
+    """The receipt result projected from a terminal Run's own outcome.
+
+    The Run is the execution identity and holds what actually happened: a
+    completed Run's logical result (the task's `files_changed` shape), a
+    failed or timed-out Run's error, a cancellation's absence of both. Used by
+    both reconciliation routes so a recovered receipt answers `GET /tasks`
+    with the same content the living receipt would have carried.
+    """
+    if terminal is TaskStatus.COMPLETED:
+        result = run.result if isinstance(run.result, dict) else {}
+        files = result.get("files_changed")
+        return TaskResult(files_changed=list(files) if isinstance(files, list) else [])
+    if run.error:
+        return TaskResult(error=run.error)
+    return None
+
+
+def _task_from_record(record: TaskRecord) -> TaskResponse:
+    """Rebuild a receipt without creating a new Run or delegation.
+
+    Used by the idempotency replay path (#1176/#1057): the durable receipt row
+    carries the originating-principal evidence the claim's stored request does
+    not, so a replay answered from it re-answers with the original identity.
+    """
+    from maistro.tasks.lanes import Lane
+
+    actor_kind = record.actor_kind
+    # Tuple membership, not a set literal: only the tuple form narrows the
+    # restored ``str`` back to the Literal for the type checker, so the guard
+    # and the proof stay one statement instead of drifting apart.
+    if actor_kind not in ("user", "system", "service"):
+        raise ValueError("invalid persisted task actor kind")
+    if not isinstance(record.user_id, str) or not record.user_id.strip():
+        # A malformed/partially migrated receipt must never become runnable
+        # ownerless work. Migration 041 classifies pre-provenance rows as the
+        # explicit system actor; this guard protects a restart during or before
+        # that migration as well as hand-edited data.
+        raise ValueError("persisted task has no effective actor")
+    try:
+        lane: Lane = Lane(record.lane)
+    except ValueError:
+        lane = Lane.BACKGROUND
+    priority_tier = (
+        record.priority_tier
+        if record.priority_tier in ("P0", "P1", "P2", "P3", "P4", "P5")
+        else "P2"
+    )
+    return TaskResponse(
+        task_id=record.id,
+        status=TaskStatus(record.status),
+        description=record.description,
+        workspace=record.workspace,
+        user_id=record.user_id,
+        service_principal_id=record.service_principal_id,
+        delegation_id=record.delegation_id,
+        actor_kind=actor_kind,
+        task_type=record.task_type,
+        agent_id=record.agent_id,
+        capability=record.capability,
+        program_context=record.program_context,
+        tier=record.tier,
+        lane=lane,
+        priority_tier=priority_tier,
+        session_id=record.session_id,
+        run_id=record.run_id,
+        phase=record.phase,
+        progress=TaskProgress.model_validate(record.progress or {}),
+        result=TaskResult.model_validate(record.result) if record.result is not None else None,
+        created_at=record.created_at,
+        started_at=record.started_at,
+        completed_at=record.completed_at,
+    )
 
 
 def _task_from_run(run: Any) -> tuple[TaskResponse | None, str | None]:
@@ -250,12 +438,48 @@ class TaskQueue:
         if to_remove:
             logger.info("task_store_pruned", removed=len(to_remove), remaining=len(self._tasks))
 
+    async def drain_persistence(self, timeout: float = PERSIST_DRAIN_TIMEOUT) -> int:
+        """Wait for in-flight TaskRecord writes to land, then give up on the rest.
+
+        Receipt writes are fire-and-forget (ADR-018) so execution never waits on
+        the database — which is exactly why shutdown must own them explicitly
+        (#849): an abandoned write takes a completed transition, a result or a
+        failure with it as the event loop closes, leaving a durable receipt that
+        stops one write short of the truth. This drain is that ownership: the
+        runner calls it from `stop()`/`drain()` and the server lifespan before
+        the singleton is dropped, so a graceful shutdown completes only after
+        every scheduled receipt write has been awaited or cancelled. Idempotent;
+        returns how many writes did not settle (already logged).
+        """
+        writes = set(self._persist_writes)
+        if not writes:
+            return 0
+        _, pending = await asyncio.wait(writes, timeout=timeout)
+        if not pending:
+            return 0
+        # Cancelling is the honest disposition for a write that would not
+        # settle: letting it run un-awaited past shutdown is the defect. The
+        # gather reaps the cancellations so nothing is left mid-flight; the
+        # canonical Run still holds the truth, and recovery reconciles from it.
+        for write in pending:
+            write.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        await logger.awarning(
+            "task_record_drain_incomplete",
+            abandoned=len(pending),
+            settled=len(writes) - len(pending),
+        )
+        return len(pending)
+
     async def submit(
         self,
         request: TaskCreate,
         *,
         user_id: str = "",
         workspace_id: str | None = None,
+        service_principal_id: str | None = None,
+        delegation_id: str | None = None,
+        actor_kind: TaskActorKind = "user",
         idempotency_key: str | None = None,
     ) -> TaskResponse:
         """Queue one task, admitting it as a Run when an admitter is wired.
@@ -278,30 +502,54 @@ class TaskQueue:
         key = normalize_idempotency_key(idempotency_key, request.idempotency_key)
         if self._idempotency is None:
             return await self._submit_once(
-                request, user_id=user_id, workspace_id=workspace_id, idempotency_key=key
+                request,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                service_principal_id=service_principal_id,
+                delegation_id=delegation_id,
+                actor_kind=actor_kind,
+                idempotency_key=key,
             )
         return await self._submit_idempotent(
-            request, key, user_id=user_id, workspace_id=workspace_id
+            request,
+            key,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            service_principal_id=service_principal_id,
+            delegation_id=delegation_id,
+            actor_kind=actor_kind,
         )
 
-    async def _scope_workspace(self, workspace_id: str | None) -> str:
-        """The Workspace a submission will actually land in, for key scoping.
+    async def _scope_binding(self, workspace_id: str | None) -> tuple[str, str]:
+        """Return the effective Workspace and Project for key scoping.
 
-        The scope must name the *effective* Workspace, not the spelled one: a
-        retry that arrives without the Workspace header has to meet the claim
-        its first call made under the default. Routers resolve None to the
-        deployment default, bound admitters know their one Workspace, and an
-        admitter that knows neither gets the submission's own spelling.
+        The scope must name the binding a Run will actually use, not only the
+        header the caller spelled. Routers resolve both values before the
+        claim is written, so two Project bindings in one Workspace cannot
+        accidentally reconcile one another's Runs.
         """
         admitter = self._admitter
+        scope = getattr(admitter, "admission_scope", None)
+        if scope is not None:
+            binding = await scope(workspace_id)
+            if len(binding) != 2:
+                raise RuntimeError("admission_scope must return Workspace and Project")
+            return str(binding[0]).strip(), str(binding[1]).strip()
         route = getattr(admitter, "admitter_for", None)
         if route is not None:
             bound = await route(workspace_id)
-            return str(bound.workspace_id).strip()
+            return (
+                str(getattr(bound, "workspace_id", workspace_id or "")).strip(),
+                str(getattr(bound, "project_id", "")).strip(),
+            )
         fixed = getattr(admitter, "workspace_id", None)
-        if isinstance(fixed, str) and fixed.strip():
-            return fixed.strip()
-        return (workspace_id or "").strip()
+        workspace = (
+            fixed.strip()
+            if isinstance(fixed, str) and fixed.strip()
+            else (workspace_id or "").strip()
+        )
+        project = getattr(admitter, "project_id", "")
+        return workspace, project.strip() if isinstance(project, str) else ""
 
     async def _submit_idempotent(
         self,
@@ -310,15 +558,21 @@ class TaskQueue:
         *,
         user_id: str,
         workspace_id: str | None,
+        service_principal_id: str | None = None,
+        delegation_id: str | None = None,
+        actor_kind: TaskActorKind = "user",
     ) -> TaskResponse:
         """Submit through the claim store: reconcile, or admit exactly once.
 
-        The ordering is the contract: claim, admit, complete — and release on
-        any admission failure, which is what keeps a failure before Run
-        creation retryable rather than pinning the key to an outcome that never
-        happened. A replay returns the recorded receipt; a pending twin is
-        waited out, with the claim lease's takeover as the backstop for a twin
-        that died mid-admission.
+        The ordering is the contract: claim, begin, admit, complete — and
+        release on any admission failure, which is what keeps a failure before
+        Run creation retryable rather than pinning the key to an outcome that
+        never happened. ``begin`` announces the receipt id before the Run is
+        minted, so a claimant that dies between minting and recording leaves
+        the one handle discovery needs: a retry resolves the minted Run by its
+        provenance instead of minting a second one. A replay returns the
+        recorded receipt; a pending twin is waited out, with the claim lease's
+        takeover as the backstop for a twin that died mid-admission.
         """
         store = self._idempotency
         if store is None:  # pragma: no cover - guarded by the only caller
@@ -326,47 +580,211 @@ class TaskQueue:
         owner = user_id or request.user_id or ""
         fingerprint = request_fingerprint(request)
         textual = key if key is not None else f"{DERIVED_KEY_PREFIX}{fingerprint}"
+        effective_workspace, _ = await self._scope_binding(workspace_id)
         scope_key = admission_scope_key(
             principal=owner,
-            workspace_id=await self._scope_workspace(workspace_id),
+            workspace_id=effective_workspace,
             action=TASK_SUBMIT_ACTION,
             key=textual,
         )
-        # The request as admitted: the owner filled in, so a replay after a
-        # restart reconstructs a receipt that names the same principal.
+        # The request as admitted: the owner, principal evidence and explicit
+        # key are persisted so restart replay reconstructs the same receipt.
         request_json = json.dumps(
-            request.model_copy(update={"user_id": owner}).model_dump(mode="json")
+            request.model_copy(
+                update={
+                    "user_id": owner,
+                    "idempotency_key": key,
+                    "service_principal_id": service_principal_id,
+                    "delegation_id": delegation_id,
+                    "actor_kind": actor_kind,
+                }
+            ).model_dump(mode="json")
         )
-        outcome = await self._claim_until_resolved(
-            store,
-            scope_key,
-            fingerprint=fingerprint,
-            request=request_json,
-        )
-        if isinstance(outcome, AdmissionRecord):
-            await logger.ainfo(
-                "task_admission_replayed",
-                task_id=outcome.task_id,
-                run_id=outcome.run_id,
-                explicit_key=key is not None,
+        for _ in range(ADMISSION_REACQUIRE_ROUNDS):
+            outcome = await self._claim_until_resolved(
+                store,
+                scope_key,
+                fingerprint=fingerprint,
+                request=request_json,
             )
-            return self._replay_receipt(outcome)
+            if isinstance(outcome, AdmissionRecord):
+                await logger.ainfo(
+                    "task_admission_replayed",
+                    task_id=outcome.task_id,
+                    run_id=outcome.run_id,
+                    explicit_key=key is not None,
+                )
+                return await self._replay_receipt(outcome)
+            claim = await store.get(scope_key)
+            if claim is None:
+                # Legacy admission fences its own ``begin`` with the token,
+                # so a concurrent deletion remains a visible retry instead
+                # of an unbound mint.
+                return await self._submit_legacy(
+                    request,
+                    key,
+                    store=store,
+                    scope_key=scope_key,
+                    claim_token=outcome.token,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    service_principal_id=service_principal_id,
+                    delegation_id=delegation_id,
+                    actor_kind=actor_kind,
+                )
+            atomic = await self._atomic_admission(workspace_id)
+            if atomic is None:
+                return await self._submit_legacy(
+                    request,
+                    key,
+                    store=store,
+                    scope_key=scope_key,
+                    claim_token=claim.claim_token,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    service_principal_id=service_principal_id,
+                    delegation_id=delegation_id,
+                    actor_kind=actor_kind,
+                )
+            coordinator, admitter = atomic
+            result = await self._admit_atomic_round(
+                coordinator,
+                admitter,
+                request=request,
+                key=key,
+                scope_key=scope_key,
+                claim=claim,
+                owner=owner,
+                service_principal_id=service_principal_id,
+                delegation_id=delegation_id,
+                actor_kind=actor_kind,
+            )
+            if isinstance(result, TaskResponse):
+                return result
+            # Missing or replaced: bounded re-claim, and no release — the row
+            # either no longer exists or now belongs to a successor whose
+            # claim this caller must not delete.
+            await logger.awarning(
+                "task_admission_row_changed",
+                scope="task_idempotency",
+                missing=isinstance(result, AdmissionRowMissing),
+            )
+        raise IdempotencyPendingTimeout(
+            "the admission row kept changing under this submission; the bounded "
+            "re-claim rounds are spent"
+        )
+
+    async def _admit_atomic_round(
+        self,
+        coordinator: PgRootAdmissionCoordinator,
+        admitter: Any,
+        *,
+        request: TaskCreate,
+        key: str | None,
+        scope_key: str,
+        claim: AdmissionRecord,
+        owner: str,
+        service_principal_id: str | None,
+        delegation_id: str | None,
+        actor_kind: TaskActorKind,
+    ) -> TaskResponse | AdmissionRowMissing | AdmissionRowReplaced:
+        """One atomic admission attempt for a claim this caller holds.
+
+        Returns the published or replayed receipt, or — when the row was
+        missing or taken over — the row-changed outcome the caller answers
+        with a bounded re-claim. Any other failure proves nothing was
+        admitted (the coordinator already resolved ambiguous commits by
+        rereading the durable row), so this releases only this caller's own
+        generation — the fenced release, never the plain one, which is what
+        keeps a late owner from deleting a successor's fresh claim — and
+        re-raises.
+        """
         try:
-            task = await self._submit_once(
-                request, user_id=user_id, workspace_id=workspace_id, idempotency_key=key
+            task, bound = await self._bind_claimed(
+                coordinator,
+                admitter,
+                request=request,
+                key=key,
+                scope_key=scope_key,
+                claim=claim,
+                owner=owner,
+                service_principal_id=service_principal_id,
+                delegation_id=delegation_id,
+                actor_kind=actor_kind,
             )
         except BaseException:
-            # Nothing was admitted. Releasing is what makes the caller's retry
-            # a fresh submission instead of a replay of a failure.
             with contextlib.suppress(Exception):
-                await store.release(scope_key)
+                await coordinator.release_claim(scope_key, claim)
             raise
-        # Best-effort like the receipt's own persistence: a failed write here
-        # is logged, not raised — the task exists, and failing the caller's
-        # 202 after admission would teach it to retry an admission that
-        # already happened.
+        if isinstance(bound, AdmissionBound):
+            return await self._publish_bound(task, bound, explicit_key=key is not None)
+        if isinstance(bound, AdmissionAlreadyBound):
+            await logger.ainfo(
+                "task_admission_replayed",
+                task_id=bound.record.task_id,
+                run_id=bound.record.run_id,
+                explicit_key=key is not None,
+            )
+            return await self._replay_receipt(bound.record)
+        return bound
+
+    async def _submit_legacy(
+        self,
+        request: TaskCreate,
+        key: str | None,
+        *,
+        store: TaskIdempotencyStore,
+        scope_key: str,
+        claim_token: str,
+        user_id: str,
+        workspace_id: str | None,
+        service_principal_id: str | None,
+        delegation_id: str | None,
+        actor_kind: TaskActorKind,
+    ) -> TaskResponse:
+        """The pre-#1845 path, unchanged: claim, admit, best-effort complete.
+
+        Still the contract for tiers without a coordinator. The two-commit
+        window it carries (Run committed, binding lost) is the gap the atomic
+        lane exists to close, not a behavior this refactor may silently
+        change for deployments that have not grown the coordinator.
+        """
+        task_id = TaskResponse.new_id()
+        began = await store.begin(
+            scope_key,
+            token=claim_token,
+            task_id=task_id,
+            now=datetime.now(UTC),
+        )
+        if not began:
+            record = await self._await_outcome(store, scope_key)
+            if record is not None:
+                return await self._replay_receipt(record)
+            raise IdempotencyPendingTimeout(
+                "this idempotency claim was superseded before admission began"
+            )
         try:
-            await store.complete(scope_key, task_id=task.task_id, run_id=task.run_id)
+            task = await self._mint(
+                request,
+                task_id=task_id,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                service_principal_id=service_principal_id,
+                delegation_id=delegation_id,
+                actor_kind=actor_kind,
+                idempotency_key=key,
+            )
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await store.release(scope_key, token=claim_token)
+            raise
+        try:
+            recorded = await store.complete(
+                scope_key,
+                token=claim_token,
+                task_id=task.task_id,
+                run_id=task.run_id,
+            )
         except Exception as exc:
             await logger.awarning(
                 "task_admission_complete_failed",
@@ -374,6 +792,177 @@ class TaskQueue:
                 run_id=task.run_id,
                 error=str(exc),
             )
+            recorded = True
+        if not recorded:
+            return await self._reconcile_superseded(store, scope_key, task)
+        await self._enqueue(task)
+        return task
+
+    async def _resolve_ambiguous(
+        self,
+        store: TaskIdempotencyStore,
+        scope_key: str,
+        record: AdmissionRecord,
+    ) -> AdmissionRecord | Claimed | None:
+        """Resolve a lease-lapsed begun claim before any takeover.
+
+        Legacy tiers announce a receipt before minting a Run. Discovery makes
+        a post-mint crash replay the original Run rather than take the key
+        over; a pre-mint crash may safely yield a fresh claim.
+        """
+        if record.task_id is None:  # pragma: no cover - ambiguous implies begun
+            return None
+        admitter = self._admitter
+        if admitter is None:
+            return await self._take_over_resolved(store, scope_key, record)
+        discover = getattr(admitter, "run_for_task_receipt", None)
+        if discover is None:
+            return None
+        run_id = await discover(record.task_id)
+        if run_id is None:
+            return await self._take_over_resolved(store, scope_key, record)
+        with contextlib.suppress(Exception):
+            await store.resolve_run(scope_key, task_id=record.task_id, run_id=run_id)
+        fresh = await store.get(scope_key)
+        return fresh if fresh is not None and fresh.admitted else None
+
+    async def _take_over_resolved(
+        self, store: TaskIdempotencyStore, scope_key: str, record: AdmissionRecord
+    ) -> Claimed | None:
+        return await store.take_over_resolved(
+            scope_key,
+            task_id=record.task_id or "",
+            fingerprint=record.fingerprint,
+            request=record.request,
+            now=datetime.now(UTC),
+            replay_window=DEFAULT_REPLAY_WINDOW,
+        )
+
+    async def _await_outcome(
+        self, store: TaskIdempotencyStore, scope_key: str
+    ) -> AdmissionRecord | None:
+        for _ in range(MAX_PENDING_POLLS):
+            record = await store.get(scope_key)
+            if record is not None and record.admitted:
+                return record
+            if record is None:
+                return None
+            await asyncio.sleep(PENDING_POLL)
+        return None
+
+    async def _reconcile_superseded(
+        self, store: TaskIdempotencyStore, scope_key: str, task: TaskResponse
+    ) -> TaskResponse:
+        """Cancel a late mint and return the generation that won the key."""
+        await logger.awarning(
+            "task_admission_superseded",
+            task_id=task.task_id,
+            run_id=task.run_id,
+            detail="claim lost past the pending lease mid-admission; compensating",
+        )
+        if self._admitter is not None and task.run_id:
+            with contextlib.suppress(Exception):
+                await self._admitter.record_transition(task.run_id, TaskStatus.CANCELLED)
+        record = await self._await_outcome(store, scope_key)
+        if record is None:
+            raise IdempotencyPendingTimeout(
+                "this submission's claim was superseded mid-admission and the winner "
+                "did not resolve within the bounded wait"
+            )
+        return await self._replay_receipt(record)
+
+    async def _atomic_admission(
+        self,
+        workspace_id: str | None,
+    ) -> tuple[PgRootAdmissionCoordinator, Any] | None:
+        """The routed admitter's atomic coordinator, when this tier carries one.
+
+        Resolved through the same routing ``_scope_workspace`` uses, so no
+        second Workspace binding exists; the queue itself never sees a
+        database handle — only the coordinator's call surface.
+        """
+        admitter = self._admitter
+        if admitter is None:
+            return None
+        route = getattr(admitter, "admitter_for", None)
+        bound = await route(workspace_id) if route is not None else admitter
+        coordinator = getattr(bound, "coordinator", None)
+        if coordinator is None:
+            return None
+        return coordinator, bound
+
+    async def _bind_claimed(
+        self,
+        coordinator: PgRootAdmissionCoordinator,
+        admitter: Any,
+        *,
+        request: TaskCreate,
+        key: str | None,
+        scope_key: str,
+        claim: AdmissionRecord,
+        owner: str,
+        service_principal_id: str | None,
+        delegation_id: str | None,
+        actor_kind: TaskActorKind,
+    ) -> tuple[TaskResponse, AdmissionOutcome]:
+        """One atomic admission attempt for a claim this caller holds.
+
+        The receipt is built here — same ``_build_unpublished_task`` helper as
+        the legacy path, so the receipt's shape and identity rules do not
+        fork — and the Run is prepared by the bound admitter before the
+        coordinator's transaction opens. The coordinator makes the Run insert
+        and the binding one commit; ``complete`` is never awaited on this
+        path, because the binding is already durable when this returns. On any
+        non-bound outcome the built receipt was never admitted and is
+        discarded with the attempt.
+        """
+        task = _build_unpublished_task(
+            request,
+            task_id=TaskResponse.new_id(),
+            created_at=datetime.now(UTC),
+            user_id=owner,
+            service_principal_id=service_principal_id,
+            delegation_id=delegation_id,
+            actor_kind=actor_kind,
+            idempotency_key=key,
+        )
+        outcome = await coordinator.bind_admission(
+            scope_key=scope_key,
+            claim=claim,
+            task_id=task.task_id,
+            prepare_run=lambda: admitter.prepare_run(task),
+        )
+        return task, outcome
+
+    async def _publish_bound(
+        self,
+        task: TaskResponse,
+        bound: AdmissionBound,
+        *,
+        explicit_key: bool,
+    ) -> TaskResponse:
+        """The queue-side half of an atomic admission, after the joint commit.
+
+        The Run and the binding are already one durable fact; what remains is
+        the receipt's in-memory home and the best-effort TaskRecord write —
+        the same tail ``_submit_once`` runs, minus the separate admitter call
+        and minus ``complete``, which this path replaces with the commit
+        itself.
+        """
+        task.run_id = bound.run_id
+        async with self._lock:
+            self._tasks[task.task_id] = task
+            self._maybe_prune()
+        self._persist(task)
+        await self._pending.put(task.task_id)
+        tasks_submitted_total.inc()
+        active_tasks.inc()
+        await logger.ainfo(
+            "task_admission_bound",
+            task_id=task.task_id,
+            run_id=bound.run_id,
+            explicit_key=explicit_key,
+        )
         return task
 
     async def _claim_until_resolved(
@@ -406,6 +995,10 @@ class TaskQueue:
                 return outcome.record
             if isinstance(outcome, Claimed):
                 return outcome
+            if isinstance(outcome, Ambiguous):
+                resolved = await self._resolve_ambiguous(store, scope_key, outcome.record)
+                if isinstance(resolved, (AdmissionRecord, Claimed)):
+                    return resolved
             waited += 1
             if waited > MAX_PENDING_POLLS:
                 raise IdempotencyPendingTimeout(
@@ -414,41 +1007,182 @@ class TaskQueue:
                 )
             await asyncio.sleep(PENDING_POLL)
 
-    def _replay_receipt(self, record: AdmissionRecord) -> TaskResponse:
+    async def _replay_receipt(self, record: AdmissionRecord) -> TaskResponse:
         """The original submission's answer, without minting anything.
 
-        The live receipt when this process still holds it; otherwise one
-        reconstructed from the claim's stored request. A reconstructed receipt
-        says ``queued`` because that is what admission said — the Run behind it
-        has moved on without the queue, and current state is read from the
-        task/Run endpoints, not from a replay.
+        The live receipt when this process still holds it; otherwise the
+        durable TaskRecord row, which carries the originating-principal
+        evidence (#1057) the claim's stored request does not; otherwise one
+        reconstructed from the claim's stored request — which carries the
+        explicit key the caller supplied, so a replay after a restart answers
+        with the receipt the first call got, header key included. A
+        reconstructed receipt says ``queued`` because that is what admission
+        said — the Run behind it has moved on without the queue, and current
+        state is read from the task/Run endpoints, not from a replay. Only the
+        live receipt short-circuits: a receipt this process still holds in
+        ``_tasks`` is this process's queue's to dispatch, so answering it is
+        the end of the replay. The durable row and the reconstruction both
+        fall through to the resume gate below — a persisted row proves the
+        receipt was written, never that a live queue still holds the work.
+
+        Reconstructing is not quite enough: a claimant can die anywhere in the
+        window after the Run exists but before ``_enqueue`` lands the receipt
+        in a live queue — between the mint and the QUEUED transition, or
+        between ``complete`` and the enqueue. Every retry then reconciles, by
+        the contract's own terms, to a Run that no queue holds: answering
+        "queued" while the work sits stranded past every queue would be a
+        reconciliation that loses the work silently. This process is where the
+        reconciling retry landed and where a runner drains, so it is where the
+        stranded admission resumes: the Run is moved to QUEUED (a Run still
+        CREATED — death between mint and queue — becomes genuinely queued;
+        one already QUEUED confirms), and the receipt re-materializes into
+        this queue for execution. ``record_transition`` is the gate: it
+        succeeds exactly when the Run is CREATED or QUEUED, and refuses a Run
+        already RUNNING or terminal — somebody's live or finished work, which
+        re-enqueuing would duplicate. With no spine there is no Run state to
+        consult, so the receipt replays unqueued — the no-database tier's
+        documented ephemerality, and the one way this path could re-run work
+        that had already finished.
         """
+        task: TaskResponse | None = None
         if record.task_id is not None:
             live = self._tasks.get(record.task_id)
             if live is not None:
                 return live
-        stored = TaskCreate.model_validate_json(record.request)
-        if record.task_id is None:  # pragma: no cover - replayed claims are admitted
-            raise RuntimeError("replayed admission claim carries no receipt id")
-        return TaskResponse(
-            task_id=record.task_id,
-            status=TaskStatus.QUEUED,
-            description=stored.description,
-            workspace=stored.workspace,
-            user_id=stored.user_id or "",
-            task_type=stored.task_type,
-            agent_id=stored.agent_id,
-            capability=stored.capability,
-            program_context=stored.program_context,
-            tier=stored.tier or 2,
-            lane=stored.lane,
-            priority_tier=stored.priority_tier,
-            session_id=stored.session_id,
-            idempotency_key=stored.idempotency_key,
-            run_id=record.run_id,
-            phase="queued",
-            progress=TaskProgress(),
-            created_at=from_epoch_us(record.created_at_us),
+            # The durable row answers the receipt's identity questions, but it
+            # must not bypass the resume gate below. A row only proves the
+            # receipt was once persisted — `_persist` lands inside `_enqueue`, a
+            # process death (or a replica picking the replay up) can leave the
+            # row readable while no queue anywhere holds the work. Returning it
+            # here answered every later replay "queued" while the Run sat
+            # stranded past every queue, exactly the loss the resume path
+            # exists to stop.
+            task = await self._persisted_receipt(record.task_id)
+        if task is None:
+            stored = TaskCreate.model_validate_json(record.request)
+            if record.task_id is None:  # pragma: no cover - replayed claims are admitted
+                raise RuntimeError("replayed admission claim carries no receipt id")
+            task = TaskResponse(
+                task_id=record.task_id,
+                status=TaskStatus.QUEUED,
+                description=stored.description,
+                workspace=stored.workspace,
+                user_id=stored.user_id or "",
+                service_principal_id=stored.service_principal_id,
+                delegation_id=stored.delegation_id,
+                actor_kind=stored.actor_kind,
+                task_type=stored.task_type,
+                agent_id=stored.agent_id,
+                capability=stored.capability,
+                program_context=stored.program_context,
+                tier=stored.tier or 2,
+                lane=stored.lane,
+                priority_tier=stored.priority_tier,
+                session_id=stored.session_id,
+                idempotency_key=stored.idempotency_key,
+                run_id=record.run_id,
+                phase="queued",
+                progress=TaskProgress(),
+                created_at=from_epoch_us(record.created_at_us),
+            )
+        admitter = self._admitter
+        if admitter is None or task.run_id is None:
+            return task
+        # CREATED -> QUEUED here; refusal (already RUNNING, terminal, or the
+        # Run gone) means the work is not this queue's to re-materialize. A
+        # second replica racing the same replay enqueues too, and the Run
+        # spine — which refuses the second QUEUED -> RUNNING — keeps one
+        # executor: the loser's task fails visibly instead of duplicating.
+        if not await admitter.record_transition(task.run_id, TaskStatus.QUEUED):
+            return task
+        await logger.ainfo(
+            "task_admission_resumed",
+            task_id=task.task_id,
+            run_id=task.run_id,
+            detail="reconciled admission was stranded outside the queue; re-enqueued",
+        )
+        await self._enqueue(task)
+        return task
+
+    async def _persisted_receipt(self, task_id: str) -> TaskResponse | None:
+        """The durable receipt row for a replayed admission, best-effort.
+
+        Receipt persistence is best-effort (ADR-018) and the claim store, not
+        this row, is the admission contract — a missing or unreadable row is a
+        fall-through to the stored-request reconstruction, never an error the
+        caller's retry has to answer for.
+        """
+        factory = get_async_session_factory()
+        if factory is None:
+            return None
+        try:
+            async with factory() as session:
+                row = await session.get(TaskRecord, task_id)
+        except Exception:
+            return None
+        if row is None:
+            return None
+        try:
+            return _task_from_record(row)
+        except (TypeError, ValueError):
+            return None
+
+    async def _mint(
+        self,
+        request: TaskCreate,
+        *,
+        task_id: str,
+        user_id: str = "",
+        workspace_id: str | None = None,
+        service_principal_id: str | None = None,
+        delegation_id: str | None = None,
+        actor_kind: TaskActorKind = "user",
+        idempotency_key: str | None = None,
+    ) -> TaskResponse:
+        """Build one receipt and mint its Run — everything durable admission
+        means, and nothing enqueue-shaped.
+
+        The idempotent path calls this between ``begin`` and ``complete`` so
+        the minted Run's provenance names an announced receipt (the discovery
+        handle), and so a claim lost mid-mint can be compensated before the
+        task ever reaches the queue.
+        """
+        created_at = datetime.now(UTC)
+        task = _build_unpublished_task(
+            request,
+            task_id=task_id,
+            created_at=created_at,
+            user_id=user_id,
+            service_principal_id=service_principal_id,
+            delegation_id=delegation_id,
+            actor_kind=actor_kind,
+            idempotency_key=idempotency_key,
+        )
+        if self._admitter is not None:
+            # Deliberately not best-effort. TaskRecord persistence may fail
+            # without the task failing, because the row is a receipt; the Run
+            # is the execution identity, and a task admitted without one would
+            # be exactly the untracked second lifecycle #41 exists to remove.
+            task.run_id = await self._admitter.admit(task, workspace_id=workspace_id)
+        return task
+
+    async def _enqueue(self, task: TaskResponse) -> None:
+        """Take a minted receipt into the live queue: store, persist, hand to
+        the runner, count it. The point this lands, the submission exists to
+        the rest of the process; everything before it can still be unwound by
+        the idempotency layer without a trace in the task list."""
+        async with self._lock:
+            self._tasks[task.task_id] = task
+            self._maybe_prune()
+        self._persist(task)
+        await self._pending.put(task.task_id)
+        tasks_submitted_total.inc()
+        active_tasks.inc()
+        await logger.ainfo(
+            "task_queued",
+            task_id=task.task_id,
+            run_id=task.run_id,
+            description=task.description[:DESCRIPTION_LOG_PREVIEW_LEN],
         )
 
     async def _submit_once(
@@ -457,6 +1191,9 @@ class TaskQueue:
         *,
         user_id: str = "",
         workspace_id: str | None = None,
+        service_principal_id: str | None = None,
+        delegation_id: str | None = None,
+        actor_kind: TaskActorKind = "user",
         idempotency_key: str | None = None,
     ) -> TaskResponse:
         """Admit and queue one submission unconditionally — the pre-#1176 path.
@@ -464,48 +1201,17 @@ class TaskQueue:
         No claim is consulted or written here: idempotency wraps this method,
         which stays the single place a receipt is born and a Run minted.
         """
-        task_id = TaskResponse.new_id()
-        owner = user_id or request.user_id or ""
-        task = TaskResponse(
-            task_id=task_id,
-            status=TaskStatus.QUEUED,
-            description=request.description,
-            workspace=request.workspace,
-            user_id=owner,
-            task_type=request.task_type,
-            agent_id=request.agent_id,
-            capability=request.capability,
-            program_context=request.program_context,
-            branch=request.branch,
-            constraints=list(request.constraints),
-            tier=request.tier or 2,
-            lane=request.lane,
-            priority_tier=request.priority_tier,
-            session_id=request.session_id,
+        task = await self._mint(
+            request,
+            task_id=TaskResponse.new_id(),
+            user_id=user_id,
+            workspace_id=workspace_id,
+            service_principal_id=service_principal_id,
+            delegation_id=delegation_id,
+            actor_kind=actor_kind,
             idempotency_key=idempotency_key,
-            phase="queued",
-            progress=TaskProgress(),
-            created_at=datetime.now(UTC),
         )
-        if self._admitter is not None:
-            # Deliberately not best-effort. TaskRecord persistence may fail
-            # without the task failing, because the row is a receipt; the Run
-            # is the execution identity, and a task admitted without one would
-            # be exactly the untracked second lifecycle #41 exists to remove.
-            task.run_id = await self._admitter.admit(task, workspace_id=workspace_id)
-        async with self._lock:
-            self._tasks[task_id] = task
-            self._maybe_prune()
-        self._persist(task)
-        await self._pending.put(task_id)
-        tasks_submitted_total.inc()
-        active_tasks.inc()
-        await logger.ainfo(
-            "task_queued",
-            task_id=task_id,
-            run_id=task.run_id,
-            description=request.description[:DESCRIPTION_LOG_PREVIEW_LEN],
-        )
+        await self._enqueue(task)
         return task
 
     async def recover(self, run_store: Any, *, batch_size: int = 100) -> int:
@@ -520,7 +1226,10 @@ class TaskQueue:
         terminalization, or of a dispatch that wrote RUNNING separately from
         its Attempt, including one that died after creating a NodeRun but
         before any Attempt under it — are failed visibly for the same reason
-        (#1114).
+        (#1114). Terminal task Runs whose receipt write never landed — a
+        forced shutdown abandoning the fire-and-forget write (#849) — get that
+        receipt written here, projected from the Run, so a completed Run can
+        never be permanently missing its receipt.
         """
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
@@ -557,7 +1266,104 @@ class TaskQueue:
             if len(queued) < batch_size:
                 break
         await self._terminalize_stranded_claims(run_store, batch_size=batch_size)
+        await self._reconcile_terminal_receipts(run_store, batch_size=batch_size)
         return recovered
+
+    async def _reconcile_terminal_receipts(self, run_store: Any, *, batch_size: int) -> None:
+        """Write the receipts terminal task Runs finished without (#849).
+
+        Receipt persistence is best-effort, and a forced shutdown between the
+        terminal transition and the in-flight upsert loses exactly that write:
+        the Run says COMPLETED (or FAILED, or CANCELLED) while no durable
+        receipt does. Recovery is where the projection is repaired — from the
+        canonical owner, never from memory, because memory is the thing that
+        died. The scan is paged like its siblings and idempotent by construction:
+        a terminal Run's payload and outcome are immutable, and a receipt row
+        that already reads terminal is left untouched, so re-running recovery
+        rewrites nothing and duplicates no results.
+        """
+        from maistro.runs.store import run_cursor_key
+
+        reconciled = 0
+        for status, terminal in _TERMINAL_TASK_STATUS_BY_RUN.items():
+            after: tuple[str, str] | None = None
+            while True:
+                page = await run_store.list_by_status(
+                    status,
+                    limit=batch_size,
+                    after=after,
+                    admission_source=TASK_QUEUE_SOURCE,
+                )
+                if not page:
+                    break
+                for run in page:
+                    after = run_cursor_key(run)
+                    if await self._reconcile_terminal_receipt(run, terminal):
+                        reconciled += 1
+                if len(page) < batch_size:
+                    break
+        if reconciled:
+            await logger.ainfo("task_receipts_reconciled_on_recovery", count=reconciled)
+
+    async def _reconcile_terminal_receipt(self, run: Any, terminal: TaskStatus) -> bool:
+        """Project one terminal Run onto its durable receipt; True when written.
+
+        A malformed admission payload is logged and skipped rather than failed:
+        the Run is already terminal, so the QUEUED-recovery disposition (claim
+        and fail visibly) has nothing left to do — the row was disposed of when
+        it terminalized, and only its receipt question remains.
+        """
+        task, reason = _task_from_run(run)
+        if reason is not None:
+            await logger.awarning(
+                "task_terminal_receipt_payload_invalid",
+                run_id=run.run_id,
+                reason=reason,
+            )
+            return False
+        assert task is not None
+        persisted = await self._persisted_receipt(task.task_id)
+        durable_is_current = persisted is not None and persisted.status in _TERMINAL
+        receipt = task.model_copy(
+            update={
+                "status": terminal,
+                "phase": terminal.value,
+                "started_at": run.started_at,
+                "completed_at": run.finished_at or task.completed_at,
+                "result": _receipt_result_for_run(run, terminal),
+            }
+        )
+        # Repair the durable row unless it already tells the truth — rewriting
+        # a current receipt could only regress it, and equal is the common case
+        # on every restart. Chained behind any write this process already
+        # scheduled for the task, so ordering matches every other write.
+        factory = get_async_session_factory()
+        wrote = False
+        if factory is not None and not durable_is_current:
+            await _write_after(self._last_write.get(task.task_id), factory, _record_values(receipt))
+            wrote = True
+        # And the same truth for any live copy this process holds, so a
+        # recovery run against a warm queue leaves one story, not two — even
+        # when the durable row needed no repair. Effects first (they stamp
+        # wall-clock fields), then the Run's own timestamps over the stamps.
+        async with self._lock:
+            live = self._tasks.get(task.task_id)
+            if live is not None and live.status not in _TERMINAL:
+                _apply_status_effects(live, terminal)
+                live.status = terminal
+                live.phase = terminal.value
+                live.started_at = receipt.started_at
+                live.completed_at = receipt.completed_at
+                live.result = receipt.result
+        if not wrote:
+            return False
+        await logger.ainfo(
+            "task_receipt_reconciled_on_recovery",
+            task_id=task.task_id,
+            run_id=run.run_id,
+            status=terminal.value,
+        )
+        return True
 
     async def _terminalize_stranded_claims(self, run_store: Any, *, batch_size: int) -> None:
         """Fail task Runs claiming execution with no physical evidence (#1114).
@@ -706,25 +1512,132 @@ class TaskQueue:
                     current=task.status.value,
                     requested=status.value,
                 )
+                # A refusal is not a place to strand the receipt (#849). The
+                # Run owns the truth; read it and reconcile the receipt to it
+                # so a refused transition can never leave a QUEUED receipt
+                # behind work the canonical side has already finished, failed
+                # or lost.
+                await self._reconcile_refused(task, requested=status)
+                self._notify(task_id)
                 return False
 
             task.status = status
             task.phase = status.value
-
-            if status == TaskStatus.PLANNING:
-                task.started_at = datetime.now(UTC)
-            elif status in _TERMINAL:
-                task.completed_at = datetime.now(UTC)
-                active_tasks.dec()
-                if status == TaskStatus.COMPLETED:
-                    tasks_completed_total.inc()
-                elif status == TaskStatus.FAILED:
-                    tasks_failed_total.inc()
+            _apply_status_effects(task, status)
 
             self._persist(task)
 
         self._notify(task_id)
         return True
+
+    async def _reconcile_refused(self, task: TaskResponse, *, requested: TaskStatus) -> None:
+        """Reconcile a receipt whose canonical Run refused to advance (#849).
+
+        Called with the queue lock held, immediately after `record_transition`
+        refused. The receipt is a projection, so it takes the Run's actual
+        state: terminal, the receipt terminalizes to match — including the
+        QUEUED case, where the Run finished (or was cancelled, or was consumed
+        by another worker) before this receipt ever reached PLANNING. Missing,
+        the receipt records an explicit canonical error receipt instead of
+        failing silently forever. Still owned and non-terminal (WAITING or
+        PAUSED — a live Attempt lease or an answer-gated pause), the receipt is
+        deliberately left exactly as it is: failing it would lie about work the
+        canonical owner may yet finish, and the recovery scan reconciles the
+        projection from the Run once the owner settles it.
+        """
+        try:
+            run = await self._lookup_run(task.run_id or "")
+        except Exception:
+            # A lookup failure is not evidence about the Run. Leave the receipt
+            # untouched and let a later pass reconcile it; failing the receipt
+            # on a read error would fabricate a failure the Run never recorded.
+            await logger.awarning(
+                "task_receipt_reconcile_lookup_failed",
+                task_id=task.task_id,
+                run_id=task.run_id,
+                exc_info=True,
+            )
+            return
+        if run is None:
+            await self._fail_receipt(
+                task,
+                error=(
+                    "canonical error receipt: canonical Run does not exist; "
+                    f"refused {requested.value}"
+                ),
+            )
+            return
+        terminal = _TERMINAL_TASK_STATUS_BY_RUN.get(run.status)
+        if terminal is None:
+            await logger.awarning(
+                "task_receipt_reconcile_deferred_to_owner",
+                task_id=task.task_id,
+                run_id=task.run_id,
+                run_status=run.status.value,
+            )
+            return
+        if terminal is task.status:
+            return
+        task.status = terminal
+        task.phase = terminal.value
+        # Effects first (they stamp completed_at with wall-clock time), then the
+        # Run's own timestamps over the stamps: the canonical record of when
+        # this work started and ended outranks the projection's clock.
+        _apply_status_effects(task, terminal)
+        if run.started_at is not None:
+            task.started_at = run.started_at
+        task.completed_at = run.finished_at or task.completed_at
+        task.result = _receipt_result_for_run(run, terminal)
+        self._persist(task)
+        await logger.ainfo(
+            "task_receipt_reconciled_from_run",
+            task_id=task.task_id,
+            run_id=task.run_id,
+            status=terminal.value,
+            refused=requested.value,
+        )
+
+    async def _fail_receipt(self, task: TaskResponse, *, error: str) -> None:
+        """Record an explicit canonical error receipt on a non-terminal task.
+
+        The last-resort disposition (#849): every failure point from QUEUED
+        onward must end in a legal terminal receipt, and a Run that does not
+        exist cannot be projected from. LEGAL because QUEUED -> FAILED is a
+        task-machine transition; HONEST because the error text names the
+        canonical fact (the Run is gone) rather than inventing an outcome the
+        work never reported.
+        """
+        if task.status in _TERMINAL:
+            return
+        if not can_transition(task.status, TaskStatus.FAILED):  # pragma: no cover - guarded
+            return
+        task.status = TaskStatus.FAILED
+        task.phase = TaskStatus.FAILED.value
+        task.completed_at = datetime.now(UTC)
+        task.result = TaskResult(error=error)
+        _apply_status_effects(task, TaskStatus.FAILED)
+        self._persist(task)
+        await logger.awarning(
+            "task_receipt_failed_without_run",
+            task_id=task.task_id,
+            run_id=task.run_id,
+            error=error,
+        )
+
+    async def _lookup_run(self, run_id: str) -> Any:
+        """The canonical Run behind a receipt, via the wired admitter.
+
+        Raises when the admitter cannot answer — callers must treat that as
+        unknown, not as absent. An admitter without `lookup_run` (a custom
+        implementation predating the projection contract) answers nothing, so
+        reconciliation is skipped rather than guessed.
+        """
+        if self._admitter is None:
+            raise RuntimeError("no admitter wired; canonical Run state is unknowable")
+        lookup = getattr(self._admitter, "lookup_run", None)
+        if lookup is None:
+            raise RuntimeError("admitter does not expose canonical Run lookups")
+        return await lookup(run_id)
 
     def update_progress(self, task_id: str, progress: TaskProgress) -> None:
         task = self._tasks.get(task_id)
@@ -750,16 +1663,55 @@ class TaskQueue:
         The receipt is a projection. For admitted work, cancellation must
         first reach the Run/Attempt service so an in-flight provider receives
         the same signal as a queued task that has not started yet.
+
+        Compatibility (#1338): an admitter wired before `cancel_run` joined
+        the :class:`~maistro.tasks.admission.TaskAdmitter` protocol exposes
+        no canonical cancellation, and ``getattr`` is the capability check —
+        the Protocol is structural, so absence is invisible to isinstance.
+        For such an adapter's admitted work this method refuses (False) and
+        leaves the receipt exactly as it was: the Run keeps its owner, and
+        terminalizing the receipt CANCELLED while nobody signals the
+        execution would make "stopped" mean "locally forgotten" (#1242).
+        Work with no canonical identity behind it (no admitter, or no
+        ``run_id``) never had physical execution to stop, so the
+        receipt-only path stays available there and reads as exactly that.
         """
         task = self._tasks.get(task_id)
         if task is None:
             return False
-        if (
-            self._admitter is not None
-            and task.run_id
-            and not await self._admitter.cancel_run(task.run_id)
-        ):
-            return False
+        # A request that found the receipt already terminal is a repeat of an
+        # old cancellation, not a new one — it stays False so the route keeps
+        # mapping it to 400 (the pinned API contract).
+        arrived_terminal = task.status in _TERMINAL
+        if self._admitter is not None and task.run_id:
+            cancel_run = getattr(self._admitter, "cancel_run", None)
+            if cancel_run is None:
+                # A legacy two-method admitter (#1338): physical cancellation
+                # is unavailable, and pretending otherwise would either crash
+                # (AttributeError) or lie (a CANCELLED receipt over a Run that
+                # is still executing). Report the limitation explicitly and
+                # refuse; the operator upgrades or replaces the adapter.
+                await logger.awarning(
+                    "task_cancel_unsupported_by_admitter",
+                    task_id=task.task_id,
+                    run_id=task.run_id,
+                    admitter_type=type(self._admitter).__name__,
+                    reason="admitter predates the TaskAdmitter.cancel_run capability; "
+                    "canonical physical cancellation unavailable",
+                )
+                return False
+            if not await cancel_run(task.run_id):
+                return False
+        # The canonical cancellation may already have reached the receipt: the
+        # worker's cancellation handler reconciles it from the Run (#849), and
+        # that reconcile can win the race against this method's own write. A
+        # receipt that flipped CANCELLED *during this call* is the cancellation
+        # having succeeded, not having failed — reporting False would turn a
+        # win into a lie. One that already read CANCELLED on arrival is the
+        # repeat case above and stays False.
+        current = self._tasks.get(task_id)
+        if not arrived_terminal and current is not None and current.status is TaskStatus.CANCELLED:
+            return True
         return await self.update_status(task_id, TaskStatus.CANCELLED)
 
     def remove(self, task_id: str) -> bool:
@@ -836,8 +1788,17 @@ class TaskQueue:
         try:
             yield task
         except BaseException as exc:
-            await self.update_status(task_id, TaskStatus.FAILED)
-            self.set_result(task_id, TaskResult(error=str(exc)))
+            # A cancellation is not a failure the receipt may write here
+            # (#1337): `update_status(FAILED)` on a Run the cancel already
+            # fenced CANCELLED is refused, and the unconditional result write
+            # that followed clobbered the reconciled projection with
+            # `str(CancelledError)` — an empty error — under a cancelled
+            # status. The runner's CancelledError handler owns the whole
+            # cancellation disposition; every other exception keeps the
+            # fail-fast disposition below.
+            if not isinstance(exc, asyncio.CancelledError):
+                await self.update_status(task_id, TaskStatus.FAILED)
+                self.set_result(task_id, TaskResult(error=str(exc)))
             await logger.aexception("task_failed", task_id=task_id)
             raise
         finally:

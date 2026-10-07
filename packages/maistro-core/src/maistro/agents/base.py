@@ -390,8 +390,8 @@ class Agent:
             auth, trace, status_callback, classified_task_type
         )
 
-        result = await self._run_strategy(
-            context_messages, model, tool_defs, strategy_kwargs, trace
+        result = await self._run_strategy_for_turn(
+            context_messages, model, tool_defs, strategy_kwargs, trace, turn_id
         )
         if result is None:
             # `_run_strategy` already caught and logged; mark it failed so this
@@ -442,9 +442,6 @@ class Agent:
 
         await self._extract_learnings(result, user_text, user_id, org_id, team_id, trace)
 
-        if self._learning_promoter and injected_learning_ids:
-            await self._learning_promoter.check_and_promote(org_id=org_id)
-
         await self._persist_run(
             result,
             auth=auth,
@@ -457,6 +454,14 @@ class Agent:
             injected_learning_ids=injected_learning_ids,
             turn_id=turn_id,
         )
+
+        # Promote only after the current Run's outcome is recorded:
+        # `_persist_run` -> `mark_outcome` updates the confidence counters this
+        # turn just paid for, and checking first would promote on the previous
+        # turn's evidence (e.g. promoting 3/4=0.75 at a 0.7 floor even though
+        # this turn's failure should have dropped it to 3/5).
+        if self._learning_promoter and injected_learning_ids:
+            await self._learning_promoter.check_and_promote(org_id=org_id)
 
         self._finalize_trace_if_present(
             trace, result, model, session_history_count, injected_learning_ids
@@ -560,6 +565,15 @@ class Agent:
                 success=not tool_had_failures,
                 org_id=org_id,
             )
+            if tool_had_failures and self._learning_promoter:
+                # Failure knowledge capture (#121, ADR-100126-8c2d): this turn's
+                # recorded failure is the evidence that just moved. When a
+                # learning's recorded failures now dominate its successes,
+                # the promoter reclassifies it as retained ANTI_PATTERN
+                # knowledge, so later Runs stop re-buying the failure.
+                # Reclassification is not validation: the repertoire still
+                # requires the Gauntlet like any other learning.
+                await self._learning_promoter.capture_anti_patterns(org_id)
 
     async def _prepare_user_input(
         self,
@@ -689,6 +703,28 @@ class Agent:
                 }
             )
         return context_messages, injected_learning_ids
+
+    async def _run_strategy_for_turn(
+        self,
+        context_messages: list[dict[str, Any]],
+        model: str,
+        tool_defs: list[dict[str, Any]] | None,
+        strategy_kwargs: dict[str, Any],
+        trace: Any,
+        turn_id: str | None,
+    ) -> Any:
+        """Set canonical LLM correlation for one turn, then clear it."""
+        set_turn = getattr(self._llm, "set_turn", None)
+        clear_turn = getattr(self._llm, "clear_turn", None)
+        if callable(set_turn):
+            set_turn(turn_id, agent_name=self.identity.name)
+        try:
+            return await self._run_strategy(
+                context_messages, model, tool_defs, strategy_kwargs, trace
+            )
+        finally:
+            if callable(clear_turn):
+                clear_turn()
 
     async def _run_strategy(
         self,
