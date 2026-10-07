@@ -903,3 +903,104 @@ baseline is untouched.
   unique node IDs, matches recorded inventory); `check-shipped-surface-truth.py`
   exit 0; `check-reachability.py` exit 0 (175/1312 banked);
   `check-reachability-dispositions.py` exit 0 (50 groups).
+
+## Fourteenth CI-repair addendum (d7d5c34f9 merge-queue round: M3-C5 convergence fallout, every ratchet green)
+
+Merge-queue evaluation flagged `Supply chain (pip-audit)`; the previous block
+was this lane's own NEEDS-DEEP-REVIEW request. This round validates the
+completed merge of `origin/develop` (the M3-C5 authority cutover
+`b0912ce59`/`#1707` converged into `3012877b7`, then `d7d5c34f9`) and repairs
+its one piece of ledger fallout. No backlog source, test, migration, or grant
+changed beyond the recorded inventory delta and the shipped-surface truth fix
+below.
+
+- **The #534 two-merge residual is resolved at this head, measured against
+  merge-base `83c7788d60bb`:** `check-vulture-baseline.py` with CI's exact
+  args (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`,
+  `RATCHET_BASE_REV=origin/develop`) **exits 0** — 1328 reviewed identities
+  = 1328 findings, `unclassified: 0`, `never_allowlist: 0` (develop's cutover
+  landed the backlog domain and its ledger authorizations, so the 50
+  formerly-NEW `maistro.backlog.*` identities are now reviewed at base);
+  `check-reachability-provenance.py` and
+  `check-reachability-dispositions-provenance.py` **exit 0** (169 → 169 of
+  1355 modules; the five `maistro.backlog*` modules are now genuinely reached
+  through the cutover wiring — `maistro.cli._backlog`, `backlog.cutover`,
+  `backlog.agent_surface`, migration `060`); `check-ratchet-provenance.py`
+  **exits 0** with every leg OK (50 quality JSON consumers with explicit
+  provenance). The prior addenda's driver-side grants-only-merge requirement
+  is obsolete.
+- **Named merge-queue failure (Supply chain / pip-audit) re-proven green at
+  this head with security.yml's verbatim sequence:** `uv sync --locked
+  --all-extras` (in sync; adds only the extras' playwright/pyee/bootstrap),
+  `uv pip install pip-audit`, `uv pip freeze --exclude-editable` → 217
+  requirements, `pip-audit --strict --format=json -r` exit 1 with a complete
+  report — 2× `ecdsa==0.19.2 PYSEC-2026-1325` and nothing else —
+  `pip_audit_gate.py` **exit 0** (ALLOWED triage,
+  `scripts/pip_audit_gate.py:76`; direct-dependency usage OK: 11 packages /
+  62 runtime deps / 4 dispositions). The dependency surface is byte-identical
+  to the merge base (`git diff 83c7788d60bb..HEAD -- uv.lock
+  'packages/*/pyproject.toml' scripts/pip_audit_gate.py
+  quality/direct-dependency-exceptions.json` is empty), so the queued failure
+  cannot be content-caused by this branch; the workflow's own retry contract
+  classifies three consecutive unusable reports as an infrastructure outage
+  ("retry the job"). ci.yml's `security` leg (`--extra dev`) audits a strict
+  subset of the same locked environment.
+- **Merge fallout found and fixed: `quality/shipped-surface-truth.json`
+  carried 7 stale backend surfaces** for
+  `maistro_server/api/backlog_items.py` — a file that existed only on this
+  branch (added by `36652bd98`; `git log origin/develop -- <path>` is empty)
+  and was removed by the M3-C5 convergence in favor of develop's canonical
+  landing (hive-conductor `backend/routes/backlog.py`, still ledger-covered,
+  plus `maistro_server/api/backlog_history.py`). The 7 entries were deleted
+  (backend_surfaces 235 → 228); `check-shipped-surface-truth.py` **exit 0**
+  (was exit 1 with exactly those 7 stale entries and zero unclassified
+  surfaces). This is the ledger mirroring the tree, not a gate relaxation.
+- **Suite inventory drift −15 recorded, proven intentional:** the convergence
+  merge deleted this branch's superseded `test_backlog_items_api.py` (9
+  unparametrized nodes) and `test_backlog_wiring.py` (6 unparametrized
+  nodes); the drift equals those counts exactly (nothing silently stopped
+  collecting). Recorded via `check-suite-inventory.py --update` →
+  `auto-82-b458.md`; the gate now reports 17/17 suites matching.
+- **Migration chain at `060` proven on fresh databases (local PostgreSQL 18,
+  pristine DBs created for this round):** `alembic heads` → single
+  `060 (head)`; `alembic upgrade head` on an empty database walks the full
+  chain (`… 057 → 058 → 059_backlog_work_source (#82) →
+  060_backlog_authority_cutover (#102)`); `alembic downgrade base` →
+  `upgrade head` clean; `tests/migrations/test_migration_chain.py` **17
+  passed**; the whole `tests/migrations` directory **157 passed** with
+  `MAISTRO_TEST_DATABASE_URL`. (Two environment prerequisites were needed
+  locally and are not tree state: other lanes' stale fixed-name scratch
+  databases (`maistro_planner_test` et al., superuser-owned) were dropped —
+  the suites' `DROP DATABASE … WITH (FORCE)` requires ownership — and the
+  round's throwaway role needed CREATEDB/SUPERUSER because pgvector is an
+  untrusted extension, exactly the condition the conftest probe
+  (`tests/migrations/conftest.py:33`) documents; CI's service user is a
+  superuser and needs neither.)
+- **Backlog substrate exercised at this head:** no-DSN
+  `packages/maistro-core/tests/backlog` **114 passed / 2 skipped**; with
+  `MAISTRO_TEST_PG_DSN` + `MAISTRO_REQUIRE_PG_LEGS=1` against a freshly
+  migrated database **114 passed / 2 skipped**. (A repeat run against an
+  already-used database fails
+  `test_dependencies_origin_and_priority_roundtrip[postgres]` with "engine-042
+  already exists": the test pins a fixed item id and the durable row from the
+  previous run survives — the fresh-database-per-run shape every prior
+  addendum and CI's fresh service already encode, not a regression of this
+  merge.) hive-conductor `test_backlog_routes.py` **42 passed**; server
+  backlog-history API **6 passed**.
+- **Merge fallout battery, all green at this head** (`RATCHET_BASE_REV=
+  origin/develop` where applicable): `ruff check .` clean; `ruff format
+  --check .` 3132 files clean; mypy clean across the seven canonical packages
+  (867 files); `check-reachability.py` OK (1355 production modules, 169
+  unreachable — down from 179: the backlog modules are reached now);
+  `check-reachability-dispositions.py` OK (49 groups cover all 169);
+  `check-durable-table-inventory.py` OK (102 tables);
+  `check-backlog-consistency.py` OK (167 items); `check-wiring-reads.py`,
+  `check-agent-store-writes.py`, `check-contract-markers.py`,
+  `check-convergence-matrix.py`, `check-credential-authority.py`,
+  `check-security-inventory.py`, `check-workflow-inventory.py` all exit 0.
+- **Residuals:** the branch is 7 commits behind `origin/develop`
+  (`e1b13dcd1`, this job's own declared base) — the next queue evaluation may
+  require a fresh develop sync, for which the documented conflict-resolution
+  procedure applies. The driver's `check-*.log` files referenced by the brief
+  were absent from the job directory; every deterministic check cited here
+  was re-executed locally at this head instead.
