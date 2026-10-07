@@ -434,6 +434,125 @@ def test_true_with_the_build_consuming_computed_release_tags_fails(
     assert "consumes computed release tags" in capsys.readouterr().out
 
 
+def test_true_with_the_build_pushing_a_release_tag_directly_fails(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """Any non-quarantine build destination publishes before the scan.
+
+    `:latest` is only one shape. A build that pushes the immutable version tag
+    itself — `tags: ghcr.io/example/maistro-engine:${{ github.ref_name }}` —
+    makes the release public before any scan could reject it, and a later
+    `imagetools create` cannot un-publish it. The check confines every build
+    destination to a `-rc` quarantine repository instead of enumerating the
+    tag shapes it happens to forbid today.
+    """
+    tree = _release_tree(
+        tmp_path,
+        RELEASE_WIRING.replace(
+            "ghcr.io/example/maistro-engine-rc:rc-${{ github.run_id }}",
+            "ghcr.io/example/maistro-engine:${{ github.ref_name }}",
+        ),
+        True,
+    )
+    assert _run(gate, tree, monkeypatch) == 1
+    assert (
+        "pushes 'ghcr.io/example/maistro-engine:${{ github.ref_name }}' outside a "
+        "`-rc` quarantine repository" in capsys.readouterr().out
+    )
+
+
+def test_true_with_a_mixed_block_scalar_tags_fails(gate, tmp_path, monkeypatch, capsys):
+    """The quarantine rule reads block-scalar `tags:` lists destination by
+    destination — one production repo smuggled in beside a quarantine repo is
+    still a publish at build time."""
+    tree = _release_tree(
+        tmp_path,
+        RELEASE_WIRING.replace(
+            "tags: ghcr.io/example/maistro-engine-rc:rc-${{ github.run_id }}",
+            "tags: |\n"
+            "            ghcr.io/example/maistro-engine-rc:rc-${{ github.run_id }}\n"
+            "            ghcr.io/example/maistro-engine:v1\n",
+        ),
+        True,
+    )
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "outside a `-rc` quarantine repository" in capsys.readouterr().out
+
+
+def test_true_with_an_all_quarantine_block_scalar_tags_passes(gate, tmp_path, monkeypatch):
+    """The block-scalar spelling of the real wiring must not read as a
+    violation: every destination ends in `-rc`, so nothing is published
+    before the scans."""
+    tree = _release_tree(
+        tmp_path,
+        RELEASE_WIRING.replace(
+            "tags: ghcr.io/example/maistro-engine-rc:rc-${{ github.run_id }}",
+            "tags: |\n"
+            "            ghcr.io/example/maistro-engine-rc:rc-${{ github.run_id }}\n"
+            "            ghcr.io/example/maistro-engine-rc:candidate\n",
+        ),
+        True,
+    )
+    assert _run(gate, tree, monkeypatch) == 0
+
+
+SIBLING_WORKFLOW = """
+name: release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build candidate
+        id: engine
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/example/maistro-engine-rc:rc-${{ github.run_id }}
+  after:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scan candidate
+        uses: aquasecurity/trivy-action@ed142fd
+        with:
+          image-ref: ghcr.io/example/maistro-engine-rc@${{ steps.engine.outputs.digest }}
+          exit-code: "1"
+      - name: Promote the scanned digest
+        run: docker buildx imagetools create -t ghcr.io/example/maistro-engine:v1 ghcr.io/example/maistro-engine-rc@${{ steps.engine.outputs.digest }}
+      - name: Sign the pushed digest
+        run: cosign sign ghcr.io/example/maistro-engine@${{ steps.engine.outputs.digest }}
+"""
+
+
+def test_the_scan_of_a_later_job_does_not_satisfy_this_jobs_claim(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """Steps belong to their own job, not to the job that happens to precede
+    them.
+
+    A job block that ran to end-of-file would read the next job's steps as
+    this job's, so a publishing job that never scanned, promoted or signed
+    could pass by borrowing a later job's wiring — two independent jobs
+    jointly satisfying what the publishing job must do alone.
+    """
+    tree = _release_tree(tmp_path, SIBLING_WORKFLOW, True)
+    assert _run(gate, tree, monkeypatch) == 1
+    out = capsys.readouterr().out
+    assert "never scans `steps.engine.outputs.digest`" in out
+    assert "never applies the release tags" in out
+    assert "no `cosign sign` of `steps.engine.outputs.digest`" in out
+
+
+def test_a_job_followed_by_a_sibling_still_reads_its_own_steps(gate, tmp_path, monkeypatch):
+    """The sibling bound must not cut the other way either: the full wiring in
+    the FIRST of two jobs must still be visible when a second job follows it."""
+    tree = _release_tree(tmp_path, RELEASE_WIRING + "  later:\n    runs-on: ubuntu-latest\n", True)
+    assert _run(gate, tree, monkeypatch) == 0
+
+
 def test_true_with_no_build_step_fails(gate, tmp_path, monkeypatch, capsys):
     workflow = "\n".join(
         line for line in RELEASE_WIRING.splitlines() if "build-push-action" not in line

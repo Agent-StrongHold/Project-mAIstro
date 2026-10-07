@@ -150,13 +150,23 @@ def check_job_ref(ref: str, failures: list[str], where: str) -> None:
 
 
 def _job_bounds(lines: list[str], job: str) -> tuple[int, int]:
-    """Half-open line range of one job's block, or `(0, 0)` if absent."""
+    """Half-open line range of one job's block, or `(0, 0)` if absent.
+
+    The block ends at the first line that is not deeper than the job's own
+    indent: a top-level key or comment (column 0), or a sibling job key at
+    exactly two spaces. Without the sibling test the block ran to the end of
+    the file and `steps_of_job` read every later job's steps as this job's --
+    so two independent jobs could jointly satisfy build/scan/promote/sign
+    checks that the declared publishing job must satisfy alone.
+    """
     job_re = re.compile(rf"^  {re.escape(job)}:\s*(?:#.*)?$")
     start = next((i + 1 for i, line in enumerate(lines) if job_re.match(line)), None)
     if start is None:
         return 0, 0
     for j in range(start, len(lines)):
         if lines[j] and not lines[j][0].isspace():
+            return start, j
+        if re.match(r"^  \S", lines[j]):
             return start, j
     return start, len(lines)
 
@@ -231,8 +241,9 @@ def check_publish_wiring(workflow: Path, job: str, ident: str, failures: list[st
     - a `cosign sign` step consuming it — the signature attests the published
       artifact, not a lookalike.
 
-    And the build itself must not apply release tags: a step that pushed
-    `:latest` (or the computed release tags) at build time would publish the
+    And the build itself must not publish: every destination of its push must
+    be a `-rc` quarantine repository. A step that pushed any release tag —
+    `:latest` or an interpolated version tag — at build time would publish the
     digest before the scan had a chance to reject it.
     """
     rel = str(workflow.relative_to(ROOT))
@@ -316,6 +327,59 @@ def _pushed_build_steps(
     return builds
 
 
+TAGS_LINE = re.compile(r"^\s+(?:-\s+)?tags:\s*(\S.*)$")
+BLOCK_TAGS = re.compile(r"^[|>][-+]?\s*(?:#.*)?$")
+
+
+def _tag_destinations(chunk: str) -> list[str]:
+    """Every build destination named by a build step's `tags:` input.
+
+    Both spellings count: inline (`tags: a,b`) and the block scalar
+    (`tags: |` with one destination per line), which is how multi-line tag
+    lists are usually written. A whole-value `steps.*` interpolation is
+    returned as-is -- it is a destination the quarantine rule can reject.
+    """
+    destinations: list[str] = []
+    lines = chunk.splitlines()
+    for i, line in enumerate(lines):
+        found = TAGS_LINE.match(line)
+        if not found:
+            continue
+        value = found.group(1).strip()
+        if BLOCK_TAGS.match(value):
+            indent = len(line) - len(line.lstrip())
+            for inner in lines[i + 1 :]:
+                if inner.strip() and len(inner) - len(inner.lstrip()) <= indent:
+                    break  # dedented: the block is over
+                if inner.strip():
+                    destinations.append(inner.strip())
+        else:
+            destinations.extend(part.strip() for part in value.split(",") if part.strip())
+    return destinations
+
+
+def _non_quarantine_destinations(chunk: str) -> list[str]:
+    """Build destinations whose repository is not a `-rc` quarantine.
+
+    Confining the build is what makes "the release publishes the scanned
+    digest" true even when the promotion is miswired: if every destination of
+    the push is `<image>-rc`, then no release tag exists anywhere until the
+    `imagetools create` step runs -- after the scans. Enumerating forbidden
+    tag shapes (`:latest`, today) would miss tomorrow's `:${{ github.ref_name }}`;
+    the repository name is the thing, so that is what is checked.
+    """
+    bad: list[str] = []
+    for dest in _tag_destinations(chunk):
+        # The repository is the segment between the last `/` and the first
+        # `:` after it; `${{ ... }}/maistro-engine-rc:rc-123` and
+        # `ghcr.io/org/maistro-engine-rc` both land on `maistro-engine-rc`.
+        after_last_slash = dest.rsplit("/", 1)[-1]
+        repo = after_last_slash.split(":", 1)[0]
+        if not repo.endswith("-rc"):
+            bad.append(dest)
+    return bad
+
+
 def _build_must_not_publish(
     chunk: str, ident: str, rel: str, job: str, failures: list[str]
 ) -> None:
@@ -323,7 +387,9 @@ def _build_must_not_publish(
 
     A build step that named a mutable release tag — or consumed the computed
     release tags — would publish the digest before any scan had the chance to
-    reject it, which is exactly what #611's AC-2 forbids.
+    reject it, which is exactly what #611's AC-2 forbids. So every build
+    destination must be a `-rc` quarantine repository, not merely "not one of
+    a few forbidden tag shapes".
     """
     if ":latest" in chunk:
         failures.append(
@@ -337,6 +403,12 @@ def _build_must_not_publish(
                 "the build must push to a quarantine, and the promote step applies "
                 "the release tags to the scanned digest"
             )
+    for dest in _non_quarantine_destinations(chunk):
+        failures.append(
+            f"{ident}: {rel} job {job!r} build step pushes {dest!r} outside a "
+            "`-rc` quarantine repository; every build destination must be a "
+            "quarantine so no release tag exists before the scans admit the digest"
+        )
 
 
 def check_exception(entry: dict[str, object], ident: str, failures: list[str]) -> bool:
