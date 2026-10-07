@@ -23,12 +23,15 @@ from maistro.graph.execution_state import GraphExecutionState
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import (
     AcceptedNodeOutcome,
+    Attempt,
     AttemptResult,
     AttemptStatus,
     InMemoryRunStore,
+    NodeRun,
     RunStatus,
 )
-from maistro.runs.lifecycle import transition_node_run
+from maistro.runs.lifecycle import InvalidLifecycleTransition, transition_node_run
+from maistro.runs.reconciliation import AttemptLifecycleReconciler
 from maistro.runs.store import ActiveAttemptExists, RunIntegrityError, StaleExecutionFence
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
@@ -427,3 +430,199 @@ async def test_a_record_that_loses_its_node_run_under_the_transition_is_an_error
 
     with pytest.raises(RunIntegrityError, match="does not exist"):
         await execution_store.transition_node_run(node_run_id, RunStatus.CANCELLED)
+
+
+# ── legacy evidence migration across the delegated transition (#1334) ──
+
+
+async def _complete_one_attempt(
+    execution_store: DurableRunExecutionStore, node_run_id: str
+) -> tuple[Attempt, Attempt]:
+    """Drive one Attempt to physical completion through the delegated path."""
+    attempt = await execution_store.create_attempt(node_run_id, executor_id="graph.node")
+    await execution_store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+    terminal = await execution_store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.COMPLETED, result={"answer": "ok"}
+    )
+    return attempt, terminal
+
+
+async def _load_legacy_node_shape(
+    store: InMemoryDurableRunStore,
+    run_store: InMemoryRunStore,
+    record: DurableRunRecord,
+    node_run_id: str,
+    terminal: Attempt,
+) -> NodeRun:
+    """Rewind one completed NodeRun to its pre-acceptance shape, in both stores.
+
+    Writes after acceptance became structural can no longer produce a
+    completed row without evidence, so the strip below is the historical
+    repair fixture — the same one ``tests/runs/test_spine_conformance.py``
+    loads against the store directly — mirrored into the canonical row and
+    the record's projection alike.
+    """
+    outcome = AcceptedNodeOutcome(
+        node_run_id=node_run_id,
+        attempt_result=AttemptResult.from_attempt(terminal),
+        result=terminal.result,
+    )
+    completed = await run_store.transition_node_run(
+        node_run_id,
+        RunStatus.COMPLETED,
+        result=outcome.result,
+        accepted_outcome=outcome,
+    )
+    legacy = completed.model_copy(update={"accepted_outcome": None}, deep=True)
+    run_store._node_runs[node_run_id] = legacy
+    current = await store.get(record.run_id)
+    assert current is not None
+    await store.update(
+        current.model_copy(
+            update={
+                "node_runs": tuple(
+                    legacy if item.node_run_id == node_run_id else item
+                    for item in current.node_runs
+                ),
+                "version": current.version + 1,
+            }
+        )
+    )
+    return legacy
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-2")
+async def test_reconciling_a_legacy_completed_node_run_installs_evidence_in_both_stores() -> None:
+    """#1334 regression: the adapter skipped the canonical write whenever the
+    row already held the target status, so a canonical-backed reconciler could
+    not perform the COMPLETED→COMPLETED legacy migration — the accepted
+    outcome vanished from the canonical row, and the projection was then
+    overwritten with that same pre-migration row."""
+    store, run_store, execution_store, record, node_run_id = await _bound_store()
+    _attempt, terminal = await _complete_one_attempt(execution_store, node_run_id)
+    legacy = await _load_legacy_node_shape(store, run_store, record, node_run_id, terminal)
+
+    settled = await AttemptLifecycleReconciler(execution_store).reconcile(terminal)
+
+    physical = AttemptResult.from_attempt(terminal)
+    assert settled.status is RunStatus.COMPLETED
+    assert settled.accepted_outcome is not None
+    assert settled.accepted_outcome.attempt_result == physical
+    assert settled.finished_at == legacy.finished_at
+    assert settled.result == legacy.result
+    canonical = await run_store.get_node_run(node_run_id)
+    assert canonical is not None and canonical.accepted_outcome is not None
+    assert canonical.accepted_outcome.attempt_result == physical
+    assert canonical.finished_at == legacy.finished_at
+    mirrored = await execution_store.get_node_run(node_run_id)
+    assert mirrored is not None and mirrored.accepted_outcome is not None
+    assert mirrored.accepted_outcome.attempt_result == physical
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-2")
+async def test_a_same_status_transition_attaching_legacy_evidence_reaches_the_store() -> None:
+    """The delegated transition itself, without the reconciler around it: a
+    COMPLETED→COMPLETED call that carries an outcome the canonical row lacks
+    must still be routed to the store that owns the row."""
+    store, run_store, execution_store, record, node_run_id = await _bound_store()
+    _attempt, terminal = await _complete_one_attempt(execution_store, node_run_id)
+    legacy = await _load_legacy_node_shape(store, run_store, record, node_run_id, terminal)
+    outcome = AcceptedNodeOutcome(
+        node_run_id=node_run_id,
+        attempt_result=AttemptResult.from_attempt(terminal),
+        result=terminal.result,
+    )
+
+    migrated = await execution_store.transition_node_run(
+        node_run_id,
+        RunStatus.COMPLETED,
+        result=legacy.result,
+        error=legacy.error,
+        accepted_outcome=outcome,
+    )
+
+    assert migrated.accepted_outcome == outcome
+    canonical = await run_store.get_node_run(node_run_id)
+    assert canonical is not None and canonical.accepted_outcome == outcome
+    assert canonical.finished_at == legacy.finished_at
+    mirrored = await execution_store.get_node_run(node_run_id)
+    assert mirrored is not None and mirrored.accepted_outcome == outcome
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-2")
+async def test_a_same_status_transition_with_already_attached_evidence_stays_a_no_op() -> None:
+    """Replays stay no-ops: the store's validator refuses completed→completed
+    outright, so routing a call whose evidence the row already holds would
+    turn every idempotent replay into a failure. The acceptance clock is what
+    a replay cannot reproduce, so it must not count as disagreement."""
+    store, run_store, execution_store, record, node_run_id = await _bound_store()
+    _attempt, terminal = await _complete_one_attempt(execution_store, node_run_id)
+    outcome = AcceptedNodeOutcome(
+        node_run_id=node_run_id,
+        attempt_result=AttemptResult.from_attempt(terminal),
+        result=terminal.result,
+    )
+    completed = await run_store.transition_node_run(
+        node_run_id,
+        RunStatus.COMPLETED,
+        result=terminal.result,
+        accepted_outcome=outcome,
+    )
+    current = await store.get(record.run_id)
+    assert current is not None
+    await store.update(
+        current.model_copy(
+            update={
+                "node_runs": tuple(
+                    completed if item.node_run_id == node_run_id else item
+                    for item in current.node_runs
+                ),
+                "version": current.version + 1,
+            }
+        )
+    )
+    replay = outcome.model_copy(update={"accepted_at": outcome.accepted_at + timedelta(seconds=1)})
+
+    replayed = await execution_store.transition_node_run(
+        node_run_id,
+        RunStatus.COMPLETED,
+        result=terminal.result,
+        accepted_outcome=replay,
+    )
+
+    assert replayed.accepted_outcome is not None
+    assert replayed.accepted_outcome.accepted_at == outcome.accepted_at
+    canonical = await run_store.get_node_run(node_run_id)
+    assert canonical is not None and canonical.accepted_outcome == outcome
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-2")
+async def test_a_same_status_transition_with_conflicting_evidence_surfaces_the_disagreement() -> (
+    None
+):
+    """The store's migration validator, not the adapter, adjudicates legacy
+    evidence: an outcome that disagrees with what the row recorded raises,
+    and neither store is left half-written."""
+    store, run_store, execution_store, record, node_run_id = await _bound_store()
+    _attempt, terminal = await _complete_one_attempt(execution_store, node_run_id)
+    legacy = await _load_legacy_node_shape(store, run_store, record, node_run_id, terminal)
+    outcome = AcceptedNodeOutcome(
+        node_run_id=node_run_id,
+        attempt_result=AttemptResult.from_attempt(terminal),
+        result=terminal.result,
+    )
+    conflicting = outcome.model_copy(update={"result": {"different": True}})
+
+    with pytest.raises(InvalidLifecycleTransition, match="legacy completed NodeRun"):
+        await execution_store.transition_node_run(
+            node_run_id,
+            RunStatus.COMPLETED,
+            result=legacy.result,
+            error=legacy.error,
+            accepted_outcome=conflicting,
+        )
+
+    canonical = await run_store.get_node_run(node_run_id)
+    assert canonical is not None and canonical.accepted_outcome is None
+    mirrored = await execution_store.get_node_run(node_run_id)
+    assert mirrored is not None and mirrored.accepted_outcome is None
