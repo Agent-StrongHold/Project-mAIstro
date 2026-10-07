@@ -96,102 +96,93 @@ async def test_missing_run_does_not_hide_a_store_failure(spine: Any) -> None:
         await store.cancel_unstarted_chat_run(run, error=ADMISSION_INCOMPLETE)
 
 
-@pytest.mark.parametrize("cancel_first", [False, True])
-@pytest.mark.parametrize("operation", ["create", "advance"])
-async def test_sqlite_independent_connections_serialize_creation_and_cancellation(
-    tmp_path: Any, cancel_first: bool, operation: str
+@pytest.mark.parametrize("shared_cursor", [False, True])
+@pytest.mark.parametrize(
+    "operation", ["cancel_after_create", "cancel_after_advance", "create", "advance"]
+)
+async def test_sqlite_physical_writes_preserve_compensation_winner(
+    tmp_path: Any, operation: str, shared_cursor: bool
 ) -> None:
+    """A shipped sibling can end BEGIN, but cannot authorize a stale write."""
+    from maistro.events.consumer_cursor import SqliteConsumerCursorStore
+
     projects = InMemoryProjectScopeStore()
-    project = await projects.create_root("chat-race")
-    path = str(tmp_path / "chat.db")
-    first_conn = await aiosqlite.connect(path)
-    second_conn = await aiosqlite.connect(path)
-    held, release, contender = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    project = await projects.create_root("chat-shared-cursor")
+    path = str(tmp_path / "shared-chat.db")
+    async with aiosqlite.connect(path) as first, aiosqlite.connect(path) as second:
+        setup = SqliteRunStore(first, project_store=projects)
+        peer = SqliteRunStore(second, project_store=projects)
+        # Container wires this actual cursor store to the Run store's same
+        # connection. Its public claim commits, with no shared Python lock.
+        sibling = SqliteConsumerCursorStore(first)
+        await setup.ensure_schema()
+        await sibling.ensure_schema()
+        run = await _admit(setup, "chat-shared-cursor", project.project_id)
+        if operation in ("advance", "cancel_after_advance"):
+            run = await setup.transition_run(run.run_id, RunStatus.QUEUED)
+        interleaved = False
 
-    class _HoldingStore(SqliteRunStore):
-        async def _require_run(self, run_id):
-            run = await super()._require_run(run_id)
-            # Both creator and canceller must reserve the DB before reading.
-            # A Python lock cannot serialize these independent connections.
-            assert first_conn.in_transaction
-            held.set()
-            await release.wait()
-            return run
+        class _BeforePhysicalWrite:
+            def __getattr__(self, name):
+                return getattr(first, name)
 
-    class _ObservedConnection:
-        def __getattr__(self, name):
-            return getattr(second_conn, name)
+            async def execute(self, sql, parameters=()):
+                nonlocal interleaved
+                guarded_write = (
+                    "INSERT INTO canonical_node_runs"
+                    if operation == "create"
+                    else "UPDATE canonical_runs"
+                )
+                if sql.startswith(guarded_write) and not interleaved:
+                    interleaved = True
+                    if shared_cursor:
+                        assert await sibling.claim("chat-review", holder="cursor-worker")
+                        assert not first.in_transaction
+                    if operation == "cancel_after_create":
+                        await peer.create_node_run(run.run_id, node_id="turn")
+                    elif operation == "cancel_after_advance":
+                        await peer.transition_run(run.run_id, RunStatus.RUNNING)
+                    else:
+                        assert await peer.cancel_unstarted_chat_run(run, error=ADMISSION_INCOMPLETE)
+                return await first.execute(sql, parameters)
 
-        async def execute(self, sql, parameters=()):
-            if sql == "BEGIN IMMEDIATE":
-                contender.set()
-            return await second_conn.execute(sql, parameters)
-
-    setup = SqliteRunStore(first_conn, project_store=projects)
-    await setup.ensure_schema()
-    run = await _admit(setup, "chat-race", project.project_id)
-    if operation == "advance":
-        run = await setup.transition_run(run.run_id, RunStatus.QUEUED)
-
-    async def _compete(store):
-        if operation == "advance":
-            return await store.transition_run(run.run_id, RunStatus.RUNNING)
-        return await store.create_node_run(run.run_id, node_id="turn")
-
-    holder = _HoldingStore(first_conn, project_store=projects)
-    other = SqliteRunStore(_ObservedConnection(), project_store=projects)
-    tasks: list[asyncio.Task] = []
-    try:
-        async with asyncio.timeout(5):
-            first = asyncio.create_task(
-                holder.cancel_unstarted_chat_run(run, error=ADMISSION_INCOMPLETE)
-                if cancel_first
-                else _compete(holder)
-            )
-            tasks.append(first)
-            await held.wait()
-            second = asyncio.create_task(
-                _compete(other)
-                if cancel_first
-                else other.cancel_unstarted_chat_run(run, error=ADMISSION_INCOMPLETE)
-            )
-            tasks.append(second)
-            await contender.wait()
-            release.set()
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-        current = await setup.get_run(run.run_id)
-        if cancel_first:
-            assert results[0] is True
-            assert isinstance(results[1], (RunIntegrityError, InvalidLifecycleTransition))
-            assert current.status is RunStatus.CANCELLED
-            assert await setup.list_node_runs(run.run_id) == []
+        actor = SqliteRunStore(_BeforePhysicalWrite(), project_store=projects)
+        if operation.startswith("cancel_after_"):
+            assert not await actor.cancel_unstarted_chat_run(run, error=ADMISSION_INCOMPLETE)
         else:
-            assert not isinstance(results[0], BaseException)
-            assert results[1] is False
-            assert current.status is (
-                RunStatus.RUNNING if operation == "advance" else RunStatus.CREATED
-            )
-            assert len(await setup.list_node_runs(run.run_id)) == (operation == "create")
-        assert not first_conn.in_transaction and not second_conn.in_transaction
-    finally:
-        release.set()
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        await first_conn.close()
-        await second_conn.close()
+            with pytest.raises(
+                RunIntegrityError if operation == "create" else InvalidLifecycleTransition,
+                match="Run changed",
+            ):
+                if operation == "create":
+                    await actor.create_node_run(run.run_id, node_id="turn")
+                else:
+                    await actor.transition_run(run.run_id, RunStatus.RUNNING)
+        assert interleaved
+        assert not first.in_transaction and not second.in_transaction
 
-    # Durable read-back uses a new connection, not either participant's state.
     async with aiosqlite.connect(path) as reopened:
         store = SqliteRunStore(reopened, project_store=projects)
         current = await store.get_run(run.run_id)
-        assert current.status is (
-            RunStatus.CANCELLED
-            if cancel_first
-            else RunStatus.RUNNING
-            if operation == "advance"
-            else RunStatus.CREATED
+        assert current is not None
+        assert (
+            current.status
+            is {
+                "cancel_after_create": RunStatus.CREATED,
+                "cancel_after_advance": RunStatus.RUNNING,
+                "create": RunStatus.CANCELLED,
+                "advance": RunStatus.CANCELLED,
+            }[operation]
         )
+        nodes = await store.list_node_runs(run.run_id)
+        assert len(nodes) == (operation == "cancel_after_create")
+        assert all(node.status is RunStatus.CREATED for node in nodes)
+        # A losing conditional write neither rolls back nor overwrites the
+        # cursor claim that committed between the reads and the write.
+        cursor = await reopened.execute(
+            "SELECT holder FROM consumer_cursors WHERE consumer_id = 'chat-review'"
+        )
+        assert await cursor.fetchone() == (("cursor-worker",) if shared_cursor else None)
 
 
 @pytest.mark.parametrize("cancel_first", [False, True])
@@ -271,43 +262,6 @@ async def test_competing_cancellers_only_count_one_repair(spine: Any) -> None:
     assert sorted(results) == [False, True]
 
 
-@pytest.mark.parametrize("cancelled", [False, True])
-@pytest.mark.parametrize("operation", ["cancel", "advance"])
-async def test_sqlite_failed_conditional_write_rolls_back_and_releases_connection(
-    tmp_path: Any, cancelled: bool, operation: str
-) -> None:
-    projects = InMemoryProjectScopeStore()
-    project = await projects.create_root("chat-rollback")
-    async with aiosqlite.connect(str(tmp_path / "chat.db")) as conn:
-        store = SqliteRunStore(conn, project_store=projects)
-        await store.ensure_schema()
-        run = await _admit(store, "chat-rollback", project.project_id)
-        if operation == "advance":
-            run = await store.transition_run(run.run_id, RunStatus.QUEUED)
-
-        class _BrokenWrite:
-            def __getattr__(self, name):
-                return getattr(conn, name)
-
-            async def execute(self, sql, parameters=()):
-                result = await conn.execute(sql, parameters)
-                if sql.startswith("UPDATE canonical_runs"):
-                    if cancelled:
-                        raise asyncio.CancelledError
-                    raise ConnectionError("write failed before commit")
-                return result
-
-        broken = SqliteRunStore(_BrokenWrite(), project_store=projects)
-        with pytest.raises(asyncio.CancelledError if cancelled else ConnectionError):
-            if operation == "advance":
-                await broken.transition_run(run.run_id, RunStatus.RUNNING)
-            else:
-                await broken.cancel_unstarted_chat_run(run, error=ADMISSION_INCOMPLETE)
-        assert not conn.in_transaction
-        assert await store.get_run(run.run_id) == run
-        assert await store.cancel_unstarted_chat_run(run, error=ADMISSION_INCOMPLETE)
-
-
 async def test_postgres_failed_conditional_write_rolls_back(pg_pool: Any) -> None:
     if pg_pool is None:
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
@@ -332,118 +286,148 @@ async def test_postgres_failed_conditional_write_rolls_back(pg_pool: Any) -> Non
     assert await store.cancel_unstarted_chat_run(run, error=ADMISSION_INCOMPLETE)
 
 
-@pytest.mark.parametrize("cancelled", [False, True])
 @pytest.mark.parametrize("operation", ["cancel", "create", "advance"])
-async def test_sqlite_lost_begin_response_does_not_leave_a_transaction(
-    tmp_path: Any, cancelled: bool, operation: str
+async def test_sqlite_refused_operation_preserves_pending_sibling_claim(
+    tmp_path: Any, operation: str
 ) -> None:
-    projects = InMemoryProjectScopeStore()
-    project = await projects.create_root("chat-begin")
-    async with aiosqlite.connect(str(tmp_path / "chat.db")) as conn:
-        store = SqliteRunStore(conn, project_store=projects)
-        await store.ensure_schema()
-        run = await _admit(store, "chat-begin", project.project_id)
-
-        class _BrokenBegin:
-            def __getattr__(self, name):
-                return getattr(conn, name)
-
-            async def execute(self, sql, parameters=()):
-                result = await conn.execute(sql, parameters)
-                if sql == "BEGIN IMMEDIATE":
-                    if cancelled:
-                        raise asyncio.CancelledError
-                    raise ConnectionError("BEGIN response lost")
-                return result
-
-        broken = SqliteRunStore(_BrokenBegin(), project_store=projects)
-        with pytest.raises(asyncio.CancelledError if cancelled else ConnectionError):
-            if operation == "cancel":
-                await broken.cancel_unstarted_chat_run(run, error=ADMISSION_INCOMPLETE)
-            elif operation == "create":
-                await broken.create_node_run(run.run_id, node_id="turn")
-            else:
-                await broken.transition_run(run.run_id, RunStatus.QUEUED)
-        assert not conn.in_transaction
-        assert await store.get_run(run.run_id) == run
-        assert await store.list_node_runs(run.run_id) == []
-        # The same connection can perform a later transaction, not just read.
-        node = await store.create_node_run(run.run_id, node_id="turn")
-        assert node.run_id == run.run_id
-
-
-@pytest.mark.parametrize("operation", ["cancel", "create", "advance"])
-@pytest.mark.parametrize("cancelled", [False, True])
-async def test_sqlite_refused_begin_preserves_sibling_transaction_even_when_cancelled(
-    tmp_path: Any, operation: str, cancelled: bool
-) -> None:
-    """A rejected queued BEGIN never gives this operation rollback authority."""
-    import sqlite3
-    import threading
+    """A validation refusal has no authority to roll back another store's write."""
+    from maistro.events.consumer_cursor import SqliteConsumerCursorStore
 
     projects = InMemoryProjectScopeStore()
-    project = await projects.create_root("chat-sibling")
-    async with aiosqlite.connect(str(tmp_path / "chat.db")) as conn:
+    project = await projects.create_root("chat-sibling-refusal")
+    path = str(tmp_path / "sibling-refusal.db")
+    async with aiosqlite.connect(path) as conn:
         setup = SqliteRunStore(conn, project_store=projects)
         await setup.ensure_schema()
-        run = await _admit(setup, "chat-sibling", project.project_id)
-        await conn.execute("CREATE TABLE sibling (value TEXT)")
-        await conn.commit()
-        await conn.execute("INSERT INTO sibling VALUES ('uncommitted')")
-        assert conn.in_transaction
+        run = await _admit(setup, "chat-sibling-refusal", project.project_id)
+        inserted, release = asyncio.Event(), asyncio.Event()
 
-        held, began = asyncio.Event(), asyncio.Event()
-        release = threading.Event()
-        loop = asyncio.get_running_loop()
+        class _HeldCursor:
+            def __init__(self, inner):
+                self.inner = inner
 
-        def _hold_worker():
-            loop.call_soon_threadsafe(held.set)
-            assert release.wait(5), "test did not release the SQLite worker"
-            return 1
+            async def fetchone(self):
+                row = await self.inner.fetchone()
+                inserted.set()
+                await release.wait()
+                return row
 
-        await conn.create_function("hold_worker", 0, _hold_worker)
-
-        class _ObservedBegin:
+        class _HeldConnection:
             def __getattr__(self, name):
                 return getattr(conn, name)
 
             async def execute(self, sql, parameters=()):
-                if sql == "BEGIN IMMEDIATE":
-                    began.set()
-                return await conn.execute(sql, parameters)
+                cursor = await conn.execute(sql, parameters)
+                return _HeldCursor(cursor) if "INSERT INTO consumer_cursors" in sql else cursor
 
-        store = SqliteRunStore(_ObservedBegin(), project_store=projects)
+        sibling = SqliteConsumerCursorStore(_HeldConnection())
+        await sibling.ensure_schema()
+        pending: asyncio.Task | None = None
 
-        async def _operation():
-            if operation == "cancel":
-                return await store.cancel_unstarted_chat_run(run, error=ADMISSION_INCOMPLETE)
-            if operation == "create":
-                return await store.create_node_run(run.run_id, node_id="turn")
-            return await store.transition_run(run.run_id, RunStatus.QUEUED)
+        class _InterleavedStore(SqliteRunStore):
+            async def _fetchone(self, sql, parameters=()):
+                nonlocal pending
+                row = await super()._fetchone(sql, parameters)
+                if pending is None and sql.startswith("SELECT payload FROM canonical_runs"):
+                    pending = asyncio.create_task(sibling.claim("victim", holder="sibling"))
+                    await inserted.wait()
+                return row
 
-        blocker = asyncio.ensure_future(conn.execute("SELECT hold_worker()"))
-        task: asyncio.Task | None = None
+        actor = _InterleavedStore(conn, project_store=projects)
         try:
             async with asyncio.timeout(5):
-                await held.wait()
-                task = asyncio.create_task(_operation())
-                await began.wait()
-                if cancelled:
-                    task.cancel()
-                release.set()
-                (result,) = await asyncio.gather(task, return_exceptions=True)
-                await blocker
-            assert isinstance(
-                result, asyncio.CancelledError if cancelled else sqlite3.OperationalError
-            )
-            assert conn.in_transaction
-            cursor = await conn.execute("SELECT value FROM sibling")
-            assert await cursor.fetchall() == [("uncommitted",)]
-            assert await setup.get_run(run.run_id) == run
+                if operation == "cancel":
+                    stale = run.model_copy(
+                        update={"updated_at": run.updated_at - timedelta(seconds=1)}
+                    )
+                    assert not await actor.cancel_unstarted_chat_run(
+                        stale, error=ADMISSION_INCOMPLETE
+                    )
+                elif operation == "create":
+                    with pytest.raises(RunIntegrityError, match="not present"):
+                        await actor.create_node_run(run.run_id, node_id="missing")
+                else:
+                    with pytest.raises(InvalidLifecycleTransition):
+                        await actor.transition_run(run.run_id, RunStatus.RUNNING)
         finally:
             release.set()
-            if task is not None:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-            await asyncio.gather(blocker, return_exceptions=True)
-            await conn.rollback()
+            assert pending is not None
+            assert await pending is not None
+
+    async with aiosqlite.connect(path) as reopened:
+        cursor = await reopened.execute(
+            "SELECT holder FROM consumer_cursors WHERE consumer_id = 'victim'"
+        )
+        assert await cursor.fetchone() == ("sibling",)
+        assert await SqliteRunStore(reopened, project_store=projects).get_run(run.run_id) == run
+
+
+@pytest.mark.parametrize("operation", ["cancel", "create", "advance"])
+async def test_sqlite_guard_compares_exact_historical_payload(
+    tmp_path: Any, operation: str
+) -> None:
+    """Hydration defaults/JSON formatting do not make an unchanged snapshot stale."""
+    import json
+
+    projects = InMemoryProjectScopeStore()
+    project = await projects.create_root("chat-legacy-payload")
+    async with aiosqlite.connect(str(tmp_path / "legacy.db")) as conn:
+        store = SqliteRunStore(conn, project_store=projects)
+        await store.ensure_schema()
+        run = await _admit(store, "chat-legacy-payload", project.project_id)
+        payload = run.model_dump(mode="json")
+        del payload["result"]
+        del payload["error"]
+        await conn.execute(
+            "UPDATE canonical_runs SET payload = ? WHERE run_id = ?",
+            (json.dumps(payload, indent=2, sort_keys=True), run.run_id),
+        )
+        await conn.commit()
+        if operation == "cancel":
+            assert await store.cancel_unstarted_chat_run(run, error=ADMISSION_INCOMPLETE)
+        elif operation == "create":
+            assert (await store.create_node_run(run.run_id, node_id="turn")).run_id == run.run_id
+        else:
+            assert (
+                await store.transition_run(run.run_id, RunStatus.QUEUED)
+            ).status is RunStatus.QUEUED
+
+
+async def test_sqlite_cancellation_service_reconciles_a_cas_loser(tmp_path: Any) -> None:
+    """A stale lifecycle write keeps the service's cancellation-race exception contract."""
+    from maistro.runs.service import RunExecutionService
+    from maistro.runtime import PythonExecutionRuntime
+
+    projects = InMemoryProjectScopeStore()
+    project = await projects.create_root("chat-cancel-service")
+    path = str(tmp_path / "cancel-service.db")
+    async with aiosqlite.connect(path) as first, aiosqlite.connect(path) as second:
+        setup = SqliteRunStore(first, project_store=projects)
+        peer = SqliteRunStore(second, project_store=projects)
+        await setup.ensure_schema()
+        run = await _admit(setup, "chat-cancel-service", project.project_id)
+        await setup.transition_run(run.run_id, RunStatus.QUEUED)
+        await setup.transition_run(run.run_id, RunStatus.RUNNING)
+        interleaved = False
+
+        class _BeforeWrite:
+            def __getattr__(self, name):
+                return getattr(first, name)
+
+            async def execute(self, sql, parameters=()):
+                nonlocal interleaved
+                if sql.startswith("UPDATE canonical_runs") and not interleaved:
+                    interleaved = True
+                    await peer.transition_run(run.run_id, RunStatus.CANCELLED)
+                return await first.execute(sql, parameters)
+
+        actor = SqliteRunStore(_BeforeWrite(), project_store=projects)
+        service = RunExecutionService(store=actor, runtime=PythonExecutionRuntime())
+        settled = await service.cancel_run(run.run_id)
+        assert settled.status is RunStatus.CANCELLED
+        assert interleaved
+        assert not first.in_transaction and not second.in_transaction
+
+    async with aiosqlite.connect(path) as reopened:
+        persisted = await SqliteRunStore(reopened, project_store=projects).get_run(run.run_id)
+        assert persisted == settled

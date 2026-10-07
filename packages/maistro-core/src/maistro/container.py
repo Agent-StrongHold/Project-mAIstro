@@ -28,10 +28,11 @@ from maistro.capabilities.binding import Binding
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
     binding_scope_policy,
-    new_in_memory_effect_context,
-    new_postgres_effect_context,
-    new_sqlite_effect_context,
+    configure_default_effect_context,
+    new_effect_context,
+    release_default_effect_context,
 )
+from maistro.capabilities.invocation import InvocationStore as CapabilityInvocationStore
 from maistro.classifier.engine import ClassifierEngine
 from maistro.credentials.router import CredentialRouter
 from maistro.events.consumer_cursor import (
@@ -134,6 +135,7 @@ if TYPE_CHECKING:
         SecretResolver,
         StateStore,
     )
+    from maistro.capabilities.provider_adapters import ProviderAdapterCatalog
     from maistro.capabilities.registry import CapabilityRegistry
     from maistro.events.bus import EventBus
     from maistro.events.consumer_cursor import ConsumerCursorStore
@@ -141,6 +143,9 @@ if TYPE_CHECKING:
     from maistro.events.invocations import InvocationStore
     from maistro.events.processing import HandlerCaller
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
+    from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
+    from maistro.extensions.service import ExtensionInstallService
+    from maistro.extensions.store import InMemoryExtensionStore
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
         AgentIdentity as LifecycleIdentity,
@@ -390,6 +395,12 @@ class Container:
     # application populated. Absence of a registered Binding stays a hard
     # refusal; wiring the context grants nothing on its own.
     capability_effects: CapabilityEffectContext = None  # type: ignore[assignment]  # wired in create_container
+    # Registered provider-adapter packages (M9-E1, #961): the catalog this
+    # container composed and published as the process default. Held so close()
+    # withdraws exactly this container's catalog (identity-checked), the way
+    # capability_effects is released; adapters add destinations to the one
+    # governed egress, never a second process-wide authority.
+    provider_adapter_catalog: Any = None
     # Shared quota usage log for any node/hook that needs one (e.g.
     # RsiQuotaPaceTriggerNode via build_node_resolver). Defaults to the
     # process-wide singleton (quota/usage_log.py) so this container and any
@@ -465,6 +476,15 @@ class Container:
     strike_tracker: StrikeTracker | None = None
     strike_recovery: Any = None
     durable_event_cursor: int = 0
+    # Governed extension install lifecycle (#953, M9-B2). Process-lifetime
+    # in-memory records until the B1 signing/identity substrate (#952) lands;
+    # this is a records-and-authority store, never an execution authority.
+    extension_install_store: InMemoryExtensionStore | None = None
+    extension_install_service: ExtensionInstallService | None = None
+    # Private organizational extension catalog (#979). In-memory catalog per
+    # organization until a durable backend is configured.
+    catalog_store: InMemoryCatalogStore | None = None
+    catalog_service: CatalogService | None = None
 
     def __post_init__(self) -> None:
         if self.conduit is None:
@@ -532,14 +552,15 @@ class Container:
         """
         if self.closed:
             return
-        if self.capability_effects is not None:
-            from maistro.capabilities.effect_context import unbind_container_effect_context
-
-            unbind_container_effect_context(self.capability_effects)
         # Marked closed before the await, so a release that raises does not
         # leave the container looking open and invite a second attempt at a pool
         # that is already going down.
         self.closed = True
+        release_default_effect_context(self.capability_effects)
+        if self.provider_adapter_catalog is not None:
+            from maistro.capabilities.provider_adapters import release_default_adapter_catalog
+
+            release_default_adapter_catalog(self.provider_adapter_catalog)
         if self.working_log is not None:
             # Release the working-memory graphs the container took (#301):
             # they are process-local caches over the durable observation log,
@@ -1999,6 +2020,41 @@ class Container:
             id_token_verifier=default_id_token_verifier(),
         )
 
+    def ensure_extension_install_service(self) -> ExtensionInstallService:
+        """Return the governed extension install lifecycle service (#953).
+
+        Lazily built over the process-lifetime in-memory store. The activation
+        loader is deliberately unwired at this layer: a deployment without an
+        activation substrate can inspect and decide, but installation fails
+        closed with a clear error instead of improvising code execution. Hosts
+        that own activation replace ``extension_install_service`` with one
+        built over their own loader.
+        """
+        from maistro.extensions.service import ExtensionInstallService, UnwiredExtensionLoader
+        from maistro.extensions.store import InMemoryExtensionStore
+
+        if self.extension_install_service is None:
+            self.extension_install_service = ExtensionInstallService(
+                self.extension_install_store or InMemoryExtensionStore(),
+                loader=UnwiredExtensionLoader(),
+            )
+        return self.extension_install_service
+
+    def ensure_catalog_service(self) -> CatalogService:
+        """Return the private organizational extension catalog service (#979).
+
+        Lazily built over the process-lifetime in-memory store. The store is
+        cached back onto the container so callers that bypass the service see
+        the same snapshot the API serves.
+        """
+        from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
+
+        if self.catalog_service is None:
+            store = self.catalog_store or InMemoryCatalogStore()
+            self.catalog_store = store
+            self.catalog_service = CatalogService(store)
+        return self.catalog_service
+
 
 def _wire_schedule_admission(
     run_store: RunStore,
@@ -2019,66 +2075,6 @@ def _wire_schedule_admission(
     if template_store is None:
         return None
     return ScheduleRunAdmitter(run_store, template_store, schedule_store)
-
-
-# Retained from develop: `_wire_capability_effects` below selects the whole
-# effect context per backend and is what composition calls, but this selector
-# is the invocation-store half on its own and has its own conformance test
-# (tests/capabilities/test_pg_invocation_store.py). Collapsing the two is a
-# follow-up, not a merge decision.
-async def _wire_capability_effects(
-    *,
-    effect_context: CapabilityEffectContext | None,
-    db_pool: Any,
-    pg_pool: Any,
-    capability_bindings: Iterable[Binding],
-    capability_credentials: CredentialRouter | None,
-    usage_log: Any = None,
-    quota_tracker: Any = None,
-) -> CapabilityEffectContext:
-    """Select the durable canonical effect stores for this container.
-
-    The usage ledger and quota tracker (#718) are passed into whichever
-    backend is selected rather than attached to a second context built beside
-    this one: two contexts would mean two Invocation authorities, and the one
-    the container handed out would be the one recording nothing.
-    """
-    if effect_context is not None:
-        return effect_context
-    # The Container is an explicit composition root, so it names its policy on
-    # every branch. `new_effect_context` now defaults to a DENY evaluator --
-    # an omitted policy is an unavailable dependency, not an authorization --
-    # and the in-memory builder is an alias for it.
-    # PostgreSQL first: durable events already prefer a supplied pool over
-    # SQLite when both are wired (#135); capability effects must follow or a
-    # caller with `pg_pool` + `sqlite://` gets PG event durability and SQLite
-    # effect stores that share one closed connection after teardown.
-    if pg_pool is not None:
-        context = await new_postgres_effect_context(
-            pg_pool,
-            credentials=capability_credentials,
-            policy_evaluator=binding_scope_policy,
-            usage_log=usage_log,
-            quota_tracker=quota_tracker,
-        )
-    elif db_pool is not None:
-        context = await new_sqlite_effect_context(
-            db_pool,
-            credentials=capability_credentials,
-            policy_evaluator=binding_scope_policy,
-            usage_log=usage_log,
-            quota_tracker=quota_tracker,
-        )
-    else:
-        context = new_in_memory_effect_context(
-            credentials=capability_credentials,
-            policy_evaluator=binding_scope_policy,
-            usage_log=usage_log,
-            quota_tracker=quota_tracker,
-        )
-    for binding in capability_bindings:
-        await context.bindings.put(binding)
-    return context
 
 
 def _identity_lifecycle_stores() -> tuple[
@@ -2131,6 +2127,7 @@ async def create_container(
     effect_context: CapabilityEffectContext | None = None,
     capability_bindings: Iterable[Binding] = (),
     capability_credentials: CredentialRouter | None = None,
+    provider_adapter_catalog: ProviderAdapterCatalog | None = None,
 ) -> Container:
     """Wire all dependencies and create the container.
 
@@ -2172,6 +2169,13 @@ async def create_container(
     Workspace provisioning seam for retained external-effect nodes. They never
     accept secret values in Graph input; omitted provisioning leaves the
     canonical Binding authority empty and therefore fails closed.
+
+    `provider_adapter_catalog` is the out-of-tree provider seam (M9-E1, #961):
+    a host that registered third-party adapters through
+    `register_adapter_models` on its own catalog hands that catalog here, and
+    every `AgentConfig.provider_adapters` entry wired against those ids
+    resolves. Omitted, the container composes a fresh catalog (reference
+    adapter only) — the pre-SDK behavior.
     """
     if not config.router_api_key:
         msg = "ROUTER_API_KEY is required."
@@ -2522,13 +2526,16 @@ async def create_container(
     # may inject a fully composed context when its deployment owns the stores.
     capability_effects = await _wire_capability_effects(
         effect_context=effect_context,
-        db_pool=db_pool,
         pg_pool=pg_pool,
+        db_pool=db_pool,
+        database_url=config.database_url,
         capability_bindings=capability_bindings,
         capability_credentials=capability_credentials,
-        usage_log=get_default_usage_log(),
         quota_tracker=quota_tracker,
+        usage_log=usage_log,
+        provider_registry=provider_registry,
     )
+    configure_default_effect_context(capability_effects)
 
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
@@ -2538,6 +2545,31 @@ async def create_container(
     from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
 
     await bootstrap_model_bindings(config, capability_effects)
+    # Registered provider-adapter packages (M9-E1, #961) join the same door:
+    # each configured entry registers its models into the canonical registry
+    # (so the cost-aware router selects them without a core routing edit),
+    # provisions its operator-supplied credential into the scoped pool, and
+    # loads its own model.chat Binding. The catalog publishes as the process
+    # default so every governed model egress — agents, graph nodes, server —
+    # resolves adapter models without a second wiring path; an unconfigured
+    # deployment keeps the gateway-only behavior exactly as before.
+    from maistro.capabilities.provider_adapters import (
+        ProviderAdapterCatalog,
+        bootstrap_provider_adapters,
+        configure_default_adapter_catalog,
+    )
+
+    # A host-supplied catalog carries its already-registered out-of-tree
+    # adapters; a fresh one self-registers only the reference adapter.
+    adapter_catalog = (
+        provider_adapter_catalog
+        if provider_adapter_catalog is not None
+        else ProviderAdapterCatalog()
+    )
+    await bootstrap_provider_adapters(
+        config, capability_effects, provider_registry, adapter_catalog
+    )
+    configure_default_adapter_catalog(adapter_catalog)
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
@@ -2628,6 +2660,7 @@ async def create_container(
         harness_adapters=wired_harness_adapters,
         spawn_harness_node=spawn_harness_node,
         capability_effects=capability_effects,
+        provider_adapter_catalog=adapter_catalog,
         golden_record_store=golden_record_store,
         skill_registry=skill_registry,
         policy_attachment_store=policy_attachment_store,
@@ -2656,9 +2689,6 @@ async def create_container(
         backend = "SQLite"
     else:
         backend = "InMemory"
-    from maistro.capabilities.effect_context import bind_container_effect_context
-
-    bind_container_effect_context(capability_effects)
     logger.info("Container wired (%s stores)", backend)
     return container
 
@@ -3236,6 +3266,181 @@ async def _wire_sqlite_backend(
         outcome_store,
         session_store,
     )
+
+
+async def _wire_capability_effects(
+    *,
+    pg_pool: Any,
+    db_pool: Any,
+    # Optional because only the SQLite quota door reads it: a caller that has
+    # no file-backed database has no durable place to hold a reservation, and
+    # an absent URL says exactly that rather than forcing every caller to
+    # invent one.
+    database_url: str = "",
+    effect_context: CapabilityEffectContext | None = None,
+    capability_bindings: Iterable[Binding] = (),
+    capability_credentials: CredentialRouter | None = None,
+    quota_tracker: QuotaTracker | None = None,
+    usage_log: InMemoryUsageLog | None = None,
+    provider_registry: Any = None,
+) -> CapabilityEffectContext:
+    """Compose the sole governed effect context from the selected backend.
+
+    Invocation rows stay on the canonical capability Invocation store. Quota
+    admission and usage recording are collaborators of that service, not a
+    second executor. Binding, approval, and canonical Event stores follow the
+    same backend so a durable deployment cannot silently keep an in-memory door.
+
+    The default quota estimator only bounds request count. ``provider_registry``
+    remains accepted for composition compatibility, but its prices and output
+    defaults cannot establish a provider-enforced, full-request usage ceiling.
+    Numeric-budget deployments need a trusted adapter-backed estimator in an
+    explicitly composed ``effect_context``; an unknown ceiling refuses spend.
+    """
+    from maistro.capabilities.invocation import Invocation
+    from maistro.events.wiring import wire_canonical_events
+    from maistro.quota.invocation_quota import QuotaEstimate
+
+    # A deployment that owns its stores hands in a composed context; building a
+    # second one here would give the Container an Invocation authority nobody
+    # else holds. Returned before any store is opened, so the injected context
+    # is not shadowed by schema work it never asked for.
+    if effect_context is not None:
+        for binding in capability_bindings:
+            await effect_context.bindings.put(binding)
+        return effect_context
+    if quota_tracker is None:
+        quota_tracker = InMemoryQuotaTracker()
+    if usage_log is None:
+        usage_log = get_default_usage_log()
+    canonical_events = await wire_canonical_events(pg_pool=pg_pool, db_pool=db_pool)
+    invocation_store = await _wire_capability_invocations(pg_pool=pg_pool, db_pool=db_pool)
+
+    async def estimate(invocation: Invocation, _binding: Any) -> QuotaEstimate:
+        # A registry price is not a physical usage bound. The gateway accepts
+        # arbitrary model aliases, full message fields, tools, response schemas
+        # and multimodal input; neither character counts nor an assumed chat
+        # framing constant bounds their billed tokens. Missing max_tokens also
+        # leaves output unbounded, never free. Until the selected adapter can
+        # prove/enforce bounds for the entire physical request, numeric units
+        # must remain unknown (quota.invocation_quota's contract, #1196).
+        # QuotaEstimate.maximum("requests") still returns one. Unconfigured
+        # quota doors still admit; applicable token/money policies fail closed.
+        return QuotaEstimate(principal_id=invocation.actor_id or "system")
+
+    bindings, approvals, quota = await _select_effect_backend(
+        pg_pool=pg_pool, db_pool=db_pool, database_url=database_url, estimate=estimate
+    )
+
+    context = new_effect_context(
+        invocation_store=invocation_store,
+        binding_store=bindings,
+        event_store=canonical_events.store,
+        approval_store=approvals,
+        quota=quota,
+        usage_log=usage_log,
+        quota_tracker=quota_tracker,
+        credentials=capability_credentials,
+        # The container is an explicit composition root. Bare contexts remain
+        # read-only until an application supplies policy authority.
+        policy_evaluator=binding_scope_policy,
+    )
+    # Operator-declared Bindings go into the store this context actually uses,
+    # not a second one registered beside it, so model egress and PM polling
+    # resolve through the same fail-closed door (#1079/#1522).
+    for binding in capability_bindings:
+        await context.bindings.put(binding)
+    return context
+
+
+async def _select_effect_backend(
+    *,
+    pg_pool: Any,
+    db_pool: Any,
+    database_url: str,
+    estimate: Any,
+) -> tuple[Any, Any, Any]:
+    """Pick the Binding, approval and quota stores for the configured backend.
+
+    Split from `_wire_capability_effects` so the composition root reads as one
+    sequence -- events, ledger, stores, context -- rather than three nested
+    backend decisions. The quota door is optional on purpose: an in-memory
+    deployment and a `:memory:` SQLite one have nowhere durable to hold a
+    reservation, and a quota that forgets its holds on restart would admit
+    work a real ceiling had already refused.
+    """
+
+    from maistro.capabilities.approval_store import (
+        ApprovalStore,
+        InMemoryApprovalStore,
+        PgApprovalStore,
+        SqliteApprovalStore,
+    )
+    from maistro.capabilities.binding_store import (
+        InMemoryBindingStore,
+        PgBindingStore,
+        RevocableBindingStore,
+        SqliteBindingStore,
+    )
+    from maistro.capabilities.invocation import InvocationQuota
+
+    # Named by contract, not by the first branch taken: each backend assigns
+    # its own implementation, and `ensure_schema` is called on the concrete
+    # object that has it rather than through the protocol, which does not.
+    bindings: RevocableBindingStore
+    approvals: ApprovalStore
+    quota: InvocationQuota | None = None
+    if pg_pool is not None:
+        from maistro.quota.pg_invocation_quota import PgInvocationQuota
+
+        pg_approvals = PgApprovalStore(pg_pool)
+        pg_quota = PgInvocationQuota(pg_pool, estimate=estimate)
+        await pg_quota.ensure_schema()
+        await pg_approvals.ensure_schema()
+        bindings, approvals, quota = PgBindingStore(pg_pool), pg_approvals, pg_quota
+    elif db_pool is not None:
+        sqlite_bindings = SqliteBindingStore(db_pool)
+        sqlite_approvals = SqliteApprovalStore(db_pool)
+        await sqlite_bindings.ensure_schema()
+        await sqlite_approvals.ensure_schema()
+        bindings, approvals = sqlite_bindings, sqlite_approvals
+        sqlite_path = database_url.removeprefix("sqlite:///").removeprefix("sqlite://")
+        if sqlite_path and sqlite_path != ":memory:":
+            from maistro.quota.sqlite_invocation_quota import SqliteInvocationQuota
+
+            sqlite_quota = SqliteInvocationQuota(sqlite_path, estimate=estimate)
+            await sqlite_quota.ensure_schema()
+            quota = sqlite_quota
+    else:
+        bindings, approvals = InMemoryBindingStore(), InMemoryApprovalStore()
+    return bindings, approvals, quota
+
+
+async def _wire_capability_invocations(
+    *,
+    pg_pool: Any,
+    db_pool: Any,
+) -> CapabilityInvocationStore:
+    """Select the canonical effect ledger from the container's durable backend."""
+    # Each branch binds its concrete store first: ``ensure_schema`` is a
+    # wiring concern the ``InvocationStore`` protocol deliberately does not
+    # carry, so it must be called on the concrete class before returning the
+    # store as the protocol type.
+    if pg_pool is not None:
+        from maistro.capabilities.pg_invocation_store import PgInvocationStore
+
+        pg_store = PgInvocationStore(pg_pool)
+        await pg_store.ensure_schema()
+        return pg_store
+    if db_pool is not None:
+        from maistro.capabilities.invocation_store import SqliteInvocationStore
+
+        sqlite_store = SqliteInvocationStore(db_pool)
+        await sqlite_store.ensure_schema()
+        return sqlite_store
+    from maistro.capabilities.invocation import InMemoryInvocationStore
+
+    return InMemoryInvocationStore()
 
 
 async def _wire_sqlite_durable_events(

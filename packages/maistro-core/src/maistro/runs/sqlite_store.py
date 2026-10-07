@@ -17,9 +17,11 @@ from maistro.runs.concurrency import (
 )
 from maistro.runs.evidence_json import json_of, model_of_json
 from maistro.runs.lifecycle import (
+    InvalidLifecycleTransition,
     check_completion_is_earned,
     lease_is_expired,
     reclaim_attempt,
+    refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
     settle_open_node_run,
@@ -77,20 +79,6 @@ if TYPE_CHECKING:
     from maistro.workspaces.store import WorkspaceStore
 
 _TERMINAL_STATUS_VALUES = sorted(status.value for status in TERMINAL_RUN_STATUSES)
-
-
-async def _settled_begin_error(pending: asyncio.Future[Any]) -> BaseException | None:
-    """Observe a queued BEGIN even when its caller has been cancelled."""
-    while not pending.done():
-        try:
-            await asyncio.shield(pending)
-        except BaseException:
-            # A repeated caller cancellation must not cancel the DB operation
-            # whose outcome tells us whether its transaction is ours.
-            continue
-    if pending.cancelled():
-        return asyncio.CancelledError()
-    return pending.exception()
 
 
 def _placeholders(count: int) -> str:
@@ -591,6 +579,22 @@ class SqliteRunStore:
             return None
         if principal_id is not None:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
+        return model_of_json(Run, row[0])
+
+    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
+        # Same expression-index pattern as the schedule-occurrence claim above:
+        # the task admitter's provenance lives inside the payload JSON, and
+        # json_extract reads it without every admitter owning columns.
+        row = await self._fetchone(
+            """
+            SELECT payload FROM canonical_runs
+            WHERE json_extract(payload, '$.provenance.task_id') = ?
+            LIMIT 1
+            """,
+            (task_id,),
+        )
+        if row is None:
+            return None
         return model_of_json(Run, row[0])
 
     async def _require_locked_parent_scope(
@@ -1119,31 +1123,30 @@ class SqliteRunStore:
 
     async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
         async with self._write_lock:
-            await self._begin_immediate()
-            committed = False
-            try:
-                current = await self._require_run(expected.run_id)
-                if not matches_chat_admission_snapshot(current, expected):
-                    return False
-                if await self._fetchone(
-                    "SELECT 1 FROM canonical_node_runs WHERE run_id = ? LIMIT 1",
-                    (expected.run_id,),
-                ):
-                    return False
-                updated = transition_run(current, RunStatus.CANCELLED, error=error)
-                await self._conn.execute(
-                    "UPDATE canonical_runs SET status = ?, payload = ? WHERE run_id = ?",
-                    (updated.status.value, json_of(updated), expected.run_id),
-                )
-                await self._conn.commit()
-                committed = True
-                return True
-            finally:
-                # Releases the cross-connection reservation on false, failure
-                # or cancellation too, without touching the connection again
-                # after a successful commit released our transaction.
-                if not committed:
-                    await self._conn.rollback()
+            current, snapshot = await self._require_run_snapshot(expected.run_id)
+            if not matches_chat_admission_snapshot(current, expected):
+                return False
+            updated = transition_run(current, RunStatus.CANCELLED, error=error)
+            # One SQL statement owns the decision: other stores share this
+            # connection, so a Python lock or BEGIN across awaits cannot
+            # establish exclusive transaction ownership. No new rollback
+            # may erase an unrelated sibling's pending write.
+            cursor = await self._conn.execute(
+                """UPDATE canonical_runs SET status = ?, payload = ?
+                   WHERE run_id = ? AND payload = ?
+                     AND NOT EXISTS (
+                         SELECT 1 FROM canonical_node_runs WHERE run_id = ?
+                     )""",
+                (
+                    updated.status.value,
+                    json_of(updated),
+                    expected.run_id,
+                    snapshot,
+                    expected.run_id,
+                ),
+            )
+            await self._conn.commit()
+            return cursor.rowcount == 1
 
     async def transition_run(
         self,
@@ -1158,41 +1161,38 @@ class SqliteRunStore:
         if principal_id is not None:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
         async with self._write_lock:
-            # A stale parent read must not overwrite a cancellation committed
-            # by another connection. Reserve the writer before any reads.
-            await self._begin_immediate()
-            try:
-                run = await self._require_run(run_id)
-                check_completion_is_earned(target, await self._node_runs_of(run_id))
-                updated = transition_run(run, target, at=at, result=result, error=error)
-                settled: list[NodeRun] = []
-                if target in TERMINAL_RUN_STATUSES:
-                    settled = [
-                        settle_open_node_run(node_run, target, at=at)
-                        for node_run in await self._open_node_runs(run_id)
-                    ]
-                # One commit for the Run and every NodeRun it settles
-                # (ADR-082426-a47f). `_update_payload` commits per call, so the
-                # cascade writes through `_stage_payload` and commits once at the
-                # end: a half-settled Run reads as deliberate, which is worse than
-                # an unsettled one.
+            run, snapshot = await self._require_run_snapshot(run_id)
+            check_completion_is_earned(target, await self._node_runs_of(run_id))
+            updated = transition_run(run, target, at=at, result=result, error=error)
+            settled: list[NodeRun] = []
+            if target in TERMINAL_RUN_STATUSES:
+                settled = [
+                    settle_open_node_run(node_run, target, at=at)
+                    for node_run in await self._open_node_runs(run_id)
+                ]
+            # Keep the existing cascade's single final commit; this guard
+            # changes the parent write, not the cascade's isolation contract.
+            # Sibling stores share this connection and can commit between
+            # our reads and write. Only the exact persisted snapshot grants
+            # this transition permission; a concurrent cancellation wins.
+            cursor = await self._conn.execute(
+                """UPDATE canonical_runs SET status = ?, payload = ?
+                   WHERE run_id = ? AND payload = ?""",
+                (updated.status.value, json_of(updated), run_id, snapshot),
+            )
+            if cursor.rowcount != 1:
+                await self._conn.commit()
+                raise InvalidLifecycleTransition("Run changed before lifecycle transition")
+            for node_run in settled:
                 self._stage_payload(
-                    "canonical_runs", "run_id", run_id, updated.status.value, json_of(updated)
+                    "canonical_node_runs",
+                    "node_run_id",
+                    node_run.node_run_id,
+                    node_run.status.value,
+                    json_of(node_run),
                 )
-                for node_run in settled:
-                    self._stage_payload(
-                        "canonical_node_runs",
-                        "node_run_id",
-                        node_run.node_run_id,
-                        node_run.status.value,
-                        json_of(node_run),
-                    )
-                await self._flush()
-                return updated
-            except BaseException:
-                self._pending.clear()
-                await self._conn.rollback()
-                raise
+            await self._flush()
+            return updated
 
     async def _open_node_runs(self, run_id: str) -> list[NodeRun]:
         """Every non-terminal NodeRun under this Run, in ordinal order."""
@@ -1206,42 +1206,44 @@ class SqliteRunStore:
 
     async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
         async with self._write_lock:
-            # Serialize parent validation with conditional cancellation even
-            # when another process uses its own connection/store lock.
-            await self._begin_immediate()
-            try:
-                run = await self._require_run(run_id)
-                if run.status in TERMINAL_RUN_STATUSES:
-                    raise RunIntegrityError("cannot create NodeRun under a terminal Run")
-                graph = run.graph.materialize()
-                if not any(node.node_id == node_id for node in graph.nodes):
-                    raise RunIntegrityError(
-                        f"node_id {node_id!r} is not present in the Run Graph snapshot",
-                    )
-                row = await self._fetchone(
-                    "SELECT COALESCE(MAX(ordinal), 0) FROM canonical_node_runs WHERE run_id = ?",
-                    (run_id,),
+            run, snapshot = await self._require_run_snapshot(run_id)
+            if run.status in TERMINAL_RUN_STATUSES:
+                raise RunIntegrityError("cannot create NodeRun under a terminal Run")
+            graph = run.graph.materialize()
+            if not any(node.node_id == node_id for node in graph.nodes):
+                raise RunIntegrityError(
+                    f"node_id {node_id!r} is not present in the Run Graph snapshot",
                 )
-                ordinal = int(row[0]) + 1 if row is not None else 1
-                node_run = NodeRun(run_id=run_id, node_id=node_id, ordinal=ordinal)
-                await self._conn.execute(
-                    """INSERT INTO canonical_node_runs
-                       (node_run_id, run_id, node_id, ordinal, status, payload)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (
-                        node_run.node_run_id,
-                        node_run.run_id,
-                        node_run.node_id,
-                        node_run.ordinal,
-                        node_run.status.value,
-                        json_of(node_run),
-                    ),
-                )
-                await self._conn.commit()
-                return node_run
-            except BaseException:
-                await self._conn.rollback()
-                raise
+            row = await self._fetchone(
+                "SELECT COALESCE(MAX(ordinal), 0) FROM canonical_node_runs WHERE run_id = ?",
+                (run_id,),
+            )
+            ordinal = int(row[0]) + 1 if row is not None else 1
+            node_run = NodeRun(run_id=run_id, node_id=node_id, ordinal=ordinal)
+            # Validate the same nonterminal parent at the physical insert,
+            # even if a sibling commit releases an intervening transaction.
+            cursor = await self._conn.execute(
+                """INSERT INTO canonical_node_runs
+                   (node_run_id, run_id, node_id, ordinal, status, payload)
+                   SELECT ?, ?, ?, ?, ?, ?
+                   WHERE EXISTS (
+                       SELECT 1 FROM canonical_runs WHERE run_id = ? AND payload = ?
+                   )""",
+                (
+                    node_run.node_run_id,
+                    node_run.run_id,
+                    node_run.node_id,
+                    node_run.ordinal,
+                    node_run.status.value,
+                    json_of(node_run),
+                    run_id,
+                    snapshot,
+                ),
+            )
+            await self._conn.commit()
+            if cursor.rowcount != 1:
+                raise RunIntegrityError("Run changed before NodeRun creation")
+            return node_run
 
     async def get_node_run(
         self, node_run_id: str, *, principal_id: str | None = None
@@ -1503,6 +1505,14 @@ class SqliteRunStore:
                 error=error,
                 metrics=metrics,
             )
+            if target is AttemptStatus.COMPLETED:
+                # Same lock `transition_run` holds, so a cancellation either
+                # committed before the parent read below (refused) or waits
+                # until this write commits (#1335). The fence the executor
+                # reads cannot close that window; this one does.
+                node_run = await self._require_node_run(attempt.node_run_id)
+                run = await self._require_run(node_run.run_id)
+                refuse_completion_under_terminal_run(run.status, attempt_id)
             await self._update_payload(
                 "canonical_attempts",
                 "attempt_id",
@@ -1576,24 +1586,16 @@ class SqliteRunStore:
         if project.workspace_id != graph.workspace_id:
             raise RunIntegrityError("Graph Project does not belong to the Graph Workspace")
 
-    async def _begin_immediate(self) -> None:
-        """Reserve a transaction without rolling back a sibling's open write.
+    async def _require_run_snapshot(self, run_id: str) -> tuple[Run, str]:
+        """Read a Run and its exact stored bytes for a conditional SQL write.
 
-        The connection is shared with sibling stores. SQLite rejecting BEGIN
-        proves we never acquired their transaction. Cancellation can hide that
-        rejection while aiosqlite's worker still executes it, so retain and
-        inspect the actual operation before deciding whether cleanup is ours.
+        Re-serializing the model would add defaults to historical payloads or
+        change their formatting, falsely rejecting an unchanged row.
         """
-        pending = asyncio.ensure_future(self._conn.execute("BEGIN IMMEDIATE"))
-        try:
-            await asyncio.shield(pending)
-        except BaseException:
-            failure = await _settled_begin_error(pending)
-            if not isinstance(failure, sqlite3.Error):
-                # Success followed by caller cancellation, or an ambiguous
-                # non-SQLite response failure, can leave our BEGIN active.
-                await self._conn.rollback()
-            raise
+        row = await self._fetchone("SELECT payload FROM canonical_runs WHERE run_id = ?", (run_id,))
+        if row is None:
+            raise RunNotFound(run_id)
+        return model_of_json(Run, row[0]), str(row[0])
 
     async def _require_run(self, run_id: str) -> Run:
         run = await self.get_run(run_id)
