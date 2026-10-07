@@ -384,6 +384,13 @@ jobs:
           MAISTRO_REQUIRE_PG_LEGS: "1"
         run: uv run pytest packages/maistro-server/tests/api/test_canvas_supported_path.py -v --tb=short
 
+      - name: Hive scheduler tick uses canonical due state on both SQL backends
+        env:
+          MAISTRO_REQUIRE_PG_LEGS: "1"
+        run: |
+          uv run pytest packages/maistro-core/tests/scheduling -v --tb=short
+          uv run pytest packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py -v --tb=short
+
   object-storage:
     needs: workflow-lint
     if: >-
