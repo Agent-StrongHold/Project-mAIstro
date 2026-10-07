@@ -129,3 +129,13 @@ def test_quality_only_change_does_not_claim_service_impact() -> None:
 
 def test_ci_workflow_change_runs_everything() -> None:
     assert classify([".github/workflows/ci.yml"]) == dict.fromkeys(LEGS, True)
+
+
+def test_minimum_dependencies_gate_change_runs_wheel_imports_leg() -> None:
+    # The floor-install gate is a step of the wheel-imports job, so a change
+    # to the gate script alone must still execute that leg at the merge-queue
+    # SHA, not only on the pull_request event.
+    result = classify(["scripts/verify-minimum-dependencies.py"])
+    assert result["wheel_imports"] is True
+    assert result["docker_build"] is True
+    assert result["postgres"] is False
