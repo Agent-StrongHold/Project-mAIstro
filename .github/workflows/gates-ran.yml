@@ -164,11 +164,18 @@ jobs:
                 per_page: 100,
               },
             );
+            const filePaths = files.flatMap(file => {
+              const paths = [file.filename];
+              if (file.status === 'renamed' && file.previous_filename) {
+                paths.push(file.previous_filename);
+              }
+              return paths;
+            });
             fs.writeFileSync(
               'changed-files.json',
-              JSON.stringify({ measured: true, files: files.map(file => file.filename) }),
+              JSON.stringify({ measured: true, files: filePaths }),
             );
-            core.info(`${files.length} changed file(s) on PR #${number}`);
+            core.info(`${filePaths.length} changed file path(s) on PR #${number}`);
 
       - name: Evaluate required execution evidence
         id: evaluate

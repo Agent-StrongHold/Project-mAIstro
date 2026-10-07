@@ -549,6 +549,38 @@ class TestTheCliScopeEnvelope:
         assert code == check.PENDING_EXIT
         assert "execution scope is ambiguous" in out
 
+    def test_renamed_file_entry_in_changed_files_includes_both_paths(
+        self, check: ModuleType, tmp_path: Path
+    ) -> None:
+        """For a renamed file, the changed-files envelope must include both
+        the old and new paths so that the classifier can see the move in
+        either direction."""
+        # Given a renamed file that moves from an in-scope path to an out-of-scope path
+        old_path = "packages/maistro-core/a.py"
+        new_path = "docs/a.md"
+        payload = {"measured": True, "files": [old_path, new_path]}
+        envelope_path = _envelope(tmp_path, payload)
+        scope, measured = check._pull_request_scope(envelope_path)
+        assert measured is True
+        assert scope is not None
+        # The hive_e2e leg should be in scope due to the old path
+        assert scope.get("hive_e2e") is True
+
+    def test_renamed_file_entry_in_changed_files_includes_both_paths_opposite_direction(
+        self, check: ModuleType, tmp_path: Path
+    ) -> None:
+        """The classifier should also see the move when the file moves
+        from out-of-scope to in-scope."""
+        old_path = "docs/a.md"
+        new_path = "packages/maistro-core/a.py"
+        payload = {"measured": True, "files": [old_path, new_path]}
+        envelope_path = _envelope(tmp_path, payload)
+        scope, measured = check._pull_request_scope(envelope_path)
+        assert measured is True
+        assert scope is not None
+        # The hive_e2e leg should be in scope due to the new path
+        assert scope.get("hive_e2e") is True
+
 
 class TestTheReport:
     """A gate is read by someone deciding whether to trust a merge, so what it
