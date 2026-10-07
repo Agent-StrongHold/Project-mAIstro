@@ -1312,3 +1312,45 @@ reviewed vulture + reachability grant pair on the integration base, or make
 the module reachable in the parent #1845 integration, where every one of the
 four reds dissolves simultaneously. Per the issue's directive the stack
 stays unmerged; handoff only, no integration approval.
+
+## 2026-10-07 round-16 CI repair: base-aligned re-dissection at the advanced evaluation base
+
+The round-16 lane brief repeated the exact-debt-ledger repair instruction
+against an advanced evaluation base (`b1f17b8d6246`, develop tip at dispatch).
+Executed at the new merge head `48bec7b04` after a clean `git merge
+origin/develop` (merge-base now exactly the evaluation base; CHANGELOG
+auto-merged, no conflicts, no `quality/` content change in
+`9bd1a93eefc4..b1f17b8d6246` — verified empty via
+`git log --name-only 9bd1a93eefc4..origin/develop -- quality/`):
+
+- Prescribed repair re-verified exact and already in place:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI argv, `RATCHET_BASE_REV=origin/develop`) — candidate
+  banking half clean (1,333 scanned = 1,333 banked; the round-13 +5 rows are
+  the leaf's only ledger delta); rc=1 with **exactly the same five NEW
+  unauthorized identities** (`admission_identity.py:515-520`), no drift from
+  develop's four-commit advance. Nothing is "genuinely dead" to fix: the five
+  members are the issue-mandated `AdmissionAssessment` pairs (AST-verified
+  exact against the issue text; zero production references outside the module
+  — deliberate, unwired contract surface), so no fix eliminated any identity
+  and no ledger row is removable. The remaining red is solely the
+  trusted-base authorization half; `load_authorizations` reads grants from
+  the merge base only (`scripts/ratchet_provenance.py:487-502`, the
+  deliberate two-merge rule), and `origin/develop`'s `quality/` carries no
+  `admission_identity` grant (grep empty) — the gate's own message: "land a
+  reviewed grant first". No in-branch edit can green it.
+- Companions re-measured at the same head: `check-reachability.py` rc=1 with
+  exactly one NEWLY UNREACHABLE module (`maistro.runs.admission_identity`,
+  issue-predicted); `check-ratchet-provenance.py` rc=1 solely via that
+  reachability sub-gate; `check-reachability-dispositions.py`,
+  `check-promotion-surface.py`, `check-shipped-surface-truth.py` all rc=0.
+- Focused acceptance unchanged and green: 79 pytest cases passed; `ruff
+  check .` / `ruff format --check .` clean; `mypy` on the module clean;
+  suite inventory `--suite packages/maistro-core/tests` ok — now at 14,986
+  node IDs (develop's merge contributes +6; the leaf's own +79 front-matter
+  delta is intact and the check passes at the merged head).
+
+Resolution is unchanged from rounds 12-15 and remains outside this leaf: land
+the reviewed vulture + reachability grant pair on the integration base, or
+wire the runtime consumer in the parent #1845 integration. Per the issue's
+directive the stack stays unmerged; handoff only, no integration approval.
