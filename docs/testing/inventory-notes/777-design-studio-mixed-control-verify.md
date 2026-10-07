@@ -15413,3 +15413,86 @@ develop sync, which this round performed as a genuine merge of the new
 #804/#805/#806 (+#774/#776) land upstream: the issue is a declared consumer
 of those APIs and its stop condition forbids a Design-Studio-private
 substitute.
+
+## Round 236 (job `81bd15ae3797496f8e802bee9f96ff8c`, head `954baaac7`)
+
+Documentation-only verifier note. No production or test code changed.
+
+Job dir has no `check-*.log` (manifest `checks=[]` — verifier ran no
+deterministic checks this round). Prior result `33063d957abf` was a completed
+BLOCKED verdict at this same starting head `9f89234b5` with a clean tree —
+nothing to salvage.
+
+### Develop sync discharged with a real merge
+
+`git fetch origin` EXIT 0; `origin/develop` advanced `0df275362d` ->
+`1df433bf5` (1 commit, #2030 "route same-status evidence through the canonical
+NodeRun transition", touches `execution_store.py` + its tests) — exactly this
+round's manifest base. `git merge-tree` conflict-free; merged `origin/develop`
+into `auto-777` locally -> **`954baaac7`** (no push, tree clean). Post-merge
+ledger rule: `git diff --numstat origin/develop -- quality/` =
+`vulture-baseline.json 0+/1-` only (intentional prior removal, no rows lost).
+
+### Fresh frozen capture (2026-10-07T01:38-01:39Z, 61 sources, complete_for_scope)
+
+- #777 open, 246 comments — newest six are automated `maistro-progress` attempt
+  markers (`fee969174710`, `ee1d4db16d29`, `33063d957abf`); no maintainer
+  guidance.
+- Body gate verbatim: "Depends on: #804/#805/#806 persistent Workspace Agent +
+  Goal reconciliation; …" + stop condition "Do not create a
+  Design-Studio-private Agent runtime, Goal owner, reconciliation loop, …
+  Consume #804 and the canonical owners."
+- **#804 (EPIC M3-D persistent Workspace Agent + Goal reconciliation): OPEN.**
+  **#805 (M3-D1): OPEN. #806 (M3-D2): OPEN. #774 (CreativeBrief): OPEN. #776
+  (Workspace Ladybug): OPEN.** #775/#39/#458 closed.
+- GitHub-native `blocked_by` = `[]` (empty); the body-text gate governs.
+- PR1660: open draft, head `78f8f6476466` unchanged, `mergeable_state=clean`,
+  CI 30 success + 1 skipped, 0 failing; head **is ancestor of branch HEAD**
+  (its 16 files — salvage docs, `design_service.py` 1-line, `agent_loop.py`
+  fix, ledger amendment — already carried in the branch; it consumes no #804
+  API).
+
+### AC prerequisites re-proven absent at merged HEAD `954baaac7` (this round's own greps)
+
+- `GoalReconciler|delegate_goal` across `packages/*/src`: **0 hits**.
+- No `maistro/goals` module exists (`find packages -type d -name goals` under
+  `src`: none). The 5 files referencing `maistro.goals` are prose/registry
+  only: `workspaces/backlog_history/model.py:73`,
+  `workspaces/campaigns/sqlite_store.py:13`, `projects/rubric_store.py:19`,
+  `maistro_design/packs/types.py:14,245` (docstrings), and
+  `interop/contract.py:313` — the #458 `INTEROP_ONTOLOGY_V1` owner-identity
+  **string** for the Goal concept, i.e. the declared (unimplemented) owner.
+- `WorkspaceAgentReconciler|goal\.reconcil` across `packages/*/src`: **0 hits**.
+- `ControlMode.COLLABORATIVE` in `maistro_design/versions.py`: declared :81,
+  docstring :1049, sole non-declaration use is the no-op `_ =
+  ControlMode.COLLABORATIVE` :1064.
+- `GoalRevisionCatalog`: Protocol-only
+  (`packages/maistro-core/src/maistro/projects/rubric_store.py:71` +
+  `projects/__init__` re-export); no concrete Goal store.
+
+### Battery at merged HEAD `954baaac7`
+
+`ruff check .` EXIT 0 (All checks passed); `ruff format --check .` EXIT 0
+(3110 files); vulture CI-exact (`scripts/check-vulture-baseline.py
+packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) EXIT 0 — base
+`1df433bf5ece` (= this round's manifest base, the new origin/develop),
+candidate `954baaac7840`, 1332 reviewed identities → 1331 findings, no
+amendment; `scripts/check-suite-inventory.py` EXIT 0 (17 suites);
+`scripts/check-backlog-consistency.py` EXIT 0 (167 items). Targeted pytest,
+repo-root invocation: newly-merged develop tests
+`tests/test_check_closure_targets.py` **63 passed** in 45.61s;
+`packages/maistro-core/tests/graph/durable_runs/test_canonical_execution_store.py`
+(the #2030 tests this merge brought in) **23 passed** in 1.60s;
+`packages/hive-conductor/backend/tests + packages/hive-conductor/tests -k
+'design or workspace'` **374 passed 8 skipped** in 16.88s;
+`maistro-design/tests + maistro-bootstrap/tests` **804 passed 7 skipped** in
+24.30s.
+
+inventory-delta unchanged (**+0**: this lane added no tests this round).
+
+Verdict: **BLOCKED** (dependency-blocking, fifty-third consecutive round with
+fresh evidence). All round actionable items discharged — including the develop
+sync, which this round performed as a genuine merge of the new `1df433bf5`
+rather than a re-check. No lawful repair for #777 exists until
+#804/#805/#806 (+#774/#776) land upstream: the issue is a declared consumer of
+those APIs and its stop condition forbids a Design-Studio-private substitute.
