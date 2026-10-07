@@ -34,6 +34,8 @@ function isEngineBacked(m: Mission): boolean {
   return m.metadata?.engine_backed === true;
 }
 
+// Queue rows do not provide a canonical Run agent to choose.
+
 type ThreadMsg = { id: number; role: "user" | "agent"; text: string; ts: number };
 
 const STATUS_COLORS: Record<MissionStatus, string> = {
@@ -169,9 +171,8 @@ export default function Missions() {
 
   useEffect(() => {
     let cancelled = false;
-    void fetch("/health")
-      .then((r) => r.json())
-      .then((h: { task_clear_supported?: boolean }) => {
+    void apiGet<{ task_clear_supported?: boolean }>("/health")
+      .then((h) => {
         if (!cancelled) setClearSupported(h.task_clear_supported === true);
       })
       .catch(() => {

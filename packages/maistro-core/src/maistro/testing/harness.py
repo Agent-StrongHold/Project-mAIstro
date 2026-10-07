@@ -16,6 +16,7 @@ from maistro.graph.types import (
     GraphTask,
     HyperagentOutput,
 )
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
@@ -116,11 +117,13 @@ def create_test_environment(
     warden = Warden()
     learning_extractor = ToolCorrectionExtractor()
     quota_tracker = InMemoryQuotaTracker()
-    learning_store = InMemoryLearningStore()
-    outcome_store = InMemoryOutcomeStore()
+    # The harness stands in for an agent-managed deployment (ADR-057): the
+    # declaration is explicit here for the same reason it is in the container.
+    learning_store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    outcome_store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     session_store = InMemorySessionStore()
 
-    router = RouterEngine(quota_tracker)
+    router = RouterEngine()
     classifier = ClassifierEngine()
     context_builder = ContextBuilder()
     intent_registry = IntentRegistry()

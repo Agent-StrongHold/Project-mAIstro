@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.sessions.store import InMemorySessionStore
@@ -89,13 +90,13 @@ async def session_store(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
 @pytest.fixture(params=["memory", "sqlite", "postgres"])
 async def outcome_store(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
     if request.param == "memory":
-        yield InMemoryOutcomeStore()
+        yield InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         return
     if request.param == "sqlite":
         from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
 
         conn = await _sqlite_conn()
-        store = SqliteOutcomeStore(conn)
+        store = SqliteOutcomeStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
         try:
             yield store
@@ -106,7 +107,7 @@ async def outcome_store(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
     from maistro.persistence.pg_outcomes import PgOutcomeStore
 
-    yield PgOutcomeStore(pg_pool)
+    yield PgOutcomeStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
 
 
 # ── quota ─────────────────────────────────────────────────────────
@@ -220,6 +221,59 @@ async def test_usage_pct_is_a_fraction_of_the_free_allowance(quota_tracker: Any)
 
 async def test_unused_provider_reports_zero(quota_tracker: Any) -> None:
     assert await quota_tracker.get_usage_pct("never-called", "monthly", free_tokens=100) == 0.0
+
+
+async def test_incomplete_evidence_reports_no_percentage(quota_tracker: Any) -> None:
+    """#718's false-complete fix, pinned identically across all three
+    backends: a provider/cycle whose calls could not report usage must not
+    present a measured percentage. The old behavior returned ``0.0`` —
+    full headroom — for evidence that is explicitly incomplete, which read
+    as complete accounting while omitting spend. ``None`` is the truthful
+    answer: the ratio over the reported remainder is unknowable."""
+    await quota_tracker.record_invocation(
+        invocation_id="inv-unreported",
+        provider="anthropic",
+        billing_cycle="monthly",
+        input_tokens=0,
+        output_tokens=0,
+        usage_reported=False,
+    )
+
+    assert await quota_tracker.get_usage_pct("anthropic", "monthly", free_tokens=100) is None
+
+
+async def test_one_unreported_call_keeps_the_whole_cycle_unknown(quota_tracker: Any) -> None:
+    """Reported neighbours do not repair completeness: the unreported call's
+    tokens are still missing, so a ratio would understate spend while
+    presenting as complete."""
+    await quota_tracker.record_invocation(
+        invocation_id="inv-reported",
+        provider="anthropic",
+        billing_cycle="monthly",
+        input_tokens=25,
+        output_tokens=25,
+        usage_reported=True,
+    )
+    await quota_tracker.record_invocation(
+        invocation_id="inv-unreported",
+        provider="anthropic",
+        billing_cycle="monthly",
+        input_tokens=0,
+        output_tokens=0,
+        usage_reported=False,
+    )
+
+    assert await quota_tracker.get_usage_pct("anthropic", "monthly", free_tokens=200) is None
+
+
+async def test_read_path_does_not_fabricate_usage_rows(quota_tracker: Any) -> None:
+    """Reading a percentage for a provider that was never called is a
+    measured zero and must not materialize a zero usage row — dashboards
+    would list providers nobody ever called."""
+    await quota_tracker.get_usage_pct("never-called", "monthly", free_tokens=100)
+
+    rows = [r for r in await quota_tracker.get_all_usage() if r["provider"] == "never-called"]
+    assert rows == []
 
 
 # ── sessions ──────────────────────────────────────────────────────
@@ -361,13 +415,13 @@ async def learning_store(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
     if request.param == "memory":
         from maistro.memory.learnings.store import InMemoryLearningStore
 
-        yield InMemoryLearningStore()
+        yield InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         return
     if request.param == "sqlite":
         from maistro.persistence.sqlite_learnings import SqliteLearningStore
 
         conn = await _sqlite_conn()
-        store = SqliteLearningStore(conn)
+        store = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
         try:
             yield store
@@ -378,7 +432,7 @@ async def learning_store(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
     from maistro.persistence.pg_learnings import PgLearningStore
 
-    store = PgLearningStore(pg_pool)
+    store = PgLearningStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await store.ensure_schema()
     yield store
 

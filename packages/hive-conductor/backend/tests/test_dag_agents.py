@@ -48,7 +48,11 @@ def test_get_registry_is_shared_and_seeded() -> None:
 
 def test_run_registered_dag_unknown_id_raises_key_error() -> None:
     with pytest.raises(KeyError):
-        asyncio.run(run_registered_dag("no-such-dag", workspace_id="w1", project_id="p1"))
+        asyncio.run(
+            run_registered_dag(
+                "no-such-dag", workspace_id="w1", project_id="p1", user_id="test-user"
+            )
+        )
 
 
 def test_standalone_registered_human_work_is_refused() -> None:
@@ -64,7 +68,11 @@ def test_standalone_registered_human_work_is_refused() -> None:
     )
     try:
         with pytest.raises(RuntimeError, match="canonical graph execution spine"):
-            asyncio.run(run_registered_dag("synth-human", workspace_id="w1", project_id="p1"))
+            asyncio.run(
+                run_registered_dag(
+                    "synth-human", workspace_id="w1", project_id="p1", user_id="test-user"
+                )
+            )
     finally:
         registry.deregister("synth-human")
 
@@ -87,13 +95,19 @@ def test_configure_hook_touches_the_instantiated_graph_only(synth_dag_id: str) -
         graph.nodes[0].inputs["extra"] = "value"
 
     graph, record = asyncio.run(
-        run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1", configure=configure)
+        run_registered_dag(
+            synth_dag_id,
+            workspace_id="w1",
+            project_id="p1",
+            configure=configure,
+            user_id="test-user",
+        )
     )
     assert graph.nodes[0].inputs["extra"] == "value"
     assert record.run.status is RunStatus.COMPLETED
     # The registered snapshot is untouched — a later run starts clean.
     graph_again, _ = asyncio.run(
-        run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1")
+        run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1", user_id="test-user")
     )
     assert "extra" not in graph_again.nodes[0].inputs
 
@@ -121,6 +135,7 @@ class _StubContainer:
         # model that real Container contract rather than making production DI
         # optional just to satisfy older tests.
         self.capability_effects = new_in_memory_effect_context()
+        self.harness_adapters = {}
         self.provider_registry = InMemoryProviderRegistry()
         self.llm_router = CostAwareRouter(self.provider_registry)
 
@@ -170,6 +185,34 @@ def test_the_delegate_node_is_wired_from_the_container(monkeypatch) -> None:
     assert node._a2a_delegator is container.a2a_delegator
     assert node._guest_peers is container.guest_peers
     assert node._run_store is container.run_store
+
+
+def test_the_harness_node_receives_the_container_adapter_on_each_resolution(monkeypatch) -> None:
+    """A timer wake must reconstruct the same configured provider authority."""
+    import services.dag_agents as dag_agents
+
+    class Adapter:
+        async def dispatch(self, request):
+            raise AssertionError("composition must not dispatch")
+
+        async def poll(self, handle):
+            raise AssertionError("composition must not poll")
+
+        async def cancel(self, handle):
+            raise AssertionError("composition must not cancel")
+
+    adapter = Adapter()
+    container = _StubContainer()
+    container.harness_adapters = {"proof": adapter}
+    _with_container(monkeypatch, container)
+    graph = {"nodes": [{"id": "h", "kind": "agent.spawn_harness"}]}
+
+    first = dag_agents._resolve_nodes_with()("h", graph)
+    recovered = dag_agents._resolve_nodes_with()("h", graph)
+
+    assert first is not recovered
+    assert first._adapters == recovered._adapters == {"proof": adapter}
+    assert recovered._effects is container.capability_effects
 
 
 @pytest.mark.ac("ADR-082526-3ca6/AC-4")
@@ -329,7 +372,9 @@ def test_a_registered_dag_is_findable_on_the_canonical_spine(monkeypatch, synth_
     assert dag_agents.get_run_store() is container.graph_run_store
 
     _graph, record = asyncio.run(
-        run_registered_dag(synth_dag_id, workspace_id="w-spine", project_id=root.project_id)
+        run_registered_dag(
+            synth_dag_id, workspace_id="w-spine", project_id=root.project_id, user_id="test-user"
+        )
     )
 
     canonical = asyncio.run(run_store.get_run(record.run_id))

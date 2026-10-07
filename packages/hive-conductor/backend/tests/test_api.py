@@ -344,6 +344,10 @@ def test_mission_create_dispatches_task() -> None:
     task_id = "abc123def456"
     fake_rec = MagicMock()
     fake_rec.id = task_id
+    # The canonical execution identity the receipt must carry back (#41);
+    # set explicitly because MagicMock auto-attributes are not valid strings.
+    fake_rec.run_id = "run-abc123"
+    fake_rec.user_id = "user"
     fake_rec.name = "Write hello world"
     fake_rec.description = "Write hello world"
     fake_rec.mission_status = "pending"
@@ -361,18 +365,26 @@ def test_mission_create_dispatches_task() -> None:
     with patch("services.engine._singleton", mock_engine):
         r = c.post(
             "/v1/tasks",
-            json={"name": "Write hello world", "description": "Write hello world"},
+            json={
+                "name": "Write hello world",
+                "description": "Write hello world",
+                "user_id": "bob",
+                "assigned_agents": ["ghost"],
+            },
         )
 
     assert r.status_code == 200
     body = r.json()
     assert body["id"] == task_id
+    assert body["run_id"] == "run-abc123"
+    assert body["assigned_agents"] == []
+    assert body["user_id"] == "user"
     assert body["status"] == "pending"
     # workspace_id=None is the explicit "this deployment's default Workspace"
     # (#158) -- the route passes it rather than omitting it, so the default is
     # named at every submission instead of being inferred downstream.
     mock_engine.submit_task.assert_called_once_with(
-        "Write hello world", "Write hello world", workspace_id=None
+        "Write hello world", "Write hello world", user_id="user", workspace_id=None
     )
 
 
@@ -388,6 +400,7 @@ def test_mission_detail_does_not_show_an_agent_the_run_does_not_have() -> None:
     t = datetime.now(UTC)
     stores.missions[mid] = Mission(
         id=mid,
+        user_id="user",
         name="Unassigned work",
         description="No Run recorded an agent",
         status="running",
@@ -412,11 +425,15 @@ def test_mission_detail_does_not_show_an_agent_the_run_does_not_have() -> None:
     mock_engine._backend = None
     created_id: str | None = None
     try:
-        with patch("services.engine._singleton", mock_engine):
+        with (
+            patch("services.engine._singleton", mock_engine),
+            patch("routes.missions.log_audit") as audit,
+        ):
             listed = c.get("/v1/tasks")
             assert listed.status_code == 200
             row = next(item for item in listed.json() if item["id"] == mid)
             assert row["assigned_agents"] == []
+            assert row["user_id"] == "user"
             # The store still holds the planted name. The lie is the response.
             assert stores.missions[mid].assigned_agents == ["agent-1"]
 
@@ -432,6 +449,9 @@ def test_mission_detail_does_not_show_an_agent_the_run_does_not_have() -> None:
             patched = c.patch(f"/v1/tasks/{mid}/status", json={"status": "paused"})
             assert patched.status_code == 200
             assert patched.json()["assigned_agents"] == []
+            audit.assert_called_once_with(
+                "mission_status", "user", target=mid, detail={"status": "paused"}
+            )
 
             created = c.post(
                 "/v1/tasks",
@@ -439,6 +459,7 @@ def test_mission_detail_does_not_show_an_agent_the_run_does_not_have() -> None:
                     "name": "Ghost assign",
                     "description": "client named an agent",
                     "assigned_agents": ["ghost"],
+                    "user_id": "another-user",
                 },
             )
             assert created.status_code == 200
@@ -446,12 +467,77 @@ def test_mission_detail_does_not_show_an_agent_the_run_does_not_have() -> None:
             created_id = body["id"]
             assert body["assigned_agents"] == []
             assert stores.missions[created_id].assigned_agents == []
+            assert body["user_id"] == stores.missions[created_id].user_id == "user"
+            audit.assert_called_with(
+                "mission_create", "user", target=created_id, detail={"name": "Ghost assign"}
+            )
     finally:
         stores.missions.pop(mid, None)
         stores.mission_steps.pop(mid, None)
         if created_id is not None:
             stores.missions.pop(created_id, None)
             stores.mission_steps.pop(created_id, None)
+
+
+@pytest.mark.parametrize("engine_backed", [False, True])
+def test_mission_agent_sanitization_keeps_other_users_records_private(engine_backed: bool) -> None:
+    """Response cleanup must not bypass either engine or fallback-store ownership."""
+    from datetime import UTC, datetime
+
+    import stores
+    from models.schemas import Mission, MissionStep
+
+    c = _login()
+    mid = "another-users-agent-mission"
+    now = datetime.now(UTC)
+    mission = Mission(
+        id=mid,
+        user_id="another-user",
+        name="Private mission",
+        description="Not this caller's work",
+        status="running",
+        priority="medium",
+        created_at=now,
+        updated_at=now,
+        assigned_agents=["private-agent"],
+    )
+    step = MissionStep(
+        id="private-step",
+        mission_id=mid,
+        name="Private step",
+        description="Private step output",
+        status="running",
+        order=0,
+        agent_id="private-agent",
+    )
+    stores.missions[mid] = mission
+    stores.mission_steps[mid] = [step]
+    engine = MagicMock()
+    engine.is_configured = engine_backed
+    engine._backend = object() if engine_backed else None
+    engine.list_tasks.return_value = []
+    engine.get_task.return_value = None
+    try:
+        with (
+            patch("services.engine._singleton", engine),
+            patch("routes.missions.log_audit") as audit,
+        ):
+            listed = c.get("/v1/tasks")
+            assert listed.status_code == 200
+            assert mid not in {row["id"] for row in listed.json()}
+            assert c.get(f"/v1/tasks/{mid}").status_code == 404
+            assert c.get(f"/v1/tasks/{mid}/steps").status_code == 404
+            assert c.patch(f"/v1/tasks/{mid}/status", json={"status": "paused"}).status_code == 404
+            assert stores.missions[mid] == mission
+            assert stores.mission_steps[mid] == [step]
+            audit.assert_not_called()
+            if engine_backed:
+                engine.list_tasks.assert_called_once_with(user_id="user")
+                assert engine.get_task.call_count == 3
+                engine.get_task.assert_called_with(mid, user_id="user")
+    finally:
+        stores.missions.pop(mid, None)
+        stores.mission_steps.pop(mid, None)
 
 
 def test_mission_status_maps_correctly() -> None:

@@ -1,0 +1,251 @@
+{
+  "$comment": [
+    "Authenticated /v1/{segment} prefixes for hive-conductor (#53 AC-P2).",
+    "scripts/check-route-permissions.py requires every mounted prefix to appear",
+    "here with either permission (scope.verb) or exempt_reason + owner.",
+    "Undeclared prefixes are tolerated only while listed in",
+    "quality/route-permissions-baseline.json; ratchet that file to zero."
+  ],
+  "prefixes": {
+    "/v1/agents": {
+      "permission": "agents.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "POST/PUT/DELETE and forge/scan mutations gate on agents.write or agents.delete in middleware/auth.py _PROTECTED_OPS; GET listing is authenticated-only."
+    },
+    "/v1/audit": {
+      "permission": "audit.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "POST appends audit rows with an arbitrary actor field; middleware requires audit.write so unscoped callers cannot forge the log."
+    },
+    "/v1/auth": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Identity bootstrap (session login, logout, OAuth link); unauthenticated entry points are public in public-routes.json; authenticated account-link and profile routes need no task-scoped elevation."
+    },
+    "/v1/backlog": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Personal planning board scoped to the caller's workspace; reads and writes stay within the member's own backlog rows with no cross-principal mutation."
+    },
+    "/v1/canvas": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Canvas evaluation surface for the caller's own compositions; routes scope records to the authenticated principal and need no deployment-wide elevation."
+    },
+    "/v1/capabilities": {
+      "permission": "config.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Capability discovery and provider configuration POST/PATCH gate on config.write; POST /approvals/* additionally requires approvals.resolve in _PROTECTED_OPS."
+    },
+    "/v1/chat": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Primary product surface; conversation history and streaming are scoped to the caller's session and workspace membership, with admin role blocked from chat routes in middleware."
+    },
+    "/v1/cli": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "CLI session record only; persists the caller's own terminal session metadata with no cross-principal or host-infrastructure mutation."
+    },
+    "/v1/containers": {
+      "permission": "containers.control",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Talks to the Docker socket; POST and DELETE require containers.control in _PROTECTED_OPS."
+    },
+    "/v1/credentials": {
+      "permission": "credentials.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "PUT and DELETE mutate stored integration secrets; middleware gates those methods on credentials.write."
+    },
+    "/v1/dag-metrics": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Read-only node metrics for runs the caller can already inspect; responses are scoped in-route and carry no mutating surface."
+    },
+    "/v1/dag-runs": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Run inspection is deliberately not elevation-gated; services/dag_run_inspection scopes list/detail/events to the caller's workspace universe and out-of-scope ids 404 (#1174)."
+    },
+    "/v1/dags": {
+      "permission": "dags.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Creating, editing, and running DAGs executes graph nodes including harness kinds; POST/PUT/DELETE gate on dags.write."
+    },
+    "/v1/dashboard": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Personal UI layout and pinned views; reads and writes affect only the caller's dashboard configuration."
+    },
+    "/v1/design": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Design content authoring scoped to the caller's workspace; no deployment-wide config or cross-principal mutation."
+    },
+    "/v1/evolution": {
+      "permission": "rsi.execute",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "The evolution tournament is the self-improvement loop's other door; GET and POST require rsi.execute."
+    },
+    "/v1/eval-judge": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Verdict reads and the trigger POST are scoped in-route through the same dag_run_inspection door as /v1/dag-runs; elevation adds no boundary (#1174)."
+    },
+    "/v1/harness": {
+      "permission": "harness.execute",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Starts and steers a coding agent against an operator workdir; GET stream, POST, and DELETE require harness.execute."
+    },
+    "/v1/hitl": {
+      "permission": "dags.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "The pending-work queue and answer route resume graph execution; GET and POST require dags.write (#244)."
+    },
+    "/v1/install": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Bootstrap installer progress for the deployment the caller already authenticated to; no host-infrastructure control beyond the caller's own install session."
+    },
+    "/v1/mcp": {
+      "permission": "mcp.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Discover, test, register and mutate MCP servers; POST/PUT/PATCH gate on mcp.write and DELETE on mcp.delete."
+    },
+    "/v1/memory": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Personal memory surface; learnings and episodic reads/writes are scoped to the caller's agent/session axes with no cross-principal access."
+    },
+    "/v1/messages": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Personal notification inbox; list and ack operations affect only the caller's own messages."
+    },
+    "/v1/optimizer": {
+      "permission": "dags.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Accepting an optimizer proposal rewrites a DAG; POST requires dags.write."
+    },
+    "/v1/profile": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Caller profile reads and self-service edits; routes mutate only the authenticated principal's own profile fields."
+    },
+    "/v1/program": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Onboarding coaching state for the caller; progress and dismissals stay within the member's own program record."
+    },
+    "/v1/providers": {
+      "permission": "config.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Provider activation stores deployment-wide LLM keys and mutates the global model registry; POST and PUT require config.write."
+    },
+    "/v1/quotas": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Read-only quota telemetry for the caller's billing cycle; no mutating or cross-principal usage surface."
+    },
+    "/v1/rsi": {
+      "permission": "rsi.execute",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "RSI runs push branches and can open PRs; GET and POST require rsi.execute."
+    },
+    "/v1/schedules": {
+      "permission": "schedules.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "A schedule is recurring autonomous execution; POST/PUT/DELETE require schedules.write."
+    },
+    "/v1/settings": {
+      "permission": "config.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Deployment configuration POST/PUT/PATCH gate on config.write and DELETE on config.delete; GET reads are authenticated-only."
+    },
+    "/v1/setup": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "First-run bootstrap after the public setup entry points; authenticated completion steps mutate only the caller's own account and deployment onboarding state."
+    },
+    "/v1/setup-checklist": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Personal setup checklist progress; reads and writes affect only the caller's checklist rows."
+    },
+    "/v1/skills": {
+      "permission": "skills.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Skill registration and PATCH toggles change what future agent runs may do; POST/PATCH gate on skills.write and DELETE on skills.delete."
+    },
+    "/v1/tasks": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Personal missions and task queue scoped to the caller; no deployment-wide or cross-principal mutation."
+    },
+    "/v1/topology": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Read-only topology inspection of agents and relationships visible to the caller's workspace membership."
+    },
+    "/v1/voice": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Device-credential voice intent; authenticated by a per-device secret rather than a session cookie but still caller-scoped with no elevation boundary."
+    },
+    "/v1/widgets": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Dashboard widget configuration for the caller; reads and writes affect only the member's own widget layout."
+    },
+    "/v1/work-items": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Personal work-item drafts scoped to the caller's workspace; no cross-principal or host-infrastructure mutation."
+    },
+    "/v1/workspaces": {
+      "permission": "workspaces.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Membership, persona authoring, tool bindings and archive/delete gate on workspaces.write; POST /v1/workspaces tab creation is explicitly exempt in middleware."
+    }
+  }
+}
