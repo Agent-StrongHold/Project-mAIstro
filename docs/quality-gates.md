@@ -33,7 +33,7 @@ A **floor** is a fixed minimum/maximum threshold. A **ratchet** records reviewed
 | benchmark provenance | floor | pinned digests | a vendored IFEval/BFCL grader or corpus changing unnoticed |
 | architecture fitness | floor | zero violations | a forbidden cross-layer dependency |
 | execution lifecycles | identity ratchet | `quality/execution-lifecycles.json` | a new work-state Enum or status-shaped Literal alias/field vocabulary nobody classified, or an entry left behind after its identity was deleted |
-| model egress | identity ratchet | `quality/model-egress.json` | a new module calling a model endpoint directly, or an entry left behind after one was migrated |
+| model egress | identity ratchet | `quality/model-egress.json` | a new module performing physical completions-family model HTTP at a call site, or an entry left behind after its egress was migrated |
 
 Ruff lint and formatting have one owner per workflow event (#1357, #1610).
 The required Quality gate runs both root commands for ordinary PR activities
@@ -65,13 +65,15 @@ All six minimum invariants now have an enforceable owner. Two are construction-t
 | Invariant | Enforced by |
 |---|---|
 | 1. No new universal execution lifecycle outside Run/NodeRun/Attempt | `scripts/check-execution-lifecycles.py` + identity ledger |
-| 2. No new direct model/tool/effect-provider bypass | `scripts/check-model-egress.py` freezes the current direct caller set while #56 converges the boundary |
+| 2. No new direct model/tool/effect-provider bypass | `scripts/check-model-egress.py` freezes the current physical direct-caller set while #56 converges the boundary |
 | 3. No second durable Workspace/Event-sequence authority | `EventEnvelope`/event-store construction rules refuse conflicting scope/sequence authority; event tests pin it |
 | 4. No unscoped durable project-owned execution objects | `Run`/`NodeRun` require Project scope and Run rejects a mismatched Graph snapshot |
 | 5. No outward core dependency-direction violations | `packages/maistro-core/tests/fitness/test_import_boundaries.py` |
 | 6. Compatibility owners cannot silently present as canonical | the same blocking fitness suite AST-scans direct public type aliases against a reviewed identity ledger and requires each reviewed alias to be explicitly described as compatibility-only in its source; new/stale/unbannered aliases fail |
 
 Invariants 3 and 4 are stronger at construction than a later grep: the invalid object cannot be created. Invariant 6 is different — an alias can always be written — so it is now mechanically checked rather than left as convention.
+
+The model-egress gate (invariant 2) measures **physical completions-family model HTTP at the call site** — an effect-method call whose own URL argument carries a model endpoint fragment, resolved through string bindings, reusing the curated direct-effect census — not endpoint-shaped text anywhere in a module (#1089, metric v2). Each finding is joined with the reachability baseline and its reviewed dispositions, so the gate reports the #56 closeout population explicitly: reachable escapes awaiting migration, unreachable library/diagnostic callers, and the approved Provider boundary (`maistro.capabilities.providers.llm_gateway`), which is recognized as the terminal boundary but is never an authorization path. Image-model HTTP is a separate curated population dispositioned in `quality/direct-effect-call-sites.json`; folding it into this ratchet is a floor raise requiring a landed grant, not a precision fix. Dispositions are derived from those gated files rather than stored in a candidate-editable ledger, so a candidate cannot relabel its own escape, and a ledger row whose physical egress disappeared still fails until pruned.
 
 ## Coverage: aggregate and diff answer different questions
 
