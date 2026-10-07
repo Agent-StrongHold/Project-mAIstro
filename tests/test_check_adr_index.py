@@ -206,6 +206,40 @@ def test_add_missing_finds_a_nested_adr(sandbox, capsys: pytest.CaptureFixture[s
     assert "added 1 row(s)" in capsys.readouterr().out
 
 
+def test_an_exact_name_nested_adr_still_resolves(
+    sandbox, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The corpus lookup's second branch (#813 recursion reaches it too).
+
+    `_adr_path` prefers `ADR-NNN-<title>.md` but must also resolve a record
+    named exactly `ADR-NNN.md` — otherwise `--add-missing`/`rewrite` build the
+    row without git metadata and silently misplace the file. The branch was
+    the one changed line pair the recursive conversion left unexecuted: every
+    other test reaches it through the suffix form. Naming the file exactly and
+    nesting it exercises both dimensions of the lookup — exact-name fallback
+    and recursive discovery — so the pre-#813 non-recursive `glob` mutation
+    (no nested hit) and a removed fallback (no hit at all) both fail here.
+    """
+    adr = next(sandbox.ADR_DIR.glob("ADR-019-*.md"))
+    nested = sandbox.ADR_DIR / "nested"
+    nested.mkdir()
+    exact = nested / "ADR-019.md"
+    adr.rename(exact)
+
+    assert sandbox._adr_path("ADR-019") == exact
+
+    index = sandbox.INDEX
+    index.write_text(
+        "\n".join(
+            line for line in index.read_text().splitlines() if not line.startswith("| ADR-019 |")
+        )
+        + "\n"
+    )
+    assert sandbox.main(["--add-missing"]) == 0
+    assert "| ADR-019 |" in index.read_text()
+    assert "added 1 row(s)" in capsys.readouterr().out
+
+
 # --- the fix -----------------------------------------------------------------
 
 
