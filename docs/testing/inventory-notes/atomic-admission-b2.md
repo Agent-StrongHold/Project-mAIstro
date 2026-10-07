@@ -1176,3 +1176,91 @@ in-branch alternatives are forbidden by the issue ("no baseline/grant/gate
 modifications to make an unwired slice green"). No code, test, or
 `quality/` file was modified this round beyond the develop merge and this
 note.
+
+## CI-repair round 20 (L1893, develop sync to 0df275362 — closure-target gate
+#2026 + registry test-path resolution #2023 + turing #753 evidence — head
+`506742ad9c68`)
+
+develop was re-fetched before judging: `origin/develop` advanced
+`30a30d10e2a64` -> `0df275362d286` (three commits: `7dbec238d` turing #753
+independent-verification evidence, `51679882b` every cited registry test path
+resolves to a real test #2023, `0df275362` PR-closure-keyword blocker
+#2026). First action of the round: `git merge-base --is-ancestor
+3235229f5fed origin/develop` still fails at `0df275362d286`, and
+`ratchet-authorizations.json` there still carries the same 11 `reachability`
+grants with none for the admission modules — so the two-merge blocker was
+re-confirmed before any merge was attempted, and the merge could not have
+brought the grant in.
+
+Sync merge `506742ad9c68` = `f57bc4fb0f2d` x `0df275362d286` applied cleanly
+(`--no-commit --no-ff` first; zero conflicts). Per the AGENTS.md
+quality-ledger hazard, row counts were snapshotted before and recounted
+after: `reachability-baseline.json` 172 rows (both `maistro.runs.
+admission_identity` and `maistro.tasks.admission_codec` kept — develop never
+had them), `reachability-dispositions.json` 50 groups
+(`runs-root-admission-contracts` kept), `contract-markers-baseline.json`
+374 -> 361 adopting develop's deliberate prune (rows for SPEC-062226-fb23,
+SPEC-193/194/195/201, SPEC-258 boundary, SPEC-279, ADR-076 removed together
+with the docs those commits delete), `vulture-baseline.json` untouched.
+`git diff origin/develop -- quality/` post-merge shows exactly the branch's
+two intended banking files plus nothing else. The four B2 surfaces are
+byte-identical to the round-19-validated content (`git diff f54f6040f..HEAD`
+on the four paths was empty pre-merge; the merge touched none of them).
+
+Battery re-executed at `506742ad9c68` (trusted base resolves to
+`0df275362d28`, the new merge base):
+
+- `uv run ruff check .` -> All checks passed. `uv run ruff format --check .`
+  -> 3105 files already formatted.
+- Focused admission suites pure: 142 passed, 1 skipped (PG leg skips without
+  a DSN). With PG legs enforced on the same disposable migrated database
+  (`maistro_b2_1893` on `127.0.0.1:5432`, verified at alembic head `058`
+  before the run; `MAISTRO_REQUIRE_PG_LEGS=1` with both DSNs pointing at it):
+  **143 passed, 0 skipped**.
+- CI-exact mypy (ten src paths, ci.yml:109) -> Success, no issues in 1009
+  source files (the +1 file is develop's registry addition). quality.yml:1414
+  form (`uv run mypy --strict packages/maistro-core/src` after
+  `uv sync --locked --all-extras`) -> Success, no issues in 753 source
+  files. Observation, not a gate: running mypy directly on the two B2 *test*
+  files reports 17 union-attr/arg-type findings — but no CI workflow type-
+  checks test files (ci.yml checks the ten src trees only; quality.yml strict
+  checks `packages/maistro-core/src`), so this is outside every type gate and
+  was deliberately not "fixed" to avoid touching declared surfaces.
+- `scripts/check-suite-inventory.py` (CI form) -> ok: 17 suites, 28202
+  collected node IDs, 0 duplicate/byte-identical evidence. This round adds no
+  tests; the `inventory-delta:` front-matter is unchanged.
+- CI-exact debt-ledger legs: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` -> 1332 = 1332, exit 0
+  (nothing unbanked; the lane's conditional vulture-ledger amendment stays
+  moot for the eleventh consecutive round); `check-shipped-surface-truth.py`
+  -> exit 0.
+- develop-merged content verified in-branch: 94 tests across
+  `tests/test_check_closure_targets.py`, `tests/tools/registry/test_cli.py`,
+  `tests/tools/registry/test_validator.py`,
+  `packages/maistro-registry/tests/test_test_paths.py` all pass.
+- Root-suite `test` leg in CI form (ci.yml:567): **4568 passed, 128
+  skipped** in 446s — +25 over round 19's 4543, exactly develop's root-suite
+  additions, no regressions.
+- `RATCHET_BASE_REV=origin/develop scripts/check-ratchet-provenance.py` ->
+  exit 1, unchanged in shape against the NEW base: exactly the two
+  reachability provenance sub-gates fail (`maistro.runs.admission_identity` +
+  `maistro.tasks.admission_codec` NEW vs trusted base `0df275362d28`,
+  dispositions NEW and "not covered by an already-landed reachability
+  authorization"); vulture 1332 = 1332, contract-markers, enumerations,
+  lifecycle, and shell sub-ratchets all OK. The failure text itself names the
+  only cure, and `scripts/ratchet_provenance.py::load_authorizations` states
+  the rule in its docstring: a grant is read from the base revision, so "a
+  new grant does not take effect in the change that introduces it ...
+  Authorizing a floor-raise is now two merges".
+
+Round-20 conclusion: identical to rounds 4-19, now proven against the fifth
+successive develop state. All B2 acceptance evidence is green at
+`506742ad9c68`; the only red is the exact-debt-ledger reachability
+provenance pair, which structurally cannot clear in-branch. The prepared
+two-entry `reachability` grant (`3235229f5fed`, probe-verified in rounds
+17-18 as green in the post-landing state with zero content change) must land
+on develop, then origin/develop is merged here. That is campaign-level and
+out of worker authority (no push permitted); in-branch alternatives are
+forbidden by the issue ("no baseline/grant/gate modifications to make an
+unwired slice green"). No code, test, or `quality/` file was modified this
+round beyond the develop sync merge and this note.
