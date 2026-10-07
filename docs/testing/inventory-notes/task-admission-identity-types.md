@@ -1354,3 +1354,58 @@ Resolution is unchanged from rounds 12-15 and remains outside this leaf: land
 the reviewed vulture + reachability grant pair on the integration base, or
 wire the runtime consumer in the parent #1845 integration. Per the issue's
 directive the stack stays unmerged; handoff only, no integration approval.
+
+## 2026-10-07 round-17 re-execution after a lost round-16 result
+
+Round-16's worker committed its evidence at `074e3e43` but its result record
+was lost to a provider timeout. This round found the worktree clean at the
+exact dispatched head `074e3e43` (nothing to salvage) and independently
+re-executed the same lane instruction. Every round-16 claim reproduced
+exactly; the new evidence below closes the one question round-16 left open
+(whether a develop sync could cure the gate).
+
+Re-executed at `074e3e43` with `RATCHET_BASE_REV=origin/develop` (trusted
+base resolves to merge-base `b1f17b8d`):
+
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI argv): candidate banking half clean (1,333 scanned
+  identities = 1,333 banked; the round-13 +5 rows remain the branch's only
+  `quality/` delta vs `origin/develop`, verified via `git diff --numstat
+  origin/develop -- quality/` → exactly 5 insertions, 0 deletions, no
+  develop-merge row loss in any other ledger). rc=1 with exactly the five
+  NEW unauthorized identities `admission_identity.py:515-520`
+  (MISMATCH, REPLAYED, TAKEOVER, REPLACE_EXPIRED, LEGACY_UNRESOLVED).
+  Nothing genuinely dead to fix: AST-verified against the issue text, the
+  five are the mandated `AdmissionAssessment` member/value pairs, unread by
+  design until the parent integration's C2 classifier consumes them.
+- Masking mechanism re-confirmed (why only 5 of 10 module identities are
+  flagged): vulture's usage analysis is global across `packages/*/src`, and
+  the names `format_version` (×2), `admitted` (×2), and `PENDING` appear as
+  attribute/name tokens elsewhere in production sources (e.g.
+  `JobStatus.PENDING` in `maistro_canvas.canvas`), so only the five truly
+  unread members surface.
+- `check-reachability.py`: rc=1, 1,356 production modules / 170 unreachable,
+  exactly one NEWLY UNREACHABLE (`maistro.runs.admission_identity`),
+  issue-predicted. `check-ratchet-provenance.py`: rc=1 solely via that
+  reachability sub-gate. `check-reachability-dispositions.py` (rc=0),
+  `check-promotion-surface.py` (rc=0), `check-shipped-surface-truth.py`
+  (rc=0) all green.
+- Focused acceptance green: 79 pytest cases passed; `ruff check` and
+  `ruff format --check` clean on module+tests; `mypy` on the module clean;
+  suite inventory ok at 14,986 node IDs for `packages/maistro-core/tests`.
+- New: merge-queue simulation — `git merge-tree` merges `origin/develop`
+  (`b78637f5`, four commits past the evaluation base) conflict-free, and at
+  that synthetic merge the trusted base becomes the develop tip. Executed
+  inspection of the tip: its `quality/ratchet-authorizations.json` vulture
+  keyset is byte-count-identical to the base (61 keys, zero
+  `admission_identity` entries), its `quality/vulture-baseline.json` has no
+  `admission_identity` row, and its `quality/reachability-baseline.json` has
+  no `admission_identity` entry (the module file itself is absent from the
+  tip). Therefore a develop sync cures nothing: both red sub-gates persist
+  at any queue head of this leaf.
+
+Unchanged resolution, now with executed evidence that no in-branch path
+erases it: the reviewed vulture + reachability grant pair must land on the
+integration base, or the parent #1845 integration must supply the runtime
+consumer that reads the five members and imports the module. Handoff only;
+no integration approval; stack stays unmerged per the issue.
