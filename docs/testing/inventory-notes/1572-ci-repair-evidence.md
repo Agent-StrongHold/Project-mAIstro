@@ -174,3 +174,95 @@ Progress: checked 1, done 0 repairs, skipped 0 items, errors 1 blocking policy
 failure (also reproduced by its test); Docker is an additional environment
 blocker. Next is owner authorization and database availability, not scanner
 suppression. Commit this evidence-only handoff locally; no closure claimed.
+
+## Recheck at assigned head d3569feb0337 (job 493c63b7)
+
+Frozen item: #1572, writer repair round, clean `auto-1572` at
+`d3569feb03370b4d5a913573949a88e255d44c25`. Supplied develop base:
+`b1f17b8d6246d347f617fb2c0b969e6798e0152b`; actual merge base:
+`9bd1a93eefc4e564041b3cc512f20b229cde64b9`. No conflict to resolve.
+Read repository instructions, the accepted execution-runtime and shared
+PostgreSQL Workspace ADRs, dispatch issue/acceptance and captured check evidence,
+prior result, driver logs, and adjacent Goal composition/authorization/binding/
+conformance/restart and migration tests. No remote refresh or mutation.
+
+### First-hand commands and outcomes
+
+Logs are in job directory
+`/home/dev/maistro/jobs/493c63b718934a8fb6d6fbc65b19b65a/`.
+
+| Command | Outcome |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS, 1328 reviewed / 1328 findings, zero unclassified/forbidden (`repair-vulture.log`). No ledger amendment justified. |
+| `uv run python scripts/check-execution-lifecycles.py` | FAIL, GoalStatus lacks trusted-base authorization, 19 classified / 20 discovered (`repair-lifecycles.log`). |
+| `uv run pytest tests/test_check_execution_lifecycles.py -x -q` | 28 passed, 1 failed at line 374, same missing authorization (`repair-lifecycle-tests.log`). |
+| `uv run pytest packages/maistro-core/tests/goals packages/maistro-core/tests/runs packages/maistro-core/tests/graph/durable_runs packages/maistro-core/tests/workspaces/test_sqlite_alembic_schema_parity.py -x -q` | 1813 passed, 311 skipped, 5 adjacent Run-suite aiosqlite closed-loop thread warnings (`repair-core.log`). |
+| `uv run pytest tests/migrations -x -q` | 38 passed, 125 skipped (`repair-migrations.log`). |
+| `uv run python scripts/check-m1-convergence-freeze.py --base b1f17b8d6246d347f617fb2c0b969e6798e0152b` | PASS. |
+| `uv run alembic heads` | PASS, single head `061`. |
+| `uv run ruff check .` / `uv run ruff format --check .` | PASS, 3145 files formatted (`repair-static.log`). |
+| `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests` | PASS, 14961 test identities, zero duplicate evidence (`repair-static.log`). |
+| `DOCKER_HOST=unix:///var/run/docker.sock docker info --format '{{.ServerVersion}}'` | FAIL, cannot connect to daemon (`repair-docker.log`). |
+| `uv run python scripts/check-integration-scope.py --event-name pull_request --required-json` | PASS for required-list resolution only; not an aggregate verdict. |
+
+### Integration-scope evidence correction
+
+The prior dispatch inference that lifecycle failure directly makes
+`integration-scope` red is **not established**. The aggregator waits for the
+specialized checks enumerated at `scripts/check-integration-scope.py:22-30`:
+PostgreSQL 17/18, object storage, durable events, strike ladder, Hive E2E/UI,
+wheel imports and Docker build. It does not directly require the lifecycle
+check. The frozen dispatch check-runs for `c52c787221ac` show integration-scope
+success alongside Quality/test failures. That is historical, not current-head
+evidence. The lane names a later integration-scope failure but supplies no
+matching producer failure log in check-0 through check-4. Its precise cause
+remains **UNRESOLVED**; do not patch its workflow or infer green from a locally
+resolved required list. No live GitHub polling was performed.
+
+### Acceptance at this candidate
+
+- **Three-backend round-trip:** shared conformance passes memory/SQLite;
+  PostgreSQL UNVERIFIED.
+- **Append-only, stale refusal, concurrent single winner and terminal finality:**
+  conformance passes memory/SQLite; independent SQLite writers and PostgreSQL
+  UNVERIFIED (the concurrent tests use one store object).
+- **Subgoal parent/Project and explicit recorded owner change:** conformance
+  passes memory/SQLite; PostgreSQL UNVERIFIED.
+- **Run admission and immutable binding:** admission/store/transition tests pass
+  memory/SQLite; PostgreSQL and historical binding after advancing the Goal
+  revision following admission UNVERIFIED. The restart test binds revision 2
+  when the Goal is already at revision 2, so it does not prove that latter case.
+- **Workspace isolation and foreign equals missing:** real scoped authorization
+  conformance passes memory/SQLite; PostgreSQL UNVERIFIED.
+- **Production composition:** Container exposure and its authorized seam pass.
+  Source confirms server `main.py:344` and Hive `adapters/maistro_core.py:194`
+  call the factory that wires Goals at `container.py:2377`. Both deployed
+  compositions and their process restarts UNVERIFIED. SQLite connection
+  close/reopen with Goal/revisions/bound Run readback passes, not a process test.
+- **No competing execution authority:** convergence freeze passes; separate
+  lifecycle policy failure remains. No architectural representation change or
+  scanner evasion is warranted by this policy failure.
+- **Merged migration identities:** graph/snapshot tests pass, preserving 056/057
+  and appending Goals at 061 after 060; central allocation UNVERIFIED.
+- **Installed-base upgrades/data preservation:** populated actual c560d4c and
+  4675101 forward upgrades, all three tables, old facts/statement keys/Run data,
+  planner indexes/constraints and durable reopened provenance UNVERIFIED on
+  both PG17 and PG18; database legs skipped.
+- **Fresh install/downgrade/refusal/reapplication/history:** unique-head checks
+  pass; live PG17/18 legs and complete older quota-door history compatibility
+  audit UNVERIFIED.
+
+**BLOCKED handoff:** only this zero-delta evidence note changes. No production,
+test, ledger, grant or gate changes. The vulture exception does not authorize a
+GoalStatus lifecycle grant, and the supplied base authorization file contains
+no GoalStatus entry. An authorized owner must independently land that grant
+before this branch consumes it. Obtain the exact failed integration-scope
+producer evidence and a working PostgreSQL environment before another repair
+attempt; repeatedly rerunning this unchanged candidate cannot establish those
+prerequisites. Preserve the canonical Goal -> Graph -> Run -> NodeRun -> Attempt
+spine and shared database authority.
+
+Progress: checked 1, done 0 repairs, skipped 0 items, errors 1 policy blocker
+(reproduced by gate and test), plus unavailable Docker and unresolved aggregate
+failure attribution. Commit this report locally; no integration approval or
+issue closure claimed.
