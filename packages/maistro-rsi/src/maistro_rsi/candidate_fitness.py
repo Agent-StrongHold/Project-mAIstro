@@ -963,7 +963,11 @@ def _lint_gates(cwd: Path, src_files: list[str]) -> list[GateResult]:
     (command, tool version, candidate SHA, exit status, output digest) and
     one of exactly two states: ``passed`` or ``failed``. Output that cannot
     be parsed is a FAILED gate, not a clean one: unreadable evidence is not
-    a green result."""
+    a green result. Nor is an execution failure: exits 0 (clean) and 1
+    (findings) are the only analyzer-evidence codes — a tool that starts and
+    then dies with a usage/configuration/internal exit (2) yields a blocking
+    ``not_run`` gate, because empty stdout from a broken analyzer is not
+    evidence of clean code."""
     if not src_files:
         return []
     gates: list[GateResult] = []
@@ -974,6 +978,17 @@ def _lint_gates(cwd: Path, src_files: list[str]) -> list[GateResult]:
         provenance = _gate_provenance(cwd, full_argv, dist, proc)
         if proc is None:
             gates.append(_not_run_gate(name, dist, cause or "error", provenance))
+            continue
+        if proc.returncode not in (0, 1):
+            # A findings exit is 0 or 1; anything else means the analyzer
+            # never evaluated the files. Reject before parsing so empty
+            # stdout (ruff "[]", mypy zero errors, bandit "{}") from a
+            # broken run cannot masquerade as a clean result.
+            gates.append(
+                _not_run_gate(
+                    name, dist, f"execution error (exit {proc.returncode})", provenance
+                )
+            )
             continue
         if name == "ruff_clean":
             try:

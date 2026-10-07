@@ -129,17 +129,39 @@ class TestRequiredToolFailClosed:
     def test_unreadable_tool_output_is_failed_not_clean(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A tool that ran but produced unparseable output cannot count as a
-        clean result: the gate records FAILED with its provenance."""
+        """A tool that ran on a findings exit but produced unparseable output
+        cannot count as a clean result: the gate records FAILED with its
+        provenance."""
         repo = _candidate_repo(tmp_path / "r")
         _stub_run_lint_tool(
-            monkeypatch, {"ruff": _proc(stdout="<html>not json</html>", returncode=2)}
+            monkeypatch, {"ruff": _proc(stdout="<html>not json</html>", returncode=0)}
         )
         gates = _lint_gates(repo, ["calc.py"])
         ruff = next(g for g in gates if g.name == "ruff_clean")
         assert ruff.passed is False
         assert ruff.resolved_state() is GateState.FAILED
         assert "unreadable" in ruff.reason
+
+    def test_usage_error_exit_is_a_blocking_not_run_not_a_clean_result(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A tool that starts but exits with a usage/configuration/internal
+        error (2) never evaluated the files: its empty stdout must not parse
+        as ruff ``[]``, mypy zero errors, or bandit ``{}`` — i.e. a PASSED
+        gate. The exit is rejected before parsing and blocks promotion."""
+        repo = _candidate_repo(tmp_path / "r")
+        for dist, name in (
+            ("ruff", "ruff_clean"),
+            ("mypy", "mypy_clean"),
+            ("bandit", "no_bandit_high"),
+        ):
+            _stub_run_lint_tool(monkeypatch, {dist: _proc(stdout="", returncode=2)})
+            gates = _lint_gates(repo, ["calc.py"])
+            gate = next(g for g in gates if g.name == name)
+            assert gate.passed is False
+            assert gate.resolved_state() is GateState.NOT_RUN
+            assert "exit 2" in gate.reason
+            assert gate.detail["cause"] == "execution error (exit 2)"
 
     def test_no_source_files_still_runs_no_gates(self, tmp_path: Path) -> None:
         assert _lint_gates(tmp_path, []) == []
