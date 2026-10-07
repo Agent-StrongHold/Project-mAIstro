@@ -41,6 +41,7 @@ from maistro.graph.harness import (
 )
 from maistro.graph.nodes import BaseNode, NodeContext, get_node, register_node
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
+from maistro.graph.nodes.base import replay_effect_key
 
 from .._canonical_helpers import run_legacy_dag_fixture as run_durable_dag
 
@@ -323,22 +324,45 @@ class TestProvidersThroughInvocationPath:
         assert openclaw_sandbox.commands[0].startswith("openclaw agent --message")
         assert pi_sandbox.commands[0].startswith("pi -p")
 
+        # The paused state carries the versioned wait; the dispatch effect
+        # identity is derived from the canonical replay contract, not read
+        # back from pause metadata.
+        openclaw_key = replay_effect_key(
+            _ctx(),
+            "agent.spawn_harness.dispatch",
+            {
+                "harness_type": "openclaw",
+                "task": "one outbound gateway task",
+                "context": {},
+                "timeout_seconds": 3600,
+            },
+        )
+        pi_key = replay_effect_key(
+            _ctx(),
+            "agent.spawn_harness.dispatch",
+            {
+                "harness_type": "pi",
+                "task": "one print-mode coding turn",
+                "context": {},
+                "timeout_seconds": 3600,
+            },
+        )
         openclaw_history = await effects.invocation_store.list_effect(
             run_id="r1",
             node_run_id="nr1",
             binding_id="b-openclaw",
-            effect_key=str(first.metadata["effect_key"]),
-            effect_scope=str(first.metadata["effect_key"]),
+            effect_key=openclaw_key,
+            effect_scope=openclaw_key,
         )
         pi_history = await effects.invocation_store.list_effect(
             run_id="r1",
             node_run_id="nr1",
             binding_id="b-pi",
-            effect_key=str(second.metadata["effect_key"]),
-            effect_scope=str(second.metadata["effect_key"]),
+            effect_key=pi_key,
+            effect_scope=pi_key,
         )
         assert len(openclaw_history) == len(pi_history) == 1
-        assert first.metadata["effect_key"] != second.metadata["effect_key"]
+        assert openclaw_key != pi_key
         for invocation in (*openclaw_history, *pi_history):
             assert invocation.status is InvocationStatus.COMPLETED
             assert invocation.run_id == "r1"
@@ -393,12 +417,22 @@ class TestProvidersThroughInvocationPath:
         )
         assert result.status == "paused"
         assert runner.stopped == ["scripted-session-1"]
+        scripted_key = replay_effect_key(
+            _ctx(),
+            "agent.spawn_harness.dispatch",
+            {
+                "harness_type": "scripted",
+                "task": "one bounded turn",
+                "context": {},
+                "timeout_seconds": 3600,
+            },
+        )
         history = await effects.invocation_store.list_effect(
             run_id="r1",
             node_run_id="nr1",
             binding_id="b1",
-            effect_key=str(result.metadata["effect_key"]),
-            effect_scope=str(result.metadata["effect_key"]),
+            effect_key=scripted_key,
+            effect_scope=scripted_key,
         )
         assert len(history) == 1
         invocation = history[0]
