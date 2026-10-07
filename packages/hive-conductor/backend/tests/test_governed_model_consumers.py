@@ -5,7 +5,10 @@ from typing import Any
 
 import pytest
 
-from maistro.capabilities.effect_context import new_in_memory_effect_context
+from maistro.capabilities.effect_context import (
+    binding_scope_policy,
+    new_in_memory_effect_context,
+)
 from maistro.capabilities.invocation import InvocationStatus
 from maistro.capabilities.providers import llm_gateway
 from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
@@ -17,6 +20,7 @@ from maistro.providers.router import CostAwareRouter
 from maistro.providers.types import ModelMetadata
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _canonical_scope(workspace_id: str = "ws-1") -> tuple[InMemoryProjectScopeStore, str]:
@@ -36,16 +40,25 @@ async def _admit_parent_run(
         name="evaluated-dag",
         nodes=[Node(node_id="worker", node_type="worker", name="worker")],
     )
-    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    run = await run_store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await run_store.transition_run(run.run_id, RunStatus.RUNNING)
     await run_store.transition_run(run.run_id, RunStatus.COMPLETED)
     return run.run_id
 
 
 async def _correlated_runtime(
-    policy_evaluator: Any = None,
+    policy_evaluator: Any = binding_scope_policy,
 ) -> tuple[Any, Any, str, str]:
-    """A GovernedModelRuntime whose run store sits on a real canonical spine."""
+    """A GovernedModelRuntime whose run store sits on a real canonical spine.
+
+    Defaults to the explicit M1 baseline policy (#846): an omitted evaluator is
+    an unavailable dependency and denies, so behavior tests must opt in and
+    denial tests pass their denying evaluator explicitly.
+    """
 
     from services.governed_model import GovernedModelRuntime
 
@@ -89,7 +102,9 @@ def _plain_runtime():
         ]
     )
     return GovernedModelRuntime(
-        effects=new_in_memory_effect_context(),
+        # Behavior fixture: explicit M1 baseline policy (#846 — omitted policy
+        # evaluators now deny, they never default to permissive).
+        effects=new_in_memory_effect_context(policy_evaluator=binding_scope_policy),
         registry=registry,
         router=CostAwareRouter(registry),
         endpoint=GatewayEndpoint(base_url="http://gateway", api_key="master"),
@@ -364,6 +379,7 @@ async def test_provider_health_with_minted_identity_completes_operation(
         operation="provider-activation:judge",
         workspace_id="ws-1",
         project_id=project_id,
+        actor_principal_id="test-admin",
         provenance={"activation_source": "routes.providers", "provider": "judge"},
     )
 
@@ -606,7 +622,7 @@ async def test_runtime_wires_container_authorities(
     scope, _project_id = await _canonical_scope()
     run_store = InMemoryRunStore(project_store=scope)
     registry = InMemoryProviderRegistry()
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     router = CostAwareRouter(registry)
     container = SimpleNamespace(
         capability_effects=effects,

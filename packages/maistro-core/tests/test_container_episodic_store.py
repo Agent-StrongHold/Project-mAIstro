@@ -1,6 +1,6 @@
 """The configured backend chooses the episodic store (#710).
 
-`create_container` built `InMemoryEpisodicStore()` on a line that sits *after*
+`create_container` built `InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)` on a line that sits *after*
 the backend branch, so it was what a `postgresql://` deployment got too. Nothing
 failed; memory simply did not survive a restart, and two replicas of one
 deployment remembered different things.

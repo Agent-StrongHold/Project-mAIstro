@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import json
 import subprocess
-from datetime import UTC
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
@@ -58,7 +57,11 @@ class StartRunBody(BaseModel):
 
 class ReviewDecisionBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    decision: Literal["approve", "deny"]
+
+    #: #110: the inbox takes the full deterministic decision set — approve /
+    #: reject / revise / resume. "deny" stays as the v1 alias of "reject" so
+    #: existing clients keep working unchanged.
+    decision: Literal["approve", "reject", "revise", "resume", "deny"]
     reason: str | None = None
     #: Accepted only to be refused. Approving a review runs `git am` and opens a
     #: pull request against this path, and it reached that code unvalidated
@@ -82,19 +85,18 @@ def rsi_status() -> dict:
 
 @router.get("/models")
 def available_models() -> dict:
-    """Models the operator can pick from in the UI."""
-    return {
-        "models": [
-            {"id": "glm-4.7", "label": "GLM-4.7 (Sonnet-level, 1x quota)", "tier": "open"},
-            {"id": "glm-5.2", "label": "GLM-5.2 (Opus-level, 2x quota)", "tier": "premium"},
-            {
-                "id": "oss120-cerebras",
-                "label": "Cerebras gpt-oss-120b (free, daily cap)",
-                "tier": "free",
-            },
-            {"id": "gemini-flash", "label": "Gemini Flash (free, 5 RPM)", "tier": "free"},
-        ]
-    }
+    """Explicitly unsupported (#389).
+
+    This returned a hard-coded catalog baked into the handler — labels and
+    quota tiers nothing updated and no deployment configured. The live model
+    catalog's owner is the LiteLLM gateway, surfaced at
+    `GET /v1/quotas/models`; this route now refuses with `501` rather than
+    serve a catalog that drifts from what the gateway actually registers.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="static model catalog removed; the live catalog is GET /v1/quotas/models",
+    )
 
 
 @router.get("/test-profiles")
@@ -137,8 +139,6 @@ async def start_run(body: StartRunBody) -> dict:
     from services.rsi import get_rsi_service
 
     svc = get_rsi_service()
-    if not svc.available:
-        raise HTTPException(status_code=503, detail="maistro-rsi is not installed in this process")
     if body.mode not in ("cleanup", "greenfield"):
         raise HTTPException(status_code=400, detail="mode must be 'cleanup' or 'greenfield'")
     if body.test_command is not None:
@@ -151,6 +151,14 @@ async def start_run(body: StartRunBody) -> dict:
         )
     if body.mode == "cleanup" and not body.repo_path:
         raise HTTPException(status_code=400, detail="cleanup mode requires repo_path")
+    if body.mode == "greenfield" and not svc.available:
+        # The tournament path still needs the package in this process. A
+        # cleanup run does not: since #509 it is dispatched into an ephemeral
+        # runner container, and its capability gate is `require_isolation()`
+        # below — demanding an in-process maistro-rsi install for it would
+        # keep the Start button broken on every Conductor that ships without
+        # the package it no longer imports.
+        raise HTTPException(status_code=503, detail="maistro-rsi is not installed in this process")
 
     caller_paths = [
         name
@@ -232,28 +240,116 @@ def list_reviews(run_id: str) -> dict:
     return {"kept": kept, "flagged": flagged}
 
 
+def _locate_review(report_dir: Path, sha: str) -> tuple[dict[str, Any], Path] | None:
+    """The review metadata + the directory (kept/ or flagged/) holding it."""
+    for d in (report_dir / "kept", report_dir / "flagged"):
+        meta = d / f"{sha[:12]}.json"
+        if meta.is_file():
+            return json.loads(meta.read_text(encoding="utf-8")), d
+    return None
+
+
+def _decided_response(sha: str, review_data: dict[str, Any], decision_file: Path) -> dict[str, Any]:
+    """The settled outcome for an already-decided review — no model touch."""
+    prior = json.loads(decision_file.read_text(encoding="utf-8"))
+    return {
+        "sha": sha[:12],
+        "decision": prior.get("decision"),
+        "target": review_data.get("target", ""),
+        "pr_url": None,
+        "rlphd_updated": False,
+        "weight_delta": {},
+        "already_decided": True,
+        "resolved_at": prior.get("resolved_at"),
+    }
+
+
+def _apply_review_verb(
+    review_dir: Path,
+    export_dir: Path,
+    state_path: Path,
+    sha: str,
+    verb: str,
+    reason: str,
+    review_data: dict[str, Any],
+) -> tuple[dict[str, Any], Any]:
+    """Apply one verb through the shared core, capturing the RLPHD weight
+    delta (for the UI) around the call."""
+    from maistro_rsi.promotion_review import (
+        RlphdStateStore,
+        explain_prediction,
+        resolve_review,
+    )
+
+    store = RlphdStateStore(state_path)
+    action_class = review_data["action_class"]
+    before_weights = dict(store.model_for(action_class).feature_weights)
+    before_theta = store.theta_for(action_class)
+    resolved = resolve_review(review_dir, export_dir, state_path, sha, verb, reason=reason)
+    # snapshot after → delta (only a verdict moves the model)
+    after_weights = store.model_for(action_class).feature_weights
+    after_theta = store.theta_for(action_class)
+    weight_delta = {
+        "theta": {"before": before_theta, "after": after_theta},
+        "weights": {
+            k: {"before": before_weights.get(k, 0.0), "after": after_weights.get(k, 0.0)}
+            for k in set(before_weights) | set(after_weights)
+        },
+        # explain the ORIGINAL prediction (why Ralph kept/reverted)
+        "prediction_explanation": explain_prediction(review_data["features"], before_weights),
+    }
+    return weight_delta, resolved
+
+
+def _review_http_error(sha: str, exc: Exception) -> HTTPException:
+    """Map core review errors onto API semantics.
+
+    - FileNotFoundError: nothing to decide on → 404;
+    - ValueError: an unknown verb → 400;
+    - TypeError: metadata the strict reviewer parser cannot read (a foreign
+      or pre-schema file) → 409 — refused, not half-applied: a decision made
+      on evidence the reviewer cannot parse would be undeterministic.
+    """
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(
+        status_code=409, detail=f"review metadata unreadable for {sha[:12]}: {exc}"
+    )
+
+
 @router.post("/runs/{run_id}/reviews/{sha}")
 def decide_review(run_id: str, sha: str, body: ReviewDecisionBody) -> dict:
-    """Approve or deny a promotion. Trains Ralph + (on approve) opens a PR."""
+    """Rule on a promotion in the review inbox (#110).
+
+    Deterministic per verb: approve/reject are verdicts (train RLPHD, settle
+    the item; approve also opens a PR); revise sends the candidate back for
+    another attempt (slot stays open, nothing trained or exported); resume
+    re-queues the reverted patch for harvest WITHOUT a verdict (review stays
+    open). The file-level mechanics live in ``maistro_rsi.promotion_review``
+    so the CLI, this API and any future surface cannot drift apart.
+    """
     from services.rsi import get_rsi_service
+
+    from maistro_rsi.promotion_review import normalize_decision
 
     run = get_rsi_service().get_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
     report_dir = Path(run.report_dir or "")
     state_path = report_dir / "rlphd_state.json"
+    verb = normalize_decision(body.decision)
 
-    # find the review in kept/ or flagged/
-    review_data = None
-    review_dir = None
-    for d in (report_dir / "kept", report_dir / "flagged"):
-        meta = d / f"{sha[:12]}.json"
-        if meta.is_file():
-            review_data = json.loads(meta.read_text(encoding="utf-8"))
-            review_dir = d
-            break
-    if review_data is None:
+    located = _locate_review(report_dir, sha)
+    if located is None:
         raise HTTPException(status_code=404, detail=f"no review for sha {sha[:12]}")
+    review_data, review_dir = located
+    if not {"action_class", "features", "predicted_p", "theta"} <= set(review_data):
+        # Metadata the strict reviewer parser cannot read (a foreign or
+        # pre-schema file). Refused, not half-applied: a decision made on
+        # evidence the reviewer cannot parse would be undeterministic.
+        raise HTTPException(status_code=409, detail=f"review metadata unreadable for {sha[:12]}")
 
     if body.repo_path is not None:
         raise HTTPException(
@@ -275,68 +371,26 @@ def decide_review(run_id: str, sha: str, body: ReviewDecisionBody) -> dict:
     # the recorded outcome back without touching the model.
     decision_file = review_dir / f"{sha[:12]}.decision.json"
     if decision_file.exists():
-        prior = json.loads(decision_file.read_text(encoding="utf-8"))
-        return {
-            "sha": sha[:12],
-            "decision": prior.get("decision"),
-            "target": review_data.get("target", ""),
-            "pr_url": None,
-            "rlphd_updated": False,
-            "weight_delta": {},
-            "already_decided": True,
-            "resolved_at": prior.get("resolved_at"),
-        }
+        return _decided_response(sha, review_data, decision_file)
 
-    # ── 1. train Ralph — capture weight delta for the UI ──
-    weight_delta = {}
+    # ── 1. apply the verb through the shared core, capturing the RLPHD delta ──
     try:
-        from maistro_rsi.promotion_review import RlphdStateStore, explain_prediction
-
-        store = RlphdStateStore(state_path)
-        # snapshot before
-        action_class = review_data["action_class"]
-        before_weights = dict(store.model_for(action_class).feature_weights)
-        before_theta = store.theta_for(action_class)
-        store.record_decision(
-            action_class,
-            review_data["features"],
-            review_data["predicted_p"],
-            review_data["theta"],
-            body.decision,
+        weight_delta, resolved = _apply_review_verb(
+            review_dir,
+            report_dir / "export",
+            state_path,
+            sha,
+            verb,
+            body.reason or "",
+            review_data,
         )
-        # snapshot after → delta
-        after_weights = store.model_for(action_class).feature_weights
-        after_theta = store.theta_for(action_class)
-        weight_delta = {
-            "theta": {"before": before_theta, "after": after_theta},
-            "weights": {
-                k: {"before": before_weights.get(k, 0.0), "after": after_weights.get(k, 0.0)}
-                for k in set(before_weights) | set(after_weights)
-            },
-            # explain the ORIGINAL prediction (why Ralph kept/reverted)
-            "prediction_explanation": explain_prediction(review_data["features"], before_weights),
-        }
-    except Exception:
-        pass
-
-    # mark resolved + store reason
-    from datetime import datetime
-
-    decision_file.write_text(
-        json.dumps(
-            {
-                "decision": body.decision,
-                "reason": body.reason,
-                "resolved_at": datetime.now(UTC).isoformat(),
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    except (FileNotFoundError, ValueError, TypeError) as exc:
+        raise _review_http_error(sha, exc) from exc
+    trained = verb in ("approve", "reject")
 
     # ── 2. on approve: open a PR ──
     pr_url = None
-    if body.decision == "approve":
+    if verb == "approve":
         patch_file = review_dir / f"{sha[:12]}.patch"
         repo = run.config.get("repo_path", "")
         if patch_file.is_file() and repo:
@@ -344,11 +398,13 @@ def decide_review(run_id: str, sha: str, body: ReviewDecisionBody) -> dict:
 
     return {
         "sha": sha[:12],
-        "decision": body.decision,
+        "decision": verb,
         "target": review_data.get("target", ""),
         "pr_url": pr_url,
-        "rlphd_updated": True,
+        "rlphd_updated": trained,
         "weight_delta": weight_delta,
+        "resumed": resolved.resumed if (verb == "resume" and resolved) else None,
+        "revision": resolved.revision if (verb == "revise" and resolved) else None,
     }
 
 
@@ -374,7 +430,8 @@ def _load_reviews(directory: Path) -> list[dict]:
         return []
     out = []
     for meta_file in sorted(directory.glob("*.json")):
-        if meta_file.name.endswith(".decision.json"):
+        # Decision/event sidecars are bookkeeping, not inbox items.
+        if meta_file.name.endswith((".decision.json", ".revise.json", ".resume.json")):
             continue
         decision_file = meta_file.with_suffix(".decision.json")
         resolved = decision_file.exists()

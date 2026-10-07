@@ -48,17 +48,16 @@ from typing import TYPE_CHECKING, Any
 from maistro.runs.admission import admit_direct_work
 from maistro.runs.archival import ArchivePolicy, RunArchiveSweeper
 from maistro.runs.lifecycle import lease_is_expired
-from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, TERMINAL_RUN_STATUSES, RunStatus
+from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.runs.retention import RetentionPolicy, RunRetentionSweeper
 from maistro.runs.retention_scope import WorkspaceRetentionScope
-from maistro.runs.sources import CHAT_SOURCE
+from maistro.runs.sources import ADMISSION_SOURCE, CHAT_SOURCE
 from maistro.runs.store import RunIntegrityError
 from maistro.runs.task_kinds import resolve_direct_work
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.agents.intents import IntentRegistry
     from maistro.projects.scope_store import ProjectScopeStore
-    from maistro.runs.model import Run
     from maistro.runs.store import RunStore
 
 #: Provenance keys correlating the Run back to the conversation it belongs to.
@@ -168,6 +167,7 @@ class ChatRunAdmitter:
         max_retained: int = MAX_RETAINED_CHAT_RUNS,
         retention: RetentionPolicy | None = None,
         archive: ArchivePolicy | None = None,
+        share_window_with: ChatRunAdmitter | None = None,
     ) -> None:
         if not workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")
@@ -187,7 +187,9 @@ class ChatRunAdmitter:
         # Insertion-ordered, so the oldest admitted Run is the first candidate
         # to forget. Holding ids rather than Runs keeps the window itself cheap
         # — the Run is read back from the store only when it is a candidate.
-        self._window: OrderedDict[str, None] = OrderedDict()
+        # A multi-Workspace composition can share this budget, never deletion
+        # authority: every entry carries the admitter whose Workspace owns it.
+        self._window: OrderedDict[str, ChatRunAdmitter] = OrderedDict()
         # Runs the dispatching seam has admitted and will dispatch imminently.
         # Between admission returning and the turn's Attempt existing, a Run
         # shows RUNNING with nothing under it — indistinguishable, to a sweep,
@@ -204,6 +206,8 @@ class ChatRunAdmitter:
         # a new Run had already been created, so the caller got no run_id for a
         # Run that then sat CREATED forever.
         self._sweep_lock = asyncio.Lock()
+        if share_window_with is not None:
+            self._share_window(share_window_with)
         # The durable half of the same policy (#132). The window above is
         # per-process and starts empty after a restart, so on a durable store a
         # chat Run admitted by a process that has since exited is one nothing
@@ -227,6 +231,14 @@ class ChatRunAdmitter:
         # that cannot archive.
         self._archive_sweeper = RunArchiveSweeper(run_store, archive)
 
+    def _share_window(self, other: ChatRunAdmitter) -> None:
+        """Join one process budget while retaining this admitter's scope."""
+        if other._runs is not self._runs or other._max_retained != self._max_retained:
+            raise ValueError("a shared chat window requires the same store and max_retained")
+        self._window = other._window
+        self._dispatch_pending = other._dispatch_pending
+        self._sweep_lock = other._sweep_lock
+
     @property
     def retention(self) -> RetentionPolicy:
         """The durable retention policy this admitter stamps onto its Runs."""
@@ -239,7 +251,7 @@ class ChatRunAdmitter:
 
     @property
     def retained(self) -> int:
-        """How many admitted chat Runs this process is still tracking."""
+        """How many chat Runs the whole (possibly shared) window tracks."""
         return len(self._window)
 
     def mark_dispatch_pending(self, run_id: str) -> None:
@@ -261,7 +273,7 @@ class ChatRunAdmitter:
     async def sweep(self) -> int:
         """Re-apply the window after a Run becomes terminal.
 
-        Admission can only sweep Runs that are terminal at the time a new Run
+        Admission can only sweep Runs that are eligible when a new Run
         arrives. The canonical chat execution seam terminalizes after
         dispatch, so it calls this hook as well; otherwise a final burst that
         ends with no following admission would leave completed Runs beyond
@@ -328,10 +340,12 @@ class ChatRunAdmitter:
             provenance=provenance,
             retention_expires_at=self._retention.deadline(),
         )
-        await self.track(run.run_id)
+        # Keep the just-created identity in hand: a second store read here
+        # could fail/cancel before the caller learns which Run to compensate.
+        await self.track(run)
         return run
 
-    async def track(self, run_id: str) -> int:
+    async def track(self, run: Run | str) -> int:
         """Record a chat Run on this window and re-apply it.
 
         ``admit`` creates the Run and then tracks it. A seam that has to
@@ -339,8 +353,20 @@ class ChatRunAdmitter:
         here instead of keeping a second retention policy. The shields are
         this admitter's: dispatch-pending, still CREATED/QUEUED, or an
         Attempt inside its lease. A non-terminal status by itself is not one.
+
+        Internal composition may pass the canonical Run returned by admission
+        to avoid a fallible second read before exposing its identity. An ID is
+        resolved and validated here. Neither form grants deletion authority:
+        eviction always re-reads and validates the persisted Run. This is not
+        an API for accepting arbitrary serialized Run snapshots from users.
         """
-        self._window[run_id] = None
+        if isinstance(run, str):
+            stored = await self._runs.get_run(run)
+            if stored is None:
+                raise RunIntegrityError("cannot track a missing chat Run")
+            run = stored
+        self._validate_tracked_run(run)
+        self._window.setdefault(run.run_id, self)
         forgotten = await self._sweep()
         # Opportunistic, and deliberately after the Run is safely created: the
         # sweep is bounded and rate-limited by the policy, it swallows its own
@@ -377,32 +403,35 @@ class ChatRunAdmitter:
                 # window as they go, so a saved count would sweep too far.
                 if len(self._window) <= self._max_retained:
                     break
-                run = await self._runs.get_run(run_id)
-                if run is None:
-                    # Already gone — another sweep, or the store's own bound.
-                    if self._window.pop(run_id, None) is not None:
-                        forgotten += 1
-                    continue
-                terminal = run.status in TERMINAL_RUN_STATUSES
-                if not terminal and await self._a_turn_could_still_live_here(run_id, run):
-                    continue
-                try:
-                    # `force` is the store's contract for a caller that has
-                    # established the Run is abandoned — which the checks
-                    # above just did, and the store re-checks what only it
-                    # knows (child Runs) on the way down.
-                    await self._runs.delete_run(run_id, force=not terminal)
-                except RunIntegrityError:
-                    # A parent with a child Run is intentionally not deletable.
-                    # Keep walking: a protected old Run must not strand younger
-                    # ones that can be forgotten.
-                    continue
-                # `pop`, not `del`: the lock makes a concurrent sweep
-                # impossible, but a caller may also have deleted this Run
-                # directly, and a sweep must not fail over work it wanted done.
-                if self._window.pop(run_id, None) is not None:
+                owner = self._window[run_id]
+                if await owner._forget_if_eligible(run_id):
+                    self._window.pop(run_id, None)
                     forgotten += 1
         return forgotten
+
+    def _validate_tracked_run(self, run: Run) -> None:
+        """Refuse foreign Workspace or non-chat identities before deletion."""
+        if run.workspace_id != self._workspace_id:
+            raise ValueError("chat Run is outside the admitter's Workspace")
+        if run.provenance.get(ADMISSION_SOURCE) != CHAT_SOURCE:
+            raise ValueError("only chat Runs can enter the chat retention window")
+
+    async def _forget_if_eligible(self, run_id: str) -> bool:
+        """Apply this Workspace's canonical shields and deletion authority."""
+        run = await self._runs.get_run(run_id)
+        if run is None:
+            return True  # Already gone, including the store's own bound.
+        self._validate_tracked_run(run)
+        terminal = run.status in TERMINAL_RUN_STATUSES
+        if not terminal and await self._a_turn_could_still_live_here(run_id, run):
+            return False
+        try:
+            # Only abandoned Runs need force; the store still refuses a parent
+            # with child Runs. A protected old Run must not strand newer ones.
+            await self._runs.delete_run(run_id, force=not terminal)
+        except RunIntegrityError:
+            return False
+        return True
 
     async def _a_turn_could_still_live_here(self, run_id: str, run: Run) -> bool:
         """Whether a non-terminal Run is shielded from the window.

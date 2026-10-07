@@ -344,6 +344,9 @@ def test_mission_create_dispatches_task() -> None:
     task_id = "abc123def456"
     fake_rec = MagicMock()
     fake_rec.id = task_id
+    # The canonical execution identity the receipt must carry back (#41);
+    # set explicitly because MagicMock auto-attributes are not valid strings.
+    fake_rec.run_id = "run-abc123"
     fake_rec.name = "Write hello world"
     fake_rec.description = "Write hello world"
     fake_rec.mission_status = "pending"
@@ -361,18 +364,23 @@ def test_mission_create_dispatches_task() -> None:
     with patch("services.engine._singleton", mock_engine):
         r = c.post(
             "/v1/tasks",
-            json={"name": "Write hello world", "description": "Write hello world"},
+            json={
+                "name": "Write hello world",
+                "description": "Write hello world",
+                "user_id": "bob",
+            },
         )
 
     assert r.status_code == 200
     body = r.json()
     assert body["id"] == task_id
+    assert body["run_id"] == "run-abc123"
     assert body["status"] == "pending"
     # workspace_id=None is the explicit "this deployment's default Workspace"
     # (#158) -- the route passes it rather than omitting it, so the default is
     # named at every submission instead of being inferred downstream.
     mock_engine.submit_task.assert_called_once_with(
-        "Write hello world", "Write hello world", workspace_id=None
+        "Write hello world", "Write hello world", user_id="user", workspace_id=None
     )
 
 

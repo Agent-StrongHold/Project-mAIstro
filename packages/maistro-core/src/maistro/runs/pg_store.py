@@ -31,19 +31,25 @@ codec (`maistro.persistence._register_json_codecs`).
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from maistro.workspaces.store import WorkspaceStore
 
 from maistro.archive.protocols import ArchiveStore
 from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.concurrency import ACTIVE_ROOT_STATUS_VALUES, RunConcurrencyLimits
 from maistro.runs.evidence_json import decode_evidence, decode_payload, json_of, model_of
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
     lease_is_expired,
     reclaim_attempt,
+    refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
     settle_open_node_run,
@@ -60,6 +66,7 @@ from maistro.runs.model import (
     GraphSnapshot,
     NodeRun,
     Run,
+    RunEvalScore,
     RunStatus,
 )
 from maistro.runs.retention_scope import (
@@ -77,16 +84,20 @@ from maistro.runs.store import (
     DuplicateOccurrence,
     NodeRunNotFound,
     PurgeOutcome,
+    RunEffectClaim,
     RunIntegrityError,
     RunNotFound,
     StaleExecutionFence,
     admit_in_state,
+    matches_chat_admission_snapshot,
     outcome_embeds_attempt,
     repaired_accepted_outcome,
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
+    validate_eval_score_spine,
 )
+from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
 
 #: The unique index migration 015 creates. Compared against
 #: `UniqueViolationError.constraint_name` so a violation on any *other*
@@ -123,17 +134,47 @@ _PAYLOAD_TABLES = {
 _TERMINAL_STATUS_VALUES = tuple(sorted(status.value for status in TERMINAL_RUN_STATUSES))
 
 
+#: The terminal statuses as SQL literals, not a `$n::text[]` parameter. The
+#: partial `ix_canonical_runs_retention` and `ix_canonical_runs_archive_candidates`
+#: indexes predicate on exactly these values, and PostgreSQL can only prove such
+#: a predicate from a clause that names the same constants: parameterized, a
+#: generic prepared plan — the steady state after five executions — cannot
+#: prove it, and the sweep degenerates to a sequential scan precisely once the
+#: table is big enough for the index to matter (#863). These are store-owned
+#: constants derived from the model, interpolated the way
+#: `_ACTIVE_ROOT_COUNTS_SQL` below already interpolates the live set; no caller
+#: input ever reaches the string.
+_TERMINAL_STATUS_LITERALS = ", ".join(f"'{status}'" for status in _TERMINAL_RUN_STATUS_VALUES)
+
 #: Retention candidate selection — the two scope variants' whole difference is
 #: one Workspace predicate line (#1175).
 #: One more row than the batch is requested (the LIMIT parameter is sent as
 #: ``limit + 1``) so the outcome can say whether the scope drained or the
 #: batch ran out; the surplus row's lock lives only as long as the
 #: transaction.
-_PURGE_CANDIDATES_SQL_GLOBAL = """SELECT run_id
+_PURGE_CANDIDATES_SQL_GLOBAL = f"""SELECT run_id
     FROM canonical_runs r
     WHERE r.retention_expires_at IS NOT NULL
       AND r.retention_expires_at <= $1
-      AND r.status = ANY($2::text[])
+      AND r.status IN ({_TERMINAL_STATUS_LITERALS})
+      AND NOT EXISTS (
+          SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM canonical_node_runs n
+          JOIN canonical_runs c2 ON c2.parent_node_run_id = n.node_run_id
+          WHERE n.run_id = r.run_id
+      )
+    ORDER BY r.retention_expires_at
+    LIMIT $2
+    FOR UPDATE SKIP LOCKED"""  # nosec B608
+
+_PURGE_CANDIDATES_SQL_SCOPED = f"""SELECT run_id
+    FROM canonical_runs r
+    WHERE r.retention_expires_at IS NOT NULL
+      AND r.retention_expires_at <= $1
+      AND r.status IN ({_TERMINAL_STATUS_LITERALS})
+      AND r.workspace_id = $2
       AND NOT EXISTS (
           SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
       )
@@ -144,25 +185,68 @@ _PURGE_CANDIDATES_SQL_GLOBAL = """SELECT run_id
       )
     ORDER BY r.retention_expires_at
     LIMIT $3
-    FOR UPDATE SKIP LOCKED"""
+    FOR UPDATE SKIP LOCKED"""  # nosec B608
 
-_PURGE_CANDIDATES_SQL_SCOPED = """SELECT run_id
-    FROM canonical_runs r
-    WHERE r.retention_expires_at IS NOT NULL
-      AND r.retention_expires_at <= $1
-      AND r.status = ANY($2::text[])
-      AND r.workspace_id = $3
-      AND NOT EXISTS (
-          SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
-      )
-      AND NOT EXISTS (
-          SELECT 1 FROM canonical_node_runs n
-          JOIN canonical_runs c2 ON c2.parent_node_run_id = n.node_run_id
-          WHERE n.run_id = r.run_id
-      )
-    ORDER BY r.retention_expires_at
-    LIMIT $4
-    FOR UPDATE SKIP LOCKED"""
+#: Archive candidate selection (migration 017): the mirror population of the
+#: retention sweep, kept off the same partial-index proof problem — literal
+#: statuses, parameterized deadline and batch (#863).
+_ARCHIVE_CANDIDATES_SQL = f"""SELECT run_id, project_id, payload FROM canonical_runs
+    WHERE archive_key IS NULL
+      AND retention_expires_at IS NULL
+      AND finished_at IS NOT NULL
+      AND finished_at <= $1
+      AND status IN ({_TERMINAL_STATUS_LITERALS})
+      AND (payload -> 'provenance' ->> 'schedule_id') IS NULL
+    ORDER BY finished_at
+    LIMIT $2
+    FOR UPDATE SKIP LOCKED"""  # nosec B608
+
+
+def _list_by_status_query(
+    status_value: str,
+    *,
+    limit: int,
+    offset: int,
+    project_id: str | None = None,
+    workspace_id: str | None = None,
+    admission_source: str | None = None,
+    after: tuple[str, str] | None = None,
+) -> tuple[str, list[object]]:
+    """The exact SQL `list_by_status` runs, as a module function so a test can
+    `EXPLAIN` the query that actually ships — the same reason `pg_episodic`
+    exposes its query shape.
+
+    `status = $1` stays a parameter on purpose: it is caller input. That is
+    precisely why the index serving it (`ix_canonical_runs_status_created`,
+    migration 057) is unconditional — a partial status index could not be
+    proven under a generic prepared plan, and the queue cursor would pay a
+    scan-plus-sort per tick. The `ORDER BY` names the same payload expression
+    the index carries, so the plan needs no Sort node at any cardinality, and
+    the `(payload->>'created_at', run_id)` keyset rides the index's trailing
+    columns.
+    """
+    sql = (
+        "SELECT payload, archive_key FROM canonical_runs WHERE status = $1 AND payload IS NOT NULL"
+    )
+    params: list[object] = [status_value]
+    if project_id is not None:
+        sql += f" AND project_id = ${len(params) + 1}"
+        params.append(project_id)
+    if workspace_id is not None:
+        sql += f" AND workspace_id = ${len(params) + 1}"
+        params.append(workspace_id)
+    if admission_source is not None:
+        sql += f" AND payload->'provenance'->>'admission_source' = ${len(params) + 1}"
+        params.append(admission_source)
+    if after is not None:
+        cursor_param = len(params) + 1
+        sql += f" AND (payload->>'created_at', run_id) > (${cursor_param}, ${cursor_param + 1})"
+        params.extend(after)
+    sql += f" ORDER BY payload->>'created_at', run_id LIMIT ${len(params) + 1}"
+    params.append(limit)
+    sql += f" OFFSET ${len(params) + 1}"
+    params.append(offset)
+    return sql, params
 
 
 class PgRunStore:
@@ -173,15 +257,26 @@ class PgRunStore:
         pool: asyncpg.Pool,
         *,
         project_store: ProjectScopeStore,
+        workspace_store: WorkspaceStore | None = None,
         archive_store: ArchiveStore | None = None,
+        concurrency_limits: RunConcurrencyLimits | None = None,
     ) -> None:
         self._pool = pool
         self._project_store = project_store
+        self._workspace_store = workspace_store
+        self._concurrency_limits = concurrency_limits or RunConcurrencyLimits.configured()
         # None means the tier is off (f436 decision 9). A store with archived
         # rows and no archive configured still reads correctly for everything
         # resident and raises `ArchivedPayloadUnavailable` -- never an empty
         # result -- for what moved.
         self._archive_store = archive_store
+
+    def _run_boundary(self) -> RunStoreBoundary:
+        if self._workspace_store is None:
+            from maistro.runs.scoped_reads import RunNotVisible
+
+            raise RunNotVisible
+        return RunStoreBoundary(self, self._workspace_store, self._project_store)
 
     # ── Run ───────────────────────────────────────────────────────
 
@@ -198,6 +293,54 @@ class PgRunStore:
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
     ) -> Run:
+        run = await self.prepare_run(
+            graph,
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
+            allow_cross_project=allow_cross_project,
+            persona_id=persona_id,
+            actor_principal_id=actor_principal_id,
+            provenance=provenance,
+            retention_expires_at=retention_expires_at,
+            initial_status=initial_status,
+        )
+        async with self._pool.acquire() as conn:
+            try:
+                # READ COMMITTED pinned: the count after the advisory locks
+                # must take its snapshot after the wait, not before it.
+                async with conn.transaction(isolation="read_committed"):
+                    await self.insert_prepared_run(conn, run)
+            except _integrity_errors() as exc:
+                conflict = _occurrence_conflict(exc, run)
+                if conflict is None:
+                    raise
+                raise conflict from exc
+        return run
+
+    async def prepare_run(
+        self,
+        graph: Graph,
+        *,
+        parent_run_id: str | None = None,
+        parent_node_run_id: str | None = None,
+        allow_cross_project: bool = False,
+        persona_id: str | None = None,
+        actor_principal_id: str | None = None,
+        provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
+    ) -> Run:
+        """Build one Run without writing anything — the admission-side half.
+
+        Every check that does not need the insertion transaction lives here:
+        graph scope (which may acquire its own connection through the Project
+        store), parent integrity, payload construction and the initial state.
+        A caller that must make a Run's insertion and some other row's update
+        one commit (#1845) completes this preparation *before* opening its
+        transaction, then hands the finished Run to :meth:`insert_prepared_run`
+        on the connection it already holds. The checks are unchanged from
+        ``create_run``'s own body — this is that body, split at its only seam.
+        """
         await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
             raise RunIntegrityError("parent_node_run_id requires parent_run_id")
@@ -225,38 +368,81 @@ class PgRunStore:
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
             persona_id=persona_id,
-            actor_principal_id=actor_principal_id,
+            actor_principal_id=require_admitted_actor(actor_principal_id),
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
         )
         # Before the insert, not after it: one commit, so there is no window in
         # which a process death leaves a CREATED Run whose receipt was queued.
-        run = admit_in_state(run, initial_status)
-        async with self._pool.acquire() as conn:
-            try:
-                await conn.execute(
-                    """INSERT INTO canonical_runs
-                   (run_id, workspace_id, project_id, parent_run_id,
-                    parent_node_run_id, status, payload, retention_expires_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8)""",
-                    run.run_id,
-                    run.workspace_id,
-                    run.project_id,
-                    run.parent_run_id,
-                    run.parent_node_run_id,
-                    run.status.value,
-                    json_of(run),
-                    # Duplicated out of the payload so the retention sweep can use
-                    # an index (migration 012). Written once at creation and never
-                    # transitioned, so the two cannot drift the way `status` could.
-                    run.retention_expires_at,
-                )
-            except _integrity_errors() as exc:
-                conflict = _occurrence_conflict(exc, run)
-                if conflict is None:
-                    raise
-                raise conflict from exc
-        return run
+        return admit_in_state(run, initial_status)
+
+    async def insert_prepared_run(self, conn: Any, run: Run) -> None:
+        """Write one already-prepared Run on the caller's open transaction.
+
+        Root-admission advisory locks, the canonical_runs INSERT and the root
+        ceiling count, in that order, on the connection the caller holds — no
+        pool acquisition here, so a caller that also updates its own row on
+        the same connection commits Run and binding together or not at all
+        (#1845). The statements are ``create_run``'s, unchanged.
+        """
+        await self._lock_root_admission(conn, run)
+        await conn.execute(
+            """INSERT INTO canonical_runs
+           (run_id, workspace_id, project_id, parent_run_id,
+            parent_node_run_id, status, payload, retention_expires_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8)""",
+            run.run_id,
+            run.workspace_id,
+            run.project_id,
+            run.parent_run_id,
+            run.parent_node_run_id,
+            run.status.value,
+            json_of(run),
+            # Duplicated out of the payload so the retention sweep can
+            # use an index (migration 012). Written once at creation
+            # and never transitioned, so the two cannot drift the way
+            # `status` could.
+            run.retention_expires_at,
+        )
+        await self._admit_root(conn, run)
+
+    async def _lock_root_admission(self, conn: Any, run: Run) -> None:
+        """Serialize root admissions across replicas (#1182).
+
+        Transaction-scoped advisory locks, so the caller's insert and count are
+        one critical section on every replica and the locks go with the
+        transaction however it ends. Workspace before principal, always: each
+        admission takes one lock per namespace in that order, so two cannot
+        wait on each other.
+        """
+        if run.parent_run_id is not None:
+            return
+        await conn.execute(
+            "SELECT pg_advisory_xact_lock($1, $2)",
+            _WORKSPACE_ADMISSION_LOCK,
+            _admission_lock_key(run.workspace_id),
+        )
+        if run.actor_principal_id:
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1, $2)",
+                _PRINCIPAL_ADMISSION_LOCK,
+                _admission_lock_key(run.actor_principal_id),
+            )
+
+    async def _admit_root(self, conn: Any, run: Run) -> None:
+        """Refuse a just-inserted root Run over a ceiling, rolling it back.
+
+        Counted after the insert so a duplicate occurrence is refused as a
+        duplicate, not as backpressure; the count includes the new row.
+        """
+        if run.parent_run_id is not None:
+            return
+        principal = run.actor_principal_id or None
+        row = await conn.fetchrow(_ACTIVE_ROOT_COUNTS_SQL, run.workspace_id, principal)
+        self._concurrency_limits.check(
+            workspace_active=int(row["workspace_active"]) - 1,
+            principal_active=int(row["principal_active"]) - 1 if principal is not None else None,
+        )
 
     async def purge_expired_runs(
         self,
@@ -308,7 +494,6 @@ class PgRunStore:
                 rows = await conn.fetch(
                     _PURGE_CANDIDATES_SQL_SCOPED,
                     cutoff,
-                    _TERMINAL_RUN_STATUS_VALUES,
                     scope.workspace_id,
                     limit + 1,
                 )
@@ -316,7 +501,6 @@ class PgRunStore:
                 rows = await conn.fetch(
                     _PURGE_CANDIDATES_SQL_GLOBAL,
                     cutoff,
-                    _TERMINAL_RUN_STATUS_VALUES,
                     limit + 1,
                 )
             backlog_remaining = len(rows) > limit
@@ -324,6 +508,13 @@ class PgRunStore:
             run_ids = [row["run_id"] for row in selected]
             if not run_ids:
                 return PurgeOutcome(scope=scope)
+            # Eval evidence is spine-attached (FK on run_id), so it dies with
+            # the Run tree, in the same transaction and before the rows it
+            # names (M7-A3).
+            await conn.execute(
+                "DELETE FROM canonical_run_eval_scores WHERE run_id = ANY($1::text[])",
+                run_ids,
+            )
             deleted_attempts = await conn.fetch(
                 """DELETE FROM canonical_attempts a
                    USING canonical_node_runs n
@@ -392,18 +583,8 @@ class PgRunStore:
         cutoff = (now if now is not None else datetime.now(UTC)) - archive_after
         async with self._pool.acquire() as conn, conn.transaction():
             rows = await conn.fetch(
-                """SELECT run_id, project_id, payload FROM canonical_runs
-                    WHERE archive_key IS NULL
-                      AND retention_expires_at IS NULL
-                      AND finished_at IS NOT NULL
-                      AND finished_at <= $1
-                      AND status = ANY($2::text[])
-                      AND (payload -> 'provenance' ->> 'schedule_id') IS NULL
-                    ORDER BY finished_at
-                    LIMIT $3
-                    FOR UPDATE SKIP LOCKED""",
+                _ARCHIVE_CANDIDATES_SQL,
                 cutoff,
-                _TERMINAL_RUN_STATUS_VALUES,
                 limit,
             )
             for row in rows:
@@ -539,6 +720,7 @@ class PgRunStore:
                     f"cannot delete Run {run_id!r} while {int(children)} child Run(s) reference "
                     "it; delete the descendants first"
                 )
+            await conn.execute("DELETE FROM canonical_run_eval_scores WHERE run_id = $1", run_id)
             await conn.execute(
                 """DELETE FROM canonical_attempts a
                    USING canonical_node_runs n
@@ -549,9 +731,212 @@ class PgRunStore:
             await conn.execute("DELETE FROM canonical_runs WHERE run_id = $1", run_id)
         return True
 
-    async def get_run(self, run_id: str) -> Run | None:
+    async def record_eval_score(self, eval_score: RunEvalScore) -> RunEvalScore:
+        """Append one scored rubric dimension to the Run's durable evidence (M7-A3).
+
+        The insert runs inside a transaction that locks the Run row first, so a
+        concurrent delete cannot land between the spine checks and the insert;
+        the RESTRICT foreign keys are what catch whatever the checks cannot
+        cover. Append-only, exactly like the SQLite twin.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            if await conn.fetchval(
+                "SELECT 1 FROM canonical_run_eval_scores WHERE eval_id = $1",
+                eval_score.eval_id,
+            ):
+                raise RunIntegrityError(f"eval score {eval_score.eval_id!r} is already recorded")
+            run_row = await conn.fetchrow(
+                "SELECT payload FROM canonical_runs WHERE run_id = $1 FOR UPDATE",
+                eval_score.run_id,
+            )
+            if run_row is None:
+                raise RunNotFound(eval_score.run_id)
+            node_run_row = await conn.fetchrow(
+                "SELECT payload FROM canonical_node_runs WHERE node_run_id = $1 FOR UPDATE",
+                eval_score.node_run_id,
+            )
+            if node_run_row is None:
+                raise NodeRunNotFound(eval_score.node_run_id)
+            attempt_row = await conn.fetchrow(
+                "SELECT payload FROM canonical_attempts WHERE attempt_id = $1 FOR UPDATE",
+                eval_score.attempt_id,
+            )
+            if attempt_row is None:
+                raise AttemptNotFound(eval_score.attempt_id)
+            validate_eval_score_spine(
+                run=Run.model_validate(run_row["payload"]),
+                node_run=NodeRun.model_validate(node_run_row["payload"]),
+                attempt=Attempt.model_validate(attempt_row["payload"]),
+            )
+            await conn.execute(
+                """INSERT INTO canonical_run_eval_scores
+                   (eval_id, run_id, node_run_id, attempt_id, scored_at, payload)
+                   VALUES ($1, $2, $3, $4, $5, $6::text::jsonb)""",
+                eval_score.eval_id,
+                eval_score.run_id,
+                eval_score.node_run_id,
+                eval_score.attempt_id,
+                eval_score.scored_at.isoformat(),
+                json_of(eval_score),
+            )
+        return eval_score.model_copy(deep=True)
+
+    async def list_eval_scores(self, run_id: str) -> list[RunEvalScore]:
+        await self._require_run(run_id)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT payload FROM canonical_run_eval_scores
+                   WHERE run_id = $1 ORDER BY scored_at, eval_id""",
+                run_id,
+            )
+        return [model_of(RunEvalScore, row["payload"]) for row in rows]
+
+    async def get_eval_score(self, eval_id: str) -> RunEvalScore | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT payload FROM canonical_run_eval_scores WHERE eval_id = $1", eval_id
+            )
+        return model_of(RunEvalScore, row["payload"]) if row is not None else None
+
+    async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
         payload = await self._payload(
             "SELECT run_id, payload, archive_key FROM canonical_runs WHERE run_id = $1", run_id
+        )
+        if payload is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_run(run_id, principal_id=principal_id)
+        return Run.model_validate(payload)
+
+    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
+        # payload is JSONB (005), so the task admitter's provenance is a path
+        # expression. Cold-archived Runs (payload moved to the archive) are
+        # outside this search: they are hours past any retry window.
+        payload = await self._payload(
+            """
+            SELECT run_id, payload, archive_key FROM canonical_runs
+            WHERE payload->'provenance'->>'task_id' = $1
+            LIMIT 1
+            """,
+            task_id,
+        )
+        return Run.model_validate(payload) if payload is not None else None
+
+    async def _require_locked_parent_scope(
+        self,
+        # PoolConnectionProxy at the one call site; `Any` like every other
+        # connection-taking helper in this store (#1194 repair).
+        conn: Any,
+        graph: Graph,
+        *,
+        parent_run_id: str | None,
+        parent_node_run_id: str | None,
+        allow_cross_project: bool,
+    ) -> None:
+        """Validate the optional parent chain inside the claim transaction."""
+        if parent_run_id is None:
+            return
+        parent_payload = await self._locked(conn, "canonical_runs", "run_id", parent_run_id)
+        parent = Run.model_validate(parent_payload)
+        validate_child_scope(
+            parent,
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
+            allow_cross_project=allow_cross_project,
+        )
+        if parent_node_run_id is None:
+            return
+        parent_node_run = NodeRun.model_validate(
+            await self._locked(conn, "canonical_node_runs", "node_run_id", parent_node_run_id)
+        )
+        if parent_node_run.run_id != parent_run_id:
+            raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
+
+    async def claim_run_by_effect(
+        self,
+        graph: Graph,
+        *,
+        effect_key: str,
+        parent_run_id: str | None = None,
+        parent_node_run_id: str | None = None,
+        allow_cross_project: bool = False,
+        persona_id: str | None = None,
+        actor_principal_id: str | None = None,
+        provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
+    ) -> RunEffectClaim:
+        """Atomically insert or recover one logical effect."""
+        if not effect_key:
+            raise ValueError("effect_key must be non-empty")
+        await self._validate_graph_scope(graph)
+        if parent_node_run_id is not None and parent_run_id is None:
+            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+        run = Run(
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
+            graph=GraphSnapshot.from_graph(graph.model_copy(deep=True)),
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
+            persona_id=persona_id,
+            actor_principal_id=require_admitted_actor(actor_principal_id),
+            provenance={**dict(provenance or {}), "effect_key": effect_key},
+            retention_expires_at=retention_expires_at,
+        )
+        run = admit_in_state(run, initial_status)
+        async with self._pool.acquire() as conn, conn.transaction():
+            existing_payload = await conn.fetchval(
+                """SELECT payload FROM canonical_runs
+                   WHERE payload -> 'provenance' ->> 'effect_key' = $1
+                   LIMIT 1""",
+                effect_key,
+            )
+            if existing_payload is not None:
+                return RunEffectClaim(
+                    Run.model_validate(decode_evidence(decode_payload(existing_payload))), False
+                )
+            await self._require_locked_parent_scope(
+                conn,
+                graph,
+                parent_run_id=parent_run_id,
+                parent_node_run_id=parent_node_run_id,
+                allow_cross_project=allow_cross_project,
+            )
+            inserted = await conn.fetchrow(
+                """INSERT INTO canonical_runs
+                   (run_id, workspace_id, project_id, parent_run_id,
+                    parent_node_run_id, status, payload, retention_expires_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8)
+                   ON CONFLICT DO NOTHING
+                   RETURNING run_id""",
+                run.run_id,
+                run.workspace_id,
+                run.project_id,
+                run.parent_run_id,
+                run.parent_node_run_id,
+                run.status.value,
+                json_of(run),
+                run.retention_expires_at,
+            )
+            if inserted is not None:
+                return RunEffectClaim(run, True)
+            existing_payload = await conn.fetchval(
+                """SELECT payload FROM canonical_runs
+                   WHERE payload -> 'provenance' ->> 'effect_key' = $1
+                   LIMIT 1""",
+                effect_key,
+            )
+            if existing_payload is None:
+                raise RunIntegrityError("logical effect claim conflicted with another constraint")
+            return RunEffectClaim(
+                Run.model_validate(decode_evidence(decode_payload(existing_payload))), False
+            )
+
+    async def find_run_by_effect(self, effect_key: str) -> Run | None:
+        payload = await self._payload(
+            """SELECT run_id, payload, archive_key FROM canonical_runs
+               WHERE payload -> 'provenance' ->> 'effect_key' = $1 LIMIT 1""",
+            effect_key,
         )
         return Run.model_validate(payload) if payload is not None else None
 
@@ -596,8 +981,8 @@ class PgRunStore:
     ) -> dict[str, Run]:
         """The batched twin of `get_run_for_occurrence`, one query for many.
 
-        `= ANY($2::text[])`, the same list-parameter shape `list_by_status`
-        uses elsewhere in this store, in place of one round trip per
+        `= ANY($2::text[])`, the store's list-parameter shape for
+        caller-supplied value sets, in place of one round trip per
         occurrence — the difference between a single query and tens of
         thousands of serial ones on a schedule whose enumeration cap dropped
         a large truncated tail (#1533).
@@ -682,25 +1067,15 @@ class PgRunStore:
             raise ValueError("limit must be positive")
         if offset < 0:
             raise ValueError("offset must not be negative")
-        sql = "SELECT payload, archive_key FROM canonical_runs WHERE status = $1 AND payload IS NOT NULL"
-        params: list[object] = [status.value]
-        if project_id is not None:
-            sql += f" AND project_id = ${len(params) + 1}"
-            params.append(project_id)
-        if workspace_id is not None:
-            sql += f" AND workspace_id = ${len(params) + 1}"
-            params.append(workspace_id)
-        if admission_source is not None:
-            sql += f" AND payload->'provenance'->>'admission_source' = ${len(params) + 1}"
-            params.append(admission_source)
-        if after is not None:
-            cursor_param = len(params) + 1
-            sql += f" AND (payload->>'created_at', run_id) > (${cursor_param}, ${cursor_param + 1})"
-            params.extend(after)
-        sql += f" ORDER BY payload->>'created_at', run_id LIMIT ${len(params) + 1}"
-        params.append(limit)
-        sql += f" OFFSET ${len(params) + 1}"
-        params.append(offset)
+        sql, params = _list_by_status_query(
+            status.value,
+            limit=limit,
+            offset=offset,
+            project_id=project_id,
+            workspace_id=workspace_id,
+            admission_source=admission_source,
+            after=after,
+        )
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)
         # Route status enumeration through the same row hydrator as every
@@ -739,6 +1114,23 @@ class PgRunStore:
         oldest = datetime.fromisoformat(oldest_raw) if oldest_raw else None
         return int(row["open_runs"]), oldest
 
+    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
+        async with self._pool.acquire() as conn, conn.transaction():
+            current = Run.model_validate(
+                await self._locked(conn, "canonical_runs", "run_id", expected.run_id)
+            )
+            if not matches_chat_admission_snapshot(current, expected):
+                return False
+            # create_node_run locks this same parent before inserting: no
+            # physical dispatch can appear between this check and the write.
+            if await conn.fetchval(
+                "SELECT 1 FROM canonical_node_runs WHERE run_id = $1 LIMIT 1", expected.run_id
+            ):
+                return False
+            updated = transition_run(current, RunStatus.CANCELLED, error=error)
+            await self._write(conn, "canonical_runs", "run_id", expected.run_id, updated)
+            return True
+
     async def transition_run(
         self,
         run_id: str,
@@ -747,7 +1139,10 @@ class PgRunStore:
         at: datetime | None = None,
         result: object | None = None,
         error: str | None = None,
+        principal_id: str | None = None,
     ) -> Run:
+        if principal_id is not None:
+            await self._run_boundary().require_run(run_id, principal_id=principal_id)
         async with self._pool.acquire() as conn, conn.transaction():
             run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
             # Read inside the Run's transaction, with its row already locked:
@@ -824,12 +1219,18 @@ class PgRunStore:
             )
         return node_run
 
-    async def get_node_run(self, node_run_id: str) -> NodeRun | None:
+    async def get_node_run(
+        self, node_run_id: str, *, principal_id: str | None = None
+    ) -> NodeRun | None:
         payload = await self._payload(
             "SELECT node_run_id, payload, archive_key FROM canonical_node_runs WHERE node_run_id = $1",
             node_run_id,
         )
-        return NodeRun.model_validate(payload) if payload is not None else None
+        if payload is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_node_run(node_run_id, principal_id=principal_id)
+        return NodeRun.model_validate(payload)
 
     async def list_node_runs(self, run_id: str) -> list[NodeRun]:
         await self._require_run(run_id)
@@ -953,12 +1354,18 @@ class PgRunStore:
                 raise _integrity_failure(exc, node_run_id) from exc
         return attempt
 
-    async def get_attempt(self, attempt_id: str) -> Attempt | None:
+    async def get_attempt(
+        self, attempt_id: str, *, principal_id: str | None = None
+    ) -> Attempt | None:
         payload = await self._payload(
             "SELECT attempt_id, payload, archive_key FROM canonical_attempts WHERE attempt_id = $1",
             attempt_id,
         )
-        return Attempt.model_validate(payload) if payload is not None else None
+        if payload is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_attempt(attempt_id, principal_id=principal_id)
+        return Attempt.model_validate(payload)
 
     async def list_attempts(self, node_run_id: str) -> list[Attempt]:
         await self._require_node_run(node_run_id)
@@ -984,6 +1391,40 @@ class PgRunStore:
         fencing_token: str | None = None,
     ) -> Attempt:
         async with self._pool.acquire() as conn, conn.transaction():
+            if target is AttemptStatus.COMPLETED:
+                # #1335: the executor's Run fence is check-then-act across two
+                # awaits, so the stale success of a provider that lost a cancel
+                # used to land COMPLETED under a terminal Run. This store-side
+                # guard re-reads the parent inside the same transaction that
+                # writes the Attempt, under a lock a concurrent `transition_run`
+                # also needs -- so the status it sees cannot move underneath
+                # it. The lock is taken parent-first (Run before Attempt, the
+                # order `transition_run` and `repair_attempt_result` use,
+                # #1888): Attempt-first would let a repair holding the Run row
+                # wait on this Attempt while this transaction waited on that
+                # Run. Only the COMPLETED path pays for the extra lock; the
+                # other targets stay legal under a terminal Run, because a
+                # run-level cancel and the reclaim path record CANCELLED (and
+                # siblings record true FAILURES) after the Run terminalized.
+                run_row = await conn.fetchrow(
+                    """SELECT r.status AS status
+                         FROM canonical_attempts a
+                         JOIN canonical_node_runs n ON n.node_run_id = a.node_run_id
+                         JOIN canonical_runs r ON r.run_id = n.run_id
+                        WHERE a.attempt_id = $1
+                        FOR SHARE OF r""",
+                    attempt_id,
+                )
+                if run_row is None:
+                    # One statement, not two: an attempt whose spine vanished
+                    # (delete_run under its own lock) and an attempt that never
+                    # existed both answer not-found here, so there is no
+                    # between-the-reads state to reason about -- and every
+                    # branch of the guard is reachable from a conformance test.
+                    # The failure names the target, not a parent it never had:
+                    # the same answer the stores give an unknown attempt.
+                    raise AttemptNotFound(attempt_id)
+                refuse_completion_under_terminal_run(RunStatus(run_row["status"]), attempt_id)
             attempt = Attempt.model_validate(
                 await self._locked(conn, "canonical_attempts", "attempt_id", attempt_id)
             )
@@ -1001,21 +1442,68 @@ class PgRunStore:
         """Rewrite one terminal Attempt's recorded result, carrying its NodeRun.
 
         The twin of `InMemoryRunStore.repair_attempt_result`; see the protocol
-        for why both copies move in one operation (ADR-083026-14c3). Both rows
+        for why both copies move in one operation (ADR-083026-14c3). Locks are
+        taken parent-first — Run, then NodeRun, then the Attempt — the order
+        `record_eval_score`, the archive sweep, and every cascade here use, so
+        a repair holding its Attempt while it waits for a parent can never
+        form the wait cycle an Attempt-first lock invites (#1888). Both rows
         are locked and written inside one transaction, so a concurrent reader
         never sees the Attempt repaired and its accepted outcome not.
         """
         async with self._pool.acquire() as conn, conn.transaction():
+            # Lineage first, from the promoted relational columns alone: the
+            # Attempt's payload may live in the archive, but its NodeRun link
+            # is a real column. Unlocked on purpose — reading the spine in the
+            # order it is about to be locked would make the reads themselves
+            # part of the cycle; each row is re-read under its lock below.
+            lineage = await conn.fetchrow(
+                """SELECT a.node_run_id AS node_run_id, n.run_id AS run_id
+                     FROM canonical_attempts a
+                     JOIN canonical_node_runs n ON n.node_run_id = a.node_run_id
+                    WHERE a.attempt_id = $1""",
+                attempt_id,
+            )
+            if lineage is None:
+                raise AttemptNotFound(attempt_id)
+            # The Run is locked for order and existence only, by relational
+            # identity: whether the Attempt may be repaired is decided by the
+            # Attempt alone (`require_repairable_attempt`), so a terminal Run
+            # over a terminal Attempt stays repairable and the Run's payload —
+            # possibly an archive-backed one — is neither read nor validated.
+            # A missing Run means delete_run removed the lineage under its own
+            # lock between the read above and this lock; the target went with
+            # it, so the failure names the target, not a parent it never had.
+            run_row = await conn.fetchrow(
+                "SELECT run_id FROM canonical_runs WHERE run_id = $1 FOR UPDATE",
+                lineage["run_id"],
+            )
+            if run_row is None:
+                raise AttemptNotFound(attempt_id)
+            node_run = NodeRun.model_validate(
+                await self._locked(
+                    conn, "canonical_node_runs", "node_run_id", lineage["node_run_id"]
+                )
+            )
             attempt = Attempt.model_validate(
                 await self._locked(conn, "canonical_attempts", "attempt_id", attempt_id)
             )
+            # The lineage was read unlocked; re-verified now that every row is
+            # locked, before anything is written.
+            if attempt.node_run_id != lineage["node_run_id"]:
+                raise RunIntegrityError(
+                    f"Attempt {attempt_id!r} lineage changed under the repair lock: it now "
+                    f"names NodeRun {attempt.node_run_id!r}, not {lineage['node_run_id']!r}"
+                )
+            if node_run.run_id != lineage["run_id"]:
+                raise RunIntegrityError(
+                    f"Attempt {attempt_id!r} lineage changed under the repair lock: "
+                    f"NodeRun {node_run.node_run_id!r} belongs to Run {node_run.run_id!r}, "
+                    f"not Run {lineage['run_id']!r}"
+                )
             require_repairable_attempt(attempt)
             updated = attempt.model_copy(update={"result": result})
             await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, updated)
 
-            node_run = NodeRun.model_validate(
-                await self._locked(conn, "canonical_node_runs", "node_run_id", attempt.node_run_id)
-            )
             if outcome_embeds_attempt(node_run, attempt_id):
                 assert node_run.accepted_outcome is not None  # narrowed above
                 repaired = node_run.model_copy(
@@ -1302,6 +1790,31 @@ _NOT_FOUND: dict[str, type[Exception]] = {
     "canonical_node_runs": NodeRunNotFound,
     "canonical_attempts": AttemptNotFound,
 }
+
+
+#: `pg_advisory_xact_lock(key1, key2)` namespaces for root-Run admission.
+#: Separate namespaces so a Workspace and a principal that hash alike never
+#: share a lock, which is what keeps the lock order acyclic.
+_WORKSPACE_ADMISSION_LOCK = 0x72617721  # "raw!"
+_PRINCIPAL_ADMISSION_LOCK = 0x72617021  # "rap!"
+
+
+#: Literal statuses rather than a parameter, so the planner can prove the
+#: predicate implies the partial `ix_canonical_runs_live` index (migration 012).
+_ACTIVE_ROOT_COUNTS_SQL = """SELECT
+       COUNT(*) FILTER (WHERE workspace_id = $1) AS workspace_active,
+       COUNT(*) FILTER (WHERE payload->>'actor_principal_id' = $2) AS principal_active
+     FROM canonical_runs
+    WHERE parent_run_id IS NULL AND status IN ({statuses})""".format(  # nosec B608
+    statuses=", ".join(f"'{status}'" for status in ACTIVE_ROOT_STATUS_VALUES)
+)
+
+
+def _admission_lock_key(identity: str) -> int:
+    """A signed 32-bit key, hashed here because `hashtext()` is not stable
+    across the PostgreSQL major versions this repository runs against."""
+    digest = hashlib.blake2b(identity.encode("utf-8"), digest_size=4).digest()
+    return int.from_bytes(digest, "big", signed=True)
 
 
 def _integrity_errors() -> tuple[type[Exception], ...]:

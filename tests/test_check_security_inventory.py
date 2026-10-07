@@ -588,9 +588,27 @@ def test_a_bare_filename_resolves_recursively(gate):
     assert findings.unresolved_paths == []
 
 
+# One whole-tree scan plus a re-walk of every sibling src root — measured at
+# ~10-11s locally under `coverage --source=scripts` (the fetch-helper scan is
+# 0.3s of that; the cost is the census walks over thousands of files), against
+# the suite's 30s default. The first PR to state that margin got it wrong: on
+# a merge-queue runner that ran the identical root suite 1.7x slower than
+# develop's passing run, this test caught a CPU-contention burst and red at
+# >30s with nothing wrong in the tree (#964, run 37498676474). 120s states
+# the margin instead, same shape as test_check_cross_package_imports.py's
+# whole-tree scans.
+@pytest.mark.timeout(120)
 def test_the_shipped_document_passes(gate):
     """The gate is only worth wiring into CI if the document it guards is
     currently in the state it demands."""
+    # Whole-repository census (SECURITY.md's counted claims are re-measured over
+    # every package source), and under the coverage gate's `--source=scripts`
+    # producer every line of the gate script is traced. Measured 13s bare and
+    # 21s pinned to one CPU under that tracing, against the suite's 30s default:
+    # the coverage-gate combine step red once on exactly this test on a loaded
+    # runner, then passed twice unchanged. Same shape as the cross-package and
+    # execution-lifecycle scans, so the margin is stated rather than left to be
+    # rediscovered as an intermittent red.
     assert gate.main() == 0
 
 

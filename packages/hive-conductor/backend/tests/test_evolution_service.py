@@ -10,8 +10,9 @@ Covers:
 - run_loop: _run_one_cycle exception captured into _last_cycle_error
 - _run_one_cycle: dispatches to canonical graph runner + increments counter
 - _run_one_cycle: failed canonical Run is surfaced and not counted as a cycle
-- _build_llm_call: no settings -> None; with settings -> callable
-- _build_llm_call inner call: posts to base_url + parses content
+- _build_llm_call: no canonical model authority fails closed, without raw fallback
+- _default_chat_model: deployment default and empty router-select fallback
+- context-bound model dispatch: see test_evolution_model_correlation.py
 - status: returns running, cycle_count, canonical run id, population, error, tournament
 """
 
@@ -492,6 +493,7 @@ def test_run_one_cycle_dispatches_canonical_graph(
         )
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
+    monkeypatch.setattr(_EvolutionService, "_build_llm_call", lambda self: None)
 
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
@@ -550,6 +552,7 @@ async def test_racing_manual_and_background_cycles_are_serialized(
         )
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
+    monkeypatch.setattr(_EvolutionService, "_build_llm_call", lambda self: None)
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
     )
@@ -605,6 +608,7 @@ async def test_seed_waits_for_active_cycle_and_joins_the_next_admission(
         )
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
+    monkeypatch.setattr(_EvolutionService, "_build_llm_call", lambda self: None)
     monkeypatch.setattr(diversity, "emergency_spawn", lambda existing, count: [])
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
@@ -660,6 +664,7 @@ def test_run_one_cycle_does_not_count_failed_canonical_run(
         )
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
+    monkeypatch.setattr(_EvolutionService, "_build_llm_call", lambda self: None)
 
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
@@ -683,115 +688,69 @@ def test_run_one_cycle_does_not_count_failed_canonical_run(
 # --- _build_llm_call ----------------------------------------------------
 
 
-def test_build_llm_call_returns_none_without_base_url(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from services.evolution import _EvolutionService
-
-    class _NoBase:
-        maistro_llm_base_url = ""
-        litellm_api_base = ""
-        maistro_llm_api_key = ""
-        litellm_api_key = ""
-        chat_default_model = "stub"
-
-    import config
-
-    monkeypatch.setattr(config, "get_settings", lambda: _NoBase())
-    s = _EvolutionService()
-    assert s._build_llm_call() is None
-
-
-def test_build_llm_call_swallows_exceptions(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("configured_url", ["", "http://test.example/api"])
+def test_build_llm_call_refuses_without_canonical_authority(
+    monkeypatch: pytest.MonkeyPatch, configured_url: str
 ) -> None:
     import config
-    from services.evolution import _EvolutionService
+    from services.evolution import EvolutionUnavailableError, _EvolutionService
 
-    def _boom() -> Any:
-        raise RuntimeError("synthetic")
-
-    monkeypatch.setattr(config, "get_settings", _boom)
-    s = _EvolutionService()
-    assert s._build_llm_call() is None
+    monkeypatch.setattr(
+        config,
+        "get_settings",
+        lambda: SimpleNamespace(litellm_api_base=configured_url, chat_default_model="test-model"),
+    )
+    with pytest.raises(EvolutionUnavailableError, match="raw model fallback is disabled"):
+        _EvolutionService().build_llm_call()
 
 
 def test_build_llm_call_public_accessor_delegates_to_private_builder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#1064: ``build_llm_call`` is the public accessor a restart-recovery
-    resolver uses to reconstruct the same llm_call a live cycle would have
-    built (it has no other way to reach the private builder). Prove it
-    actually delegates, both when the builder succeeds and when it
-    declines (no base URL configured)."""
     from services.evolution import _EvolutionService
 
-    class _NoBase:
-        maistro_llm_base_url = ""
-        litellm_api_base = ""
-        maistro_llm_api_key = ""
-        litellm_api_key = ""
-        chat_default_model = "stub"
-
-    import config
-
-    monkeypatch.setattr(config, "get_settings", lambda: _NoBase())
-    s = _EvolutionService()
-    assert s.build_llm_call() is None
-
+    service = _EvolutionService()
     sentinel = object()
-    monkeypatch.setattr(s, "_build_llm_call", lambda: sentinel)
-    assert s.build_llm_call() is sentinel
+    monkeypatch.setattr(service, "_build_llm_call", lambda: sentinel)
+    assert service.build_llm_call() is sentinel
 
 
-async def test_build_llm_call_real_call_posts_and_extracts_content(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When settings have a base URL, _build_llm_call posts and returns content."""
-    import httpx
-    from services.evolution import _EvolutionService
+def test_default_chat_model_reads_the_deployment_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real `_default_chat_model` reads the deployment's chat alias (#718).
+
+    The governed tests monkeypatch this helper, so its body needs direct
+    coverage: it must keep the cutover promise of selecting the same model the
+    raw path selected, and degrade to "" (router selects) when settings are
+    broken rather than raising out of llm-call construction.
+    """
+    import config
+    from services.evolution import _default_chat_model
 
     class _Settings:
-        litellm_api_base = "http://test.example/api"
-        maistro_llm_api_key = "test-key"
-        litellm_api_key = ""
-        chat_default_model = "test-model"
-
-    import config
+        chat_default_model = "deployment-alias"
 
     monkeypatch.setattr(config, "get_settings", lambda: _Settings())
+    assert _default_chat_model() == "deployment-alias"
 
-    captured: dict[str, Any] = {}
+    def _broken() -> Any:
+        raise RuntimeError("settings unavailable")
 
-    class _Resp:
-        def raise_for_status(self) -> None:
-            pass
+    monkeypatch.setattr(config, "get_settings", _broken)
+    assert _default_chat_model() == ""
 
-        def json(self) -> Any:
-            return {"choices": [{"message": {"content": "the answer"}}]}
 
-    class _Client:
-        def __init__(self, *a: Any, **kw: Any) -> None: ...
+def test_governed_llm_seam_yields_nothing_when_the_engine_cannot_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An absent engine cannot supply the canonical model authority."""
+    import services.engine as engine_mod
+    from services.evolution import _EvolutionService
 
-        async def __aenter__(self) -> _Client:
-            return self
+    def _no_engine() -> Any:
+        raise RuntimeError("engine not started")
 
-        async def __aexit__(self, *a: Any) -> None: ...
-
-        async def post(self, url: str, *, json: Any, headers: Any) -> _Resp:
-            captured["url"] = url
-            captured["headers"] = headers
-            captured["json"] = json
-            return _Resp()
-
-    monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    s = _EvolutionService()
-    llm = s._build_llm_call()
-    assert llm is not None
-    out = await llm([{"role": "user", "content": "hi"}])
-    assert out == "the answer"
-    assert captured["url"] == "http://test.example/api/v1/chat/completions"
-    assert captured["headers"]["Authorization"] == "Bearer test-key"
+    monkeypatch.setattr(engine_mod, "get_engine", _no_engine)
+    assert _EvolutionService()._governed_llm_seam() is None
 
 
 # --- status -------------------------------------------------------------

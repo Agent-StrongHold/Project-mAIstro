@@ -7,16 +7,24 @@ scores (`FitnessWeights`). Capability (benchmarks) and architecture-fit (LLM
 judge) are *injected* when a gateway is available, so this module stays
 runnable offline. `compose_scorecard()` is pure and takes already-gathered
 `FitnessInputs`; `evaluate_candidate()` runs the tools to produce them.
+
+Since #392 the gates include `fail_first_evidence` (see `maistro_rsi.fail_first`):
+a source-touching candidate must prove a changed test fails on the exact base
+revision for the intended reason — or, under a declared refactor/doc contract,
+show the explicit alternative evidence instead.
 """
 
 from __future__ import annotations
 
 import ast
+import hashlib
+import importlib.metadata
 import json
 import os
 import shlex
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,10 +42,18 @@ from maistro_evolve.coverage_gate import (
     uncovered_new_lines,
 )
 from maistro_evolve.doc_regression import doc_regressions
+from maistro_evolve.improvement import ImprovementKind
 from maistro_evolve.mutation_probe import MutationProbe, probe_diff_mutations
+from maistro_evolve.scenario_objective import (
+    CorrectnessResult,
+    ScenarioEvaluation,
+    ScenarioObjective,
+    evaluate_proven_scenarios,
+)
 from maistro_evolve.scorecard import (
     FitnessWeights,
     GateResult,
+    GateState,
     MeasureKind,
     Scorecard,
     SignalScore,
@@ -52,7 +68,13 @@ from maistro_evolve.tdd_gate import (
     count_net_new_tests,
     new_test_signal,
     red_green_signal,
-    run_test_selection,
+)
+from maistro_rsi.fail_first import (
+    EvidenceContract,
+    FailFirstEvidence,
+    collect_fail_first_evidence,
+    fail_first_gate,
+    resolve_contract,
 )
 from maistro_rsi.regression_judge import REJECT_BELOW, JudgeVerdict
 from maistro_rsi.test_inventory import (
@@ -82,6 +104,12 @@ _MUTATION_MAX_MUTANTS = 6
 # mass-deletion from bloating the promotion record. The full count always
 # rides along as ``deleted_count``.
 _DELETED_TRACE_CAP = 20
+
+# How many mutated-oracle paths the evaluator-integrity gate's reason names —
+# the full list always rides in the gate detail (and the promotion record),
+# but the one-line reason should survive a hostile mass-edit of the oracle
+# surface without bloating the scorecard explain().
+_EVIDENCE_PATH_CAP = 5
 
 
 def _is_test(path: str) -> bool:
@@ -266,6 +294,90 @@ class FitnessInputs:
     # to fail on, so the gate passes without verifying rather than inventing a
     # failure the caller never asked about.
     test_inventory: InventoryEvidence | None = None
+    # Fail-first evidence contract (#392). ``changed_src``/``changed_tests``
+    # are the diff's non-test/test .py files (the contract's shape input);
+    # ``declared_kind`` is the slot's ImprovementKind value (the declaration
+    # input; None/generic → BEHAVIOR for source-touching diffs).
+    # ``fail_first`` is the collected probe record (None = never probed —
+    # missing evidence under the behavior contract, fail closed).
+    # ``baseline_quality_composite`` is the changed source's mean quality at
+    # the base revision, the left side of the refactor contract's delta.
+    changed_src: list[str] = field(default_factory=list)
+    changed_tests: list[str] = field(default_factory=list)
+    declared_kind: str | None = None
+    fail_first: FailFirstEvidence | None = None
+    baseline_quality_composite: float | None = None
+    # Evaluator-oracle integrity (#109). ``evaluator_digest`` pins the SHA-256
+    # of the score-defining artifacts (scorer, pinning tests, scenario corpora,
+    # ratchet baselines, AC trees) at the TRUSTED base revision into the
+    # scorecard provenance — every acceptance decision records exactly which
+    # evaluator version judged it. ``evaluator_mutations`` lists the oracle
+    # paths this candidate's own diff touched; non-empty vetoes (see
+    # ``evaluator_integrity_gate``) because a candidate may not be judged by
+    # the oracle it just changed. ``evaluator_mutation_authorized`` is the
+    # explicit human governance override (LocalRsiConfig.
+    # allow_evaluator_mutation, the #306 precedent): the gate then passes WITH
+    # the mutation recorded, never silently.
+    evaluator_digest: str | None = None
+    evaluator_mutations: list[str] = field(default_factory=list)
+    evaluator_mutation_authorized: bool = False
+    # The weighted proven-scenario objective (M5-B, #108): the immutable,
+    # versioned scenario ruler the loop evaluates candidates with, plus the
+    # prior proven scores (best-ever per scenario, archive.proven_scenario_scores
+    # semantics), the candidate's own scenario scores, and — optionally — an
+    # explicit correctness verdict. When ``scenario_correctness`` is None the
+    # ``tests_pass`` gate IS the correctness oracle (contract/acceptance tests
+    # are the non-negotiable oracle); a caller with a broader oracle (security
+    # suites, contract tests beyond the loop's own pytest run) injects it.
+    # All four stay None when the loop has no scenario objective configured;
+    # the scenario gate and signal are then simply absent.
+    scenario_objective: ScenarioObjective | None = None
+    scenario_proven_scores: dict[str, float] = field(default_factory=dict)
+    scenario_candidate_scores: dict[str, float] = field(default_factory=dict)
+    scenario_correctness: CorrectnessResult | None = None
+
+
+def evaluator_integrity_gate(inp: FitnessInputs) -> GateResult:
+    """The oracle-immunity veto (#109): a candidate may not edit the evaluator
+    it is scored by.
+
+    RSI may satisfy the oracle — the scorer, its pinning tests, the scenario
+    corpus, the ratchet baselines, the AC trees — but may never change it in
+    the diff that is judged against it: acceptance evidence produced by a
+    mutated oracle is manufactured, not measured. Non-empty
+    ``evaluator_mutations`` therefore vetoes. Under the explicit human
+    governance override (``evaluator_mutation_authorized``) the gate passes
+    WITH the mutation recorded in detail — the authorized path is visible,
+    never silent — and the ``evaluator_digest`` provenance still names the
+    trusted base definition every other candidate was scored against.
+    """
+    detail: dict[str, object] = {
+        "evaluator_digest": inp.evaluator_digest,
+        "mutations": list(inp.evaluator_mutations),
+        "authorized": inp.evaluator_mutation_authorized,
+    }
+    if not inp.evaluator_mutations:
+        reason = (
+            f"oracle pinned at {inp.evaluator_digest[:12]}"
+            if inp.evaluator_digest
+            else "no baseline to diff against — unchecked"
+        )
+        return GateResult("evaluator_integrity", True, reason, detail=detail)
+    if inp.evaluator_mutation_authorized:
+        return GateResult(
+            "evaluator_integrity",
+            True,
+            "AUTHORIZED oracle mutation — recorded for governance review: "
+            + ", ".join(inp.evaluator_mutations[:_EVIDENCE_PATH_CAP]),
+            detail=detail,
+        )
+    return GateResult(
+        "evaluator_integrity",
+        False,
+        "candidate mutated the scoring oracle — evidence withheld (#109): "
+        + ", ".join(inp.evaluator_mutations[:_EVIDENCE_PATH_CAP]),
+        detail=detail,
+    )
 
 
 def _ladder_signals(inp: FitnessInputs, w: FitnessWeights) -> list[SignalScore]:
@@ -456,10 +568,113 @@ def _mutation_signal(inp: FitnessInputs, w: FitnessWeights) -> SignalScore | Non
     )
 
 
+def _scenario_objective_eval(inp: FitnessInputs) -> ScenarioEvaluation | None:
+    """Evaluate the proven-scenario objective when the caller configured one.
+
+    Pure: no measurement happens here, the caller gathered the scores. The
+    default correctness oracle is the ``tests_pass`` gate itself (the
+    contract/acceptance tests), so a loop that configured a scenario objective
+    but has no broader oracle still gets the M5-B semantics — a red test suite
+    scores zero on the scenario objective, no matter the aggregate.
+    """
+    if inp.scenario_objective is None:
+        return None
+    oracle = inp.scenario_correctness or CorrectnessResult(
+        passed=inp.tests_passed,
+        failures=() if inp.tests_passed else (inp.test_reason or "tests failed",),
+    )
+    return evaluate_proven_scenarios(
+        inp.scenario_objective,
+        inp.scenario_proven_scores,
+        inp.scenario_candidate_scores,
+        oracle,
+    )
+
+
+def _scenario_gate_items(scenario_eval: ScenarioEvaluation | None) -> list[GateResult]:
+    """The proven-scenario veto (M5-B, #108) as a gate list: empty when no
+    scenario objective was configured (absent evidence adds no gate), a
+    single non-tradeable gate otherwise.
+
+    The gate reads ``promotable`` — zeroed when the correctness oracle failed
+    or any proven scenario regressed / was never evaluated — so no unrelated
+    scalar gain (coverage, quality, even other scenarios' gains) can rescue
+    the candidate. The full evaluation rides in ``detail`` and on
+    ``Scorecard.scenario_objective``, so the correctness verdict and the
+    scalar score are recorded separately for audit.
+    """
+    if scenario_eval is None:
+        return []
+    return [
+        GateResult(
+            "no_proven_scenario_regression",
+            scenario_eval.promotable,
+            scenario_eval.summary(),
+            detail={
+                "objective_version": scenario_eval.objective_version,
+                "objective_digest": scenario_eval.objective_digest,
+                "correctness_passed": scenario_eval.correctness_gate.passed,
+                "correctness_failures": list(scenario_eval.correctness_gate.failures),
+                "regressed": scenario_eval.regressed,
+                "not_evaluated": scenario_eval.not_evaluated,
+                "raw_weighted_score": scenario_eval.raw_weighted_score,
+                "objective_score": scenario_eval.objective_score,
+            },
+        )
+    ]
+
+
+def _scenario_signal(scenario_eval: ScenarioEvaluation, w: FitnessWeights) -> SignalScore:
+    """The scalar ranking contribution of the proven-scenario objective: the
+    dominant term of the composite when present (M5-B #108 — keeping the
+    proven scenarios green IS the objective the work signals serve). Only
+    ranks candidates that already cleared the scenario gate."""
+    return SignalScore(
+        "proven_scenarios",
+        MeasureKind.DERIVED,
+        scenario_eval.objective_score,
+        w.proven_scenarios,
+        (
+            "criticality-weighted proven scenarios under "
+            f"{scenario_eval.objective_version} ({scenario_eval.objective_digest}): "
+            f"score={scenario_eval.objective_score:.4f}; correctness="
+            f"{'pass' if scenario_eval.correctness_gate.passed else 'FAIL'}"
+        ),
+        detail={
+            "objective_version": scenario_eval.objective_version,
+            "objective_digest": scenario_eval.objective_digest,
+            "raw_weighted_score": scenario_eval.raw_weighted_score,
+            "regressed": scenario_eval.regressed,
+            "not_evaluated": scenario_eval.not_evaluated,
+        },
+    )
+
+
+def _scenario_signal_items(
+    scenario_eval: ScenarioEvaluation | None, w: FitnessWeights
+) -> list[SignalScore]:
+    """``_scenario_signal`` as a list: empty when no scenario objective was
+    configured, so absent evidence adds no signal (and no branch lands in
+    ``compose_scorecard``)."""
+    if scenario_eval is None:
+        return []
+    return [_scenario_signal(scenario_eval, w)]
+
+
 def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None) -> Scorecard:
     """Pure: assemble gates + priority-weighted scores into a Scorecard."""
     w = weights or FitnessWeights()
+    # The proven-scenario objective (M5-B, #108) is evaluated first: its gate
+    # is a veto like any other, and its evaluation record rides on the
+    # Scorecard so the correctness verdict and the scalar objective are
+    # recorded separately from the work-signal composite.
+    scenario_eval = _scenario_objective_eval(inp)
     gates = [
+        # The oracle-immunity veto leads (#109): a candidate that mutated the
+        # evaluator it is scored by is rejected on this gate before any other
+        # signal is consulted, and its ``accepted`` can never come from the
+        # evidence its own mutation manufactured.
+        evaluator_integrity_gate(inp),
         GateResult(
             "tests_pass",
             inp.tests_passed,
@@ -488,10 +703,26 @@ def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None)
             "; ".join(inp.vacuous_test_reasons)
             or "changed tests depend on the accompanying change",
         ),
+        fail_first_gate(
+            resolve_contract(inp.declared_kind, inp.changed_src, inp.changed_tests),
+            inp.fail_first,
+            quality_delta=(
+                inp.code_quality_composite - inp.baseline_quality_composite
+                if inp.code_quality_composite is not None
+                and inp.baseline_quality_composite is not None
+                else None
+            ),
+            net_new_tests=inp.net_new_tests,
+            assertion_score=inp.assertion_score,
+        ),
         *inp.lint_gates,
+        *_scenario_gate_items(scenario_eval),
         *_conditional_gates(inp),
     ]
-    scores: list[SignalScore] = [red_green_signal(inp.tdd, w.red_green)]
+    scores: list[SignalScore] = [
+        red_green_signal(inp.tdd, w.red_green),
+        *_scenario_signal_items(scenario_eval, w),
+    ]
     cov_delta = (
         inp.candidate_coverage - inp.baseline_coverage
         if inp.candidate_coverage is not None and inp.baseline_coverage is not None
@@ -543,7 +774,16 @@ def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None)
                 inp.code_quality_detail or "changed-source quality composite",
             )
         )
-    return Scorecard(gates=gates, scores=scores)
+    scorecard = Scorecard(
+        gates=gates,
+        scores=scores,
+        scenario_objective=scenario_eval,
+    )
+    # Provenance (#109): the scorecard records the trusted evaluator digest it
+    # was judged against, so an acceptance decision is replayable against the
+    # exact oracle version that produced it.
+    scorecard.evaluator_digest = inp.evaluator_digest
+    return scorecard
 
 
 def _run(cmd: str, cwd: Path, timeout: int = 900, argv: tuple[str, ...] = ()) -> tuple[bool, str]:
@@ -595,39 +835,45 @@ def _run(cmd: str, cwd: Path, timeout: int = 900, argv: tuple[str, ...] = ()) ->
 _LINT_TIMEOUT = 120
 
 
-def _run_lint_tool(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str] | None:
-    """Run a static tool, bounded by a timeout. Returns None if the tool is
-    missing or wedges — so the gate is treated as unavailable (not a false
-    rejection, and never an indefinite hang of LocalRsiLoop.run())."""
+def _run_lint_tool(
+    argv: list[str], cwd: Path
+) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+    """Run a static tool, bounded by a timeout.
+
+    Returns ``(proc, cause)``. ``proc`` is None when the tool did not produce
+    a result; ``cause`` names why — ``"missing"`` (not installed / not
+    importable in this runner), ``"timeout"`` (wedged past the bound) or
+    ``"error"`` (could not even be spawned). Callers decide what a non-result
+    means (#304): for a REQUIRED gate it is a blocking ``not_run``, never a
+    silent omission."""
     try:
         proc = subprocess.run(
             argv, cwd=str(cwd), capture_output=True, text=True, timeout=_LINT_TIMEOUT
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    except subprocess.TimeoutExpired:
+        return None, "timeout"
+    except OSError:
+        return None, "error"
     if "No module named" in proc.stderr:
-        return None
-    return proc
+        return None, "missing"
+    return proc, None
 
 
-def _lint_gates(cwd: Path, src_files: list[str]) -> list[GateResult]:
-    """ruff / mypy / bandit-HIGH on the changed source files. A missing, errored,
-    or timed-out tool yields no gate (unenforced) rather than a false rejection."""
-    if not src_files:
-        return []
-    gates: list[GateResult] = []
-
-    ruff = _run_lint_tool(
-        [sys.executable, "-m", "ruff", "check", "--output-format", "json", *src_files], cwd
-    )
-    if ruff is not None:
-        try:
-            n = len(json.loads(ruff.stdout or "[]"))
-        except json.JSONDecodeError:
-            n = 0
-        gates.append(GateResult("ruff_clean", n == 0, f"{n} lint violation(s)"))
-
-    mypy = _run_lint_tool(
+# The required analyzer gates (#304): (gate name, distribution name, argv
+# prefix). Every one of these gates is named in the scorecard and in generated
+# RSI PR bodies, so each must have an EXECUTED result tied to provenance — a
+# runner missing any of them fails closed with a blocking ``not_run`` gate
+# instead of silently narrowing the evidence. The runner image declares the
+# same set (Dockerfile.rsi-runner); their parity is pinned by test.
+REQUIRED_LINT_TOOL_SPEC: tuple[tuple[str, str, list[str]], ...] = (
+    (
+        "ruff_clean",
+        "ruff",
+        [sys.executable, "-m", "ruff", "check", "--output-format", "json"],
+    ),
+    (
+        "mypy_clean",
+        "mypy",
         [
             sys.executable,
             "-m",
@@ -637,24 +883,203 @@ def _lint_gates(cwd: Path, src_files: list[str]) -> list[GateResult]:
             "--no-color-output",
             "--config-file",
             os.devnull,
-            *src_files,
         ],
-        cwd,
-    )
-    if mypy is not None:
-        errs = sum(1 for ln in mypy.stdout.splitlines() if ": error:" in ln)
-        gates.append(GateResult("mypy_clean", errs == 0, f"{errs} type error(s)"))
+    ),
+    ("no_bandit_high", "bandit", [sys.executable, "-m", "bandit", "-f", "json", "-q"]),
+)
 
-    bandit = _run_lint_tool([sys.executable, "-m", "bandit", "-f", "json", "-q", *src_files], cwd)
-    if bandit is not None:
-        try:
-            results = json.loads(bandit.stdout or "{}").get("results", [])
-        except json.JSONDecodeError:
-            results = []
-        high = [r for r in results if r.get("issue_severity") == "HIGH"]
-        gates.append(
-            GateResult("no_bandit_high", len(high) == 0, f"{len(high)} HIGH-severity finding(s)")
+
+def _tool_version(dist: str) -> str | None:
+    """The installed distribution version of a gate's tool, or None when the
+    dist is absent (which for a required tool surfaces as a not_run gate
+    anyway). Read in-process: the gate argv runs under ``sys.executable``, so
+    this interpreter's metadata IS the version that produced the result."""
+    try:
+        return importlib.metadata.version(dist)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _candidate_sha(cwd: Path) -> str | None:
+    """The candidate commit the gates are scoring — None outside a git
+    worktree (compose-only contexts), where provenance honestly cannot pin a
+    SHA rather than inventing one."""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    sha = proc.stdout.strip()
+    return sha or None
+
+
+def _gate_provenance(
+    cwd: Path,
+    argv: list[str],
+    dist: str,
+    proc: subprocess.CompletedProcess[str] | None,
+) -> dict[str, object]:
+    """What actually executed behind a gate result (#304 AC-1): command,
+    tool version, candidate SHA, exit status, and an output digest over both
+    output streams — the minimum a reviewer needs to distinguish a measured
+    pass from a guess."""
+    return {
+        "command": list(argv),
+        "tool_version": _tool_version(dist),
+        "candidate_sha": _candidate_sha(cwd),
+        "exit_status": proc.returncode if proc is not None else None,
+        "output_digest": _output_digest(proc) if proc is not None else None,
+    }
+
+
+def _output_digest(proc: subprocess.CompletedProcess[str]) -> str:
+    """SHA-256 over the analyzer's complete output — stdout and stderr — with
+    each stream length-framed so no concatenation ambiguity can collide two
+    different splits. Hashing stdout alone would leave stderr diagnostics and
+    fatal errors unauthenticated: a run that crashed while printing nothing to
+    stdout would carry the same digest as a genuinely silent clean one."""
+    out = (proc.stdout or "").encode()
+    err = (proc.stderr or "").encode()
+    framed = b"stdout:%d:" % len(out) + out + b"stderr:%d:" % len(err) + err
+    return "sha256:" + hashlib.sha256(framed).hexdigest()
+
+
+def _not_run_gate(name: str, dist: str, cause: str, provenance: dict[str, object]) -> GateResult:
+    return GateResult(
+        name,
+        False,
+        f"{dist} did not run ({cause}) — required gate not_run; "
+        "a missing analyzer blocks promotion rather than narrowing the evidence",
+        detail={"cause": cause, **provenance},
+        state=GateState.NOT_RUN,
+    )
+
+
+def _unreadable_output_gate(name: str, tool: str, provenance: dict[str, object]) -> GateResult:
+    """An executed tool whose stdout cannot be parsed, recorded FAILED —
+    unreadable evidence is not a green result."""
+    return GateResult(
+        name,
+        False,
+        f"unreadable {tool} output — recorded as failed, not clean",
+        detail=provenance,
+        state=GateState.FAILED,
+    )
+
+
+def _ruff_clean_gate(
+    proc: subprocess.CompletedProcess[str], provenance: dict[str, object]
+) -> GateResult:
+    """Gate on the count of ruff findings in the JSON report."""
+    try:
+        n = len(json.loads(proc.stdout or "[]"))
+    except json.JSONDecodeError:
+        return _unreadable_output_gate("ruff_clean", "ruff", provenance)
+    return GateResult(
+        "ruff_clean",
+        n == 0,
+        f"{n} lint violation(s)",
+        detail=provenance,
+        state=GateState.PASSED if n == 0 else GateState.FAILED,
+    )
+
+
+def _mypy_clean_gate(
+    proc: subprocess.CompletedProcess[str], provenance: dict[str, object]
+) -> GateResult:
+    """Gate on the count of ``: error:`` lines in mypy's output."""
+    errs = sum(1 for ln in proc.stdout.splitlines() if ": error:" in ln)
+    return GateResult(
+        "mypy_clean",
+        errs == 0,
+        f"{errs} type error(s)",
+        detail=provenance,
+        state=GateState.PASSED if errs == 0 else GateState.FAILED,
+    )
+
+
+def _bandit_high_gate(
+    proc: subprocess.CompletedProcess[str], provenance: dict[str, object]
+) -> GateResult:
+    """Gate on the count of HIGH-severity bandit findings."""
+    try:
+        results = json.loads(proc.stdout or "{}").get("results", [])
+    except json.JSONDecodeError:
+        return _unreadable_output_gate("no_bandit_high", "bandit", provenance)
+    high = [r for r in results if r.get("issue_severity") == "HIGH"]
+    return GateResult(
+        "no_bandit_high",
+        len(high) == 0,
+        f"{len(high)} HIGH-severity finding(s)",
+        detail=provenance,
+        state=GateState.PASSED if len(high) == 0 else GateState.FAILED,
+    )
+
+
+# Per-tool result builders for the executed-and-well-formed path, keyed by
+# gate name (the same names REQUIRED_LINT_TOOL_SPEC carries).
+_LINT_GATE_PARSERS: dict[
+    str, Callable[[subprocess.CompletedProcess[str], dict[str, object]], GateResult]
+] = {
+    "ruff_clean": _ruff_clean_gate,
+    "mypy_clean": _mypy_clean_gate,
+    "no_bandit_high": _bandit_high_gate,
+}
+
+
+def _lint_gate_result(
+    name: str,
+    dist: str,
+    proc: subprocess.CompletedProcess[str] | None,
+    cause: str | None,
+    provenance: dict[str, object],
+) -> GateResult:
+    """Classify one analyzer run into its gate result: ``not_run`` when the
+    tool never produced a result or died mid-execution, else the tool's
+    parser decides ``passed`` vs ``failed``.
+
+    All three are REQUIRED gates: a tool that is missing, wedged, or times
+    out yields a blocking ``not_run`` gate (``passed=False`` vetoes the
+    candidate) that names the cause — never a silent omission a downstream
+    PR body could render as a pass. Output that cannot be parsed is a FAILED
+    gate, not a clean one. Nor is an execution failure: exits 0 (clean) and
+    1 (findings) are the only analyzer-evidence codes — a tool that starts
+    and then dies with a usage/configuration/internal exit (2) yields a
+    blocking ``not_run`` gate, because empty stdout from a broken analyzer
+    is not evidence of clean code."""
+    if proc is None:
+        return _not_run_gate(name, dist, cause or "error", provenance)
+    if proc.returncode not in (0, 1):
+        # A findings exit is 0 or 1; anything else means the analyzer
+        # never evaluated the files. Reject before parsing so empty
+        # stdout (ruff "[]", mypy zero errors, bandit "{}") from a
+        # broken run cannot masquerade as a clean result.
+        return _not_run_gate(name, dist, f"execution error (exit {proc.returncode})", provenance)
+    return _LINT_GATE_PARSERS[name](proc, provenance)
+
+
+def _lint_gates(cwd: Path, src_files: list[str]) -> list[GateResult]:
+    """ruff / mypy / bandit-HIGH on the changed source files (#304).
+
+    An executed gate carries its provenance (command, tool version,
+    candidate SHA, exit status, output digest) and one of exactly two
+    states: ``passed`` or ``failed``; see ``_lint_gate_result`` for how a
+    non-execution is classified."""
+    if not src_files:
+        return []
+    gates: list[GateResult] = []
+    for name, dist, argv in REQUIRED_LINT_TOOL_SPEC:
+        full_argv = [*argv, *src_files]
+        proc, cause = _run_lint_tool(full_argv, cwd)
+        provenance = _gate_provenance(cwd, full_argv, dist, proc)
+        gates.append(_lint_gate_result(name, dist, proc, cause, provenance))
     return gates
 
 
@@ -704,40 +1129,44 @@ def _mean_assertion(cwd: Path, test_files: list[str]) -> tuple[float | None, str
     return round(mean, 4), f"mean assertion strength over {len(scores)} changed test file(s)"
 
 
-def _red_green_evidence(
-    cwd: Path, baseline_ref: str, src: list[str], tests: list[str], timeout: int
-) -> TddEvidence:
-    """Fill TddEvidence by running the candidate's changed tests against the
-    baseline source: revert the changed source files to ``baseline_ref`` in the
-    worktree (keeping the candidate's tests), run those tests (expect RED), then
-    restore the candidate source. Green-on-candidate is the plain run.
-    """
-    if not tests:
-        return TddEvidence()
-    cand_rc, _ = run_test_selection(cwd, tests, timeout=timeout)
-    base_rc: int | None = None
-    if src:
-        try:
-            subprocess.run(
-                ["git", "checkout", baseline_ref, "--", *src],
-                cwd=str(cwd),
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            base_rc, _ = run_test_selection(cwd, tests, timeout=timeout)
-        except (OSError, subprocess.CalledProcessError):
-            base_rc = None
-        finally:
-            subprocess.run(
-                ["git", "checkout", "HEAD", "--", *src],
-                cwd=str(cwd),
-                capture_output=True,
-                text=True,
-            )
-    return TddEvidence(
-        changed_tests=tests, baseline_changed_rc=base_rc, candidate_changed_rc=cand_rc
-    )
+def _baseline_quality_at_base(
+    cwd: Path, baseline_ref: str | None, src_files: list[str], contract: EvidenceContract
+) -> float | None:
+    """The refactor contract's left side (#392): the changed source's mean
+    quality at the base revision. Only a declared REFACTOR contract measures
+    it — the behavior contract's delta is fail-first evidence, not quality —
+    and with no baseline there is nothing to diff against (fail closed:
+    ``None``). Named so ``evaluate_candidate`` reads as measurement intake
+    rather than contract arithmetic."""
+    if contract is not EvidenceContract.REFACTOR or not baseline_ref:
+        return None
+    return _mean_quality_at_base(cwd, baseline_ref, src_files)
+
+
+def _mean_quality_at_base(cwd: Path, baseline_ref: str, src_files: list[str]) -> float | None:
+    """Mean code-quality composite of the changed source files AS THEY WERE on
+    ``baseline_ref`` — the left side of the refactor contract's quality delta.
+    Files absent on baseline contribute nothing (a new file has no baseline
+    quality to improve upon). Returns None when no baseline version of any
+    changed file could be read: the refactor contract then fails closed."""
+    composites: list[float] = []
+    for i, rel in enumerate(src_files):
+        base = subprocess.run(
+            ["git", "show", f"{baseline_ref}:{rel}"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if base.returncode != 0 or not base.stdout.strip():
+            continue
+        with tempfile.TemporaryDirectory() as td:
+            snap = Path(td) / f"base_{i}_{Path(rel).name}"
+            snap.write_text(base.stdout, encoding="utf-8")
+            composites.append(score_path(snap).composite)
+    if not composites:
+        return None
+    return round(sum(composites) / len(composites), 4)
 
 
 def _vacuous_test_reasons(src: list[str], tests: list[str], tdd: TddEvidence) -> list[str]:
@@ -754,6 +1183,137 @@ def _vacuous_test_reasons(src: list[str], tests: list[str], tdd: TddEvidence) ->
             "baseline — doesn't exercise this diff's source change"
         ]
     return []
+
+
+def _resolve_evaluator_evidence(
+    cwd: Path,
+    changed_files: list[str],
+    *,
+    baseline_ref: str | None,
+    declared: str | None,
+    evaluator_digest: str | None,
+    evaluator_mutations: list[str] | None,
+    evaluator_mutation_authorized: bool,
+    weights: FitnessWeights | None,
+) -> tuple[str | None, list[str], Scorecard | None]:
+    """The #109 preamble: resolve oracle-integrity evidence and, when a
+    non-authorized mutation is found, the scorecard that withholds ALL other
+    evidence (returned third). A helper so the ordering contract — integrity
+    resolved BEFORE the oracle runs — reads as one named step."""
+    if evaluator_mutations is None and baseline_ref:
+        from maistro_rsi.evaluator_oracle import oracle_digest, oracle_mutations
+
+        evaluator_mutations = oracle_mutations(cwd, baseline_ref, changed_files)
+        evaluator_digest = evaluator_digest or oracle_digest(cwd, baseline_ref)
+    mutations = list(evaluator_mutations or [])
+    withheld: Scorecard | None = None
+    if mutations and not evaluator_mutation_authorized:
+        withheld = compose_scorecard(
+            FitnessInputs(
+                tests_passed=False,
+                test_reason="withheld: candidate mutated the scoring oracle (#109)",
+                changed_src=[f for f in changed_files if f.endswith(".py") and not _is_test(f)],
+                changed_tests=changed_test_paths(changed_files),
+                declared_kind=declared,
+                evaluator_digest=evaluator_digest,
+                evaluator_mutations=mutations,
+                evaluator_mutation_authorized=False,
+            ),
+            weights,
+        )
+    return evaluator_digest, mutations, withheld
+
+
+def _resolve_tdd_evidence(
+    cwd: Path,
+    *,
+    baseline_ref: str | None,
+    src: list[str],
+    tests: list[str],
+    timeout: int,
+    config_changed: list[str],
+    tdd: TddEvidence | None,
+) -> tuple[TddEvidence, FailFirstEvidence | None]:
+    """The #392 evidence contract's collection step: when the caller supplies
+    no ``tdd`` view, probe the base revision for fail-first evidence (a source
+    change owes a changed test that is red on the exact base for the intended
+    reason). Returns ``(tdd, fail_first)`` — the probe record is None when no
+    probe ran, which the fail-first gate treats as missing evidence (fail
+    closed) under the behavior contract."""
+    if tdd is not None:
+        return tdd, None
+    if not (baseline_ref and tests):
+        return TddEvidence(changed_tests=tests), None
+    fail_first = collect_fail_first_evidence(
+        cwd,
+        baseline_ref,
+        src,
+        tests,
+        timeout,
+        config_files_changed=config_changed,
+    )
+    if fail_first is None:
+        return TddEvidence(changed_tests=tests), None
+    return fail_first.tdd_view(tests), fail_first
+
+
+def _stage_mutation_probe(
+    inputs: FitnessInputs,
+    cwd: Path,
+    baseline_ref: str | None,
+    new_src_lines: dict[str, set[int]],
+    tests: list[str],
+    timeout: int,
+    weights: FitnessWeights | None,
+) -> Scorecard | None:
+    """Run the diff-mutation probe once the cheap gates cleared.
+
+    Cost-layered after the cheap gates: mutation runs the changed tests once
+    per mutant, so a candidate already doomed on tests/coverage/syntax never
+    pays for it. Only meaningful when the diff added source lines AND changed
+    tests exist to catch mutations of them.
+
+    Returns the staged, gate-failing Scorecard when the probe vetoes the
+    candidate, else ``None`` (probe absent or passed).
+    """
+    if not (baseline_ref and new_src_lines and tests):
+        return None
+    inputs.mutation_probe = probe_diff_mutations(
+        cwd, new_src_lines, tests, timeout=timeout, max_mutants=_MUTATION_MAX_MUTANTS
+    )
+    staged = compose_scorecard(inputs, weights)
+    if staged.gates_passed:
+        return None
+    return staged
+
+
+def _attach_regression_judge(
+    inputs: FitnessInputs,
+    regression_judge_fn: Callable[[str, str], JudgeVerdict] | None,
+    cwd: Path,
+    baseline_ref: str | None,
+    target: str,
+) -> None:
+    """Attach the second-opinion LLM judge, last and only if it can rule.
+
+    Only for candidates that cleared every deterministic gate, including the
+    mutation probe. An unavailable ``git diff`` is treated as no diff (the
+    judge simply stays absent); a produced diff is judged verbatim.
+    """
+    if regression_judge_fn is None or not baseline_ref:
+        return
+    try:
+        diff = subprocess.run(
+            ["git", "diff", baseline_ref],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        diff = ""
+    if diff.strip():
+        inputs.regression_judge = regression_judge_fn(diff, target)
 
 
 def evaluate_candidate(
@@ -777,6 +1337,14 @@ def evaluate_candidate(
     test_argv: tuple[str, ...] = (),
     baseline_inventory: InventoryResult | None = None,
     allow_test_inventory_shrink: bool = False,
+    declared_kind: ImprovementKind | str | None = None,
+    evaluator_digest: str | None = None,
+    evaluator_mutations: list[str] | None = None,
+    evaluator_mutation_authorized: bool = False,
+    scenario_objective: ScenarioObjective | None = None,
+    scenario_proven_scores: dict[str, float] | None = None,
+    scenario_candidate_scores: dict[str, float] | None = None,
+    scenario_correctness: CorrectnessResult | None = None,
 ) -> Scorecard:
     """Run the local signals for a candidate and compose the Scorecard.
 
@@ -792,6 +1360,14 @@ def evaluate_candidate(
     when True, deletions pass the gate with a WARNING and are recorded, never
     silently absorbed.
 
+    The four ``scenario_*`` arguments are the M5-B proven-scenario evidence
+    (#108), gathered by the caller (the loop runs the scenario suite and reads
+    the archive's proven scores — no measurement happens here). Passing an
+    objective enables the ``no_proven_scenario_regression`` veto and the
+    dominant ``proven_scenarios`` signal; omitting it leaves both absent
+    (identical semantics to the ``FitnessInputs`` fields, never a false
+    rejection or a silent zero).
+
     ``regression_judge_fn`` (diff_text, target) -> JudgeVerdict is called
     lazily, and ONLY if every other gate already passes: a candidate that's
     going to be rejected on tests/coverage/syntax/etc. never burns the extra
@@ -799,11 +1375,51 @@ def evaluate_candidate(
     When it does run, an unavailable verdict fails the candidate (fail
     closed, #307) — the score of a judge that never ruled is None, not a
     number.
+
+    Evaluator-oracle integrity (#109): with a ``baseline_ref`` and no explicit
+    ``evaluator_mutations``, the candidate's diff is checked against the
+    score-defining artifact surface BEFORE any oracle run — a candidate that
+    mutated ``candidate_fitness.py``, its pinning tests, a ratchet baseline or
+    the AC tree is rejected (or, under ``evaluator_mutation_authorized``,
+    scored WITH the mutation recorded) without its modified oracle ever
+    producing acceptance evidence. ``evaluator_digest`` pins the trusted base
+    oracle's SHA-256 into the scorecard provenance; when not supplied it is
+    computed from the same baseline revision, so every scorecard names the
+    evaluator version that judged it.
     """
     cwd = Path(candidate_dir)
     src = [f for f in changed_files if f.endswith(".py") and not _is_test(f)]
     tests = changed_test_paths(changed_files)
     all_py = [f for f in changed_files if f.endswith(".py")]
+    # The declared contract (#392): the slot's ImprovementKind decides whether
+    # source-touching work owes fail-first evidence (default) or the refactor
+    # alternative (declared refactor/doc polish).
+    declared = declared_kind.value if isinstance(declared_kind, ImprovementKind) else declared_kind
+    contract = resolve_contract(declared, src, tests)
+    baseline_quality = _baseline_quality_at_base(cwd, baseline_ref, src, contract)
+    # Test-config surfaces touched by this diff — the shared taint signal for
+    # the protected-inventory gate (#306) and the fail-first contract (#392):
+    # a config edit can both hide inventory shrinkage and manufacture a red.
+    config_changed = changed_config_files(changed_files)
+
+    # Oracle immunity (#109) — enforced BEFORE any oracle run. Unless the
+    # caller already resolved the integrity evidence, derive it from the
+    # trusted baseline revision. A candidate that mutated the evaluator oracle
+    # is rejected WITHOUT executing the mutated tree: its modified oracle must
+    # not contribute acceptance evidence. The digest still pins the trusted
+    # base definition into the scorecard provenance either way.
+    evaluator_digest, evaluator_mutations, withheld = _resolve_evaluator_evidence(
+        cwd,
+        changed_files,
+        baseline_ref=baseline_ref,
+        declared=declared,
+        evaluator_digest=evaluator_digest,
+        evaluator_mutations=evaluator_mutations,
+        evaluator_mutation_authorized=evaluator_mutation_authorized,
+        weights=weights,
+    )
+    if withheld is not None:
+        return withheld
 
     tests_passed, test_reason = _run(test_command, cwd, timeout, argv=test_argv)
     cand_cov, missing = measure_coverage_detailed(
@@ -811,12 +1427,15 @@ def evaluate_candidate(
     )
     cq, cq_detail = _mean_quality(cwd, src)
     astr, astr_detail = _mean_assertion(cwd, tests)
-    if tdd is None:
-        tdd = (
-            _red_green_evidence(cwd, baseline_ref, src, tests, timeout)
-            if baseline_ref
-            else TddEvidence(changed_tests=tests)
-        )
+    tdd, fail_first = _resolve_tdd_evidence(
+        cwd,
+        baseline_ref=baseline_ref,
+        src=src,
+        tests=tests,
+        timeout=timeout,
+        config_changed=config_changed,
+        tdd=tdd,
+    )
     net_new = count_net_new_tests(cwd, baseline_ref, tests) if (baseline_ref and tests) else 0
     doc_reasons = _doc_regressions(cwd, baseline_ref, src) if baseline_ref else []
     from maistro_rsi.spec_tracker import new_ac_coverage, proposed_specs
@@ -839,7 +1458,7 @@ def evaluate_candidate(
     inventory_evidence = InventoryEvidence(
         candidate=collect_inventory(cwd, shlex.split(coverage_pytest_args)),
         base=baseline_inventory,
-        config_files_changed=changed_config_files(changed_files),
+        config_files_changed=config_changed,
         allow_shrink=allow_test_inventory_shrink,
     )
 
@@ -867,37 +1486,31 @@ def evaluate_candidate(
         uncollectable_test_reasons=uncollectable,
         vacuous_test_reasons=vacuous_reasons,
         test_inventory=inventory_evidence,
+        changed_src=src,
+        changed_tests=tests,
+        declared_kind=declared,
+        fail_first=fail_first,
+        baseline_quality_composite=baseline_quality,
+        evaluator_digest=evaluator_digest,
+        evaluator_mutations=evaluator_mutations,
+        evaluator_mutation_authorized=evaluator_mutation_authorized,
+        scenario_objective=scenario_objective,
+        scenario_proven_scores=scenario_proven_scores or {},
+        scenario_candidate_scores=scenario_candidate_scores or {},
+        scenario_correctness=scenario_correctness,
     )
     prelim = compose_scorecard(inputs, weights)
     if not prelim.gates_passed:
         return prelim
 
-    # Cost-layered after the cheap gates: mutation runs the changed tests once per
-    # mutant, so a candidate already doomed on tests/coverage/syntax never pays
-    # for it. Only meaningful when the diff added source lines AND changed tests
-    # exist to catch mutations of them.
-    if baseline_ref and new_src_lines and tests:
-        inputs.mutation_probe = probe_diff_mutations(
-            cwd, new_src_lines, tests, timeout=timeout, max_mutants=_MUTATION_MAX_MUTANTS
-        )
-        staged = compose_scorecard(inputs, weights)
-        if not staged.gates_passed:
-            return staged
+    staged = _stage_mutation_probe(
+        inputs, cwd, baseline_ref, new_src_lines, tests, timeout, weights
+    )
+    if staged is not None:
+        return staged
 
     # Second-opinion LLM judge last (most expensive): only for candidates that
     # cleared every deterministic gate, including the mutation probe.
-    if regression_judge_fn is not None and baseline_ref:
-        try:
-            diff = subprocess.run(
-                ["git", "diff", baseline_ref],
-                cwd=str(cwd),
-                capture_output=True,
-                text=True,
-                timeout=60,
-            ).stdout
-        except (OSError, subprocess.TimeoutExpired):
-            diff = ""
-        if diff.strip():
-            inputs.regression_judge = regression_judge_fn(diff, target)
+    _attach_regression_judge(inputs, regression_judge_fn, cwd, baseline_ref, target)
 
     return compose_scorecard(inputs, weights)

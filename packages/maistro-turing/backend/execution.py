@@ -70,7 +70,6 @@ class _ChatNode(BaseNode[_ChatInput, _ChatOutput]):
     output_schema: ClassVar[type[BaseModel]] = _ChatOutput
     display_name: ClassVar[str] = "Turing chat turn"
     description: ClassVar[str] = "Execute one reachable Turing chat request."
-    idempotent: ClassVar[bool] = False
     external_io: ClassVar[bool] = True
 
     def __init__(self, session: TuringChatSession) -> None:
@@ -94,7 +93,8 @@ class TuringExecutionPlane:
     — the durable chat turn is not ``admit``'s delegate node — but not a second
     window. Non-terminal status is not a shield; dispatch-pending, CREATED/QUEUED,
     and an in-lease Attempt are. The admitter sweeps on track and again when
-    the turn terminalizes, and ``max_retained`` is that admitter's bound.
+    the turn terminalizes. All Workspace admitters share one ordered budget:
+    ``max_retained`` bounds this process, not each user's allowance.
     """
 
     def __init__(
@@ -128,16 +128,16 @@ class TuringExecutionPlane:
         self._scope_lock = asyncio.Lock()
         self._max_retained = max_retained
         self._retention = retention if retention is not None else RetentionPolicy()
-        # One admitter per Workspace, so the window and the durable sweep
-        # share that Workspace's deletion authority (#1175). The bound is the
-        # one this plane was constructed with — explicit, and the same number
-        # ChatRunAdmitter enforces.
+        # One admitter per Workspace preserves deletion authority (#1175).
+        # They share one canonical window, so adding users cannot multiply the
+        # existing process-wide max_retained budget.
         self._admitters: dict[str, ChatRunAdmitter] = {}
 
     @property
     def retained(self) -> int:
         """How many Turing chat Runs this process still tracks."""
-        return sum(admitter.retained for admitter in self._admitters.values())
+        admitter = next(iter(self._admitters.values()), None)
+        return admitter.retained if admitter is not None else 0
 
     def _admitter_for(self, workspace_id: str) -> ChatRunAdmitter:
         """The canonical chat window for one Workspace.
@@ -156,6 +156,7 @@ class TuringExecutionPlane:
             project_store=self.project_store,
             max_retained=self._max_retained,
             retention=self._retention,
+            share_window_with=next(iter(self._admitters.values()), None),
         )
         return self._admitters.setdefault(workspace_id, created)
 
@@ -180,7 +181,7 @@ class TuringExecutionPlane:
     async def _settle_window(self, workspace_id: str, run_id: str) -> None:
         """Release the dispatch shield and re-apply the window.
 
-        Tracking can only sweep Runs that are already terminal. The turn
+        Tracking only sweeps Runs already eligible for eviction. The turn
         becomes terminal after dispatch, so a last burst with no later
         admission would sit past ``max_retained`` unless this seam sweeps
         too. The shield drops only once the turn has settled: while it is
