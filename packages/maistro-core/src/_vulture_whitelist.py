@@ -29,6 +29,7 @@ from maistro.cli._backlog import revert as backlog_revert_command
 from maistro.cli._connectors import connectors_describe, connectors_verify
 from maistro.cli._extensions import (
     extensions_compat,
+    extensions_contract,
     extensions_explain,
     extensions_history,
     extensions_lock,
@@ -58,6 +59,7 @@ from maistro.extensions.store import (
     ExtensionInstallStore,
     InMemoryExtensionInstallStore,
 )
+from maistro.extensions.tool_skill.registration import ExtensionToolCatalog
 from maistro.governance.promotion import PromotionContract, PromotionLedger
 from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTargetKind
 from maistro.identity import __getattr__ as identity_getattr
@@ -386,6 +388,7 @@ _VULTURE_WHITELIST = (
     ExtensionInstallStore.get_install,
     InMemoryExtensionInstallStore.get_install,
     SqliteExtensionInstallStore.get_install,
+    extensions_contract,
     # The lock-state read seam (#957): the upgrade preflight consumes the
     # whole installed set, not one extension's history. The CLI preflight
     # command is its in-tree caller (typer dispatch, same posture as the
@@ -417,6 +420,13 @@ _VULTURE_WHITELIST = (
     extensions_lock,
     extensions_explain,
     LockState.identity_keys,
+    # Third-party tool/Skill contracts (M9-E3, #964): the host catalog's
+    # exposure and Binding seams are consumed by the products that embed
+    # maistro-core (model-facing tool surface, workspace binding flows), not
+    # by maistro-core itself; the maistro-core test suite is their caller in
+    # this tree. Framework surface, not dead code.
+    ExtensionToolCatalog.exposed_tools,
+    ExtensionToolCatalog.tool_binding,
     extensions_compat,
     # Extension contract compatibility policy (M9-C1, #955). The negotiation
     # core (`negotiate`, `parse_compat_metadata`, `HostContractMetadata`,
@@ -456,11 +466,12 @@ _VULTURE_WHITELIST = (
     # (packages/maistro-core/tests/a2a/test_external_agents.py), and the
     # caller that binds external delegation to canonical Runs is M9-D2
     # (#959). `refresh` is the only mutation path for changed descriptor
-    # bytes (policy-evaluated broadening, `refresh_descriptor`); `report_availability` records
-    # health-probe evidence; `eligible_specialists` is the read the
-    # delegation binder will filter through. Until #959 lands, no scanned
-    # production call site names them — by construction, since discovery is
-    # deliberately decoupled from invocation.
+    # bytes (policy-evaluated broadening, `refresh_descriptor`);
+    # `report_availability` records health-probe evidence;
+    # `eligible_specialists` is the read the delegation binder will filter
+    # through. Until #959 lands, no scanned production call site names them
+    # — by construction, since discovery is deliberately decoupled from
+    # invocation.
     ExternalAgentRegistry.refresh_descriptor,
     ExternalAgentRegistry.report_availability,
     ExternalAgentRegistry.eligible_specialists,
