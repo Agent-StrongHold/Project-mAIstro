@@ -13,8 +13,8 @@ from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.cli._connectors import connectors_describe, connectors_verify
 from maistro.cli._extensions import (
-    extensions_contract,
     extensions_compat,
+    extensions_contract,
     extensions_explain,
     extensions_history,
     extensions_lock,
