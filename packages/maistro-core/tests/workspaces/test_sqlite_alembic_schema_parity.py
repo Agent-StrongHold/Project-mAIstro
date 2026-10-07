@@ -53,7 +53,7 @@ SCOPE_TABLES = (
 
 #: The canonical Goal tables (#1572). The same dual-ship applies: SQLite
 #: deployments get the Goal store's own DDL (`goals/sqlite_store.py`),
-#: PostgreSQL deployments get migration 059 — and the two must not drift.
+#: PostgreSQL deployments get migration 061 — and the two must not drift.
 GOAL_TABLES = (
     "canonical_goals",
     "canonical_goal_revisions",
@@ -210,7 +210,7 @@ def _spec() -> dict[str, TableSpec]:
             foreign_keys=(("project_id", "canonical_projects", "project_id", "r"),),
             indexes=frozenset({(("project_id", "resource_type"), "")}),
         ),
-        # The canonical Goal store's tables (#1572, migration 059). The
+        # The canonical Goal store's tables (#1572, migration 061). The
         # compare-and-set pointer is a real column on both sides: the guarded
         # UPDATE is the one cross-process CAS the PG store has, so it can not
         # live only in the payload.

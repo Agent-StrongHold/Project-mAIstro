@@ -83,7 +83,7 @@ async def test_wire_goal_store_falls_back_to_memory_loudly(caplog) -> None:
 
 
 class _UnmigratedPool:
-    """A PostgreSQL pool whose schema predates migration 059.
+    """A PostgreSQL pool whose schema predates migration 061.
 
     `fetchval` answers the wiring's `to_regclass` probe with False, which is
     all the wiring may know about it.

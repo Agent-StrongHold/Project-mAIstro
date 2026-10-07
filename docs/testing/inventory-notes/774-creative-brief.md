@@ -438,3 +438,31 @@ user-model tip), colliding with the renumbered `057_user_model_facts`; it
 renumbers onto that tip as **`058_run_store_planner_stability`**. The chain
 test walks to `058` and asserts `get_heads() == ["058"]`; the head-tracking
 stamp assertion follows the tip.
+
+Update (auto-102 lane sync of `c560d4cca`, backlog pair re-parents past the
+tip): on this lane the #102 backlog work-source/authority-cutover pair
+(#98/#102) already held the quota door's child slots as `056`/`057`, so
+merging develop's trunk-landed `056_user_model_facts` collides with it. Per
+the convention — a landed trunk migration never moves; the branch-side pair
+re-parents onto the incoming develop tip — the backlog pair renumbers to `058_backlog_work_source` and
+`059_backlog_authority_cutover`, with develop's #863 planner-stability
+revision landing between them as `057_run_store_planner_stability`. On the
+merged branch the chain test walks to `059` and asserts
+`get_heads() == ["059"]`; the refused-downgrade stamp assertion tracks the
+head at `059`.
+
+Update (auto-102 lane sync of `11376c7bef`, Gauntlet provenance takes `058`):
+develop landed #118's M4-B2 Gauntlet validation provenance as
+`058_learning_validation_provenance` (parent `057`), colliding with the
+branch backlog pair's `058_backlog_work_source` on the same parent. Per the
+convention the branch-side pair re-parents past the incoming develop tip:
+the pair renumbers to `059_backlog_work_source` and
+`060_backlog_authority_cutover`, the chain test walks to `060` and asserts
+`get_heads() == ["060"]`, and the refused-downgrade stamp assertion now
+reads the head dynamically (`_chain_head()`) instead of pinning a literal.
+
+Correction (auto-1572 salvage): the Goal-first renumbering above was an
+abandoned draft. User-model `056`, planner `057`, provenance `058`, and
+incoming backlog `059`/`060` retain their identities. Unmerged Goals append
+as candidate `061`; central reservation remains unverified. The refusal
+assertion preserves the actual pre-downgrade stamp. No test-count change.

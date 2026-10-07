@@ -578,6 +578,7 @@ class TestTheDowngrade:
         # is: the assertion below is "the stamp did not move", not a fixed
         # revision (the tip moves on every collision re-parent).
         head = _stamped_version()
+        assert head == _chain_head()
         _insert_v2(_valid_v2_row(task_id="receipt-1", run_id="run-1", acknowledged_at=3000))
         _execute(_shipped_row_sql("legacy-claim", complete=True))
         before = _query("select * from task_idempotency order by scope_key")

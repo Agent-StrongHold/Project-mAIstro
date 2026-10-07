@@ -60,6 +60,11 @@ CORE_PUBLIC_SURFACE = [
     # is absent, rather than failing at import.
     "maistro.archive",
     "maistro.auth",
+    # The #102 work-source substrate: lossless Markdown import/export, the
+    # canonical BacklogItem store, the authority-cutover ledger and the agent
+    # surface. Published library surface for downstream products; no process
+    # entry point in this repository imports it until the recorded cutover.
+    "maistro.backlog",
     "maistro.builders",
     "maistro.capabilities",
     "maistro.classifier",
@@ -74,11 +79,13 @@ CORE_PUBLIC_SURFACE = [
     # The canonical Goal store (#1572): ontology owner of the shared Goal
     # concept, shipped public surface like runs/workspaces beside it.
     "maistro.goals",
-    # Governed extension registry persistence (#939/#952, SPEC-952): publisher
-    # identity, package digests/signatures, manifest snapshots and immutable
-    # install records. Pure-library surface — `cryptography` is a declared
-    # dependency and aiosqlite is TYPE_CHECKING-only — so a bare install can
-    # import it, and the bare tier asserts that.
+    # M9 extension surface, importable from a bare install by design:
+    # - the context/lifecycle SDK (#950, ADR-104) resolves without optional
+    #   credentials, so the enumeration ratchet's core-surface check sees it
+    #   covered here rather than as a gap;
+    # - the governed registry persistence (#939/#952, SPEC-952) is a
+    #   pure-library surface — `cryptography` is a declared dependency and
+    #   aiosqlite is TYPE_CHECKING-only — and the bare tier asserts that.
     "maistro.extensions",
     "maistro.graph",
     "maistro.http",

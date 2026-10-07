@@ -61,8 +61,8 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # revisions it superseded on its ancestor path, not any fixed parent.
     # `046_durable_elevation_grants` (#72) continues the chain after this
     # branch's `045`, and `047_capability_binding_revocations` (#1133) after
-    # that; #398's `048_canvas_job_retry_backoff` continues it, and #780's
-    # `049_design_artifact_versions` continues that; #774's
+    # that; #398's `048_canvas_job_retry_backoff` continues it after `047`,
+    # `049_design_artifact_versions` (#780) continues that; #774's
     # `050_design_creative_briefs` — renumbered past 048 and 049 as #398 and
     # #780 claimed them — continues after that; and #792's eval-score
     # evidence, which had taken `049` on this branch while develop's
@@ -88,11 +88,11 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # those trees migrated would have treated the Goal DDL as already
     # applied and skipped it. Per the #1572 clarification (2026-10-06) the
     # merged identities are restored byte-for-byte, and the Goal store
-    # appends after develop's integrated `058_learning_validation_provenance`
-    # as `059_canonical_goals` — the single linear head is now `059`, with
+    # appends after the incoming backlog pair (`059`/`060`)
+    # as `061_canonical_goals` — the single linear head is now `061`, with
     # `056`/`057` meaning exactly what the installed base already knows they
     # mean.
-    walked = {item.revision for item in directory.walk_revisions("base", "059")}
+    walked = {item.revision for item in directory.walk_revisions("base", "061")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
@@ -112,7 +112,9 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     assert "057" in walked
     assert "058" in walked
     assert "059" in walked
-    assert directory.get_heads() == ["059"]
+    assert "060" in walked
+    assert "061" in walked
+    assert directory.get_heads() == ["061"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(

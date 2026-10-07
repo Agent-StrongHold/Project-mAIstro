@@ -254,9 +254,15 @@ jobs:
       # #56 was an epic closed by one PR's `Closes` keyword: the PR delivered
       # a slice, the keyword closed the whole thing, and every acceptance
       # criterion it never touched read as done. An issue titled [EPIC],
-      # [MILESTONE] or [INITIATIVE], or one with sub-issues, closes by hand
-      # once check-ac-state reports every criterion reachable (cutover S0.2).
-      - name: No PR closes an epic by keyword
+      # [MILESTONE] or [INITIATIVE], or one with open direct children, closes
+      # by explicit reviewed action once check-ac-state reports every
+      # criterion reachable (cutover S0.2). And #76 was closed completed by a
+      # keyword while its own acceptance record still had every box unticked:
+      # a leaf with a registered acceptance record closes only when the record
+      # shows every criterion proven -- never because the PR diff is green
+      # (#1141). The verdict reads the PR body and the GitHub issue state
+      # only; the candidate controls neither.
+      - name: No PR closes an epic or an issue with unproven acceptance by keyword
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/check-closure-targets.py
@@ -357,7 +363,7 @@ jobs:
       # The canonical Goal store (#1572). Same contract as the Workspace step
       # above: the conformance suite's PostgreSQL leg must not silently skip
       # in the one job that owns a real server, and the canonical_goals tables
-      # (migration 059) must answer on every supported major.
+      # (migration 061) must answer on every supported major.
       - name: Goal stores conform across memory, SQLite and PostgreSQL
         env:
           MAISTRO_REQUIRE_PG_LEGS: "1"

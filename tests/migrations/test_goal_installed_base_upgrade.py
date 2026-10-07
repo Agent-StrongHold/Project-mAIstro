@@ -11,9 +11,10 @@ would then treat the Goal DDL as already applied and silently skip it, leaving
 a deployment whose Goals vanish on every restart. The 2026-10-06
 clarification on #1572 forbids exactly that: merged identities keep their
 meaning and ancestry, and the new revision appends after the integrated
-develop head under an unused id. After the next develop sync claimed ``058``
-for learning-validation provenance, the Goal revision moved forward to
-``059_canonical_goals`` rather than reusing that installed identity.
+develop head under an unused id. The integrated tree claims ``058`` for
+learning-validation provenance and ``059``/``060`` for backlog work-source
+and authority cutover. Goals append as ``061_canonical_goals`` rather than
+reusing those installed identities.
 
 So this suite proves the three things the clarification asks for:
 
@@ -58,9 +59,8 @@ PLANNER_MERGE = "4675101647e629d290e0fece29694e43883e1395"
 USER_MODEL_FILE = "alembic/versions/056_user_model_facts.py"
 PLANNER_FILE = "alembic/versions/057_run_store_planner_stability.py"
 
-#: The single linear head after the repair: develop's ``058`` learning
-#: validation provenance plus the Goal store's fresh ``059``.
-GOAL_REVISION = "059"
+#: The single linear head after backlog ``059``/``060`` and the Goal store.
+GOAL_REVISION = "061"
 
 GOAL_TABLES = ("canonical_goals", "canonical_goal_revisions", "canonical_goal_transitions")
 USER_MODEL_TABLES = ("user_model_facts", "user_model_statement_keys")
@@ -400,14 +400,18 @@ class TestTheMergedIdentities:
         assert revisions["056"].down_revision == "043_invocation_quota_door"
         assert revisions["057"].down_revision == "056"
         assert revisions["058"].down_revision == "057"
-        assert revisions[GOAL_REVISION].down_revision == "058"
+        assert revisions["059"].down_revision == "058"
+        assert revisions["060"].down_revision == "059"
+        assert revisions[GOAL_REVISION].down_revision == "060"
         assert script_directory.get_heads() == [GOAL_REVISION]
         # The filenames carry the merged identities too — a renamed file
         # and a moved id are the same silent reassignment in two clothes.
         assert (VERSIONS / "056_user_model_facts.py").is_file()
         assert (VERSIONS / "057_run_store_planner_stability.py").is_file()
         assert (VERSIONS / "058_learning_validation_provenance.py").is_file()
-        assert (VERSIONS / "059_canonical_goals.py").is_file()
+        assert (VERSIONS / "059_backlog_work_source.py").is_file()
+        assert (VERSIONS / "060_backlog_authority_cutover.py").is_file()
+        assert (VERSIONS / "061_canonical_goals.py").is_file()
 
     def test_restored_files_are_byte_identical_to_the_merged_snapshots(self) -> None:
         """The merged revisions' content is what develop shipped, byte for byte.
