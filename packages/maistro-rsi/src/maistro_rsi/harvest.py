@@ -79,7 +79,9 @@ def pr_body(file: str, patches: list[PromotedPatch]) -> str:
 
     Only gates with a recorded result on one of the group's promotions are
     named, each with its outcome and — where recorded — its execution
-    provenance. A promotion without recorded evidence is stated as unverified.
+    provenance. Every promotion without recorded evidence is stated as
+    unverified — including in a mixed group, where another promotion's
+    recorded rows must not vouch for a legacy patch with unknown outcomes.
     Nothing here claims a gate that did not run: the historical hard-coded
     "passed the full fitness scorecard (tests, coverage-not-dropped, ruff,
     mypy, bandit)" sentence was exactly the false-evidence defect #820
@@ -95,6 +97,7 @@ def pr_body(file: str, patches: list[PromotedPatch]) -> str:
     evidence_lines = _gate_evidence_lines(patches)
     if evidence_lines:
         lines += evidence_lines
+        lines += _unevidenced_lines(patches)
     else:
         lines.append(
             "- No recorded gate evidence on any promotion in this group — "
@@ -165,6 +168,19 @@ def _gate_evidence_lines(patches: list[PromotedPatch]) -> list[str]:
             suffix = _provenance_suffix(ev)
             lines.append(f"- {name}: FAILED{suffix}")
     return lines
+
+
+def _unevidenced_lines(patches: list[PromotedPatch]) -> list[str]:
+    """One line per promotion with no recorded gate result, naming it
+    unverified. Evidence is judged per patch: in a group that mixes an
+    evidenced promotion with a legacy row (neither ``gates`` nor
+    ``gate_evidence``), the recorded rows must not read as evidence for the
+    unevidenced patch, whose gate outcomes are unknown (#820)."""
+    return [
+        f"- {p.subject or p.patch_file}: no recorded gate evidence — unverified"
+        for p in patches
+        if not p.gates and p.gate_evidence is None
+    ]
 
 
 def _state_rank(state: str) -> int:

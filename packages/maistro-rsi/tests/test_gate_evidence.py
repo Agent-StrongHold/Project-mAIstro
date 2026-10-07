@@ -528,6 +528,33 @@ class TestPrBodyTruthfulness:
         body = pr_body("a.py", patches)
         assert "- ruff_clean: NOT RUN — blocking" in body
 
+    def test_mixed_group_marks_unevidenced_promotions_unverified(self) -> None:
+        """A group mixing an evidenced promotion with a legacy row (neither
+        ``gates`` nor ``gate_evidence``) names the legacy patch unverified —
+        the recorded rows do not vouch for outcomes that are unknown."""
+        evidence = {
+            "ruff_clean": _evidence(
+                "ruff_clean",
+                state=GateState.PASSED,
+                passed=True,
+                provenance={"tool_version": "1", "exit_status": 0},
+            )
+        }
+        patches = [
+            PromotedPatch(
+                patch_file="0001.patch",
+                file="a.py",
+                subject="evidenced s1",
+                gates={"ruff_clean": True},
+                gate_evidence=evidence,
+            ),
+            PromotedPatch(patch_file="0002.patch", file="a.py", subject="legacy s2"),
+        ]
+        body = pr_body("a.py", patches)
+        assert "- ruff_clean: passed" in body
+        assert "- legacy s2: no recorded gate evidence — unverified" in body
+        assert "No recorded gate evidence on any promotion" not in body
+
     def test_failed_result_is_rendered_failed(self) -> None:
         evidence = {
             "mypy_clean": _evidence(
