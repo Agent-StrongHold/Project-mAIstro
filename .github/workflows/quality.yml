@@ -1021,8 +1021,10 @@ jobs:
       # (history in git); a count could hold slack — the ceiling sat at 1,426
       # while the tree had 1,422 findings — and 4 findings of retained slack
       # would have silently paid for a later regression. The same invocation
-      # also runs in vulture-ratchet.yml; the ledger JSON is the single
-      # authority, this job extends it to topic-branch pushes (#381).
+      # is owned by vulture-ratchet.yml on shared PR, merge-group and protected
+      # push events (#1357). Keep this fallback only for Quality's unique topic
+      # pushes (#381); do not broaden it or remove the dedicated required owner.
+      # Both use the locked analyzer, identical scope and trusted-base resolver.
       #
       # Scope: ALL packages/*/src (2026-07-01), not just maistro-core — a single
       # invocation so cross-package reachability resolves public APIs consumed
@@ -1034,6 +1036,11 @@ jobs:
       # benchmarks run the official implementation — linting someone else's
       # tree for dead names measures nothing we can act on.
       - name: vulture (dead-code; confidence ≥ 60 — per-identity ledger)
+        if: >-
+          github.event_name == 'push' &&
+          github.ref != 'refs/heads/develop' &&
+          github.ref != 'refs/heads/integration' &&
+          github.ref != 'refs/heads/main'
         run: >-
           uv run python scripts/check-vulture-baseline.py
           packages/*/src
