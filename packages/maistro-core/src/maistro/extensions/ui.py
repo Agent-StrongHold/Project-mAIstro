@@ -1022,12 +1022,12 @@ def _parse_local_action(
     )
 
 
-def _validated_action_fields(
+def _validated_action_identity(
     raw: Mapping[str, object],
     component_id: str,
     seen: set[str],
-) -> tuple[str, str, tuple[str, ...], str]:
-    """Validate an action declaration's identity fields and return them."""
+) -> str:
+    """Validate the action's name and uniqueness, returning it."""
     for required in ("action", "intent"):
         if required not in raw:
             raise _reject(f"component {component_id!r}: action missing {required!r}")
@@ -1037,7 +1037,11 @@ def _validated_action_fields(
     if name in seen:
         raise _reject(f"component {component_id!r}: duplicate action {name!r}")
     seen.add(name)
+    return name
 
+
+def _validated_action_intent(raw: Mapping[str, object], name: str, component_id: str) -> str:
+    """Validate the action's declared intent against the governed vocabulary."""
     intent = raw["intent"]
     if not isinstance(intent, str) or (
         intent not in MUTATING_INTENTS and intent not in LOCAL_INTENTS
@@ -1047,16 +1051,32 @@ def _validated_action_fields(
             f"intent {intent!r}; the governed vocabulary is "
             f"{sorted(MUTATING_INTENTS | LOCAL_INTENTS)}"
         )
+    return intent
 
-    permissions = _parse_permission_tokens(
-        raw.get("permissions", []), f"action {name!r} permissions"
-    )
+
+def _validated_action_precondition(raw: Mapping[str, object], name: str, component_id: str) -> str:
+    """Validate the action's declared precondition."""
     precondition = raw.get("precondition", "always")
     if not isinstance(precondition, str) or precondition not in PRECONDITIONS:
         raise _reject(
             f"component {component_id!r}: action {name!r} declares unknown "
             f"precondition {precondition!r}; known: {sorted(PRECONDITIONS)}"
         )
+    return precondition
+
+
+def _validated_action_fields(
+    raw: Mapping[str, object],
+    component_id: str,
+    seen: set[str],
+) -> tuple[str, str, tuple[str, ...], str]:
+    """Validate an action declaration's identity fields and return them."""
+    name = _validated_action_identity(raw, component_id, seen)
+    intent = _validated_action_intent(raw, name, component_id)
+    permissions = _parse_permission_tokens(
+        raw.get("permissions", []), f"action {name!r} permissions"
+    )
+    precondition = _validated_action_precondition(raw, name, component_id)
     return name, intent, permissions, precondition
 
 
