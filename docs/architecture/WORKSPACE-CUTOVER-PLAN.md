@@ -391,7 +391,8 @@ the P0.1 identity store. `audit_log` retires under P0.4. `dag_runs` and
 
 **Epic closure by evidence, not keyword.** `scripts/check-closure-targets.py`: parse the
 PR body for `Closes/Fixes/Resolves #N`; fail if the target's leading bracketed tag contains
-the word EPIC, MILESTONE or INITIATIVE, or the target has sub-issues. The tag test, not a
+the word EPIC, MILESTONE or INITIATIVE, or the target has open direct children (sub-issues
+whose state is `open`). The tag test, not a
 literal `[EPIC]` prefix, because real titles qualify the tag: `[EPIC M1-B]`,
 `[MILESTONE M4]`, `[MASTER INITIATIVE]`. Epics close by hand when `check-ac-state` reports
 every criterion `reachable`. This is the #56 hole. The workflow triggers on `opened`,
@@ -399,6 +400,17 @@ every criterion `reachable`. This is the #56 hole. The workflow triggers on `ope
 payload, so a body edit re-runs the check against the body as it now stands. Triggering
 only on opened/reopened/synchronize is not enough: a `Closes #N` appended after the final
 push would ride a green check (vouching for the old body) straight into the merge.
+
+**Leaf closure by acceptance record, not diff (#1141).** The same check also refuses a
+closing keyword against an open leaf whose body registers acceptance criteria as checkbox
+items under an acceptance heading while any box is still unticked — the tick is the
+issue's closeout record, and #76 was closed completed with every box unticked. A criterion
+claimed on the closing line itself (`Closes #76 AC-2`) must be ticked in that record. The
+verdict reads the PR body and the target's issue state only, never the PR diff: a PR may
+prove a criterion through tests, config, removal or migration without touching the file
+the prose cites, and touching a cited file proves nothing. A closed target is skipped (a
+keyword cannot close it again); an open leaf with every box ticked stays eligible for
+useful auto-close.
 
 **Freeze extended to surfaces.** Add to `quality/m1-convergence-freeze.json` (or an M3
 sibling) a rule: a new file under `frontend/src/pages` that declares a backend entity type
