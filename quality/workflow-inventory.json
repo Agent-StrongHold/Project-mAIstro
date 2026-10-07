@@ -118,7 +118,7 @@
       "file": ".github/workflows/release.yml",
       "disposition": "ACTIVE",
       "triggers": ["push"],
-      "rationale": "Publishes the release on v* tags: builds the pinned images, scans, signs and pushes with provenance."
+      "rationale": "Publishes the release on v* tags: builds each published image exactly once into its `-rc` quarantine repository, scans the candidate digest with Trivy and Grype (the same policy security.yml enforces on PRs and nightlies), applies the release tags to the scanned digest via `imagetools create`, then signs and verifies it with provenance (#611, #346 AC-5)."
     },
     {
       "id": "release-installer",
