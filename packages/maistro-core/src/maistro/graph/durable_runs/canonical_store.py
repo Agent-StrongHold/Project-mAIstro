@@ -37,6 +37,7 @@ from maistro.runs.store import RunCursor, RunIntegrityError, RunStore, run_curso
 from .continuation import GraphContinuation, GraphContinuationStore
 from .fair_scan import (
     DEFAULT_MAX_INSPECTED,
+    DEFAULT_PAGE_SIZE,
     ScanContinuation,
     ScanPage,
     cursor_time,
@@ -817,7 +818,8 @@ class CanonicalDurableRunStore:
         project_id: str | None = None,
         workspace_id: str | None = None,
         after: tuple[str, str] | None = None,
-    ) -> list[DurableRunRecord]:
+        max_inspected: int = DEFAULT_MAX_INSPECTED,
+    ) -> ScanPage[DurableRunRecord, tuple[str, str]]:
         """Paused Runs holding a human pause, oldest-created-first (#1109).
 
         Pages the pause-kind projection so human eligibility is decided before
@@ -828,26 +830,59 @@ class CanonicalDurableRunStore:
         its place in the page.
 
         ``workspace_id`` is canonical Run scope (#1240). The continuation
-        index cannot carry it, so it is enforced on the assembled records; a
-        caller paging Workspaces passes ``project_id`` too — a Project belongs
-        to exactly one Workspace — so the keyset itself runs over eligible
-        rows only and no foreign-page rows consume the limit.
+        index cannot carry it, so — like staleness — it filters the read
+        after assembly, which is why this returns a :class:`ScanPage` and
+        keeps walking index pages past the rows it drops, up to
+        ``max_inspected``: a page that assembles to nothing eligible is
+        progress through the projection, not the end of it, and ``exhausted``
+        is set only when the projection itself ran out. A Workspace-wide walk
+        (no ``project_id``) over a large multi-tenant store can still spend
+        ``max_inspected`` on foreign rows before reaching its own — callers
+        should pass ``project_id`` (a Project belongs to exactly one
+        Workspace) so the keyset itself runs over eligible rows only.
         """
-        if limit <= 0:
-            return []
-        run_ids = await self._continuations.list_hitl_paused_run_ids(
-            limit=limit,
-            project_id=project_id,
-            after=after,
-        )
-        records = await self._assemble_all(run_ids)
-        return [
-            record
-            for record in records
-            if record.run.status is RunStatus.PAUSED
-            and record_has_hitl_pause(record)
-            and (workspace_id is None or record.run.workspace_id == workspace_id)
-        ]
+        if limit <= 0 or max_inspected <= 0:
+            return ScanPage(items=[], resume_after=after, inspected=0)
+        items: list[DurableRunRecord] = []
+        cursor = after
+        inspected = 0
+        while len(items) < limit and inspected < max_inspected:
+            # Minimum rows per projection read, so a small item target does
+            # not force one round trip per ineligible row.
+            requested = min(
+                max(limit, DEFAULT_PAGE_SIZE),
+                max_inspected - inspected,
+            )
+            run_ids = await self._continuations.list_hitl_paused_run_ids(
+                limit=requested,
+                project_id=project_id,
+                after=cursor,
+            )
+            if not run_ids:
+                return ScanPage(
+                    items=items,
+                    resume_after=cursor,
+                    inspected=inspected,
+                    exhausted=True,
+                )
+            for run_id in run_ids:
+                inspected += 1
+                record = await self.get(run_id)
+                if record is None:
+                    # Deleted between the index read and this read: there is
+                    # no row left to page past, the same disposition
+                    # `scan_due_page` gives its own vanished candidates.
+                    continue
+                cursor = (cursor_time(record.run.created_at), record.run_id)
+                if (
+                    record.run.status is RunStatus.PAUSED
+                    and record_has_hitl_pause(record)
+                    and (workspace_id is None or record.run.workspace_id == workspace_id)
+                ):
+                    items.append(record)
+                    if len(items) >= limit:
+                        break
+        return ScanPage(items=items, resume_after=cursor, inspected=inspected)
 
     async def list_due(
         self,

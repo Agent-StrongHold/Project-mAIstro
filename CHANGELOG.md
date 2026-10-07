@@ -149,7 +149,14 @@ or placeholder-only section.
   restarts) cannot make a pending item vanish by consuming a scan position.
   The Workspace Attention projection, which had duplicated the same
   filter-after-prefix walk against the route's private constants, now walks
-  the same canonical `pending_hitl_records` contract.
+  the same canonical `pending_hitl_records` contract. Workspace-wide
+  discovery (no Project named) also survives a multi-tenant projection:
+  `list_hitl_paused` reports its progress through the projection separately
+  from the eligible items it returns (a `ScanPage`, as the due-index scan
+  has done since #1098), so a page that assembles to nothing this caller can
+  see — another tenant's rows, or a stale projected row — advances the walk
+  past itself instead of reading as the end of human work, and a bounded
+  walk that stops at its inspection ceiling reports capped, never exhausted.
 
 - **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
   always invokes Compose with explicit `-f` files, which disables Compose's own

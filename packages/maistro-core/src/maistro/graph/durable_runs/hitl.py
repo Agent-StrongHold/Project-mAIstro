@@ -11,8 +11,6 @@ from typing import TYPE_CHECKING
 
 from maistro.runs.model import RunStatus
 
-from .fair_scan import cursor_time
-
 if TYPE_CHECKING:
     from .protocol import DurableRunStore
     from .types import DurableRunRecord
@@ -411,7 +409,10 @@ class PendingHitlScan:
     carrying pending human work at read time. ``exhausted`` says whether the
     walk ended because the projection ran out (True) rather than because the
     inspection ceiling or the item limit stopped it with ordering left — the
-    caller's signal that a later read may find more.
+    caller's signal that a later read may find more. The store reports its
+    own progress separately (:class:`ScanPage`), so a page that assembles to
+    nothing eligible — foreign-workspace rows on a Workspace-wide walk, or a
+    stale projected row — advances the walk instead of reading as the end.
     """
 
     records: tuple[DurableRunRecord, ...] = ()
@@ -438,10 +439,13 @@ async def pending_hitl_records(
     (#364).
 
     ``project_id`` narrows the walk to one Project; ``None`` walks the whole
-    Workspace, which filters the assembled page against canonical Run scope —
-    callers paging Workspace-wide over a large multi-tenant store should
-    prefer named Projects (a Project belongs to exactly one Workspace) so the
-    keyset runs over eligible rows only.
+    Workspace. The store's index cannot carry Workspace scope, so the store
+    filters it from each assembled page and keeps paging — a page that
+    assembles to nothing eligible moves ``resume_after`` past the foreign
+    rows instead of ending the walk, which is what keeps this Workspace's
+    work behind another tenant's readable. Rows beyond the store's per-call
+    inspection ceiling are the one thing that can still stop a Workspace-wide
+    walk short, and the returned ``exhausted`` says so honestly.
 
     The walk stops at ``limit`` items, ``MAX_PENDING_SCAN_RECORDS`` inspected
     rows, or the end of the projection — the same bounded-scan contract
@@ -466,10 +470,11 @@ async def pending_hitl_records(
             workspace_id=workspace_id,
             after=cursor,
         )
-        if not page:
-            return PendingHitlScan(records=tuple(found), exhausted=True)
-        inspected += len(page)
-        for record in page:
+        inspected += page.inspected or 0
+        if page.resume_after is not None:
+            cursor = page.resume_after
+        filled = False
+        for record in page.items:
             node_ids = pending_hitl_node_ids(record)
             if not node_ids:
                 # A projected row that canonical state disqualifies: it
@@ -481,12 +486,15 @@ async def pending_hitl_records(
             found.append(record)
             items += len(node_ids)
             if items >= limit:
+                filled = True
                 break
-        # The store's own cursor spelling, not a bare isoformat: the keyset
-        # compares a UTC-normalized key, so a `created_at` printed at any
-        # other offset would order one way and filter the other, and this
-        # walk would silently stop advancing.
-        cursor = (cursor_time(page[-1].run.created_at), page[-1].run_id)
+        if filled:
+            # The item limit stopped the walk with ordering left — including
+            # any unread remainder of this page — so a later read may find
+            # more, whatever the page's own exhaustion said.
+            break
+        if page.exhausted:
+            return PendingHitlScan(records=tuple(found), exhausted=True)
     return PendingHitlScan(records=tuple(found))
 
 

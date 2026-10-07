@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +3
-  packages/maistro-core/tests: +29
+  packages/hive-conductor/backend/tests: +4
+  packages/maistro-core/tests: +32
 ---
 # 1109-hitl-pending-fairness
 
@@ -106,3 +106,33 @@ to `ok: every measured file this change touches is at or above 90% lines /
 --min-confidence 60 --exclude '*/third_party/*'` exits 0 with no ledger
 amendment (1332 reviewed = 1332 findings); `check-test-duplicates.py` and the
 suite-inventory check pass at the new counts.
+
+## CI-repair round: a page that assembles to nothing eligible is progress, not the end
+
+Independent verification of head 4e0eed4b6 found the one starvation the pause-kind
+projection alone cannot remove, one layer down: `CanonicalDurableRunStore.list_hitl_paused`
+filters each assembled page by Workspace scope (#1240) and projection staleness after the
+projection page was cut, and returned a plain list — so a page of 2000 foreign-Workspace
+human pauses assembled to `[]`, and `pending_hitl_records` read an empty page as the end of
+the projection (`exhausted=True`). A Workspace-wide walk (Attention's exact shape,
+`project_id=None`) answered empty forever and called it complete, and the Attention
+docstring's claim that a Workspace-wide walk "cannot hide this Workspace's work behind
+another tenant's" was false. The repair follows the `scan_due_page` precedent (#1098):
+`list_hitl_paused` now returns a `ScanPage` on every backend — the canonical store pages
+the projection internally past the rows it drops (bounded by `max_inspected`), reporting
+`resume_after`/`inspected`/`exhausted` separately from the eligible items — and the walk
+advances by `resume_after`, so an all-foreign page is progress. `exhausted` is now set only
+by the projection's real end, so a ceiling stop is reported as capped, never as ran-out.
+
+No delta change from the repair itself; the regression tests add +3 to
+`packages/maistro-core/tests` (`test_a_page_of_ineligible_rows_is_progress_not_the_end`,
+`test_a_ceiling_stop_is_reported_as_such`,
+`test_walk_reaches_the_workspace_behind_a_full_page_of_foreign_pauses` — the last is the
+mutation test: against the pre-repair walk it returns an empty, "exhausted" scan) and +1 to
+`packages/hive-conductor/backend/tests`
+(`test_attention_finds_the_workspace_pause_behind_a_full_page_of_foreign_pauses`, driven
+against the canonical store with `MAX_PENDING_SCAN_RECORDS` pulled down to the page size so
+the foreign prefix is a full page at Attention's own limit; without the repair Attention
+answers empty with `truncated: False`). Existing assertions moved from list shape to
+`page.items`; the zero-limit read-count pin went 1 → 2 because the walk's final read is the
+one that confirms the projection ran out, which is what makes `exhausted` honest.

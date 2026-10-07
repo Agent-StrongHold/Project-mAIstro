@@ -7,6 +7,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from maistro.runs.model import RunStatus
 
+from .fair_scan import DEFAULT_MAX_INSPECTED, ScanPage
 from .hitl import HitlAuthorization
 from .types import DurableRunRecord
 
@@ -71,7 +72,8 @@ class DurableRunStore(Protocol):
         project_id: str | None = None,
         workspace_id: str | None = None,
         after: tuple[str, str] | None = None,
-    ) -> list[DurableRunRecord]:
+        max_inspected: int = DEFAULT_MAX_INSPECTED,
+    ) -> ScanPage[DurableRunRecord, tuple[str, str]]:
         """Paused Runs whose durable frontier holds a human pause (#1109).
 
         Eligibility is queryable before ``limit``: the pause-kind projection
@@ -82,11 +84,23 @@ class DurableRunStore(Protocol):
         the pause entry, not the index, remains the source of truth.
 
         ``after`` is the same ``(created_at_iso, run_id)`` keyset cursor
-        ``list_by_status`` uses. ``workspace_id`` is applied from the
-        canonical Run; on stores whose index cannot carry Workspace scope it
-        filters the assembled page, so callers paging across many Workspaces
-        should pair it with a ``project_id`` (a Project belongs to exactly one
-        Workspace) to keep the page's keyset over eligible rows only.
+        ``list_by_status`` uses.
+
+        This is a :class:`ScanPage`, not a plain list, because this read
+        filters rows of its own read: scope (``workspace_id`` on stores whose
+        index cannot carry it) and projection staleness drop assembled rows
+        after the index page was cut, so an empty list cannot say whether the
+        projection ended. The page therefore carries the walk's progress
+        separately — ``resume_after`` is the keyset position of the last row
+        the read got to (eligible or not), ``inspected`` counts projected rows
+        read, and ``exhausted`` is true only when the projection itself ran
+        out. A caller walking pages advances by ``resume_after`` and so gets
+        past a page that assembled to nothing eligible, instead of rereading
+        it forever or mistaking it for the end (#1109).
+
+        ``max_inspected`` bounds the rows one call may look at, so one call
+        stays a bounded read however long an ineligible prefix is; reaching it
+        ends the call with whatever was found and ``exhausted=False``.
         """
         ...
 

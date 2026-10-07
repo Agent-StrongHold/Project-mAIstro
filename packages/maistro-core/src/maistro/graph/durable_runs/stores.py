@@ -17,7 +17,7 @@ from maistro.sqlite_schema import (
     serialized_schema_upgrade_sync,
 )
 
-from .fair_scan import cursor_time
+from .fair_scan import DEFAULT_MAX_INSPECTED, ScanPage, cursor_time
 from .hitl import (
     HitlAuthorization,
     HitlDeadlineElapsed,
@@ -449,16 +449,28 @@ class InMemoryDurableRunStore:
         project_id: str | None = None,
         workspace_id: str | None = None,
         after: tuple[str, str] | None = None,
-    ) -> list[DurableRunRecord]:
+        max_inspected: int = DEFAULT_MAX_INSPECTED,
+    ) -> ScanPage[DurableRunRecord, tuple[str, str]]:
+        """Eligibility is decided before the page is cut, so this store's page
+        carries only eligible rows: an empty page really is the end (#1109).
+        The :class:`ScanPage` shape keeps the two facts separate anyway, so a
+        walk written against one backend reads the same on every backend."""
+        del max_inspected  # eligibility precedes the cut; nothing to bound
         if limit <= 0:
-            return []
+            return ScanPage(items=[], resume_after=after, inspected=0)
         matching = _paused_hitl_records(
             self._rows.values(), project_id=project_id, workspace_id=workspace_id
         )
         matching.sort(key=_created_cursor)
         if after is not None:
             matching = [record for record in matching if _created_cursor(record) > after]
-        return [_clone(record) for record in matching[:limit]]
+        page = [_clone(record) for record in matching[:limit]]
+        return ScanPage(
+            items=page,
+            resume_after=_created_cursor(page[-1]) if page else after,
+            inspected=len(page),
+            exhausted=len(matching) <= limit,
+        )
 
     async def list_for_project(self, project_id: str, *, limit: int = 25) -> list[DurableRunRecord]:
         runs = [record for record in self._rows.values() if record.run.project_id == project_id]
@@ -760,16 +772,24 @@ class SqliteDurableRunStore:
         project_id: str | None = None,
         workspace_id: str | None = None,
         after: tuple[str, str] | None = None,
-    ) -> list[DurableRunRecord]:
+        max_inspected: int = DEFAULT_MAX_INSPECTED,
+    ) -> ScanPage[DurableRunRecord, tuple[str, str]]:
+        del max_inspected  # the SQL reads eligible rows only; nothing to bound
         if limit <= 0:
-            return []
-        return await asyncio.to_thread(
+            return ScanPage(items=[], resume_after=after, inspected=0)
+        records, exhausted = await asyncio.to_thread(
             _list_hitl_paused_sync,
             self,
             limit,
             project_id,
             workspace_id,
             after,
+        )
+        return ScanPage(
+            items=records,
+            resume_after=_created_cursor(records[-1]) if records else after,
+            inspected=len(records),
+            exhausted=exhausted,
         )
 
     async def list_for_project(self, project_id: str, *, limit: int = 25) -> list[DurableRunRecord]:
@@ -1046,10 +1066,14 @@ def _list_hitl_paused_sync(
     project_id: str | None,
     workspace_id: str | None,
     after: tuple[str, str] | None,
-) -> list[DurableRunRecord]:
+) -> tuple[list[DurableRunRecord], bool]:
     # Oldest-first, on the same (created_at, run_id) keyset `list_by_status`
     # pages (#1109): eligibility comes from the projected column, before the
     # limit, so a machine-only prefix cannot occupy the page human work needs.
+    # One row past the page decides `exhausted` for the ScanPage: this query
+    # filters in SQL, so an empty page means the projection really ended —
+    # but the flag is read from rows, not inferred from emptiness, which is
+    # what lets every backend share one walk.
     query = "SELECT * FROM durable_graph_runs WHERE status = ? AND has_hitl_pause = 1"
     params: list[Any] = [RunStatus.PAUSED.value]
     if project_id is not None:
@@ -1064,10 +1088,10 @@ def _list_hitl_paused_sync(
         query += " AND (created_at, run_id) > (?, ?)"
         params.extend(after)
     query += " ORDER BY created_at ASC, run_id ASC LIMIT ?"
-    params.append(limit)
+    params.append(limit + 1)
     with store._connect() as conn:
         rows = conn.execute(query, params).fetchall()
-    return [store._from_row(row) for row in rows]
+    return [store._from_row(row) for row in rows[:limit]], len(rows) <= limit
 
 
 def _list_for_project_sync(

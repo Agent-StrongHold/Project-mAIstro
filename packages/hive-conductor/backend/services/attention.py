@@ -89,11 +89,12 @@ async def _paused_records(
     pause-kind projection decides human eligibility before any page is cut,
     and each item-carrying record is revalidated against live membership
     before its payload is disclosed. Workspace-wide (no Project named), the
-    walk still cannot hide this Workspace's work behind another tenant's —
-    the Workspace filter binds at the assembled canonical record — but a very
-    large multi-tenant projection can spend the inspection ceiling on foreign
-    rows, which is what the second value reports: the record ceiling stopped
-    the walk early, so a later read may find more.
+    continuation index cannot carry Workspace scope, so the store filters it
+    from each assembled page and keeps paging — a page of another tenant's
+    rows advances the walk instead of ending it, and this Workspace's work
+    behind such pages is still reached within one request's inspection
+    ceiling. What the second value reports is the one honest remaining cap:
+    the record ceiling stopped the walk early, so a later read may find more.
     """
     from services.dag_agents import get_run_store
 

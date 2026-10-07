@@ -289,7 +289,8 @@ async def test_real_human_pause_without_a_deadline_is_discoverable() -> None:
 
     found = await store.list_hitl_paused(limit=10, project_id=project_id)
 
-    assert [record.run_id for record in found] == [paused.run_id]
+    assert [record.run_id for record in found.items] == [paused.run_id]
+    assert found.exhausted is True
 
 
 async def test_machine_only_paused_prefix_cannot_occupy_the_page() -> None:
@@ -324,7 +325,7 @@ async def test_machine_only_paused_prefix_cannot_occupy_the_page() -> None:
 
     page = await store.list_hitl_paused(limit=2, project_id=root.project_id)
 
-    assert [record.run_id for record in page] == [human_id]
+    assert [record.run_id for record in page.items] == [human_id]
 
 
 async def test_answering_removes_the_run_from_the_projection() -> None:
@@ -348,9 +349,8 @@ async def test_answering_removes_the_run_from_the_projection() -> None:
         run_store=run_store,
         actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
-    assert [record.run_id for record in await store.list_hitl_paused(project_id=project_id)] == [
-        paused.run_id
-    ]
+    listed = await store.list_hitl_paused(project_id=project_id)
+    assert [record.run_id for record in listed.items] == [paused.run_id]
 
     await store.submit_hitl_answer(
         paused.run_id,
@@ -359,7 +359,7 @@ async def test_answering_removes_the_run_from_the_projection() -> None:
         authorization=_authorization(WORKSPACE),
     )
 
-    assert await store.list_hitl_paused(project_id=project_id) == []
+    assert (await store.list_hitl_paused(project_id=project_id)).items == []
 
 
 async def _canonical_row(
@@ -387,6 +387,11 @@ async def _canonical_row(
     await run_store.transition_run(admitted.run_id, RunStatus.RUNNING)
     if status is not RunStatus.RUNNING:
         await run_store.transition_run(admitted.run_id, status)
+    node_run = await run_store.create_node_run(admitted.run_id, node_id="ask")
+    await run_store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await run_store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    if status is not RunStatus.RUNNING:
+        await run_store.transition_node_run(node_run.node_run_id, status)
     run = await run_store.get_run(admitted.run_id)
     assert run is not None
     node_runs = tuple(await run_store.list_node_runs(admitted.run_id))
@@ -429,7 +434,7 @@ async def test_stale_projected_row_is_never_disclosed() -> None:
 
     found = await store.list_hitl_paused(limit=10, project_id=root.project_id)
 
-    assert found == []
+    assert found.items == []
 
 
 async def test_canonical_scope_filters_bind_before_disclosure() -> None:
@@ -469,17 +474,17 @@ async def test_canonical_scope_filters_bind_before_disclosure() -> None:
     )
 
     mine = await store.list_hitl_paused(project_id=root.project_id)
-    assert [record.run_id for record in mine] == [mine_id]
+    assert [record.run_id for record in mine.items] == [mine_id]
     leaked = [
         record
-        for record in await store.list_hitl_paused(project_id=root.project_id)
+        for record in (await store.list_hitl_paused(project_id=root.project_id)).items
         if record.run.workspace_id == OTHER_WORKSPACE
     ]
     assert leaked == []
     scoped = await store.list_hitl_paused(project_id=root.project_id, workspace_id=WORKSPACE)
-    assert [record.run_id for record in scoped] == [mine_id]
+    assert [record.run_id for record in scoped.items] == [mine_id]
     foreign = await store.list_hitl_paused(project_id=root.project_id, workspace_id=OTHER_WORKSPACE)
-    assert foreign == []
+    assert foreign.items == []
 
 
 class _CountingContinuations(InMemoryGraphContinuationStore):
@@ -521,14 +526,133 @@ async def test_zero_limit_costs_zero_projection_reads() -> None:
         project_id=root.project_id,
     )
 
-    assert await store.list_hitl_paused(limit=0, project_id=root.project_id) == []
-    assert await store.list_hitl_paused(limit=-1) == []
+    assert (await store.list_hitl_paused(limit=0, project_id=root.project_id)).items == []
+    assert (await store.list_hitl_paused(limit=-1)).items == []
     assert continuations.pause_kind_reads == 0
 
-    assert [
-        record.run_id for record in await store.list_hitl_paused(project_id=root.project_id)
-    ] == [human_id]
-    assert continuations.pause_kind_reads == 1
+    listed = await store.list_hitl_paused(project_id=root.project_id)
+    assert [record.run_id for record in listed.items] == [human_id]
+    # Two reads, not one: the walk's final read is the one that confirms the
+    # projection ran out, which is what makes `exhausted` honest.
+    assert continuations.pause_kind_reads == 2
+
+
+async def test_a_page_of_ineligible_rows_is_progress_not_the_end() -> None:
+    """The false-exhausted regression (#1109 repair): Workspace scope (and
+    projection staleness) filter the read after the projection page was cut,
+    so a full page of ineligible rows must read as progress through the
+    projection, never as its end. Read as a plain list, a page that assembled
+    to nothing eligible was indistinguishable from an empty index — a
+    Workspace-wide walk answered empty forever and called it exhaustion."""
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root(WORKSPACE)
+    other_root = await projects.create_root(OTHER_WORKSPACE)
+    run_store = InMemoryRunStore(project_store=projects)
+    continuations = InMemoryGraphContinuationStore()
+    store = CanonicalDurableRunStore(run_store, continuations)
+    # One full minimum page of rows this Workspace cannot see: half foreign
+    # human pauses, half stale claims the canonical Run disqualifies.
+    for index in range(50):
+        await _canonical_row(
+            run_store,
+            continuations,
+            run_id=f"foreign-{index:03d}",
+            workspace_id=OTHER_WORKSPACE,
+            project_id=other_root.project_id,
+        )
+        stale_id = await _canonical_row(
+            run_store,
+            continuations,
+            run_id=f"stale-{index:03d}",
+            workspace_id=WORKSPACE,
+            project_id=root.project_id,
+            with_pause=False,
+        )
+        stored = await continuations.get(stale_id)
+        assert stored is not None
+        await continuations.update(
+            stored.model_copy(
+                update={"version": 2, "status": RunStatus.PAUSED, "has_hitl_pause": True}
+            )
+        )
+    mine_id = await _canonical_row(
+        run_store,
+        continuations,
+        run_id="mine-behind-the-page",
+        workspace_id=WORKSPACE,
+        project_id=root.project_id,
+    )
+
+    # The whole projection read with the ceiling just past it: a page of
+    # ineligible rows moves `resume_after` past itself and counts in
+    # `inspected`, and only the projection's own end sets `exhausted`.
+    page = await store.list_hitl_paused(
+        limit=2,
+        workspace_id=WORKSPACE,
+        max_inspected=102,
+    )
+    assert [record.run_id for record in page.items] == [mine_id]
+    assert page.inspected == 101
+    assert page.exhausted is True
+    assert page.resume_after is not None
+
+    # A caller continuing from that position pages past the ineligible prefix
+    # within bounded requests; nothing eligible is left behind it.
+    rest = await store.list_hitl_paused(
+        limit=5,
+        workspace_id=WORKSPACE,
+        after=page.resume_after,
+    )
+    assert rest.items == []
+    assert rest.exhausted is True
+
+
+async def test_a_ceiling_stop_is_reported_as_such() -> None:
+    """A bounded read that stopped at its row ceiling with nothing eligible
+    says so: `exhausted` stays False, so the caller knows the projection may
+    hold more behind the ceiling instead of reading an empty page as the
+    end of human work."""
+    projects = InMemoryProjectScopeStore()
+    await projects.create_root(WORKSPACE)
+    other_root = await projects.create_root(OTHER_WORKSPACE)
+    run_store = InMemoryRunStore(project_store=projects)
+    continuations = InMemoryGraphContinuationStore()
+    store = CanonicalDurableRunStore(run_store, continuations)
+    for index in range(10):
+        await _canonical_row(
+            run_store,
+            continuations,
+            run_id=f"foreign-ceiling-{index:02d}",
+            workspace_id=OTHER_WORKSPACE,
+            project_id=other_root.project_id,
+        )
+    mine_id = await _canonical_row(
+        run_store,
+        continuations,
+        run_id="mine-behind-the-ceiling",
+        workspace_id=WORKSPACE,
+        project_id=(await projects.create_root(WORKSPACE)).project_id,
+    )
+
+    page = await store.list_hitl_paused(
+        limit=1,
+        workspace_id=WORKSPACE,
+        max_inspected=10,
+    )
+
+    assert page.items == []
+    assert page.inspected == 10
+    assert page.exhausted is False
+    assert page.resume_after is not None
+
+    # Continuing from the ceiling's position reaches the work: bounded
+    # requests make progress instead of rereading a fixed prefix.
+    rest = await store.list_hitl_paused(
+        limit=2,
+        workspace_id=WORKSPACE,
+        after=page.resume_after,
+    )
+    assert [record.run_id for record in rest.items] == [mine_id]
 
 
 @pytest.fixture(params=["memory", "sqlite"])
@@ -556,7 +680,8 @@ async def test_standalone_stores_page_the_projection(standalone_store) -> None:
     await standalone_store.create(_record("human-2", created_at=BASE + timedelta(seconds=101)))
 
     page = await standalone_store.list_hitl_paused(limit=1)
-    assert [record.run_id for record in page] == ["human-1"]
+    assert [record.run_id for record in page.items] == ["human-1"]
+    assert page.exhausted is False  # human-2 is still behind the cursor
 
     rest = await standalone_store.list_hitl_paused(
         limit=5,
@@ -565,13 +690,15 @@ async def test_standalone_stores_page_the_projection(standalone_store) -> None:
             "human-1",
         ),
     )
-    assert [record.run_id for record in rest] == ["human-2"]
+    assert [record.run_id for record in rest.items] == ["human-2"]
+    assert rest.exhausted is True
 
     foreign = await standalone_store.list_hitl_paused(
         limit=5,
         workspace_id=OTHER_WORKSPACE,
     )
-    assert foreign == []
+    assert foreign.items == []
+    assert foreign.exhausted is True  # nothing of that Workspace is projected
 
 
 async def test_sqlite_reopens_with_the_projection_intact(tmp_path: Path) -> None:
@@ -583,17 +710,17 @@ async def test_sqlite_reopens_with_the_projection_intact(tmp_path: Path) -> None
     await store.create(_record("survives-restart"))
 
     reopened = SqliteDurableRunStore(path)
-    assert [r.run_id for r in await reopened.list_hitl_paused()] == ["survives-restart"]
+    assert [r.run_id for r in (await reopened.list_hitl_paused()).items] == ["survives-restart"]
 
     # Simulate a row written before the projection existed: NULL means "not
     # projected", and the reopen must claim it from the durable pause entry.
     with sqlite3.connect(path) as conn:
         conn.execute("UPDATE durable_graph_runs SET has_hitl_pause = NULL")
         conn.commit()
-    assert [r.run_id for r in await reopened.list_hitl_paused()] == []
+    assert [r.run_id for r in (await reopened.list_hitl_paused()).items] == []
 
     repaired = SqliteDurableRunStore(path)
-    assert [r.run_id for r in await repaired.list_hitl_paused()] == ["survives-restart"]
+    assert [r.run_id for r in (await repaired.list_hitl_paused()).items] == ["survives-restart"]
 
 
 # --- the canonical walk (`pending_hitl_records`) ---
@@ -774,3 +901,47 @@ async def test_walk_stops_at_the_inspection_ceiling(
 
     assert [record.run_id for record in scan.records] == ["ceiling-first"]
     assert scan.exhausted is False
+
+
+async def test_walk_reaches_the_workspace_behind_a_full_page_of_foreign_pauses() -> None:
+    """The #1109 repair's regression, at Attention's exact shape: a
+    Workspace-wide walk (`project_id=None`) behind a full minimum page of
+    foreign-Workspace human pauses must page past them and return this
+    Workspace's pause — not answer empty forever and call it exhaustion.
+    Before the repair the store filtered Workspace scope from the assembled
+    page, so a full page of foreign rows came back as an empty list, and the
+    walk read that as the end of the projection."""
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root(WORKSPACE)
+    other_root = await projects.create_root(OTHER_WORKSPACE)
+    run_store = InMemoryRunStore(project_store=projects)
+    continuations = InMemoryGraphContinuationStore()
+    store = CanonicalDurableRunStore(run_store, continuations)
+    # One full minimum projection page of other tenants' human work, older
+    # than this Workspace's pause.
+    for index in range(100):
+        await _canonical_row(
+            run_store,
+            continuations,
+            run_id=f"foreign-page-{index:03d}",
+            workspace_id=OTHER_WORKSPACE,
+            project_id=other_root.project_id,
+        )
+    mine_id = await _canonical_row(
+        run_store,
+        continuations,
+        run_id="mine-behind-the-foreign-page",
+        workspace_id=WORKSPACE,
+        project_id=root.project_id,
+    )
+
+    scan = await pending_hitl_records(
+        store,
+        authorization=_authorization(WORKSPACE),
+        workspace_id=WORKSPACE,
+        project_id=None,
+        limit=10,
+    )
+
+    assert [record.run_id for record in scan.records] == [mine_id]
+    assert scan.exhausted is True  # the projection's real end, not a foreign page
