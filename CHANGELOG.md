@@ -1121,6 +1121,13 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The Agent's dashboard-widget edit no longer overwrites a concurrent UI save (#1048).**
+  `create_dashboard_widget` now saves against the revision it read; on a conflict it
+  re-reads and re-applies the insertion once (via the pure
+  `dashboard_layouts.with_widget`), and on a second conflict reports `created: false`
+  instead of erasing the `PUT /v1/dashboard/layout` that landed in between. Partial: the rest
+  of #1048 (Workspace-scoped Home, pinned regions, projections) remains.
+
 - **Turing's synchronous bridge no longer blocks the event loop (#397).**
   The provider bridge used to answer event-loop callers by blocking on an
   unbounded `Future.result()`, so one stuck LLM call froze every coroutine on
