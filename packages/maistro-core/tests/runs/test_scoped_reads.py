@@ -7,6 +7,7 @@ missing or mismatched id, gets one `RunNotVisible`.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -287,3 +288,57 @@ async def test_get_runs_skips_an_unreadable_run_and_keeps_the_rest(world: _World
 
     assert list(await world.reader.get_runs([b, a], principal_id="bob")) == []
     assert list(await world.reader.get_runs([b, a], principal_id="alice")) == [a]
+
+
+class _CountingRunStore:
+    """Wraps a `RunStore`, recording how many `get_run` reads ever overlap.
+
+    The wrapper suspends inside every read: an async def with no await points
+    runs to completion inside a gather, so without the suspension point even a
+    concurrent scheduler could never interleave two reads and the counter
+    would pin nothing.
+    """
+
+    def __init__(self, inner: RunStore) -> None:
+        self._inner = inner
+        self.lookups = 0
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
+        self.lookups += 1
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            await asyncio.sleep(0)
+            return await self._inner.get_run(run_id)
+        finally:
+            self.in_flight -= 1
+
+
+async def test_get_runs_overlaps_the_page_lookups_instead_of_serializing_them(
+    world: _World,
+) -> None:
+    """One batched page must not wait on one `get_run` round trip per row (#1333).
+
+    The Recent Runs list hands the reader a whole page (up to 100 rows over a
+    durable store); the per-row canonical lookups are independent, so they
+    overlap. Pinned against the sequential regression, under which the store
+    never observes two reads in flight. Dedup happens before lookup: the
+    duplicate id costs one store read, not two.
+    """
+    counting = _CountingRunStore(world.runs)
+    reader = ScopedRunReader(counting, world.reader.workspace_store, world.reader.project_store)
+    page = [
+        world.a.run.run_id,
+        world.b.run.run_id,
+        "missing-run",
+        world.a.run.run_id,
+    ]
+
+    found = await reader.get_runs(page, principal_id="bob")
+
+    assert list(found) == [world.b.run.run_id]
+    assert counting.lookups == len(set(page))
+    assert counting.max_in_flight >= 2
+    assert counting.in_flight == 0

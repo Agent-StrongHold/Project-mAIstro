@@ -129,6 +129,18 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A full Recent Runs page no longer waits on one serialized canonical Run
+  read per row (#1333).** Conductor's Recent Runs list overlays canonical
+  lifecycle truth through one batched, Workspace-scoped reader call, but the
+  reader resolved the page's per-Run lookups with a sequential `await` per id:
+  at the supported page cap of 100 and a durable PostgreSQL/SQLite store, one
+  dashboard request still serialized up to 100 `get_run` round trips on an
+  endpoint built to be polled. `ScopedRunReader.get_runs` now overlaps the
+  page's independent lookups (bounded, 16 in flight) while keeping the scoped
+  decisions exactly once per Workspace/Project, so the visible-Runs answer and
+  its refusal semantics are unchanged; a page resolves in a few overlapping
+  waves instead of one wait per row.
+
 - **Cancelling admitted work under a legacy two-method `TaskAdmitter` no longer
   crashes, and no longer lies (#1338).** #1320 grew the protocol with
   `cancel_run`, and `TaskQueue.cancel` called it unconditionally, so a
