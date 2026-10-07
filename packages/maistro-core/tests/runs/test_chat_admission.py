@@ -731,3 +731,54 @@ async def test_a_forged_snapshot_cannot_authorize_window_deletion(spine, kind) -
     with pytest.raises(ValueError, match=r"outside|only chat"):
         await admitter.admit(_turn("later"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     assert await runs.get_run(protected.run_id) is not None
+
+
+async def test_workspace_admitters_share_one_window_for_external_run_ids(spine) -> None:
+    from maistro.runs.admission import admit_direct_work
+
+    projects, runs, root = spine
+    other_root = await projects.create_root("w2")
+    first = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=2)
+    second = ChatRunAdmitter(
+        runs,
+        workspace_id="w2",
+        project_id=other_root.project_id,
+        max_retained=2,
+        share_window_with=first,
+    )
+    oldest = await first.admit(_turn("oldest"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    await runs.transition_run(oldest.run_id, RunStatus.QUEUED)
+    await runs.transition_run(oldest.run_id, RunStatus.CANCELLED)
+    middle = await second.admit(_turn("middle"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    await runs.transition_run(middle.run_id, RunStatus.QUEUED)
+    await runs.transition_run(middle.run_id, RunStatus.CANCELLED)
+    newest = await admit_direct_work(
+        runs,
+        workspace_id="w2",
+        project_id=other_root.project_id,
+        node_type=DELEGATE_NODE_KIND,
+        name="externally composed chat",
+        source=CHAT_SOURCE,
+        parameters={"from_agent": "", "task": "chat", "to_agent": "coder"},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    assert await second.track(newest.run_id) == 1
+    assert first.retained == second.retained == 2
+    assert await runs.get_run(oldest.run_id) is None
+    assert await runs.get_run(middle.run_id) is not None
+    assert await runs.get_run(newest.run_id) is not None
+    assert await second.track(newest.run_id) == 0
+    assert first.retained == 2
+
+
+async def test_tracking_a_missing_id_preserves_the_existing_window(spine) -> None:
+    _projects, runs, root = spine
+    admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
+    admitted = await admitter.admit(_turn(), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+
+    with pytest.raises(RunIntegrityError, match="missing chat Run"):
+        await admitter.track("missing")
+
+    assert admitter.retained == 1
+    assert await runs.get_run(admitted.run_id) is not None

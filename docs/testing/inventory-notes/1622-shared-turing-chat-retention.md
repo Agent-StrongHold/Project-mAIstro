@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +8
+  packages/maistro-core/tests: +10
   packages/maistro-turing/backend/tests: +12
 ---
 # PR 1622 — one canonical Turing chat retention window
@@ -35,3 +35,12 @@ continuations, unlike the separate purge API. The existing shared continuation
 store and all current security/cancellation paths are preserved; this PR does
 not add purge authority or a new retention policy. #131 is historical, already
 closed independently.
+
+## Package-separated coverage correction
+
+Two direct core contract tests cover the successful shared-window composition
+and externally admitted Run-ID tracking, including repeated tracking and a
+missing-ID refusal that preserves the existing window. CI measures core and
+Turing in separate coverage producers; Turing's composition proof alone cannot
+count as coverage of core. These tests complement that product-path evidence
+without changing production code or the coverage floor.
