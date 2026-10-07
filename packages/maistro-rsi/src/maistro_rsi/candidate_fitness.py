@@ -927,19 +927,28 @@ def _gate_provenance(
     proc: subprocess.CompletedProcess[str] | None,
 ) -> dict[str, object]:
     """What actually executed behind a gate result (#304 AC-1): command,
-    tool version, candidate SHA, exit status, and an output digest — the
-    minimum a reviewer needs to distinguish a measured pass from a guess."""
+    tool version, candidate SHA, exit status, and an output digest over both
+    output streams — the minimum a reviewer needs to distinguish a measured
+    pass from a guess."""
     return {
         "command": list(argv),
         "tool_version": _tool_version(dist),
         "candidate_sha": _candidate_sha(cwd),
         "exit_status": proc.returncode if proc is not None else None,
-        "output_digest": (
-            "sha256:" + hashlib.sha256((proc.stdout or "").encode()).hexdigest()
-            if proc is not None
-            else None
-        ),
+        "output_digest": _output_digest(proc) if proc is not None else None,
     }
+
+
+def _output_digest(proc: subprocess.CompletedProcess[str]) -> str:
+    """SHA-256 over the analyzer's complete output — stdout and stderr — with
+    each stream length-framed so no concatenation ambiguity can collide two
+    different splits. Hashing stdout alone would leave stderr diagnostics and
+    fatal errors unauthenticated: a run that crashed while printing nothing to
+    stdout would carry the same digest as a genuinely silent clean one."""
+    out = (proc.stdout or "").encode()
+    err = (proc.stderr or "").encode()
+    framed = b"stdout:%d:" % len(out) + out + b"stderr:%d:" % len(err) + err
+    return "sha256:" + hashlib.sha256(framed).hexdigest()
 
 
 def _not_run_gate(name: str, dist: str, cause: str, provenance: dict[str, object]) -> GateResult:

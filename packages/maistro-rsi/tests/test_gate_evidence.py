@@ -241,6 +241,24 @@ class TestExecutedGateProvenance:
             assert gate.detail["candidate_sha"] is None
             assert str(gate.detail["output_digest"]).startswith("sha256:")
 
+    def test_output_digest_authenticates_stderr_not_stdout_alone(self) -> None:
+        """The digest covers both streams: identical stdout with different
+        stderr must not collide — a run dying on stderr is not evidence-equivalent
+        to a silent clean one. The length-framed combination is pinned exactly so
+        the recorded digest stays reproducible from the captured streams."""
+        import hashlib
+
+        clean = subprocess.CompletedProcess([], 0, stdout="[]", stderr="")
+        noisy = subprocess.CompletedProcess(
+            [], 0, stdout="[]", stderr="warning: config ignored\n"
+        )
+        assert candidate_fitness._output_digest(clean) != candidate_fitness._output_digest(noisy)
+        out, err = b"[]", b"warning: config ignored\n"
+        framed = b"stdout:%d:" % len(out) + out + b"stderr:%d:" % len(err) + err
+        assert candidate_fitness._output_digest(noisy) == (
+            "sha256:" + hashlib.sha256(framed).hexdigest()
+        )
+
 
 # ---------------------------------------------------------------------------
 # GateState semantics (maistro-evolve scorecard)
