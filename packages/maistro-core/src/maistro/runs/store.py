@@ -24,6 +24,7 @@ from maistro.runs.lifecycle import (
     check_completion_is_earned,
     lease_is_expired,
     reclaim_attempt,
+    refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
     settle_open_node_run,
@@ -1672,6 +1673,15 @@ class InMemoryRunStore:
             error=error,
             metrics=metrics,
         )
+        if target is AttemptStatus.COMPLETED:
+            # The executor's Run fence is check-then-act across two awaits
+            # (#1335); this guard runs with nothing between it and the durable
+            # write, so a cancellation cannot land a COMPLETED Attempt under a
+            # terminal Run here.
+            node_run = self._require_node_run(attempt.node_run_id)
+            refuse_completion_under_terminal_run(
+                self._require_run(node_run.run_id).status, attempt_id
+            )
         self._attempts[attempt_id] = updated
         return updated.model_copy(deep=True)
 
