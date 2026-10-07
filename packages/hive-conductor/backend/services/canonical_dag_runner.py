@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from maistro.graph.conditions import CONDITION_OPERATORS
@@ -579,6 +579,7 @@ async def execute_dag(
     project_id: str | None = None,
     llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
     scope: DagExecutionScope | None = None,
+    on_admitted: Callable[[str], Awaitable[Any]] | None = None,
 ) -> dict[str, Any]:
     """Run a shipped Hive DAG as one canonical durable Graph Run.
 
@@ -589,6 +590,19 @@ async def execute_dag(
     presentation seam only -- it can neither change traversal nor outcomes,
     and a raising sink is suppressed by the node adapter. Durable recovery
     never attaches one: there is no live stream to serve.
+
+    ``on_admitted`` (#1332) is the admission seam for producers that opened a
+    projection row under their own execution id before calling this: it is
+    awaited exactly once with the admitted canonical Run id, after
+    ``create_run`` and BEFORE ``run_durable_graph`` starts any physical work,
+    so the producer can persist the projection -> canonical Run correlation
+    while the execution is still cancellable rather than after it settles.
+    Like ``on_event`` it is a presentation seam: a raising sink is suppressed
+    and logged, because the canonical Run is already admitted at that point
+    and aborting execution over a projection write would strand it QUEUED for
+    recovery while the caller is told the DAG failed. No canonical store (no
+    admission) means the sink never fires and the projection row keeps its
+    honest empty correlation.
     """
     if scope is None:
         # Keep the user parameter only as a consistency check for old callers;
@@ -631,6 +645,16 @@ async def execute_dag(
             provenance=provenance,
         )
         admitted_run_id = admitted.run_id
+        if on_admitted is not None:
+            try:
+                await on_admitted(admitted_run_id)
+            except Exception:
+                logger.warning(
+                    "dag_admission_sink_failed run_id=%s dag_id=%s",
+                    admitted_run_id,
+                    dag_data.get("id", ""),
+                    exc_info=True,
+                )
 
     def _build_resolver() -> Any:
         # One Container read per execution: the effect authority and the
