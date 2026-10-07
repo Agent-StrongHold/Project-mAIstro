@@ -482,6 +482,55 @@ async def test_canonical_scope_filters_bind_before_disclosure() -> None:
     assert foreign == []
 
 
+class _CountingContinuations(InMemoryGraphContinuationStore):
+    """Counts pause-kind projection reads, so a test can pin what one call costs."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pause_kind_reads = 0
+
+    async def list_hitl_paused_run_ids(
+        self,
+        *,
+        limit: int = 100,
+        project_id: str | None = None,
+        after: tuple[str, str] | None = None,
+    ) -> list[str]:
+        self.pause_kind_reads += 1
+        return await super().list_hitl_paused_run_ids(
+            limit=limit, project_id=project_id, after=after
+        )
+
+
+async def test_zero_limit_costs_zero_projection_reads() -> None:
+    """The degenerate bound holds before any read: a caller who asks for no
+    pending work gets an empty page without the projection being consulted at
+    all — the store's own guard answers, not a paged scan that happens to find
+    nothing. The empty answer is the bound talking, not the store: the same
+    store, asked for work, still returns the planted human pause."""
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root(WORKSPACE)
+    run_store = InMemoryRunStore(project_store=projects)
+    continuations = _CountingContinuations()
+    store = CanonicalDurableRunStore(run_store, continuations)
+    human_id = await _canonical_row(
+        run_store,
+        continuations,
+        run_id="human-waiting",
+        workspace_id=WORKSPACE,
+        project_id=root.project_id,
+    )
+
+    assert await store.list_hitl_paused(limit=0, project_id=root.project_id) == []
+    assert await store.list_hitl_paused(limit=-1) == []
+    assert continuations.pause_kind_reads == 0
+
+    assert [
+        record.run_id for record in await store.list_hitl_paused(project_id=root.project_id)
+    ] == [human_id]
+    assert continuations.pause_kind_reads == 1
+
+
 @pytest.fixture(params=["memory", "sqlite"])
 async def standalone_store(
     request: pytest.FixtureRequest, tmp_path: Path

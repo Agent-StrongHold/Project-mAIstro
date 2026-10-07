@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +3
-  packages/maistro-core/tests: +28
+  packages/maistro-core/tests: +29
 ---
 # 1109-hitl-pending-fairness
 
@@ -16,14 +16,15 @@ PostgreSQL, the latter via migration 059) — plus one canonical bounded walk,
 (`services/attention.py`), which had duplicated the old filter-after-prefix
 walk and now walks the projection with it.
 
-## packages/maistro-core/tests: +28
+## packages/maistro-core/tests: +29
 
-`tests/graph/durable_runs/test_hitl_paused_index.py` is new: 28 collected node
+`tests/graph/durable_runs/test_hitl_paused_index.py` is new: 29 collected node
 IDs across the three-backend continuation fixture (projection claims only
 PAUSED human rows, includes deadline-less pauses, pages on the created cursor,
 filters by project), the canonical store (real executor-produced pause
 discoverable, answered work leaves the projection, a stale projected row is
-never disclosed, scope filters bind before disclosure, and a machine-only
+never disclosed, scope filters bind before disclosure, a zero limit answers
+before the projection is read at all, and a machine-only
 PAUSED prefix longer than the limit cannot occupy the page — the mutation test
 for `list_by_status(PAUSED, limit=N)` + in-memory filtering), the standalone
 stores (same contract, plus SQLite reopen/backfill restart safety), and the
