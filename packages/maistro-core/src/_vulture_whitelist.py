@@ -9,8 +9,23 @@ Invocation execution API.
 
 from maistro import identity as identity_package
 from maistro.a2a.external import ExternalAgentRegistry
+from maistro.backlog.markdown_io import ParsedItem
+from maistro.backlog.model import (
+    BacklogClaim,
+    BacklogClosure,
+    BacklogEvent,
+    BacklogItem,
+    BacklogOrigin,
+)
+from maistro.backlog.pg_store import PgBacklogStore
+from maistro.backlog.sqlite_store import SqliteBacklogStore
+from maistro.backlog.store import BacklogStore, InMemoryBacklogStore
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
+from maistro.cli._backlog import RoleChoice
+from maistro.cli._backlog import cutover as backlog_cutover_command
+from maistro.cli._backlog import import_cmd as backlog_import_command
+from maistro.cli._backlog import revert as backlog_revert_command
 from maistro.cli._connectors import connectors_describe, connectors_verify
 from maistro.cli._extensions import (
     extensions_compat,
@@ -136,6 +151,45 @@ _VULTURE_WHITELIST = (
     # this `packages/*/src` scan does not walk.
     Container.run_reader,
     ScopedRunReader.get_runs,
+    # --- #102 backlog work-source (maistro.backlog) -----------------------
+    # Pydantic invokes these field/model validators at runtime; static import
+    # scanning cannot see decorator-based dispatch (same shape as
+    # Binding._validate_binding above).
+    BacklogClosure._require_non_blank_summary,
+    BacklogClosure._require_resolvable_refs,
+    BacklogClosure._normalize_closed_at,
+    BacklogOrigin._require_non_blank,
+    BacklogItem._require_non_blank,
+    BacklogItem._status_is_a_defined_value,
+    BacklogItem._clean_tags,
+    BacklogItem._clean_dependencies,
+    BacklogItem._require_positive_revision,
+    BacklogItem._enforce_consistency,
+    BacklogClaim._require_non_blank_identity,
+    BacklogClaim._normalize_timestamps,
+    BacklogEvent._require_non_blank_identity,
+    BacklogEvent._normalize_at,
+    # Declarative model field on BacklogItem: written by every store
+    # (created_by=actor), validated at the boundary and serialized into the
+    # item/event tables; vulture cannot count model_dump/INSERT serialization
+    # as a read (same shape as ResolvedBinding.provider_trust_tier above).
+    BacklogItem.created_by,
+    # BacklogStore.extend_claim is the port's lease-extension operation,
+    # conformance-pinned across all three backends
+    # (packages/maistro-core/tests/backlog/test_backlog_store_conformance.py
+    # :: expired-lease reclaim and claim exclusivity). Its production
+    # consumers are the downstream agent/RSI loops the surface exists for;
+    # within this repository no process entry point extends a lease yet.
+    BacklogStore.extend_claim,
+    InMemoryBacklogStore.extend_claim,
+    SqliteBacklogStore.extend_claim,
+    PgBacklogStore.extend_claim,
+    # ParsedItem.written_block is the parse-record accessor the migration
+    # round-trip suite asserts verbatim reconstruction with
+    # (test_markdown_migration.py); it is the import-side twin of the
+    # exporter's _render_header and is consumed outside the scanned tree by
+    # the migration test suite and downstream import tooling.
+    ParsedItem.written_block,
     # Workspace work campaigns (#103, SPEC-092626-1831). Pydantic invokes the
     # validators; the Actor-valued fields are serialization surface written
     # through model_dump_json and read by consumers outside this scan (the
@@ -363,6 +417,16 @@ _VULTURE_WHITELIST = (
     extensions_history,
     extensions_preflight,
     extensions_show,
+    # The `maistro backlog` cutover lifecycle commands are invoked through
+    # typer dispatch (#102), the same surface the ledger's
+    # maistro-cli-command-surface rule classifies; the StrEnum members are
+    # typer's --role choices, consumed by option parsing.
+    backlog_import_command,
+    backlog_cutover_command,
+    backlog_revert_command,
+    RoleChoice.viewer,
+    RoleChoice.editor,
+    RoleChoice.owner,
     # Deterministic extension dependency resolution (M9-C2, #956). The two
     # `maistro extensions` lock commands are typer-dispatched like the read
     # commands above. `identity_keys` is the restart-equality seam the #953
