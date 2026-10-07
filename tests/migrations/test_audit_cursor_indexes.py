@@ -12,7 +12,7 @@ import pytest
 def test_audit_revision_only_changes_its_eight_ordered_scope_indexes(
     direction: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = Path(__file__).resolve().parents[2] / "alembic/versions/059_audit_cursor_indexes.py"
+    path = Path(__file__).resolve().parents[2] / "alembic/versions/061_audit_cursor_indexes.py"
     spec = importlib.util.spec_from_file_location("audit_cursor_indexes", path)
     assert spec is not None and spec.loader is not None
     migration = importlib.util.module_from_spec(spec)
@@ -20,8 +20,8 @@ def test_audit_revision_only_changes_its_eight_ordered_scope_indexes(
     statements: list[str] = []
     monkeypatch.setattr(migration.op, "execute", statements.append)
 
-    assert migration.revision == "059"
-    assert migration.down_revision == "058"
+    assert migration.revision == "061"
+    assert migration.down_revision == "060"
     getattr(migration, direction)()
 
     if direction == "upgrade":

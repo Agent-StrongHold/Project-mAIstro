@@ -582,14 +582,10 @@ class TestTheDowngrade:
 
         assert result.returncode != 0, "the downgrade discarded live v2 identity"
         assert "format_version" in result.stderr + result.stdout
-        # The multi-revision downgrade is transactional: even revisions
-        # preceding the refusal roll back, preserving the original head.
-        # The assertion tracks the head, not a fixed literal — every develop
-        # collision re-parents the chain tip, and the invariant under test is
-        # that the refused downgrade leaves the stamp AT HEAD. The literal
-        # drifted twice already (043_invocation_quota_door, 055, 056, and
-        # the Gauntlet revision moved the head again), so the head is read
-        # from the same version files the upgrade above ran.
+        # A multi-revision downgrade is transactional: even revisions preceding
+        # the refusal roll back, preserving the original head. Read that head
+        # from the same version files the upgrade used, so subsequent migrations
+        # (including backlog authority and audit indexes) cannot stale a literal.
         assert _stamped_version() == _chain_head()
         assert _query("select * from task_idempotency order by scope_key") == before
         assert "generation_id" in _v2_columns()

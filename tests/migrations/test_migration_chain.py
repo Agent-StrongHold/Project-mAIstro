@@ -58,6 +58,15 @@ EXPECTED_TABLES = frozenset(
         "asset_sheets",
         "audit_log",
         "books",
+        # The canonical Workspace BacklogItem work-source (#98/#102): the
+        # item/board state, its append-only event history, the imported
+        # document records and the claim leases (054), plus the authority
+        # ledger that records which work source is authoritative (055).
+        "backlog_authority",
+        "backlog_claims",
+        "backlog_documents",
+        "backlog_events",
+        "backlog_items",
         # The Canvas store's own tables (044), created outside the repository
         # until #286 put them in the chain.
         "canvas_blobs",
@@ -283,7 +292,7 @@ def empty_database():
 class TestAuditCursorIndexes:
     def test_indexes_upgrade_and_reverse_without_losing_audit_rows(self, empty_database) -> None:
         """The shipping chain installs every seek and rolls back only its indexes."""
-        assert _alembic("upgrade", "057").returncode == 0
+        assert _alembic("upgrade", "060").returncode == 0
         _execute("INSERT INTO audit_log (boundary, user_id) VALUES ('login', 'alice')")
 
         result = _alembic("upgrade", "head")
@@ -300,7 +309,7 @@ class TestAuditCursorIndexes:
         assert all("org_id" in definition for definition in indexes.values())
         assert all('"timestamp" DESC, id DESC' in definition for definition in indexes.values())
 
-        result = _alembic("downgrade", "057")
+        result = _alembic("downgrade", "060")
         assert result.returncode == 0, result.stderr
         assert not _query(
             "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' "
@@ -309,13 +318,18 @@ class TestAuditCursorIndexes:
         )
         assert _query("SELECT boundary, user_id FROM audit_log") == [("login", "alice")]
         # Rolling back audit indexes must not undo develop's preceding revision.
-        assert _query("SELECT version_num FROM alembic_version") == [("057",)]
+        assert _query("SELECT version_num FROM alembic_version") == [("060",)]
         assert _query(
             "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' "
             "AND tablename = 'canonical_runs' "
             "AND indexname = 'ix_canonical_runs_status_created'"
         ) == [("ix_canonical_runs_status_created",)]
         assert {
+            "backlog_items",
+            "backlog_events",
+            "backlog_documents",
+            "backlog_claims",
+            "backlog_authority",
             "user_model_facts",
             "user_model_statement_keys",
             "invocation_quota_allocations",
