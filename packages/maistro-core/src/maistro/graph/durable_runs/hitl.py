@@ -7,11 +7,12 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapp
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from maistro.runs.model import RunStatus
 
 if TYPE_CHECKING:
+    from .fair_scan import ScanPage
     from .protocol import DurableRunStore
     from .types import DurableRunRecord
 
@@ -419,6 +420,35 @@ class PendingHitlScan:
     exhausted: bool = False
 
 
+async def _admit_pending_items(
+    page: ScanPage[DurableRunRecord, Any],
+    authorization: HitlAuthorization,
+    found: list[DurableRunRecord],
+    items: int,
+    limit: int,
+) -> tuple[int, bool]:
+    """Admit one page's records that still carry live, permitted human work.
+
+    A record joins ``found`` only when canonical state still shows a pending
+    human pause — a projected row canonical state disqualifies carries
+    nothing a revocation could withhold and spends only its place in the
+    page — and the caller's authorization still permits its Workspace (#364).
+    Returns the running item total and whether the item limit stopped the
+    walk mid-page, unread remainder and all.
+    """
+    for record in page.items:
+        node_ids = pending_hitl_node_ids(record)
+        if not node_ids:
+            continue
+        if not await authorization.permits(record.run.workspace_id):
+            continue
+        found.append(record)
+        items += len(node_ids)
+        if items >= limit:
+            return items, True
+    return items, False
+
+
 async def pending_hitl_records(
     store: DurableRunStore,
     *,
@@ -473,21 +503,7 @@ async def pending_hitl_records(
         inspected += page.inspected or 0
         if page.resume_after is not None:
             cursor = page.resume_after
-        filled = False
-        for record in page.items:
-            node_ids = pending_hitl_node_ids(record)
-            if not node_ids:
-                # A projected row that canonical state disqualifies: it
-                # carries nothing a revocation could withhold, and only its
-                # place in the page is spent.
-                continue
-            if not await authorization.permits(record.run.workspace_id):
-                continue
-            found.append(record)
-            items += len(node_ids)
-            if items >= limit:
-                filled = True
-                break
+        items, filled = await _admit_pending_items(page, authorization, found, items, limit)
         if filled:
             # The item limit stopped the walk with ordering left — including
             # any unread remainder of this page — so a later read may find

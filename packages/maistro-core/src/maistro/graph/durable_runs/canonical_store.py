@@ -867,22 +867,45 @@ class CanonicalDurableRunStore:
                 )
             for run_id in run_ids:
                 inspected += 1
-                record = await self.get(run_id)
-                if record is None:
+                candidate = await self._hitl_paused_candidate(run_id, workspace_id)
+                if candidate is None:
                     # Deleted between the index read and this read: there is
                     # no row left to page past, the same disposition
                     # `scan_due_page` gives its own vanished candidates.
                     continue
-                cursor = (cursor_time(record.run.created_at), record.run_id)
-                if (
-                    record.run.status is RunStatus.PAUSED
-                    and record_has_hitl_pause(record)
-                    and (workspace_id is None or record.run.workspace_id == workspace_id)
-                ):
-                    items.append(record)
-                    if len(items) >= limit:
-                        break
+                cursor, record = candidate
+                if record is None:
+                    continue
+                items.append(record)
+                if len(items) >= limit:
+                    break
         return ScanPage(items=items, resume_after=cursor, inspected=inspected)
+
+    async def _hitl_paused_candidate(
+        self,
+        run_id: str,
+        workspace_id: str | None,
+    ) -> tuple[tuple[str, str], DurableRunRecord | None] | None:
+        """One projection row's keyset position, and its record if eligible.
+
+        The record is not ``None`` only when the assembled canonical Run
+        still agrees with the projection: PAUSED, carrying a human pause,
+        and inside the caller's Workspace when one is given (#1109, #1240).
+        ``None`` means the row contributes no position: its Run was deleted
+        between the index read and this read, the same disposition
+        ``scan_due_page`` gives its own vanished candidates.
+        """
+        record = await self.get(run_id)
+        if record is None:
+            return None
+        position = (cursor_time(record.run.created_at), record.run_id)
+        if (
+            record.run.status is RunStatus.PAUSED
+            and record_has_hitl_pause(record)
+            and (workspace_id is None or record.run.workspace_id == workspace_id)
+        ):
+            return position, record
+        return position, None
 
     async def list_due(
         self,

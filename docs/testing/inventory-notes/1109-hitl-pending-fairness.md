@@ -190,3 +190,50 @@ passes standalone, in every pairwise combination, and on a full re-run of the
 identical trio command, with no clock-mock leak candidate in the tree —
 recorded as a non-reproducing flake, not a repair target.
 
+## CI-repair round: the radon ratchet itself, and the complexity ledger it enforces
+
+Independent verification of head 3c6b563c6 failed the quality gate's radon
+ratchet (`scripts/check-radon-baseline.py`) on two new unauthorized C(13)
+blocks this branch's own #1109 code had introduced:
+`durable_runs/hitl.py:422 pending_hitl_records` and
+`durable_runs/canonical_store.py:814 list_hitl_paused`. The gate list in the
+previous section silently omitted check-radon-baseline, xenon and
+interrogate — the one gate that fails is the one that was not claimed; that
+omission is corrected here. A radon grant could not have authorized these:
+`scripts/ratchet_provenance.py` loads grants from the merge base (the
+two-merge rule), so a branch cannot self-authorize new complexity — the
+complexity had to go, not be banked.
+
+The repair is a behavior-preserving extraction following the store's own
+`scan_due_page`/`_due_candidate` precedent (#1098): `list_hitl_paused`'
+per-row disposition (fetch, cursor advance, PAUSED + human-pause + Workspace
+scope) moves to `_hitl_paused_candidate`, which returns the row's keyset
+position and its record only when eligible — `None` position for a row
+deleted mid-page, exactly like `_due_candidate`; `pending_hitl_records`'
+per-page admission loop (live canonical human pause + membership permit,
+cumulative item accounting) moves to `_admit_pending_items`, returning the
+running item total and the mid-page limit-stop flag. `pending_hitl_records`
+drops C(13) → B(9), `list_hitl_paused` C(13) → B(10); helpers A(5)/B(6).
+Behavioral order is unchanged on every axis the suite pins: cursor advance
+before admission, permit calls once per candidate in page order,
+limit-stop breaking before the `exhausted` check.
+
+No test was added or removed: the delta above is unchanged, and
+check-suite-inventory still reports all 17 suites at the recorded counts.
+Evidence at the merged head (origin/develop feb19affc965 merged clean; only
+CHANGELOG.md overlapped and auto-resolved, all `quality/*.json` row-identical
+to develop by `git diff --numstat`): `check-radon-baseline.py` exits 0 at
+138 current C/D/E/F blocks = 138 baseline entries, no new/regressed/improved/
+stale rows and no ledger amendment; xenon with CI's exact arguments
+(`--max-absolute B --max-modules B --max-average A -i third_party`, ten
+package trees) reports 140 block violations against the 145 floor, 0 module-
+rank and 0 project-average violations; `interrogate -f 38` on graph/nodes
+(51.3%) and `-f 45` on durable_runs (60.0%) pass; ruff check/format clean;
+mypy on packages/maistro-core/src strict-clean (768 files); the full
+durable_runs suite 666 passed and the hive attention/door suites 40 passed.
+The new helpers are mutation-checked on the tested path: dropping the
+Workspace scope clause from `_hitl_paused_candidate` fails 3 tests of
+`test_hitl_paused_index.py`; dropping the item-limit return from
+`_admit_pending_items` fails `test_walk_bounds_items_not_records`; the
+restored tree is green again.
+
