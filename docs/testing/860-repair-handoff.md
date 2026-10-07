@@ -101,3 +101,93 @@ necessary; no tests, production code, grants or gates were altered by the
 repair. The merge is committed locally, not pushed or approved for integration.
 Issue progress: {checked: 1, done: 0, skipped: 0, errors: 0,
 next: exact-RC production acceptance prerequisites}.
+
+## Fresh CI-repair review — job 536c66a5
+
+Frozen scope: #860 only, clean `auto-860` at
+`99b9e7e54d27b00cdcf70eb512f4cee9e2480ea2`, supplied base unchanged.
+This is a writer validation checkpoint, not promotion approval. No merge was
+pending. No current driver `check-*.log` files were supplied. Read the captured
+issue acceptance and PR evidence in `dispatch-context.json`, the supplied prior
+result, and the actual historical `98a11313/check-3.log` failure rather than
+assuming the previous report was correct.
+
+### Executed validation
+
+Logs are in `/home/dev/maistro/jobs/536c66a5d3ab48c1a2801d7cf497f9d5/`.
+Commands ran with 600–1,200 second timeouts.
+
+| Command | Fresh result / log |
+| --- | --- |
+| `uv sync --locked --extra dev` | PASS; `worker-sync.log` |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS; 1,328 findings, zero unclassified/never-allowlist; trusted base `28614700bd9a`, candidate `99b9e7e54d27`; `worker-vulture.log` |
+| `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py -x -q` | 37 passed, 6 skipped; `worker-schema.log` |
+| `uv run pytest tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py tests/test_gitleaksignore_contract.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py packages/maistro-server/tests/api/test_rate_limit.py -x -q` | 108 passed; `worker-acceptance.log` |
+| `uv run ruff check .` | PASS; `worker-ruff.log` |
+| `uv run ruff format --check .` | PASS, 3,151 files; `worker-format.log` |
+| `uv run python scripts/check-suite-inventory.py` | PASS, 17 suites, 28,959 unique identities; `worker-inventory.log` |
+| `uv run python scripts/check-merge-markers.py` | PASS; `worker-merge-markers.log` |
+| `uv run python -` importing `scripts/soak/run_soak.py` and asserting historical round-30 rejection | PASS; `worker-evidence-evaluation.json`: `sustain_duration` and `exact_rc_artifact` fail |
+| `git diff --check` | PASS before this documentation update; repeated before commit |
+
+The schema failure is **not reproducible** at the assigned HEAD: the independent
+DDL expectation already covers the three added audit columns. The production
+transaction and advisory lock remain in `PgLearningStore.ensure_schema()`.
+The exact vulture command matches `.github/workflows/vulture-ratchet.yml:82-86`
+and reports no identities to repair or bank. Ledger amendment permission does
+not justify inventing a change to a passing exact-debt ledger.
+
+Production reachability was checked at `maistro_server/main.py:648`, which
+installs `RateLimitMiddleware`. Its constructor creates a process-local limiter
+(`api/rate_limit.py:95-100`). The executed two-instance tests at
+`tests/test_soak_promotion_gates.py:439-488` demonstrate separate allowances
+for both credentialed and pre-auth identities. This is not merely a mocked
+429 assertion, but it is also not a deployed security soak. An attempted
+lookup of `maistro_server/lifespan.py` returned not found; skipped that path,
+with no claim of startup-path validation from it.
+
+### Acceptance disposition (fresh review)
+
+1. **Representative workload: UNVERIFIED.** The existing profile explicitly
+   omits users/Workspaces, fan-out, successful tool/model traffic, Design/Canvas
+   and sustained Goal reconciliation (`m3a-load-profile.md:153-172`). No RC
+   selection was supplied to justify exclusions.
+2. **Two production replicas: UNVERIFIED.** ASGI middleware instances in the
+   executed tests are not deployed immutable RC replicas.
+3. **Sustained saturation/reclaim/retry/leak observations: UNVERIFIED.** No
+   long production run executed in this repair; short historical evidence
+   cannot establish these properties.
+4. **Physical-work deduplication and Goal reconciliation: UNVERIFIED.** The
+   executed admission/backpressure tests leave Runs queued; receipt identity
+   and single-occurrence admission do not observe physical worker effects.
+5. **Replica-selection non-bypass/security/degradation: NOT PROVEN.** Fresh
+   tests demonstrate independent process allowances; broader deployed
+   enforcement remains UNVERIFIED. Do not redefine non-bypass as local 429s.
+6. **Complete production telemetry and thresholds: UNVERIFIED.** Driver-loop
+   latency is not application-loop latency; sampler tests do not provide an
+   exact-RC telemetry series.
+7. **Active-work restart/drain/fencing/recovery: UNVERIFIED.** No live Attempt
+   was killed and recovered this round.
+8. **Long exact-RC soak: NOT MET by evaluated evidence.** The current evaluator
+   rejects round 30: 420.08 seconds versus 14,400 required, and host-process
+   topology instead of the production artifact (`run_soak.py:730-741`).
+9. **Finding filing/reclassification completeness: UNVERIFIED.** Existing
+   findings preserved; no GitHub mutations performed.
+10. **Exact image/package/commit/config-bound publication: UNVERIFIED for
+    promotion.** Historical JSON was evaluated, not replaced or re-labelled
+    as new RC evidence. This checkpoint is repair-validation evidence only.
+
+Read accepted ADR-032, ADR-062 (including the retired entry-point warning),
+and ADR-081626-f383. ADR-081 is **Proposed**, not accepted authority. The
+accepted lease contract guarantees stale-writer rejection, not blanket
+exactly-once physical side effects; issue #860 still requires observations at
+those boundaries. Preserve `Goal -> Graph -> Run -> NodeRun -> Attempt`.
+
+**BLOCKED for issue acceptance.** There is no evidenced schema or ledger defect
+left to repair in this round. Only this existing handoff file changes; no
+production code, runtime configuration, tests, historical evidence or quality
+ledgers change. No test inventory delta is needed. Next: select immutable RC
+and configuration, complete workload/telemetry/physical-work oracles, reconcile
+the replica-budget requirement, then execute the required production soak.
+Progress: {checked: 1, done: 0, skipped: 0, errors: 0,
+next: exact-RC production acceptance prerequisites}.
