@@ -275,16 +275,29 @@ class TestEffectOnceAgainstReplaySemantics:
 
     def test_retryable_semantics_legitimately_repeats_a_crashed_effect(self) -> None:
         """At-least-once: under `retryable`, a crashed in-flight effect MAY
-        re-run through recovery. The model must allow it (no invariant
-        claims otherwise) — and the re-dispatch trace must go through
-        reclaim/retry, never through a completed Attempt (a completed effect
-        is never re-dispatched; guarded retry requires the RECOVERED
-        cause)."""
+        re-run through recovery. The model must allow it — S2 is an
+        effect-once claim scoped to `once` semantics (the TLA+ `~Once`
+        guard), so it is not recorded here and the guarded run exits 0 —
+        and the re-dispatch must go through reclaim/retry, never through a
+        completed Attempt (a completed effect is never re-dispatched;
+        guarded retry requires the RECOVERED cause)."""
         run = _explore(spec=checker.Spec(semantics="retryable"))
-        assert "S2_effect_once" in run.violated
-        trace = next(f.trace for f in run.findings if f.invariant == "S2_effect_once")
-        assert "recover" in trace, "re-dispatch must ride crash recovery"
-        assert trace.index("recover") < len(trace) - 1
+        assert "S2_effect_once" not in run.violated
+        # Act-level witness of the legitimate repeat: crash an in-flight
+        # effect, let the sweep mark it RECOVERED, retry, and the second
+        # physical dispatch is legal.
+        spec = checker.Spec(semantics="retryable")
+        _label, claimed = checker.act_claim(spec, checker.initial_state(2), 0)
+        _label, dispatched = checker.act_dispatch(spec, claimed, 0)
+        assert dispatched is not None
+        _label, crashed = checker.act_crash(spec, dispatched, 0)
+        state = crashed
+        while checker.act_recover(spec, state) is None:
+            state = checker.act_tick(spec, state)[1]
+        _label, recovered = checker.act_recover(spec, state)
+        _label, retried = checker.act_retry(spec, recovered, 1)
+        assert retried is not None
+        assert checker.act_dispatch(spec, retried, 1) is not None
 
     def test_guarded_retry_never_rides_a_completed_attempt(self) -> None:
         """A completed Attempt's node is not re-driven: guarded `retry`

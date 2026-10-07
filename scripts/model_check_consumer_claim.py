@@ -455,11 +455,15 @@ def successors(spec: Spec, state: State) -> list[tuple[str, State]]:
     return out
 
 
-def check_invariants(state: State) -> list[str]:
+def check_invariants(spec: Spec, state: State) -> list[str]:
     """The issue's candidate invariants, as state predicates.
 
     S1_single_owner — at most one active Attempt owns the node.
     S2_effect_once  — a `once` node's physical effect runs at most once.
+        Scoped to `once` replay semantics, like the TLA+ invariant's `~Once`
+        guard: under `retryable`, a recovered in-flight effect legitimately
+        dispatches again (the at-least-once contract), so a second entry in
+        `dispatched` is contract behavior, not a violation.
     S3_acceptance_is_current — the acceptance that terminalized the Run came
         from the latest Attempt (ADR-082426-e3ff's stale acceptance). The
         state records the *accepted* ordinal, so this compares the identity
@@ -478,7 +482,7 @@ def check_invariants(state: State) -> list[str]:
     running = [a for a in state.attempts if a.status == ATT_RUNNING]
     if len(running) > 1:
         violations.append("S1_single_owner")
-    if len(state.dispatched) > 1:
+    if spec.semantics == "once" and len(state.dispatched) > 1:
         violations.append("S2_effect_once")
     if state.run == RUN_COMPLETED and (
         state.accepted is None or state.accepted != state.attempts[-1].ordinal
@@ -580,7 +584,7 @@ def explore(spec: Spec, consumers: int = 2, *, with_progress: bool = True) -> Re
                 seen[key] = len(order)
                 parent[key] = (current.key(), label)
                 order.append(nxt)
-                for violation in check_invariants(nxt):
+                for violation in check_invariants(spec, nxt):
                     findings.setdefault(violation, Finding(violation, _trace(parent, key)))
                 frontier.append(nxt)
 
