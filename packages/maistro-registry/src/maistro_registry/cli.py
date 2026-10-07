@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,34 +30,10 @@ from maistro_registry.linker import (
     check_links,
 )
 from maistro_registry.schema import FrontMatter
+from maistro_registry.test_paths import TestPathProblem, check_test_paths
 from maistro_registry.validator import ValidationResult, validate_file
-
-# Walked file patterns. Order is for determinism, not precedence.
-_WALK_PATTERNS: tuple[str, ...] = (
-    "docs/adr/ADR-*.md",
-    "docs/specs/**/*.md",
-)
-
-
-def _walk(root: Path) -> Iterable[Path]:
-    seen: set[Path] = set()
-    for pattern in _WALK_PATTERNS:
-        for p in root.glob(pattern):
-            # Skip scaffolding templates (e.g. ADR-000-template.md): they carry
-            # placeholder ids/dates by design and are not real registry records.
-            # Match the "-template.md" suffix precisely — a substring check on
-            # "template" would wrongly skip real records like
-            # ADR-033-templates-and-copier-workflow.md.
-            if p.name.endswith("-template.md"):
-                continue
-            # Skip index/readme docs: they are navigation aids, not registry
-            # records (the inventory is derived per ADR-031 §5), so they carry
-            # no front-matter by design.
-            if p.name in ("README.md", "ADR-INDEX.md"):
-                continue
-            if p.suffix == ".md" and p.is_file() and p not in seen:
-                seen.add(p)
-                yield p
+from maistro_registry.walk import declared_ids
+from maistro_registry.walk import walk_repo as _walk
 
 
 @dataclass(frozen=True)
@@ -95,9 +70,19 @@ def _load_walk_validation(root: Path) -> WalkValidation | int:
 
 
 def _print_result(result: ValidationResult, *, quiet_ok: bool) -> None:
+    # Debts never affect the exit status, and --quiet promises failures only;
+    # the stderr summary still reports the aggregate debt count.
     if quiet_ok and result.ok and not result.warnings:
         return
     print(result.render())
+
+
+def _count_results(results: list[ValidationResult]) -> tuple[int, int, int, int]:
+    """Aggregate ``(files, errors, warnings, debts)`` over one lint run."""
+    n_errors = sum(1 for r in results if r.errors)
+    n_warnings = sum(1 for r in results if r.warnings)
+    n_debts = sum(len(r.debts) for r in results)
+    return len(results), n_errors, n_warnings, n_debts
 
 
 def _exit_status(
@@ -107,10 +92,8 @@ def _exit_status(
     quiet_ok: bool,
     extra_errors: int = 0,
 ) -> int:
-    n_files = len(results)
-    n_errors = sum(1 for r in results if r.errors)
-    n_warnings = sum(1 for r in results if r.warnings)
-    n_clean = n_files - n_errors - n_warnings
+    n_files, n_errors, n_warnings, n_debts = _count_results(results)
+    n_clean = n_files - n_errors - n_warnings - sum(1 for r in results if r.debts)
 
     for r in results:
         _print_result(r, quiet_ok=quiet_ok)
@@ -118,7 +101,8 @@ def _exit_status(
     print(
         f"\n{n_files} files checked: {n_clean} clean, "
         f"{n_errors} errors, {n_warnings} warnings, "
-        f"{extra_errors} extra (DAG / dangling refs)",
+        f"{extra_errors} extra (DAG / dangling refs / cited test paths), "
+        f"{n_debts} test-evidence debts",
         file=sys.stderr,
     )
 
@@ -171,7 +155,12 @@ def cmd_lint(args: argparse.Namespace) -> int:
     for c in cycles:
         print(f"  CYCLE: {c.render()}")
 
-    resolver = FilesystemResolver(engine_root=root)
+    # The resolver consumes the id index this command already validated —
+    # the same registry walk, never a second (filename-based) authority (#814).
+    resolver = FilesystemResolver(
+        engine_root=root,
+        declared_id_index=declared_ids(loaded.results),
+    )
     link_results: list[LinkResult] = check_links(valid_fms, resolver)
     dangling = [lr for lr in link_results if not lr.resolved]
     for lr in dangling:
@@ -195,7 +184,15 @@ def cmd_lint(args: argparse.Namespace) -> int:
     for problem in citations:
         print(f"  CITATION: {problem.render()}")
 
-    extra = len(cycles) + len(dangling) + len(duplicates)
+    # A cited test path is evidence other gates consume (ADR-097 requires
+    # non-empty `tests:` for proof-claiming specs), so a path that does not
+    # resolve is a false evidence claim, not a style nit (#812). Resolved like
+    # the link check but against the repository root, failing lint outright.
+    test_problems: list[TestPathProblem] = check_test_paths(valid_fms, root)
+    for test_problem in test_problems:
+        print(f"  TEST-PATH: {test_problem.render()}")
+
+    extra = len(cycles) + len(dangling) + len(duplicates) + len(test_problems)
     return _exit_status(loaded.results, strict=args.strict, quiet_ok=args.quiet, extra_errors=extra)
 
 
@@ -259,7 +256,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_lint = sub.add_parser(
         "lint",
-        help="walk + validate + DAG cycle check + local link check",
+        help="walk + validate + DAG cycle check + local link check + cited test paths",
     )
     p_lint.add_argument("root", nargs="?", default=".", help="repo root (default: cwd)")
     p_lint.set_defaults(func=cmd_lint)

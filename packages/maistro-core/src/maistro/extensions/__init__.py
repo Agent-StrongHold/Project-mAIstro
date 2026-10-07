@@ -1,7 +1,25 @@
-"""Governed extension registry, activation flow, and dependency resolution
-(M9-B/M9-C, issues #952/#953/#956).
+"""Canonical public surface of the ``maistro.extensions`` package.
 
-Public surface of the ``maistro.extensions`` package, in three layers:
+This package carries the extension surface of epic #938, in four layers:
+
+- **M9-A2 runtime contract (#950, ADR-104)**: the interfaces through which an
+  extension is activated, invoked, and deactivated, and the least-authority
+  object it is handed while doing so. The contract, in one paragraph: an
+  extension declares its maximum authority (config keys, services, effects)
+  in an :class:`ExtensionDescriptor`; the host runtime composes that
+  declaration with what it is willing to grant into one
+  :class:`ExtensionContext` per invocation; and every authority-sensitive
+  operation the extension can perform from that context crosses a canonical
+  seam — governed ``Capability → Provider → Binding → Invocation`` dispatch
+  for effects, the canonical ``Run/NodeRun/Attempt`` fence for cancellation,
+  and correlated canonical events for progress and provenance. There is no
+  ambient container access: a context holds no store, session, or container
+  handle, and a refused seam raises instead of returning something empty.
+  This layer deliberately does not define a scheduler, run store, execution
+  authority, or extension loading/manifest machinery (manifest schema: #949).
+  Physical execution truth remains owned by the canonical
+  ``Graph → Run → NodeRun → Attempt`` chain; hosts drive extensions through
+  :class:`ExtensionHost` from inside their existing Attempt execution.
 
 - **M9-B1 registry (issue #952)**: immutable install records with publisher
   identity, package digest/signature metadata, manifest snapshots, catalog
@@ -9,6 +27,7 @@ Public surface of the ``maistro.extensions`` package, in three layers:
   :class:`ExtensionInstallStore` protocol with its in-memory reference and
   SQLite durable twin. The inspect→authorize→install flow (#953) and the
   pin/upgrade/rollback lifecycle (#954) build on these records.
+
 - **M9-B2 activation (issue #953)**: the governed install state machine —
   the pure evaluation modules (manifest, compatibility, trust, authority),
   the activation store seam, and :class:`ExtensionInstallService`. Nothing in
@@ -38,6 +57,11 @@ Public surface of the ``maistro.extensions`` package, in three layers:
 No layer executes extension code: verification, evaluation, authorization,
 resolution and contract negotiation all operate on bytes and declarations
 alone.
+
+Naming note: ``ExtensionLifecycleError`` is the governed-install failure base
+(#952/#953). The #950 hook-failure wrapper — the error raised when an
+extension's own ``activate``/``invoke``/``deactivate`` hook raises — is
+:class:`ExtensionHookError`, a distinct ``ExtensionContractError`` subclass.
 """
 
 from __future__ import annotations
@@ -80,6 +104,17 @@ from maistro.extensions.compatibility import (
     CompatibilityPolicy,
     evaluate_compatibility,
 )
+from maistro.extensions.context import (
+    EffectDispatcher,
+    EffectReceipt,
+    ExtensionCancellation,
+    ExtensionConfigView,
+    ExtensionContext,
+    ExtensionContractUnavailableError,
+    ExtensionProgress,
+    ProgressReporter,
+    UngrantedProgressReporter,
+)
 from maistro.extensions.effective_authority import (
     CallerAuthority,
     EffectiveAuthority,
@@ -93,6 +128,33 @@ from maistro.extensions.effective_authority import (
     compute_effective_authority,
     extension_family,
     resolve_publisher_trust,
+)
+from maistro.extensions.errors import (
+    ConfigurationKeyNotDeclared,
+    EffectNotDeclared,
+    ExtensionCancelled,
+    ExtensionContractError,
+    ExtensionHookError,
+    ScopeMismatch,
+    ServiceNotGranted,
+)
+from maistro.extensions.host import (
+    EffectRoute,
+    EventStoreProgressSink,
+    ExtensionHost,
+    GovernedEffectRoute,
+    ProgressSink,
+)
+from maistro.extensions.identity import (
+    ExtensionDescriptor,
+    ExtensionIdentity,
+    InvocationScope,
+)
+from maistro.extensions.lifecycle import (
+    ExtensionLifecycle,
+    run_activation,
+    run_deactivation,
+    run_invocation,
 )
 from maistro.extensions.manifest import (
     SUPPORTED_MANIFEST_VERSION,
@@ -257,6 +319,7 @@ __all__ = [
     "CompatibilityReport",
     "ComponentAsset",
     "ComponentProvenance",
+    "ConfigurationKeyNotDeclared",
     "ConstraintRecord",
     "ContractRange",
     "ContractVersion",
@@ -264,21 +327,38 @@ __all__ = [
     "Degradation",
     "DependencyCycle",
     "DeprecationNotice",
+    "EffectDispatcher",
+    "EffectNotDeclared",
+    "EffectReceipt",
+    "EffectRoute",
     "EffectiveAuthority",
+    "EventStoreProgressSink",
     "ExtensionAuthorityEvidence",
     "ExtensionAuthorityInputs",
+    "ExtensionCancellation",
+    "ExtensionCancelled",
     "ExtensionCatalog",
     "ExtensionCodeLoader",
     "ExtensionCompatMetadata",
+    "ExtensionConfigView",
+    "ExtensionContext",
+    "ExtensionContractError",
+    "ExtensionContractUnavailableError",
     "ExtensionDependency",
+    "ExtensionDescriptor",
     "ExtensionEntryPoint",
+    "ExtensionHookError",
+    "ExtensionHost",
+    "ExtensionIdentity",
     "ExtensionIdentityConflict",
     "ExtensionInstallRecord",
     "ExtensionInstallService",
     "ExtensionInstallStore",
+    "ExtensionLifecycle",
     "ExtensionLifecycleError",
     "ExtensionManifest",
     "ExtensionPackage",
+    "ExtensionProgress",
     "ExtensionRegistryError",
     "ExtensionScope",
     "ExtensionState",
@@ -288,6 +368,7 @@ __all__ = [
     "FeatureStatus",
     "FeatureSupport",
     "GovernedActionCall",
+    "GovernedEffectRoute",
     "GovernedRoute",
     "HostContractMetadata",
     "HostExtensionPolicy",
@@ -300,6 +381,7 @@ __all__ = [
     "InvalidSemanticVersion",
     "InvalidTransition",
     "InvalidVersionRange",
+    "InvocationScope",
     "LoadedExtension",
     "LockArtifacts",
     "LockDiff",
@@ -316,6 +398,8 @@ __all__ = [
     "PermissionDenial",
     "PreflightPolicy",
     "PreflightReport",
+    "ProgressReporter",
+    "ProgressSink",
     "PublisherIdentity",
     "PublisherKeyConflict",
     "PublisherTrust",
@@ -327,8 +411,10 @@ __all__ = [
     "RootRequest",
     "RouteParam",
     "SandboxPolicy",
+    "ScopeMismatch",
     "SelectionExplanation",
     "SemVer",
+    "ServiceNotGranted",
     "SkippedOptional",
     "SqliteExtensionInstallStore",
     "TargetHostContract",
@@ -342,6 +428,7 @@ __all__ = [
     "UiComponentManifest",
     "UiExtensionError",
     "UiProjectionService",
+    "UngrantedProgressReporter",
     "UnknownAction",
     "UnknownCatalog",
     "UnknownComponent",
@@ -376,6 +463,9 @@ __all__ = [
     "parse_range",
     "resolve_lock",
     "resolve_publisher_trust",
+    "run_activation",
+    "run_deactivation",
+    "run_invocation",
     "run_preflight",
     "sha256_hex",
     "verify_component_asset",

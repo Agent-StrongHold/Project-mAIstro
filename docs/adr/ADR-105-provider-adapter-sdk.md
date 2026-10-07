@@ -1,5 +1,5 @@
 ---
-id: ADR-104
+id: ADR-105
 title: "Third-party provider adapter SDK: registration seams, canonical-only egress, shared conformance"
 repo: maistro-engine
 kind: adr
@@ -36,7 +36,7 @@ history:
     date: 2026-10-05
 ---
 
-# ADR-104: Third-party provider adapter SDK (M9-E1, #961)
+# ADR-105: Third-party provider adapter SDK (M9-E1, #961)
 
 - **Status:** Accepted
 - **Date:** 2026-10-05
