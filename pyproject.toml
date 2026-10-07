@@ -137,6 +137,13 @@ dev = [
     "pytest-cov>=6.0",
     "ruff>=0.9",
     "mypy>=1.14",
+    # The RSI fitness scorecard treats ruff/mypy/bandit as REQUIRED gates
+    # (#304): a runner missing one fails the candidate closed with a blocking
+    # not_run gate. The shipped runner image installs all three; the dev
+    # environment runs the same loop and suite, so bandit is declared here to
+    # match — without it every source-touching candidate would be vetoed in
+    # dev/CI for an environment reason, not a fitness reason.
+    "bandit>=1.7",
     # scripts/check-ac-state.py parses the acceptance-criteria Gherkin with the
     # real grammar, not a regex. It arrives transitively today via
     # hive-conductor's pytest-bdd, which is a different package's dependency
