@@ -53,6 +53,7 @@ from maistro.extensions.compat import (
 from maistro.extensions.context import ExtensionCancellation, ExtensionConfigView, ExtensionContext
 from maistro.extensions.effective_authority import EffectiveAuthority
 from maistro.extensions.host import ExtensionHost
+from maistro.extensions.isolation import SandboxViolationLog
 from maistro.extensions.resolution import LockState
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
@@ -475,6 +476,13 @@ _VULTURE_WHITELIST = (
     ExternalAgentRegistry.refresh_descriptor,
     ExternalAgentRegistry.report_availability,
     ExternalAgentRegistry.eligible_specialists,
+    # Extension sandbox boundary evidence (M9-G2, #970). The bounded,
+    # per-identity query is the operational half of "violations are
+    # attributable and visible": the M9-G4 disable/quarantine flow consumes
+    # it, and until that flow lands its in-tree callers are the runner and
+    # conformance suites in packages/maistro-core/tests/extensions/ — the
+    # same contract-ships-first posture as the M9-B1 store seams above.
+    SandboxViolationLog.violations_for,
     # Effective-authority evidence linkage (M9-G1, #969). `with_execution_context`
     # pins a computed intersection to canonical Run evidence (run/node-run/attempt
     # ids) without mutating the digest-anchored result; its consumers are the

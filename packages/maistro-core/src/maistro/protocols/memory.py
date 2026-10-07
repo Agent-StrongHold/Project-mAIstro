@@ -506,6 +506,8 @@ class ContextAssemblyPolicy(Protocol):
         session_id: str,
         query: str = "",
         budget_tokens: int | None = None,
+        *,
+        project_id: str = "",
     ) -> str:
         """Active task context: high-confidence episodic memories scoped to this agent.
 
@@ -516,6 +518,11 @@ class ContextAssemblyPolicy(Protocol):
         memory is no longer a unit and ADR-091's always-include band cannot be
         honoured. Both default so an existing caller keeps its behaviour: no
         query means no ranking, and no budget means unbounded, not zero.
+
+        A nonempty `project_id` restricts recall to memories attributed to
+        that Project, so one agent id serving several Workspaces does not carry
+        memories between them (#1047). An empty string keeps agent-wide recall;
+        nonempty values, including whitespace, are exact filters.
         """
         ...
 
