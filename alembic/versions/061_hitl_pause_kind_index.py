@@ -9,9 +9,17 @@ human eligibility selectable before LIMIT, without becoming a second HITL
 queue: the canonical pause entry stays the authority and every disclosed item
 is revalidated against it at read time.
 
-Revision ID: 059
-Revises: 058
+Revision ID: 061
+Revises: 060
 Create Date: 2026-10-06
+
+Renumbered once during a develop integration: written as `059` on the
+`058` tip, the sync landed develop's backlog pair (#98/#102) on that same
+tip as `059_backlog_work_source` and `060_backlog_authority_cutover` —
+and a landed trunk migration never moves. This revision therefore
+re-parents onto develop's `060` and takes the next free slot, keeping the
+chain linear with exactly one head (046 records the convention, 058 the
+nearest precedent).
 
 The DDL is guarded (``ADD COLUMN IF NOT EXISTS`` / ``CREATE INDEX IF NOT
 EXISTS``), matching the runtime stores' own DDL and the adoption rule 044
@@ -29,8 +37,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "059"
-down_revision = "058"
+revision = "061"
+down_revision = "060"
 branch_labels = None
 depends_on = None
 

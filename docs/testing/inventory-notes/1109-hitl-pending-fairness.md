@@ -136,3 +136,21 @@ the foreign prefix is a full page at Attention's own limit; without the repair A
 answers empty with `truncated: False`). Existing assertions moved from list shape to
 `page.items`; the zero-limit read-count pin went 1 → 2 because the walk's final read is the
 one that confirms the projection ran out, which is what makes `exhausted` honest.
+
+## CI-repair round: develop sync renumbers the projection migration 059 → 061
+
+The develop sync for this round (origin/develop 9bd1a93eef) landed the backlog pair
+(#98/#102) on the `058` tip this branch's projection migration had taken: develop's trunk
+now carries `059_backlog_work_source` and `060_backlog_authority_cutover`, so the tree held
+two `059` revisions and two heads, and the chain-tip conformance pin
+(`test_capability_invocation_effect_index_migration.py`) conflicted — its branch side
+named `059` as the single head, develop's named `060`. The resolution follows the chain's
+own convention (046 records it, 058 is the nearest precedent): a landed trunk migration
+never moves, so the branch-side projection migration renumbers past the incoming tip —
+`alembic/versions/059_hitl_pause_kind_index.py` becomes
+`061_hitl_pause_kind_index.py`, `revision = "061"`, `down_revision = "060"` — and the
+merged pin walks to `061`, asserts the whole ancestor path through `060`, and pins
+`get_heads() == ["061"]` (`alembic heads` reports the single head). No test was added or
+removed: the delta above is unchanged, and the evidence is the resolved conformance test
+plus `tests/migrations` passing (the DB legs skipped without a live server, as in CI's
+unit shards).
