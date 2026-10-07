@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +28
+  tests/: +38
 ---
 # Issue #1100 — align the PyJWT dependency floor with the mandatory OIDC verifier imports
 
@@ -78,3 +78,68 @@ Executed evidence at this head (all exit 0):
   lines / 100% branch arcs on the script outside the named exclusions.
 - `uv sync --locked --extra dev` — lock consistent with the moved specifier.
 - `uv run ruff check .` / `uv run ruff format --check .` — clean.
+
+## Follow-up round: the three review findings on the gate itself
+
+Codex review of PR #2039 (head `c7846310`) raised three P2s against the gate as
+first landed; this round closes them (+10 nodes, all still in `tests/`):
+
+1. **Lazy verifier APIs were never probed at the floor.** `auth_jwt.py` and
+   `auth_demo_cookie.py` import/use `jwt` only inside `_decode_token()` /
+   `authenticate()`, and several `oauth.py` attributes are reached only during
+   verification — importing the modules proves nothing about them. The gate now
+   discovers every PyJWT API the three verifier sources reference statically
+   (`jwt_api_inventory`: `pyjwt.X` attribute uses plus `from jwt...` imports
+   wherever they appear) and asserts each one exists on the floor-resolved
+   PyJWT inside the floor venv. An inventory that discovers nothing aborts the
+   gate instead of gating nothing; a parenthesized multi-line jwt import is
+   refused rather than half-parsed. Tests: discovery finds the lazy imports
+   (`decode`, `PyJWK`, `get_unverified_header`, `PyJWKClient`,
+   `MissingCryptographyError`), `VERSION_SENSITIVE_IMPORTS` stays a subset of
+   the discovery (a lazy import cannot silently shrink the gate), the
+   parenthesized refusal, and a floor-venv probe run that fails on an API the
+   locked PyJWT has but the floor lacks (4 nodes).
+2. **Only PyJWT's resolution was asserted; other stale floors were masked.**
+   `uv pip install --resolution lowest-direct` picks the lowest COMPATIBLE
+   version, so `pydantic-settings>=2.7` silently lifted pydantic above its
+   declared `>=2.4.0` floor while the gate reported the minimum tested. The
+   gate now derives and asserts a floor for EVERY declared dependency, failing
+   on any resolution above its declaration — which exposed that maistro-core's
+   `pydantic>=2.4.0` was untestable as written, so the declaration moves to
+   `>=2.7.0` (the earliest release the floor set can actually install;
+   `uv.lock` moves only the recorded specifier). Tests: a lifted floor is
+   reported per-package, a corrected floor passes, a non-PyJWT mismatch fails
+   the render even with PyJWT at its floor, every declaration has a derivable
+   floor, and the pydantic floor never drops below what pydantic-settings
+   installs (5 nodes).
+3. **A merge-group change to the gate script skipped the gate.** The
+   floor-install step lives in ci.yml's wheel-imports job, gated on
+   `needs.workflow-lint.outputs.wheel_imports`, but the classifier set that
+   flag only for package paths — a PR touching only
+   `scripts/verify-minimum-dependencies.py` executed it on pull_request but
+   not at the merge-queue SHA. `classify` now maps the gate script to
+   `wheel_imports` (and `docker_build`, as before), with a classifier test
+   (1 node).
+
+Executed evidence for this round (all exit 0 unless stated):
+
+- `uv run python scripts/verify-minimum-dependencies.py --python 3.12` — 24
+  check(s) passed, pyjwt resolved 2.14.0, all 12 declared dependencies at
+  their floors, PyJWT-removal refusal intact.
+- Negative control: same gate against a copy of the package with the old
+  `pydantic>=2.4.0` restored — exit 1, naming "pydantic 2.7.0, not the
+  declared floor 2.4.0", i.e. the gate now catches the masking the review
+  described.
+- `uv run pytest tests/test_verify_minimum_dependencies.py
+  tests/test_ci_merge_group_scope.py -q` — 56 passed (37 + 19).
+- Mandatory-verification suites re-run green:
+  `packages/maistro-core/tests/auth/test_mandatory_verification.py`,
+  `.../auth/test_oauth.py`, `.../security/test_auth_jwt.py` — 83 passed.
+- `uv run coverage run --branch --source=scripts -m pytest
+  tests/test_verify_minimum_dependencies.py tests/test_ci_merge_group_scope.py`
+  + `coverage xml` + `scripts/check-diff-coverage.py --base
+  b78637f52be33c5` — ok at 90% lines / 80% arcs per file.
+- `uv run python scripts/check-suite-inventory.py` — only this note's delta
+  (+10 on `tests/`) after `--update`.
+- `uv lock --check`, `uv run ruff check .`, `uv run ruff format --check .` —
+  clean.

@@ -22,9 +22,16 @@ proves, in the result:
      ``pyyaml>=6.0`` here: 6.0 has no CPython 3.12 wheels and its sdist does
      not build under Cython >=3.1);
   2. the OIDC/auth modules import there, including the version-sensitive
-     imports the issue is about;
-  3. PyJWT itself resolved to the declared floor -- proving the environment is
-     the minimum, not the current set in disguise;
+     imports the issue is about, and every PyJWT API the verifier sources
+     reference -- including the imports made lazily inside ``authenticate()``
+     / ``_decode_token()`` -- exists on the floor-resolved PyJWT;
+  3. every declared dependency resolved to its DECLARED floor -- proving the
+     environment is the minimum, not the current set in disguise. Note that
+     `uv pip install --resolution lowest-direct` selects the lowest
+     COMPATIBLE version of each direct dependency, so a floor another
+     declared dependency's own constraint raises (pydantic via
+     pydantic-settings>=2.7) resolves above its declaration; that is a
+     reported failure naming the untestable floor, never a pass;
   4. removing PyJWT still fails closed at import with the #856 actionable
      error, so a minimum install never means a downgraded verifier.
 
@@ -48,9 +55,11 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-#: The dependency whose floor the gate pins to the minimum. The issue is about
-#: PyJWT, but the install covers every declared dependency of the package --
-#: this is only the one whose resolved version is asserted to be the floor.
+#: The dependency named in the gate's headline. The issue is about PyJWT, but
+#: the install covers every declared dependency of the package and EACH one's
+#: resolved version is asserted to be its declared floor -- `lowest-direct`
+#: picks the lowest COMPATIBLE version, so a floor another dependency's
+#: constraint raises must surface here, not pass as "the minimum".
 FLOOR_DEPENDENCY = "pyjwt"
 
 #: The modules whose import at the floor versions the issue requires. The OIDC
@@ -69,6 +78,16 @@ DEFAULT_MODULES = [
 VERSION_SENSITIVE_IMPORTS = [
     ("jwt.exceptions", "MissingCryptographyError"),
     ("jwt", "PyJWKClient"),
+]
+
+#: The verifier source files the API inventory is discovered from. Keep in
+#: step with DEFAULT_MODULES and the test suite's OIDC_SOURCES copy: a module
+#: added to DEFAULT_MODULES but not here would be imported at the floor while
+#: its PyJWT usage went unchecked.
+OIDC_SOURCES = [
+    "packages/maistro-core/src/maistro/auth/oauth.py",
+    "packages/maistro-core/src/maistro/security/auth_jwt.py",
+    "packages/maistro-core/src/maistro/security/auth_demo_cookie.py",
 ]
 
 #: Runs inside the floor venv. Prints one JSON object so the parent reports
@@ -102,13 +121,30 @@ def module_version():
 
 record(f"dist version of {floor_dependency}", lambda: dist_version(floor_dependency))
 record("import jwt", module_version)
-for symbol_module, symbol in json.loads(sys.argv[3]):
+# Every declared dependency's dist metadata is collected so the parent can
+# assert each resolution against its declared floor, not only PyJWT's.
+for declared in (n for n in sys.argv[3].split(",") if n):
+    record(f"dist version of {declared}", lambda d=declared: dist_version(d))
+for symbol_module, symbol in json.loads(sys.argv[4]):
     record(
         f"from {symbol_module} import {symbol}",
         lambda sm=symbol_module, s=symbol: getattr(importlib.import_module(sm), s),
     )
-for name in targets:
+for name in (t for t in targets if t):
     record(f"import {name}", lambda n=name: importlib.import_module(n))
+
+inventory = json.loads(sys.argv[5])
+jwt_module = importlib.import_module("jwt")
+for attr in inventory["attrs"]:
+    record(
+        f"jwt.{attr} exists on the floor-resolved PyJWT",
+        lambda a=attr: getattr(jwt_module, a),
+    )
+for symbol_module, symbol in inventory["froms"]:
+    record(
+        f"from {symbol_module} import {symbol} exists on the floor-resolved PyJWT",
+        lambda sm=symbol_module, s=symbol: getattr(importlib.import_module(sm), s),
+    )
 
 print(json.dumps({"checked": len(checked), "failures": failures, "versions": versions}))
 """
@@ -153,18 +189,73 @@ def _run(
     return subprocess.run(cmd, text=True, capture_output=True, check=False, **kw)  # type: ignore[call-overload,no-any-return]
 
 
-def declared_requirement(package_dir: Path, dependency: str) -> str:
-    """The package's declared requirement string for ``dependency``."""
+#: Repo root the gate's OIDC_SOURCES are relative to.
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def jwt_api_inventory(paths: list[Path]) -> tuple[set[str], set[tuple[str, str]]]:
+    """Every PyJWT API the verifier sources reference, discovered statically.
+
+    Returns (``pyjwt.X`` attribute uses, ``(module, symbol)`` from-imports).
+    The imports are found wherever they appear -- module level or lazily
+    inside ``authenticate()``/``_decode_token()`` -- because importing the
+    modules alone does not reach them. Keep the parsing in step with
+    ``_jwt_api_inventory`` in tests/test_verify_minimum_dependencies.py.
+    """
+    attrs: set[str] = set()
+    froms: set[tuple[str, str]] = set()
+    for path in paths:
+        src = path.read_text(encoding="utf-8")
+        attrs |= set(re.findall(r"\bpyjwt\.([A-Za-z_]\w*)", src))
+        for line in src.splitlines():
+            match = re.match(r"\s*from (jwt(?:\.\w+)*) import (.+?)\s*$", line)
+            if match is None:
+                continue
+            names, module = match.group(2).strip(), match.group(1)
+            if names.startswith("("):
+                # Parenthesized multi-line import: the continuation lines are
+                # not `from jwt` lines, so refuse to half-parse it.
+                raise SystemExit(
+                    f"{path}: parenthesized jwt import is not parsed by the "
+                    "inventory discovery -- extend jwt_api_inventory for it"
+                )
+            for name in names.split(","):
+                name = name.strip().split(" as ")[0].strip()
+                if name:
+                    froms.add((module, name))
+    return attrs, froms
+
+
+def declared_dependencies(package_dir: Path) -> dict[str, str]:
+    """Every ``[project.dependencies]`` entry, keyed by package name.
+
+    The gate asserts the resolved version of EACH entry against its declared
+    floor: ``uv pip install --resolution lowest-direct`` selects the lowest
+    version COMPATIBLE with every constraint, so a floor another direct
+    dependency raises (pydantic via pydantic-settings>=2.7) would otherwise
+    resolve above its declaration while the run still reported "minimum".
+    """
     with (package_dir / "pyproject.toml").open("rb") as fh:
         data = tomllib.load(fh)
     deps = data.get("project", {}).get("dependencies", [])
-    for dep in deps:
-        name = re.split(r"[\[>=<;! \n]", dep.strip(), maxsplit=1)[0].strip()
-        if name.lower() == dependency.lower():
-            return dep.strip()
-    raise SystemExit(
-        f"error: {package_dir}/pyproject.toml declares no {dependency!r} dependency (found: {deps})"
-    )
+    if not deps:
+        raise SystemExit(f"error: {package_dir}/pyproject.toml declares no dependencies")
+    return {
+        re.split(r"[\[>=<;! \n]", dep.strip(), maxsplit=1)[0].strip().lower(): dep.strip()
+        for dep in deps
+    }
+
+
+def declared_requirement(package_dir: Path, dependency: str) -> str:
+    """The package's declared requirement string for ``dependency``."""
+    deps = declared_dependencies(package_dir)
+    try:
+        return deps[dependency.lower()]
+    except KeyError:
+        raise SystemExit(
+            f"error: {package_dir}/pyproject.toml declares no {dependency!r} dependency "
+            f"(found: {list(deps.values())})"
+        ) from None
 
 
 def derive_floor(requirement: str) -> tuple[int, ...]:
@@ -212,25 +303,47 @@ def _probe_env() -> dict[str, str]:
     return env
 
 
-def _floor_assertion(versions: dict[str, str], floor: tuple[int, ...]) -> str | None:
-    dist = versions.get(FLOOR_DEPENDENCY)
-    if dist is None:
-        return f"{FLOOR_DEPENDENCY} dist metadata unreadable in the floor venv"
-    if not floor_resolved(dist, floor):
-        return (
-            f"floor venv resolved {FLOOR_DEPENDENCY} {dist}, not the declared floor "
-            f"{'.'.join(map(str, floor))} -- --resolution lowest-direct did not apply "
-            "to the package's direct dependencies, so this run did not test the minimum"
-        )
-    return None
+def _floor_assertion(
+    versions: dict[str, str], floors: dict[str, tuple[int, ...]]
+) -> list[dict[str, str]]:
+    """One failure per declared dependency that did NOT resolve to its floor.
+
+    ``--resolution lowest-direct`` must pick exactly each declared floor. A
+    dependency resolving higher means either the flag did not apply to direct
+    dependencies, or another declared dependency's own floor raises it -- the
+    declared floor is then untestable as written and the run is not the
+    minimum, so every such package is reported rather than masked.
+    """
+    problems: list[dict[str, str]] = []
+    for name, floor in floors.items():
+        dist = versions.get(name)
+        if dist is None:
+            problems.append(
+                {
+                    "check": f"{name} resolved at the declared floor",
+                    "error": f"{name} dist metadata unreadable in the floor venv",
+                }
+            )
+        elif not floor_resolved(dist, floor):
+            problems.append(
+                {
+                    "check": f"{name} resolved at the declared floor",
+                    "error": (
+                        f"floor venv resolved {name} {dist}, not the declared floor "
+                        f"{'.'.join(map(str, floor))} -- another declared dependency "
+                        f"raises {name} above it, so this floor is untestable as "
+                        "written; raise it to the earliest release the floor set "
+                        "can actually install (#1100)"
+                    ),
+                }
+            )
+    return problems
 
 
-def render(result: dict, floor: tuple[int, ...]) -> tuple[bool, str]:
-    """Turn the probe payload into an (ok, detail) pair, floor check included."""
+def render(result: dict, floors: dict[str, tuple[int, ...]]) -> tuple[bool, str]:
+    """Turn the probe payload into an (ok, detail) pair, floor checks included."""
     failures = list(result["failures"])
-    floor_problem = _floor_assertion(result.get("versions", {}), floor)
-    if floor_problem:
-        failures.append({"check": "pyjwt resolved at the declared floor", "error": floor_problem})
+    failures.extend(_floor_assertion(result.get("versions", {}), floors))
     versions = result.get("versions", {})
     resolved = versions.get(FLOOR_DEPENDENCY, "?")
     if failures:
@@ -241,7 +354,10 @@ def render(result: dict, floor: tuple[int, ...]) -> tuple[bool, str]:
         for f in failures:
             lines.append(f"  {f['check']}: {f['error']}")
         return False, "\n".join(lines)
-    return True, f"{result['checked']} check(s) passed ({FLOOR_DEPENDENCY} resolved {resolved})"
+    return True, (
+        f"{result['checked']} check(s) passed ({FLOOR_DEPENDENCY} resolved {resolved}; "
+        f"all {len(floors)} declared dependencies at their floors)"
+    )
 
 
 def check(
@@ -261,6 +377,38 @@ def check(
     floor = derive_floor(requirement)
     print(f"declared {FLOOR_DEPENDENCY} requirement: {requirement}")
     print(f"floor under test: {'.'.join(map(str, floor))}")
+
+    # Every declared dependency's floor is asserted, not just PyJWT's:
+    # `lowest-direct` selects the lowest COMPATIBLE version per dependency, so
+    # a floor another direct dependency's constraint raises (pydantic via
+    # pydantic-settings>=2.7) resolves above its declaration and must fail
+    # here rather than pass as "the minimum".
+    declared = declared_dependencies(package_dir)
+    floors = {name: derive_floor(req) for name, req in declared.items()}
+    print(
+        "declared floors under test: "
+        + ", ".join(
+            f"{name}>={'.'.join(map(str, dep_floor))}" for name, dep_floor in sorted(floors.items())
+        )
+    )
+
+    # Every PyJWT API the verifiers touch -- however lazily -- must exist on
+    # the floor-resolved PyJWT, not just on the locked one the test suite
+    # runs against. An empty inventory means the discovery regex no longer
+    # matches the sources, so fail loudly instead of gating nothing.
+    inv_attrs, inv_froms = jwt_api_inventory([ROOT / rel for rel in OIDC_SOURCES])
+    if not inv_attrs and not inv_froms:
+        raise SystemExit(
+            "error: jwt_api_inventory found no PyJWT usage in the OIDC sources "
+            "-- the discovery is broken or the verifiers moved; fix the "
+            "discovery rather than gating nothing"
+        )
+    inventory = json.dumps(
+        {
+            "attrs": sorted(inv_attrs),
+            "froms": [list(pair) for pair in sorted(inv_froms)],
+        }
+    )
 
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
@@ -315,14 +463,16 @@ def check(
                 PROBE_MINIMUM,
                 ",".join(modules),
                 FLOOR_DEPENDENCY,
+                ",".join(sorted(declared)),
                 json.dumps([list(pair) for pair in VERSION_SENSITIVE_IMPORTS]),
+                inventory,
             ],
             cwd=probe_cwd,
             env=_probe_env(),
         )
         if probe.returncode != 0 or not probe.stdout.strip():
             return False, f"probe crashed:\n{probe.stdout.strip()}\n{probe.stderr.strip()[-2000:]}"
-        ok, detail = render(json.loads(probe.stdout.strip().splitlines()[-1]), floor)
+        ok, detail = render(json.loads(probe.stdout.strip().splitlines()[-1]), floors)
         if not ok:
             return False, detail
 

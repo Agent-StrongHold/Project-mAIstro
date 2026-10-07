@@ -17,8 +17,15 @@ unit-proven here is everything that does not need the five-minute install:
 - the declared floors themselves: maistro-core must keep a PyJWT floor at or
   above the verified minimum, and both in-tree consumers of the published
   range must agree on it (the "metadata and documentation agree" criterion);
+- every declared dependency's resolved version is asserted at its floor
+  (lowest-direct picks the lowest COMPATIBLE version, so a floor another
+  dependency lifts -- pydantic via pydantic-settings>=2.7 -- must fail the
+  gate, not pass as "the minimum");
 - the JWT API inventory the three verifier modules import resolves on the
   installed PyJWT -- the fast, in-suite complement to the CI run at the floor;
+- the same inventory is discovered statically (including lazy imports) and
+  checked INSIDE the floor venv by the CI gate, so an API added to the locked
+  PyJWT but absent from the declared floor fails the gate, not a user;
 - the fail-closed probe both detects a module that refuses without PyJWT and
   rejects one that silently imports (the downgrade case is what it exists to
   catch, so the degenerate path is exercised, not assumed).
@@ -116,24 +123,50 @@ class TestProbeEnvironment:
 
 class TestFloorAssertion:
     def test_a_missing_dist_version_is_reported(self, gate):
-        problem = gate._floor_assertion({}, (2, 14))
-        assert problem is not None and "unreadable" in problem
+        problems = gate._floor_assertion({}, {"pyjwt": (2, 14)})
+        assert problems and "unreadable" in problems[0]["error"]
 
     def test_resolving_above_the_floor_means_the_minimum_was_not_tested(self, gate):
         """The #1100 failure in miniature: an environment that resolved the
         current release is the current set wearing a minimum-deps label, and
         checks 1-4 would have proven nothing about the floor."""
-        problem = gate._floor_assertion({"pyjwt": "2.15.1"}, (2, 14))
-        assert problem is not None and "not the declared floor" in problem
+        problems = gate._floor_assertion({"pyjwt": "2.15.1"}, {"pyjwt": (2, 14)})
+        assert problems and "not the declared floor" in problems[0]["error"]
 
     def test_resolving_the_floor_is_silent(self, gate):
-        assert gate._floor_assertion({"pyjwt": "2.14.0"}, (2, 14)) is None
+        assert gate._floor_assertion({"pyjwt": "2.14.0"}, {"pyjwt": (2, 14)}) == []
+
+    def test_a_floor_another_dependency_raises_is_reported_not_masked(self, gate):
+        """`lowest-direct` resolves the lowest COMPATIBLE version, so
+        pydantic-settings>=2.7 lifts pydantic above its declared 2.4.0 floor
+        while the gate used to check only PyJWT and report success. Every
+        declared dependency is now asserted; the lifted one is a failure."""
+        problems = gate._floor_assertion(
+            {"pyjwt": "2.14.0", "pydantic": "2.7.0"},
+            {"pyjwt": (2, 14), "pydantic": (2, 4, 0)},
+        )
+        assert len(problems) == 1
+        assert problems[0]["check"] == "pydantic resolved at the declared floor"
+        assert "pydantic 2.7.0, not the declared floor 2.4.0" in problems[0]["error"]
+
+    def test_a_corrected_floor_that_installs_is_not_flagged(self, gate):
+        """A floor raised to the earliest installable release (pydantic 2.7.0
+        after the pydantic-settings lift) resolves exactly at its floor and
+        passes like any other dependency."""
+        assert (
+            gate._floor_assertion(
+                {"pyjwt": "2.14.0", "pydantic": "2.7.0"},
+                {"pyjwt": (2, 14), "pydantic": (2, 7, 0)},
+            )
+            == []
+        )
 
 
 class TestRender:
     def test_a_clean_probe_at_the_floor_passes_with_the_resolution_named(self, gate):
         ok, detail = gate.render(
-            {"checked": 7, "failures": [], "versions": {"pyjwt": "2.14.0"}}, (2, 14)
+            {"checked": 7, "failures": [], "versions": {"pyjwt": "2.14.0"}},
+            {"pyjwt": (2, 14)},
         )
         assert ok is True
         assert "7 check(s) passed" in detail and "2.14.0" in detail
@@ -145,7 +178,7 @@ class TestRender:
                 "failures": [{"check": "import maistro.auth.oauth", "error": "Boom: no"}],
                 "versions": {"pyjwt": "2.14.0"},
             },
-            (2, 14),
+            {"pyjwt": (2, 14)},
         )
         assert ok is False
         assert "import maistro.auth.oauth" in detail and "Boom: no" in detail
@@ -155,10 +188,26 @@ class TestRender:
         the run was about the minimum, so a wrong resolution fails the render
         on its own."""
         ok, detail = gate.render(
-            {"checked": 7, "failures": [], "versions": {"pyjwt": "2.15.1"}}, (2, 14)
+            {"checked": 7, "failures": [], "versions": {"pyjwt": "2.15.1"}},
+            {"pyjwt": (2, 14)},
         )
         assert ok is False
         assert "not the declared floor" in detail
+
+    def test_a_non_pyjwt_floor_mismatch_fails_even_when_pyjwt_is_at_its_floor(self, gate):
+        """The masking this gate used to allow: PyJWT at its floor while
+        pydantic was lifted above its declaration by pydantic-settings still
+        reported the minimum-deps run as passed. Now it fails, naming pydantic."""
+        ok, detail = gate.render(
+            {
+                "checked": 7,
+                "failures": [],
+                "versions": {"pyjwt": "2.14.0", "pydantic": "2.7.0"},
+            },
+            {"pyjwt": (2, 14), "pydantic": (2, 4, 0)},
+        )
+        assert ok is False
+        assert "pydantic" in detail and "not the declared floor" in detail
 
 
 class TestDeclaredFloors:
@@ -185,6 +234,24 @@ class TestDeclaredFloors:
             stripped for raw in text.splitlines() if (stripped := raw.strip()).startswith("pyjwt")
         )
         assert gate.derive_floor(core) == gate.derive_floor(line), f"{core!r} vs {line!r}"
+
+    def test_every_declared_dependency_has_a_derivable_floor(self, gate):
+        """The gate asserts every declared dependency's resolution at its
+        floor, so every declaration must use the supported >=X[,<Y] form;
+        anything else fails loudly here in CI, not silently in the gate."""
+        declared = gate.declared_dependencies(ROOT / "packages/maistro-core")
+        assert len(declared) >= 10 and gate.FLOOR_DEPENDENCY in declared
+        for name, requirement in declared.items():
+            assert gate.derive_floor(requirement), name
+
+    def test_the_pydantic_floor_is_never_below_what_pydantic_settings_installs(self, gate):
+        """`lowest-direct` installs the lowest COMPATIBLE pydantic, and
+        pydantic-settings>=2.7 requires pydantic>=2.7.0: a lower declared
+        pydantic floor is untestable, and the gate would report it lifted.
+        Regression test for the run that passed while pydantic>=2.4.0 could
+        not be installed under its own declaration."""
+        declared = gate.declared_dependencies(ROOT / "packages/maistro-core")
+        assert gate.derive_floor(declared["pydantic"]) >= (2, 7, 0), declared["pydantic"]
 
 
 def _jwt_api_inventory(path: Path) -> tuple[set[str], set[tuple[str, str]]]:
@@ -232,6 +299,44 @@ def test_every_jwt_api_the_verifier_imports_exists_on_installed_pyjwt(relpath):
         if not hasattr(importlib.import_module(module), symbol)
     ]
     assert missing == [], f"{relpath} imports APIs missing from installed pyjwt: {missing}"
+
+
+class TestFloorApiInventory:
+    def test_the_inventory_discovers_the_lazy_verifier_imports(self, gate):
+        """The point of running the inventory at the floor: most PyJWT usage
+        sits inside ``authenticate()``/``_decode_token()``/verification, so a
+        discovery that only saw module-level imports would gate nothing."""
+        attrs, froms = gate.jwt_api_inventory([ROOT / rel for rel in gate.OIDC_SOURCES])
+        assert {"decode", "PyJWK", "get_unverified_header"} <= attrs
+        assert {("jwt", "PyJWKClient"), ("jwt.exceptions", "MissingCryptographyError")} <= froms
+
+    def test_version_sensitive_imports_are_part_of_the_discovered_inventory(self, gate):
+        """A lazy import made invisible to the discovery cannot silently
+        shrink the gate: the explicitly asserted pairs must be found again."""
+        _, froms = gate.jwt_api_inventory([ROOT / rel for rel in gate.OIDC_SOURCES])
+        assert set(gate.VERSION_SENSITIVE_IMPORTS) <= froms
+
+    def test_discovery_refuses_parenthesized_jwt_imports(self, gate, tmp_path):
+        source = tmp_path / "lazy.py"
+        source.write_text("from jwt import (\n    PyJWK,\n)\n", encoding="utf-8")
+        with pytest.raises(SystemExit, match="parenthesized jwt import"):
+            gate.jwt_api_inventory([source])
+
+    def test_the_floor_probe_fails_on_an_api_missing_from_the_resolved_pyjwt(self, gate, tmp_path):
+        """The inventory runs INSIDE the floor venv: a symbol present on the
+        locked PyJWT but absent from the floor is reported as a failure."""
+        payload = json.dumps({"attrs": ["decode"], "froms": [["jwt", "NotARealApi"]]})
+        proc = subprocess.run(
+            [sys.executable, "-c", gate.PROBE_MINIMUM, "", "pyjwt", "", "[]", payload],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+        )
+        assert proc.returncode == 0, proc.stderr
+        result = json.loads(proc.stdout.strip().splitlines()[-1])
+        failed = {f["check"] for f in result["failures"]}
+        assert any("NotARealApi" in check for check in failed)
+        assert "jwt.decode exists on the floor-resolved PyJWT" not in failed
 
 
 class TestGateWiring:
