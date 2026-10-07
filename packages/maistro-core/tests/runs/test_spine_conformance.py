@@ -495,6 +495,23 @@ async def test_transitioning_an_unknown_attempt_raises(spine: Any) -> None:
         await store.transition_attempt("no-such-attempt", AttemptStatus.RUNNING)
 
 
+async def test_an_unknown_attempt_is_not_found_even_for_a_completed_target(
+    spine: Any,
+) -> None:
+    """An unknown attempt is not-found for every target, COMPLETED included (#1335).
+
+    The pg store's terminal-Run guard resolves the attempt's spine before it
+    looks at any parent status, so the COMPLETED target asks its first question
+    about an attempt that does not exist -- and must still answer not-found,
+    not fail some later way. On memory and sqlite the attempt lookup raises
+    before the guard; on postgres the guard's spine query is what raises.
+    """
+    store, _workspace, _project_id = spine
+
+    with pytest.raises(AttemptNotFound):
+        await store.transition_attempt("no-such-attempt", AttemptStatus.COMPLETED, result={})
+
+
 @pytest.mark.parametrize("terminal", [RunStatus.CANCELLED, RunStatus.FAILED, RunStatus.TIMED_OUT])
 async def test_a_completed_attempt_is_refused_under_a_terminal_run(
     spine: Any, terminal: Any

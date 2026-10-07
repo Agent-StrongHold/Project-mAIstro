@@ -1388,24 +1388,23 @@ class PgRunStore:
                 # other targets stay legal under a terminal Run, because a
                 # run-level cancel and the reclaim path record CANCELLED (and
                 # siblings record true FAILURES) after the Run terminalized.
-                lineage = await conn.fetchrow(
-                    """SELECT n.run_id AS run_id
+                run_row = await conn.fetchrow(
+                    """SELECT r.status AS status
                          FROM canonical_attempts a
                          JOIN canonical_node_runs n ON n.node_run_id = a.node_run_id
-                        WHERE a.attempt_id = $1""",
+                         JOIN canonical_runs r ON r.run_id = n.run_id
+                        WHERE a.attempt_id = $1
+                        FOR SHARE OF r""",
                     attempt_id,
                 )
-                if lineage is None:
-                    raise AttemptNotFound(attempt_id)
-                run_row = await conn.fetchrow(
-                    "SELECT status FROM canonical_runs WHERE run_id = $1 FOR SHARE",
-                    lineage["run_id"],
-                )
                 if run_row is None:
-                    # delete_run removed the spine under its own lock between
-                    # the two reads; the target went with it, so the failure
-                    # names the target, not a parent it never had -- the same
-                    # answer repair_attempt_result gives.
+                    # One statement, not two: an attempt whose spine vanished
+                    # (delete_run under its own lock) and an attempt that never
+                    # existed both answer not-found here, so there is no
+                    # between-the-reads state to reason about -- and every
+                    # branch of the guard is reachable from a conformance test.
+                    # The failure names the target, not a parent it never had:
+                    # the same answer the stores give an unknown attempt.
                     raise AttemptNotFound(attempt_id)
                 refuse_completion_under_terminal_run(RunStatus(run_row["status"]), attempt_id)
             attempt = Attempt.model_validate(
