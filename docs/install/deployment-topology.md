@@ -39,7 +39,10 @@ Persistent layer (outside instances):
   tasks in flight on a replica that dies to be lost with it.
 - **Rate limits are per-process, not cluster-wide (#842).** The request limiter
   (`maistro_server.api.rate_limit`) keeps its sliding window in process memory,
-  keyed to the authenticated principal (ADR-085). Each of the N replicas
+  keyed to the authenticated principal (ADR-085) — or, in the auth-disabled
+  development configuration (`API_KEYS` empty), to the connecting client's
+  address; Authorization header content never changes the bucket there (#1101).
+  Each of the N replicas
   enforces `RATE_LIMIT_PER_MINUTE` independently, so the effective aggregate
   budget is N × the configured limit. A cluster-wide floor would need the
   shared store (e.g. the Redis above); none is claimed today.
