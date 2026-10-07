@@ -44,3 +44,28 @@ still passes with all 17 recorded suites unchanged.
   ~357) is pre-existing and outside the changed block.
 - `uv run ruff check .` / `uv run ruff format --check .`: clean.
 - `uv run python scripts/check-suite-inventory.py`: ok, 17 suites match.
+
+## Repair-round revalidation (2026-10-07, head `369cc93e968b`)
+
+Independent re-run on the post-merge head (after the develop sync resolved in
+`369cc93e`); tree otherwise untouched:
+
+- `npx playwright test toggle-switch-name --project=chromium` with
+  `E2E_SRC_ROOT=<worktree>/packages/hive-conductor` (the local equivalent of
+  CI's `/tests` mount): **3 passed**. Note for whoever runs this locally:
+  `E2E_SRC_ROOT` must be the hive-conductor package root, not `frontend/` —
+  the harness appends `frontend/src/components/shared.tsx` itself.
+- Sensitivity re-check against a mutated copy in `/tmp` (the worktree was not
+  edited): deleting the `aria-label={label}` line makes the run fail at
+  `spec.ts:152` (`toHaveAttribute("aria-label", ...)`), exactly the mechanism
+  pin described above.
+- `tsc -p tsconfig.json --noEmit` / `tsc -p tsconfig.node.json --noEmit`: exit 0.
+- `npm run lint`: 0 errors, 94 warnings (same pre-existing warning set).
+- `uv run ruff check .`, `uv run ruff format --check .`,
+  `uv run python scripts/check-suite-inventory.py`: all clean, 17 suites.
+- Environment: `tests/e2e/node_modules` had gone stale (a hoisted
+  `playwright`/`@playwright/test` 1.52 against the lockfile's 1.60); one
+  `npm ci` from the tracked `package-lock.json` restored consistency and the
+  run used the cached chromium-1243 build. The frontend `npm ci` was also run
+  fresh to make the `tsc`/lint evidence reproducible (no `node_modules` was
+  assumed).
