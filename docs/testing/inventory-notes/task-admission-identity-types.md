@@ -1535,3 +1535,59 @@ first (two-merge rule — a candidate cannot bank or authorize its own debt,
 proven both by the gate mechanics and by the executed merge-tree simulation in
 round 17), or the parent #1845 integration must supply the runtime consumer.
 Handoff only; no integration approval; the stack stays unmerged per the issue.
+
+## 2026-10-07 round-20 repair: issue-prohibited vulture baseline rows removed
+
+Dispatched at the exact head `05646eb620e2` (branch `auto-1851`, develop base
+`e3233939343b`) with the prior round's finding that
+`quality/vulture-baseline.json` carried five `admission_identity` rows that the
+issue prohibits. The issue's staging constraint is explicit — "No fake callers,
+baseline additions, grants, disabled gates or quality waivers are permitted" —
+and a candidate-ledger row cannot authorize itself anyway
+(`ratchet_provenance` reads authorizations from the trusted base, and rounds
+17–19 proved by merge-tree simulation that no candidate-side edit greens these
+gates). This round therefore removed the five rows, restoring the branch's own
+delta to exactly the three in-scope leaf files:
+
+- `git diff --numstat 28614700b..HEAD` (the develop merge point) is now exactly
+  `admission_identity.py` (+520), `test_root_admission_identity.py` (+634),
+  `task-admission-identity-types.md` (+1537 including this entry); the working
+  tree additionally drops the five baseline rows. No other file differs from
+  the merge point, and `quality/radon-baseline.json`'s `+10` versus current
+  `origin/develop` is develop-attributed (#1682, arrived with the sanctioned
+  `dba8cf6e1` sync; develop later pruned the row in `b55f144e1` after
+  refactoring `candidate_fitness.py` — the row is accurate for this tree, and
+  `check-radon-baseline.py` passes 138 == 138).
+- Focused acceptance battery, all green at this head: focused suite 79/79
+  passed (`pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q`);
+  ruff check clean on module+tests and tree-wide (3,149 files); ruff format
+  clean on module+tests and tree-wide; `mypy admission_identity.py` clean;
+  `check-suite-inventory.py` ok (17 suites, 28,962 collected node IDs);
+  `tests/test_check_vulture_baseline.py` + `tests/test_ratchet_provenance.py`
+  57 passed post-edit.
+- Required integration-head gates, re-executed with CI's exact arguments:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=1 — the same five issue-mandated
+  `AdmissionAssessment` identities (`admission_identity.py:515-520`) are now
+  reported as unbanked AND unauthorized ("land a reviewed grant first");
+  `check-reachability.py` rc=1 — exactly one NEWLY UNREACHABLE module,
+  `maistro.runs.admission_identity` (170 of 1,360); `check-ratchet-provenance.py`
+  rc=1 solely via the `check-reachability-provenance` sub-gate (169 -> 170);
+  `check-reachability-dispositions.py` rc=0; `check-promotion-surface.py`
+  rc=0; `check-radon-baseline.py` rc=0.
+- The hosted `test` job's three failures were reproduced locally
+  (`tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `tests/test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`)
+  and are unchanged: all three assert the committed reachability baseline
+  matches the tree, and this leaf's deliberately unwired module is exactly the
+  one divergence. 35 sibling tests in those files pass.
+
+Blocker unchanged and by design: the issue declares this leaf not independently
+mergeable while its runtime consumer is absent, predicts both red gates
+verbatim, and forbids every candidate-side cure (consumer, re-export,
+suppression, baseline entry, grant). The reds can only be resolved by the
+parent #1845 integration supplying the reviewed runtime consumer, or by a
+reviewed vulture+reachability grant pair landed on the integration base first
+(two-merge rule). The stack stays unmerged per the issue; this leaf claims
+implementation/test readiness only.
