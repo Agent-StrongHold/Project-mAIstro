@@ -636,8 +636,17 @@ class LoadStats:
         self.kind_status_codes: dict[str, dict[int, int]] = {}
         self.run_ids: set[str] = set()
         self.errors: list[str] = []
+        self.retryable_counts: dict[str, int] = {}
 
-    async def record(self, kind: str, status: int, latency: float, run_id: str | None) -> None:
+    async def record(
+        self,
+        kind: str,
+        status: int,
+        latency: float,
+        run_id: str | None,
+        *,
+        retry_after: str | None = None,
+    ) -> None:
         async with self.lock:
             self.counts[kind] = self.counts.get(kind, 0) + 1
             self.latencies.setdefault(kind, []).append(latency)
@@ -646,6 +655,8 @@ class LoadStats:
             by_kind[status] = by_kind.get(status, 0) + 1
             if run_id:
                 self.run_ids.add(run_id)
+            if status == 429 and retry_after and retry_after.strip():
+                self.retryable_counts[kind] = self.retryable_counts.get(kind, 0) + 1
 
     async def snapshot(self) -> dict[str, dict[Any, int]]:
         """Return one lock-consistent request counter snapshot.
@@ -658,6 +669,7 @@ class LoadStats:
         async with self.lock:
             return {
                 "counts": dict(self.counts),
+                "retryable_counts": dict(self.retryable_counts),
                 "status_codes": dict(self.status_codes),
                 "kind_status_codes": {
                     kind: dict(counts) for kind, counts in self.kind_status_codes.items()
@@ -668,6 +680,38 @@ class LoadStats:
 def _counter_delta(after: dict[Any, int], before: dict[Any, int]) -> dict[Any, int]:
     """Return non-negative counter increments between two snapshots."""
     return {key: max(after.get(key, 0) - before.get(key, 0), 0) for key in after | before}
+
+
+def task_admission_check(stats: LoadStats, kill_record: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate sustained admission outside the measured kill/rejoin window."""
+    window = {
+        int(key): value for key, value in kill_record.get("window_task_status_counts", {}).items()
+    }
+    outside = {
+        key: max(value - window.get(key, 0), 0)
+        for key, value in stats.kind_status_codes.get("task_submit", {}).items()
+    }
+    submissions = max(stats.counts.get("task_submit", 0) - sum(window.values()), 0)
+    accepted = outside.get(202, 0)
+    # Only observed Retry-After responses count as designed backpressure.
+    # Subtract the same lock-consistent kill-window snapshots as status counts.
+    backpressured = max(
+        stats.retryable_counts.get("task_submit", 0)
+        - kill_record.get("window_retryable_counts", {}).get("task_submit", 0),
+        0,
+    )
+    available = accepted + backpressured
+    ratio = round(available / max(submissions, 1), 4)
+    return {
+        "accepted_202_outside_kill_window": accepted,
+        "backpressured_429_outside_kill_window": backpressured,
+        "unretryable_429_outside_kill_window": outside.get(429, 0) - backpressured,
+        "available_outside_kill_window": available,
+        "submissions_outside_kill_window": submissions,
+        "ratio": ratio,
+        # A wall of retryable rejections proves no sustained task admission.
+        "ok": accepted > 0 and ratio >= 0.99,
+    }
 
 
 def _check_ok(check: Any) -> bool:
@@ -788,6 +832,7 @@ async def one_request_with(
 
     start = time.monotonic()
     status, run_id = 0, None
+    retry_after = None
     try:
         if kind == "health_ready":
             r = await client.get(f"{base}/health/ready", headers=headers)
@@ -802,6 +847,7 @@ async def one_request_with(
                 json={"description": f"soak load task {seq}"},
             )
             status = r.status_code
+            retry_after = r.headers.get("Retry-After")
             if r.status_code == 202:
                 body = r.json()
                 run_id = body.get("run_id")
@@ -815,7 +861,7 @@ async def one_request_with(
         status = -1
     except Exception:
         status = -2
-    await stats.record(kind, status, time.monotonic() - start, run_id)
+    await stats.record(kind, status, time.monotonic() - start, run_id, retry_after=retry_after)
 
 
 # ────────────────────────────── evidence phases ─────────────────────────────
@@ -1415,6 +1461,9 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
                         _counter_delta(counters_after["status_codes"], status_before).items()
                     )
                 },
+                "window_retryable_counts": _counter_delta(
+                    counters_after["retryable_counts"], counters_before["retryable_counts"]
+                ),
                 "window_task_status_counts": {
                     str(key): value
                     for key, value in sorted(
@@ -1483,31 +1532,10 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     window_statuses = {
         int(key): value for key, value in kill_record.get("window_status_counts", {}).items()
     }
-    window_task_statuses = {
-        int(key): value for key, value in kill_record.get("window_task_status_counts", {}).items()
-    }
     kill_window_failures = sum(
         value for key, value in window_statuses.items() if key >= 500
     ) + window_statuses.get(-1, 0)
-    task_sub_status_outside = {
-        key: max(value - window_task_statuses.get(key, 0), 0)
-        for key, value in stats.kind_status_codes.get("task_submit", {}).items()
-    }
-    task_submissions_outside_kill = max(
-        stats.counts.get("task_submit", 0) - sum(window_task_statuses.values()), 0
-    )
-    task_accepted_outside_kill = task_sub_status_outside.get(202, 0)
-    # Round-5 amendment: a 429 with Retry-After is designed admission
-    # backpressure (the active-root-Run ceiling, #1182, mapped from an
-    # escaping-500 by the F9 fix; the request limiter answers the same shape).
-    # It counts as available admission machinery; 5xx and connection failures
-    # do not, and the 202 count is recorded beside the ratio so a window that
-    # is all backpressure cannot masquerade as an accepted-load result.
-    task_limited_outside_kill = task_sub_status_outside.get(429, 0)
-    available_admissions_outside_kill = task_accepted_outside_kill + task_limited_outside_kill
-    task_admission_ratio = round(
-        available_admissions_outside_kill / max(task_submissions_outside_kill, 1), 4
-    )
+    admission_check = task_admission_check(stats, kill_record)
     nonterminal_count = _integer_or_invalid(evidence["nonterminal_runs"])
     p95s: dict[str, float] = {}
     for kind, lat in stats.latencies.items():
@@ -1519,7 +1547,7 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         "status_counts": {str(k): v for k, v in sorted(stats.status_codes.items())},
         "kind_counts": dict(sorted(stats.counts.items())),
         "p95_latency_ms": p95s,
-        "task_admission_ratio": task_admission_ratio,
+        "task_admission_ratio": admission_check["ratio"],
         "checks": {
             "exact_rc_artifact": preflight_artifact_check(),
             "exactly_once_task_admission": evidence["exactly_once_tasks"]["ok"],
@@ -1567,14 +1595,7 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
                 "items": evidence["nonterminal_run_items"],
                 "ok": nonterminal_count == 0,
             },
-            "task_admission_availability": {
-                "accepted_202_outside_kill_window": task_accepted_outside_kill,
-                "backpressured_429_outside_kill_window": task_limited_outside_kill,
-                "available_outside_kill_window": available_admissions_outside_kill,
-                "submissions_outside_kill_window": task_submissions_outside_kill,
-                "ratio": task_admission_ratio,
-                "ok": task_admission_ratio >= 0.99,
-            },
+            "task_admission_availability": admission_check,
             "sustain_duration": {
                 "observed_seconds": sustain_seconds,
                 "minimum_seconds": PROMOTION_MIN_SUSTAIN_SECONDS,

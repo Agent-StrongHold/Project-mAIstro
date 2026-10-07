@@ -488,6 +488,78 @@ async def test_replica_selection_has_an_independent_production_allowance(
         get_settings.cache_clear()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("responses", "kill_count", "expected"),
+    [
+        pytest.param([], 0, False, id="no-submissions"),
+        pytest.param([(429, "60")] * 2, 0, False, id="all-backpressure"),
+        pytest.param([(202, None), (429, None)], 0, False, id="missing-retry-after"),
+        pytest.param([(202, None), (429, " ")], 0, False, id="blank-retry-after"),
+        pytest.param([(202, None), (429, "60")], 0, True, id="accepted-and-backpressure"),
+        pytest.param([(202, None), (500, None)], 0, False, id="server-error"),
+        pytest.param([(202, None), (429, "60")], 1, False, id="accepted-only-during-kill"),
+        pytest.param(
+            [(429, "60"), (202, None), (429, None)],
+            1,
+            False,
+            id="kill-window-header-cannot-cover-outside-rejection",
+        ),
+        pytest.param(
+            [(429, None), (202, None), (429, "60")],
+            1,
+            True,
+            id="kill-window-rejection-excluded",
+        ),
+    ],
+)
+async def test_sustained_admission_requires_work_and_retryable_backpressure(
+    soak: ModuleType,
+    responses: list[tuple[int, str | None]],
+    kill_count: int,
+    expected: bool,
+) -> None:
+    """Feed HTTP responses through the real worker/accounting/evaluator path."""
+    import httpx
+
+    pending = iter(responses)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST" and request.url.path == "/tasks"
+        status, retry_after = next(pending)
+        return httpx.Response(
+            status,
+            headers={} if retry_after is None else {"Retry-After": retry_after},
+            json={"run_id": "run-observed"} if status == 202 else {},
+        )
+
+    stats = soak.LoadStats()
+    before = await stats.snapshot()
+    after = before
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        for index in range(len(responses)):
+            await soak.one_request_with(client, LB, {}, "task_submit", stats, index)
+            if index + 1 == kill_count:
+                after = await stats.snapshot()
+    kill_record = {
+        "window_task_status_counts": soak._counter_delta(
+            after["kind_status_codes"].get("task_submit", {}),
+            before["kind_status_codes"].get("task_submit", {}),
+        ),
+        "window_retryable_counts": soak._counter_delta(
+            after.get("retryable_counts", {}), before.get("retryable_counts", {})
+        ),
+    }
+    check = soak.task_admission_check(stats, kill_record)
+    assert check["submissions_outside_kill_window"] == len(responses) - kill_count
+    assert check["ok"] is expected
+    evidence = _passing_evidence()
+    evidence["thresholds"]["checks"]["task_admission_availability"] = check
+    assert soak.failed_promotion_checks(evidence) == (
+        [] if expected else ["task_admission_availability"]
+    )
+
+
 # ─── boot hygiene (2026-10-06 incident chain) ────────────────────────────────
 
 
