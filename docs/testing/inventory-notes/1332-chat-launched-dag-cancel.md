@@ -114,3 +114,35 @@ Independently executed at this head:
 - `scripts/check-diff-coverage.py coverage.xml --base 1df433bf5` (CI's
   script, develop merge-base, both producers combined): ok, changed source
   files >=90% lines / 80% branch arcs, test files exempt as evidence.
+
+## Validation round (2026-10-07, head `1fcceb71c`)
+
+Independent re-execution of every proof at this head (no claim carried over),
+plus the two defect-restoration demonstrations, each applied via a reversible
+patch and reversed immediately (worktree verified clean after each):
+
+- #1332 pre-fix proof: `record_canonical_run` neutered to the pre-fix no-write
+  behavior — the production-path regression fails with exactly "chat-launched
+  row never recorded its canonical admission" (`test_chat_launched_dag_cancel.py:242`);
+- #1334 defect proof: `_supplies_new_evidence` restored to route differing
+  result/error text — `test_a_cancellation_replay_over_the_cascade_settled_row_converges`
+  fails with exactly the production `RunIntegrityError: cannot transition
+  NodeRun ...: Run ... is terminal (cancelled)`; with the fix, the adapter
+  suite passes 24/24;
+- `test_chat_launched_dag_cancel.py` 15 passed; adjacent suites (cancel route,
+  durability, store) 48 passed;
+- full `packages/maistro-core/tests` under CI's coverage producer: 13719
+  passed, 940 skipped, 1 xfailed; full
+  `packages/hive-conductor/backend/tests` under CI's producer: 3428 passed,
+  6 skipped;
+- `scripts/check-diff-coverage.py coverage.xml --base 1df433bf5` (CI's script,
+  merge-base, both producers combined): ok;
+- `scripts/check-suite-inventory.py`: ok, 17 suites match the recorded
+  inventory;
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (vulture-ratchet.yml's exact invocation): exit 0;
+- `ruff check` clean, `ruff format --check` clean (3102 files).
+
+develop's only branch-new commit (`b0912ce59`, #1707 BACKLOG migration) shares
+no file with this branch's diff, so the queued merge-queue integration has no
+conflict surface.
