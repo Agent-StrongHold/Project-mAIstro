@@ -3,9 +3,9 @@
 ## Frozen scope
 
 - Assigned issue: #1572 only; branch `auto-1572`.
-- Starting HEAD: `f059b2702e94f1f8e54e2818bd68dc93d1c91951` (verified); worktree initially clean.
+- Starting HEAD: `cf7e21ed30655599a33719f7d82d2affa682c1db` (verified); worktree initially clean.
 - Supplied develop reference: `e1b13dcd15dedd637404c38dfe1900921aba2b8c` (resolved).
-- Evidence snapshot: `/home/dev/maistro/jobs/d04310b260c448609b387832f19b47a4/dispatch-context.json` and check-0.log through check-4.log. No remote enumeration or mutations.
+- Evidence snapshot: `/home/dev/maistro/jobs/5e1344732b374b9eb9b8a80b8aac0ea6/dispatch-context.json` and check-0.log through check-4.log. No remote enumeration or mutations. Read the previous job's `result.json`, but independently reran the validations below rather than inheriting its verdict.
 - Files in repair scope: canonical goals and Run binding implementation/tests already present, relevant CI gate scripts (inspection only), `quality/vulture-baseline.json` (only if exact scan proves reviewed debt), and this report. No other ledger/grant edits permitted.
 - Role ambiguity: prompt includes verifier and writer directions; lane explicitly assigns repair, so proceed as writer with focused validation and local commit.
 
@@ -23,7 +23,7 @@ First-hand `uv run python scripts/check-execution-lifecycles.py` fails: `maistro
 
 Read the captured issue body, including its installed-base migration acceptance additions.
 
-Executed focused core validation: `uv run pytest packages/maistro-core/tests/goals packages/maistro-core/tests/runs packages/maistro-core/tests/graph/durable_runs packages/maistro-core/tests/workspaces/test_sqlite_alembic_schema_parity.py -x -q`: **1,813 passed, 311 skipped**, five adjacent Run SQLite worker/event-loop warnings. `DOCKER_HOST=unix:///var/run/docker.sock docker info --format '{{.ServerVersion}}'` fails: daemon unavailable; PostgreSQL legs remain unverified.
+Executed focused core validation: `uv run pytest packages/maistro-core/tests/goals packages/maistro-core/tests/runs packages/maistro-core/tests/graph/durable_runs packages/maistro-core/tests/workspaces/test_sqlite_alembic_schema_parity.py -x -q`: **1,813 passed, 311 skipped**, six adjacent Run SQLite worker/event-loop warnings (full output in this job's `worker-core.log`). `DOCKER_HOST=unix:///var/run/docker.sock docker info --format '{{.ServerVersion}}'` fails: daemon unavailable; PostgreSQL legs remain unverified.
 
 `uv run pytest tests/test_check_execution_lifecycles.py -x -q`: **28 passed, 1 failed** at line 374, reproducing the missing trusted-base GoalStatus authorization.
 
@@ -60,6 +60,6 @@ Changed file: only `docs/testing/goal-1572-current-repair.md`. No production cod
 
 The permitted vulture repair has no reproduced defect. The actual reproduced lifecycle failure requires an independently landed authorization under `scripts/ratchet_provenance.py:478`; candidate grants cannot authorize themselves. That policy action is outside this lane. The named integration-scope failure remains UNRESOLVED without its exact-head failed specialized producer evidence; do not synthesize passing `--result` inputs. Docker is unavailable despite the environment brief, so PostgreSQL acceptance cannot be proved here.
 
-Next: obtain the actual integration-scope failing producer log, independently land the lifecycle authorization, and provide working PG17/18 infrastructure before retrying remaining acceptance. No GitHub mutations or issue closure actions performed.
+Next: obtain the actual integration-scope failing producer log, independently land the lifecycle authorization, and provide working PG17/18 infrastructure before retrying remaining acceptance. The captured check-run records do not establish the reported aggregate's failing producer at this starting head. This is an external-prerequisite handoff: repeating the same repair dispatch without those prerequisites cannot repair the reproduced policy failure. No GitHub mutations or issue closure actions performed.
 
 Progress: checked 1 assigned item; done 0 repairs; skipped 0 items; errors 1 policy blocker reproduced by gate and test, plus unavailable Docker infrastructure. Commit this evidence-only checkpoint locally and leave the worktree clean.
