@@ -3,8 +3,10 @@
 Every decision-order row of the #1852 matrix is exercised at its exact
 boundary and +/-1 microsecond where meaningful, with a fixed ``now_us``: no
 sleeps, no free-running clocks, and no database fixtures. The unchanged live
-four-variant flow in :mod:`maistro.tasks.idempotency` is called alongside the
-new classifier to prove the separate module path activated nothing there.
+claim flow in :mod:`maistro.tasks.idempotency` — the five-variant loop the
+merged M1-B1 commit (``df00785bb``) ships, untouched by this leaf — is called
+alongside the new classifier to prove the separate module path activated
+nothing there.
 """
 
 from __future__ import annotations
@@ -122,11 +124,15 @@ def _legacy(
         object(),
         # The live flow's record type is a raw-row stand-in, not one of the
         # two exact record classes: it must not sneak past the classifier.
+        # Built in the merged M1-B1 record shape (claim_token, and the
+        # completed_at_us stamp) so it stays a realistic foreign row.
         idempotency.AdmissionRecord(
+            claim_token="token-1",
             fingerprint=FP,
             request="{}",
             task_id=None,
             run_id=None,
+            completed_at_us=0,
             created_at_us=CREATED_AT_US,
             expires_at_us=EXPIRES_AT_US,
             lease_expires_at_us=PENDING_LEASE_US,
@@ -471,7 +477,11 @@ def test_never_mutates_the_record(factory: type) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The unchanged live four-variant flow (called, not edited).
+# The unchanged live claim flow (called, not edited). The record shape and
+# variant set below are the merged M1-B1 reality (``df00785bb``): the live
+# ``admitted`` property reads the ``completed_at_us`` stamp, a begun claim
+# (announced ``task_id``, no stamp) with a lapsed lease answers
+# ``"ambiguous"``, and this leaf changed none of it.
 # ---------------------------------------------------------------------------
 
 
@@ -479,25 +489,32 @@ def _live_record(
     *,
     fingerprint: str = FP,
     admitted: bool = False,
+    begun: bool = False,
     expired: bool = False,
     lease_past: bool = False,
 ) -> idempotency.AdmissionRecord:
     return idempotency.AdmissionRecord(
+        claim_token="token-1",
         fingerprint=fingerprint,
         request="{}",
-        task_id="task-1" if admitted else None,
+        task_id="task-1" if (admitted or begun) else None,
         run_id="run-1" if admitted else None,
+        completed_at_us=MID_US if admitted else 0,
         created_at_us=CREATED_AT_US,
         expires_at_us=MID_US if expired else EXPIRES_AT_US,
         lease_expires_at_us=CREATED_AT_US if lease_past else PENDING_LEASE_US,
     )
 
 
-def test_live_flow_still_has_exactly_four_variants() -> None:
+def test_live_flow_variant_set_is_unchanged_by_this_leaf() -> None:
+    """The live loop answers exactly the variant set the merged M1-B1 flow
+    ships — including its ``"ambiguous"`` admit-window answer — and neither
+    of this leaf's classifier outcomes has leaked into it."""
     assert get_args(idempotency._AssessmentKind) == (
         "mismatch",
         "replayed",
         "pending",
+        "ambiguous",
         "takeover",
     )
 
@@ -509,10 +526,21 @@ def test_live_flow_still_has_exactly_four_variants() -> None:
         (_live_record(), MID_US, "pending"),
         (_live_record(lease_past=True), MID_US, "takeover"),
         (_live_record(expired=True), MID_US, "takeover"),
+        # Begun (receipt announced) but never completed, lease lapsed: the
+        # merged flow's admit-window answer, discovered — not takeover.
+        (_live_record(begun=True, lease_past=True), MID_US, "ambiguous"),
         (_live_record(fingerprint=FP_OTHER), MID_US, "mismatch"),
         (_live_record(fingerprint=FP_OTHER, expired=True), MID_US, "takeover"),
     ],
-    ids=["admitted", "pending", "lease-past", "expired", "mismatch", "expired-mismatch"],
+    ids=[
+        "admitted",
+        "pending",
+        "lease-past",
+        "expired",
+        "begun-lapsed",
+        "mismatch",
+        "expired-mismatch",
+    ],
 )
 def test_live_flow_answers_are_unchanged(
     record: idempotency.AdmissionRecord, now_us: int, expected: str
@@ -537,8 +565,8 @@ def test_live_takeover_guard_is_unchanged(
 
 
 def test_new_variants_exist_only_on_the_new_path() -> None:
-    """At the same instant on the same story, the live flow still answers its
-    four-variant ``"takeover"`` where the new classifier distinguishes
+    """At the same instant on the same story, the live flow still answers
+    ``"takeover"`` where the new classifier distinguishes
     ``REPLACE_EXPIRED``; and the live flow still answers ``"takeover"`` for an
     expired *mismatched* payload where the new classifier puts expiry first."""
     live_expired_match = _live_record(expired=True)

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +131
+  packages/maistro-core/tests: +132
 ---
 # #1852 admission-generation classifier evidence
 
@@ -27,12 +27,16 @@ accepted). Purity is asserted structurally: `time.time`/`monotonic`/
 (restored inside the test body, before pytest's own teardown timing), caplog
 stays empty, and records compare equal to pristine copies afterwards.
 
-The unchanged live four-variant loop in `maistro.tasks.idempotency` is called,
-not edited: `_AssessmentKind` still has exactly its four values, live `_assess`
-and `_takeover_guard_holds` still answer the live contract on mirrored rows
-(expired matching key → `"takeover"`, expired mismatch → `"takeover"`), while
-the new classifier distinguishes `REPLACE_EXPIRED` on the same stories —
-proof the separate module path activated no new variants in the live loop.
+The unchanged live claim loop in `maistro.tasks.idempotency` is called,
+not edited: live `_assess` and `_takeover_guard_holds` still answer the
+live contract on mirrored rows (expired matching key → `"takeover"`,
+expired mismatch → `"takeover"`), while the new classifier distinguishes
+`REPLACE_EXPIRED` on the same stories — proof the separate module path
+activated no new variants in the live loop. Since round 20 the mirrored
+rows are built in the merged M1-B1 record shape (`df00785bb`: required
+`claim_token`/`completed_at_us`, `admitted` ⇔ stamp ≠ 0) and pin the
+merged loop's five-variant answer set (including `"ambiguous"`) — the
+leaf still added none of them.
 
 ## Explicit merge blocker (documented, not repaired here)
 
@@ -1543,3 +1547,62 @@ leaf's scope forbids grants, baseline rows, dispositions, fake callers, and
 production wiring. Retirement stays with the base-landed-authorization or the
 #1845 integration consumer. The stack stays unmerged by design; implementation
 and test readiness stand proven at 6747d4a63347.
+
+## CI-repair round 20 (2026-10-06, head aee968654d6b): the merged M1-B1 commit
+## (df00785bb) changed the live flow the leaf's tests mirror — test file
+## repaired to the merged reality; collection error fixed; source untouched
+
+The driver's pre-worker checks failed at this head: the focused suite no
+longer collected (`AdmissionRecord.__init__() missing 2 required positional
+arguments: 'claim_token' and 'completed_at_us'` at the module-level
+parametrize), so both the pytest job and the suite-inventory job red.
+Root cause: the branch merged `df00785bb` ("WIP: M1-B1 — Route every
+ordinary task/chat request into a canonical Run (#1325)"), which evolved the
+live `maistro.tasks.idempotency` flow this leaf's tests call as a witness:
+`AdmissionRecord` gained required `claim_token` and `completed_at_us`
+fields, the `admitted` property now reads the `completed_at_us` stamp
+(`begun` — the announced `task_id` — is separate), and `_AssessmentKind`
+ships a fifth `"ambiguous"` answer (begun, uncompleted, lapsed lease). The
+merge changed none of this leaf's own files; the test file simply predated
+it. The issue forbids editing `tasks/idempotency.py`, so the repair adapts
+the witness tests to the merged live reality — the classifier module and
+every ledger are untouched (`git diff` this round: the one test file, this
+note, nothing else).
+
+- **Repairs in `test_admission_generation_assessment.py` only**: both
+  `idempotency.AdmissionRecord(...)` constructions (the raw-row stand-in in
+  the input-validation parametrize and the `_live_record` witness helper)
+  build the merged record shape; `admitted=True` now stamps
+  `completed_at_us` (the live `admitted` semantics) and a new `begun=True`
+  flag announces the receipt without stamping; the variant-set witness was
+  renamed `test_live_flow_still_has_exactly_four_variants` →
+  `test_live_flow_variant_set_is_unchanged_by_this_leaf` and now pins the
+  merged loop's exact five-variant tuple (mismatch, replayed, pending,
+  ambiguous, takeover) — the leaf's real guarantee (no classifier outcome
+  leaked into the live loop) unchanged;
+  `test_live_flow_answers_are_unchanged` gained one mirrored row pinning
+  the merged flow's `"ambiguous"` answer (begun, uncompleted, lapsed lease
+  → ambiguous, not takeover); the stale "four-variant" prose updated.
+- **Re-derived at the repaired head**: focused suite 132 passed (131 + the
+  new ambiguous row; `inventory-delta` updated +131 → +132 via
+  `check-suite-inventory.py --update --note
+  task-admission-generation-assessment`, gate exit 0);
+  `test_root_admission_identity.py` + `test_idempotency.py` 140 passed (112
+  prior + the merged flow's own expanded suite); driver check-4's exact
+  recipe (`REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 pytest
+  packages/maistro-core/tests --collect-only -q`) collects 14830 tests, 0
+  errors (was: 1 collection error); whole-tree ruff check + format clean;
+  mypy clean on the classifier.
+- **Mutation teeth re-proven against the current tree** (cp backup/restore,
+  md5 `257a6e45c382349dd12f559099663fbc` identical before and after — the
+  same identity as rounds 13–19, so the source is untouched; `git status`
+  clean between runs): with `-x`, swap TAKEOVER/REPLACE_EXPIRED → 1 failed;
+  lease row hoisted above binding → 1 failed; LEGACY_UNRESOLVED row deleted
+  → 1 failed; mismatch row hoisted above expiry → 1 failed. All four
+  issue-named mutations are caught.
+- **Structural blocker unchanged**: nothing in this round touches the
+  sanctioned two-module reachability delta; no ledger, grant, baseline row,
+  disposition, or production wiring was added or removed. The unblock
+  sequence stays the base-landed authorization or the #1845 integration
+  consumer.
+
