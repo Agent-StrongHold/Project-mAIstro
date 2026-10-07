@@ -542,3 +542,81 @@ soak. Repeating this green vulture check cannot resolve those prerequisites.
 Progress: checked 1, done 0, skipped 0 issues; validation commands passed,
 acceptance remains blocked. Commit this checkpoint locally; no integration
 approval or issue closure.
+
+## Job 6d3b71cd — validation of assigned head 921e6a75ca4b
+
+Scope frozen to issue #860, branch `auto-860`, clean starting HEAD
+`921e6a75ca4b0eb1ad0bd4f381191d0d64c33f80`, supplied develop base
+`b0912ce590d51bcfe4944da57770575e50ae2e8a`. No conflict or uncommitted salvage
+was present. This job directory supplied no `check-*.log`. The supplied older
+`98a11313/check-3.log` was inspected: its 24-versus-21 DDL assertion is already
+repaired in the current test by the three Gauntlet validation columns
+(`packages/maistro-core/tests/persistence/test_pg_learnings.py:174-178`). The
+prior `9e70c718` result reports a provider timeout, not an acceptance result.
+
+### Fresh executed checks
+
+Logs are `worker-*.log` under
+`/home/dev/maistro/jobs/6d3b71cd71a240b7b29cccb3edad224a/`. All commands below
+exited zero; prior verification claims were not substituted for execution.
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`:
+  **1,332 reviewed identities / 1,332 findings**, zero unclassified or
+  never-allowlist findings. Workflow arguments match `quality.yml:1013-1016`.
+  The gate resolved baseline `1df433bf5ece`, not the supplied diff base; no
+  override was used. There is no evidenced ledger amendment or dead-code fix.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py -x -q`:
+  **37 passed, 6 skipped**. The reported schema-fence failure does not reproduce.
+  Skips are not live PostgreSQL concurrency proof.
+- `uv run pytest packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py -x -q -rs`:
+  **65 passed**, no skips. These cover admission backpressure, fail-closed soak
+  gates, sampler missingness, boot cleanup and production limiter behavior.
+- `uv run ruff check .`: all checks passed.
+- `uv run ruff format --check .`: **3,105 files** already formatted.
+- `uv run python scripts/check-deployment-claims.py`: passed.
+- `uv run python scripts/check-execution-lifecycles.py`: **19** classified lifecycles.
+- `uv run python scripts/check-suite-inventory.py`: **17** suites match,
+  **28,173** unique identities, zero duplicate evidence.
+- `uv run python scripts/check-backlog-consistency.py`: **168** items passed.
+- `git diff --check`: passed.
+- A `uv run python` probe imported the current driver and evaluated preserved
+  `evidence/m3a-round6-shakedown.json`. It asserted rejection for both
+  `sustain_duration` (**90.43 s** against **14,400 s**) and `exact_rc_artifact`.
+  `preflight_artifact_check()` returned `ok=false`, `host-uvicorn-preflight`.
+
+### Acceptance checked against current reachable behavior
+
+| Criterion | Evidence and disposition |
+|---|---|
+| Representative RC profile | PARTIAL: profile exists; `m3a-load-profile.md:152-164` explicitly lacks users/Workspaces, Graph fan-out, successful tool/model, Design/Canvas and Goal/worker coverage. RC applicability UNVERIFIED. |
+| At least two application replicas | UNVERIFIED for the selected production RC. The executed tests use two ASGI middleware instances, not a deployed RC pair. |
+| Sustained saturation, queues, leases, retries and leaks | UNVERIFIED. Historical short pack rejected by the executed evaluator; no sustained run in this round. |
+| Admission, Goal reconciliation and no duplicate physical work | Local backpressure and probe regressions pass. Cross-replica physical Attempt fencing and Goal reconciliation UNVERIFIED; occurrence admission alone is not physical execution. |
+| Security/degraded behavior without replica-selection bypass | Aggregate non-bypass is NOT PROVEN: executed `test_replica_selection_has_an_independent_production_allowance` observes `[200, 200, 429]` separately for each replica, for authenticated and pre-auth identities. Full RC-load security UNVERIFIED. |
+| Required telemetry and thresholds | Sampler tests pass, but application-loop latency, worker census and complete RC threshold evaluation remain UNVERIFIED. |
+| Active-work kill/restart, drain and recovery | UNVERIFIED; no replica killed/restarted here. Rejoin alone cannot prove fenced physical recovery. |
+| Long-running exact RC artifact/configuration | NOT MET: current driver explicitly returns false at `scripts/soak/run_soak.py:686-697`; no immutable RC image/configuration supplied and no four-hour production run. |
+| Findings filed/reclassified to earliest invariant | Local backlog consistency passes; completeness of filing/reclassification UNVERIFIED. No GitHub mutations permitted or performed. |
+| Machine/human evidence tied to exact hashes | Historical evidence preserved and rejected by current evaluator; qualifying current RC evidence UNVERIFIED. |
+
+Reachability: `maistro_server/main.py:648` installs the tested production
+`RateLimitMiddleware`; `api/rate_limit.py:72-77` allocates its process-local
+limiter. Its documented N-times-limit semantics do not prove a shared principal
+budget. Accepted ADR-085 specifies principal identity, not shared replica state;
+this contract ambiguity is recorded, not silently resolved by changing policy.
+Accepted ADR-081226-a66b and ADR-081626-f383 preserve the canonical
+Goal → Graph → Run → NodeRun → Attempt authority. In particular, the fencing
+ADR does not itself authorize expiry takeover. Accepted ADR-083026-a91e keeps
+unmeasured metrics absent. No competing authority or acceptance waiver added.
+
+**BLOCKED**, not a reproduced CI defect. Only this existing evidence checkpoint
+changed; no code/configuration/tests/ledger/grants changed, so no inventory delta
+is needed. Designate the immutable RC and representative workload, resolve the
+rate-contract mismatch through existing security ownership, then execute an
+instrumented production-topology soak with physical Attempt correlation for at
+least four hours on the unchanged artifact. Another host-process shakedown or
+ledger edit cannot satisfy that prerequisite. This local commit is a handoff,
+not integration approval or issue closure.
+
+Progress: checked 1, done 0, skipped 0 issues, errors 0 executed commands;
+6 tests skipped. No additional item started.
