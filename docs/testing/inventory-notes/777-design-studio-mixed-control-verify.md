@@ -15802,3 +15802,83 @@ was already merged in round 239 (5a6528d87, base == origin/develop head). No
 lawful repair for #777 exists until #804/#805/#806 (+#774/#776) land
 upstream: every acceptance criterion consumes those APIs and the stop
 condition forbids a Design-Studio-private substitute.
+
+## Round 241 — repair round at `8f29f58ddc23` (2026-10-07T03:38Z capture, job `437c75a6ad1c`)
+
+### Round inputs
+
+- Starting head `8f29f58ddc23f5ac98c987000a59975383eeba44` == manifest head
+  == round-240 end head; working tree clean, nothing to salvage.
+- Prior result `c4cc4b4925d6` (round 240): completed BLOCKED verdict at this
+  exact starting head; its manifest `checks=[]` so no check-*.log exists to
+  inspect for this job either.
+- Stale lane pointer re-disproved again: job `53d5e08bf027`'s `check-2.log`
+  ("Would reformat: .../agent_loop.py, 2863 files") predates the fix; this
+  round's whole-tree `ruff format --check .` reports 3129 files already
+  formatted, agent_loop.py included.
+
+### Develop sync (discharged, no merge needed)
+
+`git fetch origin` EXIT 0; `origin/develop` = `b0912ce590d5` = manifest base;
+`git rev-list HEAD..origin/develop --count` = 0 (round-239 merge `5a6528d87`
+already carried develop).
+
+### Fresh dependency capture (this job's dispatch-context.json, 61 sources,
+complete_for_scope, captured 2026-10-07T03:38:33Z)
+
+- #777 **open**, 257 comments, updated 2026-10-07T03:23:00Z; body gate
+  verbatim "Depends on: #804/#805/#806 persistent Workspace Agent + Goal
+  reconciliation; #39 canonical Persona; #458 shared ontology/canonical Goal;
+  #53 Conductor/Conduit persistent Agent front door; #774 CreativeBrief;
+  #775 creative Graph; #776 Workspace Ladybug working graph; #93/#94/#95
+  production Canvas/Design Studio path" + stop condition "Do not create a
+  Design-Studio-private Agent runtime, Goal owner, reconciliation loop, ..."
+- Dependencies OPEN: #804, #805, #806, #774, #776, #53, #93, #95. CLOSED
+  (landed): #775, #39, #458. GitHub-native `blocked_by` = [] (body-text gate
+  governs).
+- PR1660: open draft, head `78f8f6476466` unchanged, not merged, mergeable
+  CLEAN.
+
+### AC prerequisites re-proven absent at HEAD `8f29f58ddc23` (this round's own greps)
+
+- `GoalReconciler|delegate_goal` -> 0 hits in `packages/*/src`; no
+  `maistro/goals` module anywhere under `packages/`.
+- `WorkspaceAgentReconciler|goal.reconcil` -> 0 hits.
+- `ControlMode.COLLABORATIVE`: declared `versions.py:81`; sole
+  non-declaration use is the documented no-op discard
+  `_ = ControlMode.COLLABORATIVE` at `versions.py:1064` inside the
+  `_vulture_artifact_version_contract_usage` TYPE_CHECKING block.
+- `GoalRevisionCatalog` Protocol-only
+  (`packages/maistro-core/src/maistro/projects/rubric_store.py:71`).
+
+### Validation battery at HEAD `8f29f58ddc23` (candidate) vs base `b0912ce590d5`
+
+- `uv run ruff check .` EXIT 0 ("All checks passed!").
+- `uv run ruff format --check .` EXIT 0 (3129 files already formatted).
+- CI-exact vulture `uv run python scripts/check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` EXIT 0
+  (base `b0912ce590d5`, candidate `8f29f58ddc23`, 1329 reviewed identities ->
+  1328 findings; no amendment needed).
+- `uv run python scripts/check-suite-inventory.py` EXIT 0 (17 suites match).
+- `uv run python scripts/check-backlog-consistency.py` EXIT 0 (167 items).
+- `uv run python scripts/check-closure-targets.py` EXIT 0.
+- Targeted pytest: `tests/test_check_closure_targets.py` -> 63 passed;
+  `packages/maistro-design/tests packages/maistro-bootstrap/tests` -> 804
+  passed, 7 skipped; hive-conductor `backend/tests -k 'design or workspace'`
+  -> 374 passed, 5 skipped (3044 deselected); backlog authority gates ->
+  `tests/test_backlog_authority_gate.py` + `tests/test_check_backlog_consistency.py`
+  -> 51 passed (round-239 merge's #1707 gates; the round-240 note's cited
+  filenames `test_backlog_authority_flip.py`/`test_backlog_routes.py` no
+  longer exist at this head — renamed upstream, live equivalents used).
+- Branch diff vs base = exactly the 16 manifest surfaces
+  (`git diff --name-only b0912ce590d5..HEAD` identical to manifest surface
+  list; verified set-equal both directions). Inventory-delta unchanged, +0.
+
+### Verdict
+
+Verdict: **BLOCKED** (dependency-blocking, fifty-eighth consecutive round
+with fresh evidence). All round actionable items discharged (develop sync
+already merged round 239; no check logs exist for this job). No lawful
+repair for #777 exists until #804/#805/#806 (+#774/#776) land upstream:
+every acceptance criterion consumes those APIs and the stop condition
+forbids a Design-Studio-private substitute.
