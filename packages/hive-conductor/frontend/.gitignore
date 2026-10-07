@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Input to `npm run gen:api`, written by scripts/dump-hive-openapi.py;
+# only its output, src/api/types.gen.ts, is committed.
+openapi.json

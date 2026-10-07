@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -49,7 +49,11 @@ from models.schemas import Agent
 
 from maistro.personas.expander import expand_persona
 from maistro.personas.schema import PersonaTemplate
-from maistro.security.warden.detector import Warden
+from maistro.security.warden.detector import (
+    Warden,
+    context_from_messages,
+    message_to_scan_text,
+)
 
 from .model_store import register_pop_hook
 
@@ -104,6 +108,10 @@ def _text_leaves(value: object, *, path: str = "", depth: int = 0) -> Iterator[t
     if isinstance(value, Mapping):
         for key, item in value.items():
             child = f"{path}.{key}" if path else str(key)
+            # Mapping keys are part of a JSON result too (Airtable field names
+            # are a common attacker-controlled example), so scan them before
+            # walking their values rather than treating them as paths only.
+            yield f"{child}<key>", str(key)
             yield from _text_leaves(item, path=child, depth=depth + 1)
         return
     if isinstance(value, list | tuple):
@@ -122,13 +130,57 @@ def _warden() -> Warden:
 _warden_instance: Warden | None = None
 
 
+def _looks_like_chat_messages(payload: object) -> bool:
+    if not isinstance(payload, list) or not payload:
+        return False
+    return all(isinstance(item, Mapping) and "role" in item for item in payload)
+
+
+async def scan_messages(
+    messages: Sequence[Mapping[str, object]],
+    *,
+    boundary: str = "user_input",
+) -> dict:
+    """Scan every forwarded message with bounded, ordered prior context.
+
+    A caller can supply assistant/tool history after its latest user turn, or
+    no user turn at all. Those messages still reach the model and must not be
+    omitted. Each current message is untrusted input; context provenance and
+    its bounded window remain the canonical Warden helper's responsibility.
+    """
+    # Keep the generic config walk's budgets before serializing chat metadata.
+    # Checking only the latest user turn or Warden's truncated context would
+    # silently exempt trailing/older text, nested content and oversized lists.
+    for scanned, (path, text) in enumerate(_text_leaves(messages), start=1):
+        if scanned > MAX_SCAN_NODES:
+            raise ScanBudgetExceeded(f"config holds more than {MAX_SCAN_NODES} values")
+        if len(text) > MAX_SCAN_TEXT:
+            raise ScanBudgetExceeded(f"{path} is longer than {MAX_SCAN_TEXT} characters")
+    warden = _warden()
+    findings: list[str] = []
+    for index, message in enumerate(messages):
+        content = message_to_scan_text(message)
+        if len(content) > MAX_SCAN_TEXT:
+            raise ScanBudgetExceeded(f"messages[{index}] is longer than {MAX_SCAN_TEXT} characters")
+        context = context_from_messages(messages[:index])
+        verdict = await warden.scan(content, boundary, context=context)
+        if not verdict.clean:
+            findings.extend(f"messages[{index}]: {flag}" for flag in verdict.flags)
+    return {"findings": findings, "status": "clean" if not findings else "flagged"}
+
+
 async def scan_config(config: object, *, boundary: str = "user_input") -> dict:
     """Scan every string in a configuration at a Warden boundary.
 
     The default boundary is the one inbound configurations cross; `tool_result`
     selects the detector's second boundary (#315) so tool outputs that will be
     re-fed to a model are judged by the same detector, not a second check.
+
+    OpenAI-shaped chat message lists scan every forwarded message with prior
+    conversation context instead of walking structural fields such as ``role``.
     """
+    if _looks_like_chat_messages(config):
+        return await scan_messages(config, boundary=boundary)
     warden = _warden()
     findings: list[str] = []
     for scanned, (path, text) in enumerate(_text_leaves(config), start=1):
@@ -186,6 +238,25 @@ async def upsert_agent_definition(
     the provenance stamp either way, so a caller cannot forge one through
     `config`.
     """
+    stored = await _scanned_definition(agent, source=source, scan=scan)
+    stores.agents[stored.id] = stored
+    return stored
+
+
+async def insert_agent_definition_once(agent: Agent, *, source: str) -> Agent:
+    """Store a definition only while its id is free; return the row holding it.
+
+    The same scan-before-store gate as `upsert_agent_definition`, but a row
+    that already holds the id -- including one another process wrote after
+    this one loaded its roster -- is returned untouched rather than replaced.
+    """
+    stored = await _scanned_definition(agent, source=source, scan=None)
+    stores.agents.put_if_absent(stored.id, stored)
+    held: Agent = stores.agents[stored.id]
+    return held
+
+
+async def _scanned_definition(agent: Agent, *, source: str, scan: dict[str, Any] | None) -> Agent:
     t = datetime.now(UTC)
     if scan is None:
         try:
@@ -200,9 +271,7 @@ async def upsert_agent_definition(
     _reject_if_flagged(scan)
     config = dict(agent.config)
     config["provenance"] = _provenance(source, scan, t)
-    stored = agent.model_copy(update={"config": config})
-    stores.agents[stored.id] = stored
-    return stored
+    return agent.model_copy(update={"config": config})
 
 
 async def update_agent_definition(
@@ -237,6 +306,14 @@ def agent_id_for(workspace_id: str, spawn_agent: str) -> str:
     re-materialization: creating/updating the same workspace's agents again
     overwrites the same records rather than piling up duplicates."""
     return f"{workspace_id}.{spawn_agent}"
+
+
+def workspace_agent_id(workspace_id: str) -> str:
+    """The Workspace Agent's stable id; a pure function of the Workspace id.
+
+    Its own `workspace-agent:` namespace, so no other producer can mint it
+    (#1037)."""
+    return f"workspace-agent:{workspace_id}"
 
 
 def slugify_agent_name(text: str, *, limit: int = 32) -> str:
@@ -310,6 +387,9 @@ def delete_workspace_agents(workspace_id: str) -> None:
     """
     for agent in list(workspace_agents(workspace_id)):
         stores.agents.pop(agent.id, None)
+    # The Workspace Agent's id is known without a cache hit: another process
+    # may have materialized it after this one loaded its roster (#1037).
+    stores.agents.discard(workspace_agent_id(workspace_id))
 
 
 # ─── Canonical roster materialization (#840) ──────────────────────────────
@@ -476,7 +556,12 @@ def register_runtime_source(*, container: Any, llm: Any, preamble: str) -> None:
 
 
 def reset_runtime_source() -> None:
-    """Forget the registered runtime. Test isolation; boot never calls this."""
+    """Forget the registered runtime.
+
+    Test isolation, and since #1181 the engine-start unwind: a boot that
+    fails after the bridge registered the runtime must not leave the
+    materialization seam pointing at a container nothing published.
+    """
     global _runtime_source
     _runtime_source = None
 

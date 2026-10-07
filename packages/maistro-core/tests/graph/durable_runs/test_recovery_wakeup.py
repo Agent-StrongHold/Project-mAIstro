@@ -11,6 +11,7 @@ from maistro.graph.durable_runs.attempt_executor import LiveAttemptOwned
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.model import GraphSnapshot, Run, RunStatus
 from maistro.runs.store import run_cursor_key
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
@@ -133,6 +134,7 @@ def _queued_run(run_id: str = "queued", *, source: str = "owned") -> Run:
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
         status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         provenance={"admission_source": source},
     )
 
@@ -861,7 +863,7 @@ class _ReconcilingStore(_BootstrapStore):
         super().__init__(*records)
         self.reconciled: list[int] = []
 
-    async def reconcile_persistence(self, *, limit: int = 100) -> int:
+    async def reconcile_persistence(self, *, limit: int = 100, now: object = None) -> int:
         self.reconciled.append(limit)
         return 0
 

@@ -1,7 +1,8 @@
 """Security subsystem type definitions.
 
-Ported from Stronghold types/security.py and types/auth.py.
-org_id stripped for single-tenant maistro-engine.
+Ported from Stronghold types/security.py and types/auth.py. ``AuditEntry`` is
+imported from the canonical persisted security types module so Sentinel and
+both durable audit stores exchange the same record shape.
 """
 
 from __future__ import annotations
@@ -10,7 +11,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
-from maistro.security.redact import redact
+from maistro.types.security import AuditEntry as AuditEntry
+from maistro.types.security import Violation as Violation
 
 
 class IdentityKind(StrEnum):
@@ -61,9 +63,9 @@ SYSTEM_AUTH = AuthContext(
 #: The identity a request that carried none is evaluated as (#1165 review).
 #:
 #: Role-less, so a fail-closed permission table denies it every tool: an
-#: absent identity is not a grant, and the strategies that gate
-#: ``Sentinel.pre_call`` on ``auth is not None`` must reach the table rather
-#: than skip it. ``user_id`` stays empty on purpose -- the strike paths key on
+#: absent identity is not a grant. The Agent tool seam denies ``auth=None``
+#: outright, so routing an identity-free turn as this principal lets the
+#: operator's table decide instead. ``user_id`` stays empty on purpose -- the strike paths key on
 #: it and skip when it is empty, exactly as they did for ``auth=None``, and
 #: `Container.route_request` refuses to arm strike tracking without a real
 #: identity in the first place.
@@ -96,43 +98,11 @@ class WardenVerdict:
 
 
 @dataclass
-class Violation:
-    boundary: str
-    rule: str
-    severity: str
-    detail: str = ""
-    repair_action: str | None = None
-
-    def __post_init__(self) -> None:
-        # #1159: `detail` interpolates rejected tool-call material (e.g. the
-        # invalid-enum message carries the rejected value verbatim), so it is
-        # scrubbed AT CONSTRUCTION — before any AuditLog implementation,
-        # durable or in-memory, can persist the violations list. The stop
-        # condition is explicit: keeping raw values out of evidence must not
-        # depend on a particular store omitting the field. The same redactor
-        # runs on every log pipeline, so this matches the system-wide
-        # secret policy (labels + entropy fallback).
-        self.detail = redact(self.detail)
-
-
-@dataclass
 class SentinelVerdict:
     allowed: bool = True
     repaired: bool = False
     repaired_data: dict[str, Any] | None = None
     violations: tuple[Violation, ...] = ()
-
-
-@dataclass
-class AuditEntry:
-    boundary: str
-    user_id: str
-    team_id: str = ""
-    tool_name: str = ""
-    verdict: str = ""
-    violations: tuple[Violation, ...] = ()
-    detail: str = ""
-    agent_id: str = ""
 
 
 @dataclass

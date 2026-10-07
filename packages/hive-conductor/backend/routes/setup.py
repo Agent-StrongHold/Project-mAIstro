@@ -7,11 +7,18 @@ import logging
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from maistro.config.first_run import (  # pyright: ignore[reportMissingImports]
+    DEFAULT_ADMIN_USERNAME,
+    DEFAULT_CONDUCTOR_NAME,
+    DEFAULT_DAILY_DRIVER_USERNAME,
+    DEFAULT_DEFAULT_MODEL,
+    DEFAULT_HARDWARE_PRESET,
+)
 from maistro.security.passwords import (  # pyright: ignore[reportMissingImports]
     validate_password as validate_canonical_password,
 )
@@ -38,6 +45,21 @@ _SEED_VAULT_KEY = "CONDUCTOR_SEED_MNEMONIC"
 # permissions remain admin-only until a dedicated grant-management surface is
 # introduced.
 _DEFAULT_DAILY_USER_PERMISSIONS = ["dags.write"]
+
+
+class SetupRollbackError(RuntimeError):
+    """Setup could not safely release accounts after a later failure."""
+
+
+def _rollback_setup_accounts(accounts: list[Any]) -> None:
+    """Release setup accounts only through the canonical claim transaction."""
+    from services import username_registry
+
+    try:
+        username_registry.rollback_users(accounts)
+    except Exception as exc:
+        logger.error("setup account rollback failed; preserving the setup claim: %s", exc)
+        raise SetupRollbackError("setup accounts require operator reconciliation") from exc
 
 
 def _vault_paths() -> tuple[str, str]:
@@ -134,6 +156,14 @@ def _is_setup_complete() -> bool:
     "setup happened" signal this process can see. This is deliberately
     fail-closed after partial initialization; a failed attempt with no account
     remains retryable.
+
+    Scope, versus the other two "first-run state" notions (#443): this answers
+    "may the one-shot provisioning endpoint / wizard still run at all" — the
+    authority the SPA AuthGuard, ``GET /v1/setup/status`` (install.sh probes
+    the same route), and the ``/complete`` guard all consume. The setup
+    checklist (``routes/setup_checklist.py``) answers a different question —
+    which *post*-provisioning onboarding steps remain for the now-authenticated
+    operator — and is unreachable until this has gone terminal.
     """
     import stores
 
@@ -168,25 +198,69 @@ def setup_status() -> dict[str, Any]:
     }
 
 
+@router.get("/questions")
+def setup_questions() -> dict[str, Any]:
+    """The first-run question declaration, for wizard seeding (#443 AC-1).
+
+    Serves ``maistro.config.first_run.FIRST_RUN_QUESTIONS`` — the same
+    declarations the terminal wizard reads directly — so the SPA wizard seeds
+    its state (labels, defaults, required flags) instead of restating them.
+    Public like the rest of ``/v1/setup``: it carries question metadata only,
+    never credentials or answers.
+    """
+    from maistro.config.first_run import (
+        FIRST_RUN_QUESTIONS,  # pyright: ignore[reportMissingImports]
+    )
+
+    return {
+        "kind": "first_run_questions",
+        "questions": {key: q.model_dump() for key, q in FIRST_RUN_QUESTIONS.items()},
+    }
+
+
 class SetupCompleteBody(BaseModel):
-    """Validated payload for the one-shot first-run provisioning endpoint."""
+    """Validated payload for the one-shot first-run provisioning endpoint.
+
+    Field defaults are read from ``maistro.config.first_run`` — the one
+    declaration of the first-run questions that the terminal wizard and the
+    SPA wizard (via ``GET /v1/setup/questions``) also read (#443). This model
+    never restates a default: identical answers must produce an identical
+    payload whichever path collected them, defaults included.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
-    hardware_preset: str
-    admin_username: str = "admin"
+    hardware_preset: str = DEFAULT_HARDWARE_PRESET
+    admin_username: str = DEFAULT_ADMIN_USERNAME
     admin_password: str
-    user_username: str = "user"
+    user_username: str = DEFAULT_DAILY_DRIVER_USERNAME
     user_password: str
     optional_modules: list[str] = Field(default_factory=list)
-    conductor_name: str = "Hive Conductor"
-    default_model: str | None = None
+    conductor_name: str = DEFAULT_CONDUCTOR_NAME
+    default_model: str | None = DEFAULT_DEFAULT_MODEL
+    # #287: set by the Setup wizard's final gateway preflight. Absent (None)
+    # means the caller predates the field and made no claim; an explicit
+    # "unverified" must be preserved as-is, never silently upgraded.
+    model_availability: Literal["verified", "unverified"] | None = None
 
     @field_validator("hardware_preset")
     @classmethod
     def validate_hardware_preset(cls, value: str) -> str:
         if not value:
             raise ValueError("hardware_preset required")
+        return value
+
+    @field_validator("admin_username", "user_username")
+    @classmethod
+    def validate_usernames_present(cls, value: str) -> str:
+        """Blank names are refused, not defaulted.
+
+        A collector that cannot ask (or dropped the field) must omit the key
+        and let the declaration default apply; sending an empty string would
+        otherwise provision an account with an empty username (#443 DOD-1).
+        """
+        if not value.strip():
+            raise ValueError("username must not be blank")
         return value
 
     @field_validator("admin_password", "user_password")
@@ -272,6 +346,17 @@ def _maybe_generate_identity(
     mnemonic = seed.mnemonic_words()
     persisted = _persist_identity_root(mnemonic)
     seed.zero()
+    if not persisted:
+        # A selected identity root must survive the one-shot setup response;
+        # otherwise setup would report success while every later identity use
+        # failed after the only provisioning opportunity was consumed.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "crypto_identity could not be persisted to the encrypted vault. "
+                "No accounts were created; repair the vault and retry setup."
+            ),
+        )
     return user_did, mnemonic, persisted
 
 
@@ -311,7 +396,9 @@ def _provision_first_run(
     admin_hash = hash_password(admin_password)
     user_hash = hash_password(user_password)
 
-    stores.users["admin"] = stores.users._model_class(
+    from services import username_registry
+
+    admin = stores.users._model_class(
         id="admin",
         username=admin_username,
         password_hash=admin_hash,
@@ -320,7 +407,7 @@ def _provision_first_run(
         created_at=now_ts,
         did=None,
     )
-    stores.users["user"] = stores.users._model_class(
+    daily_user = stores.users._model_class(
         id="user",
         username=user_username,
         password_hash=user_hash,
@@ -330,6 +417,17 @@ def _provision_first_run(
         created_at=now_ts,
         did=user_did,
     )
+    try:
+        # Bootstrap uses the same canonical allocator as public registration;
+        # both identities and both username claims land as one unit.
+        username_registry.create_users([admin, daily_user])
+    except username_registry.UsernameTakenError as exc:
+        raise HTTPException(status_code=409, detail="Username is already taken.") from exc
+    except username_registry.UsernameAllocationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Setup could not durably allocate its accounts; please retry.",
+        ) from exc
 
     # v0 fix: persist the Setup-chosen default_model so the Settings page
     # reflects what the user actually picked (was showing the hardcoded legacy
@@ -349,6 +447,11 @@ def _provision_first_run(
         "identity_persisted": identity_persisted,
         "completed_at": now_ts.isoformat(),
     }
+    if body.model_availability is not None:
+        # #287: keep the wizard's gateway-preflight verdict next to the model
+        # it qualifies, so a degraded install is explicitly recorded as such
+        # rather than indistinguishable from a verified one.
+        config["model_availability"] = body.model_availability
 
     # Was `stores.settings.default_model = ...` — an in-place mutation of a
     # module-level object, so the Setup wizard's choice never outlived the
@@ -368,12 +471,14 @@ def _provision_first_run(
             settings_store.current().model_copy(update={"default_model": chosen_default_model})
         )
     except settings_store.SettingsPersistenceError as exc:
+        _rollback_setup_accounts([admin, daily_user])
         logging.getLogger("hive.setup").error("setup could not persist settings: %s", exc)
         raise HTTPException(
             status_code=503,
             detail=f"setup did not complete: settings were not persisted ({exc})",
         ) from exc
     except settings_store.SettingsSecretError as exc:
+        _rollback_setup_accounts([admin, daily_user])
         raise HTTPException(
             status_code=400,
             detail=(
@@ -392,6 +497,7 @@ def _provision_first_run(
     try:
         registration_policy.close_after_setup()
     except registration_policy.RegistrationPolicyError as exc:
+        _rollback_setup_accounts([admin, daily_user])
         logging.getLogger("hive.setup").error(
             "setup could not persist the registration policy: %s", exc
         )
@@ -405,10 +511,26 @@ def _provision_first_run(
 
     kv = _get_kv()
     if kv is not None:
-        kv[_SETUP_KEY] = config
-        # The marker is the durable one-shot boundary for persisted setup. Do
-        # not return success while this write is still only queued.
-        _flush_setup_marker(config)
+        try:
+            kv[_SETUP_KEY] = config
+            # The marker is the durable one-shot boundary for persisted setup. Do
+            # not return success while this write is still only queued.
+            _flush_setup_marker(config)
+        except BaseException:
+            # Deliberately no account rollback on this failure. The marker is
+            # the LAST durable write: if it is lost, the accounts and their
+            # username claims are already complete, and releasing them would
+            # re-open this public, unauthenticated endpoint to a retry that
+            # could install a new first owner over the restart. Retaining them
+            # keeps the instance closed (the setup guard sees the accounts) as
+            # one operator-reconcilable reservation — never an ambiguous
+            # duplicate identity. Pre-marker failures (settings, policy) above
+            # DO roll back, so a failed attempt cannot consume a username.
+            logger.error(
+                "setup marker was not acknowledged; retaining durable accounts "
+                "and the setup claim for operator reconciliation"
+            )
+            raise
     else:
         # Unpersisted run: the claim was only ever an in-flight lock —
         # "setup happened" in this mode is signalled by the accounts it
@@ -484,22 +606,30 @@ def complete_setup(body: SetupCompleteBody) -> dict[str, Any]:
             user_username=user_username,
             user_password=user_password,
         )
-    except BaseException:
-        # A failure before any account exists remains retryable. In an
-        # unpersisted run, account state disappears with the process, so the
-        # claim can also be released; the in-memory account check still blocks
-        # a same-process overwrite. Once account writes have landed in a
-        # persisted store, retain the claim: releasing it would let a restart
-        # retry the public endpoint after a lost setup marker and overwrite the
-        # first owner's credentials. The handler re-raises everything it
-        # catches — this is rollback only where it cannot expose a takeover.
+    except BaseException as exc:
+        # Release the claim only when the failure left nothing durable behind.
+        # Two signals are checked together so the handler can only fail closed:
+        # the provisioner's canonical rollback reports a failed account release
+        # as SetupRollbackError, and the durable store is inspected directly so
+        # an unexpected path that left accounts behind is still classified the
+        # same way. Retaining the claim keeps the durable accounts and
+        # reservation a closed, operator-reconcilable state rather than letting
+        # a second setup attempt compete with them; a retry after a lost setup
+        # marker must never be able to overwrite the first owner's credentials.
+        # The delete is enqueued, so a crash in the instant between failure and
+        # flush can resurrect the claim — fail-closed (setup stays locked,
+        # registration stays closed) rather than fail-open, which is the only
+        # direction this endpoint is allowed to fail in. The handler re-raises
+        # everything it catches — this is rollback, not a swallow.
         with _SETUP_LOCK:
-            if len(stores.users) == 0 or _get_kv() is None:
-                stores.sessions.pop(_SETUP_CLAIM_KEY, None)
-            else:
+            if isinstance(exc, SetupRollbackError) or (
+                len(stores.users) > 0 and _get_kv() is not None
+            ):
                 logger.error(
                     "setup failed after account creation; retaining the durable setup claim"
                 )
+            else:
+                stores.sessions.pop(_SETUP_CLAIM_KEY, None)
         raise
 
     result = {"setup_complete": True, "config": config}

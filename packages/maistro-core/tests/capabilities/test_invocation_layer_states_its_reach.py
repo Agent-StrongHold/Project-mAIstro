@@ -1,9 +1,10 @@
 """Production reachability assertions for governed capability Invocation (#55).
 
-The layer is no longer specification-only. `agent.spawn_harness` is the first
-canonical Run consumer that resolves a scoped Binding and crosses the governed
-Invocation boundary before a provider-specific physical effect. These tests
-pin that reach and the durable-store composition used by configured containers.
+The layer is no longer specification-only. Retained graph effects and
+`agent.spawn_harness` resolve scoped Bindings and cross the governed Invocation
+boundary before provider-specific physical effects. These tests pin that reach
+and the durable store composition without conflating capability Invocations
+with handler-delivery Invocations.
 """
 
 from __future__ import annotations
@@ -63,17 +64,37 @@ class TestTheInvocationLayerStatesItsReach:
 
 class TestTheStoreStatesItsReachAndItsTable:
     @pytest.mark.ac("SPEC-083026-6cef/AC-2")
-    def test_the_sqlite_store_is_distinct_from_event_invocations(self) -> None:
+    def test_the_capability_store_is_wired_by_effect_context(self) -> None:
+        doc = (invocation_store.__doc__ or "").lower()
+        assert "effect context" in doc
+        assert "pginvocationstore" in doc
+
+    @pytest.mark.ac("SPEC-083026-6cef/AC-2")
+    def test_it_disambiguates_itself_from_the_handler_store(self) -> None:
         assert "maistro.events.invocations" in (invocation_store.__doc__ or "")
 
     @pytest.mark.ac("SPEC-083026-6cef/AC-2")
+    def test_it_documents_runtime_schema_ownership(self) -> None:
+        doc = (invocation_store.__doc__ or "").lower()
+        assert "ensure_schema" in doc
+
+    @pytest.mark.ac("SPEC-083026-6cef/AC-2")
     def test_the_capability_table_has_a_migration(self) -> None:
-        creating = [
+        touching = [
             path.name
             for path in sorted(_MIGRATIONS.glob("*.py"))
             if "capability_invocations" in path.read_text()
         ]
-        assert creating == ["035_capability_invocations.py"]
+        # 035 creates the table; 043 recreates its effect index in the
+        # SQLite shape; 045 adds the persisted logical-effect admission
+        # discriminator and its Run-scoped unique index. All three durable
+        # backends of the replay contract (#1194) stay aligned. Any further
+        # migration touching the table must be added here deliberately.
+        assert touching == [
+            "035_capability_invocations.py",
+            "043_capability_invocation_effect_index.py",
+            "045_capability_invocation_logical_effect.py",
+        ]
 
     def test_the_migration_scan_has_a_corpus(self) -> None:
         assert len(list(_MIGRATIONS.glob("*.py"))) > 10
@@ -82,12 +103,15 @@ class TestTheStoreStatesItsReachAndItsTable:
 class TestTheReachIsWhatTheStatementSays:
     @pytest.mark.ac("SPEC-083026-6cef/AC-1")
     def test_a_production_module_calls_the_governed_seam(self) -> None:
-        callers = sorted(
-            str(path.relative_to(_REPO))
-            for path in _REPO.glob("packages/*/src/**/*.py")
-            if _calls_governed_seam(path.read_text())
-        )
-        assert "packages/maistro-core/src/maistro/graph/nodes/agent_spawn_harness.py" in callers
+        target = "packages/maistro-core/src/maistro/graph/nodes/agent_spawn_harness.py"
+        callers = []
+        for path in _REPO.glob("packages/*/src/**/*.py"):
+            if _calls_governed_seam(path.read_text()):
+                caller = str(path.relative_to(_REPO))
+                callers.append(caller)
+                if caller == target:
+                    break
+        assert target in callers
 
     def test_the_caller_scan_finds_calls_not_definitions(self) -> None:
         assert _calls_governed_seam("    await self._effects.invocations.invoke(binding=binding)")

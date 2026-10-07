@@ -3,9 +3,10 @@ id: ADR-076
 title: "HTTP API Versioning via content negotiation"
 repo: maistro-engine
 kind: adr
-status: Accepted
+status: Implemented
 accepted: 2026-06-10
 created: 2026-05-30
+implemented: 2026-10-01
 substrate: []
 implements: []
 related:
@@ -16,6 +17,10 @@ blocks: []
 blocked-by: []
 contracts:
   - boundary
+tests:
+  - packages/maistro-core/tests/api_versioning/test_middleware.py
+  - packages/maistro-server/tests/api/test_version_negotiation.py
+  - packages/hive-conductor/backend/tests/test_version_negotiation.py
 layer: UserClient
 owners:
   - '@BlakeMatthews-dev'
@@ -24,6 +29,14 @@ history:
     date: 2026-05-30
   - status: Accepted
     date: 2026-06-10
+  - status: Implemented
+    date: 2026-10-01
+ac-modules:
+  AC-1: maistro.api_versioning
+  AC-2: maistro.api_versioning
+  AC-3: maistro.api_versioning
+  AC-4: maistro.api_versioning
+  AC-5: maistro.api_versioning
 ---
 
 # ADR-076: HTTP API Versioning via content negotiation
@@ -32,15 +45,40 @@ history:
 **Fixes the HTTP surface contract** so the API can evolve without forking the URL space, and so every
 client (TUI, web, third-party) talks to one canonical, fully-featured surface.
 
-**Implementation status (D2/#290, 2026-07-29):** the decision is Accepted, but no
-code implements this content-negotiation scheme. `maistro-server` and
-`hive-conductor` mount every business route under a plain `/v1` path prefix
-(`main.py` in each), not the `Accept: application/vnd.maistro.vN` / `api_version`
-mechanism described below. The only content-negotiation code anywhere in the
-tree is `maistro-server`'s `/v2/canvas` route, which checks a narrow,
-canvas-specific `application/vnd.canvas+json;version=2` media type — unrelated
-to this ADR's general scheme. None of the acceptance criteria below are met.
-Tracked as a v1.1 deferral in [KNOWN-GAPS.md](../../KNOWN-GAPS.md#http-api-content-negotiation).
+**Implementation status (2026-10-01, #96): implemented.** The negotiation
+scheme now runs on both business HTTP surfaces — `maistro-server` and
+`hive-conductor` — as one shared middleware, `maistro.api_versioning.VersionNegotiationMiddleware`
+(in `maistro-core`), wired just inside each app's security-headers layer. A
+request selects a version via `Accept: application/vnd.maistro.vN`, an
+`api_version` query parameter, or an `api_version` JSON body field (precedence
+in that order); every response advertises `Maistro-API-Version` and
+`Maistro-API-Default`; an unsupported selector is a `406` and a malformed one
+a `400`, both answered before any route handler; a plain-JSON response to an
+Accept-negotiated request is returned as `application/vnd.maistro.vN+json`;
+deprecation signalling (`Deprecation`/`Sunset`/`Link`) ships behind the version
+table. Health, metrics, OpenAPI/docs and A2A paths are out of scope, matching
+the Out-of-scope list below. Evidence:
+`packages/maistro-core/tests/api_versioning/test_middleware.py`,
+`packages/maistro-server/tests/api/test_version_negotiation.py`,
+`packages/hive-conductor/backend/tests/test_version_negotiation.py`.
+
+What this implementation deliberately does not claim: no second version
+exists yet, so the breaking-change criterion below is implemented as
+mechanism (a version table) but not yet exercised by a real v2; nothing is
+deprecated, so the signalling headers are proven by a fixture version only;
+and the canonical-surface parity property is a separate standing rule, not
+something this negotiation layer can prove. The canvas
+`application/vnd.canvas+json;version=2` media-type check remains a
+canvas-local response-format mechanism — it never was this ADR's general
+scheme, and the middleware explicitly leaves vendor media types untouched.
+
+---
+
+**Earlier status (2026-07-29, D2/#290; historical):** the decision was
+Accepted but no code implemented the scheme; every business route was mounted
+under a plain `/v1` prefix and the only negotiation code in the tree was the
+canvas-local `/v2/canvas` media-type check. That deferral was tracked in
+[KNOWN-GAPS.md](../../KNOWN-GAPS.md) and closed by the implementation above.
 
 ---
 
@@ -117,18 +155,38 @@ complete and keeps every client at parity.
 
 ## Acceptance criteria
 
-- [ ] A client selects an API version via `Accept: application/vnd.maistro.vN` or an `api_version`
-      body/query field; both forms resolve to the same negotiated version.
-- [ ] A single endpoint serves all versions; there is no `/vN/.../...` route duplication per version.
-- [ ] An additive change (new optional field or new route) ships without incrementing the negotiated
-      version and does not break a client requesting the prior version.
-- [ ] A breaking change increments the negotiated version, and the prior version keeps working until
-      its sunset.
-- [ ] A request omitting a version selector resolves to the advertised default version, and the
-      response states which version served it.
-- [ ] A deprecated version's responses carry `Deprecation` / `Sunset` / `Link` headers naming the
-      migration path.
-- [ ] Every operation exposed in any UI (TUI, web) is reachable through the HTTP API (parity check).
+Measured criteria. Each is bound to `maistro.api_versioning` (`ac-modules`)
+and proven by `@pytest.mark.ac("ADR-076/AC-N")` tests in
+`packages/maistro-core/tests/api_versioning/test_middleware.py`,
+`packages/maistro-server/tests/api/test_version_negotiation.py`, and
+`packages/hive-conductor/backend/tests/test_version_negotiation.py`.
+
+- [x] **AC-1** A client selects an API version via `Accept: application/vnd.maistro.vN` or an
+      `api_version` body/query field; both forms resolve to the same negotiated version.
+- [x] **AC-2** A single endpoint serves all versions; there is no `/vN/.../...` route duplication
+      per version. Business routes stay on their stable `/v1` mounts; the middleware serves the
+      version axis.
+- [x] **AC-3** An additive change (new optional field or new route) ships without incrementing the
+      negotiated version and does not break a client requesting the prior version. Exercised by
+      this change itself: the negotiation layer and its response headers shipped within version 1,
+      and a selector-less client is served unchanged.
+- [x] **AC-4** A request omitting a version selector resolves to the advertised default version,
+      and the response states which version served it (`Maistro-API-Version` /
+      `Maistro-API-Default`).
+- [x] **AC-5** A deprecated version's responses carry `Deprecation` / `Sunset` / `Link` headers
+      naming the migration path. Proven against a fixture version; nothing is deprecated today, so
+      no live traffic carries them.
+
+Deliberately unmeasured properties — no **AC-N** id, because a criterion this
+document cannot prove must not sit under an `Implemented` claim (that is
+exactly what the acceptance-state gate refuses; `scripts/check-ac-state.py`):
+
+- A breaking change increments the negotiated version, and the prior version keeps working until
+  its sunset. *Mechanism in place — a version table with deprecation metadata — but no v2 exists
+  yet to exercise it. This gains an AC id when the first v2 ships.*
+- Every operation exposed in any UI (TUI, web) is reachable through the HTTP API (parity check).
+  *A standing property of the canonical-surface principle, not a property the negotiation layer
+  can prove; tracked by that principle, not closed here.*
 
 ## Consequences
 

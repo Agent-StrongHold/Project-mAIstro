@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
-from maistro.types.memory import REINFORCE_DELTA
+from maistro.types.memory import CONTRADICT_DELTA, REINFORCE_DELTA
 
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from maistro.memory.learnings.lifecycle import StageTransition
+    from maistro.memory.user_model.types import UserModelFact
     from maistro.types.memory import (
         DecaySweep,
         EpisodicMemory,
         Learning,
+        LearningStage,
         Outcome,
         SkillMutation,
     )
@@ -33,6 +37,8 @@ class LearningStore(Protocol):
         user_text: str,
         *,
         agent_id: str | None = None,
+        user_id: str | None = None,
+        team_id: str | None = None,
         org_id: str = "",
         max_results: int = 10,
     ) -> list[Learning]:
@@ -61,19 +67,176 @@ class LearningStore(Protocol):
         ...
 
     async def check_auto_promotions(
-        self, threshold: int = 5, *, org_id: str = ""
+        self,
+        threshold: int = 5,
+        *,
+        org_id: str = "",
+        min_confidence: float = 0.5,
     ) -> list[Learning]:
-        """Promote learnings that have been hit enough times."""
+        """Promote learnings that have been hit enough times *and* carry evidence.
+
+        `min_confidence` mirrors `evidence.DEFAULT_MIN_PROMOTION_CONFIDENCE` as a
+        plain default rather than an import so the protocol stays
+        dependency-free; the stores and promoter share the real constant.
+        """
+        ...
+
+    async def promote_learning(
+        self,
+        learning_id: int,
+        *,
+        org_id: str = "",
+        validated_by: str = "",
+        evaluator_version: str = "",
+        validated_at: datetime | None = None,
+        validation_run_ids: Sequence[str] = (),
+        validation_content_hash: str = "",
+    ) -> Learning | None:
+        """Promote exactly one active learning, recording validation provenance.
+
+        The per-candidate promotion seam the Gauntlet path needs (M4-B2): an
+        independent validator decides per candidate, so the store must be able
+        to promote one learning with the exact evaluation Runs, evaluator
+        version and frozen-content hash that justified it. Only an `active`,
+        in-scope row flips; anything else returns None untouched.
+        """
         ...
 
     async def get_promoted(
-        self, task_type: str | None = None, *, org_id: str = ""
+        self,
+        task_type: str | None = None,
+        *,
+        org_id: str = "",
+        team_id: str | None = None,
+        user_id: str | None = None,
+        agent_id: str | None = None,
     ) -> list[Learning]:
-        """Get promoted learnings for system prompt injection."""
+        """Get promoted learnings for system prompt injection within scope."""
         ...
 
     async def list_all(self, org_id: str = "", limit: int = 200) -> list[Learning]:
         """List learnings for an org (candidate enumeration for promotion/admin)."""
+        ...
+
+    async def advance_stage(
+        self,
+        learning_id: int,
+        *,
+        to_stage: LearningStage,
+        actor: str,
+        reason: str = "",
+        org_id: str = "",
+    ) -> Learning:
+        """Move a learning one rung up the knowledge ladder (ADR-103).
+
+        Forward-only, single-step, actor-attributed; the transition is
+        persisted together with its audit row. Raises the shared transition
+        error on an illegal move instead of half-applying it.
+
+        ADR-057: implementations gate the move as a write at the store
+        boundary — `actor` credits the move in the ledger, the ADR-057
+        principal (default agent) decides whether it may happen at all.
+        """
+        ...
+
+    async def stage_history(self, learning_id: int, *, org_id: str = "") -> list[StageTransition]:
+        """The durable audit trail of one learning's ladder transitions."""
+        ...
+
+
+@runtime_checkable
+class LearningLifecycleStore(LearningStore, Protocol):
+    """A learning store that runs the M4-B lifecycle on its rows (#117/#120).
+
+    Split from :class:`LearningStore` so a plain store stays a valid one: the
+    lifecycle methods are the validated/repertoire machinery, and a backend
+    that has not grown them is still a functioning learning store, not a
+    broken one.
+    """
+
+    async def get(self, learning_id: int, *, org_id: str = "") -> Learning | None:
+        """Point read by id, or None. Blank ``org_id`` means no org filter."""
+        ...
+
+    async def reinforce(
+        self, learning_id: int, delta: float = REINFORCE_DELTA, *, org_id: str = ""
+    ) -> Learning | None:
+        """A later Run confirmed the learning; confidence rises, never past 1."""
+        ...
+
+    async def contradict(
+        self, learning_id: int, delta: float = CONTRADICT_DELTA, *, org_id: str = ""
+    ) -> Learning | None:
+        """A later Run showed the learning wrong; confidence falls to its floor."""
+        ...
+
+    async def supersede(self, old_id: int, replacement: Learning, *, org_id: str = "") -> int:
+        """Retire the old row in favour of the stored replacement; both survive.
+
+        Raises ``KeyError`` when the old id is not in scope: a silent no-op
+        would leave both rows active and the lineage unrecorded.
+
+        ADR-057: implementations gate superseding as a write at the store
+        boundary — a denied call retires nothing and stores nothing.
+        """
+        ...
+
+    async def apply_decay(
+        self,
+        *,
+        now: datetime | None = None,
+        half_life_days: float | None = None,
+    ) -> int:
+        """One time-decay sweep over live rows; returns how many moved."""
+        ...
+
+    async def consolidate(
+        self,
+        *,
+        org_id: str = "",
+        tool_name: str | None = None,
+    ) -> list[Learning]:
+        """Merge near-duplicate active rows, folding their evidence; returns survivors.
+
+        ADR-057: implementations gate consolidation as a write at the store
+        boundary — consolidation retires rows.
+        """
+        ...
+
+
+@runtime_checkable
+class IneffectiveLearningSource(Protocol):
+    """Names learnings whose failures outnumber successes (M4-B #121).
+
+    The read that turns losses into retained anti-pattern knowledge. Read-only
+    by contract: converting what it names into anti-patterns is the caller's
+    decision, so a store can never silently rewrite its rows' epistemics.
+    """
+
+    async def list_ineffective(self, min_uses: int) -> list[Learning]:
+        """Learnings with at least ``min_uses`` recorded outcomes and more failures."""
+        ...
+
+
+@runtime_checkable
+class AntiPatternSink(Protocol):
+    """Durably records a caller-decided anti-pattern reclassification (#121).
+
+    The write half of :class:`IneffectiveLearningSource`. The decision stays
+    with the caller; what this adds is durability for backends whose reads
+    return detached row copies -- without it, a reclassification the promoter
+    made on a copy would evaporate with the copy and the next process would
+    re-learn the anti-pattern by re-buying the failure.
+    """
+
+    async def mark_anti_pattern(
+        self, learning_id: int, confidence_floor: float, *, org_id: str = ""
+    ) -> bool:
+        """Reclassify one row as ``anti_pattern`` at least at the floor.
+
+        Org is an exact boundary, like every other scoped write. Returns
+        whether a row in scope was updated.
+        """
         ...
 
 
@@ -404,4 +567,39 @@ class AuditLog(Protocol):
         limit: int = 100,
     ) -> list[AuditEntry]:
         """Retrieve audit entries with optional filtering."""
+        ...
+
+
+@runtime_checkable
+class UserModelStore(Protocol):
+    """Durable, owner-keyed lineages of UserModelFact revisions (#1047).
+
+    Facts are never decayed or updated in place: every change appends a
+    revision, and a tombstoned lineage can never be written again.
+    """
+
+    async def append_revision(self, fact: UserModelFact) -> UserModelFact:
+        """Append the next revision; it must directly follow the current one."""
+        ...
+
+    async def current(self, lineage_or_fact_key: str) -> UserModelFact | None:
+        """The latest revision of a lineage, found by its id or any statement key it held."""
+        ...
+
+    async def history(self, lineage_id: str) -> list[UserModelFact]:
+        """Every retained revision of a lineage, oldest first."""
+        ...
+
+    async def list_for_user(self, owner_user_id: str) -> list[UserModelFact]:
+        """Current revisions of one owner's live lineages; never another owner's."""
+        ...
+
+    async def tombstone(
+        self, lineage_id: str, *, acting_user_id: str, reason: str
+    ) -> UserModelFact:
+        """Delete a lineage's content for good, keeping who deleted it and why."""
+        ...
+
+    async def is_tombstoned(self, lineage_or_fact_key: str) -> bool:
+        """Whether the lineage (by id or any statement key it held) was tombstoned."""
         ...

@@ -14,7 +14,10 @@ if str(_BACKEND_DIR) not in sys.path:
 
 from services.dag_agents import get_registry, run_registered_dag  # noqa: E402
 
+from maistro.capabilities.effect_context import new_in_memory_effect_context  # noqa: E402
 from maistro.graph.durable_runs import RunStatus  # noqa: E402
+from maistro.providers.registry import InMemoryProviderRegistry  # noqa: E402
+from maistro.providers.router import CostAwareRouter  # noqa: E402
 
 _SYNTH_DAG = {
     "id": "synth-noop",
@@ -45,7 +48,33 @@ def test_get_registry_is_shared_and_seeded() -> None:
 
 def test_run_registered_dag_unknown_id_raises_key_error() -> None:
     with pytest.raises(KeyError):
-        asyncio.run(run_registered_dag("no-such-dag", workspace_id="w1", project_id="p1"))
+        asyncio.run(
+            run_registered_dag(
+                "no-such-dag", workspace_id="w1", project_id="p1", user_id="test-user"
+            )
+        )
+
+
+def test_standalone_registered_human_work_is_refused() -> None:
+    registry = get_registry()
+    registry.register(
+        {
+            "id": "synth-human",
+            "name": "Synth Human",
+            "entry_node": "ask",
+            "nodes": [{"id": "ask", "kind": "human.ask_question", "config": {}}],
+            "edges": [],
+        }
+    )
+    try:
+        with pytest.raises(RuntimeError, match="canonical graph execution spine"):
+            asyncio.run(
+                run_registered_dag(
+                    "synth-human", workspace_id="w1", project_id="p1", user_id="test-user"
+                )
+            )
+    finally:
+        registry.deregister("synth-human")
 
 
 def test_run_registered_dag_produces_provenanced_completed_run(synth_dag_id: str) -> None:
@@ -66,13 +95,19 @@ def test_configure_hook_touches_the_instantiated_graph_only(synth_dag_id: str) -
         graph.nodes[0].inputs["extra"] = "value"
 
     graph, record = asyncio.run(
-        run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1", configure=configure)
+        run_registered_dag(
+            synth_dag_id,
+            workspace_id="w1",
+            project_id="p1",
+            configure=configure,
+            user_id="test-user",
+        )
     )
     assert graph.nodes[0].inputs["extra"] == "value"
     assert record.run.status is RunStatus.COMPLETED
     # The registered snapshot is untouched — a later run starts clean.
     graph_again, _ = asyncio.run(
-        run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1")
+        run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1", user_id="test-user")
     )
     assert "extra" not in graph_again.nodes[0].inputs
 
@@ -95,6 +130,13 @@ class _StubContainer:
         # `run_store` on purpose: the whole point of the test below is that the
         # two are one line apart and must not be swapped.
         self.graph_run_store = graph_runs if graph_runs is not None else object()
+        # #1079 production composition: the Hive bridge forwards these exact
+        # Container-owned authorities into build_node_resolver. The stub must
+        # model that real Container contract rather than making production DI
+        # optional just to satisfy older tests.
+        self.capability_effects = new_in_memory_effect_context()
+        self.provider_registry = InMemoryProviderRegistry()
+        self.llm_router = CostAwareRouter(self.provider_registry)
 
 
 def _with_container(monkeypatch, container) -> None:
@@ -217,9 +259,27 @@ def test_without_a_bridge_the_path_still_resolves_nodes(monkeypatch) -> None:
     )
 
     resolver = dag_agents._resolve_nodes_with()
-    assert resolver is dag_agents._fallback_node_resolver
+    # Per execution, not the import-time module-level singleton the wiring fix
+    # removed (#147): a resolver built before any Container exists would freeze
+    # process defaults (the shared usage log above all) at import time.
+    assert callable(resolver)
+    assert dag_agents._resolve_nodes_with() is not resolver
     node = resolver("d", _DELEGATE_DAG)
     assert node._a2a_delegator is None
+
+
+def test_hitl_store_requires_the_canonical_graph_spine(monkeypatch) -> None:
+    """HITL must not expose the standalone process-local compatibility store."""
+    import services.dag_agents as dag_agents
+    import services.engine as engine_module
+
+    port = type("_Port", (), {"container": None})()
+    monkeypatch.setattr(
+        engine_module, "get_engine", lambda: type("_Engine", (), {"_agent_port": port})()
+    )
+
+    with pytest.raises(RuntimeError, match="canonical graph execution spine"):
+        dag_agents.get_canonical_run_store()
 
 
 @pytest.mark.ac("ADR-082526-3ca6/AC-5")
@@ -232,7 +292,11 @@ def test_an_engine_that_raises_falls_back_rather_than_propagating(monkeypatch) -
         raise RuntimeError("engine unavailable")
 
     monkeypatch.setattr(engine_module, "get_engine", _boom)
-    assert dag_agents._resolve_nodes_with() is dag_agents._fallback_node_resolver
+    resolver = dag_agents._resolve_nodes_with()
+    assert callable(resolver)
+    # The fallback is a working resolver, not just a swallowed exception: a
+    # node still resolves (unwired), so DAG execution proceeds as before.
+    assert resolver("d", _DELEGATE_DAG)._a2a_delegator is None
 
 
 @pytest.mark.ac("ADR-082526-3ca6/AC-4")
@@ -279,7 +343,9 @@ def test_a_registered_dag_is_findable_on_the_canonical_spine(monkeypatch, synth_
     assert dag_agents.get_run_store() is container.graph_run_store
 
     _graph, record = asyncio.run(
-        run_registered_dag(synth_dag_id, workspace_id="w-spine", project_id=root.project_id)
+        run_registered_dag(
+            synth_dag_id, workspace_id="w-spine", project_id=root.project_id, user_id="test-user"
+        )
     )
 
     canonical = asyncio.run(run_store.get_run(record.run_id))

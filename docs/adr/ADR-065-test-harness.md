@@ -76,6 +76,15 @@ The key constraint is composability: tests must be able to swap individual compo
 
 New file at `packages/maistro-core/src/maistro/testing/harness.py`. It depends only on existing public APIs: `Container`, `ClassifierEngine`, `RouterEngine`, `GraphRun`, `FauxProvider`, in-memory stores, and `GraphEvent`.
 
+> **`RouterEngine`'s constructor narrowed by #1196.** `RouterEngine(quota_tracker)`
+> is now `RouterEngine()`. The `quota_tracker` parameter was dead on arrival —
+> stored on `self._quota` and never read, since `select()` always calls
+> `select_with_usage()` with an empty usage map — so no quota check ever ran
+> through it. Removing it closes off the router as a second, non-authoritative
+> quota-enforcement point; enforcement belongs at the canonical Invocation
+> boundary. `select()`/`select_with_usage()`, the surface this harness and
+> `create_container()` actually exercise, are unchanged.
+
 ### 2. `TestEnvironment` dataclass
 
 `TestEnvironment` is a frozen-capable dataclass holding:

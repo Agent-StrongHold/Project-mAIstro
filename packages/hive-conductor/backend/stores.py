@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
 
+from models.backlog import BacklogItem
 from models.persona_feedback import PersonaFeedback
 from models.schemas import (
     Agent,
@@ -29,7 +30,6 @@ from models.schemas import (
     MCPServer,
     MCPTool,
     MemoryEntry,
-    MemoryNamespace,
     Mission,
     MissionStep,
     Schedule,
@@ -57,6 +57,8 @@ def _mission(
     t = now()
     return Mission(
         id=id,
+        # Seeded demo work is an explicit system actor, not an ownerless task.
+        user_id="system",
         name=name,
         description=f"Stub mission: {name}",
         status=status,
@@ -81,14 +83,15 @@ mcp_servers: ModelStore = ModelStore("mcp_servers", MCPServer)
 mcp_tools: ModelStore = ModelStore("mcp_tools", MCPTool)
 containers: ModelStore = ModelStore("containers", Container)
 memory_entries: ModelStore = ModelStore("memory_entries", MemoryEntry)
-memory_namespaces: dict[str, MemoryNamespace] = {
-    "default": MemoryNamespace(name="default", entry_count=1, size_bytes=1024)
-}
 # Persona/Workspace system — a user's live instantiations of adopted personas.
 workspaces: ModelStore = ModelStore("workspaces", Workspace)
 # Phase I: thumbs +/- + comment feedback, persisted per-persona (see
 # services/persona_feedback.py for aggregation across workspaces).
 persona_feedback: ModelStore = ModelStore("persona_feedback", PersonaFeedback)
+# Canonical backlog records (#98 shape). The board/list/detail UI (#99) and
+# the /v1/backlog routes are clients of services.backlog, the single write
+# path; the store is the durability layer underneath it.
+backlog_items: ModelStore = ModelStore("backlog_items", BacklogItem)
 
 
 # `settings` is deliberately absent from this module. It used to be a
@@ -131,6 +134,9 @@ dag_runs: JsonStore = JsonStore("dag_runs")
 #: whose conflict-safe insert decides single use. Name is shared with
 #: ``services/registration_policy.py``; tokens are stored only as digests.
 registration_invitations: JsonStore = JsonStore("registration_invitations")
+#: Canonical case-folded username -> user-id claims. Account creation writes
+#: this index and the user row in one durable transaction.
+username_claims: JsonStore = JsonStore("username_claims")
 
 _all_model_stores: list[ModelStore] = [
     missions,
@@ -145,6 +151,7 @@ _all_model_stores: list[ModelStore] = [
     users,
     workspaces,
     persona_feedback,
+    backlog_items,
 ]
 _all_json_stores: list[JsonStore] = [
     mission_steps,
@@ -163,6 +170,7 @@ _all_json_stores: list[JsonStore] = [
     oauth_identity_links,
     dag_runs,
     registration_invitations,
+    username_claims,
 ]
 
 
@@ -176,6 +184,17 @@ def configure_persistence(persisted_store: Any) -> None:
         store._persisted = persisted_store
 
 
+def persistence_backend() -> Any | None:
+    """The configured persistence backend, or None when everything is in-memory.
+
+    Health and the persistence map (#1135, #1179) read the durability/ack mode
+    from here rather than reaching for the module private: a non-None backend
+    means every ModelStore/JsonStore write is an acknowledged write that
+    returns only after the State writer commits.
+    """
+    return _persisted
+
+
 def purge_all_sessions() -> int:
     """Invalidate every authenticated session. Returns the number revoked.
 
@@ -184,7 +203,12 @@ def purge_all_sessions() -> int:
     Every user must log in again. Elevation grants live inside the session
     records, so they are revoked with them.
     """
-    revoked = sessions.clear()
+    # Share the auth boundary's lock so a purge cannot race a sliding idle
+    # update and leave one session valid after the operator revoked it.
+    from routes.auth import _SESSION_LOCK
+
+    with _SESSION_LOCK:
+        revoked = sessions.clear()
     logger.warning("sessions_purged count=%d", revoked)
     return revoked
 
@@ -196,6 +220,11 @@ def initialize_stores() -> None:
     for store in _all_json_stores:
         store.initialize()
     _seed_if_empty()
+    # Legacy rows predate the username index. Create a canonical claim for
+    # unambiguous rows and quarantine historical duplicates before login uses it.
+    from services.username_registry import migrate_legacy_claims
+
+    migrate_legacy_claims()
     logger.info("Stores initialized (persisted=%s)", _persisted is not None)
 
 
@@ -536,15 +565,28 @@ def _seed_dags() -> None:
 
 
 def _seed_messages() -> None:
+    """Fabricated inbox chatter -- demo mode only (#399).
+
+    One of these rows used to be a fabricated CRITICAL security finding
+    ("XSS in /v1/auth/callback" from "RedTeam"), so every fresh install
+    booted looking compromised and no reviewer could tell fiction from a
+    real finding. Production now seeds nothing here -- an empty inbox
+    renders as "no messages", the same honesty rule the audit log already
+    follows -- while the explicit demo mode (``hive_mode == "demo"``) keeps
+    the fixture, every row stamped machine-readably as synthetic and
+    carrying a deterministic ``msg-seed-*`` id so it is unmistakable and
+    trivially removable.
+    """
+    from config import get_settings
+
+    if get_settings().hive_mode != "demo":
+        return
     if len(messages) == 0:
         from routes.messages import Message
 
         t = now()
-        m1_id = str(uuid4())
-        m2_id = str(uuid4())
-        m3_id = str(uuid4())
-        messages[m1_id] = Message(
-            id=m1_id,
+        messages["msg-seed-1"] = Message(
+            id="msg-seed-1",
             from_agent="RedTeam",
             to="admin",
             subject="Vulnerability found in auth flow",
@@ -553,9 +595,10 @@ def _seed_messages() -> None:
             read=False,
             category="security",
             created_at=t,
+            synthetic=True,
         ).model_dump(mode="json")
-        messages[m2_id] = Message(
-            id=m2_id,
+        messages["msg-seed-2"] = Message(
+            id="msg-seed-2",
             from_agent="DreamLoop",
             to="all",
             subject="DreamLoop cycle 47 complete",
@@ -564,9 +607,10 @@ def _seed_messages() -> None:
             read=False,
             category="mission",
             created_at=t,
+            synthetic=True,
         ).model_dump(mode="json")
-        messages[m3_id] = Message(
-            id=m3_id,
+        messages["msg-seed-3"] = Message(
+            id="msg-seed-3",
             from_agent="Conductor",
             to="admin",
             subject="Anthropic quota at 25%",
@@ -575,6 +619,7 @@ def _seed_messages() -> None:
             read=True,
             category="quota",
             created_at=t,
+            synthetic=True,
         ).model_dump(mode="json")
 
 

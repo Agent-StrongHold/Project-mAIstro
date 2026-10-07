@@ -40,6 +40,9 @@ from maistro.projects.scope import (
     ProjectScopeDenied,
     ProjectScopedResource,
 )
+
+if TYPE_CHECKING:
+    from maistro.workspaces.store import WorkspaceStore
 from maistro.runs.evidence_json import json_of, model_of
 
 #: Passes the leaf-first Project purge may take before it gives up. A Workspace
@@ -56,6 +59,20 @@ class PgProjectScopeStore:
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
+        self._workspace_store: WorkspaceStore | None = None
+
+    def bind_workspace_store(self, workspace_store: WorkspaceStore) -> None:
+        self._workspace_store = workspace_store
+
+    async def _require_project_view(self, project: Project, principal_id: str) -> None:
+        from maistro.workspaces.store_boundary import is_blank_principal, require_project_view
+
+        workspace_store = self._workspace_store
+        if workspace_store is None:
+            raise ProjectScopeDenied("Project not found")
+        if is_blank_principal(principal_id):
+            raise ProjectScopeDenied("Project not found")
+        await require_project_view(project, workspace_store, principal_id)
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[Any]:
@@ -191,11 +208,16 @@ class PgProjectScopeStore:
             )
         return project
 
-    async def get(self, project_id: str) -> Project | None:
+    async def get(self, project_id: str, *, principal_id: str | None = None) -> Project | None:
         payload = await self._payload(
             "SELECT payload FROM canonical_projects WHERE project_id = $1", project_id
         )
-        return model_of(Project, payload) if payload is not None else None
+        if payload is None:
+            return None
+        project = model_of(Project, payload)
+        if principal_id is not None:
+            await self._require_project_view(project, principal_id)
+        return project
 
     async def lineage(self, project_id: str) -> list[Project]:
         return await self._lineage(project_id)
@@ -283,8 +305,11 @@ class PgProjectScopeStore:
         project_id: str,
         *,
         defaults: dict[str, Any],
+        principal_id: str | None = None,
     ) -> Project:
         project = await self._require(project_id)
+        if principal_id is not None:
+            await self._require_project_view(project, principal_id)
         updated = project.model_copy(
             deep=True,
             update={"defaults": dict(defaults), "updated_at": datetime.now(UTC)},
@@ -371,6 +396,57 @@ class PgProjectScopeStore:
             # persisted -- whichever of the two committed last -- instead of
             # a value the other writer's conflict resolution has already
             # superseded.
+            row = await conn.fetchrow(
+                """INSERT INTO canonical_project_memberships
+                   (project_id, principal_id, workspace_id, membership_id, payload)
+                   VALUES ($1, $2, $3, $4, $5::text::jsonb)
+                   ON CONFLICT (project_id, principal_id) DO UPDATE SET
+                     workspace_id = EXCLUDED.workspace_id,
+                     membership_id = EXCLUDED.membership_id,
+                     payload = EXCLUDED.payload
+                   RETURNING payload""",
+                updated.project_id,
+                updated.principal_id,
+                updated.workspace_id,
+                updated.membership_id,
+                json_of(updated),
+            )
+        return model_of(ProjectMembership, row["payload"])
+
+    async def merge_membership(self, membership: ProjectMembership) -> ProjectMembership:
+        """Merge a delegated re-grant into the canonical row atomically.
+
+        The existing row is read under `FOR UPDATE` inside the same
+        transaction that writes the merge, so a concurrent owner
+        `remove_membership` blocks until this commits (or finds no row left
+        to preserve if it commits first) -- an upsert fed by a separately
+        read row could resurrect a revoked principal with stale grants
+        (#1148). As in `set_membership`, the row is read back from the
+        `RETURNING` clause rather than trusting a pre-computed value.
+        """
+        project = await self._require(membership.project_id)
+        if project.workspace_id != membership.workspace_id:
+            raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
+        async with self._pool.acquire() as conn, conn.transaction():
+            existing = await self._membership_or_none(
+                membership.project_id, membership.principal_id, conn=conn
+            )
+            if existing is None:
+                updated = membership.model_copy(update={"updated_at": datetime.now(UTC)})
+            else:
+                updated = membership.model_copy(
+                    update={
+                        "membership_id": existing.membership_id,
+                        "created_at": existing.created_at,
+                        "role": existing.role,
+                        "grants": existing.grants | membership.grants,
+                        "denies": existing.denies,
+                        "delegable_grants": (
+                            existing.delegable_grants | membership.delegable_grants
+                        ),
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
             row = await conn.fetchrow(
                 """INSERT INTO canonical_project_memberships
                    (project_id, principal_id, workspace_id, membership_id, payload)

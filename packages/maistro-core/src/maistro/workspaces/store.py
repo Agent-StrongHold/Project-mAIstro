@@ -49,9 +49,13 @@ class WorkspaceStore(Protocol):
         """Create a Workspace, preserving identity/timestamps only for convergence imports."""
         ...
 
-    async def get(self, workspace_id: str) -> Workspace | None: ...
+    async def get(
+        self, workspace_id: str, *, principal_id: str | None = None
+    ) -> Workspace | None: ...
 
-    async def update(self, workspace: Workspace) -> Workspace: ...
+    async def update(
+        self, workspace: Workspace, *, principal_id: str | None = None
+    ) -> Workspace: ...
 
     async def delete(self, workspace_id: str) -> None: ...
 
@@ -122,19 +126,39 @@ class InMemoryWorkspaceStore:
         self._memberships[(workspace.workspace_id, creator_user_id)] = owner
         try:
             await self.project_store.create_root(workspace.workspace_id)
-        except Exception:
+        except BaseException:
             del self._workspaces[workspace.workspace_id]
             del self._memberships[(workspace.workspace_id, creator_user_id)]
+            # A failing scope backend may have persisted the Root before
+            # reporting the failure; remove it so the operation is atomic in
+            # the reference store as well as in the durable transactions.
+            await self.project_store.purge_workspace(workspace.workspace_id)
             raise
         return workspace.model_copy(deep=True)
 
-    async def get(self, workspace_id: str) -> Workspace | None:
-        workspace = self._workspaces.get(workspace_id)
-        return workspace.model_copy(deep=True) if workspace is not None else None
+    async def get(self, workspace_id: str, *, principal_id: str | None = None) -> Workspace | None:
+        from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
+        from maistro.workspaces.store_boundary import is_blank_principal, require_workspace_view
 
-    async def update(self, workspace: Workspace) -> Workspace:
+        workspace = self._workspaces.get(workspace_id)
+        if workspace is None:
+            return None
+        if principal_id is not None:
+            if is_blank_principal(principal_id):
+                raise WorkspaceAuthorizationDenied
+            await require_workspace_view(self, workspace_id, principal_id)
+        return workspace.model_copy(deep=True)
+
+    async def update(self, workspace: Workspace, *, principal_id: str | None = None) -> Workspace:
+        from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
+        from maistro.workspaces.store_boundary import is_blank_principal, require_workspace_view
+
         if workspace.workspace_id not in self._workspaces:
             raise WorkspaceNotFound(workspace.workspace_id)
+        if principal_id is not None:
+            if is_blank_principal(principal_id):
+                raise WorkspaceAuthorizationDenied
+            await require_workspace_view(self, workspace.workspace_id, principal_id)
         updated = workspace.model_copy(update={"updated_at": datetime.now(UTC)})
         self._workspaces[workspace.workspace_id] = updated
         return updated.model_copy(deep=True)

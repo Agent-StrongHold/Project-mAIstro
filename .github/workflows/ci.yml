@@ -14,6 +14,11 @@ on:
   # worse than none: the green tick means different things depending on the base
   # and nothing on the PR says which. #161.
   pull_request:
+    # `edited` is load-bearing for the closure guard below: a `Closes #N` added
+    # by editing the body after the last push must re-run check-closure-targets
+    # against the payload's current body, or a green check vouching for the old
+    # body lets the keyword close an epic at merge time (#56 review on #1773).
+    types: [opened, reopened, synchronize, edited]
   # A merge queue evaluates a synthetic commit containing the current base plus
   # the queued candidate(s). Every required CI job must report on that SHA, not
   # merely on the feature-branch head that was green before it entered the queue.
@@ -29,8 +34,29 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  compliance:
+    name: Compliance registry
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # This job intentionally uses the system interpreter; provision the YAML
+      # parser it imports instead of relying on an unrelated workspace install.
+      - name: Install compliance checker dependencies
+        run: python -m pip install --disable-pip-version-check "PyYAML>=6.0,<7"
+      - name: Validate control registry and claims
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/check-compliance.py
+
   # #383: the PR template used to tell every author to target `main`, which
   # contradicted CONTRIBUTING, ADR-095 and the actual branch flow — and the
   # base decides which checks can even report (base-coupled gates run on
@@ -54,8 +80,18 @@ jobs:
 
   lint-and-type-check:
     runs-on: ubuntu-latest
+    # The workflow defaults plus `issues: read` for check-closure-targets.py.
+    permissions:
+      contents: read
+      actions: read
+      issues: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Ratchet steps resolve origin/develop and the typed-client ratchet
+          # resolves the event's trusted base; shallow checkout leaves that ref
+          # unresolvable and fails with "Needed a single revision".
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -80,6 +116,7 @@ jobs:
           packages/maistro-evolve/src
           packages/maistro-rsi/src
           packages/maistro-design/src
+          packages/maistro-ext-harness/src
       # Neither of the two above resolves an import into a package that is not
       # installed in the checking environment, and hive-conductor never is: it
       # is a flat-layout app with no wheel. So `from
@@ -91,6 +128,22 @@ jobs:
       # with an import-time side effect runs here.
       - name: Cross-package imports name modules and attributes that exist
         run: python3 scripts/check-cross-package-imports.py
+      # The same boundary one audience further out (#951). Extension packages
+      # are third-party-shaped: they may import the public extension SDK and
+      # their own declared dependencies, never the product's private modules,
+      # never a repo-relative root, never a sys.path repair. Static, against
+      # the namespace policy the SDK epic publishes, so an import inside a
+      # function or a TYPE_CHECKING block is still caught.
+      - name: Extension packages import only the public SDK
+        run: python3 scripts/check-extension-imports.py
+      # The physical half of the same claim (#951): build each extension as a
+      # wheel, install it plus pytest into a fresh venv, prove the product's
+      # own modules are unimportable there, and run its tests with that
+      # interpreter. A fresh venv holds none of this repository, so a pass
+      # here is the executed proof that an extension needs no repo-relative
+      # import to build or test.
+      - name: Reference extension builds and tests in a clean environment
+        run: python3 scripts/check-reference-extension.py
       # The same question one seam further out. That one asks whether an import
       # names something that exists; this asks whether the path the frontend
       # fetches reaches a route the backend registers. `fetch` does not reject
@@ -100,6 +153,20 @@ jobs:
       # own route table, not a list of prefixes someone maintains by hand.
       - name: Frontend calls reach registered backend routes
         run: uv run python3 scripts/check-frontend-api-routes.py
+      # Workspace cutover P0.3 banks raw fetch outside src/lib/ and hand-typed
+      # declarations in pages/components until the generated client owns HTTP
+      # (#1048 AC-P3). Static scan only; the blocking ratchet also runs in
+      # quality.yml beside the other Phase 0 debt gates.
+      - name: Frontend typed-client debt (raw fetch + hand-typed — ratchet)
+        run: uv run python scripts/check-frontend-typed-client.py
+      # One lie further: a route that answers 200 without doing the operation
+      # it names. `/v1/settings/reload` said "reloaded" for years without
+      # reloading anything, and `fetch` never rejects on a canned payload
+      # (#389). This refuses any handler whose every return is a pure literal
+      # with no operation behind it, and holds the audited inventory
+      # (quality/api-route-contracts.json) against the live route table.
+      - name: No canned no-op route handlers ship
+        run: python3 scripts/check-api-route-contracts.py
       # The same failure mode one layer out: a document naming a component that
       # does not exist. DEPLOYMENT-STANCE.md listed a `maistro-sandbox-worker`
       # in all four supported profiles and offered Kata and gVisor as backends;
@@ -138,6 +205,14 @@ jobs:
       # profile to the `${VAR:?message}` shape the rest already use.
       - name: No deployment profile hands out a credential
         run: python3 scripts/check-compose-secrets.py
+      # `security_violations` and `usage_events` were appended to forever
+      # because no table had to say how long its rows live (#325). Every table
+      # an Alembic revision, runtime `CREATE TABLE` or `__tablename__` creates
+      # needs an entry in `quality/durable-table-retention.json`, and every
+      # claimed deletion path must import. No driven purge is `undecided`
+      # against its issue, written down rather than absent.
+      - name: Every durable table declares its retention
+        run: uv run python3 scripts/check-durable-table-inventory.py
       # `SENSITIVE_PATH_PATTERNS` decides which self-modifications need
       # adversarial review, and it was a hand-written list that kept falling
       # one entry behind: `local_loop.py` fast-forwards the baseline,
@@ -176,6 +251,21 @@ jobs:
       # asymmetry gets an owner, a risk, and an expiry.
       - name: Every unauthenticated path is declared and justified
         run: python3 scripts/check-public-routes.py
+      # #56 was an epic closed by one PR's `Closes` keyword: the PR delivered
+      # a slice, the keyword closed the whole thing, and every acceptance
+      # criterion it never touched read as done. An issue titled [EPIC],
+      # [MILESTONE] or [INITIATIVE], or one with open direct children, closes
+      # by explicit reviewed action once check-ac-state reports every
+      # criterion reachable (cutover S0.2). And #76 was closed completed by a
+      # keyword while its own acceptance record still had every box unticked:
+      # a leaf with a registered acceptance record closes only when the record
+      # shows every criterion proven -- never because the PR diff is green
+      # (#1141). The verdict reads the PR body and the GitHub issue state
+      # only; the candidate controls neither.
+      - name: No PR closes an epic or an issue with unproven acceptance by keyword
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check-closure-targets.py
       # `LocalRsiLoop._run_tests` carried the comment "the test command is
       # operator-supplied config, not agent input" while POST /v1/rsi/runs
       # accepted that command over HTTP (#305). The comment was true when it
@@ -270,6 +360,20 @@ jobs:
         env:
           MAISTRO_REQUIRE_PG_LEGS: "1"
         run: uv run pytest packages/maistro-core/tests/workspaces -v --tb=short
+      # The #851 Canvas supported-path E2E lives under maistro-server/tests,
+      # whose only CI invocations (`test` here, the coverage combine job in
+      # quality.yml) have no PostgreSQL service — so without this step the
+      # migration, real-store and lease assertions all skipped and CI stayed
+      # green having run none of them. The module builds its own throwaway
+      # database and walks the chain from empty, so it neither depends on nor
+      # disturbs the migrated `maistro_test` above. Same contract as the step
+      # above: MAISTRO_REQUIRE_PG_LEGS here turns a silent skip — a dead
+      # service container, a renamed env — into a red job, because for this
+      # module a skip and a pass are the same green tick.
+      - name: Canvas supported path end to end over the migrated chain
+        env:
+          MAISTRO_REQUIRE_PG_LEGS: "1"
+        run: uv run pytest packages/maistro-server/tests/api/test_canvas_supported_path.py -v --tb=short
 
   object-storage:
     needs: workflow-lint
@@ -298,41 +402,50 @@ jobs:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
       - run: uv sync --locked --extra dev --extra s3
-      # `docker run`, not a `services:` container. MinIO's own image needs an
-      # explicit `server /data` command and service containers cannot set one,
-      # which is why this used `bitnami/minio` — a repackaging that starts the
-      # server by default. Bitnami withdrew that tag and the job began failing
-      # on `manifest unknown`, so the dependency on someone else's repackaging
-      # is gone: the upstream image, pinned, started here. That did not end the
-      # churn either — Docker Hub stopped serving `minio/minio` anonymously
-      # (`pull access denied` before a single test ran), so the pin now names
-      # quay.io, where MinIO publishes the identical RELEASE tag.
+      # A step, not a `services:` container, and no longer an image at all.
+      # Upstream MinIO needs an explicit `server /data` command, which a
+      # service container cannot set, so this first used `bitnami/minio` (a
+      # repackaging that starts the server by default) until Bitnami withdrew
+      # that tag (`manifest unknown`). The upstream image then went too: Docker
+      # Hub stopped serving `minio/minio` anonymously, and after MinIO archived
+      # the community server quay.io started answering 401 and dl.min.io 410.
+      # The step below builds the same pinned RELEASE from source through the
+      # Go module proxy, checksum-verified, and runs the binary on the runner.
+      - uses: actions/setup-go@v7
+        with:
+          # minio's go.mod names this toolchain; the module cache is not ours
+          # to key (no go.sum in this repo), so setup-go's cache stays off.
+          go-version: "1.24.2"
+          cache: false
       - name: Start MinIO
         run: |
-          image=quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
-          # Pull before `docker run`, retrying the fetch alone. quay.io answered
-          # `502 Bad Gateway` on one PR run and `unauthorized: Unknown service
-          # key` on one merge-group run in a single night (2026-09-15), each
-          # before a test had run, and each cost a queue round: the automation
-          # that watches these PRs cannot re-run a job (403). Only the network
-          # step is retried, the same shape as scripts/prepull-base-images.sh;
-          # a MinIO that starts and never answers still fails once, below.
-          for attempt in 1 2 3 4; do
-            if docker pull "$image"; then
+          # Build the pinned RELEASE from source rather than pulling an image.
+          # MinIO archived the community server: quay.io now answers 401 for
+          # `minio/minio` and dl.min.io answers 410 for every release binary,
+          # so no anonymous prebuilt artifact remains. The source still does,
+          # through the Go module proxy, and `go install` checks every module
+          # it fetches against sum.golang.org, so the pin is content-verified
+          # without a secret. This pseudo-version is RELEASE.2025-04-22T22-12-26Z
+          # (commit 0d7408fc9969), the same server build the image pin named.
+          version=v0.0.0-20250422221226-0d7408fc9969
+          # Retry the fetch-and-build alone: a proxy hiccup is not a storage
+          # bug, and the automation that watches these PRs cannot re-run a
+          # job (403). A MinIO that starts and never answers still fails once.
+          for attempt in 1 2 3; do
+            if go install "github.com/minio/minio@${version}"; then
               break
             fi
-            if [ "$attempt" -eq 4 ]; then
-              echo "::error::could not pull $image after 4 attempts" >&2
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::could not build minio@${version} after 3 attempts" >&2
               exit 1
             fi
-            echo "::warning::pull of $image failed (attempt $attempt/4); retrying" >&2
+            echo "::warning::go install of minio@${version} failed (attempt $attempt/3); retrying" >&2
             sleep $((attempt * 5))
           done
-          docker run -d --name minio \
-            -p 9000:9000 \
-            -e MINIO_ROOT_USER=maistro \
-            -e MINIO_ROOT_PASSWORD=maistro-secret \
-            "$image" server /data
+          mkdir -p "$RUNNER_TEMP/minio-data"
+          MINIO_ROOT_USER=maistro MINIO_ROOT_PASSWORD=maistro-secret \
+            nohup "$(go env GOPATH)/bin/minio" server "$RUNNER_TEMP/minio-data" \
+            --address 127.0.0.1:9000 >"$RUNNER_TEMP/minio.log" 2>&1 &
           for _ in $(seq 1 40); do
             if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null; then
               echo "minio ready"
@@ -341,7 +454,9 @@ jobs:
             sleep 2
           done
           echo "minio did not become ready" >&2
-          docker logs minio >&2 || true
+          # Best-effort dump: the explicit exit 1 below is the verdict; a
+          # failed log cat must not shadow it.
+          cat "$RUNNER_TEMP/minio.log" >&2 || true
           exit 1
       - name: Archive conformance against MinIO
         run: uv run pytest packages/maistro-core/tests/archive -v --tb=short
@@ -448,6 +563,13 @@ jobs:
         env:
           REQUIRE_AUTH: "false"
           MAISTRO_DRY_RUN: "1"
+      # The extension host harness (#974): stdlib-only runtime, no services,
+      # so no env gates are needed — a third-party CI runs exactly this shape.
+      - run: uv run pytest packages/maistro-ext-harness/tests -v --tb=short
+      - run: uv run pytest packages/maistro-ext-sdk/tests -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
       - run: uv run pytest tests/ --ignore=tests/tools/registry -v --tb=short
         env:
           REQUIRE_AUTH: "false"
@@ -466,6 +588,16 @@ jobs:
             packages/maistro-canvas/frontend/package-lock.json
       - run: npm ci && npm run lint && npm run build
         working-directory: packages/hive-conductor/frontend
+      # Frontend entity types are generated from the backend's OpenAPI document
+      # and committed (#1048). Regenerating both and diffing makes a backend
+      # schema change the frontend has not picked up a red build here, rather
+      # than an `undefined` in the browser. Fix: run the same two commands
+      # locally and commit types.gen.ts.
+      - name: Generated API types match the backend's OpenAPI document (#1048)
+        run: |
+          uv run python scripts/dump-hive-openapi.py
+          npm --prefix packages/hive-conductor/frontend run gen:api
+          git diff --exit-code -- packages/hive-conductor/frontend/src/api/types.gen.ts
       - run: npm ci && npm run test:ci
         working-directory: packages/maistro-canvas/frontend
       - run: npm run lint
@@ -494,6 +626,8 @@ jobs:
           MAISTRO_DRY_RUN: "1"
       - name: Suite inventory matches collected node IDs (C1/#286)
         run: python scripts/check-suite-inventory.py
+      - name: No byte-identical test files without a generated-test contract (#396)
+        run: python scripts/check-test-duplicates.py
 
   durable-events:
     needs: workflow-lint
@@ -640,16 +774,24 @@ jobs:
         if: always()
         working-directory: packages/hive-conductor
         run: |
+          # Diagnostics only: the verdict came from the e2e step above, so
+          # each dump tolerates its own failure rather than shadowing the
+          # real one with a second error (#400: every swallow says why).
           echo "::group::compose ps (did hive ever start and report healthy?)"
-          docker compose -f docker-compose.test.yml ps -a || true
+          docker compose -f docker-compose.test.yml ps -a || true # a stack that never started has no state to print
           echo "::endgroup::"
           echo "::group::hive service logs"
-          docker compose -f docker-compose.test.yml logs --no-color --tail=300 hive || true
+          docker compose -f docker-compose.test.yml logs --no-color --tail=300 hive || true # logs vanish when the stack was torn down mid-failure
           echo "::endgroup::"
           echo "::group::e2e-tests (playwright) logs"
-          docker compose -f docker-compose.test.yml logs --no-color --tail=200 e2e-tests || true
+          docker compose -f docker-compose.test.yml logs --no-color --tail=200 e2e-tests || true # same: the reporter container may be gone
           echo "::endgroup::"
           echo "::group::is the app reachable, and what does GET / return?"
+          # the probe prints its own exit=$?; unreachable is itself the finding.
+          # `|| true` below tolerates a failed probe, not a wedged compose. The
+          # reason sits here rather than on the flagged line so DevSkim DS137138
+          # (the URL is the compose-internal hive hostname; no TLS exists to
+          # prefer) keeps attributing it to the commit that introduced it.
           docker compose -f docker-compose.test.yml run --rm --no-deps -T \
             --entrypoint sh e2e-tests -c \
             'wget -S -T 10 -O /dev/null http://hive:8101/ 2>&1 | head -40; echo "exit=$?"' || true
@@ -691,8 +833,9 @@ jobs:
         if: always()
         working-directory: packages/hive-conductor
         run: |
-          docker compose -f docker-compose.test.yml ps -a || true
-          docker compose -f docker-compose.test.yml logs --no-color --tail=200 || true
+          # Diagnostics only: the verdict came from the api-tests step above.
+          docker compose -f docker-compose.test.yml ps -a || true # a stack that never started has no state to print
+          docker compose -f docker-compose.test.yml logs --no-color --tail=200 || true # logs vanish when the stack was torn down mid-failure
       - name: Tear down
         if: always()
         working-directory: packages/hive-conductor
@@ -736,8 +879,35 @@ jobs:
       - uses: ./.github/actions/setup-uv
       - run: uv sync --locked --extra dev
       - run: uv pip install pip-audit
+      # #406: the synced environment is the one place the reviewed
+      # pytoniq-core-fork `examples` namespace is allowed to exist. The gate
+      # inventories every distribution's top-level surface and rejects any
+      # generic/colliding/unreviewed name, so a new dependency cannot add an
+      # importable namespace without a written review.
+      - name: Dependency wheels install no unreviewed top-level namespaces (#406)
+        run: uv run python scripts/check-dependency-namespaces.py
       - run: uv pip freeze --exclude-editable > /tmp/deps.txt
-      - run: uv run pip-audit --strict --format=json -r /tmp/deps.txt > /tmp/pip-audit.json || true
+      # Same retry contract as security.yml's supply-chain job (single gate
+      # script, same failure mode): retry only an unusable report — a crashed
+      # audit leaves the redirected file empty — never a finding-bearing one,
+      # whose verdict belongs to the gate's allowlist.
+      - name: pip-audit (retry transient registry outages)
+        run: |
+          for attempt in 1 2 3; do
+            status=0
+            uv run pip-audit --strict --format=json -r /tmp/deps.txt > /tmp/pip-audit.json || status=$?
+            if [ -s /tmp/pip-audit.json ] && \
+               uv run python -c "import json,sys; json.load(open(sys.argv[1]))" /tmp/pip-audit.json 2>/dev/null; then
+              echo "pip-audit attempt ${attempt}: report complete (audit exit ${status})"
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::pip-audit produced no usable report after 3 attempts (last exit ${status}) — registry/network outage; retry the job"
+              exit 1
+            fi
+            echo "::warning::pip-audit attempt ${attempt} produced no usable report (exit ${status}); retrying in 15s"
+            sleep 15
+          done
       - run: python scripts/pip_audit_gate.py /tmp/pip-audit.json
 
   docker-build:
@@ -747,7 +917,19 @@ jobs:
       github.event.merge_group.base_ref != 'refs/heads/develop' ||
       needs.workflow-lint.outputs.docker_build == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Sized for the COLD path, not the warm one. Every image below COPYs
+    # maistro-core (or all of packages/) BEFORE its dependency-install layer,
+    # so a candidate that touches maistro-core src invalidates the install
+    # layers of ALL FOUR builds (engine, hive-conductor, engine-research,
+    # rsi-runner) and legitimately rebuilds them from scratch. Warm-cache runs
+    # finish in 8-12 min, but run 36831116132 (auto-133, 2026-10-01) measured
+    # the cold path on a slow runner: 25m42s consumed and still mid-way
+    # through engine-research, with rsi-runner not started (hive-conductor's
+    # uncached install chain alone ran ~15m there; apt took 294s). Extrapolated
+    # cold total on that runner: ~38-46m. 45 covers that with margin while
+    # staying a real bound; warm runs are untouched (the job ends long before
+    # this ceiling). Precedent for >25m jobs: `test` (uncapped) runs 31m.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -760,7 +942,7 @@ jobs:
       # one Dockerfile's cache cannot evict another's, and security.yml's
       # `containers` job uses the SAME scope names so a main-targeted PR can
       # warm-start from whatever a develop-targeted run already built.
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # `docker/build-push-action` exposes GitHub's runtime cache-auth
       # variables (ACTIONS_RUNTIME_TOKEN, ACTIONS_CACHE_URL) internally
@@ -789,7 +971,7 @@ jobs:
       # daemon's retried pull never reaches -- so they carry their own retry
       # via buildx-build-retry.sh instead (Codex, #683).
       - name: Pre-pull base images (retry transient registry faults)
-        run: scripts/prepull-base-images.sh Dockerfile packages/hive-conductor/Dockerfile
+        run: scripts/prepull-base-images.sh Dockerfile packages/hive-conductor/Dockerfile Dockerfile.rsi-runner
 
       - name: Build maistro-engine (cached)
         run: >-
@@ -797,6 +979,13 @@ jobs:
           -f Dockerfile -t maistro-engine:test
           --load --cache-from type=gha,scope=engine
           --cache-to type=gha,scope=engine,mode=max .
+      # #406: the image's own build layer prunes the pytoniq-core-fork
+      # `examples` namespace and asserts it gone; this runs the shipped image
+      # itself so the assertion covers the artifact, not just the layer.
+      - name: Shipped engine image carries no examples namespace (#406)
+        run: >-
+          docker run --rm --entrypoint python maistro-engine:test
+          -c "import importlib.util; assert importlib.util.find_spec('examples') is None, 'unpruned pytoniq examples namespace'"
       - name: Boot the shipped engine image on an empty PostgreSQL 18 volume
         shell: bash
         run: |
@@ -808,14 +997,16 @@ jobs:
 
           cleanup() {
             status=$?
+            # Cleanup must never mask the real exit status: every command
+            # below is best-effort, and `exit "$status"` preserves the verdict.
             if [[ $status -ne 0 ]]; then
-              docker logs "$engine" 2>&1 || true
-              docker logs "$postgres" 2>&1 || true
-              docker ps -a || true
+              docker logs "$engine" 2>&1 || true # the container may already be gone
+              docker logs "$postgres" 2>&1 || true # same
+              docker ps -a || true # state dump, not the verdict
             fi
-            docker rm -f "$engine" "$postgres" >/dev/null 2>&1 || true
-            docker network rm "$network" >/dev/null 2>&1 || true
-            docker volume rm "$volume" >/dev/null 2>&1 || true
+            docker rm -f "$engine" "$postgres" >/dev/null 2>&1 || true # nothing to remove on an early failure
+            docker network rm "$network" >/dev/null 2>&1 || true # already absent
+            docker volume rm "$volume" >/dev/null 2>&1 || true # already absent
             exit "$status"
           }
           trap cleanup EXIT
@@ -917,6 +1108,10 @@ jobs:
           -f packages/hive-conductor/Dockerfile -t hive-conductor:ci
           --load --cache-from type=gha,scope=hive-conductor
           --cache-to type=gha,scope=hive-conductor,mode=max .
+      - name: Shipped conductor image carries no examples namespace (#406)
+        run: >-
+          docker run --rm --entrypoint python hive-conductor:ci
+          -c "import importlib.util; assert importlib.util.find_spec('examples') is None, 'unpruned pytoniq examples namespace'"
       # The static gate above reads the ignore files. This one builds the
       # actual RSI runner from a context carrying canary secrets and proves
       # none is in any layer -- because the question is what Docker did, not
@@ -1127,11 +1322,30 @@ jobs:
       # one-line change once that warning is fixed.
       - name: shellcheck the standalone scripts under tools/
         run: /tmp/shellcheck-bin --severity=warning tools/*.sh
+      # install.sh and get.sh are the supported installer entry points. A
+      # typo'd helper there fails a supported clean install only on the branch
+      # that names it (#807: upsert_env sat on the macOS non-default-socket
+      # path, so the Linux gate never executed the broken line and shellcheck
+      # cannot see calls to undefined functions). Linting them here means the
+      # PR that breaks the installer fails instead of a user's machine.
+      - name: shellcheck the installer entry points
+        run: /tmp/shellcheck-bin --severity=warning install.sh get.sh
+      # shellcheck's blind spot above is exactly undefined-function calls, so
+      # this static check asserts every function the installers invoke is
+      # defined in-file, a shell builtin/reserved word, or explicitly
+      # allowlisted as intentionally external (#807 AC-4).
+      - name: installer invokes only defined or deliberately external functions
+        run: python3 scripts/check-install-functions.py
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install PyYAML
         run: pip install pyyaml
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Integration scope judges the newest check attempt
+        run: node --test tests/ci/integration-scope.test.cjs
       # The check-name contract #162 pins branch protection against. It lives
       # in this job because it is a check about workflow shape, next to the
       # other one — and because a rename is only caught if the gate runs on the

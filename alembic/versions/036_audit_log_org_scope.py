@@ -1,0 +1,99 @@
+"""Persist and index the audit log organization scope (#1155).
+
+The audit stores accepted ``AuditEntry.org_id`` before the database shape did,
+so the value was discarded on write and a scoped read could not constrain SQL.
+The expand phase stays nullable so old and new writers can coexist; its default
+and backfill represent existing rows with the explicit empty-string
+system/unscoped scope. A later contract migration may make the column
+non-nullable once old writers are retired.
+
+Revision ID: 036_audit_log_org_scope
+Revises: 041_quota_invocation_evidence
+Create Date: 2026-09-10
+
+Re-parented five times, each time because develop or a sibling branch took
+the same parent while this revision was open: first onto 038, then onto 039
+after `039_canvas_job_admission_key` landed (#1531), then onto develop's `040`
+(`down_revision = "039"`). Merging that state into the #1057 branch — which
+had already taken 040's child slot with `041_task_identity_provenance` —
+restored a two-head fork; the #1057 side re-parented this revision onto its
+chain tip `042_task_receipt_dispatch_inputs`. The #1194 branch then took the
+same slot with its own `041` (the canonical Run effect claim) and re-parented
+this revision onto it, and develop wove those forks back into one line by
+re-parenting `041_task_identity_provenance` onto #1194's `041`. Syncing that
+develop state into the #718 branch — whose own quota-evidence migration
+(`041_quota_invocation_evidence`, re-ID'd twice for the same reason) had also
+taken 042's child slot — forked the chain once more, so the quota-evidence
+migration follows `042_task_receipt_dispatch_inputs` and this revision
+follows the quota-evidence migration, keeping the chain linear with the audit
+scope migration woven into the single line develop's #1319 additions
+(043/045) extend. The same reconciliation move revision 040's own docstring
+records for its two renumberings.
+"""
+
+from __future__ import annotations
+
+import sqlalchemy as sa
+from alembic import op
+
+revision = "036_audit_log_org_scope"
+down_revision = "041_quota_invocation_evidence"
+branch_labels = None
+depends_on = None
+
+
+_BACKFILL_BATCH_SIZE = 1_000
+
+
+def _backfill_org_scope(connection: sa.Connection, *, batch_size: int) -> None:
+    """Normalize legacy rows without holding one write lock for the table."""
+    statement = sa.text(
+        """
+        UPDATE audit_log
+        SET org_id = ''
+        WHERE id IN (
+            SELECT id
+            FROM audit_log
+            WHERE org_id IS NULL
+            ORDER BY id
+            LIMIT :batch_size
+        )
+        """
+    )
+    while True:
+        result = connection.execute(statement, {"batch_size": batch_size})
+        if result.rowcount == 0:
+            return
+
+
+def upgrade() -> None:
+    # Expand: old application versions omit this column while rolling deploys
+    # overlap, so the new shape must remain nullable. The default protects
+    # concurrent old writes; the batched update makes legacy rows explicit.
+    op.add_column(
+        "audit_log",
+        sa.Column("org_id", sa.Text, nullable=True, server_default=sa.text("''")),
+    )
+    _backfill_org_scope(op.get_bind(), batch_size=_BACKFILL_BATCH_SIZE)
+
+    # CREATE INDEX CONCURRENTLY cannot run inside Alembic's normal transaction.
+    # The autocommit block also prevents this index from blocking audit writes.
+    with op.get_context().autocommit_block():
+        op.create_index(
+            "ix_audit_log_scope",
+            "audit_log",
+            ["org_id", "timestamp"],
+            postgresql_concurrently=True,
+        )
+
+
+def downgrade() -> None:
+    # Match the online upgrade: dropping the index should not take the audit
+    # table's write path offline during a rollback.
+    with op.get_context().autocommit_block():
+        op.drop_index(
+            "ix_audit_log_scope",
+            table_name="audit_log",
+            postgresql_concurrently=True,
+        )
+    op.drop_column("audit_log", "org_id")

@@ -14,9 +14,12 @@ human.ask_question, ...) live in sibling modules and self-register via
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Any, ClassVar, Generic, Literal, NoReturn, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializeAsAny
@@ -36,6 +39,28 @@ KindCategory = Literal[
     "composite",
     "negative_signal",
 ]
+
+
+class ReplaySemantics(StrEnum):
+    """Executable replay contract for one node kind.
+
+    ``EFFECT_KEY`` is retryable only because the node binds its durable or
+    external effect to :func:`replay_effect_key`; it is not a claim that the
+    underlying operation is intrinsically idempotent.
+    """
+
+    PURE = "pure"
+    IDEMPOTENT = "idempotent"
+    EFFECT_KEY = "retryable_with_effect_key"
+    NON_RETRYABLE = "non_retryable"
+
+    @property
+    def retryable(self) -> bool:
+        return self is not ReplaySemantics.NON_RETRYABLE
+
+    @property
+    def idempotent(self) -> bool:
+        return self in {ReplaySemantics.PURE, ReplaySemantics.IDEMPOTENT}
 
 
 class NodeContext(BaseModel):
@@ -126,12 +151,14 @@ class Node(Protocol):
     input_schema: ClassVar[type[BaseModel]]
     output_schema: ClassVar[type[BaseModel]]
     cost_hint: ClassVar[float]  # 0.0 = free; 10.0 = very expensive
-    idempotent: ClassVar[bool]
+    replay_semantics: ClassVar[ReplaySemantics]
     external_io: ClassVar[bool]
     display_name: ClassVar[str]
     description: ClassVar[str]
 
     async def run(self, inputs: BaseModel, ctx: NodeContext) -> NodeResult: ...
+
+    def replay_effect_key(self, inputs: BaseModel, ctx: NodeContext) -> str: ...
 
 
 class BaseNode(Generic[InputT, OutputT]):
@@ -155,7 +182,7 @@ class BaseNode(Generic[InputT, OutputT]):
     input_schema: ClassVar[type[BaseModel]]
     output_schema: ClassVar[type[BaseModel]]
     cost_hint: ClassVar[float] = 1.0
-    idempotent: ClassVar[bool] = True
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.PURE
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = ""
     description: ClassVar[str] = ""
@@ -185,7 +212,9 @@ class BaseNode(Generic[InputT, OutputT]):
         else:
             validated = inputs  # type: ignore[assignment]
         start = time.perf_counter()
+        effect_key = ""
         try:
+            effect_key = self.replay_effect_key(validated, ctx)
             output = await self._execute(validated, ctx)
             latency_ms = int((time.perf_counter() - start) * 1000)
             return NodeResult(
@@ -193,6 +222,7 @@ class BaseNode(Generic[InputT, OutputT]):
                 output=output,
                 latency_ms=latency_ms,
                 status="completed",
+                metadata={"replay_effect_key": effect_key} if effect_key else {},
             )
         except _NodePaused as exc:
             latency_ms = int((time.perf_counter() - start) * 1000)
@@ -202,7 +232,11 @@ class BaseNode(Generic[InputT, OutputT]):
                 latency_ms=latency_ms,
                 status="paused",
                 resume_at=exc.resume_at,
-                metadata={"paused_reason": exc.reason, **exc.metadata},
+                metadata={
+                    "paused_reason": exc.reason,
+                    **exc.metadata,
+                    **({"replay_effect_key": effect_key} if effect_key else {}),
+                },
             )
         except Exception as exc:
             latency_ms = int((time.perf_counter() - start) * 1000)
@@ -213,11 +247,33 @@ class BaseNode(Generic[InputT, OutputT]):
                 status="failed",
                 error_code=type(exc).__name__,
                 error_message=str(exc)[:512],
+                metadata={
+                    **_failure_metadata(exc),
+                    **({"replay_effect_key": effect_key} if effect_key else {}),
+                },
             )
+
+    def replay_effect_key(self, inputs: InputT, ctx: NodeContext) -> str:
+        """Return the stable key a retryable effect must reconcile.
+
+        The executor records and checks this key on every outcome. Effectful
+        subclasses may override it when their external adapter uses a narrower
+        operation namespace, but they must still bind it to the same Run/node
+        logical identity rather than to a physical Attempt or NodeRun.
+        """
+        if self.replay_semantics is ReplaySemantics.EFFECT_KEY:
+            return replay_effect_key(ctx, self.kind, inputs.model_dump(mode="json"))
+        return ""
 
     async def _execute(self, inputs: InputT, ctx: NodeContext) -> OutputT:
         """Subclasses implement this. Return the typed output (or raise)."""
         raise NotImplementedError(f"{type(self).__name__}._execute not implemented")
+
+
+def _failure_metadata(exc: Exception) -> dict[str, Any]:
+    """Metadata a raising node attaches to its failed NodeResult, if a mapping."""
+    carried = getattr(exc, "result_metadata", None)
+    return dict(carried) if isinstance(carried, Mapping) else {}
 
 
 class NodeCompositionError(RuntimeError):
@@ -287,16 +343,18 @@ PAUSE_AWAITING_HARNESS = "awaiting_harness"
 PAUSE_WAITING_ON_JIRA_SUBTASKS = "waiting_on_jira_subtasks"
 PAUSE_AWAITING_DELEGATION_RECONCILIATION = "awaiting_delegation_reconciliation"
 
-#: Who each pause waits on. "human" means a person owes the next action and the
-#: NodeRun parks PAUSED; "system" means a retry decision is owed and it parks
-#: WAITING. Every reason states its own answer, so adding a pausing node is a
-#: question a reviewer sees rather than a default nobody chose.
+#: Who each pause waits on. "human" means an external answer is owed and the
+#: NodeRun parks PAUSED; "system" means a retry or poll is owed and it parks
+#: WAITING. A remote delegation is answer-gated too: its responder is another
+#: agent, but it must use the same durable answer/resume path as other
+#: externally answered nodes. Every reason states its own answer, so adding a
+#: pausing node is a question a reviewer sees rather than a default nobody chose.
 PAUSE_REASON_OWNERS: dict[str, str] = {
     PAUSE_AWAITING_HUMAN_ANSWER: "human",
     PAUSE_AWAITING_HUMAN_APPROVAL: "human",
     PAUSE_AWAITING_HUMAN_REVIEW: "human",
     PAUSE_AWAITING_ROLE_DELEGATE: "human",
-    PAUSE_AWAITING_REMOTE_DELEGATION: "system",
+    PAUSE_AWAITING_REMOTE_DELEGATION: "human",
     PAUSE_AWAITING_HARNESS: "system",
     PAUSE_WAITING_ON_JIRA_SUBTASKS: "system",
     PAUSE_AWAITING_DELEGATION_RECONCILIATION: "system",
@@ -434,6 +492,18 @@ def pause_until(
 def now_utc() -> datetime:
     """Single source of truth for "now" so tests can monkeypatch."""
     return datetime.now(UTC)
+
+
+def replay_effect_key(ctx: NodeContext, operation: str, identity: Any = None) -> str:
+    """Derive one logical effect key across physical Attempt retries.
+
+    A retry gets a new Attempt (and may get a new NodeRun visit), so neither is
+    sufficient as the effect identity. Run + graph node is the logical scope;
+    the input digest distinguishes explicit new work at the same node.
+    """
+    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+    return f"{operation}:{ctx.run_id}:{ctx.node_id}:{digest}"
 
 
 def preserved_hitl_deadline(resumed: dict[str, Any] | None, *, timeout_seconds: int) -> datetime:

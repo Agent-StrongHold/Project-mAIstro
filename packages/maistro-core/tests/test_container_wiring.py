@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from maistro.container import Container, create_container
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 PERSONA_YAML = Path(__file__).parent / "personas" / "fixtures" / "plant_wellness_local_seller.yaml"
@@ -59,11 +60,64 @@ async def test_container_exposes_all_new_subsystems() -> None:
 
 async def test_sqlite_backend_wires_sqlite_durable_event_stores() -> None:
     container = await _container(database_url="sqlite://")
+    assert container.stores_memory_backed is True
+    assert type(container.elevation_store).__name__ == "SqliteElevationStore"
+    assert type(container.usage_log_persistence).__name__ == "SqliteUsageLog"
     assert type(container.durable_event_log).__name__ == "SqliteEventLog"
     assert type(container.trigger_store).__name__ == "SqliteTriggerStore"
     assert type(container.invocation_store).__name__ == "SqliteInvocationStore"
     event = await container.durable_event_log.append("task.created", source="test")
     assert (await container.durable_event_log.get(event.id)) is not None
+    container.usage_log.record("provider:model", input_tokens=7, now=1000.0)
+    await container.flush_usage_log()
+    restored = await container.usage_log_persistence.restore()
+    from maistro.quota.rate_profile import LimitUnit
+
+    assert restored.tokens_since("provider:model", 3600, LimitUnit.INPUT_TOKENS, now=1000.0) == 7
+
+
+async def test_flush_usage_log_is_a_noop_without_persistence() -> None:
+    """`None` persistence is the explicit ephemeral profile (#72).
+
+    Callers own the response boundary and call `flush_usage_log()`
+    unconditionally, so an ephemeral container absorbs the call instead of
+    making every boundary probe `usage_log_persistence` first — the same
+    contract `aclose()` already relies on at shutdown.
+    """
+    container = await _container()
+
+    assert container.usage_log_persistence is None
+    container.usage_log.record("provider:model", input_tokens=3, now=1000.0)
+    await container.flush_usage_log()  # must not raise
+    assert container.usage_log.events_for("provider:model") != ()
+
+
+async def test_context_assembly_uses_the_canonical_scope_store() -> None:
+    container = await _container(database_url="sqlite://")
+
+    assert container.project_store is container.project_scope_store
+    root = await container.project_scope_store.create_root("context-wiring")
+    assert await container.context_assembly_policy.layer0(root.project_id) == ""
+
+
+async def test_aclose_releases_working_memory_projections_but_never_the_log() -> None:
+    """The graphs are process-local caches over the durable log (#301).
+
+    Shutdown releases what the container took — the live projections — and
+    the observation log they were hydrated from stays exactly where it is.
+    """
+    container = await _container(database_url="sqlite://")
+    manager = container.working_log
+    assert manager is not None
+    await manager.observe("ws-shutdown", cycle=1, text="durable across shutdown")
+    await manager.projection("ws-shutdown")
+    assert manager.hot("ws-shutdown") is not None
+    # The entry is in the log, not only in the graph.
+    assert len(await manager.store.list_entries("ws-shutdown")) == 1
+
+    await container.aclose()
+
+    assert manager.hot("ws-shutdown") is None
 
 
 # --- Resilience (ADR-066) ----------------------------------------------------
@@ -414,9 +468,52 @@ async def test_issue_and_verify_capability_token_via_container() -> None:
 
     from maistro.identity.lifecycle import TokenRevokedError
 
+    assert container.token_store is not None
     await container.token_store.revoke(token)
     with pytest.raises(TokenRevokedError):
         await container.verify_capability_token(token)
+
+
+class _BlockBipUtils:
+    """Meta-path finder that makes `bip_utils` absent, as on the Python 3.14 Hive image."""
+
+    def find_spec(self, fullname: str, path: object = None, target: object = None) -> None:
+        if fullname.split(".")[0] == "bip_utils":
+            raise ModuleNotFoundError("No module named 'bip_utils'", name="bip_utils")
+        return None
+
+
+async def test_container_starts_without_the_identity_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#37: the Hive image cannot install the extra, and still needs a Container.
+
+    The stores stay unwired, and asking for an identity still raises the
+    ImportError that names the extra instead of failing somewhere quieter.
+    """
+    import sys
+
+    for name in list(sys.modules):
+        if name.split(".")[0] == "bip_utils" or name.startswith("maistro.identity"):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setattr(sys, "meta_path", [_BlockBipUtils(), *sys.meta_path])
+
+    container = await _container()
+
+    assert container.identity_store is None
+    assert container.token_store is None
+    assert container.secret_store is None
+    assert container.workspace_store is not None
+    with pytest.raises(ImportError, match=r"maistro-core\[identity\]"):
+        await container.create_agent_identity("agent-a")
+
+
+async def test_identity_calls_on_a_container_without_stores_fail_loudly() -> None:
+    container = await _container()
+    container.token_store = None
+
+    with pytest.raises(RuntimeError, match="identity lifecycle stores are not wired"):
+        await container.issue_capability_token("agent-a", "agent-b", "read")
 
 
 # --- A2A broker (ADR-058): retired from the Container (#225) -------------------
@@ -605,8 +702,18 @@ def test_build_node_resolver_resolves_spawn_harness_with_injected_adapters() -> 
     from maistro.container import build_node_resolver
     from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
 
-    fake_adapter = object()
-    resolver = build_node_resolver(harness_adapters={"rsi_cycle": fake_adapter})  # type: ignore[arg-type]
+    # The node shape-validates its adapter map at construction (#1613), so the
+    # identity sentinel must satisfy the HarnessAdapter protocol — unchanged
+    # by the wrapping, which is exactly what the equality asserts.
+    class _StubHarnessAdapter:
+        async def dispatch(self, request: object) -> object: ...
+
+        async def poll(self, handle: object) -> object: ...
+
+        async def cancel(self, handle: object) -> None: ...
+
+    fake_adapter = _StubHarnessAdapter()
+    resolver = build_node_resolver(harness_adapters={"rsi_cycle": fake_adapter})
 
     dag = {"nodes": [{"id": "n1", "kind": "agent.spawn_harness"}]}
     node = resolver("n1", dag)
@@ -762,7 +869,7 @@ async def test_the_container_sweeps_abandoned_attempts() -> None:
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")
@@ -810,7 +917,7 @@ async def test_the_sweep_parks_the_reclaimed_attempts_logical_records() -> None:
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")
@@ -872,7 +979,7 @@ async def test_the_sweep_survives_an_attempt_it_cannot_reconcile(
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")

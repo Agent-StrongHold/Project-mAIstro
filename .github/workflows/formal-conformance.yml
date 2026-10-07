@@ -17,7 +17,6 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      pull-requests: write
 
     # I29 (`test_run_lease_fence.py`) drives the real `PgRunStore`, because the
     # invariant it checks is *about* concurrent writers and a store that has
@@ -77,6 +76,16 @@ jobs:
           fi
           python scripts/check-m1-convergence-freeze.py "${args[@]}"
 
+      # The oracle is a governed baseline, not a candidate-controlled test
+      # input. After the initial contract lands, implementation and oracle
+      # changes must use separate PRs so a self-approving candidate cannot
+      # rewrite both sides of the judgment.
+      - name: Enforce formal oracle independence
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        env:
+          FORMAL_ORACLE_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: python scripts/check-formal-oracle-independence.py --base "$FORMAL_ORACLE_BASE"
+
       - name: Setup Python
         uses: actions/setup-python@v7
         with:
@@ -105,8 +114,17 @@ jobs:
       # from `uv sync --extra dev`; a pip-based job has to say so. The version
       # matches the root pyproject's own `psycopg[binary]>=3.2` rather than
       # floating.
+      #
+      # aiosqlite is here for the same reason: the #981 proof's durable-restart
+      # stage drives `SqliteExtensionInstallStore`, and `aiosqlite` is a
+      # *declared optional extra* of maistro-core (the `sqlite` extra), not a
+      # base dependency — so a bare `pip install -e packages/maistro-core`
+      # above does not bring it. Measured in CI: the proof died on
+      # `ModuleNotFoundError: No module named 'aiosqlite'` until this job said
+      # so explicitly. The root pyproject pins `aiosqlite>=0.20`; the floor
+      # here matches rather than floating.
       - name: Install PostgreSQL drivers and alembic
-        run: pip install asyncpg "psycopg[binary]>=3.2" alembic
+        run: pip install asyncpg "psycopg[binary]>=3.2" alembic "aiosqlite>=0.20"
 
       # The canonical tables I29 writes to. Without this the model fails on a
       # missing relation, which reads as a broken test rather than a missing
@@ -122,67 +140,29 @@ jobs:
           DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
         run: alembic upgrade head
 
-      - name: Extract constants from source
-        run: python -m formal.extractors.extract_security_constants
-
-      - name: Check for drift
-        id: drift
-        run: |
-          if git diff --quiet -- formal/generated/; then
-            echo "drift=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "drift=true" >> "$GITHUB_OUTPUT"
-            git diff -- formal/generated/ > formal-models-drift.diff
-          fi
-
+      # The models consume the independently governed security oracle in
+      # formal/fixtures/. They exercise the installed candidate behavior directly;
+      # no artifact is regenerated from candidate source.
       - name: Run formal models
         run: pytest formal/models/ -v --timeout=300 --hypothesis-seed=0
 
-      - name: Upload drift diff artifact
-        if: steps.drift.outputs.drift == 'true'
+      # #981 (M9-J3): the extension lifecycle proof is driven end-to-end by
+      # packages/maistro-core/tests/extensions/test_lifecycle_proof.py, but a
+      # test wrapper is not a production/CI entry point — reachability correctly
+      # reported scripts/extension_lifecycle_proof.py itself as never rooted,
+      # the same trap #460's checker hit above. Run the proof directly in this
+      # already-required conformance job so its reachability claim is true
+      # rather than baselined away, and so every candidate re-proves the
+      # discover → … → restart lifecycle (exit 0 iff every stage check passed).
+      # The proof is deterministic (fixed test keys, injectable clock) and
+      # needs no services; its lineage evidence is kept as a job artifact.
+      - name: Run extension lifecycle proof (M9-J3)
+        run: python scripts/extension_lifecycle_proof.py --out lifecycle-proof
+      - name: Upload lifecycle proof lineage
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: formal-models-conformance-drift
-          path: formal-models-drift.diff
-
-      # Fork PRs get a read-only GITHUB_TOKEN, so createComment below would fail
-      # there. That used to be handled with `continue-on-error: true`, which
-      # swallowed every other failure mode too. Skipping forks by condition is the
-      # narrow fix; the drift gate below runs regardless of fork status.
-      - name: Comment on PR (drift detected)
-        if: >-
-          steps.drift.outputs.drift == 'true'
-          && github.event_name == 'pull_request'
-          && github.event.pull_request.head.repo.fork == false
-        uses: actions/github-script@v9
-        with:
-          script: |
-            const body = [
-              'Formal models conformance drift detected.',
-              '',
-              'The extracted constants (`formal/generated/security-constants.json`) do not match this PR.',
-              'Run `python -m formal.extractors.extract_security_constants` locally and commit the updated file.',
-            ].join('\n');
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              body,
-            });
-
-      # Drift now FAILS the job. Until this step existed, `Check for drift` only set
-      # an output: a PR whose security constants no longer matched the formal models
-      # uploaded a diff, posted a comment, and passed. The workflow reported
-      # conformance it had just measured as broken.
-      #
-      # Last, so the diff artifact and the PR comment are produced first — a
-      # contributor gets the diff and the fix instruction alongside the failure.
-      # Verified clean on 2026-07-26: the extractor is a no-op against this tree.
-      - name: Gate on conformance drift
-        if: steps.drift.outputs.drift == 'true'
-        run: |
-          echo "::error::Formal models conformance drift — formal/generated/ does not match this tree."
-          echo "Run: python -m formal.extractors.extract_security_constants && git add formal/generated/"
-          git diff -- formal/generated/
-          exit 1
+          name: extension-lifecycle-proof-${{ github.sha }}
+          path: lifecycle-proof/
+          if-no-files-found: warn
+          retention-days: 90

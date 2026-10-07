@@ -20,13 +20,67 @@ if TYPE_CHECKING:
         CanvasRecord,
         CompositeResult,
         GenerationJobRecord,
+        JobQueueStats,
         LayerRecord,
         ModelInfo,
     )
 
 
 @runtime_checkable
-class CanvasStore(Protocol):
+class CanvasJobStore(Protocol):
+    """The generation-job queue contract (#398) — claim, lease, retry, health.
+
+    One typed protocol for the job-store surface the background runner and the
+    queue-health route consume, so production (``PgCanvasStore``) and every
+    runner-focused fake cannot drift: the runner's ``store`` parameter is this
+    protocol (mypy checks both directions structurally), and the contract
+    suite asserts the runtime ``isinstance`` of both legs and runs the same
+    behavioral bodies against each. The scope rule (#857) applies unchanged:
+    every read and mutation carries ``org_id`` into its predicate.
+    """
+
+    async def create_job(self, job: GenerationJobRecord, *, org_id: str) -> GenerationJobRecord: ...
+
+    async def get_job(self, job_id: str, *, org_id: str) -> GenerationJobRecord | None: ...
+
+    async def update_job(
+        self,
+        job: GenerationJobRecord,
+        *,
+        org_id: str,
+        expected_leased_by: str | None = None,
+        expected_attempts: int | None = None,
+        expected_status: str | None = None,
+    ) -> GenerationJobRecord: ...
+
+    async def active_job_for_layer(
+        self, layer_id: str, *, org_id: str
+    ) -> GenerationJobRecord | None: ...
+
+    async def list_jobs_for_layer(
+        self, layer_id: str, *, org_id: str
+    ) -> list[GenerationJobRecord]: ...
+
+    async def claim_next_pending(
+        self, worker_id: str, lease_seconds: int
+    ) -> GenerationJobRecord | None: ...
+
+    async def reap_expired_leases(self) -> list[GenerationJobRecord]: ...
+
+    async def renew_lease(
+        self,
+        job_id: str,
+        worker_id: str,
+        lease_seconds: int,
+        *,
+        expected_attempts: int | None = None,
+    ) -> bool: ...
+
+    async def job_queue_stats(self, *, org_id: str) -> JobQueueStats: ...
+
+
+@runtime_checkable
+class CanvasStore(CanvasJobStore, Protocol):
     """CRUD for canvases, layers, generation jobs, and composites.
 
     Every ID-addressed read and mutation takes a required keyword-only
@@ -83,26 +137,6 @@ class CanvasStore(Protocol):
         *,
         org_id: str,
     ) -> list[LayerRecord]: ...
-
-    async def create_job(self, job: GenerationJobRecord, *, org_id: str) -> GenerationJobRecord: ...
-
-    async def get_job(self, job_id: str, *, org_id: str) -> GenerationJobRecord | None: ...
-
-    async def update_job(self, job: GenerationJobRecord, *, org_id: str) -> GenerationJobRecord: ...
-
-    async def active_job_for_layer(
-        self, layer_id: str, *, org_id: str
-    ) -> GenerationJobRecord | None: ...
-
-    async def list_jobs_for_layer(
-        self, layer_id: str, *, org_id: str
-    ) -> list[GenerationJobRecord]: ...
-
-    async def claim_next_pending(
-        self, worker_id: str, lease_seconds: int
-    ) -> GenerationJobRecord | None: ...
-
-    async def reap_expired_leases(self) -> list[GenerationJobRecord]: ...
 
     async def save_composite(self, result: CompositeResult, *, org_id: str) -> CompositeResult: ...
 

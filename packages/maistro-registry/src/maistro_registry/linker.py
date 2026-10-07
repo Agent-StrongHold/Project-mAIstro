@@ -9,8 +9,9 @@ the GitHub API.
 
 Resolvers shipped:
 
-- `FilesystemResolver` — looks at local files for the engine repo;
-  used in engine self-check.
+- `FilesystemResolver` — answers from the local registry walk's
+  validated front-matter id index (`maistro_registry.walk`); used in
+  engine self-check.
 - `GitHubResolver` — uses the GitHub Contents API (httpx, already a
   dep) for cross-repo verification. Caches one directory listing per
   repo to minimize API calls.
@@ -23,10 +24,13 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import quote, urlsplit
 
 import httpx
 
+from maistro.http import sync_client
 from maistro_registry.schema import FrontMatter
+from maistro_registry.walk import declared_ids, validate_walk
 
 _RELATIONSHIP_FIELDS: tuple[str, ...] = (
     "substrate",
@@ -41,6 +45,22 @@ _RELATIONSHIP_FIELDS: tuple[str, ...] = (
 _DEFAULT_REPO_OWNERS: dict[str, str] = {
     "maistro-engine": "BlakeMatthews-dev",
 }
+
+# Link checking is restricted to GitHub's HTTPS Contents API. Repository and
+# artifact identifiers can influence the path, but never the network origin.
+_GITHUB_API_ORIGIN = "https://api.github.com"
+_GITHUB_ALLOWED_HOSTS = frozenset({"api.github.com"})
+
+
+def _github_contents_url(owner: str, repo: str, path: str) -> str:
+    """Build a URL whose scheme and origin are an explicit policy decision."""
+    url = (
+        f"{_GITHUB_API_ORIGIN}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/contents/{path}"
+    )
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.hostname not in _GITHUB_ALLOWED_HOSTS:
+        raise ValueError("GitHub resolver URL must use the api.github.com HTTPS origin")
+    return url
 
 
 class Resolver(Protocol):
@@ -101,7 +121,14 @@ class FakeResolver:
 
 @dataclass
 class FilesystemResolver:
-    """Resolver that checks local engine filesystem for ADR/spec presence.
+    """Resolver that answers existence from the registry walk's id index.
+
+    Identity comes from the `id` of front matter that passed validation —
+    the same index the registry walk produces (`maistro_registry.walk`),
+    never from filenames: a file whose name implies one id while its front
+    matter declares another makes only the declared id resolve. The
+    filename is storage metadata; it cannot establish an identity the
+    front matter withholds (#814).
 
     Only authoritative for `maistro-engine`; for any other repo, returns
     ``True`` (optimistic) so a single-repo run doesn't false-flag valid
@@ -109,19 +136,17 @@ class FilesystemResolver:
     """
 
     engine_root: Path
+    #: Precomputed index for callers that already ran the walk (e.g. `lint`,
+    #: which validates every walked file anyway). Built lazily from the same
+    #: registry walk when omitted.
+    declared_id_index: frozenset[str] | None = None
 
     def resolve(self, repo: str, item_id: str) -> bool:
         if repo != "maistro-engine":
             return True  # optimistic; cross-repo check needs GitHubResolver
-
-        prefix = f"{item_id}-"
-        for dir_name in ("adr", "specs"):
-            dir_path = self.engine_root / "docs" / dir_name
-            if dir_path.is_dir() and any(
-                f.name.startswith(prefix) and f.suffix == ".md" for f in dir_path.iterdir()
-            ):
-                return True
-        return False
+        if self.declared_id_index is None:
+            self.declared_id_index = declared_ids(validate_walk(self.engine_root))
+        return item_id in self.declared_id_index
 
 
 @dataclass
@@ -150,10 +175,15 @@ class GitHubResolver:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
 
+        # The fixed host allowlist and HTTPS pin are explicit policy decisions;
+        # the owner/repo values only affect quoted path segments. Do not add the
+        # public endpoint to the configured-origin bypass: the central validator
+        # must still inspect its DNS answer before this caller-influenced fetch.
         for path in ("docs/adr", "docs/specs"):
-            url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+            url = _github_contents_url(owner, repo, path)
             try:
-                resp = httpx.get(url, headers=headers, timeout=10)
+                with sync_client(timeout=10) as client:
+                    resp = client.get(url, headers=headers)
             except httpx.RequestError:
                 continue
             if resp.status_code != 200:

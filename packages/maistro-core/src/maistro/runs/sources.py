@@ -4,11 +4,14 @@ A Run's `provenance[ADMISSION_SOURCE]` records the entry point that admitted
 it. Three parts of the system need those names and none of them can import the
 others: `runs.admission` writes the key, `runs.store` reads it to decide what
 its retention bound may evict first, and each entry point supplies its own
-value. A leaf module with no imports of its own is what lets all three agree on
+value. A leaf module (its one import is `datetime`, for the occurrence-instant
+canonicalisation below) is what lets all three agree on
 the strings rather than on three copies of them.
 """
 
 from __future__ import annotations
+
+from datetime import UTC, datetime
 
 #: Provenance key recording how a Run entered the system.
 ADMISSION_SOURCE = "admission_source"
@@ -56,17 +59,90 @@ SCHEDULE_CATCHUP_KEY = "catchup"
 #: replayed.
 SCHEDULE_INPUTS_KEY = "schedule_inputs"
 
+#: What kind of firing produced the Run: a nominal recurrence or a manual fire.
+#:
+#: A manual fire (#1120) is a deliberate user action, not a cron occurrence, and
+#: a Run that looks exactly like a scheduled tick erases the difference — which
+#: matters for audit ("why did this run outside its cron window?") and for
+#: semantics (a manual fire must not be mistaken for a nominal one when reading
+#: `scheduled_for`). Both kinds carry the key, so its absence means the Run
+#: predates the distinction rather than that it was fired by either.
+SCHEDULE_TRIGGER_KEY = "schedule_trigger"
+
+#: `schedule_trigger` for a Run a recurring evaluation fired.
+SCHEDULE_TRIGGER_RECURRING = "recurring"
+
+#: `schedule_trigger` for a Run a caller asked for by hand (#1120).
+SCHEDULE_TRIGGER_MANUAL = "manual"
+
+#: The manual fire's stable occurrence identity token (#1120).
+#:
+#: A nominal occurrence is identified by its cron time, and `(schedule_id,
+#: scheduled_for)` claims it. A manual fire has no cron time — minting a fresh
+#: `datetime.now()` per request makes the identity different on every retry,
+#: which is exactly how a double submit becomes two Runs. So a manual fire
+#: claims `(schedule_id, schedule_fire_id)` instead: an opaque token the caller
+#: keeps stable across retries of the same logical request (and the server
+#: mints when the caller does not supply one, making each request its own
+#: deliberate firing). Opaque, not a timestamp, on purpose — it is an identity,
+#: not an instant; the instant a fire was requested stays in `scheduled_for`.
+SCHEDULE_FIRE_ID_KEY = "schedule_fire_id"
+
+#: Namespace separating a manual fire's claim from a nominal occurrence's.
+#:
+#: Both claims live in one index as `(schedule_id, token)`. The prefix is what
+#: keeps a caller who passes `schedule_fire_id` equal to some cron time's ISO
+#: string from claiming that nominal occurrence — the two identity spaces never
+#: intersect, so a manual fire can never consume a scheduled tick's slot.
+MANUAL_OCCURRENCE_PREFIX = "manual:"
+
+
+def canonical_occurrence_instant(moment: datetime) -> str:
+    """The one text a nominal occurrence's instant is claimed by (#850).
+
+    The occurrence claim (#220) is `(schedule_id, scheduled_for)`, and every
+    store compares `scheduled_for` as text: a Run's provenance is JSON, and
+    the claim indexes (migrations 015 and 042) are expressions over that text.
+    `datetime.isoformat()` renders in the datetime's *own* offset, and the cron
+    walker renders moments in the schedule's timezone — so the same instant
+    changed identity when a schedule's timezone changed: the re-enumerated
+    occurrence carried different text, the claim lookup missed, and the
+    double-fire window the uniqueness contract exists to close reopened.
+
+    Canonical form is the instant in UTC. Equal instants render identically
+    whatever zone produced them, so the text the admitter writes and the text
+    every claim probe asks with are one representation of one instant, and
+    editing a timezone can change the wall clock but never the claim. (A
+    manual fire is untouched by this: its identity is the caller's token,
+    which carries no offset to re-render.)
+
+    A naive moment is read as UTC rather than left to `astimezone`, which
+    would apply the host's local zone and make the claim machine-dependent.
+    Production datetimes are aware — the `Schedule` model forces it — so this
+    branch exists to keep a careless caller deterministic, not to bless naive
+    datetimes as claim carriers.
+    """
+    aware = moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+    return aware.astimezone(UTC).isoformat()
+
 
 def occurrence_key(provenance: dict[str, object] | None) -> tuple[str, str] | None:
     """The occurrence a scheduled Run claims, or None if it claims none.
 
-    `(schedule_id, scheduled_for)` is the identity of a *firing* — the cursor
-    never was (#220). A schedule's cursor says where enumeration resumes; two
-    tickers reading it before either writes enumerate the same occurrences and
-    both create Runs for them, and a crash between creating a Run and stamping
-    the cursor re-enumerates the same occurrence on the next tick.
+    A nominal occurrence claims `(schedule_id, scheduled_for)` — the identity
+    of a *firing* — the cursor never was (#220). A schedule's cursor says where
+    enumeration resumes; two tickers reading it before either write enumerate
+    the same occurrences and both create Runs for them, and a crash between
+    creating a Run and stamping the cursor re-enumerates the same occurrence on
+    the next tick.
 
-    `catchup` is deliberately **not** part of the key. A backfill and an
+    A manual fire claims `(schedule_id, "manual:" + fire_id)` instead (#1120).
+    Its identity is the caller's stable request token, not an instant: minting
+    `datetime.now()` per request is how a retried click became a second Run.
+    The prefix keeps the two identity spaces disjoint, so a manual token can
+    never collide with — and thereby consume — a nominal occurrence's slot.
+
+    `catchup` is deliberately **not** part of either key. A backfill and an
     on-time fire for the same nominal time are the same occurrence — that they
     were noticed at different moments is why the flag exists, not a reason to
     run the work twice.
@@ -78,10 +154,13 @@ def occurrence_key(provenance: dict[str, object] | None) -> tuple[str, str] | No
     if not provenance:
         return None
     schedule_id = provenance.get(SCHEDULE_ID_KEY)
-    scheduled_for = provenance.get(SCHEDULED_FOR_KEY)
-    if not (isinstance(schedule_id, str) and isinstance(scheduled_for, str)):
+    if not isinstance(schedule_id, str) or not schedule_id:
         return None
-    if not (schedule_id and scheduled_for):
+    fire_id = provenance.get(SCHEDULE_FIRE_ID_KEY)
+    if isinstance(fire_id, str) and fire_id:
+        return schedule_id, f"{MANUAL_OCCURRENCE_PREFIX}{fire_id}"
+    scheduled_for = provenance.get(SCHEDULED_FOR_KEY)
+    if not isinstance(scheduled_for, str) or not scheduled_for:
         return None
     return schedule_id, scheduled_for
 
@@ -90,11 +169,17 @@ __all__ = [
     "ADMISSION_SOURCE",
     "CHAT_SOURCE",
     "EPHEMERAL_ADMISSION_SOURCES",
+    "MANUAL_OCCURRENCE_PREFIX",
     "SCHEDULED_FOR_KEY",
     "SCHEDULE_CATCHUP_KEY",
+    "SCHEDULE_FIRE_ID_KEY",
     "SCHEDULE_ID_KEY",
     "SCHEDULE_INPUTS_KEY",
     "SCHEDULE_SOURCE",
+    "SCHEDULE_TRIGGER_KEY",
+    "SCHEDULE_TRIGGER_MANUAL",
+    "SCHEDULE_TRIGGER_RECURRING",
     "TASK_QUEUE_SOURCE",
+    "canonical_occurrence_instant",
     "occurrence_key",
 ]

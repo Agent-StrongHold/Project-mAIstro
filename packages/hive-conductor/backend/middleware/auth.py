@@ -20,6 +20,8 @@ from services import voice_identity
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
 
+from maistro.identity import Principal
+
 logger = logging.getLogger("hive.auth_middleware")
 
 _PUBLIC_PREFIXES = (
@@ -119,6 +121,10 @@ _PROTECTED_OPS: dict[str, dict[str, str]] = {
         "/v1/workspaces": "workspaces.write",
         # The evolution tournament is the self-improvement loop's other door.
         "/v1/evolution": "rsi.execute",
+        # Chat workflow execution creates durable Run history and can invoke
+        # mutating nodes. It uses the shared approval capability before the
+        # existing chat dispatch path, so authentication alone is not enough.
+        "/v1/chat/workflows": "dags.write",
         # Executes GitHub/GitLab tools with stored credentials against real
         # external trackers.
         # Audit entries name an arbitrary `actor`: an unscoped writer is a
@@ -139,8 +145,11 @@ _PROTECTED_OPS: dict[str, dict[str, str]] = {
         # scratch workdir is a smaller decision than granting the loop that
         # rewrites this repository.
         "/v1/rsi": "rsi.execute",
-        # Capability discovery + approval resolution (approving a destructive
-        # infra action is high-stakes) — gate behind config.write.
+        # Resolving an approval is an authority-bearing decision, not a
+        # generic configuration write. Require the dedicated approver scope;
+        # the route applies the action-specific policy on top of this.
+        "/v1/capabilities/approvals": "approvals.resolve",
+        # Capability discovery and provider configuration remain config writes.
         "/v1/capabilities": "config.write",
         # Provider activation uses the LiteLLM master key, mutates the global
         # model registry, and can trigger billed calls (SPEC-072726-3439).
@@ -202,23 +211,33 @@ def _is_public_oauth_get(method: str, path: str) -> bool:
     return provider in get_settings().oauth_providers
 
 
-def resolve_principal(
-    cookies: Mapping[str, str], authorization: str | None
-) -> dict[str, Any] | None:
+def _session_id(cookies: Mapping[str, str], authorization: str | None) -> str | None:
     session_id = cookies.get("hive_session")
     if not session_id:
         auth_header = authorization or ""
         if auth_header.startswith("Bearer "):
             session_id = auth_header[7:]
+    return session_id or None
+
+
+def resolve_principal(
+    cookies: Mapping[str, str],
+    authorization: str | None,
+    *,
+    refresh_activity: bool = False,
+) -> dict[str, Any] | None:
+    session_id = _session_id(cookies, authorization)
     if not session_id:
         return None
     try:
-        return auth_routes.get_current_user(session_id)
+        return auth_routes.get_current_user(session_id, refresh_activity=refresh_activity)
     except Exception:
         return None
 
 
-def principal_has_permission(user: dict[str, Any], perm: str) -> bool:
+def principal_has_permission(user: Principal | Mapping[str, Any], perm: str) -> bool:
+    if isinstance(user, Principal):
+        return user.has_permission(perm)
     if user.get("role") == "admin":
         return True
     user_perms = user.get("permissions", [])
@@ -286,6 +305,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if path.startswith("/v1/"):
+            # Resolve first without touching the session. A permission-denied
+            # request is authenticated but is not eligible activity: refreshing
+            # here would let rejected polling keep a session alive.
             user = self._get_user(request)
             if user is None:
                 return JSONResponse(
@@ -293,9 +315,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     content={"detail": "Authentication required"},
                 )
 
-            request.state.user = user
+            principal = Principal.from_legacy_dict(user)
+            request.state.principal = principal
 
-            if user["role"] == "admin" and self._is_chat(path):
+            if principal.is_admin and self._is_chat(path):
                 return JSONResponse(
                     status_code=403,
                     content={
@@ -311,7 +334,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 request.method == "GET"
                 and path.startswith("/v1/workspaces/persona-templates/")
                 and path.endswith("/feedback")
-                and user.get("role") != "admin"
+                and not principal.is_admin
             ):
                 return JSONResponse(
                     status_code=403,
@@ -319,12 +342,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 )
 
             required_perm = self._required_permission(request)
-            if required_perm and not self._check_permission(user, required_perm):
+            if required_perm and not self._check_permission(principal, required_perm):
                 return JSONResponse(
                     status_code=403,
                     content={
                         "detail": f"Permission '{required_perm}' required. Elevate to proceed."
                     },
+                )
+
+            # Touch only after the request has passed the authentication and
+            # middleware authorization boundary. WebSocket handshakes use the
+            # same server-side decision directly in routes.ws.
+            session_id = getattr(request.state, "session_id", None)
+            if (
+                self._is_eligible_activity(request)
+                and session_id is not None
+                and not auth_routes.refresh_session_activity(session_id)
+            ):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Authentication required"},
                 )
 
         return await call_next(request)
@@ -336,11 +373,22 @@ class AuthMiddleware(BaseHTTPMiddleware):
             # Fail closed: if setup state can't be read, require auth.
             return True
 
-    def _get_user(self, request: Request) -> dict[str, Any] | None:
+    def _get_user(
+        self, request: Request, *, refresh_activity: bool = False
+    ) -> dict[str, Any] | None:
         authorization = request.headers.get("Authorization")
-        user = resolve_principal(request.cookies, authorization)
+        session_id = _session_id(request.cookies, authorization)
+        user = resolve_principal(
+            request.cookies,
+            authorization,
+            refresh_activity=refresh_activity,
+        )
         if user is not None:
+            # Keep the source explicit so a voice credential on /v1/voice/*
+            # is not mistaken for an opaque session that must be touched.
+            request.state.session_id = session_id
             return user
+        request.state.session_id = None
         # Scoped to the voice prefix on purpose. Resolving the device
         # credential for every path would make one key a second way into the
         # whole API; here it opens the surface it was issued for and nothing
@@ -349,6 +397,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if _matches_public_prefix(request.url.path, _VOICE_PREFIX):
             return voice_identity.principal_for(authorization)
         return None
+
+    def _is_eligible_activity(self, request: Request) -> bool:
+        """Only an authenticated API request, not a health probe, slides idle expiry.
+
+        ``whoami`` is used by SPA startup and restoration and is deliberately
+        observational. CORS preflight is bypassed before this point, while
+        WebSocket handshakes opt in explicitly in ``routes.ws``.
+        """
+        return (
+            request.method not in {"OPTIONS", "HEAD"}
+            and request.url.path not in auth_routes._SESSION_ACTIVITY_EXCLUDED_PATHS
+        )
 
     def _is_chat(self, path: str) -> bool:
         return any(path.startswith(p) for p in _ADMIN_CHAT_BLOCKED)
@@ -361,12 +421,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # here made the first-run daily account's workspace UI unusable.
         if request.method == "POST" and path.rstrip("/") == "/v1/workspaces":
             return None
-        # Agent invoke (POST /v1/agents/{id}/invoke) is autonomous read — don't
-        # gate behind elevation. Match the trailing segment, not a bare
-        # substring: "in path" would also exempt any future route that merely
-        # contains "/invoke" elsewhere (e.g. "/v1/agents/invoke-history").
-        if path.endswith("/invoke"):
-            return None
+        # No URL-suffix carve-outs (#403): the former endswith("/invoke")
+        # exemption — written for POST /v1/agents/{id}/invoke, a route that
+        # no longer exists — would have granted any future route with that
+        # suffix a silent elevation bypass decided purely by URL naming.
+        # Elevation binds only to the capability identifiers registered in
+        # _PROTECTED_OPS (prefix -> permission) plus the named, reviewed
+        # exceptions in this method; a path's spelling grants no authority.
+        # A new mutating route that needs no elevation is a conscious,
+        # documented decision in ROUTE_EXEMPT — scripts/check_enumerations.py
+        # fails the build until it is classified (#403).
         # Thumbs +/- feedback (POST /v1/dag-runs/{id}/feedback,
         # POST /v1/workspaces/{id}/feedback) is a low-stakes reaction, not a
         # mutating operation on the thing itself — any authenticated member
@@ -404,5 +468,5 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return perm
         return None
 
-    def _check_permission(self, user: dict[str, Any], perm: str) -> bool:
+    def _check_permission(self, user: Principal | Mapping[str, Any], perm: str) -> bool:
         return principal_has_permission(user, perm)

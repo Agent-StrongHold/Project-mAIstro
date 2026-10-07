@@ -31,6 +31,22 @@ from maistro.runs.store import InMemoryRunStore
 
 pytestmark = pytest.mark.contract("behavioral")
 
+_EVOLUTION_TEST_ACTOR = "evolve-user"
+
+
+def _evolution_route_app(router: Any) -> Any:
+    from fastapi import FastAPI
+
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def _stamp_test_actor(request, call_next):
+        request.state.user_id = _EVOLUTION_TEST_ACTOR
+        return await call_next(request)
+
+    app.include_router(router, prefix="/v1/evolution")
+    return app
+
 
 class _Genome:
     def __init__(
@@ -63,7 +79,7 @@ class _Population:
     def list_all(self) -> list[_Genome]:
         return list(self._items.values())
 
-    def cull_bottom(self, pct: float) -> int:
+    def cull_bottom(self, pct: float, archive: Any = None) -> int:
         return 0
 
     def record_cycle_marker(self, marker_id: str, payload: dict[str, Any]) -> None:
@@ -118,13 +134,25 @@ class _Tournament:
     def get_avg_elo(self, genome_id: str) -> float:
         return 1000.0
 
+    def get_total_battles(self, genome_id: str) -> int:
+        # Mirrors EloTournament's real surface (#853): _publish_tournament_elos
+        # gates Elo publication on battle evidence and records the battle
+        # count beside the rating.
+        return sum(1 for _b, a, b in self.battles if genome_id in (a, b))
+
 
 class _Cycle:
     """Small domain double; the test is about the execution mapping, not Evolve math."""
 
-    def __init__(self, harness: Any = None, tournament: Any = None) -> None:
+    def __init__(self, harness: Any = None, tournament: Any = None, archive: Any = None) -> None:
         self.harness = harness
         self.tournament = tournament
+        # M4-A6: the production cycle now carries the candidate archive; the
+        # double mirrors the attribute so finalize's archival cull path is
+        # exercised against a real CandidateArchive, not stubbed out.
+        from maistro_evolve.archive import CandidateArchive
+
+        self.archive = archive if archive is not None else CandidateArchive()
         self._island_pop: Any = None
         self._cycle_count = 0
         self._child_added = False
@@ -211,6 +239,7 @@ async def test_cycle_is_one_run_with_evaluation_battle_finalization_attempts(
         harness=_Harness(),
         cycle_number=1,
         container=owner,
+        actor_principal_id="evolve-user",
     )
 
     assert record.run.status is RunStatus.COMPLETED
@@ -218,6 +247,11 @@ async def test_cycle_is_one_run_with_evaluation_battle_finalization_attempts(
     assert stored is not None
     assert stored.status is RunStatus.COMPLETED
     assert stored.provenance["admission_source"] == "evolve"
+    # #51: every Evolve canonical Run records the durable execution owner in
+    # Run provenance at admission (not left to run_durable_graph() to infer
+    # or backfill it — it ignores the `provenance` kwarg entirely once a
+    # canonical `run_store` already holds an admitted Run for that run_id).
+    assert stored.provenance["executor"] == "durable_graph"
 
     node_runs = await owner.run_store.list_node_runs(record.run_id)
     assert [item.node_id for item in node_runs] == [
@@ -284,6 +318,7 @@ async def test_battle_and_finalization_failures_are_canonical_run_failures(
         config=_config(population_size=2, eval_batch_size=2),
         harness=_Harness(),
         container=owner,
+        actor_principal_id="evolve-user",
     )
 
     assert record.run.status is RunStatus.FAILED
@@ -361,6 +396,9 @@ async def test_cycle_route_projects_real_canonical_failures(
     population = _Population([_Genome("g1"), _Genome("g2")])
     tournament = _BattleFailureTournament() if failure_stage == "battle" else _Tournament()
     service = _EvolutionService()
+    # This domain/execution fixture performs no model work; the governed path
+    # is covered separately by test_evolution_model_correlation.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = population
     service._tournament = tournament
     monkeypatch.setattr(evolution_module, "get_evolution_service", lambda: service)
@@ -425,6 +463,9 @@ async def test_successful_cycle_route_projects_completed_canonical_run(
     monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
 
     service = _EvolutionService()
+    # This domain/execution fixture performs no model work; the governed path
+    # is covered separately by test_evolution_model_correlation.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = _Population([_Genome("g1"), _Genome("g2")])
     service._tournament = _Tournament()
     monkeypatch.setattr(evolution_module, "get_evolution_service", lambda: service)
@@ -437,6 +478,12 @@ async def test_successful_cycle_route_projects_completed_canonical_run(
     stored = await owner.run_store.get_run(response["run_id"])
     assert stored is not None
     assert stored.status is RunStatus.COMPLETED
+    # #853: Elo publication is gated on battle evidence — a genome that fought
+    # gets the rating AND the battle count (fitness's Elo term fires only on
+    # recorded battles), published together or not at all.
+    published = {g.id: dict(g.harness_params) for g in service._population.list_all()}
+    assert published["g1"].get("avg_elo") == 1000.0
+    assert published["g1"].get("elo_battles", 0) > 0
 
 
 @pytest.mark.asyncio
@@ -471,6 +518,7 @@ async def test_seeding_during_evaluation_cannot_expand_frozen_pair_plan(
         config=_config(population_size=3, eval_batch_size=2),
         harness=_SeedingHarness(),
         container=owner,
+        actor_principal_id="evolve-user",
     )
 
     stored = await owner.run_store.get_run(record.run_id)
@@ -493,7 +541,6 @@ async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
 ) -> None:
     import httpx
     import services.evolution as evolution_service
-    from fastapi import FastAPI
     from routes import evolution as evolution_routes
 
     import maistro_evolve.harness as harness_module
@@ -538,13 +585,14 @@ async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
 
     population = _Population([_Genome("g1"), _Genome("g2")])
     service = evolution_service._EvolutionService()
+    # The pausing domain double does not call a model.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = population
     service._tournament = _Tournament()
     previous = evolution_service._service
     evolution_service._service = service
     try:
-        app = FastAPI()
-        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        app = _evolution_route_app(evolution_routes.router)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             cycle_task = asyncio.create_task(client.post("/v1/evolution/cycle"))
@@ -582,7 +630,6 @@ async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
     import httpx
     import services.evolution as evolution_service
     import services.evolution_graph as evolution_graph
-    from fastapi import FastAPI
     from routes import evolution as evolution_routes
 
     battle_started = asyncio.Event()
@@ -625,13 +672,14 @@ async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
 
     population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
     service = evolution_service._EvolutionService()
+    # The pausing domain double does not call a model.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = population
     service._tournament = _Tournament()
     previous = evolution_service._service
     evolution_service._service = service
     try:
-        app = FastAPI()
-        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        app = _evolution_route_app(evolution_routes.router)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             cycle_task = asyncio.create_task(client.post("/v1/evolution/cycle"))
@@ -679,7 +727,6 @@ async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
 ) -> None:
     import httpx
     import services.evolution as evolution_service
-    from fastapi import FastAPI
     from routes import evolution as evolution_routes
 
     evaluation_started = asyncio.Event()
@@ -720,13 +767,14 @@ async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
 
     population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
     service = evolution_service._EvolutionService()
+    # The pausing domain double does not call a model.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = population
     service._tournament = _Tournament()
     previous = evolution_service._service
     evolution_service._service = service
     try:
-        app = FastAPI()
-        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        app = _evolution_route_app(evolution_routes.router)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             first = asyncio.create_task(client.post("/v1/evolution/cycle"))
@@ -798,6 +846,7 @@ async def test_missing_has_more_successor_fails_before_recording_unroutable_batt
         config=_config(population_size=5, eval_batch_size=4),
         harness=_Harness(),
         container=owner,
+        actor_principal_id="evolve-user",
     )
 
     assert record.run.status is RunStatus.FAILED
@@ -832,6 +881,7 @@ async def test_multiple_battle_nodes_finish_before_finalization(
         config=_config(population_size=5, eval_batch_size=4),
         harness=_Harness(),
         container=owner,
+        actor_principal_id="evolve-user",
     )
 
     assert record.run.status is RunStatus.COMPLETED
@@ -872,6 +922,7 @@ async def test_unscored_genomes_do_not_create_fake_battle_node_runs(
         config=_config(population_size=2, eval_batch_size=2),
         harness=_NoResultHarness(),
         container=owner,
+        actor_principal_id="evolve-user",
     )
     node_runs = await owner.run_store.list_node_runs(record.run_id)
     battle_runs = [item for item in node_runs if item.node_id.startswith("evolve-battle-")]
@@ -936,6 +987,7 @@ async def test_failed_evaluation_attempt_does_not_publish_partial_scores(
         ),
         harness=_TwoResultHarness(),
         container=owner,
+        actor_principal_id="evolve-user",
     )
 
     assert record.run.status is RunStatus.FAILED

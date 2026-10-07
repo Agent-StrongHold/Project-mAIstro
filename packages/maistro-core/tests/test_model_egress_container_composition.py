@@ -21,7 +21,7 @@ async def _container(**overrides: object) -> Container:
     )
 
 
-async def test_configured_model_bindings_bootstrap_into_container_effect_context() -> None:
+async def test_configured_model_bindings_bootstrap_into_the_container_effect_context() -> None:
     container = await _container(
         workspace_id="ws-default",
         model_bindings=[
@@ -98,7 +98,7 @@ async def test_declared_disabled_model_binding_bootstraps_but_refuses_resolution
         )
 
 
-async def test_container_resolved_summarize_uses_real_authorities_and_invocation(
+async def test_container_resolved_summarize_uses_real_authorities_and_governed_invocation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -115,6 +115,13 @@ async def test_container_resolved_summarize_uses_real_authorities_and_invocation
     container = await _container(
         workspace_id="ws-prod",
         provider_config_path=str(provider_config),
+        # `litellm_key` is what makes `bootstrap_model_bindings` register the
+        # deployment's default gateway credential and backfill this Binding's
+        # empty `credential_refs` with it (see its docstring); omitted, the
+        # Binding authorizes no credential and the governed egress refuses
+        # with `CredentialScopeError` before any call reaches the fake
+        # transport below.
+        litellm_key="test-litellm-key",
         model_bindings=[
             {
                 "binding_id": "model-prod",
@@ -132,7 +139,8 @@ async def test_container_resolved_summarize_uses_real_authorities_and_invocation
         provider_registry=container.provider_registry,
         llm_router=container.llm_router,
     )
-    node = resolver("summarize", {"nodes": [{"id": "summarize", "kind": "llm.summarize"}]})
+    graph = {"nodes": [{"id": "summarize", "kind": "llm.summarize"}]}
+    node = resolver("summarize", graph)
 
     assert isinstance(node, LlmSummarizeNode)
     assert node._effects is container.capability_effects
@@ -140,6 +148,10 @@ async def test_container_resolved_summarize_uses_real_authorities_and_invocation
     assert node._router is container.llm_router
 
     metadata = await node._registry.get_model("yaml-model")
+    assert metadata.provider == "openai"
+    assert metadata.cost_per_1k_input == 1.0
+    assert metadata.cost_per_1k_output == 2.0
+
     calls: list[str] = []
 
     async def fake_execute_model_chat(
@@ -159,6 +171,7 @@ async def test_container_resolved_summarize_uses_real_authorities_and_invocation
 
     monkeypatch.setattr(model_chat, "execute_model_chat", fake_execute_model_chat)
     monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "https://gateway.test")
+    monkeypatch.setenv("MAISTRO_LLM_API_KEY", "test-secret")
 
     result = await node.run(
         {

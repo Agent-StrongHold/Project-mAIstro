@@ -5,7 +5,10 @@ from typing import Any
 
 import pytest
 
-from maistro.capabilities.effect_context import new_in_memory_effect_context
+from maistro.capabilities.effect_context import (
+    binding_scope_policy,
+    new_in_memory_effect_context,
+)
 from maistro.capabilities.invocation import InvocationStatus
 from maistro.capabilities.providers import llm_gateway
 from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
@@ -17,6 +20,7 @@ from maistro.providers.router import CostAwareRouter
 from maistro.providers.types import ModelMetadata
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _canonical_scope(workspace_id: str = "ws-1") -> tuple[InMemoryProjectScopeStore, str]:
@@ -36,16 +40,25 @@ async def _admit_parent_run(
         name="evaluated-dag",
         nodes=[Node(node_id="worker", node_type="worker", name="worker")],
     )
-    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    run = await run_store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await run_store.transition_run(run.run_id, RunStatus.RUNNING)
     await run_store.transition_run(run.run_id, RunStatus.COMPLETED)
     return run.run_id
 
 
 async def _correlated_runtime(
-    policy_evaluator: Any = None,
+    policy_evaluator: Any = binding_scope_policy,
 ) -> tuple[Any, Any, str, str]:
-    """A GovernedModelRuntime whose run store sits on a real canonical spine."""
+    """A GovernedModelRuntime whose run store sits on a real canonical spine.
+
+    Defaults to the explicit M1 baseline policy (#846): an omitted evaluator is
+    an unavailable dependency and denies, so behavior tests must opt in and
+    denial tests pass their denying evaluator explicitly.
+    """
 
     from services.governed_model import GovernedModelRuntime
 
@@ -89,7 +102,9 @@ def _plain_runtime():
         ]
     )
     return GovernedModelRuntime(
-        effects=new_in_memory_effect_context(),
+        # Behavior fixture: explicit M1 baseline policy (#846 — omitted policy
+        # evaluators now deny, they never default to permissive).
+        effects=new_in_memory_effect_context(policy_evaluator=binding_scope_policy),
         registry=registry,
         router=CostAwareRouter(registry),
         endpoint=GatewayEndpoint(base_url="http://gateway", api_key="master"),
@@ -239,6 +254,7 @@ async def test_provider_health_registration_keeps_secret_out_of_invocation(
 
     runtime = _plain_runtime()
     binding = control_plane_binding(
+        runtime,
         binding_id="provider-binding",
         workspace_id="ws-1",
         project_id="provider-project",
@@ -299,6 +315,7 @@ async def test_provider_health_policy_denial_causes_zero_http(
         endpoint=GatewayEndpoint(base_url="http://gateway", api_key="master"),
     )
     binding = control_plane_binding(
+        runtime,
         binding_id="denied-provider-binding",
         workspace_id="ws-1",
         project_id="provider-project",
@@ -349,6 +366,7 @@ async def test_provider_health_with_minted_identity_completes_operation(
 
     runtime, run_store, _parent_run_id, project_id = await _correlated_runtime()
     binding = control_plane_binding(
+        runtime,
         binding_id="provider-activation:judge",
         workspace_id="ws-1",
         project_id=project_id,
@@ -361,6 +379,7 @@ async def test_provider_health_with_minted_identity_completes_operation(
         operation="provider-activation:judge",
         workspace_id="ws-1",
         project_id=project_id,
+        actor_principal_id="test-admin",
         provenance={"activation_source": "routes.providers", "provider": "judge"},
     )
 
@@ -440,6 +459,7 @@ async def test_provider_registration_failure_is_not_authorization_failure(
 
     runtime = _plain_runtime()
     binding = control_plane_binding(
+        runtime,
         binding_id="registration-failure-binding",
         workspace_id="ws-1",
         project_id="provider-project",
@@ -485,6 +505,7 @@ async def test_ensure_binding_is_immutable_and_idempotent() -> None:
 
     runtime, _run_store, _parent_run_id, project_id = await _correlated_runtime()
     binding = control_plane_binding(
+        runtime,
         binding_id="immutable-binding",
         workspace_id="ws-1",
         project_id=project_id,
@@ -499,6 +520,81 @@ async def test_ensure_binding_is_immutable_and_idempotent() -> None:
     mutated = binding.model_copy(update={"provider_name": "other-model"})
     with pytest.raises(BindingResolutionError, match="immutable"):
         await ensure_binding(runtime, mutated)
+
+
+@pytest.mark.asyncio
+async def test_control_plane_binding_reregistration_preserves_credential_cooldown() -> None:
+    """#1079 Finding 2: consecutive control-plane calls reusing the same
+    Workspace/Project (e.g. repeated benchmark evaluations or provider
+    activations) must not reset a credential's tracked cooldown/blocked
+    state -- `control_plane_binding` re-registers the runtime's gateway
+    credential on every call, and that re-registration must not undo the
+    outcome-driven backoff `record_outcome` already recorded for it."""
+
+    from services.governed_model import control_plane_binding
+
+    runtime = _plain_runtime()
+
+    # First control-plane call: registers the credential and authorizes it.
+    control_plane_binding(
+        runtime,
+        binding_id="benchmark-evaluation:run-1",
+        workspace_id="ws-1",
+        project_id="provider-project",
+        provider_name="judge-model",
+    )
+
+    from maistro.capabilities.providers.llm_gateway import (
+        DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+        MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+    )
+
+    class _UnauthorizedError(Exception):
+        """A real HTTP-401-shaped error, the same status the credentials
+        classifier reads off `status_code`/`response.status_code`."""
+
+        def __init__(self) -> None:
+            super().__init__("401 Unauthorized")
+            self.status_code = 401
+            self.response = type("Resp", (), {"status_code": 401, "headers": {}})
+
+    # A real provider outcome (401) blocks that credential -- e.g. the
+    # gateway key was rotated out from under this deployment.
+    await runtime.effects.credentials.record_outcome(
+        workspace_id="ws-1",
+        project_id="provider-project",
+        provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+        key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+        error=_UnauthorizedError(),
+    )
+    pool = runtime.effects.credentials.pool_for(
+        workspace_id="ws-1",
+        project_id="provider-project",
+        provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+    )
+    assert pool is not None
+    blocked_entry = next(
+        e for e in pool._entries if e.key_id == DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF
+    )
+    assert blocked_entry.blocked is True
+
+    # A second, unrelated control-plane call reuses the same Workspace/Project
+    # (same scope `control_plane_binding` registers the credential into).
+    control_plane_binding(
+        runtime,
+        binding_id="benchmark-evaluation:run-2",
+        workspace_id="ws-1",
+        project_id="provider-project",
+        provider_name="judge-model",
+    )
+
+    still_blocked_entry = next(
+        e for e in pool._entries if e.key_id == DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF
+    )
+    assert still_blocked_entry.blocked is True, (
+        "re-registering the gateway credential must not clear the cooldown/"
+        "block state an earlier 401 already set for it"
+    )
 
 
 @pytest.mark.asyncio
@@ -526,7 +622,7 @@ async def test_runtime_wires_container_authorities(
     scope, _project_id = await _canonical_scope()
     run_store = InMemoryRunStore(project_store=scope)
     registry = InMemoryProviderRegistry()
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     router = CostAwareRouter(registry)
     container = SimpleNamespace(
         capability_effects=effects,

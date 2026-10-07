@@ -38,6 +38,8 @@ from typing import Any, ClassVar
 
 import pytest
 import pytest_asyncio
+from canvas_testing.canvas_schema import CANVAS_SCHEMA_DDL as _CANVAS_DDL
+from canvas_testing.job_store_contract import ZERO_BACKOFF
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -60,6 +62,7 @@ from maistro_canvas.types import (
     CanvasRecord,
     CompositeResult,
     GenerationJobRecord,
+    JobLeaseLostError,
     JobNotFoundError,
     LayerNotFoundError,
     LayerRecord,
@@ -74,77 +77,9 @@ ORG_B = "org-beta"
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Canvas-store schema — the legacy product tables no migration owns
+# Schemas — the canvas tables come from the shared testing module (migrations
+# 044 + 048), so this suite and the job-store contract suite cannot drift.
 # ─────────────────────────────────────────────────────────────────────
-
-_CANVAS_DDL = """
-CREATE TABLE canvases (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    width INTEGER NOT NULL,
-    height INTEGER NOT NULL,
-    background_color TEXT NOT NULL DEFAULT '#FFFFFF',
-    org_id TEXT NOT NULL DEFAULT '',
-    layer_count INTEGER NOT NULL DEFAULT 0,
-    archived_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE TABLE layers (
-    id TEXT PRIMARY KEY,
-    canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    layer_type TEXT NOT NULL DEFAULT 'background',
-    z_index INTEGER NOT NULL DEFAULT 0,
-    x DOUBLE PRECISION NOT NULL DEFAULT 0,
-    y DOUBLE PRECISION NOT NULL DEFAULT 0,
-    scale DOUBLE PRECISION NOT NULL DEFAULT 1,
-    rotation DOUBLE PRECISION NOT NULL DEFAULT 0,
-    opacity DOUBLE PRECISION NOT NULL DEFAULT 1,
-    blend_mode TEXT NOT NULL DEFAULT 'normal',
-    visible BOOLEAN NOT NULL DEFAULT TRUE,
-    locked BOOLEAN NOT NULL DEFAULT FALSE,
-    image_path TEXT,
-    prompt TEXT,
-    negative_prompt TEXT,
-    model_id TEXT,
-    tier TEXT DEFAULT 'draft',
-    generation_seed INTEGER,
-    text_config JSONB,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (canvas_id, z_index)
-);
-CREATE TABLE generation_jobs (
-    id TEXT PRIMARY KEY,
-    layer_id TEXT NOT NULL REFERENCES layers(id) ON DELETE CASCADE,
-    canvas_id TEXT NOT NULL,
-    action TEXT NOT NULL DEFAULT 'generate',
-    status TEXT NOT NULL DEFAULT 'pending',
-    model_id TEXT NOT NULL DEFAULT '',
-    prompt TEXT NOT NULL DEFAULT '',
-    params JSONB NOT NULL DEFAULT '{}',
-    result_paths JSONB NOT NULL DEFAULT '[]',
-    selected_index INTEGER,
-    error_message TEXT,
-    started_at TIMESTAMPTZ,
-    completed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    attempts INTEGER NOT NULL DEFAULT 0,
-    max_attempts INTEGER NOT NULL DEFAULT 3,
-    leased_by TEXT,
-    lease_expires_at TIMESTAMPTZ
-);
-CREATE TABLE composite_records (
-    id TEXT PRIMARY KEY,
-    canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
-    image_bytes BYTEA NOT NULL,
-    width INTEGER NOT NULL,
-    height INTEGER NOT NULL,
-    layer_snapshot JSONB NOT NULL DEFAULT '[]',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-"""
 
 # The asset tables as migrations 002 + 032 declare them.
 _ASSET_DDL = """
@@ -281,7 +216,10 @@ async def pg_engine():
 
 @pytest.fixture
 def canvas_store(pg_engine: Any) -> PgCanvasStore:
-    return PgCanvasStore(pg_engine)
+    # Zero backoff: this suite pins scope and fencing semantics, which requeue
+    # then immediately re-claim; the backoff gate itself is the job-store
+    # contract suite's subject (against the production store, real schedule).
+    return PgCanvasStore(pg_engine, retry_backoff=ZERO_BACKOFF)
 
 
 async def _canvas(store: PgCanvasStore, org: str, name: str = "A's canvas") -> CanvasRecord:
@@ -498,6 +436,186 @@ class TestCanvasTwoTenants:
                 CompositeResult(canvas_id=canvas.id, image_bytes=b"x", width=8, height=8),
                 org_id=ORG_B,
             )
+
+
+class TestCanvasJobFencing:
+    """Real-SQL proofs for the Codex #1535 follow-ups (#735).
+
+    ``claim_next_pending``/``reap_expired_leases`` are global queue scans, so
+    each test starts and ends with an empty job table: a leftover expired or
+    over-budget row would leak into another test's reap/claim.
+    """
+
+    @pytest_asyncio.fixture(autouse=True, loop_scope="module")
+    async def _empty_job_queue(self, pg_engine: Any) -> AsyncIterator[None]:
+        from sqlalchemy import text
+
+        async with pg_engine.begin() as conn:
+            await conn.execute(text("DELETE FROM generation_jobs"))
+        yield
+        async with pg_engine.begin() as conn:
+            await conn.execute(text("DELETE FROM generation_jobs"))
+
+    async def _pending(self, store: PgCanvasStore, org: str = ORG_A) -> GenerationJobRecord:
+        return await TestCanvasTwoTenants()._job(store, org)
+
+    async def _expire(self, store: PgCanvasStore, job_id: str) -> None:
+        current = await store.get_job(job_id, org_id=ORG_A)
+        assert current is not None
+        current.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        await store.update_job(current, org_id=ORG_A)
+
+    async def test_a_same_worker_id_reclaim_fences_the_stale_claims_completion(
+        self, canvas_store: PgCanvasStore
+    ) -> None:
+        job = await self._pending(canvas_store)
+        first = await canvas_store.claim_next_pending("canvas-worker-1", 60)
+        assert first is not None and first.id == job.id and first.attempts == 1
+        await self._expire(canvas_store, job.id)
+        assert [r.status for r in await canvas_store.reap_expired_leases()] == ["pending"]
+        second = await canvas_store.claim_next_pending("canvas-worker-1", 60)
+        assert second is not None and second.attempts == 2
+
+        first.status = "done"
+        first.result_paths = ["/stale.png"]
+        first.leased_by = None
+        with pytest.raises(JobLeaseLostError):
+            await canvas_store.update_job(
+                first,
+                org_id=ORG_A,
+                expected_leased_by="canvas-worker-1",
+                expected_attempts=1,
+                expected_status="running",
+            )
+        assert not await canvas_store.renew_lease(
+            job.id, "canvas-worker-1", 60, expected_attempts=1
+        )
+
+        current = await canvas_store.get_job(job.id, org_id=ORG_A)
+        assert current is not None
+        assert (current.status, current.attempts, current.result_paths) == ("running", 2, [])
+        assert current.leased_by == "canvas-worker-1"
+
+        # The live claim itself still renews and completes.
+        assert await canvas_store.renew_lease(job.id, "canvas-worker-1", 60, expected_attempts=2)
+        second.status = "done"
+        second.leased_by = None
+        await canvas_store.update_job(
+            second,
+            org_id=ORG_A,
+            expected_leased_by="canvas-worker-1",
+            expected_attempts=2,
+            expected_status="running",
+        )
+        done = await canvas_store.get_job(job.id, org_id=ORG_A)
+        assert done is not None and done.status == "done"
+
+    async def test_a_terminal_write_refuses_to_replace_a_concurrent_cancellation(
+        self, canvas_store: PgCanvasStore
+    ) -> None:
+        await self._pending(canvas_store)
+        claimed = await canvas_store.claim_next_pending("canvas-worker-1", 60)
+        assert claimed is not None
+        cancelled = dataclasses.replace(claimed, status="cancelled")
+        await canvas_store.update_job(cancelled, org_id=ORG_A)
+
+        claimed.status = "failed"
+        with pytest.raises(JobLeaseLostError):
+            await canvas_store.update_job(
+                claimed, org_id=ORG_A, expected_status="running", expected_attempts=1
+            )
+        current = await canvas_store.get_job(claimed.id, org_id=ORG_A)
+        assert current is not None and current.status == "cancelled"
+
+    async def test_a_fenced_write_from_another_org_reads_as_absent(
+        self, canvas_store: PgCanvasStore
+    ) -> None:
+        await self._pending(canvas_store)
+        claimed = await canvas_store.claim_next_pending("canvas-worker-1", 60)
+        assert claimed is not None
+        claimed.status = "done"
+        with pytest.raises(JobNotFoundError):
+            await canvas_store.update_job(claimed, org_id=ORG_B, expected_leased_by="someone-else")
+        with pytest.raises(JobNotFoundError):
+            await canvas_store.update_job(
+                claimed, org_id=ORG_B, expected_leased_by="canvas-worker-1"
+            )
+        current = await canvas_store.get_job(claimed.id, org_id=ORG_A)
+        assert current is not None and current.status == "running"
+
+    async def test_an_over_budget_pending_job_is_not_claimed_but_reaped_for_failure(
+        self, canvas_store: PgCanvasStore
+    ) -> None:
+        job = await self._pending(canvas_store)
+        job.attempts = 3
+        job.max_attempts = 3
+        await canvas_store.update_job(job, org_id=ORG_A)
+
+        assert await canvas_store.claim_next_pending("canvas-worker-1", 60) is None
+
+        reaped = await canvas_store.reap_expired_leases()
+        assert [r.id for r in reaped] == [job.id]
+        assert reaped[0].status == "running"
+        assert reaped[0].leased_by is None
+        assert reaped[0].lease_expires_at is not None
+        assert reaped[0].attempts == 3
+
+    async def test_a_stale_detached_write_never_lowers_the_claim_generation(
+        self, canvas_store: PgCanvasStore
+    ) -> None:
+        """Codex #1560: ``attempts`` is the fencing generation, so a detached
+        copy written back after a re-claim must not move it backwards (which
+        would let the next claim reuse a generation number)."""
+        await self._pending(canvas_store)
+        first = await canvas_store.claim_next_pending("canvas-worker-1", 60)
+        assert first is not None and first.attempts == 1
+        stale = dataclasses.replace(first)
+        await self._expire(canvas_store, first.id)
+        await canvas_store.reap_expired_leases()
+        second = await canvas_store.claim_next_pending("canvas-worker-1", 60)
+        assert second is not None and second.attempts == 2
+
+        # A recovery-style write fenced on what it read is refused outright.
+        stale.status = "pending"
+        with pytest.raises(JobLeaseLostError):
+            await canvas_store.update_job(
+                stale, org_id=ORG_A, expected_status="running", expected_attempts=1
+            )
+        # Even an unfenced write of the stale copy cannot lower the counter.
+        await canvas_store.update_job(stale, org_id=ORG_A)
+        current = await canvas_store.get_job(first.id, org_id=ORG_A)
+        assert current is not None and current.attempts == 2
+        third = await canvas_store.claim_next_pending("canvas-worker-1", 60)
+        assert third is not None and third.attempts == 3
+
+    async def test_reap_once_keeps_a_cancellation_that_lands_during_reconciliation(
+        self, canvas_store: PgCanvasStore
+    ) -> None:
+        from maistro_canvas.canvas.runner import CanvasJobRunner
+
+        await self._pending(canvas_store)
+        claimed = await canvas_store.claim_next_pending("canvas-worker-1", 60)
+        assert claimed is not None
+        claimed.max_attempts = 1
+        claimed.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        await canvas_store.update_job(claimed, org_id=ORG_A)
+
+        class _CancelDuringReconciliation:
+            async def fail_job_execution(self, job: GenerationJobRecord, exc: Exception) -> str:
+                current = await canvas_store.get_job(job.id, org_id=ORG_A)
+                assert current is not None
+                current.status = "cancelled"
+                await canvas_store.update_job(current, org_id=ORG_A)
+                return str(exc)
+
+        runner = CanvasJobRunner(
+            store=canvas_store,
+            executor=_CancelDuringReconciliation(),  # type: ignore[arg-type]
+        )
+        await runner.reap_once()
+
+        current = await canvas_store.get_job(claimed.id, org_id=ORG_A)
+        assert current is not None and current.status == "cancelled"
 
 
 # ─────────────────────────────────────────────────────────────────────

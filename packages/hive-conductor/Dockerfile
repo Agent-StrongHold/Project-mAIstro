@@ -2,14 +2,14 @@
 #   docker build -f packages/hive-conductor/Dockerfile . -t hive-conductor
 # Or via docker-compose (context is set to monorepo root in docker-compose.yml).
 #
-# Runtime is a Chainguard/Wolfi base (glibc, nonroot uid 65532, no shell/pip,
-# near-zero CVEs) so the image scan finds no fixable HIGH/CRITICAL CVEs — the
-# CVE-laden debian-slim base was the sole source of the container-scan failures.
-# Pattern mirrors Dockerfile.chainguard: fat -dev builder makes a self-contained
-# venv; thin runtime copies only the venv + app sources.
-
+# The Conductor identity contract is pinned to CPython 3.13: coincurve 21.0.0
+# publishes the required Linux wheels for cp313, but not cp314. Keep the exact
+# patch version here so a moving base tag cannot silently change that contract.
+# A fat builder makes a self-contained venv; the runtime copies only the venv and
+# app sources.
 # ---- frontend build ----
-FROM node:22-alpine AS frontend
+# Digest-pinned (#349); node:22-alpine resolved to this index digest 2026-09-30.
+FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS frontend
 WORKDIR /build
 COPY packages/hive-conductor/frontend/package.json packages/hive-conductor/frontend/package-lock.json ./
 RUN npm ci
@@ -28,7 +28,7 @@ RUN npm run build
 # immutable release tag ourselves with a patched Go toolchain/dependency set so
 # the runtime does not inherit vulnerabilities from an otherwise-current source
 # release. The release tag resolves to b8564ad; fail if upstream ever disagrees.
-FROM golang:1.25.13-alpine AS agebuild
+FROM golang:1.25.13-alpine@sha256:1e0126852075c9c60731c8ba49088448b91f63e2aed97ca9d1a9791622a05946 AS agebuild
 ARG AGE_VERSION=1.3.1
 ARG AGE_COMMIT_SHORT=b8564ad
 RUN apk add --no-cache git && \
@@ -40,9 +40,16 @@ RUN apk add --no-cache git && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/age ./cmd/age && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/age-keygen ./cmd/age-keygen
 
-# ---- fat Wolfi builder: self-contained venv (has shell/pip/apk, glibc) ----
-FROM cgr.dev/chainguard/python:latest-dev AS pybuild
+# ---- builder: self-contained venv (has shell/pip) ----
+# Digest-pinned (#349); shared with the runtime stage below so both resolve to
+# the same CPython build.
+FROM python:3.13.15-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26 AS pybuild
 WORKDIR /app
+# CI evidence (run 36835563311): pip's 15s transport timeouts, not resolution
+# failures, killed the sibling research image's builds under runner load.
+# State the patience here too -- this stage pip-installs the same PyPI set.
+ENV PIP_DEFAULT_TIMEOUT=60 \
+    PIP_RETRIES=10
 ENV PATH="/app/venv/bin:$PATH"
 RUN python -m venv /app/venv
 # Install the maistro library packages (non-editable) so the venv is fully
@@ -55,14 +62,17 @@ COPY packages/maistro-bootstrap /packages/maistro-bootstrap
 COPY packages/maistro-canvas /packages/maistro-canvas
 COPY packages/maistro-design /packages/maistro-design
 COPY packages/maistro-evolve /packages/maistro-evolve
-# NOTE: maistro-core's [identity] extra (bip-utils → coincurve) cannot install
-# here yet: coincurve publishes no cp314 wheels (21.0.0 caps at cp313), this
-# base image is Python 3.14, and coincurve's source build is broken against
-# current cffi. Until a cp314 wheel exists, setup surfaces the gap loudly via
-# identity_unavailable instead of a silently-missing mnemonic
-# (SPEC-072726-3439 Phase 3 tracks restoring in-image identity).
+# Pin the identity wheel set as one install contract. The explicit pins make a
+# dependency refresh fail at review time rather than selecting a new native
+# extension without a corresponding CPython/wheel check.
+ARG BIP_UTILS_VERSION=2.12.1
+ARG COINCURVE_VERSION=21.0.0
+ARG PYNACL_VERSION=1.6.2
 RUN pip install --no-cache-dir \
-    /packages/maistro-core \
+    "/packages/maistro-core[identity]" \
+    "bip-utils==${BIP_UTILS_VERSION}" \
+    "coincurve==${COINCURVE_VERSION}" \
+    "pynacl==${PYNACL_VERSION}" \
     /packages/maistro-bootstrap \
     /packages/maistro-canvas \
     /packages/maistro-design \
@@ -87,17 +97,39 @@ ARG INSTALL_OBSERVABILITY=0
 RUN if [ "$INSTALL_OBSERVABILITY" = "1" ]; then \
         pip install --no-cache-dir "/packages/maistro-core[observability]"; \
     fi
+
+# #406: bip-utils pins pytoniq-core-fork, whose wheel installs a generic
+# top-level `examples` namespace package. Both PyPI releases of the fork ship
+# it and pip cannot exclude a subpath, so the payload is pruned at build time
+# and the whole environment is then re-checked in production mode — placed
+# AFTER every install that can touch site-packages (identity stack, backend
+# requirements, optional observability), because a gate that runs before the
+# last dependency lands does not gate that dependency. A silent no-op prune
+# fails this build, not the next audit. RECORD is rewritten, so the syft SBOM
+# keeps the fork provenance (pkg:pypi/pytoniq-core-fork) with the pruned file
+# inventory.
+COPY scripts/check-dependency-namespaces.py scripts/prune-dependency-namespaces.py /tmp/
+RUN python /tmp/prune-dependency-namespaces.py \
+    && python /tmp/check-dependency-namespaces.py --production \
+    && rm -rf /tmp/check-dependency-namespaces.py /tmp/prune-dependency-namespaces.py
+# The image build is the first contract test: exercise the same identity import
+# and derivation that setup uses, and fail if a native wheel was not selected.
+RUN python -c "import importlib.metadata as m, sys; from maistro.identity import ConductorSeed; assert sys.version_info[:3] == (3, 13, 15), sys.version; assert m.version('bip-utils') == '${BIP_UTILS_VERSION}'; assert m.version('coincurve') == '${COINCURVE_VERSION}'; assert m.version('pynacl') == '${PYNACL_VERSION}'; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero()" && \
+    if [ "$INSTALL_OBSERVABILITY" = "1" ]; then \
+        python -c "import opentelemetry, opentelemetry.sdk, opentelemetry.exporter.otlp"; \
+    fi
 # Seed dir for conductor state (SQLite/vault/state). Created under the writable
 # /app workdir because the -dev base runs as nonroot and cannot write to /. The
 # runtime stage COPY --chown's it to /data so a mounted named volume inherits
 # writable nonroot ownership.
 RUN mkdir -p /app/state_seed
 
-# ---- thin Wolfi runtime: near-0-CVE base, nonroot, no shell/pip ----
-FROM cgr.dev/chainguard/python:latest
+# ---- thin runtime: same pinned CPython ABI, nonroot ----
+FROM python:3.13.15-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26
 WORKDIR /app
 ENV PATH="/app/venv/bin:$PATH" \
     PYTHONPATH=/app/backend:/app \
+    CONDUCTOR_DATA_DIR=/data \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 COPY --from=pybuild /app/venv /app/venv
@@ -106,15 +138,19 @@ COPY packages/hive-conductor/backend/ /app/backend/
 COPY packages/hive-conductor/cage/ /app/cage/
 COPY packages/hive-conductor/eval/ /app/eval/
 COPY packages/hive-conductor/dags/ /app/dags/
+# The canonical agent roster. The default MAISTRO_AGENTS_DIR ("agents")
+# resolves against the backend directory, and the embedded bridge builds its
+# roster with require_agents=True: without these files it fails to start, and
+# with DATABASE_URL set every Workspace request then fails closed (#37).
+COPY agents/ /app/backend/agents/
 COPY --from=frontend /build/dist /app/frontend/dist
 # Persistent conductor state dir, pre-owned by the nonroot uid (see pybuild).
 COPY --from=pybuild --chown=65532:65532 /app/state_seed /data
 EXPOSE 8101
 WORKDIR /app/backend
-# Chainguard runs as nonroot (uid 65532) by default; make it explicit so the
-# image is unambiguously non-root.
+# Keep the app nonroot even though the pinned runtime is a slim Python image.
 USER 65532
-# exec-form, stdlib healthcheck — no curl/shell in the image.
+# exec-form, stdlib healthcheck — no curl/shell dependency.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD ["python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8101/health/ready', timeout=4).status==200 else 1)"]
 # Base image's ENTRYPOINT is `python`, so invoke uvicorn via `python -m`.

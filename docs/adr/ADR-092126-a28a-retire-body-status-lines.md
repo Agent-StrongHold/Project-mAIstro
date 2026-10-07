@@ -41,7 +41,9 @@ history:
 ADR-031 made front matter canonical: the lifecycle machine, the AC ladder, the
 citation gate and `ADR-INDEX` all read `status:` there. But 63 ADRs and 20
 specs also carried a `**Status:** X` line in their body, restating that value
-in prose a few lines below the front matter that owns it.
+in prose a few lines below the front matter that owns it. The October 7
+refresh also removes the same duplication from eight documents added since
+this decision was authored, bringing the retirement to 91 documents.
 
 Nothing consumed those lines. A survey of `scripts/`, `tools/` and
 `packages/*/src` found exactly one reader: the gate written to police them.
@@ -73,7 +75,7 @@ that has one predates that convention.
 ## Decision
 
 **A document's status lives in its front matter and nowhere else.** The
-`**Status:** X` line is removed from the body of all 83 documents under
+`**Status:** X` line is removed from the body of all 91 documents under
 `docs/adr/` and `docs/specs/`, in both the bare and list-item spellings. The
 surrounding header block (`**Date:**`, `**Deciders:**`, `**ADR:**`) is left
 alone — this ADR is about the duplicated status, not about that block.
@@ -114,7 +116,7 @@ registration all continue to apply unchanged.
   text. They see it in the front matter, which most renderers display, and it
   is the value every tool acts on — but it is a real change in where the eye
   finds it.
-- 83 documents change in one sweep. The diff is one deleted line each and no
+- 91 documents change in one sweep. The diff is one deleted line each and no
   document's meaning changes, but it is a wide diff to review.
 - A document that genuinely needs a status-like banner in its body — a
   superseded one, say — must express it as a banner (category 2 territory),

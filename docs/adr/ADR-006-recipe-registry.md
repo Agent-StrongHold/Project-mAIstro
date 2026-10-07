@@ -16,7 +16,7 @@ blocked-by: []
 contracts:
   - boundary
 tests:
-  - tests/agents/recipes/test_registry.py
+  - packages/maistro-core/tests/agents/recipes/test_recipes_init.py
 layer: Foundation
 owners:
   - '@BlakeMatthews-dev'
@@ -97,6 +97,14 @@ Seeded YAMLs (one per role, minimal config):
 | `test_registry_programmatic_register` | register + get |
 | `test_registry_save_roundtrip` | save + get |
 | `test_recipe_result_schema_resolves` | dotted-path schema field is valid |
+
+The registry shipped at `maistro.agents.recipes` (maistro-core), not the
+monorepo-root `tests/agents/recipes/` path this ADR originally cited; that
+path never existed in this tree. Front-matter `tests:` points at the
+package suite that carries the RecipeRegistry coverage
+(`test_recipes_init.py`) — dispositioned while making cited test paths
+resolve (#812); the plan table above records intent, the front-matter
+entry records evidence.
 
 ## Out of scope
 

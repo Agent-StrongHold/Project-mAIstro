@@ -230,6 +230,30 @@ class DesignOutput:
     node_run_id: str = ""
     attempt_id: str = ""
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the supported single-file API representation.
+
+        Binary and container outputs do not have inline text content. They are
+        represented by their kind and URL/metadata instead of calling
+        ``content`` and turning a valid persisted read into a server error.
+        """
+        content = (
+            self.content
+            if self.root.kind is ArtifactKind.FILE and isinstance(self.root.value, str)
+            else None
+        )
+        return {
+            "format": self.format.value if self.format is not None else None,
+            "content": content,
+            "url": self.url,
+            "trust_tier": self.trust_tier.value,
+            "metadata": self.metadata,
+            "artifact_kind": self.root.kind.value,
+            "run_id": self.run_id,
+            "node_run_id": self.node_run_id,
+            "attempt_id": self.attempt_id,
+        }
+
     @property
     def format(self) -> OutputFormat | None:
         return self.root.format

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 
 import stores
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from middleware.auth import origin_allowed, principal_has_permission, resolve_principal
 from services.dag_execution_scope import (
+    DagExecutionScope,
     DagWorkspaceSelectionError,
     authorize_hive_dag_scope,
 )
@@ -38,6 +40,9 @@ async def _authenticate(websocket: WebSocket, permission: str | None = None) -> 
     if not origin_allowed(websocket.headers.get("origin"), websocket.headers.get("host")):
         await websocket.close(code=_POLICY_VIOLATION, reason="Origin not allowed")
         return None
+    # Resolve identity before touching activity. A denied handshake is not
+    # eligible activity: otherwise an unauthorized polling client can slide
+    # the session's idle window indefinitely.
     user = resolve_principal(websocket.cookies, websocket.headers.get("authorization"))
     if user is None:
         await websocket.close(code=_POLICY_VIOLATION, reason="Authentication required")
@@ -48,9 +53,43 @@ async def _authenticate(websocket: WebSocket, permission: str | None = None) -> 
     return user
 
 
+async def _refresh_authenticated_activity(
+    websocket: WebSocket, permission: str | None = None
+) -> dict | None:
+    """Touch activity only after the complete handshake authorization path passes."""
+    # Resolve and authorize WITHOUT touching first: a denied handshake is not
+    # eligible activity — including one denied by a `dags.write` elevation
+    # withdrawn between the admission check above and this re-check. Touching
+    # on the denial path would let rejected (even mid-handshake-revoked)
+    # callers slide the idle window, diverging from the HTTP middleware's
+    # resolve -> authorize -> touch ordering.
+    user = resolve_principal(websocket.cookies, websocket.headers.get("authorization"))
+    if user is None:
+        await websocket.close(code=_POLICY_VIOLATION, reason="Authentication required")
+        return None
+    if permission is not None and not principal_has_permission(user, permission):
+        await websocket.close(code=_POLICY_VIOLATION, reason=f"Permission '{permission}' required")
+        return None
+    # Authorization passed: the serialized touch re-validates the record under
+    # the session lock, so expiry or revocation winning between the check and
+    # this touch fails closed rather than accepting stale authorization.
+    user = resolve_principal(
+        websocket.cookies,
+        websocket.headers.get("authorization"),
+        refresh_activity=True,
+    )
+    if user is None:
+        await websocket.close(code=_POLICY_VIOLATION, reason="Authentication required")
+        return None
+    return user
+
+
 @router.websocket("/tasks/{task_id}")
 async def stream_task(websocket: WebSocket, task_id: str) -> None:
     user = await _authenticate(websocket)
+    if user is None:
+        return
+    user = await _refresh_authenticated_activity(websocket)
     if user is None:
         return
     await websocket.accept()
@@ -105,26 +144,63 @@ async def stream_dag_run(websocket: WebSocket, dag_id: str) -> None:
         await websocket.close(code=_POLICY_VIOLATION, reason="Workspace not found")
         return
 
+    user = await _refresh_authenticated_activity(websocket, permission="dags.write")
+    if user is None:
+        return
+    await _stream_dag_run(websocket, dag_id, user, scope=scope)
+
+
+async def _stream_dag_run(
+    websocket: WebSocket, dag_id: str, user: dict, *, scope: DagExecutionScope
+) -> None:
     await websocket.accept()
     if dag_id not in stores.dags:
         await websocket.send_json({"error": "dag not found"})
         await websocket.close()
         return
 
-    dag_data = stores.dags[dag_id]
     try:
-        from services.graph_runner import execute_dag_streaming
-
-        async for event in execute_dag_streaming(dag_data, scope=scope):
-            await websocket.send_json(event)
-            if event.get("status") in ("completed", "failed"):
-                break
+        await _stream_canonical_run(websocket, dag_id=dag_id, scope=scope)
     except WebSocketDisconnect:
         pass
     except Exception as exc:
-        await websocket.send_json({"status": "failed", "error": str(exc)})
+        from services.graph_runner import public_failure
+
+        logger.warning("dag_stream_failed dag_id=%s", dag_id, exc_info=exc)
+        with contextlib.suppress(Exception):
+            await websocket.send_json({"status": "failed", "error": public_failure(exc)})
     finally:
         try:
             await websocket.close()
         except Exception as exc:
             logger.debug("ws_close_failed (already closed): %s", exc)
+
+
+async def _stream_canonical_run(
+    websocket: WebSocket, *, dag_id: str, scope: DagExecutionScope
+) -> None:
+    """Stream one canonical Run live and record the projection POST /v1/dags/{id}/run records.
+
+    The projection is recorded incrementally (#1183): every node transition is
+    appended to the run store (with its sequence number) before its frame is
+    sent, so a client that disappears mid-Run leaves durable progress behind,
+    and the SSE stream over the same run id delivers the same events live.
+    """
+    from services.dag_run_live import LiveRunProjection
+    from services.graph_runner import execute_dag_streaming
+
+    from routes.audit import log_audit
+
+    log_audit("dag_run", scope.user_id, target=dag_id)
+
+    recorder = LiveRunProjection(dag_id=dag_id, scope=scope)
+    async for event in execute_dag_streaming(
+        stores.dags[dag_id],
+        scope=scope,
+        execution_mode="interactive",
+        on_event=recorder.record_event,
+        on_result=recorder.record_result,
+    ):
+        await websocket.send_json(event)
+        if event.get("status") in ("completed", "failed"):
+            break

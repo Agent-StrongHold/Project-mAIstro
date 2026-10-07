@@ -22,10 +22,13 @@ from maistro.runs.chat_admission import (
     CHAT_SOURCE,
     EXECUTION_NEVER_STARTED,
     SESSION_ID_KEY,
+    ChatRunAdmitter,
 )
+from maistro.runs.chat_refusal import ChatTurnRefused
 from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
-from maistro.runs.store import RunNotFound
+from maistro.runs.store import RunIntegrityError, RunNotFound
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 
@@ -47,18 +50,22 @@ class _Conduit:
         return {"choices": [{"message": {"role": "assistant", "content": "hi"}}]}
 
 
+@pytest.mark.ac("ADR-082326-c126/AC-3")
 async def test_a_turn_yields_a_run_id_that_resolves() -> None:
     container = await _container()
     container.conduit = _Conduit()
 
     result = await container.route_request(
-        [{"role": "user", "content": "what broke?"}], session_id="sess-1"
+        [{"role": "user", "content": "what broke?"}],
+        session_id="sess-1",
+        request_id="req-1",
     )
 
     run = await container.run_store.get_run(result["run_id"])
     assert run is not None
     assert run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
     assert run.provenance[SESSION_ID_KEY] == "sess-1"
+    assert run.provenance["request_id"] == "req-1"
 
 
 async def test_the_openai_shape_is_untouched() -> None:
@@ -118,7 +125,10 @@ async def test_cancelled_turn_observes_cancelled_run_without_false_terminalizati
 async def test_cancelled_close_rejects_error_payload() -> None:
     """Cancellation is a terminal cause, not a second failure payload."""
     container = await _container()
-    run = await container.chat_admitter.admit([{"role": "user", "content": "hi"}])
+    run = await container.chat_admitter.admit(
+        [{"role": "user", "content": "hi"}],
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     with pytest.raises(ValueError, match="cannot carry error or result"):
         await container._close_chat_run(run, cancelled=True, error="provider_error")
@@ -128,34 +138,107 @@ async def test_cancelled_close_rejects_error_payload() -> None:
     assert unchanged.status is RunStatus.CREATED
 
 
-async def test_the_turn_is_answered_even_when_admission_fails() -> None:
-    """The chat path has no receipt to fall back on, so it must not refuse."""
+class _BrokenAdmitter:
+    async def admit(self, *_args, **_kwargs):
+        raise RuntimeError("no project")
+
+
+async def test_a_turn_whose_admission_fails_is_refused_and_never_dispatched() -> None:
+    """No canonical Run, no answer (#1108 owner decision): refuse, retryably."""
     container = await _container()
     conduit = _Conduit()
     container.conduit = conduit
+    container.chat_admitter = _BrokenAdmitter()  # type: ignore[assignment]
 
-    class _Broken:
-        async def admit(self, *_args, **_kwargs):
-            raise RuntimeError("no project")
+    with pytest.raises(ChatTurnRefused) as refused:
+        await container.route_request([{"role": "user", "content": "hi"}])
 
-    container.chat_admitter = _Broken()  # type: ignore[assignment]
-
-    result = await container.route_request([{"role": "user", "content": "hi"}])
-
-    assert len(conduit.calls) == 1
-    assert "run_id" not in result
+    assert conduit.calls == []
+    assert refused.value.retry_after_s > 0
+    assert not [run for run in _chat_runs(container) if run.status is RunStatus.RUNNING]
 
 
-async def test_no_chat_admitter_means_no_run_id_and_no_failure() -> None:
+async def test_no_chat_admitter_means_the_turn_is_refused() -> None:
     container = await _container()
     conduit = _Conduit()
     container.conduit = conduit
     container.chat_admitter = None  # type: ignore[assignment]
 
-    result = await container.route_request([{"role": "user", "content": "hi"}])
+    with pytest.raises(ChatTurnRefused):
+        await container.route_request([{"role": "user", "content": "hi"}])
 
+    assert conduit.calls == []
+
+
+async def test_no_run_store_means_an_adopted_run_is_refused() -> None:
+    """A Run with nowhere to record its Attempt is not a licence to dispatch."""
+    container = await _container()
+    conduit = _Conduit()
+    container.conduit = conduit
+    run = await container._admit_chat_turn([{"role": "user", "content": "hi"}])
+    container.run_store = None  # type: ignore[assignment]
+
+    with pytest.raises(ChatTurnRefused):
+        await container._execute_chat_turn(run, [], conduit.route_request)
+
+    assert conduit.calls == []
+
+
+async def test_a_pre_dispatch_integrity_failure_is_refused_not_redispatched() -> None:
+    """The mutation check for #1108: restoring `return await dispatch()` fails this.
+
+    The store vetoes the Attempt create, so the spine fails before the Attempt
+    ever starts -- provably before the model. The turn is refused and the Run
+    closed, rather than answered outside the record.
+    """
+    container = await _container()
+    conduit = _Conduit()
+    container.conduit = conduit
+    store = container.run_store
+
+    async def _veto_attempt(*_args, **_kwargs):
+        raise RunIntegrityError("attempt write vetoed")
+
+    store.create_attempt = _veto_attempt  # type: ignore[method-assign]
+
+    with pytest.raises(ChatTurnRefused) as refused:
+        await container.route_request([{"role": "user", "content": "hi"}])
+
+    assert conduit.calls == []
+    assert isinstance(refused.value.__cause__, RunIntegrityError)
+    (run,) = _chat_runs(container)
+    assert run.status in TERMINAL_RUN_STATUSES
+
+
+async def test_a_pre_dispatch_driver_failure_is_refused_too() -> None:
+    """A store outage before the Attempt is not a RunIntegrityError, and no
+    less pre-dispatch: refused retryably, not a 500."""
+    container = await _container()
+    conduit = _Conduit()
+    container.conduit = conduit
+
+    async def _connection_lost(*_args, **_kwargs):
+        raise ConnectionError("database went away")
+
+    container.run_store.create_attempt = _connection_lost  # type: ignore[method-assign]
+
+    with pytest.raises(ChatTurnRefused):
+        await container.route_request([{"role": "user", "content": "hi"}])
+
+    assert conduit.calls == []
+
+
+async def test_an_integrity_error_raised_by_the_dispatch_is_not_a_retryable_refusal() -> None:
+    """The model was reached, so telling the caller to retry would dispatch twice."""
+    container = await _container()
+    conduit = _Conduit(raises=RunIntegrityError("stale fence inside the agent"))
+    container.conduit = conduit
+
+    with pytest.raises(RunIntegrityError) as raised:
+        await container.route_request([{"role": "user", "content": "hi"}])
+
+    assert not isinstance(raised.value, ChatTurnRefused)
     assert len(conduit.calls) == 1
-    assert "run_id" not in result
 
 
 async def test_the_chat_admitter_is_wired_by_the_container() -> None:
@@ -163,6 +246,59 @@ async def test_the_chat_admitter_is_wired_by_the_container() -> None:
 
     assert container.chat_admitter is not None
     assert container.chat_admitter.retained == 0
+
+
+@pytest.mark.ac("ADR-082326-c126/AC-3")
+async def test_terminalized_concurrent_chat_burst_is_swept() -> None:
+    """The bound still holds when no later admission arrives to sweep."""
+    container = await _container()
+    container.chat_admitter = ChatRunAdmitter(
+        container.run_store,
+        workspace_id=container.config.workspace_id,
+        project_store=container.project_scope_store,
+        max_retained=2,
+    )
+    container.conduit = _Conduit()
+
+    results = await asyncio.gather(
+        *(container.route_request([{"role": "user", "content": f"turn {i}"}]) for i in range(8))
+    )
+
+    assert all("run_id" in result for result in results)
+    assert container.chat_admitter.retained <= 2
+    terminal_chat_runs = [
+        run for run in _chat_runs(container) if run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
+    ]
+    assert len(terminal_chat_runs) <= 2
+    assert all(run.status in TERMINAL_RUN_STATUSES for run in terminal_chat_runs)
+
+
+async def test_stalled_admissions_cannot_grow_the_store_past_the_window() -> None:
+    """Admission alone, never executed, must not grow the store past the bound.
+
+    The repro: three turns through `_admit_chat_turn` that never reach an
+    executor leave three RUNNING Runs with nothing under them, over a window
+    of two. The sweep may not skip every non-terminal Run — a stalled turn
+    will never terminalize on its own, and a window that shields it grows
+    without limit exactly when the process is misbehaving.
+    """
+    container = await _container()
+    container.chat_admitter = ChatRunAdmitter(
+        container.run_store,
+        workspace_id=container.config.workspace_id,
+        project_store=container.project_scope_store,
+        max_retained=2,
+    )
+
+    admitted = [
+        await container._admit_chat_turn([{"role": "user", "content": f"turn {index}"}])
+        for index in range(3)
+    ]
+
+    assert all(run.status is RunStatus.RUNNING for run in admitted)
+    assert container.chat_admitter.retained <= 2
+    stored = [run for run in admitted if await container.run_store.get_run(run.run_id) is not None]
+    assert [run.run_id for run in stored] == [admitted[1].run_id, admitted[2].run_id]
 
 
 def _chat_runs(container: Container):
@@ -258,7 +394,10 @@ async def test_a_caller_supplied_run_is_adopted_rather_than_duplicated() -> None
     """
     container = await _container()
     container.conduit = _Conduit()
-    mine = await container.chat_admitter.admit([{"role": "user", "content": "hi"}])
+    mine = await container.chat_admitter.admit(
+        [{"role": "user", "content": "hi"}],
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await container.run_store.transition_run(mine.run_id, RunStatus.QUEUED)
     await container.run_store.transition_run(mine.run_id, RunStatus.RUNNING)
 
@@ -276,7 +415,10 @@ async def test_an_adopted_run_is_still_terminalized_here() -> None:
     recovery reads as a process that died."""
     container = await _container()
     container.conduit = _Conduit()
-    mine = await container.chat_admitter.admit([{"role": "user", "content": "hi"}])
+    mine = await container.chat_admitter.admit(
+        [{"role": "user", "content": "hi"}],
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await container.run_store.transition_run(mine.run_id, RunStatus.QUEUED)
     await container.run_store.transition_run(mine.run_id, RunStatus.RUNNING)
 
@@ -313,17 +455,19 @@ async def test_a_failure_persisting_running_cancels_the_queued_run() -> None:
 
     The Run used to stay QUEUED forever — admission swallowed the exception and
     returned None, so `_close_chat_run` had nothing to settle and no sweeper
-    owns a QUEUED chat Run. Compensation cancels it with a sanitized category.
+    owns a QUEUED chat Run. Compensation cancels it with a sanitized category
+    before the turn is refused.
     """
     container = await _container()
     container.run_store = _VetoStore(container.run_store, RunStatus.RUNNING)  # type: ignore[assignment]
-    container.conduit = _Conduit()
+    conduit = _Conduit()
+    container.conduit = conduit
 
-    result = await container.route_request([{"role": "user", "content": "hi"}])
+    # Refused, not answered ungoverned (#1108) -- and compensated first.
+    with pytest.raises(ChatTurnRefused):
+        await container.route_request([{"role": "user", "content": "hi"}])
 
-    # The turn is still answered — admission failing must not refuse the turn.
-    assert result["choices"][0]["message"]["content"] == "hi"
-    assert "run_id" not in result
+    assert conduit.calls == []
     (run,) = _chat_runs(container)
     assert run.status is RunStatus.CANCELLED
     assert run.error == ADMISSION_INCOMPLETE
@@ -333,11 +477,13 @@ async def test_a_failure_persisting_queued_cancels_the_created_run() -> None:
     """The hop before: admit() persisted CREATED, QUEUED raises."""
     container = await _container()
     container.run_store = _VetoStore(container.run_store, RunStatus.QUEUED)  # type: ignore[assignment]
-    container.conduit = _Conduit()
+    conduit = _Conduit()
+    container.conduit = conduit
 
-    result = await container.route_request([{"role": "user", "content": "hi"}])
+    with pytest.raises(ChatTurnRefused):
+        await container.route_request([{"role": "user", "content": "hi"}])
 
-    assert "run_id" not in result
+    assert conduit.calls == []
     (run,) = _chat_runs(container)
     assert run.status is RunStatus.CANCELLED
     assert run.error == ADMISSION_INCOMPLETE
@@ -425,7 +571,9 @@ async def test_compensation_declines_a_run_already_past_queued() -> None:
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await container.run_store.create_run(graph)
+    run = await container.run_store.create_run(
+        graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
     running = await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
 
@@ -487,6 +635,7 @@ async def _stranded_running_chat_run(
         session_id=None,
         intent_hint="",
         known_task_types=container.config.task_types,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     assert admitted is not None
     at = datetime.now(UTC) - age
@@ -506,6 +655,31 @@ async def test_stranded_running_admission_with_no_noderun_is_cancelled() -> None
     assert current is not None
     assert current.status is RunStatus.CANCELLED
     assert current.error == EXECUTION_NEVER_STARTED
+
+
+@pytest.mark.parametrize("stage", [RunStatus.CREATED, RunStatus.QUEUED])
+async def test_an_admission_stranded_before_running_is_cancelled(stage: RunStatus) -> None:
+    """A crash between `create_run` and the RUNNING write strands the Run
+    earlier, and it holds an active-root slot all the same (#1182)."""
+    container = await _container()
+    admitted = await container.chat_admitter.admit(  # type: ignore[union-attr]
+        [{"role": "user", "content": "hi"}],
+        known_task_types=container.config.task_types,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    if stage is RunStatus.QUEUED:
+        await container.run_store.transition_run(admitted.run_id, RunStatus.QUEUED)
+
+    assert await container.recover_stranded_chat_admissions() == 0
+    recovered = await container.recover_stranded_chat_admissions(
+        now=datetime.now(UTC) + timedelta(hours=1)
+    )
+
+    assert recovered == 1
+    current = await container.run_store.get_run(admitted.run_id)
+    assert current is not None
+    assert current.status is RunStatus.CANCELLED
+    assert current.error == ADMISSION_INCOMPLETE
 
 
 async def test_a_running_admission_still_within_its_grace_period_is_left_alone() -> None:
@@ -552,7 +726,11 @@ async def test_a_stranded_admission_from_a_non_chat_source_is_left_alone() -> No
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await container.run_store.create_run(graph, provenance={ADMISSION_SOURCE: "schedule"})
+    run = await container.run_store.create_run(
+        graph,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={ADMISSION_SOURCE: "schedule"},
+    )
     at = datetime.now(UTC) - timedelta(minutes=10)
     await container.run_store.transition_run(run.run_id, RunStatus.QUEUED, at=at)
     await container.run_store.transition_run(run.run_id, RunStatus.RUNNING, at=at)
@@ -740,7 +918,11 @@ async def test_a_store_that_ignores_the_source_filter_still_spares_a_foreign_run
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    foreign = await container.run_store.create_run(graph, provenance={ADMISSION_SOURCE: "schedule"})
+    foreign = await container.run_store.create_run(
+        graph,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={ADMISSION_SOURCE: "schedule"},
+    )
     at = datetime.now(UTC) - timedelta(minutes=10)
     await container.run_store.transition_run(foreign.run_id, RunStatus.QUEUED, at=at)
     await container.run_store.transition_run(foreign.run_id, RunStatus.RUNNING, at=at)
@@ -807,3 +989,41 @@ async def test_a_run_deleted_mid_tick_does_not_abort_the_rest_of_the_sweep(
     still_there = await container.run_store.get_run(vanished.run_id)
     assert still_there is not None
     assert still_there.status is RunStatus.RUNNING
+
+
+async def test_sweep_without_an_admitter_is_a_no_op() -> None:
+    """Retention rides on the admitter. A Container wired without one (the
+    minimal deployment that still closes chat Runs) reaches this guard on
+    every closure, and must pass through it without touching a store that is
+    not there."""
+    container = await _container()
+    container.chat_admitter = None  # type: ignore[assignment]
+
+    await container._sweep_chat_runs()
+
+
+async def test_a_failing_sweep_does_not_replace_the_turns_answer(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Retention is housekeeping that runs after the Run is already terminal:
+    a sweep that raises must not fail a turn that was answered, and must be
+    logged so the missed trim is visible rather than silent."""
+    container = await _container()
+    container.conduit = _Conduit()
+
+    async def _explodes() -> int:
+        raise RuntimeError("retention exploded")
+
+    # The public `sweep()` hook is exactly what `_sweep_chat_runs` calls after
+    # terminalization; admission's internal `_sweep()` is a different method,
+    # so the turn itself is unaffected by this stub.
+    container.chat_admitter.sweep = _explodes  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.WARNING, logger="maistro.container"):
+        result = await container.route_request([{"role": "user", "content": "hi"}])
+
+    assert result["choices"][0]["message"]["content"] == "hi"
+    run = await container.run_store.get_run(result["run_id"])
+    assert run is not None
+    assert run.status is RunStatus.COMPLETED
+    assert "chat Run retention sweep failed" in caplog.text

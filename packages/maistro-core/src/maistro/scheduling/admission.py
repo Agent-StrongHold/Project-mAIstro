@@ -16,6 +16,21 @@ already has one, so two tickers evaluating the same due window produce one Run
 between them and a crash between creating a Run and stamping the cursor cannot
 duplicate the firing on the next tick.
 
+The claim is an *instant*, not a wall clock (#850). Every store compares
+`scheduled_for` as text — provenance is JSON, and the claim indexes are
+expressions over that text — so the text is one representation of the
+identity. `datetime.isoformat()` renders in the datetime's own offset, and
+the cron walker renders moments in the schedule's timezone, so editing a
+schedule's timezone used to re-render an already-claimed instant as different
+text: the lookup missed, the same firing was admitted twice, and the window
+the uniqueness contract exists to close reopened. Nominal claims are now
+written and probed as the instant in UTC (`canonical_occurrence_instant`),
+so a timezone edit changes the wall clock and never the claim. Rows written
+before this identity keep their wall-clock text: a crash-window occurrence
+straddling the upgrade can re-fire once, the same narrow, loud-documented
+window migrations 015/042 accepted rather than backfill-parse every Run's
+provenance (PostgreSQL refuses the non-IMMUTABLE cast in an index).
+
 That leaves `record_fire` doing what it is actually good at. The cursor is now
 an optimisation — where to start enumerating, so a schedule does not re-derive
 its whole history every tick — rather than the mechanism that makes firing
@@ -48,15 +63,23 @@ fires are recorded", which is only true if all of them were. Partial failure
 recomputes it from the count that survived, so a schedule is never disabled for
 reaching a limit it did not reach.
 
-**A manual fire is the same authority, one occurrence wide (#1119).**
+**A manual fire is the same authority, one occurrence wide (#1119, #1120).**
 The `manual=True` variant of `admit_due` exists because a product "run this
 schedule now" request is not an occurrence the cron enumerated — `evaluate()`
 has nothing to say about it — but everything *after* that decision is the
 recurring path's: the durable template resolution, `_admit_one`'s Run with its
-provenance, the occurrence claim, and `record_fire`'s advance-and-disable. A manual fire counts against
-`max_runs` and names the schedule in Run provenance exactly as an enumerated
-one does, so the product cannot grow a second set of firing semantics by
-asking for a fire by hand.
+provenance, the occurrence claim, and the same advance-and-disable discipline
+— a manual fire settles its slot through `reserve_fire` /
+`settle_pending_fire` rather than `record_fire` only because its occurrence is
+the caller's token, not a cron moment the enumeration cursor could pass. A
+manual fire counts against `max_runs` and names the schedule in Run provenance
+exactly as an enumerated one does, so the product cannot grow a second set of
+firing semantics by asking for a fire by hand. Its occurrence identity is the
+caller-stable `fire_id` token rather than a fresh instant per request, so a
+retried or concurrent double submit reconciles to the one Run the first call
+created (#1120) instead of silently becoming two — and its slot is held, not
+spent, until that Run exists, so a crash before the Run leaves no firing
+behind and a crash after it is recoverable from the marker plus the Run.
 """
 
 from __future__ import annotations
@@ -65,7 +88,7 @@ import logging
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from maistro.graph.templates import require_template
@@ -78,13 +101,20 @@ from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
     SCHEDULE_CATCHUP_KEY,
+    SCHEDULE_FIRE_ID_KEY,
     SCHEDULE_ID_KEY,
     SCHEDULE_INPUTS_KEY,
     SCHEDULE_SOURCE,
+    SCHEDULE_TRIGGER_KEY,
+    SCHEDULE_TRIGGER_MANUAL,
+    SCHEDULE_TRIGGER_RECURRING,
     SCHEDULED_FOR_KEY,
+    canonical_occurrence_instant,
 )
 from maistro.runs.store import DuplicateOccurrence, RunIntegrityError
 from maistro.scheduling.engine import (
+    DEFAULT_ENUMERATION_LIMITS,
+    EnumerationLimits,
     FireDecision,
     SkippedFire,
     SkipReason,
@@ -120,6 +150,23 @@ REQUEST_ID_KEY = "request_id"
 #: reason is a decision not to run that occurrence at all.
 _UNCONSUMED_SKIPS: Final = frozenset({SkipReason.BUFFERED, SkipReason.TRUNCATED})
 
+#: How long a pending manual-fire marker is trusted as held by a live fire
+#: (#1120).
+#
+# The marker exists to serialize the last `max_runs` unit between callers
+# without spending it before the Run does, and its holder closes it in the
+# one store write that also links the Run — a window of one Run-store insert.
+# A lease far longer than that window is what lets recovery tell a dead
+# holder from a live one: inside the lease the marker is untouchable (the
+# race safety #1119 demanded), past it no healthy process can still be
+# mid-fire, so the marker is a crash leftover and the next admission settles
+# it against the Run store — a Run confirms the spend, none returns the slot.
+# A process frozen mid-fire longer than the lease can have its slot taken
+# while its Run lands anyway; both Runs then exist and are both counted,
+# which is the honest durable state for work that really ran twice, and the
+# price of un-bricking every schedule whose holder simply died.
+_PENDING_FIRE_LEASE: Final = timedelta(seconds=60)
+
 
 class ManualFireRefused(Exception):
     """A manually requested occurrence was refused before anything happened.
@@ -135,8 +182,27 @@ class ManualFireRefused(Exception):
 
 
 def _owes(decision: ScheduleEvaluation) -> bool:
-    """Whether the evaluation left an occurrence that still has to run."""
-    return any(skip.reason in _UNCONSUMED_SKIPS for skip in decision.skipped)
+    """Whether the evaluation left work that still has to happen.
+
+    Two kinds of owing, and both keep the due cursor where it is so the next
+    tick comes back (#1199):
+
+    - an occurrence that still has to run: BUFFERED says the cursor does not
+      advance because "run one queued occurrence afterwards" is what
+      BUFFER_ONE means, and TRUNCATED says a caller advancing on it "would
+      otherwise lose the occurrence with no record of it";
+    - a range that was never examined (#1200): an incomplete catch-up walk —
+      budget or step bound reached — considered neither the occurrences in the
+      unexamined range nor their absence. Advancing the due cursor past it
+      would hide the schedule from `due()` until long after that range should
+      have been looked at, so an incomplete walk owes a re-examination.
+
+    Every other reason is a decision not to run that occurrence at all, and
+    the cursor consumes it.
+    """
+    return decision.enumeration_incomplete or any(
+        skip.reason in _UNCONSUMED_SKIPS for skip in decision.skipped
+    )
 
 
 #: Skips whose occurrences the policy never acts on, so their claims are not
@@ -340,6 +406,23 @@ class ScheduleAdmission:
     because nothing was due" are different operational facts.
     """
 
+    reconciled_run_id: str | None = None  # noqa: V107
+    """The Run that already held this admission's own duplicate claim (#1120).
+
+    Set for a manual fire whose `(schedule_id, fire_id)` occurrence was
+    claimed by a concurrent or retried caller of the same logical request:
+    the documented reconciliation is the first caller's receipt, not a
+    refusal, so the loser resolves and returns the winner's Run instead of
+    creating a second one. Unset for recurring admissions, whose winners are
+    already linked through `last_run_id`.
+
+    The field is read by Hive's scheduler
+    (hive-conductor/backend/services/scheduler.py), which lies outside the
+    vulture CI scan scope (packages/*/src), and a brand-new per-identity
+    ledger bank cannot be self-authorized against the trusted base — so the
+    declaration carries vulture's own per-finding suppression instead.
+    """
+
     failures: tuple[Exception, ...] = field(default=())
     """Occurrences that could not be admitted, with why.
 
@@ -347,6 +430,25 @@ class ScheduleAdmission:
     discard the sibling occurrences that resolved fine — and because the cursor
     still has to advance for the ones that did.
     """
+
+    enumeration_incomplete: bool = False
+    """This evaluation's catch-up walk stopped before reaching `now` (#1200).
+
+    The range between where it stopped and `now` was never considered — not
+    fired, not skipped, simply not looked at. The due cursor was left alone so
+    the next tick re-examines it. Reported so a host can say truthfully that a
+    tick ended with backlog work owed, instead of a clean "nothing due" that a
+    budget cut short.
+    """
+
+    enumeration_stopped_at: datetime | None = None
+    """Where an incomplete walk stopped: the exclusive end of what it examined.
+    Everything from here to `now` is the backlog the next tick re-examines."""
+
+    window_clamped: bool = False
+    """The host's window bound, not the schedule's own, sized this evaluation's
+    catch-up window (#1200). Operator-visible for the same reason: the schedule
+    asked to consider more than the host allows."""
 
 
 class ScheduleRunAdmitter:
@@ -357,10 +459,15 @@ class ScheduleRunAdmitter:
         run_store: RunStore,
         template_store: GraphTemplateStore,
         schedule_store: ScheduleStore,
+        enumeration_limits: EnumerationLimits | None = None,
     ) -> None:
         self._runs = run_store
         self._templates = template_store
         self._schedules = schedule_store
+        # None keeps the substrate's safe defaults (#1200); a host with a
+        # different latency/backlog trade-off passes its own bounds, and every
+        # evaluate() this admitter drives uses exactly these.
+        self._limits = enumeration_limits or DEFAULT_ENUMERATION_LIMITS
 
     async def _record_fire(
         self,
@@ -420,20 +527,33 @@ class ScheduleRunAdmitter:
         now: datetime,
         active_run: bool = False,
         manual: bool = False,
+        fire_id: str | None = None,
     ) -> ScheduleAdmission:
         """Admit due occurrences, or one explicit manual occurrence.
 
         `active_run` is whether a Run this schedule started is still in flight.
         The caller answers it from Run state, which is the only place it lives —
         the same contract `evaluate()` states. When `manual` is true, the
-        caller's `now` is the one occurrence to admit and cron overlap policy is
-        deliberately bypassed; the same template, Run, occurrence claim, and
-        cursor authority still handles the request.
+        caller's `now` is the instant the fire was asked for (observability,
+        kept in the Run's `scheduled_for`), cron overlap policy is deliberately
+        bypassed, and `fire_id` is the fire's occurrence identity: the opaque
+        token that makes a retried or concurrent double submit of the same
+        logical request reconcile to the Run the first call created (#1120),
+        the same authority, template, Run, occurrence claim, and cursor as a
+        nominal occurrence. A manual fire without a `fire_id` mints one, which
+        makes each call its own deliberate firing.
         """
         if manual:
-            return await self._admit_manual(schedule, now=now)
+            return await self._admit_manual(schedule, now=now, fire_id=fire_id)
 
-        decision = evaluate(schedule, now=now, active_run=active_run)
+        if schedule.pending_fires:
+            # A manual fire died mid-window and left its marker behind
+            # (#1120). Guarded on the snapshot so an idle schedule — the
+            # overwhelmingly common tick — pays nothing: only a row that
+            # actually holds markers triggers the reconciliation read.
+            schedule = await self._reconcile_pending_fires(schedule.schedule_id) or schedule
+
+        decision = evaluate(schedule, now=now, active_run=active_run, limits=self._limits)
         decision, claims, active_run_id, recovered_moments = await self._reconcile_claims(
             schedule, decision, now=now, active_run=active_run
         )
@@ -474,6 +594,9 @@ class ScheduleRunAdmitter:
                 next_due_at=decision.next_due_at,
                 cancel_active_run=decision.cancel_active_run,
                 failures=(exc,),
+                enumeration_incomplete=decision.enumeration_incomplete,
+                enumeration_stopped_at=decision.enumeration_stopped_at,
+                window_clamped=decision.window_clamped,
             )
 
         # The cursor's last_run_id follows the newest consumed occurrence, not
@@ -514,6 +637,9 @@ class ScheduleRunAdmitter:
                 cancel_active_run=decision.cancel_active_run,
                 active_run_id=active_run_id,
                 failures=tuple(failures),
+                enumeration_incomplete=decision.enumeration_incomplete,
+                enumeration_stopped_at=decision.enumeration_stopped_at,
+                window_clamped=decision.window_clamped,
             )
 
         # `next_due_at` is recomputed only when the whole batch landed and
@@ -555,6 +681,9 @@ class ScheduleRunAdmitter:
             active_run_id=active_run_id,
             already_fired=tuple(sorted(already_fired)),
             failures=tuple(failures),
+            enumeration_incomplete=decision.enumeration_incomplete,
+            enumeration_stopped_at=decision.enumeration_stopped_at,
+            window_clamped=decision.window_clamped,
         )
 
     async def _admit_batch(
@@ -765,7 +894,9 @@ class ScheduleRunAdmitter:
                 claims[moment] = run
         claims.update(await self._lookup_truncated_claims(schedule, decision))
         walk: list[datetime] = []
-        for moment in self._claims_before(schedule, enumeration_start(schedule, now=now)):
+        for moment in self._claims_before(
+            schedule, enumeration_start(schedule, now=now, limits=self._limits)
+        ):
             run = await self._lookup_claim(schedule, moment)
             if run is not None:
                 claims[moment] = run
@@ -792,10 +923,12 @@ class ScheduleRunAdmitter:
         if not truncated:
             return {}
         probe = truncated[-_MAX_TRUNCATED_CLAIM_PROBES:]
+        # The canonical instant, not the zone-local rendering: the claims on
+        # disk were written by whatever timezone the schedule had when its
+        # ticker fired (#850).
+        probe_keys = [canonical_occurrence_instant(moment) for moment in probe]
         try:
-            found = await self._runs.get_runs_for_occurrences(
-                schedule.schedule_id, [moment.isoformat() for moment in probe]
-            )
+            found = await self._runs.get_runs_for_occurrences(schedule.schedule_id, probe_keys)
         except Exception as exc:
             logger.warning(
                 "schedule %s could not batch-probe %d truncated claim(s): %s",
@@ -804,7 +937,7 @@ class ScheduleRunAdmitter:
                 exc,
             )
             return {}
-        by_moment = {moment.isoformat(): moment for moment in probe}
+        by_moment = dict(zip(probe_keys, probe, strict=True))
         return {
             by_moment[scheduled_for]: run
             for scheduled_for, run in found.items()
@@ -822,7 +955,9 @@ class ScheduleRunAdmitter:
         that the reactive design rides out (#1059).
         """
         try:
-            return await self._runs.get_run_for_occurrence(schedule.schedule_id, moment.isoformat())
+            return await self._runs.get_run_for_occurrence(
+                schedule.schedule_id, canonical_occurrence_instant(moment)
+            )
         except Exception as exc:
             logger.warning(
                 "schedule %s could not probe the claim on %s: %s",
@@ -895,25 +1030,45 @@ class ScheduleRunAdmitter:
         schedule: Schedule,
         *,
         now: datetime,
+        fire_id: str | None = None,
     ) -> ScheduleAdmission:
         """Admit the one occurrence the caller asked for *now*, off the cron.
 
         The returned `ScheduleAdmission` holds exactly one entry: `run_ids` of
-        length one on success, or `already_fired` naming the moment when the
-        occurrence-claim found a Run already standing for it (#220).
+        length one on success, or `already_fired` naming the fire's identity
+        with `reconciled_run_id` resolving the Run that already holds it
+        (#220, #1120).
 
-        Three things differ from `admit_due`, each because a manual fire is
+        Four things differ from `admit_due`, each because a manual fire is
         not a cron occurrence:
 
-        * **The quota is claimed first, atomically.** `reserve_fire` counts
-          the run and disables on exhaustion under the store's own lock,
-          *before* the Run exists. Two callers racing on the last run cannot
-          both pass an exhaustion check read from the same snapshot; the
-          loser is refused. The order also fixes what a crash leaves behind:
-          a process that dies between the reservation and the Run loses one
-          slot (visible: `runs_so_far` moved, `last_run_id` did not), never
-          the reverse, where a Run exists that no count admits to and the
-          next request duplicates it.
+        * **The occurrence identity is the fire's token, not the instant.**
+          `fire_id` (minted as an opaque uuid when the caller supplies none,
+          making each call its own deliberate firing) claims
+          `(schedule_id, 'manual:' + fire_id)` — the same occurrence-claim
+          uniqueness a nominal `(schedule_id, scheduled_for)` fires under, so
+          a retried or concurrent double submit of the same logical request
+          reconciles to the Run the first call created instead of minting a
+          fresh identity per request (#1120). `now` is observability: it is
+          the Run's `scheduled_for`, when the fire was asked for.
+        * **The quota is claimed first, atomically.** `reserve_fire` holds
+          the run under the store's own lock, *before* the Run exists, so two
+          callers racing on the last run cannot both pass an exhaustion
+          check read from the same snapshot; the loser is refused. The hold
+          is a durable `PendingFire` marker naming the token, not a spend:
+          `runs_so_far`, `enabled`, and the cursors are exactly as they
+          were, and the count, the disable, and `last_run_id` land only in
+          `settle_pending_fire` — the same write that removes the marker and
+          links the Run. So a process that dies between the hold and the Run
+          leaves no firing behind at all (#1120: "failure before canonical
+          Run creation does not advance/claim a firing that never existed"),
+          and the orphaned marker is settled by the next admission
+          (`_reconcile_pending_fires`): a Run for its token confirms the
+          spend, none releases the slot. A marker inside its lease window is
+          left alone — its holder may still be mid-fire — which is what
+          keeps the last-run race closed (#1119). A duplicate claim — the
+          reconciliation case above — releases the marker unspent: the
+          winner already counted it.
         * **The recurrence cursor does not move.** `last_fired_at` and
           `next_due_at` describe the cron's occurrences; stamping *now* on
           them would carry the cursor past an occurrence that was already due
@@ -927,14 +1082,95 @@ class ScheduleRunAdmitter:
         schedule at `max_runs`, the template store's own error for an
         unresolvable target, and the run store's for a Run that could not be
         created. A refusal before the reservation touches nothing; one after
-        it releases the reservation, so the schedule reads as it did before.
+        it releases the marker, so the schedule reads as it did before.
+
+        One refusal a retry never meets: the claim is asked **first**. A
+        caller-stable `fire_id` whose Run already exists is that logical
+        firing's winner answering, so it reconciles even when the winner's
+        fire has since spent the last `max_runs` unit (or the template has
+        disappeared) — telling a retried caller "could not be fired" about a
+        fire whose Run demonstrably exists would be the one answer worse
+        than a refusal. A minted token skips the probe: it is fresh by
+        construction, so the read could only ever cost.
         """
+        # Settle whatever a previous holder left behind before doing anything
+        # else. A manual fire is the one admission a caller retries by hand,
+        # so this is where a crashed fire's marker must not outlive its
+        # usefulness: released, a retry of the same token can fire again;
+        # confirmed, the retry reconciles through the claim probe below. One
+        # store read on a path a human clicked — never the tick's hot path.
+        schedule = await self._reconcile_pending_fires(schedule.schedule_id) or schedule
+        token = fire_id if fire_id else uuid.uuid4().hex
+        reconciled = await self._already_admitted(schedule, now, fire_id)
+        if reconciled is not None:
+            return reconciled
         if schedule.exhausted:
             raise ManualFireRefused(
                 f"schedule {schedule.schedule_id} has used all {schedule.max_runs} of its runs"
             )
+        template = await self._resolve_manual_template(schedule)
         try:
-            template = await require_template(
+            reserved = await self._schedules.reserve_fire(schedule.schedule_id, fire_id=token)
+        except ScheduleExhausted as exc:
+            raise ManualFireRefused(str(exc)) from exc
+        if reserved is None:
+            raise ManualFireRefused(f"schedule {schedule.schedule_id} no longer exists")
+
+        fire = FireDecision(scheduled_for=now, catchup=False)
+        try:
+            run_id = await self._admit_one(reserved, template, fire, fire_id=token)
+        except DuplicateOccurrence:
+            return await self._duplicate_manual_receipt(schedule, now, token)
+        except BaseException:
+            await self._schedules.settle_pending_fire(schedule.schedule_id, token, run_id=None)
+            raise
+        return await self._manual_fire_receipt(reserved, token, run_id)
+
+    async def _already_admitted(
+        self,
+        schedule: Schedule,
+        now: datetime,
+        fire_id: str | None,
+    ) -> ScheduleAdmission | None:
+        """The receipt of a caller-stable fire whose Run already exists (#1120).
+
+        Only a caller-supplied `fire_id` can collide: a minted token is fresh
+        by construction, so probing it could only ever cost a read. A retried
+        or concurrent double submit of the same logical request therefore
+        reconciles to the winner's Run instead of minting a fresh identity
+        per request. `None` means nothing was admitted yet and the fire
+        should proceed.
+        """
+        if fire_id is None:
+            return None
+        winner = await self._runs.find_occurrence_run(
+            {
+                SCHEDULE_ID_KEY: schedule.schedule_id,
+                SCHEDULE_FIRE_ID_KEY: fire_id,
+            }
+        )
+        if winner is None:
+            return None
+        logger.info(
+            "schedule %s manual fire %s was already admitted as %s",
+            schedule.schedule_id,
+            fire_id,
+            winner.run_id,
+        )
+        return ScheduleAdmission(
+            already_fired=(now,),
+            reconciled_run_id=winner.run_id,
+        )
+
+    async def _resolve_manual_template(self, schedule: Schedule) -> GraphTemplate:
+        """Resolve the manual fire's target from the canonical template store.
+
+        The store's own error propagates — an unresolvable target is a
+        caller-visible misconfiguration, raised after a warning rather than
+        folded into a scheduler failure.
+        """
+        try:
+            return await require_template(
                 self._templates,
                 schedule.graph_template_id,
                 version=schedule.template_version,
@@ -948,40 +1184,133 @@ class ScheduleRunAdmitter:
             )
             raise
 
-        try:
-            reserved = await self._schedules.reserve_fire(schedule.schedule_id)
-        except ScheduleExhausted as exc:
-            raise ManualFireRefused(str(exc)) from exc
-        if reserved is None:
-            raise ManualFireRefused(f"schedule {schedule.schedule_id} no longer exists")
-        current, reservation = reserved
+    async def _duplicate_manual_receipt(
+        self,
+        schedule: Schedule,
+        now: datetime,
+        token: str,
+    ) -> ScheduleAdmission:
+        """Hand the loser of a claimed fire the winner's receipt (#1120).
 
-        fire = FireDecision(scheduled_for=now, catchup=False)
-        try:
-            run_id = await self._admit_one(current, template, fire)
-        except DuplicateOccurrence:
-            logger.info(
-                "schedule %s manual occurrence %s was already admitted elsewhere",
-                schedule.schedule_id,
-                now.isoformat(),
-            )
-            # The firing happened — some other admitter claimed this exact
-            # moment — so there is nothing to create; the slot goes back.
-            await self._schedules.settle_fire(schedule.schedule_id, reservation, run_id=None)
-            return ScheduleAdmission(already_fired=(now,))
-        except BaseException:
-            await self._schedules.settle_fire(schedule.schedule_id, reservation, run_id=None)
-            raise
-
-        settled = await self._schedules.settle_fire(
-            schedule.schedule_id, reservation, run_id=run_id
+        The firing happened — some other admitter claimed this exact logical
+        request — so there is nothing to create; the marker is released
+        unspent (the winner already counted it) and the reconciled Run is the
+        documented reconciliation for a retried or concurrent double submit
+        (#1120).
+        """
+        logger.info(
+            "schedule %s manual fire %s was already admitted elsewhere",
+            schedule.schedule_id,
+            token,
         )
-        recorded = settled if settled is not None else current
+        await self._schedules.settle_pending_fire(schedule.schedule_id, token, run_id=None)
+        winner = await self._runs.find_occurrence_run(
+            {
+                SCHEDULE_ID_KEY: schedule.schedule_id,
+                SCHEDULE_FIRE_ID_KEY: token,
+            }
+        )
+        return ScheduleAdmission(
+            already_fired=(now,),
+            reconciled_run_id=winner.run_id if winner is not None else None,
+        )
+
+    async def _manual_fire_receipt(
+        self,
+        reserved: Schedule,
+        token: str,
+        run_id: str,
+    ) -> ScheduleAdmission:
+        """Close the fire's marker on its Run and report what the row now says."""
+        settled = await self._schedules.settle_pending_fire(
+            reserved.schedule_id, token, run_id=run_id
+        )
+        recorded = settled if settled is not None else reserved
         return ScheduleAdmission(
             run_ids=(run_id,),
             next_due_at=recorded.next_due_at,
-            disabled=reservation.disabled,
+            # What this fire's own settle write disabled: enabled before it,
+            # disabled after it. A schedule someone else disabled mid-window
+            # is reported as it is, not as this fire's doing.
+            disabled=reserved.enabled and not recorded.enabled,
         )
+
+    async def _reconcile_pending_fires(self, schedule_id: str) -> Schedule | None:
+        """Settle markers whose holder is provably gone (#1120).
+
+        A pending marker names its fire's token, so the Run store can answer
+        the only question that matters: did that firing happen? A Run for the
+        token means the holder died *after* creating it — the spend is
+        earned, and confirming it here (count, `last_run_id`, the disable on
+        exhaustion) is the same write `settle_pending_fire` performs for a
+        live fire, so after-admission crashes recover exactly like live
+        ones. No Run means the holder died *before* creating anything — the
+        slot returns and the schedule reads as though the fire never
+        happened, which it did not.
+
+        Freshness decides who gets settled: inside `_PENDING_FIRE_LEASE` a
+        marker may belong to a live fire still inside its reserve→settle
+        window, and touching it would reopen the last-run race the marker
+        exists to close (#1119). Past the lease no healthy holder can still
+        be mid-fire, so the marker is a crash leftover. Probes and settles
+        degrade rather than raise: recovery is an extra chance to clean up,
+        never a reason to fail an admission that would otherwise succeed —
+        a marker that cannot be settled now is settled by the next one.
+
+        Returns the row as stored after reconciliation (None when the
+        schedule is gone), so the caller evaluates against the truth rather
+        than the snapshot it arrived with.
+        """
+        row = await self._schedules.get(schedule_id)
+        if row is None or not row.pending_fires:
+            return row
+        wall = datetime.now(UTC)
+        for marker in row.pending_fires:
+            if wall - marker.stamped_at <= _PENDING_FIRE_LEASE:
+                continue
+            try:
+                winner = await self._runs.find_occurrence_run(
+                    {
+                        SCHEDULE_ID_KEY: schedule_id,
+                        SCHEDULE_FIRE_ID_KEY: marker.fire_id,
+                    }
+                )
+            except Exception as exc:
+                logger.warning(
+                    "schedule %s could not probe pending fire %s for recovery: %s",
+                    schedule_id,
+                    marker.fire_id,
+                    exc,
+                )
+                continue
+            try:
+                if winner is not None:
+                    await self._schedules.settle_pending_fire(
+                        schedule_id, marker.fire_id, run_id=winner.run_id
+                    )
+                    logger.info(
+                        "schedule %s pending fire %s confirmed by its recovered Run %s",
+                        schedule_id,
+                        marker.fire_id,
+                        winner.run_id,
+                    )
+                else:
+                    await self._schedules.settle_pending_fire(
+                        schedule_id, marker.fire_id, run_id=None
+                    )
+                    logger.info(
+                        "schedule %s pending fire %s released; its Run was never created",
+                        schedule_id,
+                        marker.fire_id,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "schedule %s could not settle pending fire %s: %s",
+                    schedule_id,
+                    marker.fire_id,
+                    exc,
+                )
+        return await self._schedules.get(schedule_id)
 
     async def _consume_without_firing(
         self,
@@ -1045,6 +1374,9 @@ class ScheduleRunAdmitter:
                 cancel_active_run=decision.cancel_active_run,
                 active_run_id=active_run_id,
                 already_fired=tuple(claimed),
+                enumeration_incomplete=decision.enumeration_incomplete,
+                enumeration_stopped_at=decision.enumeration_stopped_at,
+                window_clamped=decision.window_clamped,
             )
         if _due_cursor_changed(schedule, next_due_at):
             # Nothing fired and nothing was dropped, but the evaluation still
@@ -1066,18 +1398,44 @@ class ScheduleRunAdmitter:
             next_due_at=decision.next_due_at,
             cancel_active_run=decision.cancel_active_run,
             active_run_id=active_run_id,
+            enumeration_incomplete=decision.enumeration_incomplete,
+            enumeration_stopped_at=decision.enumeration_stopped_at,
+            window_clamped=decision.window_clamped,
         )
 
     async def _admit_one(
-        self, schedule: Schedule, template: GraphTemplate, fire: FireDecision
+        self,
+        schedule: Schedule,
+        template: GraphTemplate,
+        fire: FireDecision,
+        *,
+        fire_id: str | None = None,
     ) -> str:
         graph = template.instantiate(project_id=schedule.project_id, name=schedule.name or None)
         provenance: dict[str, Any] = {
             ADMISSION_SOURCE: SCHEDULE_SOURCE,
             SCHEDULE_ID_KEY: schedule.schedule_id,
-            SCHEDULED_FOR_KEY: fire.scheduled_for.isoformat(),
+            # The instant in UTC, not the cron rendering's own offset (#850):
+            # the claim every store compares is this text, and a schedule whose
+            # timezone changes would otherwise re-render the same instant as a
+            # different identity and fire it twice.
+            SCHEDULED_FOR_KEY: canonical_occurrence_instant(fire.scheduled_for),
             SCHEDULE_CATCHUP_KEY: fire.catchup,
         }
+        if fire_id is not None:
+            # A manual fire's identity is its caller-stable token, not the
+            # instant its request arrived (#1120): `occurrence_key` reads this
+            # before `scheduled_for`, so the claim — and therefore a retry's
+            # reconciliation — is the same token across processes and
+            # restarts, while `scheduled_for` above stays what it means
+            # everywhere else: when the fire was asked for.
+            provenance[SCHEDULE_FIRE_ID_KEY] = fire_id
+            # Named, not implied by an absence: a Run with no trigger key is a
+            # Run from before the distinction existed (#1120), which is a
+            # different fact from "this was a nominal occurrence".
+            provenance[SCHEDULE_TRIGGER_KEY] = SCHEDULE_TRIGGER_MANUAL
+        else:
+            provenance[SCHEDULE_TRIGGER_KEY] = SCHEDULE_TRIGGER_RECURRING
         if schedule.inputs:
             # `Schedule.inputs` is the schedule's configured payload, and
             # instantiating the template alone dropped it: a parameterized

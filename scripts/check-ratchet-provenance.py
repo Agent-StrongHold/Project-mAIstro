@@ -26,6 +26,14 @@ SCRIPTS = ROOT / "scripts"
 _ROOT_NAMES = frozenset({"ROOT", "REPO", "REPO_ROOT"})
 
 CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
+    ("check-compliance.py", "quality/compliance-registry.json"): (
+        "the compliance registry is the reviewed status and evidence specification; changing a "
+        "claim or evidence record is the substantive compliance change"
+    ),
+    ("produce-compliance-evidence.py", "quality/compliance-registry.json"): (
+        "the evidence producer executes the reviewed registry declarations; it does not compare "
+        "a candidate measurement against a mutable baseline"
+    ),
     ("check-retired-guidance.py", "quality/retired-guidance.json"): (
         "retirement guidance is the reviewed specification being changed"
     ),
@@ -33,6 +41,21 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "image inventory is the reviewed current-tree specification: the checker validates "
         "each Dockerfile's disposition and named build/scan jobs rather than comparing "
         "against a tolerated prior-state oracle"
+    ),
+    ("check-workflow-inventory.py", "quality/workflow-inventory.json"): (
+        "the workflow inventory is the reviewed current-tree specification: the checker validates "
+        "each workflow's disposition, declared triggers and reference liveness rather than "
+        "comparing against a tolerated prior-state oracle"
+    ),
+    ("check-image-pins.py", "quality/image-pins.json"): (
+        "the pin registry is the reviewed approval authority being changed (#349): every pin "
+        "and exemption row is explicit policy, and a base update lands as the reviewable "
+        "registry-plus-Dockerfile diff rather than against a prior-state oracle"
+    ),
+    ("check-image-pins.py", "quality/image-inventory.json"): (
+        "release dispositions are read from the reviewed per-tree inventory specification; "
+        "reclassifying a Dockerfile is itself the reviewable edit, and "
+        "check-image-inventory.py owns validating that inventory"
     ),
     ("pip_audit_gate.py", "quality/direct-dependency-exceptions.json"): (
         "dependency exceptions are an explicitly reviewed specification"
@@ -53,6 +76,20 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "the worktree copy is read only to reject stale or spent grants; permission to lower "
         "an AC-state floor is read separately from the trusted base by authorized_floors()"
     ),
+    ("check_enumerations.py", "quality/ratchet-authorizations.json"): (
+        "not a read: the string is a probe-path literal in the #109 evaluator-oracle "
+        "coverage check (check_evaluator_oracle_paths), asserting the oracle pattern "
+        "tier matches this ledger path so a candidate cannot quietly stop tracking "
+        "it; the script never opens the file, so there is no candidate-tree value "
+        "to resolve against a base"
+    ),
+    ("check_enumerations.py", "quality/vulture-baseline.json"): (
+        "not a read: the string is a probe-path literal in the #109 evaluator-oracle "
+        "coverage check (check_evaluator_oracle_paths), asserting the oracle pattern "
+        "tier matches this ledger path; the blocking vulture ratchet itself reads "
+        "the ledger through scripts/check-vulture-baseline.py with trusted-base "
+        "resolution, and this script never opens the file"
+    ),
     ("check-branch-independence.py", "quality/branch-independence.json"): (
         "the branch-independence registry is the reviewed representation specification; "
         "the checker separately compares its frozen legacy set against the trusted base"
@@ -71,11 +108,31 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "direct-effect entries are per-call-site reviewed policy: exact AST identities must "
         "match both directions and every live site must state disposition, owner and rationale"
     ),
+    ("check-durable-table-inventory.py", "quality/durable-table-retention.json"): (
+        "the retention inventory is the reviewed per-table specification being changed: "
+        "every table the tree creates must carry an entry and every entry must name a "
+        "table the tree creates, so a prior-tree oracle would predate this tree's schema; "
+        "a changed retention claim is the substantive change reviewers read"
+    ),
+    ("check-backlog-consistency.py", "quality/backlog-authority.json"): (
+        "the authority marker is the reviewed operator-owned declaration of which work "
+        "source is authoritative (#102), not a prior-tree oracle: the gate reads it to "
+        "decide whether hand-edited BACKLOG.md content is still permitted or must match "
+        "the database digest. The marker moves only via the shipped `maistro backlog` "
+        "CLI (maistro.cli._backlog), so comparing it against the base revision would "
+        "measure a cutover that has not happened instead of the one this tree ships"
+    ),
     ("check-shipped-surface-truth.py", "quality/shipped-surface-truth.json"): (
         "the shipped-surface matrix is the reviewed per-surface truth specification being "
         "changed: every discovered route must carry an exact disposition, so comparing "
         "against a prior-tree oracle would compare against a matrix that predates the "
         "surfaces this tree ships"
+    ),
+    ("check-api-route-contracts.py", "quality/api-route-contracts.json"): (
+        "the route-contract inventory is the reviewed per-route specification being "
+        "changed: every entry must resolve to a live handler in this tree's route table, "
+        "so a prior-tree oracle would predate the routes this tree ships; a changed "
+        "disposition or contract is the substantive change reviewers read"
     ),
 }
 
@@ -328,11 +385,20 @@ def _load_module(path: Path, name: str) -> ModuleType:
         raise RuntimeError(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
+    # Direct ``import ratchet_provenance`` is valid when this checker is run as
+    # a script because Python puts scripts/ on sys.path. Preserve that contract
+    # for dynamically loaded adapters and for callers that import this checker.
+    search_paths = [str(path.parent), str(SCRIPTS)]
+    added_paths = [candidate for candidate in search_paths if candidate not in sys.path]
+    sys.path[0:0] = added_paths
     try:
         spec.loader.exec_module(module)
     except BaseException:
         del sys.modules[name]
         raise
+    finally:
+        for candidate in added_paths:
+            sys.path.remove(candidate)
     return module
 
 

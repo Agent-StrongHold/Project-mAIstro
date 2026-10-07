@@ -314,6 +314,33 @@ health genuinely changes over time. `feature_judge` is designed but not
 built; FEATURE-kind promotions are judged by proxy signals only until it
 lands.
 
+## Amendment (2026-10-03): weighted proven scenarios as the initial RSI fitness objective (M5-B, #108)
+
+The maturity ladder above ranks *improvement moves*. This amendment defines
+what the moves are FOR: the initial scalar objective of the RSI fitness is the
+criticality-weighted aggregate over the **proven Gherkin acceptance
+scenarios** (`maistro_evolve.scenario_objective`), with the contract /
+acceptance tests as the non-negotiable correctness oracle. Contract, in one
+sentence: a correctness failure scores zero and promotes nothing; scenario
+weights reflect product criticality (security > product > cosmetic, clamped
+into non-overlapping bands so the ordering is structural, not a tuning
+discipline); a regression against the prior proven scenario set cannot be
+compensated by unrelated scalar gains — the raw aggregate is recorded, but the
+verdict and the objective scalar are zeroed; the objective is versioned and
+frozen, and every evaluation stamps the version and content digest it was
+scored under; a later, more general backlog-utility function may add terms,
+but correctness/security stay **gates, not tradeable weights**.
+
+Concretely: `FitnessWeights.proven_scenarios = 0.50` enters the composite
+ABOVE every work signal — superseding the v3 amendment's "`spec_completion`
+is the largest weight in the system" for the composite's scalar axis only.
+`spec_completion` (0.45) remains the largest **work** signal and the ladder's
+finish-contracted-work-first ordering is unchanged. The scenario verdict is a
+`Scorecard` **gate** (`no_proven_scenario_regression`), so it can never be
+out-weighted, only out-voted by another gate — which is the point. The
+governed magnitude fixture (`governed_magnitudes_evolve.json`) is amended in
+lockstep.
+
 ## Acceptance Criteria
 
 Criteria declared 2026-09-03 for the harvest-path tests that already cite this

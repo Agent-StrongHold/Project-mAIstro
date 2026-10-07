@@ -22,7 +22,7 @@ A **floor** is a fixed minimum/maximum threshold. A **ratchet** records reviewed
 | reachability | identity ratchet | `quality/reachability-baseline.json` | a module built but never wired to any entry point |
 | convergence matrix | identity ratchet | `docs/architecture/CONVERGENCE-MATRIX.md` | a subsystem left unclassified, or a row whose ownership/reachability claim no longer matches the code |
 | reachability dispositions | identity ratchet | `quality/reachability-dispositions.json` | an unreachable module with no disposition, a disposition left behind after its module became reachable, or a CONNECT/RETIRE row with no named root/replacement |
-| backlog consistency | floor | `BACKLOG.md` legends | an item using a status or gap marker no legend defines, a duplicate id, an undocumented id prefix, or a citation to an ADR/spec that does not exist |
+| backlog consistency | floor + identity ratchet | `BACKLOG.md` legends; `_LEGACY_UNEVIDENCED` in `scripts/check-backlog-consistency.py` | an item using a status or gap marker no legend defines, a duplicate id, an undocumented id prefix, a citation to an ADR/spec that does not exist, an `Implemented` item with no PR/issue link or existing repo path (or citing a path that no longer exists), an `Abandoned` item with no reason, or a legacy id left in the set after it gained evidence, reopened or was removed (#101). After the #102 authority cutover (`quality/backlog-authority.json` says `db`), the file is generated documentation: it must carry the generated banner and match the recorded export digest, so a direct edit fails here instead of silently diverging |
 | coverage (aggregate) | floor | 86% line + branch, publish set | the repository as a whole rotting |
 | coverage (diff) | floor | per file: 90% lines, 80% branch arcs, on lines the PR touched | a single undertested change the aggregate cannot see |
 | interrogate | ratchet | 38 / 45 / 63 / 46 per tree | missing docstrings, per-subtree floors |
@@ -111,6 +111,8 @@ The **current reviewed floor is always the fold over `quality/ac-state-notes/`**
 
 Security scanning (Bandit, Semgrep, gitleaks), dependency audit, container/SBOM/signing checks, and mutation testing live in their dedicated workflows. `SECURITY.md` has its own inventory consistency gate under #157; a green security-document check is limited to the claims that checker can mechanically verify.
 
+Workflow files have their own inventory gate (#400): `quality/workflow-inventory.json` gives every file under `.github/workflows/` a reviewed disposition — `ACTIVE` (event-triggered gate or automation), `MANUAL_DIAGNOSTIC` (`workflow_dispatch`-only, an on-demand measurement) or `RETIRED` (removed, naming its successors, owner and removal issue) — and `scripts/check-workflow-inventory.py` holds the inventory and the tree to each other in both directions. The same gate rejects the three rots that let `stream1-diagnostic.yml` sit always-green: a trigger branch deleted from the remote (unless a reviewed `retained_branches` row claims it), a 40-hex commit pin this checkout no longer contains, and an error swallow (`|| true`, `continue-on-error: true`) with no written reason within six lines. A `RETIRED` file that reappears fails the gate: coming back is a reviewed reclassification, not a copy-paste.
+
 ## Running the architecture/governance gates locally
 
 ```bash
@@ -125,6 +127,7 @@ uv run python scripts/check-execution-lifecycles.py
 uv run python scripts/check-model-egress.py
 uv run pytest packages/maistro-core/tests/fitness -v --timeout=30
 uv run python scripts/check-suite-inventory.py
+uv run python scripts/check-workflow-inventory.py
 uv run python scripts/check-doc-links.py
 uv run python scripts/bump_version.py --check
 uv run python scripts/check-vulture-baseline.py packages/*/src \

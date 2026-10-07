@@ -53,7 +53,7 @@ on:
     # tests/test_branch_policy.py, so a push to any documented branch receives
     # this gate set — a `feature/*` or bare-name branch is not a documented
     # shape and gets its gates at PR time, where pull_request is unfiltered.
-    branches: [main, integration, develop, feat/*, bug/*, fix/*, idea/*, doc/*, chore/*]
+    branches: [main, integration, develop, feat/*, bug/*, fix/*, idea/*, doc/*, docs/*, chore/*]
 
 # See the rationale in ci.yml: supersede candidate runs, let protected-branch
 # pushes finish so their pass/fail record survives.
@@ -111,7 +111,7 @@ jobs:
       # The Tier-3 sandbox backend (#76). Without it the bubblewrap
       # integration tests skip, and the diff-coverage gate then measures a
       # backend whose execution paths nothing ran -- the exact shape of the
-      # gap that gate exists to find.
+      # gap that gate exists to catch.
       - name: install bubblewrap
         run: |
           timeout 180 sudo apt-get update -qq || true
@@ -179,50 +179,61 @@ jobs:
   # aioboto3 from the import system rather than uninstalling it — so both halves
   # are checked in one environment.
   #
-  # Started as a step rather than under `services:`, for two reasons found the
+  # Started as a step rather than under `services:`, for reasons found the
   # hard way. The official `minio/minio` image needs `server /data` as a
   # command, and a `services:` block has no `command:` key at all — only
-  # `image`, `env`, `ports`, `options` and `credentials`. And the first version
-  # of this job named `bitnami/minio:latest`, which does not resolve: Bitnami
-  # retired their public tags, so every run died on `manifest unknown` before
-  # reaching a single test. An image name is not verified by being plausible.
-  # The move to the upstream image was not the end of it either: `minio/minio`
-  # on Docker Hub stopped serving anonymous pulls (`pull access denied`), so
-  # the image below names quay.io — where MinIO publishes the same RELEASE tag
-  # ci.yml pins — rather than `:latest`, so this job and ci.yml's conformance
-  # job exercise the same server build.
+  # `image`, `env`, `ports`, `options` and `credentials`. The first version of
+  # this job named `bitnami/minio:latest`, which stopped resolving when Bitnami
+  # retired their public tags (`manifest unknown` before a single test). An
+  # image name is not verified by being plausible. The upstream image did not
+  # last either: Docker Hub stopped serving `minio/minio` anonymously, and once
+  # MinIO archived the community server quay.io answered 401 and dl.min.io 410
+  # for the release binaries. So the step builds the RELEASE ci.yml pins from
+  # source via the Go module proxy (checksum-verified against sum.golang.org)
+  # and runs it on the runner, so this job and ci.yml's conformance job still
+  # exercise the same server build.
   coverage-archive:
     name: coverage (MinIO)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          # minio's go.mod names this toolchain; the module cache is not ours
+          # to key (no go.sum in this repo), so setup-go's cache stays off.
+          go-version: "1.24.2"
+          cache: false
       - name: Start MinIO
         run: |
           set -euo pipefail
-          image=quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
-          # Pull before `docker run`, retrying the fetch alone. quay.io answered
-          # `502 Bad Gateway` on one PR run and `unauthorized: Unknown service
-          # key` on one merge-group run in a single night (2026-09-15), each
-          # before a test had run, and each cost a queue round: the automation
-          # that watches these PRs cannot re-run a job (403). Only the network
-          # step is retried, the same shape as scripts/prepull-base-images.sh;
-          # a MinIO that starts and never answers still fails once, below.
-          for attempt in 1 2 3 4; do
-            if docker pull "$image"; then
+          # Build the pinned RELEASE from source rather than pulling an image.
+          # MinIO archived the community server: quay.io now answers 401 for
+          # `minio/minio` and dl.min.io answers 410 for every release binary,
+          # so no anonymous prebuilt artifact remains. The source still does,
+          # through the Go module proxy, and `go install` checks every module
+          # it fetches against sum.golang.org, so the pin is content-verified
+          # without a secret. This pseudo-version is RELEASE.2025-04-22T22-12-26Z
+          # (commit 0d7408fc9969), the same server build the image pin named.
+          version=v0.0.0-20250422221226-0d7408fc9969
+          # Retry the fetch-and-build alone: a proxy hiccup is not a storage
+          # bug, and the automation that watches these PRs cannot re-run a
+          # job (403). A MinIO that starts and never answers still fails once.
+          for attempt in 1 2 3; do
+            if go install "github.com/minio/minio@${version}"; then
               break
             fi
-            if [ "$attempt" -eq 4 ]; then
-              echo "::error::could not pull $image after 4 attempts" >&2
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::could not build minio@${version} after 3 attempts" >&2
               exit 1
             fi
-            echo "::warning::pull of $image failed (attempt $attempt/4); retrying" >&2
+            echo "::warning::go install of minio@${version} failed (attempt $attempt/3); retrying" >&2
             sleep $((attempt * 5))
           done
-          docker run -d --name minio -p 9000:9000 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            "$image" server /data
+          mkdir -p "$RUNNER_TEMP/minio-data"
+          MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
+            nohup "$(go env GOPATH)/bin/minio" server "$RUNNER_TEMP/minio-data" \
+            --address 127.0.0.1:9000 >"$RUNNER_TEMP/minio.log" 2>&1 &
           # Poll the health endpoint rather than sleeping a fixed amount: a
           # fixed sleep is either slower than it needs to be or racy, and the
           # race surfaces as a connection error that reads exactly like the
@@ -235,7 +246,7 @@ jobs:
             sleep 2
           done
           echo "::error::MinIO did not become ready within 60s"
-          docker logs minio
+          cat "$RUNNER_TEMP/minio.log"
           exit 1
       - uses: actions/setup-python@v7
         with:
@@ -353,6 +364,32 @@ jobs:
       # while its PostgreSQL leg was passing — in the other job, where it
       # skipped. A list of suites is a list of what gets measured, so a new
       # PostgreSQL store means an edit here, every time.
+      #
+      # (#72) PgElevationStore is a new PostgreSQL store under security/, so
+      # its suite joins this producer by that same rule: elsewhere its
+      # PostgreSQL legs skip and the store scores as untested code.
+      #
+      # `memory/user_model` joins for that same reason (#1047):
+      # PostgresUserModelStore is PG-only, needs the migrated chain's
+      # user-model tables (056 after two develop-collision re-parents; 054
+      # when written), and without a producer here the diff gate scores the
+      # new store as untested code while its conformance cases pass in the
+      # `postgres` job.
+      #
+      # The claim-driven `task_idempotency` purge (#325) is one file, not the
+      # whole `tasks` suite: its PostgreSQL legs, including the renewed-claim
+      # race, are the only ones under `tasks` that need a server. The atomic
+      # task-admission proof joins it: its one-commit Run/binding test cannot
+      # run in the no-service producer, so excluding it would score the new PG
+      # seam from fake-pool paths only.
+      #
+      # `backlog` joins by that same rule (#102): `backlog/pg_store.py` is a
+      # PostgreSQL store whose conformance and cutover suites are parametrised
+      # over memory/sqlite/postgres and gate the PostgreSQL leg on
+      # MAISTRO_TEST_PG_DSN. Without a producer here the leg skipped and the
+      # diff gate scored the new store's 238 changed lines at 25.6% while the
+      # same arcs passed against a real server in the `postgres` job — the
+      # exact shape #231 documented for scheduling.
       - name: Apply the chain, then the suites that need a schema (under coverage)
         run: |
           uv run alembic upgrade head
@@ -365,7 +402,33 @@ jobs:
             packages/maistro-core/tests/graph \
             packages/maistro-core/tests/projects \
             packages/maistro-core/tests/workspaces \
-            packages/maistro-core/tests/scheduling -v --tb=short
+            packages/maistro-core/tests/scheduling \
+            packages/maistro-core/tests/tasks/test_idempotency_purge_driven.py \
+            packages/maistro-core/tests/tasks/test_pg_admission_atomicity_live.py \
+            packages/maistro-core/tests/security/test_elevation_durable.py \
+            packages/maistro-core/tests/memory/user_model \
+            packages/maistro-core/tests/quota -v --tb=short
+          # The backlog suite runs as its own invocation, not appended to the
+          # list above (#102). Its `test_backlog_stores_import_no_rsi` pins the
+          # #82 exit condition — importing the work-source substrate must not
+          # import RSI — by asserting on `sys.modules`, which is process-global:
+          # one shared pytest process with the container-wiring suites ahead of
+          # it reads as a violation no import of its own caused. Same shape as
+          # the structlog pollution that split the publish-set producers into
+          # per-package invocations in the first place.
+          uv run coverage run --append --branch \
+            --source=packages/maistro-core/src/maistro \
+            -m pytest packages/maistro-core/tests/backlog -v --tb=short
+          # `tests/quota` is here for the same reason the canvas lane below is:
+          # test_pg_invocation_quota_boundary.py gates all three of its tests on
+          # MAISTRO_TEST_PG_DSN and skips without it, so in `coverage (no
+          # services)` PgInvocationQuota contributes nothing. Without a producer
+          # here the diff gate scored 176 changed lines in pg_invocation_quota.py
+          # at 23% -- untested code by the measurement, covered by tests that
+          # pass against a real server. The rest of tests/quota is fast and
+          # service-free; it runs twice rather than splitting one directory
+          # across two jobs by filename, which is the kind of split that goes
+          # stale the next time a file is added (#1196/#718).
           # The canvas org-scope lane (#857) put PostgresAssetStore and the
           # PgCanvasStore job/composite writers behind MAISTRO_TEST_PG_DSN.
           # Their suites are dual-leg: the PostgreSQL half skips in
@@ -390,7 +453,16 @@ jobs:
   coverage-gate:
     name: Coverage gate (publish-set floor + diff coverage)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 15 -> 30 on 2026-09-26: capacity, not scope. The `combine` step below
+    # runs the non-publish suites serially after the publish-set floor (six
+    # when measured; maistro-registry has since made it seven), and they are
+    # essentially the whole job: on #1591 (run 36207106537) it took 11m07s of
+    # 11m25s, of which the root `tests/` suite (the `--source=scripts`
+    # producer) was 7m49s and hive-conductor 2m16s with its requirements
+    # install. #1576 took ~14 min and #1581 was cancelled at 15 twice; a
+    # cancelled gate never reports, so it blocks the PR without measuring
+    # anything. The suites, sources, floor and diff thresholds are unchanged.
+    timeout-minutes: 30
     needs: [coverage-unit, coverage-archive, coverage-postgres]
     env:
       # The combine step re-runs the root suite as the `scripts` producer, and
@@ -398,9 +470,9 @@ jobs:
       # to `develop` the resolver's local fallback degenerates to HEAD and the
       # #534 self-reference refusal fires, reding this job for "cannot
       # compare" rather than any coverage regression (#1235). Name the event's
-      # own base, exactly as vulture-ratchet.yml does. tests/conftest.py
-      # captures this value and keeps it away from every test except the gate
-      # self-checks that opt in.
+      # own base, exactly as vulture-ratchet.yml does, so the trusted baseline is
+      # the revision this push replaces. tests/conftest.py captures this value
+      # and keeps it away from every test except the gate self-checks that opt in.
       #
       # `before` is right only for a protected-branch push, which really does
       # replace that revision. A topic branch's `before` is its own previous
@@ -523,6 +595,43 @@ jobs:
             -m pytest packages/maistro-turing/backend/tests --timeout=30 -q
           uv run coverage run --append --branch --source=packages/maistro-design/src/maistro_design \
             -m pytest packages/maistro-design/tests --timeout=30 -q
+          # maistro-registry joins the measured set with #1096: its linker
+          # performs the caller-influenced GitHub fetch that the SSRF sweep
+          # (#67, ADR-102) routed through the central guard — the one tree
+          # where an unmeasured change would be indistinguishable from a
+          # tested one, because nothing else ran its suite under coverage.
+          # The #374 citation-status policy (maistro_registry.citations) is
+          # exercised by the root suite, not by this package's own five tests;
+          # without naming that file here the module's changed lines measure
+          # 0% in this producer and the diff-coverage gate fails on tests
+          # that exist and pass but were never pointed at this --source.
+          # The same holds for the #813 walk/disposition logic in
+          # maistro_registry.cli: its tests live in the root suite's
+          # tests/tools/registry/test_cli.py, and the root producer measures
+          # --source=scripts only, so cli.py's changed lines scored 0% here
+          # until that file was named in this producer's pytest args too.
+          # Same shape as #812 (merged from develop): the CLI's
+          # cited-test-path lint and the validator's test-evidence debts are
+          # exercised by root tests under tests/tools/registry/ (this
+          # package's own suite has no cli or validator cases), so those two
+          # files are named here or the changed lines measure 0% and the
+          # diff-coverage gate rejects the commit.
+          uv run coverage run --append --branch --source=packages/maistro-registry/src/maistro_registry \
+            -m pytest packages/maistro-registry/tests tests/test_check_citation_status.py \
+              tests/tools/registry/test_cli.py tests/tools/registry/test_validator.py --timeout=30 -q
+          # The extension host harness (#974) joins the measured set: it is
+          # the code third-party CI executes, so an unmeasured change there
+          # would be indistinguishable from a tested one. Its suite needs no
+          # services (stdlib-only runtime), so this producer cannot flake on
+          # infrastructure the job does not have.
+          uv run coverage run --append --branch --source=packages/maistro-ext-harness/src/maistro_ext_harness \
+            -m pytest packages/maistro-ext-harness/tests --timeout=30 -q
+          # maistro-ext-sdk joins the measured set with #949: the manifest
+          # contract an external author codes against is exactly the tree
+          # where an uncovered bug bites hardest, and nothing else runs its
+          # suite under coverage.
+          uv run coverage run --append --branch --source=packages/maistro-ext-sdk/src/maistro_ext_sdk \
+            -m pytest packages/maistro-ext-sdk/tests --timeout=30 -q
           # hive-conductor's pytest-bdd is declared in that workspace member's
           # OWN `dev` extra, and `--all-extras` includes every optional
           # dependency of the ROOT project only — not of each member. So the
@@ -553,8 +662,15 @@ jobs:
           #
           # Its PostgreSQL-dependent legs skip in this job, which has no server.
           # That is fine for this --source: no gate script needs a database.
+          #
+          # The #981 lifecycle-proof test is named here for the same reason
+          # tests/test_check_citation_status.py is named in the registry
+          # producer above: the suite that exercises a measured scripts/ file
+          # lives in a package suite this producer would otherwise never run,
+          # so the file's changed lines would measure 0% and the diff-coverage
+          # gate would fail on evidence that exists and passes.
           uv run coverage run --append --branch --source=scripts \
-            -m pytest tests/ --timeout=30 -q
+            -m pytest tests/ packages/maistro-core/tests/extensions/test_lifecycle_proof.py --timeout=30 -q
           uv run coverage xml -o coverage.xml
 
       # ----- Pillar 1b: diff coverage (the lines this candidate added) -----
@@ -696,7 +812,7 @@ jobs:
         run: uv run python scripts/check-radon-baseline.py
 
       - name: radon CC (report; the ratchet above is the gate)
-        run: uv run radon cc packages/maistro-core/src --min B --total-average
+        run: uv run radon cc packages/*/src -i third_party --min B --total-average
 
       # Single-sourced version (E1/#294): VERSION is the source of truth, and
       # every package's pyproject.toml/__version__ fallback, inter-package
@@ -745,6 +861,36 @@ jobs:
       - name: enumeration coverage (derived control lists — ratchet)
         run: uv run python scripts/check_enumerations.py
 
+      # The Workspace cutover only deprecates the old Conductor surfaces if
+      # they can't pick up new consumers while their replacements land, so
+      # quality/workspace-retirement.json only shrinks (#1046, cutover S0.1).
+      # Its importer lists are judged against the merge base, so it needs this
+      # job's full history.
+      - name: workspace retirement (retiring Conductor surfaces gain no importers — ratchet)
+        run: uv run python scripts/check-workspace-retirement.py
+
+      # Default-allow route prefixes are the seam Workspace cutover P0.2 closes:
+      # every authenticated /v1/{segment} mount must declare a permission or a
+      # reviewed exempt_reason before Workspace surfaces land (#53 AC-P2). Same
+      # app introspection as the enumeration check above, so it lives beside it.
+      - name: route permissions (every authenticated prefix declared — ratchet)
+        run: uv run python scripts/check-route-permissions.py
+
+      # Parallel HTTP principal types and dict-shaped request.state.user are
+      # how the last three Conductor attempts kept diverging identity. P0.1
+      # ratchets them to one canonical Principal in maistro-core (#53). Its
+      # baseline is read from the merge base, so it needs this job's history.
+      - name: principal identity (one HTTP principal surface — ratchet)
+        run: uv run python scripts/check-principal-identity.py
+
+      # Workspace cutover P0.3 closes the hand-typed client seam: HTTP must
+      # eventually go through one generated client and entity shapes must come
+      # from types.gen.ts (#1048 AC-P3). Until then this ratchet banks the
+      # current raw-fetch and hand-typed declaration debt and refuses growth.
+      # Its baseline is read from the merge base, so it needs this job's history.
+      - name: frontend typed client (raw fetch + hand-typed entities — ratchet)
+        run: uv run python scripts/check-frontend-typed-client.py
+
       # The vendored IFEval grader and corpus are the *exam* the RSI loop is
       # scored against, so they must stay byte-comparable to what Google
       # published. This verifies the committed tree still matches its pinned
@@ -758,24 +904,115 @@ jobs:
       - name: vendored benchmark provenance (BFCL checker + corpus)
         run: uv run python scripts/vendor_bfcl.py --check
 
-      # Ratchet, not a 0-baseline: full backlog (77 ERROR blocks measured
-      # 2026-06-29) is too large to clear in one PR (Phase 18 code-health
-      # sweep). Hard-fails on REGRESSION (new violations beyond the
-      # recorded baseline) on every branch; raise the floor as the backlog
-      # is worked down, and drop the ratchet for a strict 0-baseline once
-      # XENON_BASELINE reaches 0.
+      # Ratchet, not a 0-baseline: the backlog (140 ERROR blocks over all
+      # shipped src, measured 2026-09-29; 139 by 2026-09-30) is too large to
+      # clear in one PR.
+      # Hard-fails on REGRESSION (new violations beyond the recorded
+      # baselines) on every branch; lower the floor as the backlog is worked
+      # down, and drop the ratchet for a strict 0-baseline once the counts
+      # reach 0.
+      #
+      # This step's unique value after #1682 is the module-rank and
+      # project-average axes: check-radon-baseline.py now carries the same
+      # 139 blocks as a per-identity ledger, which is strictly stronger than
+      # a count for the per-block axis.
       - name: xenon (per-function ≤ B; per-module ≤ B; project avg ≤ A — ratchet)
         env:
-          XENON_BASELINE: 77
+          # 77 -> 140 when the scope widened from maistro-core to every shipped
+          # package (2026-09-29, #1682). Not a loosening: the old floor watched
+          # 67 violations in one package while 73 more went unseen in canvas,
+          # evolve, rsi and the rest. Measured per package at the change:
+          # core 67, evolve 25, rsi 30, canvas 11, bootstrap 2, registry 2,
+          # design 1, server 1, turing 1.
+          #
+          # This number has moved twice before merging, which is the point of
+          # recording why. 140 -> 139: #1674 took
+          # tau_bench.py::_score_tool_usage from C (14) to B (9), and the radon
+          # ledger dropped the same row. 139 -> 145: #1663 added three C blocks
+          # in maistro-design and #1730 added three in maistro-rsi and regressed
+          # three more there (#1793 grants all nine; #1791/#1792 track taking
+          # them back down). Both PRs merged on 2026-10-02, into packages this
+          # scan does not watch *until this PR lands* -- which is the argument
+          # for landing it rather than refreshing the number again.
+          #
+          # 145 is the same number check-radon-baseline.py now carries, and that
+          # is the point: the two tools measure the same blocks over the same
+          # scope, so a divergence between this count and the ledger's length is
+          # itself a signal that one of them stopped looking.
+          XENON_BASELINE: 145
+          # Module rank was never gated at all. The old count matched only
+          # '^ERROR:xenon:block', so a whole module drifting to C passed in
+          # silence; widening the scope surfaced one.
+          #
+          # By identity, not by count -- the same argument that replaced
+          # vulture's total-count ceiling with quality/vulture-baseline.json.
+          # A count of 1 is satisfied by *any* one module, so a module
+          # improving from C to B would silently pay for a different module
+          # degrading from B to C in the same change, and the tolerated debt
+          # would rotate while the number held still. It matters more here
+          # than for blocks: a module average crosses into C through added
+          # B-ranked blocks, which the per-block radon ledger does not track,
+          # so this is the only instrument watching that axis.
+          #
+          # Empty, and still enforcing. Its one entry, tau_bench.py at C, was
+          # fixed by #1674 (the module is now A); an empty ledger means any
+          # module reaching C fails by name. Add a row only with the reason.
+          XENON_MODULE_LEDGER: ""
         run: |
-          uv run xenon --max-absolute B --max-modules B --max-average A packages/maistro-core/src > xenon.log 2>&1 || true
+          # -i third_party for the same reason check-radon-baseline.py excludes
+          # it: vendored BFCL/IFEval source is kept byte-faithful to upstream on
+          # purpose and is not this repository's complexity to ratchet. Without
+          # the exclusion the count is 150 and two of the three module-rank
+          # violations are vendored files nobody may touch.
+          uv run xenon --max-absolute B --max-modules B --max-average A \
+            -i third_party \
+            packages/maistro-bootstrap/src packages/maistro-canvas/src \
+            packages/maistro-core/src packages/maistro-design/src \
+            packages/maistro-ext-sdk/src \
+            packages/maistro-evolve/src packages/maistro-registry/src \
+            packages/maistro-rsi/src packages/maistro-server/src \
+            packages/maistro-turing/src > xenon.log 2>&1 || true # the exit code is re-derived from xenon.log below
+          # grep -c exits 1 on a zero count, which here is the passing case.
           count=$(grep -c '^ERROR:xenon:block' xenon.log || true)
+          average=$(grep -c '^ERROR:xenon:average' xenon.log || true)
           cat xenon.log
-          echo "xenon violation count: $count (baseline: $XENON_BASELINE)"
+          fail=0
+
+          echo "xenon block violations:  $count (baseline: $XENON_BASELINE)"
           if [ "$count" -gt "$XENON_BASELINE" ]; then
-            echo "::error::xenon regression — $count violations exceeds baseline of $XENON_BASELINE; refactor the new complex blocks (Boy Scout Rule)"
-            exit 1
+            echo "::error::xenon regression — $count block violations exceeds baseline of $XENON_BASELINE; refactor the new complex blocks (Boy Scout Rule)"
+            fail=1
           fi
+
+          # Module rank, compared as a set of <path> <rank> identities. Both
+          # directions fail, exactly like check-radon-baseline.py: a new one is
+          # a regression, and a fixed one must be removed from the ledger in
+          # the PR that fixed it, so the floor can only move down.
+          grep '^ERROR:xenon:module' xenon.log \
+            | sed -E "s/^ERROR:xenon:module '(.*)' has a rank of ([A-F])\$/\1 \2/" \
+            | sort > xenon-modules.now || true
+          printf '%s\n' "$XENON_MODULE_LEDGER" | sed -e 's/^[[:space:]]*//' -e '/^$/d' \
+            | sort > xenon-modules.ledger
+          echo "xenon module violations: $(wc -l < xenon-modules.now) (ledger: $(wc -l < xenon-modules.ledger))"
+          added=$(comm -23 xenon-modules.now xenon-modules.ledger)
+          fixed=$(comm -13 xenon-modules.now xenon-modules.ledger)
+          if [ -n "$added" ]; then
+            echo "::error::xenon regression — module-rank violations not in the ledger; a whole module drifting to C is a design signal, not a line-level one:"
+            while IFS= read -r module; do echo "  $module"; done <<< "$added"
+            fail=1
+          fi
+          if [ -n "$fixed" ]; then
+            echo "::error::xenon improvement not banked — remove these from XENON_MODULE_LEDGER in this PR so the floor cannot rotate:"
+            while IFS= read -r module; do echo "  $module"; done <<< "$fixed"
+            fail=1
+          fi
+
+          echo "xenon average violations: $average (baseline: 0)"
+          if [ "$average" -gt 0 ]; then
+            echo "::error::xenon regression — project average complexity fell below rank A"
+            fail=1
+          fi
+          exit "$fail"
 
       # Per-identity debt ledger, not a count: quality/vulture-baseline.json
       # records the exact reviewed finding identities per classification rule,
@@ -810,6 +1047,232 @@ jobs:
       # This ratchet closes that blind spot at module granularity.
       - name: reachability ratchet (built-but-never-wired modules)
         run: uv run python scripts/check-reachability.py
+
+      # The installed-workspace proof validator (#1878) is release tooling, and
+      # the ratchet above counts a scripts/ module as wired only when a
+      # workflow names its file — so this step is its call path, not an
+      # ornament. It exercises the real CLI end to end, which the in-process
+      # tests in tests/release/test_installed_workspace_proof_schema.py cannot:
+      # a synthetic, correctly hashed envelope is valid structural evidence but
+      # must fail closeout with SYNTHETIC_NOT_CLOSEOUT, asserted here through
+      # actual process exit codes. This checks envelope form only; it never
+      # asserts that a run occurred or that evidence is authentic.
+      - name: installed proof envelope validator fails closed via CLI (#1878)
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          uv run python - "$tmp" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          bundle = root / "bundle"
+          bundle.mkdir(parents=True)
+
+          profile_id = "ci-reviewed-profile-1878"
+          commit = "b" * 40  # shape-conformant stand-in; envelope form, not authenticity
+          artifact = hashlib.sha256(
+              b"maistro installed-workspace proof envelope conformance"
+          ).hexdigest()
+
+          payloads = {
+              "install.log": b"synthetic install log (CI conformance, #1878)\n",
+              "effective-config.json": b'{"synthetic": true}\n',
+              "execution.json": b'{"synthetic": true}\n',
+              "restart.json": b'{"synthetic": true}\n',
+              "isolation.json": b'{"synthetic": true}\n',
+              "junit.xml": b"<testsuites synthetic='true' />\n",
+          }
+          profile = {
+              "schema_version": 1,
+              "profile_id": profile_id,
+              "browser_login_applicable": False,
+          }
+          (root / "reviewed-profile.json").write_text(json.dumps(profile, indent=2) + "\n")
+
+          def dump(doc):
+              return (json.dumps(doc, indent=2) + "\n").encode()
+
+          results = {
+              "schema_version": 1,
+              "candidate_sha256": artifact,
+              "profile_id": profile_id,
+              "scenarios": [
+                  {
+                      "id": family,
+                      "outcome": "PASS",
+                      "reason_code": None,
+                      "evidence_paths": ["install.log"],
+                  }
+                  for family in ("INSTALL", "EXECUTE", "RESTART", "ISOLATE", "FAIL-CLOSED")
+              ],
+              "subchecks": [
+                  {
+                      "id": "BROWSER_LOGIN",
+                      "outcome": "NOT_APPLICABLE",
+                      "reason_code": "browser-login-not-applicable",
+                      "evidence_paths": [],
+                  }
+              ],
+          }
+          on_disk = {**payloads, "results.json": dump(results)}
+          manifest = {
+              "schema_version": 1,
+              "evidence_kind": "synthetic",
+              "candidate": {"commit": commit, "artifact_sha256": artifact},
+              "profile_id": profile_id,
+              "files": [
+                  {"path": name, "sha256": hashlib.sha256(data).hexdigest()}
+                  for name, data in sorted(on_disk.items())
+              ],
+          }
+          for name, data in on_disk.items():
+              (bundle / name).write_bytes(data)
+          (bundle / "manifest.json").write_bytes(dump(manifest))
+          print(f"synthetic bundle written to {bundle}")
+          PY
+          uv run python scripts/validate-installed-workspace-proof.py \
+            --bundle "$tmp/bundle" --profile "$tmp/reviewed-profile.json" \
+            --mode structural > "$tmp/structural-report.json"
+          grep -q '"valid": true' "$tmp/structural-report.json"
+          if uv run python scripts/validate-installed-workspace-proof.py \
+              --bundle "$tmp/bundle" --profile "$tmp/reviewed-profile.json" \
+              --mode closeout > "$tmp/closeout-report.json"; then
+            echo "::error::synthetic envelope passed closeout — validator is not fail-closed"
+            exit 1
+          fi
+          grep -q "SYNTHETIC_NOT_CLOSEOUT" "$tmp/closeout-report.json" || {
+            echo "::error::closeout failed without SYNTHETIC_NOT_CLOSEOUT:"
+            cat "$tmp/closeout-report.json"
+            exit 1
+          }
+          echo "installed proof envelope validator fails closed: structural exit 0, closeout exit 1 (SYNTHETIC_NOT_CLOSEOUT)"
+
+      # The selected-model-call validator (#1879) is release tooling, and the
+      # ratchet above counts a scripts/ module as wired only when a workflow
+      # names its file — so this step is its call path, not an ornament. It
+      # exercises the real CLI end to end, which the in-process tests in
+      # tests/release/test_installed_workspace_request_chain.py cannot: a
+      # synthetic, fully consistent selected-call document passes while a
+      # dispatch spliced onto a foreign Invocation fails with the first
+      # ordered join code, asserted through actual process exit codes. This
+      # checks record consistency only; it never asserts that a model call
+      # occurred or that any evidence is authentic.
+      - name: selected model-call validator fails closed via CLI (#1879)
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          uv run python - "$tmp" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          doc = {
+              "schema_version": 1,
+              "evidence_kind": "synthetic",
+              "request": {
+                  "request_id": "req-ci-1879",
+                  "run_id": "run-ci-1879",
+                  "workspace_id": "ws-ci-1879",
+                  "project_id": "proj-ci-1879",
+                  "actor_principal_id": "principal-ci-1879",
+                  "agent_id": "agent-ci-1879",
+              },
+              "run": {
+                  "run_id": "run-ci-1879",
+                  "workspace_id": "ws-ci-1879",
+                  "project_id": "proj-ci-1879",
+                  "actor_principal_id": "principal-ci-1879",
+              },
+              "node_run": {
+                  "node_run_id": "nr-ci-1879",
+                  "run_id": "run-ci-1879",
+                  "node_id": "node-ci-1879",
+              },
+              "attempt": {
+                  "attempt_id": "att-ci-1879",
+                  "node_run_id": "nr-ci-1879",
+                  "ordinal": 1,
+              },
+              "invocation": {
+                  "invocation_id": "inv-ci-1879",
+                  "run_id": "run-ci-1879",
+                  "node_run_id": "nr-ci-1879",
+                  "attempt_id": "att-ci-1879",
+                  "workspace_id": "ws-ci-1879",
+                  "project_id": "proj-ci-1879",
+                  "effect_key": "effect-ci-1879",
+                  "logical_effect": True,
+                  "status": "completed",
+                  "binding": {
+                      "binding_id": "bind-ci-1879",
+                      "workspace_id": "ws-ci-1879",
+                      "project_id": "proj-ci-1879",
+                      "capability": "model.chat",
+                      "provider_name": "synthetic-provider",
+                  },
+                  "usage": {
+                      "units": "tokens",
+                      "input_units": 11,
+                      "output_units": 7,
+                      "cost_cents": None,
+                      "model": "synthetic-model",
+                      "model_version": "synthetic-model-2026-01-01",
+                      "provider": "synthetic-provider",
+                  },
+              },
+              "dispatch": {
+                  "dispatch_id": "disp-ci-1879",
+                  "invocation_id": "inv-ci-1879",
+                  "provider_name": "synthetic-provider",
+                  "requested_model": "synthetic-model",
+                  "provider_request_id": None,
+                  "response_kind": "provider",
+                  "result_present": True,
+                  "usage_provenance": {"source": "reported", "evidence_ref": "usage.json"},
+              },
+              "expected_model": {
+                  "provider_name": "synthetic-provider",
+                  "requested_model": "synthetic-model",
+              },
+          }
+          (root / "call.json").write_text(json.dumps(doc, indent=2) + "\n")
+          # Splice the dispatch onto a foreign Invocation: the first ordered
+          # join failure must be DISPATCH_LINK_MISMATCH, nothing else.
+          spliced = json.loads(json.dumps(doc))
+          spliced["dispatch"]["invocation_id"] = "inv-other"
+          (root / "spliced.json").write_text(json.dumps(spliced, indent=2) + "\n")
+          print(f"synthetic selected-call documents written to {root}")
+          PY
+          uv run python scripts/installed_workspace_proof_contract.py \
+            "$tmp/call.json" > "$tmp/valid-report.json"
+          grep -q '"valid": true' "$tmp/valid-report.json"
+          if uv run python scripts/installed_workspace_proof_contract.py \
+              "$tmp/spliced.json" > "$tmp/spliced-report.json"; then
+            echo "::error::spliced selected-call document passed — validator is not fail-closed"
+            exit 1
+          fi
+          grep -q "DISPATCH_LINK_MISMATCH" "$tmp/spliced-report.json" || {
+            echo "::error::spliced document failed without DISPATCH_LINK_MISMATCH:"
+            cat "$tmp/spliced-report.json"
+            exit 1
+          }
+          echo "selected model-call validator fails closed: valid document exit 0, spliced dispatch exit 1 (DISPATCH_LINK_MISMATCH)"
+
+      # Credential authority is checked against the same reachable module graph;
+      # a renamed unscoped store must fail before it can become a route dependency.
+      - name: credential authority (reachable stores are classified and scoped)
+        run: uv run python scripts/check-credential-authority.py
+
+      # Credential authority is checked against the same reachable module graph;
+      # a renamed unscoped store must fail before it can become a route dependency.
+      - name: credential authority (reachable stores are classified and scoped)
+        run: uv run python scripts/check-credential-authority.py
 
       # Both gates above stop one level short of the DI root. `Container` is not
       # a value object -- its fields exist so the runtime can consume them -- and
@@ -897,6 +1360,30 @@ jobs:
       # that build and scan it (#346).
       - name: image inventory (every Dockerfile is dispositioned; shipped ones name live jobs)
         run: uv run python scripts/check-image-inventory.py
+
+      # Digest pins close what the inventory comment names as its open gap: a
+      # mutable base means the released artifact can differ from the scanned
+      # one. This gate rejects `:latest` (explicit or implicit) everywhere, and
+      # requires every external image reference to be pinned
+      # `name:tag@sha256:<digest>` AND registered in quality/image-pins.json
+      # with the same coordinates (#349) -- so a base update can only land as a
+      # reviewable change to the registry plus the Dockerfiles, never as a
+      # silent tag move.
+      - name: image pins (release bases digest-pinned; no mutable :latest anywhere)
+        run: uv run python scripts/check-image-pins.py
+
+      # stream1-diagnostic.yml sat pinned to a branch deleted after #373
+      # landed, with a baseline SHA the repository no longer contained and
+      # every step ending in `|| true` -- unable to run, unable to fail, and
+      # reading to every agent as an active workflow pattern (#400). Every
+      # workflow now carries a reviewed disposition (ACTIVE,
+      # MANUAL_DIAGNOSTIC, RETIRED), and the same gate rejects the three rots
+      # that let stream1 go unnoticed: trigger branches that no longer exist
+      # (unless a reviewed retained_branches row says otherwise), pinned
+      # commits this checkout does not contain, and error swallowing with no
+      # written reason.
+      - name: workflow inventory (every workflow dispositioned; references live; swallows reasoned)
+        run: uv run python scripts/check-workflow-inventory.py
 
       # BACKLOG.md is the hand-maintained work-source of record until the DB
       # backlog is live (#50), and agents read it as well as people. The gate
@@ -986,14 +1473,12 @@ jobs:
           # above -- 3 points of headroom is 3 regressions that land silently.
           PYRIGHT_BASELINE: 21
         run: |
-          uv run pyright --outputjson packages/maistro-core/src > pyright.json || true
-          count=$(uv run python -c "import json;print(json.load(open('pyright.json'))['summary']['errorCount'])")
-          uv run pyright packages/maistro-core/src || true
-          echo "pyright error count: $count (baseline: $PYRIGHT_BASELINE)"
-          if [ "$count" -gt "$PYRIGHT_BASELINE" ]; then
-            echo "::error::pyright regression — $count errors exceeds baseline of $PYRIGHT_BASELINE; fix the new findings (Boy Scout Rule)"
-            exit 1
-          fi
+          # One analysis supplies both the verdict and the complete diagnostics.
+          # A type-error exit may consume the existing allowance; a fatal exit may not.
+          pyright_status=0
+          uv run pyright --outputjson packages/maistro-core/src > pyright.json || pyright_status=$?
+          uv run python scripts/check-pyright-report.py pyright.json \
+            --baseline "$PYRIGHT_BASELINE" --exit-code "$pyright_status"
 
       # ----- Pillar 2: Hypothesis property tests -----
       # The property suite lives in formal/ (also run by formal-conformance.yml
@@ -1021,6 +1506,13 @@ jobs:
       - name: model egress (the direct-caller set may only shrink)
         run: uv run python scripts/check-model-egress.py
 
+      # M1-D (#1613): foreign harnesses are admitted as governed graph nodes —
+      # Provider -> Binding -> Invocation. A product module that references
+      # OpenClaw/Pi and performs its own HTTP/subprocess transport is a raw
+      # side door: same harness, no Binding, no Invocation, no parent Run.
+      - name: foreign-harness egress (OpenClaw/Pi transport stays inside the Provider boundary)
+        run: uv run python scripts/check-foreign-harness-egress.py
+
       - name: Architecture fitness functions
         env:
           PYTHONPATH: packages/maistro-core/src
@@ -1040,3 +1532,21 @@ jobs:
           uv run interrogate -f 45 packages/maistro-core/src/maistro/graph/durable_runs
           uv run interrogate -f 63 packages/maistro-core/src/maistro/projects
           uv run interrogate -f 46 packages/maistro-core/src/maistro
+          # Every other shipped package, floored at its measured coverage on
+          # 2026-09-29. These were unmeasured until now, which is why turing
+          # sits at 24 and canvas at 36: nothing had ever asked.
+          uv run interrogate -f 64 packages/maistro-rsi/src
+          uv run interrogate -f 59 packages/maistro-server/src
+          uv run interrogate -f 51 packages/maistro-design/src
+          # evolve is the one package carrying vendored source. Measured with
+          # BFCL/IFEval included the aggregate reads 50.7%; the 14 upstream
+          # files are well documented and were lending 12.5 points to a
+          # floor meant to hold first-party code. Excluded, evolve's own
+          # coverage is 38.2% -- so a floor of 50 would have let first-party
+          # docstrings rot the whole way down while the step stayed green.
+          uv run interrogate -f 38 -e packages/maistro-evolve/src/maistro_evolve/benchmarks/third_party \
+            packages/maistro-evolve/src
+          uv run interrogate -f 50 packages/maistro-registry/src
+          uv run interrogate -f 45 packages/maistro-bootstrap/src
+          uv run interrogate -f 36 packages/maistro-canvas/src
+          uv run interrogate -f 24 packages/maistro-turing/src

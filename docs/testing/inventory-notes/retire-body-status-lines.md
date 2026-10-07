@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +1
+  tests/: +10
 ---
 # retire-body-status-lines
 
-Net +1 in `tests/test_check_adr_status_language.py`, and the net hides a
+Net +10 in `tests/test_check_adr_status_language.py`, and the net hides a
 larger reshuffle that is worth stating, because ADR-092126-a28a changed what
 the first category *is*. It used to check that a body `**Status:**` line
 agreed with front matter; it now checks that no such line exists at all.
@@ -36,3 +36,14 @@ Renamed in place, no count change: the disagreeing-line test keeps its
 coverage under `test_a_disagreeing_body_status_line_still_fails`, the empty
 line moves from "declares nothing, so skip it" to "still a retired line", and
 the two ledger tests drop "contradiction" for "finding".
+
+October 7 refresh adds seven collected cases by exercising the agreeing-line
+rejection across ADRs and specs with bare, dash, star, and plus spellings.
+The corpus assertion now checks both document roots, and the sandbox copies
+both, so spec regressions cannot hide behind ADR-only fixtures. Existing
+category-2/3 behavior and the empty baseline remain unchanged.
+
+Independent refresh review found that the old checker skipped nested records,
+although registry/index discovery supports them. Two added ADR/spec cases
+prove a nested agreeing body line is rejected; both failed against the
+nonrecursive checker. The checker and corpus assertion now recurse together.

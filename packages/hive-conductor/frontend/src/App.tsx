@@ -16,6 +16,7 @@ import Setup from "./pages/Setup";
 // trip with nothing to show meanwhile.
 const Agents = lazy(() => import("./pages/Agents"));
 const AuditLog = lazy(() => import("./pages/AuditLog"));
+const Backlog = lazy(() => import("./pages/Backlog"));
 const Chat = lazy(() => import("./pages/Chat"));
 const CLI = lazy(() => import("./pages/CLI"));
 const Containers = lazy(() => import("./pages/Containers"));
@@ -23,6 +24,7 @@ const DagBuilder = lazy(() => import("./pages/DagBuilder"));
 const DagRuns = lazy(() => import("./pages/DagRuns"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const DesignStudio = lazy(() => import("./pages/DesignStudio"));
+const DeckBuilder = lazy(() => import("./pages/DeckBuilder"));
 const Docs = lazy(() => import("./pages/Docs"));
 const Evolution = lazy(() => import("./pages/Evolution"));
 const RSI = lazy(() => import("./pages/RSI"));
@@ -181,16 +183,18 @@ function AppRoutes() {
                   <Route path="dashboard" element={<Dashboard />} />
                   <Route path="chat" element={<Chat />} />
                   <Route path="missions" element={<Missions />} />
+                  <Route path="backlog" element={<Backlog />} />
                   <Route path="dags" element={<DagBuilder />} />
                   <Route path="dag-runs" element={<DagRuns />} />
                   <Route path="schedules" element={<Schedules />} />
                   <Route path="agents" element={<Agents />} />
                   <Route path="work-items" element={<WorkItems />} />
                   <Route path="knowledge" element={<KnowledgeBase />} />
-                  {/* M0 containment for #311: model-authored Deck markup reaches
-                      raw browser HTML/SVG sinks. Keep the executable surface
-                      unreachable until the M2 sanitizer/structured renderer lands. */}
-                  <Route path="decks" element={<Navigate to="/dashboard" replace />} />
+                  {/* #311 M0 containment lifted: the M2 Deck sanitizer
+                      (lib/deckSanitizer.ts, #752/#873) now sanitizes every
+                      render sink, so the keyboard-complete Deck editor (#769)
+                      is reachable at /decks and from Design Studio. */}
+                  <Route path="decks" element={<DeckBuilder />} />
                   <Route path="skills" element={<Skills />} />
                   <Route path="mcp" element={<MCP />} />
                   <Route path="topology" element={<Topology />} />
@@ -200,7 +204,15 @@ function AppRoutes() {
                   <Route path="quotas" element={<Quotas />} />
                   <Route path="audit" element={<AuditLog />} />
                   <Route path="cli" element={<CLI />} />
-                  <Route path="cli/canvas" element={<DesignStudio />} />
+                  {/* #95: Design Studio is the product, so its deep link is the
+                      product's name. Capability APIs keep their /v1/canvas and
+                      /v1/design namespaces; the UI route namespace is product
+                      identity and does not borrow the Canvas tool's name. The
+                      implementation-era /cli/canvas path survives only as a
+                      compatibility redirect, asserted by
+                      design-studio-truthfulness.spec.ts. */}
+                  <Route path="design-studio" element={<DesignStudio />} />
+                  <Route path="cli/canvas" element={<Navigate to="/design-studio" replace />} />
                   <Route path="containers" element={<Containers />} />
                   <Route path="docs" element={<Docs />} />
                   <Route path="evolution" element={<Evolution />} />

@@ -22,7 +22,7 @@ dev = [
 # Installed only for its dependencies; the code is imported as a namespace
 # package from the repo root (python -m formal..., pytest formal/models).
 # Without an explicit empty package list, setuptools auto-discovery fails on
-# the multiple top-level directories (models/, extractors/, generated/).
+# the multiple top-level directories (models/, fixtures/).
 [build-system]
 requires = ["setuptools>=77"]  # >=77 for PEP 639 SPDX `license` expression
 build-backend = "setuptools.build_meta"

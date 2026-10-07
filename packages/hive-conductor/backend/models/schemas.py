@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from maistro.scheduling.model import DEFAULT_CATCHUP_WINDOW_SECONDS
+
 
 class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -56,6 +58,7 @@ class Mission(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str
+    run_id: str | None = None
     user_id: str = ""
     name: str
     description: str
@@ -95,6 +98,10 @@ class Schedule(BaseModel):
 
     id: str
     user_id: str = ""
+    # The canonical scope the create route authorized (#1201). Empty on rows
+    # that predate it, which no principal can see or fire.
+    workspace_id: str = ""
+    project_id: str = ""
     name: str
     description: str
     cron_expression: str
@@ -108,6 +115,12 @@ class Schedule(BaseModel):
     # unbounded, which is what every schedule predating this column was.
     # Enforced on the canonical cursor (`maistro.scheduling`), not here.
     max_runs: int | None = None
+    # How far back missed fires are backfilled, in seconds (#1200). Defaulted
+    # like `timezone` so a row persisted before the column keeps loading and
+    # keeps firing with the substrate's own default. The routes bound what a
+    # client may request (`schedule_max_catchup_window_s`); the canonical
+    # definition model enforces its own absolute ceiling on top.
+    catchup_window_seconds: float = DEFAULT_CATCHUP_WINDOW_SECONDS
     last_run: datetime | None = None
     # The Run that claimed the most recent occurrence. A projection of the
     # canonical cursor's `last_run_id`, so a caller holding a schedule can
@@ -231,6 +244,12 @@ class MemoryEntry(BaseModel):
     created_at: datetime
     updated_at: datetime
     accessed_count: int = 0
+    #: Contradiction count — durable record of how many times this entry was
+    #: contradicted through `POST /v1/memory/entries/{id}/contradict` (#389).
+    #: The route used to acknowledge a contradiction it never stored; the
+    #: count lives on the entry itself so the acknowledgment and the state
+    #: change are the same write through the one durable store.
+    contradictions: int = 0
     ttl_seconds: int | None = None
 
 

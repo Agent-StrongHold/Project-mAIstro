@@ -54,7 +54,9 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     module = _gate()
     adr_dir = tmp_path / "docs" / "adr"
     shutil.copytree(ROOT / "docs" / "adr", adr_dir)
-    monkeypatch.setattr(module, "DOC_ROOTS", (adr_dir,))
+    spec_dir = tmp_path / "docs" / "specs"
+    shutil.copytree(ROOT / "docs" / "specs", spec_dir)
+    monkeypatch.setattr(module, "DOC_ROOTS", (adr_dir, spec_dir))
     monkeypatch.setattr(module, "ROOT", tmp_path)
     # The ledger's identities are repo-relative (docs/adr/...), so the sandbox
     # reproduces the real layout under tmp_path rather than flattening it.
@@ -91,13 +93,14 @@ def test_adr_046_is_no_longer_a_contradiction() -> None:
 def test_the_corpus_carries_no_body_status_line_at_all(sandbox) -> None:
     """The retirement itself, asserted against the real corpus.
 
-    ADR-092126-a28a removed the line from all 83 documents that had one. This
+    ADR-092126-a28a removed the line from all 91 documents that had one. This
     is the test that fails if any comes back — including via a merge that
     reinstates an old revision, which no per-document test would notice.
     """
     offenders = [
-        path.name
-        for path in sorted(sandbox.DOC_ROOTS[0].glob("*.md"))
+        str(path.relative_to(sandbox.ROOT))
+        for root in sandbox.DOC_ROOTS
+        for path in sorted(root.rglob("*.md"))
         if _BODY_STATUS_LINE_RE.search(path.read_text())
     ]
 
@@ -105,7 +108,10 @@ def test_the_corpus_carries_no_body_status_line_at_all(sandbox) -> None:
 
 
 @pytest.mark.ac("ADR-092126-a28a/AC-2")
-def test_a_body_status_line_fails_even_when_it_agrees(sandbox) -> None:
+@pytest.mark.ac("ADR-092126-a28a/AC-3")
+@pytest.mark.parametrize("root_index", [0, 1], ids=["adr", "spec"])
+@pytest.mark.parametrize("bullet", ["", "- ", "* ", "+ "], ids=["bare", "dash", "star", "plus"])
+def test_a_body_status_line_fails_even_when_it_agrees(sandbox, root_index, bullet) -> None:
     """Absence, not agreement — the rule that makes the retirement durable.
 
     This is the case the old agreement check let through, and the one that
@@ -113,12 +119,29 @@ def test_a_body_status_line_fails_even_when_it_agrees(sandbox) -> None:
     second place to edit tomorrow. #387's whole history is that copy going
     stale.
     """
-    path = _an_adr(sandbox.DOC_ROOTS[0])
-    path.write_text(_with_status_line(path.read_text(), _front_matter_status(path)))
+    path = _an_adr(sandbox.DOC_ROOTS[root_index])
+    path.write_text(_with_status_line(path.read_text(), _front_matter_status(path), bullet=bullet))
 
     problems = sandbox.audit()
 
     assert any(p.path == path and p.kind == "body-status-line" for p in problems)
+
+
+@pytest.mark.ac("ADR-092126-a28a/AC-1")
+@pytest.mark.ac("ADR-092126-a28a/AC-2")
+@pytest.mark.parametrize("root_index", [0, 1], ids=["adr", "spec"])
+def test_a_nested_document_cannot_hide_a_body_status_line(sandbox, root_index) -> None:
+    """Registry-supported nested documents obey the same retirement rule."""
+    root = sandbox.DOC_ROOTS[root_index]
+    path = _an_adr(root)
+    nested = root / "nested"
+    nested.mkdir()
+    moved = path.rename(nested / path.name)
+    moved.write_text(_with_status_line(moved.read_text(), _front_matter_status(moved)))
+
+    problems = sandbox.audit()
+
+    assert any(p.path == moved and p.kind == "body-status-line" for p in problems)
 
 
 @pytest.mark.ac("ADR-092126-a28a/AC-3")
@@ -350,10 +373,10 @@ def test_a_reintroduced_body_status_line_is_not_absorbed_by_the_baseline(sandbox
     With the ledger drained it is simpler still: every finding is new, and the
     run that reports one exits non-zero.
     """
-    test_a_body_status_line_fails_even_when_it_agrees(sandbox)
+    test_a_body_status_line_fails_even_when_it_agrees(sandbox, 0, "")
 
     assert sandbox.main([]) == 1
-    assert "new body/front-matter status contradiction" in capsys.readouterr().out
+    assert "new body-status-language finding" in capsys.readouterr().out
 
 
 # --- category 2, the other half: a banner with nothing behind it -------------

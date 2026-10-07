@@ -135,6 +135,78 @@ class TestScopedAcquisition:
         stats = router.stats(workspace_id=WS, project_id=PROJECT, provider=PROVIDER)
         assert stats is not None and stats.total_keys == 1
 
+    async def test_re_registering_a_key_id_preserves_cooldown_and_block_state(self):
+        """#1079 Finding 2: a re-register (e.g. a repeated control-plane
+        Binding call reusing the same Workspace/Project) must not undo a
+        cooldown/block decision `record_outcome` already made for that
+        credential -- otherwise the very next acquisition immediately
+        retries a credential the pool just decided to back off from."""
+
+        router = _router(["a"])
+        await router.record_outcome(
+            workspace_id=WS,
+            project_id=PROJECT,
+            provider=PROVIDER,
+            key_id="a",
+            error=_HttpError("Rate limit exceeded", 429),
+        )
+        cooldown_before = _entry(router, "a").cooldown_until
+        assert cooldown_before is not None
+
+        # A later control-plane call re-registers the same credential (fresh
+        # CredentialRecord, default health fields) -- e.g. a repeated
+        # `governed_model.control_plane_binding()` or a bootstrap reload.
+        router.add(workspace_id=WS, project_id=PROJECT, record=_rec("a"))
+
+        entry = _entry(router, "a")
+        assert entry.cooldown_until == cooldown_before
+        assert entry.error_count == 1
+        assert not entry.is_available
+
+    async def test_re_registering_a_blocked_key_id_keeps_it_blocked(self):
+        router = _router(["a"])
+        await router.record_outcome(
+            workspace_id=WS,
+            project_id=PROJECT,
+            provider=PROVIDER,
+            key_id="a",
+            error=_HttpError("Unauthorized", 401),
+        )
+        assert _entry(router, "a").blocked is True
+
+        router.add(workspace_id=WS, project_id=PROJECT, record=_rec("a"))
+
+        assert _entry(router, "a").blocked is True
+
+    async def test_re_registering_a_key_id_updates_the_secret(self):
+        """The refresh path exists precisely so a rotated secret takes
+        effect -- only health state is preserved, not the stale api_key."""
+
+        router = _router(["a"])
+        rotated = CredentialRecord(key_id="a", provider=PROVIDER, api_key="sk-rotated")
+        router.add(workspace_id=WS, project_id=PROJECT, record=rotated)
+
+        assert _entry(router, "a").api_key == "sk-rotated"
+
+    async def test_registering_a_brand_new_key_id_starts_with_clean_health(self):
+        """Upsert only preserves state for a key id already in the pool --
+        a genuinely new credential must not inherit anyone else's history."""
+
+        router = _router(["a"])
+        await router.record_outcome(
+            workspace_id=WS,
+            project_id=PROJECT,
+            provider=PROVIDER,
+            key_id="a",
+            error=_HttpError("Unauthorized", 401),
+        )
+
+        router.add(workspace_id=WS, project_id=PROJECT, record=_rec("b"))
+
+        entry_b = _entry(router, "b")
+        assert entry_b.blocked is False
+        assert entry_b.is_available
+
     def test_router_reports_its_default_strategy(self):
         router = _router(["a"])
 

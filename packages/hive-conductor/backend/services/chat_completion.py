@@ -36,6 +36,7 @@ from services.agent_materialization import (
 )
 from services.airtable_cache import get_airtable_base_tables_json, get_airtable_records_json
 from services.chat_gate import (
+    _workflow_request_digest,
     gate_tool_dispatch,
     gate_untrusted,
     new_gate_id,
@@ -471,7 +472,7 @@ PM_TOOLS: list[dict[str, Any]] = [
                     "size": {"type": "string", "description": "Column span: 1, 2, 3, 4, 5, or 6"},
                     "config": {
                         "type": "object",
-                        "description": "Widget config. For jira: {project, status, days, assignee, jql_extra, jira_display}. For kpi: {field, sub}. For custom: {source, table, filter_formula} or {endpoint, params}.",
+                        "description": "Widget config. For jira: {project, status, days, assignee, jql_extra, jira_display}. For kpi: {field, sub} — fields approval_rate and ttft currently render N/A (no source measures them). For custom metrics source: {source: 'metrics', metric: 'latency'|'ttft'|'cost'|'tokens'|'invocations'} — there is no errors metric. For custom: {source, table, filter_formula} or {endpoint, params}.",
                     },
                     "tab": {
                         "type": "string",
@@ -1513,6 +1514,106 @@ async def _tool_list_workflows(
     }
 
 
+async def _canonical_run_was_cancelled(canonical_run_id: str) -> bool:
+    """Whether the canonical spine recorded this Run as CANCELLED.
+
+    The projection mirrors canonical truth or says nothing; when the spine is
+    unreachable there is nothing to mirror, so the answer is no (#1332).
+    """
+    try:
+        from maistro.runs.model import RunStatus
+        from services.engine import get_engine
+
+        run_store = get_engine().run_store
+        if run_store is None:
+            return False
+        run = await run_store.get_run(canonical_run_id)
+    except Exception:
+        return False
+    return run is not None and run.status is RunStatus.CANCELLED
+
+
+class _ChatDagRunScoreAdapter:
+    """The run shape the eval judge scores a chat-launched DAG through."""
+
+    def __init__(self, exec_id: str, dag_id: str, result: dict[str, Any]):
+        self.run_id = exec_id
+        self.dag_id = dag_id
+        self.project_id = ""
+        self.status = "completed"
+        self.node_records = []
+        for nid, nr in result.get("node_results", {}).items():
+
+            class _NR:
+                pass
+
+            n = _NR()
+            n.node_id = nid
+            n.kind = nr.get("role", "llm")
+            n.phase = "completed"
+            n.latency_ms = nr.get("latency_ms", 0)
+            n.tokens_in = nr.get("tokens_in", 0)
+            n.tokens_out = nr.get("tokens_out", 0)
+            n.error_code = None
+            n.error_message = None
+            n.response_preview = nr.get("response", "")[:500]
+            self.node_records.append(n)
+
+
+async def _eval_judge_score(exec_id: str, dag_id: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Score a chat-launched DAG through the eval judge.
+
+    The scorer is commentary on a run, not part of it: its failure has the
+    same standing as a failed history write and must not change the outcome
+    the caller sees.
+    """
+    try:
+        from services.eval_judge import score_run
+
+        return await score_run(_ChatDagRunScoreAdapter(exec_id, dag_id, result))
+    except Exception as e:
+        return {"score": 0, "error": str(e)[:100]}
+
+
+def _chat_dag_output_preview(result: dict[str, Any]) -> dict[str, str]:
+    """The first few node responses, at the preview length the tool serves."""
+    return {
+        nid: nr.get("response", "")[:200]
+        for nid, nr in list(result.get("node_results", {}).items())[:3]
+    }
+
+
+async def _cancellation_answer(
+    cancelled: asyncio.CancelledError, exec_id: str, dag_id: str
+) -> dict[str, Any]:
+    """The turn's answer when the canonical spine cancelled this DAG run.
+
+    `RunExecutionService.cancel_run` fences the canonical Run CANCELLED, stops
+    its Attempts, and the durable walk persists that truth and re-raises the
+    cancellation into this awaiter (#1332). The same exception also arrives
+    when THIS task is torn down (a chat disconnect) with the canonical Run
+    untouched, so an answer -- and the cancelled row it stamps -- follows only
+    a cancellation the spine actually recorded; otherwise the original
+    cancellation is re-raised, as asyncio's contract requires.
+    """
+    if asyncio.current_task().cancelling():
+        raise cancelled
+    from services.dag_run_store import get_dag_run_store
+
+    record = get_dag_run_store().get_run(exec_id) or {}
+    canonical_run_id = str(record.get("canonical_run_id") or "")
+    if not canonical_run_id or not await _canonical_run_was_cancelled(canonical_run_id):
+        raise cancelled
+    with contextlib.suppress(Exception):
+        await get_dag_run_store().finish_run(exec_id, status="cancelled")
+    return {
+        "run_id": exec_id,
+        "dag_id": dag_id,
+        "status": "cancelled",
+        "cancelled": True,
+    }
+
+
 async def _tool_run_workflow(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
@@ -1553,7 +1654,16 @@ async def _tool_run_workflow(
             workspace_id=workspace_id,
             project_id=project_id,
         )
-        result = await execute_dag(dag_data, scope=scope)
+
+        async def _record_admission(canonical_run_id: str) -> None:
+            # Persist the projection -> canonical Run correlation at canonical
+            # admission, not after execution settles (#1332). The canonical
+            # executor awaits this before any physical node work, so a live
+            # Recent Runs entry cancels through the exact canonical Run while
+            # the DAG is still running instead of 404-ing the projection id.
+            await store.record_canonical_run(exec_id, canonical_run_id=canonical_run_id)
+
+        result = await execute_dag(dag_data, scope=scope, on_admitted=_record_admission)
         executed = True
 
         # Store events
@@ -1567,37 +1677,7 @@ async def _tool_run_workflow(
             )
 
         # Trigger eval-judge
-        score_result = {}
-        try:
-            from services.eval_judge import score_run
-
-            class _Adapter:
-                def __init__(self):
-                    self.run_id = exec_id
-                    self.dag_id = dag_id
-                    self.project_id = ""
-                    self.status = "completed"
-                    self.node_records = []
-                    for nid, nr in result.get("node_results", {}).items():
-
-                        class _NR:
-                            pass
-
-                        n = _NR()
-                        n.node_id = nid
-                        n.kind = nr.get("role", "llm")
-                        n.phase = "completed"
-                        n.latency_ms = nr.get("latency_ms", 0)
-                        n.tokens_in = nr.get("tokens_in", 0)
-                        n.tokens_out = nr.get("tokens_out", 0)
-                        n.error_code = None
-                        n.error_message = None
-                        n.response_preview = nr.get("response", "")[:500]
-                        self.node_records.append(n)
-
-            score_result = await score_run(_Adapter())
-        except Exception as e:
-            score_result = {"score": 0, "error": str(e)[:100]}
+        score_result = await _eval_judge_score(exec_id, dag_id, result)
 
         # This producer called `start_run` and never finished it, so a run
         # launched from chat sat at `running` for the life of the process --
@@ -1616,11 +1696,14 @@ async def _tool_run_workflow(
             "score": score_result.get("score", 0),
             "rationale": score_result.get("rationale", ""),
             "topology_proposal": score_result.get("topology_proposal"),
-            "output_preview": {
-                nid: nr.get("response", "")[:200]
-                for nid, nr in list(result.get("node_results", {}).items())[:3]
-            },
+            "output_preview": _chat_dag_output_preview(result),
         }
+    except asyncio.CancelledError as cancelled:
+        # Cancellation that works (#1332): the durable walk re-raises the
+        # canonical cancel fence into this awaiter; `_cancellation_answer`
+        # answers only a cancellation the spine actually recorded -- never a
+        # task teardown, which it re-raises unchanged.
+        return await _cancellation_answer(cancelled, exec_id, dag_id)
     except Exception as e:
         # The failure branch has to finish the run too, or a chat-launched DAG
         # that failed is indistinguishable from one still running.
@@ -1852,29 +1935,197 @@ _TOOL_HANDLERS["hill_climb"] = tool_hill_climb
 _TOOL_HANDLERS["mutate_workflow"] = tool_mutate_workflow
 
 
-async def _execute_tool(tool_name: str, args: dict[str, Any], user_id: str) -> dict[str, Any]:
+def _serialize_tool_result(result: object) -> str:
+    """Serialize exactly the payload that the next model turn receives."""
+    return json.dumps(result)
+
+
+async def _execute_tool(
+    tool_name: str,
+    args: dict[str, Any],
+    user_id: str,
+    *,
+    approved: bool = False,
+    approval_evidence: dict[str, Any] | None = None,
+    approval_request: Any | None = None,
+    approval_decision: Any | None = None,
+) -> dict[str, Any]:
     """Execute a PM tool for real. No stubs. Calls Jira REST API directly.
 
     The #315 dispatch policy is enforced here rather than in each caller, so
     every path that reaches a handler has crossed the same authorization:
     privileged effects (destroy/mutate) need an approval the model cannot
-    mint, and networked effects need a principal. Handler-level tests that
-    monkeypatch this function replace the policy with the fake, exactly as
-    they replaced the dispatch before.
+    mint, and networked effects need a principal. ``approved`` and its evidence
+    are trusted caller inputs, never model arguments; approval covers this
+    dispatch only, not effects a workflow may initiate downstream.
     """
-    refusal = gate_tool_dispatch(tool_name, user_id)
+    workflow_id = (
+        str(args.get("dag_id") or args.get("id") or "") if tool_name == "run_workflow" else None
+    )
+    request_digest = _workflow_request_digest(args) if tool_name == "run_workflow" else None
+    approval_record = (
+        {
+            "request_id": approval_request.request_id,
+            "action": approval_request.action,
+            "principal": approval_request.requester,
+            "workflow_id": approval_request.params.get("workflow_id"),
+            "request_digest": approval_request.params.get("request_digest"),
+            "actor": approval_decision.actor,
+            "authority_kind": (
+                approval_decision.authority.kind if approval_decision.authority else None
+            ),
+            "authority_scope": (
+                approval_decision.authority.scope if approval_decision.authority else None
+            ),
+            "source": "capability_approval",
+        }
+        if approval_request is not None and approval_decision is not None
+        else (dict(approval_evidence) if approval_evidence else None)
+    )
+    refusal = gate_tool_dispatch(
+        tool_name,
+        user_id,
+        approved=approved,
+        approval_evidence=approval_evidence,
+        approval_request=approval_request,
+        approval_decision=approval_decision,
+        workflow_id=workflow_id or None,
+        request_digest=request_digest,
+    )
     if refusal is not None:
         return {
             "error": f"tool '{tool_name}' was not run: {refusal.reason}",
             "blocked": True,
+            **({"workflow_id": workflow_id} if workflow_id else {}),
         }
     jira_pat = _get_jira_pat(user_id)
     handler = _TOOL_HANDLERS.get(tool_name, _tool_poll_jira)
-    return await handler(args, user_id, jira_pat)
+    result = await handler(args, user_id, jira_pat)
+    if tool_name == "run_workflow":
+        # This records the canonical execution identity without granting its
+        # approval to any node-level effect inside the graph.
+        log_audit(
+            "chat_workflow_execution",
+            user_id or "anonymous",
+            target=str(result.get("run_id") or workflow_id or ""),
+            detail={
+                "workflow_id": workflow_id,
+                "run_id": result.get("run_id"),
+                "principal": user_id or "anonymous",
+                "approval_evidence": approval_record,
+                "approval_scope": "tool_dispatch_only",
+                "status": result.get("status"),
+                "refusal_reason": result.get("error"),
+            },
+            severity="warning" if result.get("error") else "info",
+        )
+    return result
+
+
+async def _execute_workflow_with_approval(args: dict[str, Any], user_id: str) -> dict[str, Any]:
+    """Request workflow approval through the canonical capability provider.
+
+    The request remains pending in the shared approval inbox while the caller
+    waits. Resolving it through the capabilities API supplies the typed,
+    cryptographically bound decision used by the chat dispatch gate; no
+    chat-local approval store or execution authority is involved.
+    """
+    from maistro.capabilities.approval_store import redact_approval_value
+    from maistro.capabilities.slots.approval import ApprovalRequest
+    from services.engine import get_engine
+
+    workflow_id = str(args.get("dag_id") or args.get("id") or "")
+    request_digest = _workflow_request_digest(args)
+    provider = await get_engine().capabilities.resolve("approval")
+    if provider is None or not hasattr(provider, "request"):
+        # Refusal must be observable even when the canonical capability is not
+        # installed; otherwise an operator cannot distinguish a denied action
+        # from a wiring outage.
+        log_audit(
+            "chat_workflow_approval_refused",
+            user_id or "anonymous",
+            target=workflow_id,
+            detail={
+                "principal": user_id or "anonymous",
+                "workflow_id": workflow_id,
+                "request_digest": request_digest,
+                "refusal_reason": "approval_capability_unavailable",
+                "effect": "mutate",
+            },
+            severity="warning",
+        )
+        return {
+            "error": "workflow approval capability unavailable",
+            "blocked": True,
+            "workflow_id": workflow_id,
+        }
+    approval_request = ApprovalRequest(
+        action="run_workflow",
+        params={
+            "workflow_id": workflow_id,
+            "request_digest": request_digest,
+            "request": redact_approval_value(args),
+        },
+        tier="policy",
+        requester=user_id,
+        rationale="Chat requested durable workflow execution",
+    )
+    log_audit(
+        "chat_workflow_approval_requested",
+        user_id or "anonymous",
+        target=workflow_id,
+        detail={
+            "request_id": approval_request.request_id,
+            "principal": user_id or "anonymous",
+            "workflow_id": workflow_id,
+            "request_digest": request_digest,
+            "effect": "mutate",
+        },
+    )
+    decision = await provider.request(approval_request)
+    if not decision.approved or not decision.actor:
+        log_audit(
+            "chat_workflow_approval_refused",
+            user_id or "anonymous",
+            target=workflow_id,
+            detail={
+                "request_id": approval_request.request_id,
+                "principal": user_id or "anonymous",
+                "workflow_id": workflow_id,
+                "request_digest": request_digest,
+                "actor": decision.actor,
+                "authority_kind": (decision.authority.kind if decision.authority else None),
+                "refusal_reason": (
+                    "approval_denied"
+                    if not decision.approved
+                    else ("missing_authority" if decision.authority is None else "missing_actor")
+                ),
+            },
+            severity="warning",
+        )
+        return {
+            "error": "workflow execution refused by approval",
+            "blocked": True,
+            "workflow_id": workflow_id,
+            "approval_request_id": approval_request.request_id,
+        }
+    return await _execute_tool(
+        "run_workflow",
+        args,
+        user_id,
+        approval_request=approval_request,
+        approval_decision=decision,
+    )
 
 
 async def _gated_execute_tool(
-    tool_name: str, args: dict[str, Any], user_id: str, gate_id: str
+    tool_name: str,
+    args: dict[str, Any],
+    user_id: str,
+    gate_id: str,
+    *,
+    approved: bool = False,
+    approval_evidence: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """One model-authored tool call through the #315 boundaries.
 
@@ -1900,13 +2151,29 @@ async def _gated_execute_tool(
         )
 
     try:
-        result = await _execute_tool(tool_name, args, user_id)
+        if tool_name == "run_workflow" and not approved and approval_evidence is None:
+            result = await _execute_workflow_with_approval(args, user_id)
+        elif approved or approval_evidence is not None:
+            result = await _execute_tool(
+                tool_name,
+                args,
+                user_id,
+                approved=approved,
+                approval_evidence=approval_evidence,
+            )
+        else:
+            # Keep the ordinary loop's narrow call seam compatible with
+            # trusted test/internal adapters that replace the executor.
+            result = await _execute_tool(tool_name, args, user_id)
     except Exception as tool_exc:
         logger.warning("tool_execution_error name=%s error=%s", tool_name, tool_exc)
         result = {"error": f"Tool '{tool_name}' failed: {type(tool_exc).__name__}: {tool_exc}"}
 
+    # Scan the exact JSON representation appended below. This makes mapping
+    # keys and values share one canonical model-visible representation.
+    serialized_result = _serialize_tool_result(result)
     result_gate = await gate_untrusted(
-        result,
+        serialized_result,
         boundary="tool_result",
         surface="chat_tool_result",
         user_id=user_id,
@@ -1943,9 +2210,28 @@ def _record_chat_metric(
         _chat_metrics.pop(0)
 
 
-def get_chat_metrics_summary() -> dict[str, Any]:
-    """Aggregate chat metrics for the dashboard."""
-    if not _chat_metrics:
+def get_chat_metrics_summary(
+    user_id: str | None = None, window_seconds: float | None = None
+) -> dict[str, Any]:
+    """Aggregate chat metrics for the dashboard.
+
+    `user_id` scopes the aggregation to one principal's observations: the
+    dashboard serves per-principal KPI envelopes, and the unscoped default
+    would pool every account's latency and spend into each of them (#380).
+    `window_seconds` keeps only observations newer than that; `None` (the
+    default, and every pre-#380 caller) aggregates the whole ring.
+
+    `last_observation_ts` — the newest observation in the filtered set, or
+    `None` — is how a caller tells fresh data from a set nobody has added to
+    since before its window began.
+    """
+    rows = _chat_metrics
+    if user_id is not None:
+        rows = [m for m in rows if m.get("user") == user_id]
+    if window_seconds is not None:
+        cutoff = __import__("time").time() - window_seconds
+        rows = [m for m in rows if m.get("ts", 0) >= cutoff]
+    if not rows:
         return {
             "count": 0,
             "latency_ms_p50": 0,
@@ -1953,19 +2239,21 @@ def get_chat_metrics_summary() -> dict[str, Any]:
             "tokens_in_total": 0,
             "tokens_out_total": 0,
             "cost_usd_total": 0.0,
+            "last_observation_ts": None,
         }
-    lats = sorted(m["latency_ms"] for m in _chat_metrics)
+    lats = sorted(m["latency_ms"] for m in rows)
     n = len(lats)
     return {
         "count": n,
         "latency_ms_p50": lats[n // 2] if n else 0,
         "latency_ms_p95": lats[int(n * 0.95)] if n else 0,
         "latency_ms_mean": sum(lats) / n if n else 0,
-        "tokens_in_total": sum(m["tokens_in"] for m in _chat_metrics),
-        "tokens_out_total": sum(m["tokens_out"] for m in _chat_metrics),
+        "tokens_in_total": sum(m["tokens_in"] for m in rows),
+        "tokens_out_total": sum(m["tokens_out"] for m in rows),
         "cost_usd_total": sum(
-            m["tokens_out"] * 0.000003 + m["tokens_in"] * 0.000001 for m in _chat_metrics
+            m["tokens_out"] * 0.000003 + m["tokens_in"] * 0.000001 for m in rows
         ),  # rough estimate
+        "last_observation_ts": max(m["ts"] for m in rows),
     }
 
 
@@ -1973,10 +2261,14 @@ async def run_chat_completion(
     req: ChatCompletionRequest,
     user_id: str = "",
     _llm: LLMPort | None = None,
+    *,
+    approval_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """PM Fleet chat — real tools, real data, real LLM synthesis."""
     try:
-        return await _run_chat_completion_inner(req, user_id, _llm)
+        return await _run_chat_completion_inner(
+            req, user_id, _llm, approval_evidence=approval_evidence
+        )
     except Exception as exc:
         logger.exception("run_chat_completion crashed: %s", exc)
         return {
@@ -1991,6 +2283,8 @@ async def _run_chat_completion_inner(
     req: ChatCompletionRequest,
     user_id: str = "",
     _llm: LLMPort | None = None,
+    *,
+    approval_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Inner implementation."""
     import time as _time
@@ -2058,7 +2352,13 @@ async def _run_chat_completion_inner(
                 args = {}
 
             logger.info("tool_call name=%s args=%s user=%s", name, args, user_id)
-            result, _summary = await _gated_execute_tool(name, args, user_id, gate_id)
+            result, _summary = await _gated_execute_tool(
+                name,
+                args,
+                user_id,
+                gate_id,
+                approval_evidence=approval_evidence,
+            )
             logger.info(
                 "tool_result name=%s keys=%s",
                 name,
@@ -2069,7 +2369,7 @@ async def _run_chat_completion_inner(
                 {
                     "role": "tool",
                     "tool_call_id": tc.get("id", ""),
-                    "content": json.dumps(result),
+                    "content": _serialize_tool_result(result),
                 }
             )
 
@@ -2245,6 +2545,8 @@ def _registered_tool_names(tools: list[dict[str, Any]]) -> tuple[str, ...]:
 async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
     req: ChatCompletionRequest,
     user_id: str = "",
+    *,
+    approval_evidence: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Streaming version — yields SSE events with real status updates."""
     s = get_settings()
@@ -2411,14 +2713,20 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
                 # policy, executes, and scans the result at the tool_result
                 # boundary (#315) — indirect injection in a tool result is
                 # withheld before it reaches the next model turn.
-                result, summary = await _gated_execute_tool(name, args, user_id, gate_id)
+                result, summary = await _gated_execute_tool(
+                    name,
+                    args,
+                    user_id,
+                    gate_id,
+                    approval_evidence=approval_evidence,
+                )
             yield {"type": "tool_result", "tool": name, "summary": summary}
 
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": tc.get("id", ""),
-                    "content": json.dumps(result),
+                    "content": _serialize_tool_result(result),
                 }
             )
 
@@ -2516,8 +2824,9 @@ async def _tool_profile_set(
     if not field or not value:
         return {"error": "field and value required"}
     try:
-        # Off the loop: a profile write waits in `State.flush()` for the writer
-        # thread, and this runs inside the chat request's own task.
+        # Off the loop: a profile write waits inside the acknowledged `put_raw`
+        # (a `State.submit_sync`) for the writer thread to commit, and this
+        # runs inside the chat request's own task.
         await asyncio.to_thread(profile_store.set_field, user_id, field, value)
     except profile_store.ProfilePersistenceError as exc:
         # Reported, not swallowed. The old path suppressed the write failure

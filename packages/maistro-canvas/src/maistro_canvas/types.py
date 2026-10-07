@@ -266,6 +266,12 @@ class GenerationJobRecord:
     max_attempts: int = 3
     leased_by: str | None = None
     lease_expires_at: datetime | None = None
+    # Issue #398: earliest instant the runner may re-claim this receipt after a
+    # requeue. Set by the requeueing writer (runner failure path or the lease
+    # reaper) from the shared retry policy, cleared by the claim that finally
+    # takes the attempt; NULL on a never-failed job. Durable so a requeued job
+    # whose worker dies cannot lose its backoff and hammer the provider.
+    next_retry_at: datetime | None = None
     # The soft org scope this job belongs to (#857). The route stamps it from
     # the authenticated principal when the job is admitted; the background
     # runner reads it back off the claimed record so execution resolves the
@@ -302,7 +308,46 @@ class GenerationJobRecord:
             "lease_expires_at": (
                 self.lease_expires_at.isoformat() if self.lease_expires_at else None
             ),
+            "next_retry_at": self.next_retry_at.isoformat() if self.next_retry_at else None,
             "org_id": self.org_id,
+        }
+
+
+@dataclass(frozen=True)
+class JobQueueStats:
+    """Point-in-time health counts for one org's generation-job queue (#398).
+
+    The three states the issue names, plus the two ordinary ones they are
+    measured against:
+
+    - ``stuck`` — ``running`` whose lease has already expired: a worker died
+      (or stalled past ``max_execution_seconds``) mid-attempt and no reaper
+      sweep has run since. Sustained non-zero ``stuck`` means the reaper is
+      not keeping up or workers keep dying.
+    - ``retrying`` — ``pending`` with at least one charged attempt: failures
+      currently waiting out their backoff, not fresh work. Growth here means
+      the provider (or the prompt) is failing systematically.
+    - ``exhausted`` — out of attempt budget but not yet terminal: the reaper
+      has surfaced them and canonical reconciliation still owes them a
+      terminal write. A non-zero value that never drains means
+      ``fail_job_execution`` is failing for those receipts.
+    """
+
+    org_id: str
+    pending: int
+    running: int
+    stuck: int
+    retrying: int
+    exhausted: int
+
+    def to_dict(self) -> dict[str, int | str]:
+        return {
+            "org_id": self.org_id,
+            "pending": self.pending,
+            "running": self.running,
+            "stuck": self.stuck,
+            "retrying": self.retrying,
+            "exhausted": self.exhausted,
         }
 
 
@@ -371,6 +416,20 @@ class JobNotDoneError(CanvasError):
 
 class JobAlreadyTerminalError(CanvasError):
     code = "JOB_ALREADY_TERMINAL"
+
+
+class JobLeaseLostError(CanvasError):
+    """A fenced job write lost the race to a newer writer.
+
+    Raised by ``CanvasStore.update_job`` when a given ``expected_leased_by`` /
+    ``expected_attempts`` / ``expected_status`` no longer matches the row: the
+    lease expired and the job was reclaimed (possibly under the same worker
+    id, as a new claim generation), or a concurrent terminal write such as a
+    user cancellation landed first. The caller's result is stale and must be
+    discarded rather than persisted over the newer state.
+    """
+
+    code = "JOB_LEASE_LOST"
 
 
 class TextLayerNoGenError(CanvasError):

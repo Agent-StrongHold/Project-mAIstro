@@ -129,11 +129,15 @@ _EVOLVE_RSI = ["packages/maistro-evolve/src", "packages/maistro-rsi/src"]
 #: recording a count for it would appear to be gated when it is not.
 RECIPES: dict[str, Recipe] = {
     "packages/maistro-core/tests": Recipe(args=[]),
+    "packages/maistro-registry/tests": Recipe(args=[]),
     "packages/maistro-evolve/tests": Recipe(args=[], pythonpath=_EVOLVE_RSI),
     "packages/maistro-rsi/tests": Recipe(args=[], pythonpath=_EVOLVE_RSI),
     "packages/maistro-server/tests": Recipe(args=[]),
     "packages/maistro-turing/tests": Recipe(args=[]),
     "packages/maistro-design/tests": Recipe(args=[]),
+    # The public extension SDK (#949): no maistro imports, no services, no DB —
+    # the plain uv workspace env collects it.
+    "packages/maistro-ext-sdk/tests": Recipe(args=[]),
     "packages/maistro-bootstrap/tests": Recipe(args=[]),
     "packages/maistro-canvas/tests": Recipe(args=[]),
     "packages/maistro-turing/backend/tests": Recipe(args=[]),
@@ -141,7 +145,31 @@ RECIPES: dict[str, Recipe] = {
     # at run time). The inventory records what the tree *contains*; which
     # workflow executes which part is documented in SUITE-INVENTORY.md.
     "tests/": Recipe(args=[]),
-    "formal/": Recipe(args=[], pythonpath=["packages/maistro-core/src", *_EVOLVE_RSI]),
+    # The reference extension's own suite (#951). Not in the root testpaths —
+    # the clean-environment proof is the isolation fixture's, which runs these
+    # tests in a venv holding only the built wheel. But the suite IS part of
+    # this repository's test surface, and the root dev env installs the
+    # extension editable (root `dev` extra), so plain collection sees it: a
+    # vanishing or unimportable extension suite is inventory drift like any
+    # other. Collection needs no PYTHONPATH — the package is a workspace
+    # member installed by `uv sync --extra dev`, and the boundary gate
+    # (scripts/check-extension-imports.py) keeps it free of repo-relative
+    # repair that could make collection checkout-dependent.
+    "extensions/reference-greeter/tests": Recipe(args=[]),
+    # The extension host harness's own suite (#974). A packages/ workspace
+    # member installed by the root `dev` extra (like reference-greeter), so
+    # plain collection sees it with no PYTHONPATH repair: its runtime is
+    # stdlib-only and its conftest works under the root --import-mode=importlib
+    # config without sys.path rescue.
+    "packages/maistro-ext-harness/tests": Recipe(args=[]),
+    # formal/ ships its own pytest config whose `addopts = "-v --tb=short"`
+    # arithmetically cancels the CLI `-q` (net verbosity 0), so a plain
+    # collection prints the tree format instead of node-ID lines. Clearing
+    # ini addopts affects only this collection run — the count is unchanged,
+    # and formal-conformance.yml still runs the suite with its own options.
+    "formal/": Recipe(
+        args=["-o", "addopts="], pythonpath=["packages/maistro-core/src", *_EVOLVE_RSI]
+    ),
     # Trap 1 — bare python, never uv.
     "packages/hive-conductor/backend/tests": Recipe(args=[], bare_python=True),
     "packages/hive-conductor/tests/e2e": Recipe(args=[], bare_python=True),
@@ -153,6 +181,12 @@ RECIPES: dict[str, Recipe] = {
 INVENTORY_ROW_RE = re.compile(r"^\|\s*`([^`]+)`[^|]*\|")
 
 COLLECTED_RE = re.compile(r"(\d+)\s+tests?\s+collected")
+COLLECTED_LINE_RE = re.compile(r"\d+\s+tests?\s+collected")
+
+#: A collected node ID at column 0: ``path/file.py::Class::test``. Warnings
+#: prose that merely *contains* a node ID (e.g. formal/'s usefixtures
+#: warning) is indented or prefixed, so anchoring at column 0 excludes it.
+NODE_ID_LINE_RE = re.compile(r"^\S+\.py::")
 ERROR_RE = re.compile(r"(\d+)\s+errors?\b")
 
 #: `  packages/maistro-core/tests: +12` — one delta line inside the front matter.
@@ -368,8 +402,17 @@ def expected_counts() -> tuple[dict[str, int], dict[str, dict[str, int]]]:
 # --------------------------------------------------------------------------
 
 
-def collect(suite: str, recipe: Recipe) -> tuple[int, str]:
-    """Collect ``suite`` and return ``(node_id_count, human_readable_command)``."""
+def collect(suite: str, recipe: Recipe) -> tuple[int, str, list[str]]:
+    """Collect ``suite`` and return ``(node_id_count, command, node_ids)``.
+
+    The node IDs come free: ``--collect-only -q`` prints one per line on
+    stdout ahead of the summary, and the gate was already discarding them.
+    #396 needs them to report how much collected evidence is *unique* across
+    suites versus double-counted copies of the same test under two roots.
+    A node-ID parse that disagrees with the summary count degrades to an
+    empty list (the count stays authoritative; the report warns) rather
+    than failing a gate whose actual job is the count.
+    """
     if recipe.bare_python:
         argv = [sys.executable, "-m", "pytest"]
         shown = "python3 -m pytest"
@@ -396,7 +439,80 @@ def collect(suite: str, recipe: Recipe) -> tuple[int, str]:
         detail = f"{errs.group(0)} during collection" if errs else f"exit {proc.returncode}"
         tail = "\n".join(out.strip().splitlines()[-15:])
         raise RuntimeError(f"collection failed ({detail}) for `{suite}`\n  {cmd}\n{tail}")
-    return int(matches[-1]), cmd
+    count = int(matches[-1])
+    node_ids = _parse_node_ids(proc.stdout, count)
+    return count, cmd, node_ids
+
+
+def _parse_node_ids(stdout: str, count: int) -> list[str]:
+    """The node-ID lines ``pytest --collect-only -q`` prints before its summary.
+
+    Robust to the two shapes real suites produce: a summary line decorated
+    with ``=`` bars (``formal/``) and a warnings summary printed ahead of it
+    on stdout. Every collected node ID contains ``::`` with a ``.py`` path
+    ahead of it, which warning prose does not; the count cross-check decides
+    whether the parse can be trusted. Empty when it cannot — the caller
+    treats that as "report unavailable", not as "suite empty".
+    """
+    lines = stdout.splitlines()
+    summary = [i for i, line in enumerate(lines) if COLLECTED_LINE_RE.search(line)]
+    if not summary:
+        return []
+    node_ids = [line for line in lines[: summary[-1]] if NODE_ID_LINE_RE.match(line)]
+    return node_ids if len(node_ids) == count else []
+
+
+def _duplicate_file_metrics(suites: list[str]) -> tuple[int, int, int]:
+    """Byte-identical test-file metrics over the scanned suite roots.
+
+    Returns ``(groups, redundant_files, redundant_bytes)``. This is the
+    static half of #396's duplicate-content metric; the node-ID half is the
+    unique-evidence report that uses the collection above. The gate that
+    *fails* on duplicate files is ``check-test-duplicates.py`` — this only
+    reports, so the inventory's summary stays readable even when a
+    contract-approved duplicate exists.
+    """
+    by_hash: dict[str, list[Path]] = {}
+    for suite in suites:
+        base = REPO_ROOT / suite
+        if not base.is_dir():
+            continue
+        for pattern in ("test_*.py", "*_test.py"):
+            for path in base.rglob(pattern):
+                if path.is_file():
+                    by_hash.setdefault(hashlib.sha256(path.read_bytes()).hexdigest(), []).append(
+                        path
+                    )
+    groups = [paths for paths in by_hash.values() if len(paths) > 1]
+    redundant = sum(len(paths) - 1 for paths in groups)
+    redundant_bytes = sum(paths[0].stat().st_size * (len(paths) - 1) for paths in groups)
+    return len(groups), redundant, redundant_bytes
+
+
+def unique_evidence_report(collected: dict[str, list[str]]) -> str:
+    """How much of the collected evidence is unique, per #396.
+
+    A node ID is suite-rooted (``tests/api/x.py::t`` and
+    ``packages/maistro-server/tests/api/x.py::t`` are different strings for
+    the same test), so identity is compared with the suite root stripped:
+    the same test file under two gated roots must count its evidence once.
+    """
+    total = 0
+    unique: set[str] = set()
+    for suite, node_ids in collected.items():
+        prefix = suite if suite.endswith("/") else f"{suite}/"
+        for node_id in node_ids:
+            total += 1
+            unique.add(node_id.removeprefix(prefix))
+    duplicates = total - len(unique)
+    groups, redundant_files, redundant_bytes = _duplicate_file_metrics(list(collected))
+    return (
+        f"  collected node IDs: {total}\n"
+        f"  unique test identities (cross-suite): {len(unique)}\n"
+        f"  duplicate evidence from copied test files: {duplicates}\n"
+        f"  byte-identical test files: {groups} group(s), "
+        f"{redundant_files} redundant file(s), {redundant_bytes} redundant bytes"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -549,28 +665,35 @@ def compact(expected: dict[str, int], deltas: dict[str, dict[str, int]]) -> int:
 
 def run_checks(
     suites: list[str], expected: dict[str, int]
-) -> tuple[list[tuple[str, int, int]], list[str]]:
-    """Collect each suite and compare. Returns ``(drift, collection_failures)``.
+) -> tuple[list[tuple[str, int, int]], list[str], dict[str, list[str]]]:
+    """Collect each suite and compare.
 
-    The two are kept apart deliberately. Drift is a number that moved and may
-    well be intentional; a collection failure is a suite that did not run at
-    all, and recording a delta for it would bank the breakage as the new truth.
+    Returns ``(drift, collection_failures, node_ids_per_suite)``. The two
+    problems are kept apart deliberately. Drift is a number that moved and
+    may well be intentional; a collection failure is a suite that did not
+    run at all, and recording a delta for it would bank the breakage as the
+    new truth. The node IDs feed #396's unique-evidence report and gate
+    nothing.
     """
     drift: list[tuple[str, int, int]] = []
     failures: list[str] = []
+    node_ids: dict[str, list[str]] = {}
     for suite in suites:
         try:
-            actual, _cmd = collect(suite, RECIPES[suite])
+            actual, _cmd, ids = collect(suite, RECIPES[suite])
         except RuntimeError as exc:
             failures.append(str(exc))
             print(f"ERROR  {suite}", file=sys.stderr)
             continue
+        if not ids:
+            print(f"warn   {suite}: node-ID parse unavailable; unique-evidence report omits it")
+        node_ids[suite] = ids
         if actual == expected[suite]:
             print(f"ok     {suite}: {actual}")
             continue
         drift.append((suite, expected[suite], actual))
         print(f"DRIFT  {suite}: expected {expected[suite]}, collected {actual}")
-    return drift, failures
+    return drift, failures, node_ids
 
 
 def record_delta(
@@ -682,7 +805,16 @@ def main() -> int:
         return 2
     suites = [s for s in RECIPES if s in expected and (wanted is None or s in wanted)]
 
-    drift, failures = run_checks(suites, expected)
+    drift, failures, collected_ids = run_checks(suites, expected)
+
+    # #396: the point of the ledger is that the number represents evidence.
+    # Say, on every run and for free (the collection already happened), how
+    # much of that evidence is unique versus byte-identical copies counted
+    # twice. Report-only: failing on duplicate files is
+    # check-test-duplicates.py's job, in the same CI job as this gate.
+    if collected_ids:
+        print(f"\nUnique-evidence report ({len(collected_ids)} suite(s) collected):")
+        print(unique_evidence_report(collected_ids))
 
     if failures:
         print("\n".join(["", *failures]), file=sys.stderr)

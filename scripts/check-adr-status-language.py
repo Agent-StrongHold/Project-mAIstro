@@ -10,13 +10,13 @@ not moved to `Deferred` or `Superseded`." Different readers received different
 authority answers, and no check could see it because nothing read the body's
 status claims at all.
 
-This gate reads the structured status markers a body can carry and requires
-each to agree with the front matter:
+This gate retires duplicated body status lines and requires the remaining
+structured status claims to agree with front matter:
 
 1. `**Status:** X` lines — **retired entirely** (ADR-092126-a28a). Any such
    line in a body is a finding, in either the bare or the list-item spelling,
    whatever value it carries. This category used to check *agreement* with
-   front matter; the 83 documents that carried a line are now cleared, and a
+   front matter; the 91 documents that carried a line are now cleared, and a
    line that agrees today is one that drifts tomorrow, so absence is what is
    enforced. The fix is always the same: delete the line.
 2. `**Superseded by [ID](...)`` banners — when present on a Superseded
@@ -43,7 +43,7 @@ baselined — they were zero at filing, so any occurrence is new.
 **The ledger is empty and category 1 keeps it that way.** #387 banked 28
 legacy lines it could see; the 19 list-form spec lines it could not see were
 corrected when the category learned that spelling, the 28 were corrected
-after, and ADR-092126-a28a then removed the remaining 83 lines outright. The
+after, and ADR-092126-a28a then removed the remaining 91 lines outright. The
 ratchet has nothing left to tolerate, and any finding this gate reports is
 new by construction. Refilling the ledger is an expansion, which the
 provenance adapter requires a landed grant for (#534) — delete the line
@@ -121,10 +121,10 @@ def _display(path: Path) -> str:
 
 
 def audit(*, roots: tuple[Path, ...] | None = None) -> list[StatusProblem]:
-    """Every structured status marker that contradicts its front matter."""
+    """Every retired body status line or claim contradicting front matter."""
     problems: list[StatusProblem] = []
     for root in roots or DOC_ROOTS:
-        for path in sorted(root.glob("*.md")):
+        for path in sorted(root.rglob("*.md")):
             if path.name == "ADR-INDEX.md":
                 continue
             problems.extend(_audit_file(path))
@@ -234,13 +234,13 @@ def main(argv: list[str] | None = None) -> int:
     stale = sorted(known - found)
 
     if new:
-        print(f"FAIL: {len(new)} new body/front-matter status contradiction(s)\n")
+        print(f"FAIL: {len(new)} new body-status-language finding(s)\n")
         for identity in new:
             problem = next(p for p in problems if p.identity == identity)
             print(f"  {problem.render()}")
         print(
-            "\nFront matter is canonical (#379). Make the body agree with it, or bank a "
-            "reviewed legacy exception with --update if this predates that rule."
+            "\nFront matter is canonical (#379). Delete retired body status lines "
+            "(ADR-092126-a28a); align replacement banners and status assertions with front matter."
         )
         return 1
 

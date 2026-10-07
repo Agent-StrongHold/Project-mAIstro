@@ -27,9 +27,16 @@ Persistent layer (outside instances):
 └── File store (shared volume; S3 or NFS in real deployments)
 ```
 
-- **Instances are stateless.** All persistent state (agents, sessions, memory, audit)
-  lives in PostgreSQL/Redis; the only local files are config (in git) and the shared
-  file store. Any replica can serve any request.
+- **Instances are stateless — except the task queue.** Agents, sessions, memory,
+  audit and every canonical Run live in PostgreSQL/Redis; the only local files are
+  config (in git) and the shared file store. **The `/v1/tasks` queue does not:**
+  `TaskQueue` is an in-process singleton, so a task is visible only on the replica
+  that accepted it. Behind round-robin, a client that creates a task and polls
+  `GET /v1/tasks/{id}` gets 404 from every other replica — measured on this stack:
+  200 from the replica that took the `POST`, 404 from the other. The task's Run
+  *is* durable and shared; its queue entry is not. Until the queue is shared,
+  route task traffic to one replica (or pin clients with `ip_hash`), and expect
+  tasks in flight on a replica that dies to be lost with it.
 - **Rate limits are per-process, not cluster-wide (#842).** The request limiter
   (`maistro_server.api.rate_limit`) keeps its sliding window in process memory,
   keyed to the authenticated principal (ADR-085). Each of the N replicas
@@ -40,6 +47,20 @@ Persistent layer (outside instances):
   (nginx passive checks + compose healthchecks). `/health/live` is the unconditional
   liveness probe (ADR-038). `stop_grace_period: 30s` gives replicas a connection-drain
   window on rolling updates.
+- **SIGTERM semantics (#819).** Uvicorn owns SIGTERM/SIGINT for the server
+  process: on receipt it stops accepting connections and runs the lifespan
+  shutdown, which drains in-flight tasks for up to `SHUTDOWN_DRAIN_TIMEOUT`
+  (30s, `maistro_server/main.py`) — tasks still running when that window
+  closes are cancelled and marked FAILED — then tears down MAIstro-owned
+  sandbox containers, closes shared outbound clients, flushes the usage log
+  and disposes the DB engine before the process exits. A signal-driven stop
+  exits with the conventional "died of SIGTERM" status (Uvicorn re-raises the
+  captured signal after shutdown completes), which is what orchestrators
+  expect. Size `stop_grace_period` to cover the drain window **plus** that
+  teardown — a deployment whose tasks legitimately run longer than 30s must
+  raise the grace period (or the tasks keep getting cancelled at the drain
+  deadline), and SIGKILL must remain only the runaway backstop, never the
+  normal path.
 - **Reference stack:** `deploy/docker-compose.prod.yml` (LB + 2 replicas +
   primary/replica PostgreSQL + Redis). Stronghold-scale deployments map the same
   shape onto Kubernetes + Helm (ADR-081).
@@ -50,11 +71,17 @@ Persistent layer (outside instances):
 Bring it up:
 
 ```bash
-cp deploy/.env.example .env   # or export vars: POSTGRES_PASSWORD, REPLICATION_PASSWORD, REDIS_PASSWORD, API_KEYS
+cp deploy/.env.example deploy/.env   # then set every change-me, LITELLM_BASE_URL and LITELLM_API_KEY
 docker compose -f deploy/docker-compose.prod.yml up -d
 curl -fsS http://localhost:8080/lb-health
 curl -fsS http://localhost:8080/health/ready
 ```
+
+The `.env` goes in `deploy/`, beside the compose file, because that is where
+Compose looks: with `-f deploy/docker-compose.prod.yml` the project directory is
+`deploy/`, not the directory you run the command from. These steps used to say
+`cp deploy/.env.example .env`, which leaves every variable unread and fails the
+second command with `required variable POSTGRES_PASSWORD is missing a value`.
 
 ---
 

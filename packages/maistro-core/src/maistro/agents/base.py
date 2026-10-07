@@ -7,12 +7,20 @@ handle() runs: Warden scan -> build context -> strategy.reason() -> post-turn.
 from __future__ import annotations
 
 import logging as _logging
+from collections import deque
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from maistro.observability.correlation import current_execution_context
+from maistro.security.normalize import to_scan_string
 from maistro.security.sentinel.pii_filter import scan_and_redact
+from maistro.security.warden.detector import WardenContext, prior_message_context
 from maistro.types.agent import AgentResponse
+
+# Bounded tool-result analysis context. Tool output is untrusted; a payload
+# split across individually-benign results is only visible when the later
+# fragment is scanned together with the bounded prefix of prior ones.
+_TOOL_CONTEXT_MAX_TURNS = 8
 
 _TOOL_SCHEMAS: dict[str, dict[str, object]] = {
     "read_file": {
@@ -348,18 +356,26 @@ class Agent:
         _delegation_depth: int,
     ) -> AgentResponse:
         """The body of `handle()`. Never ends `trace` — the caller owns that."""
+        # Session history is injected before the trust gate so prior untrusted
+        # turns are part of the bounded analysis context: an override split
+        # across individually-benign turns of one session is refused here,
+        # before it reaches the strategy or any provider call.
+        messages, session_history_count = await self._inject_session_history(messages, session_id)
         messages, blocked_response = await self._prepare_user_input(messages, trace)
         if blocked_response is not None:
             return blocked_response
         user_text = _extract_user_text(messages)
 
-        messages, session_history_count = await self._inject_session_history(messages, session_id)
-
+        # `user_id` (learning-scope provenance) is resolved after the trust
+        # gate; session history was already injected above it, before
+        # `_prepare_user_input`, so prior untrusted turns are part of the
+        # bounded Warden analysis context.
+        user_id = getattr(auth, "user_id", "")
         org_id = getattr(auth, "org_id", "")
         team_id = getattr(auth, "team_id", "")
 
         context_messages, injected_learning_ids = await self._build_context(
-            messages, org_id, team_id, trace, session_id
+            messages, user_id, org_id, team_id, trace, session_id
         )
 
         tool_defs: list[dict[str, Any]] | None = None
@@ -374,8 +390,8 @@ class Agent:
             auth, trace, status_callback, classified_task_type
         )
 
-        result = await self._run_strategy(
-            context_messages, model, tool_defs, strategy_kwargs, trace
+        result = await self._run_strategy_for_turn(
+            context_messages, model, tool_defs, strategy_kwargs, trace, turn_id
         )
         if result is None:
             # `_run_strategy` already caught and logged; mark it failed so this
@@ -422,12 +438,9 @@ class Agent:
             )
         )
         if tool_had_failures:
-            await self._extract_rca(result, user_text, org_id, team_id, trace)
+            await self._extract_rca(result, user_text, user_id, org_id, team_id, trace)
 
-        await self._extract_learnings(result, user_text, org_id, team_id, trace)
-
-        if self._learning_promoter and injected_learning_ids:
-            await self._learning_promoter.check_and_promote(org_id=org_id)
+        await self._extract_learnings(result, user_text, user_id, org_id, team_id, trace)
 
         await self._persist_run(
             result,
@@ -441,6 +454,14 @@ class Agent:
             injected_learning_ids=injected_learning_ids,
             turn_id=turn_id,
         )
+
+        # Promote only after the current Run's outcome is recorded:
+        # `_persist_run` -> `mark_outcome` updates the confidence counters this
+        # turn just paid for, and checking first would promote on the previous
+        # turn's evidence (e.g. promoting 3/4=0.75 at a 0.7 floor even though
+        # this turn's failure should have dropped it to 3/5).
+        if self._learning_promoter and injected_learning_ids:
+            await self._learning_promoter.check_and_promote(org_id=org_id)
 
         self._finalize_trace_if_present(
             trace, result, model, session_history_count, injected_learning_ids
@@ -544,24 +565,45 @@ class Agent:
                 success=not tool_had_failures,
                 org_id=org_id,
             )
+            if tool_had_failures and self._learning_promoter:
+                # Failure knowledge capture (#121, ADR-100126-8c2d): this turn's
+                # recorded failure is the evidence that just moved. When a
+                # learning's recorded failures now dominate its successes,
+                # the promoter reclassifies it as retained ANTI_PATTERN
+                # knowledge, so later Runs stop re-buying the failure.
+                # Reclassification is not validation: the repertoire still
+                # requires the Gauntlet like any other learning.
+                await self._learning_promoter.capture_anti_patterns(org_id)
 
     async def _prepare_user_input(
         self,
         messages: list[dict[str, Any]],
         trace: Any,
     ) -> tuple[list[dict[str, Any]], AgentResponse | None]:
-        """Scan and redact every user message before context assembly."""
+        """Scan and redact every user message before context assembly.
+
+        Each user turn is scanned together with the bounded ordered prefix of
+        the messages before it (session history included, since it is injected
+        before this gate), so an instruction distributed across
+        individually-benign turns is refused before it becomes trusted model
+        context. Trusted system/developer turns carry an authority label and
+        are never concatenated into attacker-controlled analysis text.
+        """
         prepared = [dict(message) for message in messages]
         context_manager = trace.span("warden.user_input") if trace else _NullSpan()
         with context_manager as ws:
             ws.set_input({"message_count": len(messages)})
-            for message in prepared:
+            for index, message in enumerate(prepared):
                 if message.get("role") != "user":
                     continue
                 content = message.get("content", "")
                 text = _extract_message_text(content)
                 if text and self._warden is not None:
-                    verdict = await self._warden.scan(text, "user_input")
+                    scan_kwargs: dict[str, Any] = {}
+                    prior = prior_message_context(prepared[: index + 1])
+                    if prior:
+                        scan_kwargs["context"] = prior
+                    verdict = await self._warden.scan(text, "user_input", **scan_kwargs)
                     if not verdict.clean:
                         ws.set_output({"clean": False, "flags": verdict.flags})
                         if trace:
@@ -623,6 +665,7 @@ class Agent:
     async def _build_context(
         self,
         messages: list[dict[str, Any]],
+        user_id: str,
         org_id: str,
         team_id: str,
         trace: Any,
@@ -640,6 +683,7 @@ class Agent:
             "learning_store": self._learning_store,
             "context_assembly_policy": self._context_assembly_policy,
             "agent_id": self.identity.name,
+            "user_id": user_id,
             "org_id": org_id,
             "team_id": team_id,
             "project_id": project_id,
@@ -659,6 +703,28 @@ class Agent:
                 }
             )
         return context_messages, injected_learning_ids
+
+    async def _run_strategy_for_turn(
+        self,
+        context_messages: list[dict[str, Any]],
+        model: str,
+        tool_defs: list[dict[str, Any]] | None,
+        strategy_kwargs: dict[str, Any],
+        trace: Any,
+        turn_id: str | None,
+    ) -> Any:
+        """Set canonical LLM correlation for one turn, then clear it."""
+        set_turn = getattr(self._llm, "set_turn", None)
+        clear_turn = getattr(self._llm, "clear_turn", None)
+        if callable(set_turn):
+            set_turn(turn_id, agent_name=self.identity.name)
+        try:
+            return await self._run_strategy(
+                context_messages, model, tool_defs, strategy_kwargs, trace
+            )
+        finally:
+            if callable(clear_turn):
+                clear_turn()
 
     async def _run_strategy(
         self,
@@ -730,10 +796,18 @@ class Agent:
     ) -> Any:
         """Return the only executor a strategy can use at the effect boundary."""
         auth = strategy_kwargs.get("auth")
+        # Analysis context of prior tool results, bounded by turns regardless
+        # of how many tool calls the strategy makes. The sanitized string is
+        # what flows back into model context, so that is what aggregates.
+        tool_context: deque[WardenContext] = deque(maxlen=_TOOL_CONTEXT_MAX_TURNS)
 
         async def execute(tool_name: str, tool_args: dict[str, Any]) -> str:
             raw_result = await self._authorize_and_invoke(tool_name, tool_args, auth, tool_defs)
-            return await self._sanitize_tool_result(tool_name, str(raw_result), auth)
+            sanitized = await self._sanitize_tool_result(
+                tool_name, to_scan_string(raw_result), auth, context=list(tool_context)
+            )
+            tool_context.append(WardenContext(sanitized))
+            return sanitized
 
         return execute
 
@@ -745,7 +819,13 @@ class Agent:
         tool_defs: list[dict[str, Any]] | None,
     ) -> Any:
         if self._sentinel is None or auth is None:
-            return await self._invoke_raw_tool(tool_name, tool_args)
+            _logging.getLogger("maistro.agent").warning(
+                "Denied tool '%s' for agent '%s': no %s to authorize it",
+                tool_name,
+                self.identity.name,
+                "Sentinel" if self._sentinel is None else "caller auth",
+            )
+            return f"Error: Permission denied for tool '{tool_name}'"
         verdict = await self._sentinel.pre_call(
             tool_name, tool_args, auth, self._tool_schema(tool_name, tool_defs)
         )
@@ -770,12 +850,25 @@ class Agent:
             return f"Tool '{tool_name}' not available"
         return await self._tool_executor(tool_name, tool_args)
 
-    async def _sanitize_tool_result(self, tool_name: str, result: str, auth: Any) -> str:
-        """Sanitize tool output before it can re-enter any strategy context."""
+    async def _sanitize_tool_result(
+        self,
+        tool_name: str,
+        result: str,
+        auth: Any,
+        *,
+        context: list[WardenContext] | None = None,
+    ) -> str:
+        """Sanitize tool output before it can re-enter any strategy context.
+
+        The bounded prior tool-result ``context`` makes a payload split across
+        individually-benign results detectable at the fragment that completes
+        it, instead of only ever seeing one string at a time.
+        """
+        scan_kwargs: dict[str, Any] = {"context": context} if context else {}
         if self._sentinel is not None and auth is not None:
-            return str(await self._sentinel.post_call(tool_name, result, auth))
+            return str(await self._sentinel.post_call(tool_name, result, auth, **scan_kwargs))
         if self._warden is not None:
-            verdict = await self._warden.scan(result, "tool_result")
+            verdict = await self._warden.scan(result, "tool_result", **scan_kwargs)
             if not verdict.clean:
                 return (
                     "[BLOCKED: tool result contained suspicious content: "
@@ -788,6 +881,7 @@ class Agent:
         self,
         result: Any,
         user_text: str,
+        user_id: str,
         org_id: str,
         team_id: str,
         trace: Any,
@@ -800,6 +894,7 @@ class Agent:
                 rca = await self._rca_extractor.extract_rca(user_text, result.tool_history)
                 if rca:
                     rca.agent_id = self.identity.name
+                    rca.user_id = user_id
                     rca.org_id = org_id
                     rca.team_id = team_id
                     await self._learning_store.store(rca)
@@ -810,6 +905,7 @@ class Agent:
             rca = await self._rca_extractor.extract_rca(user_text, result.tool_history)
             if rca:
                 rca.agent_id = self.identity.name
+                rca.user_id = user_id
                 # Scope exactly as the traced branch does. Omitting these left
                 # the RCA at its default `org_id=""` whenever tracing was off,
                 # so an analysis derived from one org's tool failures was
@@ -822,6 +918,7 @@ class Agent:
         self,
         result: Any,
         user_text: str,
+        user_id: str,
         org_id: str,
         team_id: str,
         trace: Any,
@@ -839,6 +936,7 @@ class Agent:
                 )
                 for learning in corrections + positives:
                     learning.agent_id = self.identity.name
+                    learning.user_id = user_id
                     learning.org_id = org_id
                     learning.team_id = team_id
                     await self._learning_store.store(learning)
@@ -854,6 +952,7 @@ class Agent:
             )
             for learning in corrections:
                 learning.agent_id = self.identity.name
+                learning.user_id = user_id
                 learning.org_id = org_id
                 learning.team_id = team_id
                 await self._learning_store.store(learning)

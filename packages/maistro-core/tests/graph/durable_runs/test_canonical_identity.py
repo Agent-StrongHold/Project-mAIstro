@@ -28,8 +28,9 @@ from maistro.graph.nodes import BaseNode, NodeContext, pause_until
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
-from .._canonical_helpers import durable_record
+from .._canonical_helpers import durable_record, hitl_authorization
 
 
 class _StepIn(BaseModel):
@@ -57,7 +58,9 @@ async def _admit(run_store: InMemoryRunStore, graph: Graph) -> str:
     the first traversal checkpoint are writes to two stores, and a crash
     between them would leave a canonical Run RUNNING with nothing to resume it.
     """
-    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    run = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     return run.run_id
 
 
@@ -95,6 +98,7 @@ async def test_a_graph_run_is_findable_in_the_canonical_store() -> None:
         node_resolver=_resolver,
         run_id=await _admit(run_store, graph),
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     canonical = await run_store.get_run(record.run.run_id)
@@ -117,6 +121,7 @@ async def test_the_identity_is_the_stores_not_the_records() -> None:
         node_resolver=_resolver,
         run_id=await _admit(run_store, graph),
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     listed = await run_store.list_by_status(RunStatus.RUNNING, limit=100)
@@ -137,7 +142,9 @@ async def test_a_workspace_scoped_listing_walks_the_spine_first() -> None:
     store = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
 
     graph = _graph(workspace_id, project_id)
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await store.create(
         durable_record(
             {"id": "d1", "nodes": [{"id": "n1"}], "edges": []},
@@ -167,6 +174,7 @@ async def test_without_a_canonical_store_the_previous_behaviour_is_unchanged() -
         ),
         store=InMemoryDurableRunStore(),
         node_resolver=_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.run.run_id
@@ -193,6 +201,7 @@ async def test_the_adopted_run_keeps_what_admission_recorded_on_it() -> None:
         node_resolver=_resolver,
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.run.run_id == admitted.run_id
@@ -212,6 +221,7 @@ async def test_a_pinned_run_id_without_a_spine_stays_where_it_was() -> None:
         store=InMemoryDurableRunStore(),
         node_resolver=_resolver,
         run_id="pinned-run-1",
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.run.run_id == "pinned-run-1"
@@ -231,6 +241,7 @@ async def test_frontier_node_runs_are_findable_in_the_canonical_store() -> None:
         node_resolver=_resolver,
         run_id=await _admit(run_store, graph),
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     canonical = await run_store.list_node_runs(record.run_id)
@@ -252,6 +263,7 @@ async def test_attempts_are_findable_in_the_canonical_store() -> None:
         node_resolver=_resolver,
         run_id=await _admit(run_store, graph),
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.attempts, "the Attempt firewall ran at least one physical try"
@@ -275,6 +287,7 @@ async def test_a_settled_attempt_does_not_read_differently_per_store() -> None:
         node_resolver=_resolver,
         run_id=await _admit(run_store, graph),
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     for attempt in record.attempts:
@@ -293,6 +306,7 @@ async def test_without_a_canonical_store_nothing_reaches_the_spine() -> None:
         _graph(workspace_id, project_id),
         store=InMemoryDurableRunStore(),
         node_resolver=_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.node_runs and record.attempts
@@ -313,6 +327,7 @@ async def test_the_run_and_its_node_reach_their_terminal_status_canonically() ->
         node_resolver=_resolver,
         run_id=await _admit(run_store, graph),
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     run = await run_store.get_run(record.run_id)
@@ -369,12 +384,15 @@ async def test_a_node_answered_out_of_a_pause_walks_the_statuses_it_must() -> No
         node_resolver=lambda node_id, _graph: _Ask(),
         run_id=await _admit(run_store, graph),
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     assert paused.status is RunStatus.PAUSED
     canonical = await run_store.get_run(paused.run_id)
     assert canonical is not None and canonical.status is RunStatus.PAUSED
 
-    await store.submit_hitl_answer(paused.run_id, "ask", {"answer": "yes"})
+    await store.submit_hitl_answer(
+        paused.run_id, "ask", {"answer": "yes"}, authorization=hitl_authorization()
+    )
     resumed = await resume_durable_graph(
         paused.run_id,
         store=store,
@@ -407,8 +425,11 @@ async def test_resuming_a_pre_convergence_record_takes_the_old_path() -> None:
         graph,
         store=store,
         node_resolver=lambda node_id, _graph: _Ask(),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
-    await store.submit_hitl_answer(paused.run_id, "ask", {"answer": "yes"})
+    await store.submit_hitl_answer(
+        paused.run_id, "ask", {"answer": "yes"}, authorization=hitl_authorization()
+    )
 
     resumed = await resume_durable_graph(
         paused.run_id,
@@ -450,6 +471,7 @@ async def test_a_failed_node_settles_canonically_too() -> None:
         node_resolver=lambda node_id, _graph: _Boom(),
         run_id=await _admit(run_store, graph),
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.FAILED
@@ -478,6 +500,7 @@ async def test_the_traversal_executor_takes_the_same_path() -> None:
         node_resolver=_resolver,
         run_id=await _admit(run_store, graph),
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.COMPLETED

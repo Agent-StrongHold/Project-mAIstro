@@ -30,6 +30,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from maistro.agents.base import Agent
 from maistro.agents.strategies.direct import DirectStrategy
+from maistro.runs.task_kinds import DIRECT_SUBMISSION_AGENT
 from maistro.types.agent import AgentIdentity
 from maistro.types.errors import ConfigError
 
@@ -303,6 +304,28 @@ def _instantiate(identity: AgentIdentity, *, agent_resolver: Any = None, **deps:
     )
 
 
+def _register_delegation_capabilities(agents: dict[str, Agent], a2a_delegator: Any | None) -> None:
+    """Project the loaded roster's allow-lists into the wired A2A receipt service.
+
+    ``A2ADelegator`` deliberately remains the receipt/transport registry; the
+    AgentIdentity is the configuration authority for who may delegate. Keeping
+    this projection at the one roster construction seam makes both filesystem
+    and database boot paths agree without creating a second agent registry.
+    """
+    if a2a_delegator is None:
+        return
+    register = getattr(a2a_delegator, "register_agent_capability", None)
+    if not callable(register):
+        raise ConfigError("configured A2A delegator cannot register agent capabilities")
+    for name, agent in agents.items():
+        register(name, list(agent.identity.sub_agents))
+    # Direct task/chat admissions are system-requested delegations, not an
+    # unnamed agent. Restrict that reserved principal to the roster actually
+    # loaded into this runtime so an absent target remains a real refusal.
+    if agents:
+        register(DIRECT_SUBMISSION_AGENT, list(agents))
+
+
 def instantiate_agent(identity: AgentIdentity, *, agent_resolver: Any = None, **deps: Any) -> Agent:
     """Build one runtime Agent from a ready identity -- the factory's single
     construction path, without the filesystem walk.
@@ -489,6 +512,40 @@ async def _seed_agent_directory(
     )
 
 
+def _governed_llm_client(
+    capability_effects: Any,
+    provider_registry: Any,
+    llm_router: Any,
+    model_endpoint: Any,
+    workspace_id: str,
+    project_id: str,
+) -> Any | None:
+    """The canonical model client for every strategy, or None.
+
+    One wrapper at the factory boundary keeps all Agent strategies on their
+    existing LLMClient protocol while routing production model effects through
+    the canonical Binding -> Invocation path (#718). Tests and legacy callers
+    that do not supply the full effect authority set retain their injected
+    client: any absent authority means the governed path cannot be composed
+    fail-closed, so nothing is wrapped rather than half of it.
+    """
+    if any(
+        value is None
+        for value in (capability_effects, provider_registry, llm_router, model_endpoint)
+    ):
+        return None
+    from maistro.capabilities.model_chat import GovernedLLMClient
+
+    return GovernedLLMClient(
+        capability_effects,
+        registry=provider_registry,
+        router=llm_router,
+        endpoint=model_endpoint,
+        workspace_id=workspace_id,
+        project_id=project_id,
+    )
+
+
 async def create_agents(
     *,
     agents_dir: str | Path,
@@ -510,9 +567,27 @@ async def create_agents(
     rca_extractor: Any = None,
     learning_promoter: Any = None,
     tool_registry: Any = None,
+    a2a_delegator: Any = None,
     require_agents: bool = False,
+    capability_effects: Any = None,
+    provider_registry: Any = None,
+    llm_router: Any = None,
+    model_endpoint: Any = None,
+    workspace_id: str = "default",
+    project_id: str = "agent-runtime",
 ) -> dict[str, Agent]:
     _register_custom_strategies()
+
+    governed = _governed_llm_client(
+        capability_effects,
+        provider_registry,
+        llm_router,
+        model_endpoint,
+        workspace_id,
+        project_id,
+    )
+    if governed is not None:
+        llm = governed
 
     deps = {
         "llm": llm,
@@ -537,6 +612,7 @@ async def create_agents(
     if sa_engine:
         db_agents = await _load_agents_from_db(sa_engine, prompt_manager, deps)
         if db_agents is not None:
+            _register_delegation_capabilities(db_agents, a2a_delegator)
             return db_agents
 
     agents_path = Path(agents_dir)
@@ -569,4 +645,5 @@ async def create_agents(
             raise ConfigError(f"required agents directory {agents_dir} contains no valid agents")
         logger.warning("No agents loaded from %s", agents_dir)
 
+    _register_delegation_capabilities(agents, a2a_delegator)
     return agents

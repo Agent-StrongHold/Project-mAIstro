@@ -39,6 +39,7 @@ from maistro.observability.correlation import (
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import AttemptStatus, InMemoryRunStore, RunExecutionService
 from maistro.runtime import PythonExecutionRuntime
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
@@ -112,7 +113,9 @@ class TestOneTraceFollowsTheWork:
             with bind_execution_context(
                 request_id="req-42", workspace_id="ws-1", project_id=project_id
             ):
-                run = await service.create_run(graph)
+                run = await service.create_run(
+                    graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+                )
                 node_run, attempt = await service.execute_node(
                     run.run_id,
                     "node-1",
@@ -178,7 +181,9 @@ class TestOneTraceFollowsTheWork:
             with bind_execution_context(
                 request_id="req-43", workspace_id="ws-1", project_id=project_id
             ):
-                run = await service.create_run(graph)
+                run = await service.create_run(
+                    graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+                )
                 with pytest.raises(RuntimeError, match="first try fails"):
                     await service.execute_node(run.run_id, "node-1", "work", {}, executor=failing)
                 first_node_run = (await store.list_node_runs(run.run_id))[0]
@@ -262,7 +267,12 @@ class TestOneTraceFollowsTheWork:
             with bind_execution_context(
                 request_id="req-http-boundary", workspace_id="ws-1", project_id=project.project_id
             ):
-                task = await queue.submit(TaskCreate(description="admitted work"))
+                task = await queue.submit(
+                    TaskCreate(
+                        description="admitted work",
+                        user_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+                    )
+                )
             run = await run_store.get_run(task.run_id or "")
             assert run is not None
             assert run.provenance[REQUEST_ID_KEY] == "req-http-boundary"

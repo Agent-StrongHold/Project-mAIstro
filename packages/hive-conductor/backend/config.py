@@ -24,6 +24,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from maistro.config.settings import validate_cors_origins
 from maistro.types.config import ModelBindingConfig
 
+#: Hard bounds the schedule floor/cap settings cannot be configured outside of
+#: (#1200). See the field comments on the ``Settings`` fields for why these
+#: fail at startup instead of clamping. The maximum is the substrate's own
+#: definition-time ceiling (``maistro.scheduling.model.MAX_CATCHUP_WINDOW_SECONDS``):
+#: a product cap above it would let a create through the route and then always
+#: fail at the canonical write, an error the operator config caused and could
+#: not see.
+SCHEDULE_FLOOR_HARD_MINIMUM_S = 300
+SCHEDULE_WINDOW_HARD_MINIMUM_S = 3_600
+SCHEDULE_WINDOW_HARD_MAXIMUM_S = 604_800
+
 _BACKEND_DIR = Path(__file__).resolve().parent
 # Repo root `.env` (PM POC flags) — uvicorn cwd is usually `backend/`.
 _ENV_FILES: tuple[str, ...] = tuple(
@@ -197,11 +208,17 @@ class Settings(BaseSettings):
     allow_stub_llm: bool = False
 
     maistro_router_api_key: str | None = None
-    # Provider metadata and explicit model authorizations are operator config,
-    # not inferred from the gateway URL. The bridge passes both into the
-    # canonical Container so Canvas and graph nodes share one authority.
+    # Separate host key used to attest the authenticated Hive user across the
+    # service hop. The bearer key identifies Conductor; this key identifies the
+    # delegation context and must be shared only with maistro-server.
+    maistro_delegation_key: SecretStr | None = None
+    maistro_service_principal: str = "conductor"
+    # Provider metadata is operator config, not inferred from the gateway URL.
+    # The bridge passes it into the canonical Container so Canvas and graph
+    # nodes share one provider registry. Model-Binding authorizations are
+    # `maistro_model_bindings` below -- one canonical list, shared by Canvas
+    # and every other `model.chat`-consuming node, not a second competing one.
     provider_config_path: str = ""
-    model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
     # Optional explicit binding selector for the server-side Canvas quality
     # route. If omitted, exactly one matching model binding is required.
     canvas_model_binding_id: str = ""
@@ -220,6 +237,13 @@ class Settings(BaseSettings):
     # `MAISTRO_PERMISSIONS='{"tool_name": ["admin", "user"]}'` (JSON).
     maistro_permission_preset: str = "none"
     maistro_permissions: dict[str, list[str]] = Field(default_factory=dict)
+    # Operator-declared `model.chat` Binding authorizations (#1079). Fail-closed:
+    # the shipped empty list authorizes no Binding, so `llm.summarize` (and any
+    # other `model.chat`-consuming node) refuses everything until a Conductor
+    # states its Bindings here -- JSON list of
+    # `maistro.types.config.ModelBindingConfig` objects, e.g.
+    # `MAISTRO_MODEL_BINDINGS='[{"binding_id": "b1", "project_id": "p1", "provider_name": "gpt-4"}]'`.
+    maistro_model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
 
     conductor_data_dir: str = "~/.conductor"
     conductor_vault_path: str | None = None
@@ -346,8 +370,59 @@ class Settings(BaseSettings):
     # malformed file is an error rather than an empty overlay.
     rsi_test_profiles_file: str = ""
 
+    # Container dispatch for HTTP-initiated RSI runs (#509). The loop runs
+    # inside an ephemeral container built from Dockerfile.rsi-runner; these
+    # name the image, the gateway endpoint reachable from the container's
+    # network, the compose network to join (empty = auto-detect from the
+    # maistro-litellm container), and an optional host root for the per-run
+    # report directories (empty = the system temp dir). Nothing here is taken
+    # from a request: output directories are always derived from the run id.
+    rsi_runner_image: str = "maistro-rsi-runner:latest"
+    # In-compose default: maistro-litellm is the gateway's service name on
+    # the stack's private bridge network, so this is container-to-container
+    # and never off-host; there is no CA to sign it (same disposition as
+    # DEFAULT_GATEWAY_URL in services/rsi_container_dispatch.py). The marker
+    # sits on the line itself because DevSkim only honors a suppression
+    # comment on the flagged line — one in the preceding comment block left
+    # the finding live in CI. Deployments override this via rsi_gateway_url,
+    # whose scheme is whatever the operator gives it.
+    rsi_gateway_url: str = (
+        "http://maistro-litellm:4000"  # devskim: ignore DS137138 until 2027-12-31
+    )
+    rsi_container_network: str = ""
+    rsi_work_root: str = ""
+    # Resource ceilings for a dispatched runner container, mirroring
+    # tools/run_rsi_isolated.sh's defaults (a runaway ceiling, not a squeeze).
+    rsi_container_memory: str = "6g"
+    rsi_container_cpus: str = "4"
+    rsi_container_pids: str = "1024"
+
     # self_repair (SPEC-188) cadence; <=0 disables the periodic loop (API still works).
     self_repair_interval_s: int = 90
+
+    # Schedule frequency floor (#1200). The product refuses `/v1/schedules`
+    # create/update whose recurrence can fire more often than this — measured
+    # with `maistro.scheduling.cron.minimum_gap` from real consecutive fire
+    # times, so list/step/range forms are all honored. The ADR reference floor
+    # is 15 minutes; an operator may raise it (quieter product) or lower it,
+    # but never below SCHEDULE_FLOOR_HARD_MINIMUM_S: a recurrence finer than
+    # that is a busy-loop the scheduler must not accept regardless of config,
+    # which is what makes the floor "configurable only within safe operator
+    # bounds". Out-of-range values fail at startup rather than being silently
+    # clamped — a deployment that thinks it asked for a 60s floor must not
+    # quietly get 300s and start admitting schedules the operator believed
+    # forbidden.
+    schedule_min_frequency_gap_s: int = 900
+
+    # Largest catch-up window a client may request on `/v1/schedules` (#1200).
+    # The canonical substrate refuses windows above seven days outright
+    # (maistro.scheduling.model.MAX_CATCHUP_WINDOW_SECONDS); this is the
+    # product's own, tighter, operator-selected bound, defaulting to one day.
+    # After downtime the window is how much missed work one evaluation will
+    # consider, so it — not just the frequency floor — is what bounds backlog
+    # size. Same fail-loud rule: out-of-range startup config is an error, not
+    # a clamp.
+    schedule_max_catchup_window_s: int = 86_400
 
     # Episodic memory-decay cadence (SPEC-080126-9e42). This is what makes
     # README's "decays without reinforcement" and CLAUDE.md decision #5 true at
@@ -367,6 +442,20 @@ class Settings(BaseSettings):
             raise ValueError("at most 16 OAuth providers may be configured")
         if any(not is_valid_oauth_provider_name(name) for name in value):
             raise ValueError("OAuth provider names must be lowercase URL-safe slugs")
+        return value
+
+    @field_validator("schedule_min_frequency_gap_s", "schedule_max_catchup_window_s")
+    @classmethod
+    def validate_schedule_bounds(cls, value: int, info: ValidationInfo) -> int:
+        """Refuse floor/cap config outside the safe operator bounds (#1200)."""
+        if info.field_name == "schedule_min_frequency_gap_s":
+            low, high = SCHEDULE_FLOOR_HARD_MINIMUM_S, SCHEDULE_WINDOW_HARD_MAXIMUM_S
+            label = "schedule_min_frequency_gap_s"
+        else:
+            low, high = SCHEDULE_WINDOW_HARD_MINIMUM_S, SCHEDULE_WINDOW_HARD_MAXIMUM_S
+            label = "schedule_max_catchup_window_s"
+        if not low <= value <= high:
+            raise ValueError(f"{label} must be between {low} and {high} seconds, got {value}")
         return value
 
     @field_validator("oauth_public_origin", mode="before")

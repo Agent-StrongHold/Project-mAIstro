@@ -13,6 +13,8 @@ credential text. Consequences:
 * changing/omitting/forging an Authorization string cannot mint a fresh
   bucket — invalid credentials fall into the same pre-auth bucket as no
   credential at all;
+* a verified Conductor delegation envelope keys the budget to the originating
+  user while retaining the service credential as the authenticated caller;
 * key material never becomes a bucket id, label, or header.
 
 The limiter runs before the route's auth dependency, so it resolves the
@@ -40,6 +42,7 @@ is exceeded.
 
 from __future__ import annotations
 
+import os
 import time
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -55,6 +58,7 @@ from maistro.observability.metrics import (
 )
 from maistro.security._types import RateLimitConfig
 from maistro.security.rate_limiter import InMemoryRateLimiter
+from maistro.tasks.http_contract import DELEGATION_HEADER, verify_delegation_context
 from maistro_server.api.auth import resolve_token_principal
 from maistro_server.api.route_table import iter_effective_routes
 
@@ -94,6 +98,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if scheme.lower() == "bearer" and token.strip():
             principal = resolve_token_principal(token.strip(), get_settings())
             if principal is not None:
+                delegation = request.headers.get(DELEGATION_HEADER)
+                if delegation:
+                    try:
+                        context = verify_delegation_context(
+                            delegation, os.getenv("TASK_DELEGATION_KEY", "")
+                        )
+                    except ValueError:
+                        context = None
+                    if context is not None and context.service_principal == principal.user_id:
+                        # The service credential remains the authenticated caller;
+                        # the signed originating principal gets its own abuse budget.
+                        return ":".join(("delegated-principal", context.originating_principal))
                 return ":".join(("principal", principal.user_id))
 
         client = request.client

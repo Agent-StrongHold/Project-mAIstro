@@ -11,6 +11,7 @@ import structlog
 
 from maistro.agents.types import ConductorOutput
 from maistro.constants import WORKER_POLL_TIMEOUT
+from maistro.runs.consumer_claim import ConsumerClaimLost
 from maistro.tasks.execution import TaskAttemptExecutor, TaskExecutionFailed
 from maistro.tasks.lanes import Lane, LaneGate
 from maistro.tasks.models import TaskCreate, TaskProgress, TaskResult, TaskStatus
@@ -123,6 +124,14 @@ class TaskRunner:
                 await self._settle_cancelled(pending)
                 await logger.awarning("tasks_cancelled_on_shutdown", count=len(pending))
 
+        # Receipt writes are fire-and-forget while serving (ADR-018) and must
+        # not be at shutdown (#849): the completions, failures and results the
+        # settled workers just scheduled are scheduled writes until they land,
+        # and a stop that returns before them abandons exactly the writes that
+        # make the durable receipt tell the truth. This drain is the lifecycle
+        # ownership the fire-and-forget model needs.
+        await self._queue.drain_persistence()
+
         if self._progress_webhook:
             await self._progress_webhook.aclose()
 
@@ -143,6 +152,11 @@ class TaskRunner:
             if pending:
                 await self._settle_cancelled(pending)
                 await logger.awarning("task_runner_drain_timeout", cancelled=len(pending))
+
+        # Same receipt-write ownership as `stop()` (#849): the signal-handler
+        # drain path must not complete ahead of the writes its settled tasks
+        # scheduled.
+        await self._queue.drain_persistence()
 
         if self._worker_task:
             self._worker_task.cancel()
@@ -222,11 +236,23 @@ class TaskRunner:
         try:
             await self._execute_task(task_id)
         except asyncio.CancelledError:
-            # Graceful shutdown — mark task as failed rather than leaving it stuck
-            await self._queue.update_status(
+            # Cancellation arrives here with two different stories (#1337):
+            # a shutdown drain cancelling the worker, and a user-initiated
+            # `TaskQueue.cancel` that fenced its Run CANCELLED and settled the
+            # Attempt before this handler ran. Only the first may write the
+            # shutdown disposition. When the Run refuses FAILED (it is already
+            # CANCELLED) `update_status` returns False — and has already
+            # reconciled the receipt to the Run's own terminal state (#849) —
+            # so the shutdown result must not be written: overwriting that
+            # projection stamped a cancelled receipt with a shutdown failure
+            # it never had and pushed it to the progress webhook. Emit either
+            # way: the receipt read at emit time is whichever disposition
+            # actually holds.
+            accepted = await self._queue.update_status(
                 task_id, TaskStatus.FAILED, error="Task cancelled during shutdown"
             )
-            self._queue.set_result(task_id, TaskResult(error="Task cancelled during shutdown"))
+            if accepted:
+                self._queue.set_result(task_id, TaskResult(error="Task cancelled during shutdown"))
             await self._emit_progress_webhook(task_id)
         except Exception as exc:
             await logger.aexception("task_execution_failed", task_id=task_id)
@@ -315,7 +341,10 @@ class TaskRunner:
                 agent_id=task.agent_id,
                 capability=task.capability,
                 program_context=task.program_context,
+                branch=task.branch,
+                constraints=list(task.constraints),
                 user_id=task.user_id or None,
+                session_id=task.session_id,
                 lane=task.lane,
                 priority_tier=task.priority_tier,
             )
@@ -331,6 +360,14 @@ class TaskRunner:
 
             try:
                 result = await self._execute_work(task.run_id, request)
+            except ConsumerClaimLost:
+                # Another dispatcher won the atomic claim (#1114). No work ran
+                # here, so there is nothing to fail: recording a failure would
+                # terminalize the winner's Run out from under it. Same
+                # disposition as a refused Run — put the receipt down and let
+                # the claim's owner finish the work.
+                await logger.awarning("task_abandoned_claim_lost", task_id=task_id)
+                return
             except TaskExecutionFailed as exc:
                 # The Attempt already recorded the failure. The receipt's own
                 # failure branch below is unchanged, so a `/tasks` caller reads

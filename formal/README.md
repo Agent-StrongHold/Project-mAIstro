@@ -56,8 +56,8 @@ PYTHONPATH=packages/maistro-core/src pytest formal/models/test_strike_escalation
 # Deep exploration (10,000 examples)
 PYTHONPATH=packages/maistro-core/src pytest formal/models/ -v --nightly
 
-# Regenerate extracted constants
-PYTHONPATH=packages/maistro-core/src python -m formal.extractors.extract_security_constants
+# Run the security oracle directly against the candidate implementation
+PYTHONPATH=packages/maistro-core/src pytest formal/models/test_dangerous_tools.py -q
 ```
 
 ## How to read failures
@@ -72,6 +72,17 @@ AssertionError: strike_count=2 but scrutiny_level='elevated' (expected 'locked')
 ```
 
 This tells you the exact steps and broken invariant.
+
+## Invariant evidence rules (#410)
+
+Every counted invariant must be able to fail: it is expressed against an
+independent model, a documented contract, or a constructive input class, has
+a documented counterexample class, and has been demonstrated to fail a
+realistic mutant. Tautologies (`counter >= 0` on the machine's own counter),
+empty `pass` invariants, and self-referential impl-vs-impl assertions are
+rejected from the evidence counts. The full inventory — counted properties,
+rejected invariants, informational keeps, and the demonstrated mutants —
+lives in [INVARIANTS.md](INVARIANTS.md).
 
 ## CI
 

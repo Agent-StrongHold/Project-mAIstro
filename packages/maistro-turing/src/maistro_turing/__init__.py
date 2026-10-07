@@ -30,6 +30,7 @@ from maistro_turing.protocols import (
     WisdomInvariantViolation,
     WorkingMemoryStore,
 )
+from maistro_turing.runtime import TuringContentBlocked
 from maistro_turing.self_model import (
     ALL_FACETS,
     CANONICAL_FACETS,
@@ -55,6 +56,11 @@ from maistro_turing.self_model import (
     current_level,
     facet_node_id,
     guess_node_kind,
+)
+from maistro_turing.sync_runner import (
+    ReentrantSyncCallError,
+    SyncLoopClosedError,
+    SyncLoopRunner,
 )
 from maistro_turing.tiers import (
     INHERITANCE_PRIORITY,
@@ -96,15 +102,19 @@ __all__ = [
     "PreferenceKind",
     "ProvenanceViolation",
     "Reactor",
+    "ReentrantSyncCallError",
     "RepoError",
     "SelfTodo",
     "SelfTodoRevision",
     "Skill",
     "SkillKind",
     "SourceKind",
+    "SyncLoopClosedError",
+    "SyncLoopRunner",
     "TodoStatus",
     "Trait",
     "TuringClassifierBridge",
+    "TuringContentBlocked",
     "TuringMemoryBridge",
     "TuringProviderBridge",
     "TuringSecurityBridge",

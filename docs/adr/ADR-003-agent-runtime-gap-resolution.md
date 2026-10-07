@@ -6,7 +6,7 @@ kind: adr
 status: Accepted
 created: 2026-04-26
 substrate:
-  - maistro-engine#ADR-001
+  - maistro-engine#ADR-095
 implements: []
 related: []  # roadmap doc: the gap→tranche ADR ranges in the body are planning
              # numbers, not semantic edges. The original numbering predates the
@@ -31,7 +31,7 @@ history:
 
 **Date:** 2026-04-26  
 **Tranche:** T0  
-**Depends on:** ADR-001
+**Depends on:** ADR-095
 
 ---
 
@@ -64,7 +64,8 @@ The analysis identified five gaps in maistro-engine relative to that reference r
 
 ## Acceptance criteria
 
-- [x] `docs/analysis/agent-runtime-gap-analysis.md` present on `integration`
+- [x] Gap analysis captured in this ADR and the downstream ADR corpus (historical
+  `docs/analysis/agent-runtime-gap-analysis.md` removed; provenance in git history)
 - [ ] Orphaned branch `origin/claude/compare-bot-frameworks-tFPdY` deleted after this commit merges (manual step — requires `git push origin --delete claude/compare-bot-frameworks-tFPdY`)
 
 ## Out of scope
