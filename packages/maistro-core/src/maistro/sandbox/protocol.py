@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from maistro.sandbox.fence import SandboxFence
 from maistro.sandbox.network import DENY_ALL, EgressGrant
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    # Imported lazily: `maistro.sandbox.fence` reaches `maistro.runs.model`, whose
+    # package import runs execution wiring through `maistro.runtime` ->
+    # `maistro.extensions` -> `maistro.extensions.isolation` -> this module. A
+    # module-level import here closes that cycle whenever `maistro.sandbox`
+    # itself is the entry point (#970 follow-up). `SandboxFence` is annotation
+    # only, and the module is `from __future__ import annotations`.
+    from maistro.sandbox.fence import SandboxFence
 
 # Type alias for clarity
 IsolationTier = str  # "vm" | "gvisor" | "container" | "bubblewrap" | "fake"
