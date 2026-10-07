@@ -40,3 +40,27 @@ The wiring is read from the workflow text (same line-anchor approach as the
 gate's job parser, no YAML dependency), and the negative tests assert the
 gate's actual failure text, so a reworded message cannot silently stop
 describing the violation.
+
+## Validation log (2026-10-07, head a936e58a6)
+
+- `uv run pytest tests/test_check_image_inventory.py -q` — 37 passed (24
+  pre-existing + 13 new).
+- `uv run pytest tests/ -q -x --timeout=120` — 4675 passed, 128 skipped
+  (= the 4803 collected identities the suite inventory records).
+- `uv run python scripts/check-suite-inventory.py --suite tests/` — ok, 4803
+  unique identities match the recorded inventory with this note's +13.
+- `uv run python scripts/check-diff-coverage.py coverage.xml --base
+  b0912ce590d51bcfe4944da57770575e50ae2e8a` — ok, changed gate lines ≥90%
+  lines / ≥80% branch arcs.
+- `uv run python scripts/check-image-inventory.py` — ok; the gate's wiring
+  read accepts the re-wired `release.yml` with both flags `true`.
+- `uv run python scripts/check-image-pins.py`,
+  `scripts/check-workflow-inventory.py` — ok.
+- `uv run ruff check .` / `ruff format --check .` — clean.
+- Mechanism proof against a real registry (docker 29.7.2, buildx v0.37.2,
+  registry:2): a build pushed with `--provenance=mode=max --sbom=true` to a
+  quarantine repo, then `docker buildx imagetools create -t
+  <prod>:v1 <rc-repo>@sha256:9e15931a…` — the promoted tag resolves to the
+  identical index digest, and the attestation manifest is visible under the
+  promoted tag, so the #349 provenance check still finds its materials on the
+  production digest.
