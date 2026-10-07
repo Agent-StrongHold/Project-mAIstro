@@ -869,6 +869,16 @@ jobs:
       - name: Import wheels from a clean venv
         run: python scripts/verify-wheel-imports.py --dist dist/ --python 3.12
 
+      # The wheel gate above resolves the CURRENT dependency set, which is
+      # exactly what masked issue #1100: the published pyjwt floor advertised
+      # versions the mandatory OIDC verifier does not import on, and only the
+      # workspace lockfile (which a consumer of the published wheel never
+      # reads) was right. Resolve the DECLARED floors instead and import the
+      # OIDC/auth modules in the result (#1100) — per-PR, not only at release
+      # time, so a stale floor is caught where it landed.
+      - name: Import at the minimum supported dependency floors
+        run: python scripts/verify-minimum-dependencies.py --package packages/maistro-core --python 3.12
+
   security:
     runs-on: ubuntu-latest
     steps:

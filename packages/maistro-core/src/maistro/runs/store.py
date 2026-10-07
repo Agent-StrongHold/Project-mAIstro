@@ -55,6 +55,7 @@ from maistro.runs.retention_scope import (
 )
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
+    CHAT_SOURCE,
     EPHEMERAL_ADMISSION_SOURCES,
     occurrence_key,
 )
@@ -64,6 +65,21 @@ from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
 #: reason the retention sweep is: a recovery pass must not become a long
 #: transaction that blocks the workers it is trying to unblock.
 DEFAULT_RECLAIM_BATCH = 100
+
+
+def matches_chat_admission_snapshot(current: Run, expected: Run) -> bool:
+    """Recheck an admission snapshot while the store holds its write authority.
+
+    NodeRun absence must be checked under the same authority by the caller.
+    This is a compare-and-cancel guard, not evidence that an owner died: the
+    request or existing recovery policy still decides which snapshot to offer.
+    """
+    return (
+        current.provenance.get(ADMISSION_SOURCE) == CHAT_SOURCE
+        and current.status in (RunStatus.CREATED, RunStatus.QUEUED, RunStatus.RUNNING)
+        and current.status is expected.status
+        and current.updated_at == expected.updated_at
+    )
 
 
 class RunNotFound(KeyError):
@@ -570,6 +586,11 @@ class RunStore(Protocol):
     ) -> Run: ...
 
     async def claim_delegation_transport_attempt(self, run_id: str) -> bool: ...
+
+    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
+        """Cancel only an unchanged chat admission with no NodeRuns, atomically."""
+        ...
+
     async def transition_run(
         self,
         run_id: str,
@@ -1349,6 +1370,17 @@ class InMemoryRunStore:
         provenance = dict(run.provenance)
         provenance["transport_attempted"] = True
         self._runs[run_id] = run.model_copy(update={"provenance": provenance})
+        return True
+
+    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
+        # No await: parent comparison, child absence and cancellation are one
+        # event-loop operation, serialized with create_node_run.
+        current = self._require_run(expected.run_id)
+        if not matches_chat_admission_snapshot(current, expected):
+            return False
+        if self._node_runs_of(expected.run_id):
+            return False
+        self._runs[expected.run_id] = transition_run(current, RunStatus.CANCELLED, error=error)
         return True
 
     async def transition_run(
