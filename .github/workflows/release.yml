@@ -301,6 +301,16 @@ jobs:
           for pkg in ${PUBLISH_SET}; do only+=(--only "${pkg}"); done
           python scripts/verify-wheel-imports.py --dist dist/ --python 3.12 "${only[@]}"
 
+      # That gate resolves the CURRENT dependency set, which is exactly what
+      # masked issue #1100: the published pyjwt floor advertised versions the
+      # mandatory OIDC verifier does not import on, and only this workspace's
+      # lockfile (which a consumer of the published wheel never reads) was
+      # right. Resolve the DECLARED floors instead and import the OIDC/auth
+      # modules in the result, so a release cannot ship a range whose own
+      # minimum does not install (#1100).
+      - name: Install + import at the minimum supported dependency floors
+        run: python scripts/verify-minimum-dependencies.py --package packages/maistro-core --python 3.12
+
       - uses: actions/upload-artifact@v7
         with:
           name: dist
@@ -363,20 +373,39 @@ jobs:
           print-hash: true
 
   # ---------------------------------------------------------------------------
-  # images — build, push, cosign-sign the pushed DIGEST, and verify in-workflow.
+  # images — build ONCE, scan what was built, publish that digest, sign it.
+  #
+  # One artifact, built once (#346 AC-5, #611). Each image is built exactly
+  # once and pushed to a release-candidate (`*-rc`) quarantine repository;
+  # Trivy and Grype scan that candidate DIGEST; only after both pass do the
+  # release tags get applied — by `docker buildx imagetools create`, which
+  # re-tags the scanned digest byte-for-byte instead of rebuilding equivalent
+  # inputs. There is no second build on this path, so a mutable base (#349's
+  # half) or a re-resolved dependency (#593's half) cannot make the released
+  # artifact differ from the scanned one: they are the same manifest.
+  #
+  # The scan gate is the same policy security.yml enforces on PRs and
+  # nightlies — Trivy HIGH/CRITICAL with `exit-code: 1` and the checked-in
+  # ignores, Grype `--fail-on high --only-fixed` — so a finding at the gating
+  # severity fails this job before any release tag exists.
   #
   # security.yml deliberately removed its old cosign step because it signed
   # local Docker tags nothing had pushed, so no consumer could ever verify the
   # signature — "reinstate alongside a real registry push (sign the pushed
   # digest, not a local tag) when one exists". This is that push, and this is
   # that reinstatement: it signs `repo@sha256:...` from build-push-action's
-  # digest output, then verifies the signature in the same run.
+  # digest output — the digest the scans just admitted — then verifies the
+  # signature in the same run, so whatever cosign attests is the artifact the
+  # scans cleared and the release publishes.
   # ---------------------------------------------------------------------------
   images:
-    name: Build, push + sign images
+    name: Build, scan, push + sign images
     needs: [guard, wheels]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Builds, two remote Trivy pulls, two remote Grype pulls, promotion and
+    # signing. The scans doubled the registry traffic of the push-only shape,
+    # so the old 60-minute ceiling is raised rather than trusted.
+    timeout-minutes: 90
     environment:
       name: release
       url: https://github.com/Agent-StrongHold/Project-mAIstro/pkgs/container/maistro-engine
@@ -387,8 +416,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # The immutable vX.Y.Z (or vX.Y.Z-rcN) tag is always pushed. The two
-      # MOVING pointers — X.Y and latest — are pushed only when the guard says
+      # These are the tags the release will publish — computed here, applied
+      # only after the scan passes (the promote step below consumes them). The
+      # immutable vX.Y.Z (or vX.Y.Z-rcN) tag is always published. The two
+      # MOVING pointers — X.Y and latest — are applied only when the guard says
       # this release is the highest on its line / overall, so a hotfix on an
       # older line never drags `latest` backwards, and no release candidate
       # ever touches either (an unpinned `docker pull` and the installer's
@@ -418,32 +449,84 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build + push maistro-engine
+      # Each image is built exactly once, into the `-rc` quarantine
+      # repository — never under a release tag. The scans below admit this
+      # digest; the promote step applies the release tags to it afterwards.
+      # `outputs.digest` is the manifest/index digest in the registry, and it
+      # is what every later step (scan, promote, sign, attest, SBOM) binds to.
+      - name: Build + push maistro-engine (release candidate)
         id: engine
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
           push: true
-          tags: ${{ steps.tags.outputs.maistro_engine }}
+          tags: ${{ env.IMAGE_NAMESPACE }}/maistro-engine-rc:rc-${{ github.run_id }}
           # mode=max, not the default min mode: the SLSA statement must name
-          # every base image it resolved, because the step below fails the
-          # release if any base digest is missing from the provenance (#349).
+          # every base image it resolved, because the attestation step below
+          # fails the release if any base digest is missing from the
+          # provenance (#349).
           provenance: mode=max
           sbom: true
 
-      - name: Build + push hive-conductor
+      - name: Build + push hive-conductor (release candidate)
         id: conductor
         uses: docker/build-push-action@v7
         with:
           context: .
           file: packages/hive-conductor/Dockerfile
           push: true
-          tags: ${{ steps.tags.outputs.hive_conductor }}
+          tags: ${{ env.IMAGE_NAMESPACE }}/hive-conductor-rc:rc-${{ github.run_id }}
           # Same as maistro-engine above: mode=max so base digests land in the
           # SLSA statement the attestation check below demands (#349).
           provenance: mode=max
           sbom: true
+
+      # The scan gate, on the release path (#346 AC-5, #611). Same policy as
+      # security.yml's containers job — Trivy HIGH/CRITICAL, exit-code 1,
+      # ignore-unfixed, the checked-in ignore list — pointed at the candidate
+      # digest. A finding at the gating severity fails this job here, before
+      # any release tag exists anywhere in the production repositories.
+      - name: Trivy scan maistro-engine (HIGH/CRITICAL, blocking)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.73.0
+          image-ref: ${{ env.IMAGE_NAMESPACE }}/maistro-engine-rc@${{ steps.engine.outputs.digest }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
+
+      - name: Trivy scan hive-conductor (HIGH/CRITICAL, blocking)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.73.0
+          image-ref: ${{ env.IMAGE_NAMESPACE }}/hive-conductor-rc@${{ steps.conductor.outputs.digest }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
+
+      # Grype cross-check on the same digests, same policy as security.yml
+      # (`--only-fixed`, so a finding is always something a rebuild could
+      # resolve) and the same pinned tarball + checksum.
+      - name: Grype scan the candidate digests (cross-check, blocking)
+        env:
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
+          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest }}
+        run: |
+          set -euo pipefail
+          curl -sSfL -o grype.tgz https://github.com/anchore/grype/releases/download/v0.116.0/grype_0.116.0_linux_amd64.tar.gz
+          echo "40aff724297312f91ea390d003bed8d8651c74cc7f5b26732db80b3a408d2fc5  grype.tgz" | sha256sum --check
+          tar -xzf grype.tgz grype && sudo mv grype /usr/local/bin/
+          for ref in \
+            "${IMAGE_NAMESPACE}/maistro-engine-rc@${ENGINE_DIGEST}" \
+            "${IMAGE_NAMESPACE}/hive-conductor-rc@${CONDUCTOR_DIGEST}"
+          do
+            echo "::group::grype ${ref}"
+            grype "${ref}" --fail-on high --only-fixed --output table
+            echo "::endgroup::"
+          done
 
       # Pinned binary + hardcoded checksum, the same shape security.yml uses
       # for grype and syft. Piping an unpinned installer off a mutable branch
@@ -463,9 +546,36 @@ jobs:
           cosign version
           syft version
 
+      # Both scans passed: publish the scanned digest. `imagetools create`
+      # re-tags the candidate manifest byte-for-byte — the release tags
+      # resolve to exactly the digest the scans admitted, not a rebuild of
+      # equivalent inputs. This is the first write to the production
+      # repositories, and it only runs because the scans above passed.
+      - name: Promote the scanned digests to the release tags
+        env:
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
+          CONDUCTOR_DIGEST: ${{ steps.conductor.outputs.digest }}
+          ENGINE_TAGS: ${{ steps.tags.outputs.maistro_engine }}
+          CONDUCTOR_TAGS: ${{ steps.tags.outputs.hive_conductor }}
+        run: |
+          set -euo pipefail
+          promote() {
+            local image="$1" digest="$2" tags="$3"
+            local rc="${IMAGE_NAMESPACE}/${image}-rc@${digest}"
+            echo "promoting ${rc}"
+            IFS=',' read -ra targets <<< "${tags}"
+            for tag in "${targets[@]}"; do
+              docker buildx imagetools create -t "${tag}" "${rc}"
+            done
+          }
+          promote maistro-engine "${ENGINE_DIGEST}" "${ENGINE_TAGS}"
+          promote hive-conductor "${CONDUCTOR_DIGEST}" "${CONDUCTOR_TAGS}"
+
       # Sign the DIGEST, not a tag. A tag is mutable — signing `:latest` binds
       # the signature to a name that can later point somewhere else, which is
-      # precisely the property a signature is supposed to remove.
+      # precisely the property a signature is supposed to remove. The digest
+      # here is the one the scans admitted and the release tags now resolve
+      # to, so the signature is evidence about the published artifact itself.
       - name: Sign the pushed digests (keyless)
         env:
           COSIGN_YES: "true"
