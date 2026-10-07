@@ -3382,6 +3382,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/rum/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Events */
+        get: operations["list_events_v1_rum_events_get"];
+        put?: never;
+        /** Ingest Events */
+        post: operations["ingest_events_v1_rum_events_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/rum/events/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Summary */
+        get: operations["summary_v1_rum_events_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/schedules": {
         parameters: {
             query?: never;
@@ -4758,6 +4793,37 @@ export interface components {
             prompt_fragment: string;
             /** Tools */
             tools?: string[];
+        };
+        /**
+         * ApiRequestEventIn
+         * @description One shared-client request observation (`hive.rum.v1`).
+         */
+        ApiRequestEventIn: {
+            /** Duration Ms */
+            duration_ms: number;
+            /** Method */
+            method: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "ok" | "http_error" | "timeout" | "network_error";
+            /** Request Id */
+            request_id?: string | null;
+            /** Route */
+            route: string;
+            /**
+             * Status Class
+             * @enum {integer}
+             */
+            status_class: 0 | 2 | 3 | 4 | 5;
+            /** Ts */
+            ts: number;
+            /**
+             * Type
+             * @constant
+             */
+            type: "api_request";
         };
         /** AppendMessageBody */
         AppendMessageBody: {
@@ -6320,6 +6386,20 @@ export interface components {
             /** Repo Path */
             repo_path?: string | null;
         };
+        /**
+         * RumBatchIn
+         * @description The `hive.rum.v1` envelope the reporter sends.
+         */
+        RumBatchIn: {
+            /** Build Id */
+            build_id: string;
+            /** Events */
+            events: (components["schemas"]["WebVitalEventIn"] | components["schemas"]["ApiRequestEventIn"])[];
+            /** Schema */
+            schema: string;
+            /** Session Id */
+            session_id: string;
+        };
         /** RunWorkflowBody */
         RunWorkflowBody: {
             /** Dag Id */
@@ -6905,6 +6985,28 @@ export interface components {
             run_id?: string | null;
             /** Understood */
             understood: boolean;
+        };
+        /**
+         * WebVitalEventIn
+         * @description One browser load-metric observation (`hive.rum.v1`).
+         */
+        WebVitalEventIn: {
+            /**
+             * Name
+             * @enum {string}
+             */
+            name: "LCP" | "load";
+            /** Route */
+            route: string;
+            /** Ts */
+            ts: number;
+            /**
+             * Type
+             * @constant
+             */
+            type: "web_vital";
+            /** Value Ms */
+            value_ms: number;
         };
         /** WidgetConfig */
         WidgetConfig: {
@@ -13202,6 +13304,96 @@ export interface operations {
         };
     };
     rsi_test_profiles_v1_rsi_test_profiles_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    list_events_v1_rum_events_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ingest_events_v1_rum_events_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RumBatchIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    summary_v1_rum_events_summary_get: {
         parameters: {
             query?: never;
             header?: never;
