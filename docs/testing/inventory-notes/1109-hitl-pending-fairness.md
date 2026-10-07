@@ -154,3 +154,39 @@ merged pin walks to `061`, asserts the whole ancestor path through `060`, and pi
 removed: the delta above is unchanged, and the evidence is the resolved conformance test
 plus `tests/migrations` passing (the DB legs skipped without a live server, as in CI's
 unit shards).
+
+## Validation round: develop sync completed, gates proven at the merged head
+
+The develop sync this section describes was completed at b114d7144: the only
+conflict was CHANGELOG.md (both sides had added their entry at the top of
+`### Fixed`), resolved by keeping both entries; the migration renumber to 061
+merged clean and `alembic upgrade head` applied 058 → 059 → 060 → 061 in order
+on a live PostgreSQL 18.6 server with `tests/migrations` green against it
+(157 passed) and the five PostgreSQL parametrizations of
+`test_hitl_paused_index.py` passing (32/32). The mutation claims above were
+re-proven from scratch at this head: reintroducing the pre-ScanPage store
+shape (one projection read, filter after assembly, no paging past dropped
+rows) together with the pre-repair walk semantics (an itemless page reads as
+the end of the projection) fails all three regressions named in the previous
+section — `test_walk_reaches_the_workspace_behind_a_full_page_of_foreign_pauses`,
+`test_a_page_of_ineligible_rows_is_progress_not_the_end`, and
+`test_attention_finds_the_workspace_pause_behind_a_full_page_of_foreign_pauses`
+— and the restored tree is green again (67 passed across the three suites).
+Gates proven at the merged head with CI's exact arguments: ruff check, ruff
+format --check, mypy (all ten listed package trees, 1021 files),
+check-suite-inventory, check-backlog-consistency, check-release-consistency,
+check-merge-markers, verify-monorepo-layout, check-vulture-baseline
+`packages/*/src --min-confidence 60 --exclude '*/third_party/*'` (1328
+reviewed = 1328 findings, no ledger amendment), the full `packages/maistro-core/tests`
+(13968 passed), full `packages/hive-conductor/backend/tests` (3438 passed),
+root `tests/` (4578 passed), the one-process trio step (8682 passed),
+hive-conductor frontend lint + build, and the #1048 OpenAPI drift check with
+`openapi.json` regenerated and `gen:api` re-run for real (types.gen.ts
+unchanged). One anomaly, recorded rather than papered over: the first
+one-process trio run failed
+`test_property_marked_field_is_immediately_locked` once (a Hypothesis
+property over an in-process TTL map, untouched by this branch's delta); it
+passes standalone, in every pairwise combination, and on a full re-run of the
+identical trio command, with no clock-mock leak candidate in the tree —
+recorded as a non-reproducing flake, not a repair target.
+
