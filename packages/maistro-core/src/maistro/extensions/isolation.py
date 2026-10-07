@@ -754,6 +754,10 @@ class ExtensionSandboxRunner:
                 profile, f"backend {type(backend).__name__} failed to start: {exc}"
             ) from exc
 
+        # Pre-bound so the second-cancel path (the shield's CancelledError
+        # suppressed below, before the assignment binds) cannot fall through to
+        # an unbound read at the violations tuple.
+        teardown_violation: ExtensionSandboxViolation | None = None
         try:
             result = await backend.exec(instance, list(command), timeout_s=config.timeout_s)
         except Exception as exc:

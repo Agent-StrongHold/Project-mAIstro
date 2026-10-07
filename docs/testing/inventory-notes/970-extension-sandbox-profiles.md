@@ -115,3 +115,12 @@ install flow's contract, stated in the loader's docstring;
 "from filling the host disk": `RLIMIT_FSIZE` is a per-file ceiling, not an
 aggregate quota, and the docstring plus the module's honesty notes now say
 exactly that.
+- the second-cancel teardown path pre-binds `teardown_violation` to `None`
+  before the shielded destroy: the binding sat inside a `CancelledError`
+  suppression, so pyright (correctly) read the violations tuple as touching a
+  possibly-unbound name — the one new finding that put the tree at 22 against
+  the pyright ratchet's 21. On CPython 3.12 asyncio re-delivers the pending
+  cancellation before the read is reached (proven by instrumentation), so no
+  runtime behavior changes and no test can distinguish the two forms — the
+  evidence is the pyright report returning to exactly 21, and `None` is the
+  semantically correct value when teardown was interrupted without a result.
