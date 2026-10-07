@@ -101,8 +101,15 @@ def _classify_path(path: str, out: dict[str, bool]) -> None:
         out["strike_ladder"] = True
     if hive or server or core or _under(path, "docker-compose.yml", "docker-compose", "tests/e2e"):
         out["hive_e2e"] = True
-    if _under(path, "packages") and (
-        path.endswith("pyproject.toml") or "/src/" in path or path.endswith("/__init__.py") or hive
+    if (
+        path == "scripts/verify-wheel-imports.py"
+        or _under(path, "packages")
+        and (
+            path.endswith("pyproject.toml")
+            or "/src/" in path
+            or path.endswith("/__init__.py")
+            or hive
+        )
     ):
         out["wheel_imports"] = True
     if (
