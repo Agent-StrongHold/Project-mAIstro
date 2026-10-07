@@ -86,6 +86,12 @@ async def _tree(
 
 
 @pytest.fixture
+def stores_kind(request: pytest.FixtureRequest) -> str:
+    """The `stores` fixture param, so pins can match what the store can expose."""
+    return request.node.callspec.params["stores"]
+
+
+@pytest.fixture
 async def world(stores: Any) -> _World:
     runs, workspaces, projects = stores
     ws_a = await workspaces.create(creator_user_id="alice", name="A")
@@ -291,33 +297,45 @@ async def test_get_runs_skips_an_unreadable_run_and_keeps_the_rest(world: _World
 
 
 class _CountingRunStore:
-    """Wraps a `RunStore`, recording how many `get_run` reads ever overlap.
+    """Wraps a `RunStore`, recording how far `get_run` reads ever overlap.
 
-    The wrapper suspends inside every read: an async def with no await points
-    runs to completion inside a gather, so without the suspension point even a
-    concurrent scheduler could never interleave two reads and the counter
-    would pin nothing.
+    Two windows are tracked. `dispatched` brackets the real store call: a
+    second increment can only land while an earlier read is suspended inside
+    the wrapped store -- for `SqliteRunStore` that is its first
+    `aiosqlite.Connection.execute`, queued to the connection's worker.
+    `scheduled` counts reads set in motion before a cooperative yield, the
+    deepest window `InMemoryRunStore` offers: its `get_run` is a synchronous
+    dict hit with no await point of its own, so the `sleep(0)` there stands
+    in for the suspension a durable store provides itself.
     """
 
     def __init__(self, inner: RunStore) -> None:
         self._inner = inner
         self.lookups = 0
-        self.in_flight = 0
-        self.max_in_flight = 0
+        self.dispatched = 0
+        self.max_dispatched = 0
+        self.scheduled = 0
+        self.max_scheduled = 0
 
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
         self.lookups += 1
-        self.in_flight += 1
-        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        self.scheduled += 1
+        self.max_scheduled = max(self.max_scheduled, self.scheduled)
         try:
             await asyncio.sleep(0)
-            return await self._inner.get_run(run_id)
+            self.dispatched += 1
+            self.max_dispatched = max(self.max_dispatched, self.dispatched)
+            try:
+                return await self._inner.get_run(run_id)
+            finally:
+                self.dispatched -= 1
         finally:
-            self.in_flight -= 1
+            self.scheduled -= 1
 
 
 async def test_get_runs_overlaps_the_page_lookups_instead_of_serializing_them(
     world: _World,
+    stores_kind: str,
 ) -> None:
     """One batched page must not wait on one `get_run` round trip per row (#1333).
 
@@ -340,5 +358,14 @@ async def test_get_runs_overlaps_the_page_lookups_instead_of_serializing_them(
 
     assert list(found) == [world.b.run.run_id]
     assert counting.lookups == len(set(page))
-    assert counting.max_in_flight >= 2
-    assert counting.in_flight == 0
+    if stores_kind == "sqlite":
+        # Real reads, not merely scheduled coroutines: read two was dispatched
+        # into the store while read one was already suspended inside it, at
+        # its own aiosqlite await. The page's store calls overlap and pipeline
+        # through the connection worker instead of waiting on one full round
+        # trip per row.
+        assert counting.max_dispatched >= 2
+    else:
+        assert counting.max_scheduled >= 2
+    assert counting.dispatched == 0
+    assert counting.scheduled == 0

@@ -21,14 +21,17 @@ unreadable-run-as-missing refusals are unchanged.
 Two test movements:
 
 - `packages/maistro-core/tests/runs/test_scoped_reads.py` (+2 across the
-  memory/sqlite parametrization): a counting store records how many `get_run`
+  memory/sqlite parametrization): a counting store records how far `get_run`
   reads ever overlap while a four-id page (one foreign, one missing, one
-  duplicate) resolves. The counter suspends inside every read — an async def
-  with no await point runs to completion inside a gather and would pin
-  nothing — so the assertion `max_in_flight >= 2` fails against the
-  sequential regression (observed: 1) and holds under the gather. It also
-  pins that the duplicate costs one store lookup, not two, and that every
-  read settles.
+  duplicate) resolves, in two windows. `dispatched` brackets the real store
+  call — a second increment can only land while an earlier read is suspended
+  inside the store, at its own aiosqlite await — and is asserted `>= 2` for
+  the sqlite parametrization; `scheduled` counts reads set in motion before a
+  cooperative yield, the deepest window the memory store offers, whose
+  `get_run` is a synchronous dict hit with no await point of its own. Both
+  assertions fail against the sequential regression (observed: 1) and hold
+  under the gather. It also pins that the duplicate costs one store lookup,
+  not two, and that every read settles.
 - `packages/hive-conductor/backend/tests/test_dag_run_cancel_route.py` (+1):
   the endpoint-side companion pins that `list_visible_runs` re-enters the
   canonical reader exactly once for the whole page, carrying both canonical
