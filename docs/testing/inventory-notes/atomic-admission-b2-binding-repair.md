@@ -113,3 +113,91 @@ activating the out-of-scope C consumer. It requires separately authorized
 coordination on the trusted integration base. Existing reachability ledgers
 are preserved without alteration. Full hosted required CI has not been run
 by this worker. This is a locally validated repair handoff, not merge approval.
+
+## Independent repair revalidation (job 04817d65)
+
+Revalidated source `c1351bffe8aa4fe20e7f9460940bab533f2bb472` against the
+resolved dispatch base `b1f17b8d6246d347f617fb2c0b969e6798e0152b`. The tree
+started clean. The earlier binding defect is already repaired at this head;
+no new production/test change or inventory delta is justified by this round.
+The front-matter +5 remains the preceding repair's delta, not five more tests.
+Read the supplied check-0 through check-4 logs and prior result, but executed
+validation again rather than adopting their claims. Current logs, commands,
+and JUnit node/session identities are retained under job directory
+`/home/dev/maistro/jobs/04817d651dca4dc8bd5e18382e116326`.
+
+### Commands and results
+
+- `createdb maistro_1893_04817d65` then
+  `DATABASE_URL=postgresql:///maistro_1893_04817d65 uv run alembic upgrade head`:
+  **passed** on a new disposable local PostgreSQL database, real chain through
+  060 including 055. No stamping, recreated schema, downgrade or Docker claim.
+- With both `MAISTRO_TEST_PG_DSN` and `MAISTRO_TEST_DATABASE_URL` set to
+  `postgresql:///maistro_1893_04817d65`, and `MAISTRO_REQUIRE_PG_LEGS=1`:
+  `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py
+  packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q
+  -o junit_family=legacy --junitxml=<job-directory>/repair-focused.xml`:
+  **148 passed, no skips** (75 codec nodes, 73 identity nodes).
+  Production/raw backend PIDs were **1667141/1667142** (unbound),
+  **1667156/1667158** (bound), **1667162/1667164** (acknowledged), all on the
+  same database over the Unix socket. Each case independently inserted one
+  admission row, read identical TEXT columns through both pools, compared the
+  complete DTO and removed its scoped row. No mocked transaction proof.
+- With the same PostgreSQL environment,
+  `uv run pytest packages/maistro-core/tests/tasks
+  packages/maistro-core/tests/runs -x -q`: **2015 passed, 3 skipped, 6 warnings**.
+  Warnings report aiosqlite worker callbacks after event-loop closure; skipped
+  cases do not count as proof. Final SQL inspection after this broader suite
+  found migration **060**, **3** task_idempotency rows, **0** distinct non-NULL
+  generation IDs and **2** distinct non-NULL Run IDs (legacy adjacent-test
+  residue, not codec-generated v2 rows).
+- `uv run ruff check .`, `uv run ruff format --check .`, and
+  `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py
+  packages/maistro-core/src/maistro/runs/admission_identity.py`: **passed**.
+- Exact requested `uv run python scripts/check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: **passed**,
+  1328 findings / 1328 reviewed identities. There are no unbanked identities
+  to amend; the vulture exception does not authorize other ledger changes.
+- `uv run python scripts/check-suite-inventory.py --suite
+  packages/maistro-core/tests`: **passed** with default environment, **15055**
+  nodes. An earlier invocation with the PostgreSQL variables set failed with
+  **15072** collected versus **15055** expected (+17). No tests changed between
+  invocations: this is environment-sensitive collection, not a new test delta;
+  neither the inventory baseline nor a compensating delta was edited.
+- Each of `scripts/check-radon-baseline.py`, `check-reachability.py`,
+  `check-reachability-dispositions.py`, `check-shipped-surface-truth.py`,
+  `check-convergence-matrix.py`, and `check-promotion-surface.py`, invoked via
+  `uv run python`: **passed**. Candidate-ledger consistency does not authorize
+  newly banked debt.
+- `RATCHET_BASE_REV=b1f17b8d6246d347f617fb2c0b969e6798e0152b uv run python
+  scripts/check-ratchet-provenance.py`: **FAILED**. Both
+  `maistro.runs.admission_identity` and `maistro.tasks.admission_codec` are new
+  unreachable modules and new dispositions without trusted-base authorization.
+  Other provenance checks passed. This reproduces the exact-debt-ledger
+  blocker; it is not a vulture failure.
+
+### Acceptance and handoff boundary
+
+The executed codec tests cover all ten named prospective contracts: immutable
+snapshot round-trip; storage-only owner-token hex; distinct legacy unbound,
+bound and partial evidence; expired-header identity preservation; scalar
+expiry/fingerprint preservation across full-decode failures; unknown-format
+refusal; tagged nonfinite/fingerprint preservation; invalid and duplicate JSON
+refusal; and actual raw/production pool equivalence. Further tests exercise
+header mismatch, signed timestamp/UUID validation, safe typed errors and both
+one-sided v2 binding failures. Regression failures against the old encoder are
+recorded above from the earlier repair; this round did not mutate the code.
+
+Accepted lifecycle ADR 081226-a66b and consumer ADR 082826-b601 still require
+the single canonical Run/NodeRun/Attempt spine. No production caller reaches
+this codec: the B2 contract explicitly leaves activation to C. Therefore
+production admission with authorized principals/Workspace/Project/Graph,
+Run JSONB materialization through this slice, live expiry/409 ordering, claim
+atomicity, and full required hosted CI remain **UNVERIFIED**. DTO fixtures and
+TEXT-row tests cannot prove those integration properties.
+
+Disposition: **BLOCKED**, not merge-ready. The only change in this round is
+this evidence update. Existing restricted reachability ledgers/grants, gates,
+and implementation are preserved. Resolving the blocker needs separately
+coordinated trusted-base authorization or the separately assigned integration
+consumer; neither fake callers nor a vulture ledger edit can resolve it.
