@@ -19,24 +19,54 @@ The canonical seam for modeling is the public async interface of these modules, 
 
 ## Record
 
-This note does not report a provider experiment. No real-model corpus exists in this repository's deterministic CI, and manufacturing one was out of scope; absent evidence is recorded rather than simulated (M8 guardrail 3). This change adds no product code, no feature flag, and touches no authority path.
+This note does not report an Apalache run. No TLA+/Apalache toolchain exists in this
+repository's deterministic CI, none was run for this leaf, and no real-model corpus
+exists here; manufacturing evidence was out of scope, so absent evidence is recorded
+rather than simulated (M8 guardrail 3). This change adds no product code, no feature
+flag, and touches no authority path.
 
-What this change does add is an exploratory model checking harness as a clearly separated research artifact:
-`packages/maistro-rsi/tests/test_m8a_tlaplus_model_checking_research.py` (test suite only; it imports nothing from `maistro`, so it cannot become an authority by accident — M8 guardrails 1 and 2). Validated on deterministic, hand-checked behavioral models, it implements:
+What this change does add is the technique's mechanics, reproducible today, as a
+clearly separated research artifact:
+`packages/maistro-rsi/tests/test_m8a_tlaplus_model_checking_research.py` (test suite
+only; it imports nothing from `maistro`, so it cannot become an authority by accident
+— M8 guardrails 1 and 2). The leaf's title says "or equivalent": since Apalache could
+not be run, the harness implements the equivalent in miniature — an explicit-state
+model checker (the kind of checker TLC executes), validated on deterministic,
+hand-checked models. It implements:
 
-- TLA+ specification extraction from async Python code via manual abstraction;
-- Apalache model checking for invariant violation detection;
-- Counterexample trace generation and simplification;
-- Focus on liveness properties (e.g., "every admitted task eventually completes or fails") and safety properties (e.g., "no two tasks write to the same run record concurrently");
-- Integration with existing Hypothesis state machine testing where applicable.
+- exhaustive reachability over a fingerprint set with a bounded state budget whose
+  exhaustion is reported as `truncated` — an inconclusive result that can never be
+  read as a pass;
+- safety invariant checking with shortest counterexample traces (initial states
+  included), plus trace replay to validate every step is an enabled transition;
+- leads-to liveness checking (`<>target`) by sticky-cycle detection over the reachable
+  graph, with terminal states treated as stuttering (TLA+ semantics: a stopped
+  execution repeats forever), so a dead end short of the target is a violation;
+- state abstraction with counterexample spuriousness replay (benchmark step 5): a
+  deliberately over-coarse abstraction is included precisely to demonstrate the
+  harness flagging its own invented counterexample as spurious;
+- a hand-written abstract model of the canonical seam's exactly-once contract
+  (occurrence claiming, duplicate-claim consumption, cursor-after-run discipline).
+  Dropping each documented guard makes the checker rediscover the corresponding
+  defect shape — the second-Run race and the cursor-stamped-without-Run skip — which
+  is the failure class the leaf asks about, caught on a hand-checked model. It is
+  evidence about the technique, never about the real implementation, which carries
+  the guards.
+
+Relationship to existing evidence infrastructure (epic non-goal: no competing
+`formal/` authority): `formal/` stays the canonical in-tree model suite — randomized
+Hypothesis state machines against the real code. This harness is the complementary
+mechanism (exhaustive checking of hand-written abstract models), shares nothing with
+it, and does not modify it. The Hypothesis-integration step of the procedure below is
+future work, deliberately not claimed as done.
 
 ## Benchmark procedure (what a real experiment must do)
 
 1. Identify a bounded concurrency-critical subsystem (e.g., task admission cycle with overlap policies);
-2. Manual abstraction to TLA++/Apalache model, preserving key async interleavings;
+2. Manual abstraction to a TLA+/Apalache model, preserving key async interleavings;
 3. Define safety/liveness invariants based on MAIstro's execution contract (ADR-081426-1f7c);
-4. Run Apalache to check invariants against bounded execution traces;
-5. Analyze counterexamples for spuriousness (due to abstraction) vs real bugs;
+4. Run Apalache (or the in-repo explicit-state checker on the same abstract model) to check invariants against bounded execution traces;
+5. Analyze counterexamples for spuriousness (due to abstraction) vs real bugs — the harness's trace replay is the prototype of this step;
 6. Map confirmed bugs to MAIstro code and assess fix cost;
 7. Emit disposition: GRADUATE if model checking finds actionable bugs with low false-positive rate; INCUBATE if promising but needs better abstraction; REJECT if cost/yield unfavorable; WATCH if external tooling not ready.
 
@@ -46,4 +76,4 @@ Experimental model checking outputs are evidence, not authorization. Nothing in 
 
 ## Dispositions
 
-- **WATCH** — exploratory harness created; no real-model evidence yet. Move to INCUBATE on successful abstraction of a MAIstro subsystem with non-spurious counterexamples. Move to GRADUATE if model checking finds bugs that, when fixed, reduce escape defects in representative MAIstro workloads with acceptable engineering cost.
+- **WATCH** — exploratory harness created (explicit-state checker + hand-checked occurrence-claim model, 37 checks); no Apalache/TLA+ run and no real-subsystem abstraction yet. Move to INCUBATE on a successful abstraction of a real MAIstro subsystem with non-spurious counterexamples (checker or Apalache). Move to GRADUATE if model checking finds bugs that, when fixed, reduce escape defects in representative MAIstro workloads with acceptable engineering cost.
