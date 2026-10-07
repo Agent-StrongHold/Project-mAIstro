@@ -859,3 +859,86 @@ provenance, quality, and root-suite gates — structural, issue-predicted, and
 forbidden to cure in-leaf. The leaf remains implementation- and test-complete
 with the explicit merge blocker recorded; integration, the base-side
 reachability grant, or wiring belongs to parent #1845. Stack left unmerged.
+
+## 2026-10-07 round-10 four-gate revalidation at the evaluated merge head
+
+Round 9 validated at `77f0d3a091fa`; the merge-queue evaluation this lane was
+dispatched against ran at `643cc2b22f1e` (develop `30a30d10e2a6a` merged into
+the branch — the round-9 note commit plus one merge). This round re-derived
+every claim at that exact head; no tree change was needed.
+
+Merge-neutrality audit: `git diff 77f0d3a09..643cc2b22` touches neither the
+module nor the test file; the inventory-note lines in that range are round 9's
+own evidence commit, and the `_vulture_whitelist.py` lines are develop-side
+M9-A2 extension-contract entries (the seven `AdmissionAssessment` references
+are intact at this head). The merged develop commits change no gate script or
+workflow (`git diff df00785bb..30a30d10e` over `scripts/check-*.py`,
+`quality/`, and the quality/vulture workflows adds only an ac-state note
+JSON). `origin/develop` has since moved three commits further (to
+`51679882bc59`); none is a sync-conflict trigger for this leaf, so no merge
+was performed this round.
+
+CI step-level evidence at `643cc2b22f1e` (job APIs, read-only): all four red
+jobs localize to one root cause.
+
+- `test` (job 112548235085): failed at the root-suite step
+  (`pytest tests/ --ignore=tests/tools/registry`); every earlier step,
+  including the full `packages/maistro-core/tests` suite, passed.
+- Quality gate (job 112548234674): steps 1–25 green (vulture at step 25
+  included); failed at step 26, `uv run python scripts/check-reachability.py`.
+- Coverage gate (job 112551813450): failed at the `combine` step, whose
+  `scripts` producer runs that same root suite; the diff-coverage step never
+  ran (skipped), consistent with round 9's local proof that both coverage
+  halves pass on this content.
+- exact-debt-ledger (job 112548234578): failed at
+  `check-ratchet-provenance.py`, reachability sub-ratchet only.
+
+Local re-execution at `643cc2b22f1e` (base `30a30d10e2a6a`, `uv sync --locked
+--extra dev`):
+
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (exact job argv): rc=0, 1,332 reviewed identities ->
+  1,332 findings, zero deltas. `check-shipped-surface-truth.py` rc=0.
+- `check-ratchet-provenance.py` (RATCHET_BASE_REV=origin/develop): rc=1
+  solely via the reachability sub-ratchet — `maistro.runs.admission_identity`:
+  NEW unreachable absent from trusted base, not previously authorized; 170 ->
+  171 of 1,341 modules. adr-status-language, citation-status,
+  promotion-surface, reachability-dispositions, shell-execution,
+  contract-markers, enumerations, lifecycle, and vulture sub-ratchets all OK.
+- `check-reachability.py`: rc=1 (exit code captured unpiped) with exactly the
+  one NEW unreachable module. `check-reachability-dispositions.py` rc=0 (49
+  groups, 170 modules); `check-promotion-surface.py` rc=0.
+- Root-suite expression reproduced: across the reachability test files, 3
+  failed / 63 passed, and the failures are exactly
+  `test_check_reachability.py::test_baseline_matches_the_tree`,
+  `test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  and `...::test_the_baseline_is_exactly_the_unreachable_set` — each asserting
+  the committed baseline equals the tree's unreachable set, with the left-set
+  extra item named as `maistro.runs.admission_identity`. The Coverage gate's
+  `scripts` producer runs this same suite, so its `combine` failure is the
+  same red, not a separate defect.
+- Full `packages/maistro-core/tests`: 13,791 passed / 940 skipped / 1
+  xfailed. Focused suite: 77 passed. Focused and repository-wide ruff
+  check/format clean; module mypy clean. Full `check-suite-inventory.py` ok
+  (17 suites, 28,125 unique node IDs, no duplicate evidence; scoped core
+  count 14,732 per the round's driver log); delta unchanged at +77.
+- Scope re-measured: no production module imports or calls
+  `admission_identity`; `maistro/runs/__init__.py` does not export it;
+  `git diff --numstat 30a30d10e..HEAD -- quality/` is empty — the branch
+  still carries zero ledger edits, grants, dispositions, or waivers against
+  its integration base. The #1841 prerequisite signatures
+  (`require_admitted_actor(actor_principal_id: str | None) -> str`,
+  `get_run(*, principal_id=...)`, the create/claim `actor_principal_id`
+  guards, and `Run.actor_principal_id` validation) re-confirmed at this head.
+
+Round-10 verdict: all four CI reds at the evaluated head decompose into the
+single issue-predicted structural blocker (the deliberately unwired module's
+reachability new-unreachable, expressed through the provenance, quality,
+root-suite, and coverage-combine gates). The leaf's own acceptance criteria
+are fully proven at the exact evaluated head. Every in-leaf cure remains
+prohibited by the issue (wiring, baseline entries, dispositions, grants,
+suppressions, fake callers) and the round-2 two-merge experiment already
+demonstrated the grant route inert from a candidate branch. Merge blocker
+unchanged: parent #1845 integration must supply the real reviewed consumer
+(or the orchestrator must land a base-side reachability authorization first).
+This leaf stays unmerged per its staging constraint.
