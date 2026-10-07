@@ -2609,8 +2609,10 @@ class LocalRsiLoop:
         """The compact per-gate/reward bundle behind a fitness decision — the
         promotion record's evidence payload. Gate details ride along in full
         (never silent): the protected inventory (#306), the fail-first proof
-        (#392), and the evaluator-oracle verdict with its trusted digest
-        (#109)."""
+        (#392), the evaluator-oracle verdict with its trusted digest
+        (#109), and — #304 — every gate's state plus execution provenance,
+        so the promotion record (and every PR body rendered from it) can
+        state exactly which gates ran and which never did."""
         mut_raw = next(
             (g.detail.get("score") for g in scorecard.gates if g.name == "tests_pin_behavior"),
             None,
@@ -2619,6 +2621,21 @@ class LocalRsiLoop:
             "gates": {g.name: g.passed for g in scorecard.gates},
             "composite": scorecard.composite,
             "mutation_score": float(mut_raw) if isinstance(mut_raw, int | float) else None,
+            # #304: per-gate state + provenance (command/tool version/candidate
+            # SHA/exit status/output digest where the gate recorded them).
+            "gate_evidence": {
+                g.name: {
+                    "state": g.resolved_state().value,
+                    "passed": g.passed,
+                    "reason": g.reason,
+                    **(
+                        {"provenance": dict(g.detail)}
+                        if "command" in g.detail or "cause" in g.detail
+                        else {}
+                    ),
+                }
+                for g in scorecard.gates
+            },
         }
         evidence_keys = (
             ("protected_test_inventory", "inventory"),
@@ -2676,6 +2693,11 @@ class LocalRsiLoop:
                 regression_judge=top.regression_judge_score,
             ),
             gates={str(k): bool(v) for k, v in gates.items()},
+            gate_evidence=(
+                {str(k): dict(v) for k, v in source["gate_evidence"].items()}
+                if isinstance(source.get("gate_evidence"), dict)
+                else None
+            ),
             note=summary,
             inventory=source.get("inventory"),
             fail_first=source.get("fail_first"),
@@ -3230,12 +3252,12 @@ class LocalRsiLoop:
 
     def _export_entry(self, dest: Path, position: int, sha: str) -> dict[str, object]:
         """One promotion's manifest row: the git-am-able patch file, the file
-        it edits, the subject — and (#109) the evaluator provenance. The
-        harvest path opens PRs from these manifests, so each one names the
-        oracle version that accepted the promotion: a reviewer sees an
-        authorized oracle override before it merges, and a promotion accepted
-        under a mutated oracle can never masquerade as one judged by the
-        trusted base definition."""
+        it edits, the subject — (#109) the evaluator provenance, and (#304/
+        #820) the promotion's recorded gate evidence. The harvest path opens
+        PRs from these manifests, so each row carries exactly which gates ran
+        against this candidate and which never did: a PR body rendered from
+        the manifest can name its real evidence and cannot claim a gate that
+        has no recorded result."""
         names = [
             ln.strip()
             for ln in _git(
@@ -3252,10 +3274,17 @@ class LocalRsiLoop:
         note = read_trace_note(self._baseline, sha)
         evaluator = (note.evaluator if note is not None else None) or {}
         src = next((n for n in names if n.endswith(".py")), names[0] if names else "")
-        return {
+        entry: dict[str, object] = {
             "patch_file": patch_name,
             "file": src,
             "subject": subject,
             "evaluator_digest": evaluator.get("evaluator_digest"),
             "evaluator_authorized": bool(evaluator.get("authorized")),
+            "gates": dict(note.gates) if note is not None else {},
+            "gate_evidence": (
+                dict(note.gate_evidence)
+                if note is not None and note.gate_evidence is not None
+                else None
+            ),
         }
+        return entry
