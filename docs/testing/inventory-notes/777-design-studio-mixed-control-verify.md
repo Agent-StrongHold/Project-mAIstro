@@ -15344,3 +15344,72 @@ Verdict: **BLOCKED** (dependency-blocking, fifty-first consecutive round with
 fresh evidence). No lawful repair for #777 exists until #804/#805/#806
 (+#774/#776) land upstream: the issue is a declared consumer of those APIs and
 its stop condition forbids a Design-Studio-private substitute.
+
+## Round 235 — repair, job `33063d957abf4e8a8f1c4fc387bd9e50` (2026-10-07)
+
+Starting head `8f896fd18` exactly as the manifest pins; tree clean, nothing to
+salvage (prior result `ee1d4db16d29` = completed BLOCKED verdict with full
+evidence at this same head). Manifest `checks=[]` and the job directory
+contains **no `check-*.log` files**: the verifier ran no deterministic checks,
+so all acceptance evidence below was re-established directly this round.
+
+**Develop sync discharged with a real merge.** `git fetch origin` EXIT 0;
+`origin/develop` advanced `51679882b` → `0df275362d` (1 commit, "[CI] Block PR
+closure keywords from auto-closing epics or issues with unmet acceptance
+evidence" #2026 — touches `scripts/check-closure-targets.py` +
+`tests/test_check_closure_targets.py` + PR template + one inventory note).
+`git merge-tree --write-tree` conflict-free; merged `origin/develop` into
+`auto-777` locally → merge commit `d9ce99a1f` (no push). Post-merge numstat
+rule: `git diff --numstat origin/develop -- quality/` =
+`vulture-baseline.json 0+/1-` only (the intentional prior duplicate removal
+already recorded in round 233; no rows silently lost).
+
+Fresh frozen capture `2026-10-07T01:16:42Z` (`complete_for_scope: true`, 61
+sources): issue #777 **open**, 244 comments — newest four are automated
+attempt markers (`fee969174710` started/blocked, `ee1d4db16d29` started/
+blocked), **no maintainer guidance**; #804 (EPIC M3-D), #805 (M3-D1), #806
+(M3-D2), #774 (CreativeBrief), #776 (Workspace Ladybug) all **state=open**;
+#775/#458 closed. PR #1660 open draft, head `78f8f6476466` unchanged,
+`mergeable_state=clean`, still unmerged; that head **is an ancestor of this
+branch's HEAD** (`git merge-base --is-ancestor` OK) — the branch carries its
+16 files; no #804 consumption anywhere. GitHub-native `blocked_by` = `[]`;
+the body-text gate governs verbatim: "Depends on: #804/#805/#806 persistent
+Workspace Agent + Goal reconciliation …" + stop condition "Do not create a
+Design-Studio-private Agent runtime, Goal owner, reconciliation loop …
+Consume #804 and the canonical owners."
+
+AC prerequisites re-proven absent at merged HEAD `d9ce99a1f` (this round's
+own greps): `GoalReconciler|delegate_goal` **0** hits in `packages/*/src`;
+**no `maistro/goals` module** (the 3 `maistro.goals` grep hits are docstring
+prose in `workspaces/backlog_history/model.py:73`,
+`workspaces/campaigns/sqlite_store.py:13`, `projects/rubric_store.py:19` —
+no importable module); `WorkspaceAgentReconciler|goal.reconcil` **0** hits;
+`ControlMode.COLLABORATIVE` declared-only (`maistro_design/versions.py:81`),
+sole non-declaration use the no-op `_ = ControlMode.COLLABORATIVE`
+(`versions.py:1064`, vulture-usage marker block); `GoalRevisionCatalog`
+Protocol-only (`maistro/projects/rubric_store.py:71` + re-export).
+
+Battery at merged HEAD `d9ce99a1f`: `ruff check .` EXIT 0 (All checks
+passed); `ruff format --check .` EXIT 0 (3110 files); vulture CI-exact
+(`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'`) EXIT 0 — base `0df275362d28` (= this round's
+manifest base, the new origin/develop), candidate `d9ce99a1fa27`, 1332
+reviewed identities → 1331 findings, no amendment;
+`scripts/check-suite-inventory.py` EXIT 0 (17 suites);
+`scripts/check-backlog-consistency.py` EXIT 0 (167 items). Targeted pytest,
+repo-root invocation: newly-merged develop tests
+`tests/test_check_closure_targets.py` **63 passed** in 1.01s;
+`packages/hive-conductor/backend/tests + packages/hive-conductor/tests -k
+'design or workspace'` **374 passed 8 skipped** in 20.09s;
+`maistro-design/tests + maistro-bootstrap/tests` **804 passed 7 skipped** in
+23.54s.
+
+inventory-delta unchanged (**+0**: this lane added no tests this round).
+
+Verdict: **BLOCKED** (dependency-blocking, fifty-second consecutive round
+with fresh evidence). All round actionable items discharged — including the
+develop sync, which this round performed as a genuine merge of the new
+`0df275362d` rather than a re-check. No lawful repair for #777 exists until
+#804/#805/#806 (+#774/#776) land upstream: the issue is a declared consumer
+of those APIs and its stop condition forbids a Design-Studio-private
+substitute.
