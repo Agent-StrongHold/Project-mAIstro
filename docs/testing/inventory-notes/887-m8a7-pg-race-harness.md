@@ -50,3 +50,11 @@ dropping the claim's `FOR UPDATE`, dropping the invocation claim's terminal
 exclusion, and dropping `ix_canonical_runs_effect` each make specific cases fail
 loudly — the last produces four canonical runs for one effect key, the exact
 defect class the issue hypothesizes. No product code changed in this delta.
+
+Environment trap worth recording (pre-existing, not introduced here): 17 node
+IDs elsewhere in `packages/maistro-core/tests` appear in collection only when
+`MAISTRO_TEST_PG_DSN` is set (collect-with-DSN 15324 vs collect-without 15307
+at this change). The gate's collector job (ci.yml `test`) does not set the
+DSN, so the recorded convention is collect-without-DSN — this module collects
+its 9 identically either way, but anyone running the gate with a DSN exported
+in their shell will see a +17 DRIFT that is not inventory drift.
