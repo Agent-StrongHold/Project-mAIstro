@@ -71,3 +71,13 @@ awaiting the queue.
   **1 passed** (with `scripts/check-principal-identity.py` and
   `scripts/check-route-permissions.py` both exit 0 — re-landed P0.1/P0.2
   enforcement, see the fifteenth addendum of `82-backlog-work-source.md`).
+- **Backlog substrate at this head (local PG 18.6, pristine scratch database
+  created and dropped for this round):** no-DSN
+  `packages/maistro-core/tests/backlog` **96 passed / 20 skipped** (the 18
+  PG-parametrized legs skip without `MAISTRO_TEST_PG_DSN`; a genuinely
+  DSN-less run is the correct shape for that number — see the clarification
+  appended to the fifteenth addendum of `82-backlog-work-source.md`, which
+  also records the DSN-present proof **114 passed / 2 skipped** at this
+  head); `alembic upgrade head` walks the full chain onto the fresh database
+  ending `059 → 060`; `tests/migrations/test_migration_chain.py` **17
+  passed**.

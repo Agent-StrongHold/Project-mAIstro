@@ -1052,3 +1052,19 @@ head. No test was added or removed; the suites' collected counts are unchanged.
   `ALLOWED`, and the gate **exits 0** ("pip-audit OK (1 known, all triaged in
   ALLOWED); direct-dependency usage OK: 11 packages, 62 runtime dependencies,
   4 reviewed dispositions").
+
+  **PostgreSQL legs re-proven at the merged head (local PG 18.6, pristine
+  scratch database `maistro_l82_review_r15` created and dropped for this
+  bullet):** `alembic upgrade head` walks the full chain onto the fresh
+  database, ending `… 058 → 059 (backlog work source) → 060 (authority
+  cutover)`; `tests/migrations/test_migration_chain.py` **17 passed**; the
+  backlog suite with `MAISTRO_TEST_PG_DSN` +
+  `MAISTRO_REQUIRE_PG_LEGS=1` **114 passed / 2 skipped** — matching the
+  fourteenth addendum's recorded numbers exactly. Clarification the next
+  reviewer needs: that addendum's "no-DSN … 114 passed / 2 skipped" row was
+  measured with a DSN present (its two rows are the same DSN-present shape);
+  a genuinely DSN-less run at this head is **96 passed / 20 skipped**, the
+  delta being the 18 PG-parametrized legs that correctly skip without
+  `MAISTRO_TEST_PG_DSN` (per-test `pytest.skip("set MAISTRO_TEST_PG_DSN
+  …")`, and `MAISTRO_REQUIRE_PG_LEGS=1` turns that skip into a loud failure)
+  plus the same 2 no-substrate skips.
