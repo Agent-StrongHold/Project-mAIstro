@@ -1468,3 +1468,69 @@ authority: land the reviewed vulture + reachability grant pair on the
 integration base first (two-merge rule), or let the parent #1845 integration
 supply the runtime consumer. Handoff only; no integration approval; stack
 stays unmerged per the issue.
+
+## 2026-10-07 round-19 independent re-execution and develop sync at dba8cf6e1
+
+Dispatched at the exact head `e1734a32` with the four hosted gate failures
+(`test`, `exact-debt-ledger`, Quality gate, Coverage gate). This round
+independently reproduced every failure from the hosted job logs and re-ran the
+gates locally with CI's exact arguments before touching anything:
+
+- Hosted-log dissection at `e1734a32`: the `test` job failed exactly three
+  tests (`tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `tests/test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`),
+  all on one cause — `maistro.runs.admission_identity` is a NEWLY UNREACHABLE
+  module absent from `quality/reachability-baseline.json`. The Coverage gate's
+  test leg hit the same three. `exact-debt-ledger` failed at
+  `check-reachability-provenance.py: trusted-base gate returned 1` (169 -> 170
+  unreachable). The Quality gate failed at the vulture ratchet (1,328 reviewed
+  identities -> 1,333 findings).
+- Local re-execution at `e1734a32` with `RATCHET_BASE_REV=origin/develop`:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=1 with exactly the five NEW unauthorized identities
+  `admission_identity.py:515-520` (MISMATCH, REPLAYED, TAKEOVER,
+  REPLACE_EXPIRED, LEGACY_UNRESOLVED — the issue-mandated
+  `AdmissionAssessment` pairs, consumed by no production code in this leaf by
+  design); candidate banking is exact (the +5 rows in
+  `quality/vulture-baseline.json` are precisely the five scanned identities;
+  `git diff --numstat origin/develop -- quality/` remains exactly 5/0).
+  `check-ratchet-provenance.py` rc=1 solely via the reachability sub-gate.
+  `check-reachability.py` rc=1 with exactly one NEWLY UNREACHABLE module.
+  `check-reachability-dispositions.py`, `check-promotion-surface.py` rc=0.
+  All four hosted failures therefore reduce to the two designed,
+  issue-predicted inactive-leaf reds; no additional defect exists.
+- Develop sync (sanctioned lane instruction): merged `origin/develop`
+  (`28614700b`: #2039, #2040, #1953, #2036, #1952) conflict-free — the
+  branch's own delta vs the merge-base `00382f657` is exactly the four leaf
+  files, none touched by develop's five commits. New evaluation head
+  `dba8cf6e1`. As round-17 predicted from merge-tree inspection, the sync
+  cures nothing: both red sub-gates persist with identical signatures at the
+  merged head (vulture 1,328 -> 1,333, same five identities; reachability
+  1,360 production modules / 170 unreachable, same one NEWLY UNREACHABLE
+  module; provenance rc=1 via the same sub-gate).
+- Re-verified green at `dba8cf6e1`: focused suite 79/79 passed; ruff check and
+  format clean on module+tests and tree-wide (3,149 files); module mypy
+  clean; `__all__` still the 21 mandated names with no `maistro.runs` package
+  export; zero production importers of the module; full suite inventory
+  matches at 28,962 collected node IDs across 17 suites (per-suite
+  `packages/maistro-core/tests` also matches — develop's five new notes and
+  this leaf's +79 delta sum correctly over the baseline);
+  `packages/maistro-core/tests/runs` neighborhood 1,251 passed / 265 skipped
+  (service-gated legs).
+- #1841 security-signature revalidation at `dba8cf6e1` (develop's #1953
+  touched `runs/store.py`, so this was re-checked post-merge):
+  `require_admitted_actor(actor_principal_id: str | None) -> str`
+  (`store_boundary.py:56`), `get_run(self, run_id: str, *, principal_id:
+  str | None = None) -> Run | None` (protocol `store.py:512`, impl
+  `store.py:1224`), `actor_principal_id: str | None = None` retained on all
+  four Run-constructing signatures, the admitted-actor guard enforced at both
+  construction sites (`store.py:896`, `store.py:1315`), and
+  `Run.actor_principal_id: str | None` (`model.py:300`). Intact.
+
+Blocker and resolution unchanged, and outside this leaf's authority: the
+reviewed vulture + reachability grant pair must land on the integration base
+first (two-merge rule — a candidate cannot bank or authorize its own debt,
+proven both by the gate mechanics and by the executed merge-tree simulation in
+round 17), or the parent #1845 integration must supply the runtime consumer.
+Handoff only; no integration approval; the stack stays unmerged per the issue.
