@@ -154,11 +154,11 @@ _ISSUE_LINK_RE = re.compile(r"\(#\d+")
 #: `(pip-audit)`; deeper parens fall back to the rejection, which is the
 #: safe direction.
 _NO_ISSUE_RE = re.compile(
-    r"\(no linked issue:"       # the annotation opener
-    r"(?:[^()]|\([^()]*\))*?"   # balanced reason: flat prose or one nested pair
-    r"[^()\s]"                  # ≥1 char that is neither whitespace nor a delimiter
-    r"(?:[^()]|\([^()]*\))*?"   # rest of the reason
-    r"\)",                      # complete, balanced close
+    r"\(no linked issue:"  # the annotation opener
+    r"(?:[^()]|\([^()]*\))*?"  # balanced reason: flat prose or one nested pair
+    r"[^()\s]"  # ≥1 char that is neither whitespace nor a delimiter
+    r"(?:[^()]|\([^()]*\))*?"  # rest of the reason
+    r"\)",  # complete, balanced close
     re.I,
 )
 
@@ -457,9 +457,11 @@ def _release_readiness_problems(changelog: str, releasing: str) -> list[str]:
             f"release_notes.py publishes exactly this section; a placeholder-only section cannot satisfy release "
             f"readiness (#385)."
         ]
-    # Check if the body consists only of category headings
-    lines = [line.strip() for line in body.splitlines() if line.strip()]
-    if lines and all(re.match(r"^###\s", line) for line in lines):
+    if not _body_has_meaningful_content(body):
+        # Empty and placeholder-only bodies returned above, so the only way a
+        # nonempty body gets here is bare category headings: structure with no
+        # entry under any of them (#1102). Published verbatim, the notes would
+        # be headings alone.
         return [
             f"CHANGELOG.md's '## [{version}]' section contains only category headings and tag {releasing} is being cut against it. "
             f"release_notes.py publishes exactly this section; a heading-only section cannot satisfy release "

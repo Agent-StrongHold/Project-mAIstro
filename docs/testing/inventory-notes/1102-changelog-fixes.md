@@ -1,15 +1,35 @@
+---
 inventory-delta:
-  tests/: +0
+  tests/: +4
 ---
 # 1102-changelog-fixes
 
-Fix CHANGELOG-related enforcement gaps from issue #1102:
+CHANGELOG enforcement repairs for issue #1102, all in
+`scripts/check-release-consistency.py`:
 
-1. Fix `_entries` function to not lose the last entry before a category heading.
-2. Enhance `_release_readiness_problems` to treat heading-only sections as non-releasable.
-3. Tighten `_NO_ISSUE_RE` pattern to require non-empty reason for no-issue exemptions.
+1. `_entries` now flushes the pending bullet when a `###` category heading
+   begins, so the last entry of every non-final category is validated instead
+   of silently dropped.
+2. `_release_readiness_problems` treats a heading-only section (bare `###`
+   categories, no entries) as non-releasable, via `_body_has_meaningful_content`.
+3. `_NO_ISSUE_RE` requires a complete, balanced `(...)` whose reason holds at
+   least one character that is neither whitespace nor a delimiter, so
+   `(no linked issue: )` and `(no linked issue:)` no longer pass as exemptions.
 
-These changes fix the following gaps from the issue:
-- CHANGELOG entry parsing loses the last item before a category heading
-- Structure-only release sections can pass nonempty checks
-- Empty no-issue exemptions satisfy the release traceability escape hatch
+Tests added to `tests/test_check_release_consistency.py`:
+
+- `test_an_empty_no_issue_exclusion_is_rejected` — pins the delimiter-only
+  no-issue escape.
+- `test_the_last_entry_before_a_category_heading_is_validated` — pins the
+  category-boundary flush escape (untraceable entry hidden by a heading).
+- `test_a_well_formed_last_entry_before_a_category_heading_passes` — the
+  flush does not over-reject a linked entry that closes its category.
+- `test_releasing_against_a_heading_only_target_section_fails` — pins the
+  heading-only release-readiness escape.
+
+Mutation evidence: running the new tests against the pre-fix script
+(`git show 28614700bd9a:scripts/check-release-consistency.py`) reproduces
+each escape — the old `_entries` loses the `Untraceable` bullet, the old
+`_release_readiness_problems` passes a heading-only section, and the old
+`_NO_ISSUE_RE` accepts `(no linked issue: )` — so each test fails if its
+escape returns.
