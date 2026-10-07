@@ -226,6 +226,8 @@ class BubblewrapSandboxBackend:
         argv += ["--bind", str(workdir), "/work", "--chdir", "/work"]
         for extra in config.writable_paths:
             argv += ["--bind", extra, extra]
+        for extra in config.read_paths:
+            argv += ["--ro-bind", extra, extra]
         if config.egress.mode is EgressMode.HOST:
             # `--unshare-all` already removed the network namespace; sharing it
             # back is the only way this backend can grant egress, and it grants
