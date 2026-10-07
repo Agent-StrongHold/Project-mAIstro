@@ -129,6 +129,14 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Reusable CI check discovery resolves optional string defaults (#1609).**
+  The required-check contract discovers single-level local reusable workflow
+  names, including both same-revision local path syntaxes, date-shaped names,
+  and omitted optional string inputs with an implicit empty value. Conditional
+  or dependency-bound callers, ambiguous names and unsupported nested, matrix, or conditional callee jobs
+  fail closed; production check names and branch-protection requirements stay
+  unchanged.
+
 - **Chat admission compensation is conditional on the unchanged, unstarted Run (#338).**
   A QUEUED or RUNNING write that commits but loses its response is compensated
   before the existing retryable refusal, without dispatching the turn. The
