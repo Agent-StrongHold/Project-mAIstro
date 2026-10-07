@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +10
+  tests/: +36
 ---
 # retire-body-status-lines
 
-Net +10 in `tests/test_check_adr_status_language.py`, and the net hides a
+Net +36 in `tests/test_check_adr_status_language.py`, and the net hides a
 larger reshuffle that is worth stating, because ADR-092126-a28a changed what
 the first category *is*. It used to check that a body `**Status:**` line
 agreed with front matter; it now checks that no such line exists at all.
@@ -47,3 +47,7 @@ Independent refresh review found that the old checker skipped nested records,
 although registry/index discovery supports them. Two added ADR/spec cases
 prove a nested agreeing body line is rejected; both failed against the
 nonrecursive checker. The checker and corpus assertion now recurse together.
+
+Hosted review adds 24 collected agreeing-line cases for one-to-three leading
+Markdown spaces across both roots and all four spellings, plus two cases
+keeping four-space code blocks outside the declaration grammar.

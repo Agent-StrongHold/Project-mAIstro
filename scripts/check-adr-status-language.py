@@ -73,7 +73,7 @@ LEDGER = ROOT / "quality" / "adr-status-language-baseline.json"
 #: retirement buys: while this category compared body against front matter it
 #: needed the status vocabulary, multi-word values (`AC Defined` read as `AC`)
 #: and case folding, and each of those was a defect in turn.
-_BODY_STATUS_RE = re.compile(r"^(?:[-*+]\s+)?\*\*Status:\*\*.*$", re.M)
+_BODY_STATUS_RE = re.compile(r"^ {0,3}(?:[-*+][ \t]+)?\*\*Status:\*\*.*$", re.M)
 
 #: `**Superseded by [ADR-xxx](...)`` — the banner naming the replacement.
 #: `^`-anchored per line, tolerating the blockquote and emphasis markup the

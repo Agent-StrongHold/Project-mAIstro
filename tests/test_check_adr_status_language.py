@@ -111,7 +111,8 @@ def test_the_corpus_carries_no_body_status_line_at_all(sandbox) -> None:
 @pytest.mark.ac("ADR-092126-a28a/AC-3")
 @pytest.mark.parametrize("root_index", [0, 1], ids=["adr", "spec"])
 @pytest.mark.parametrize("bullet", ["", "- ", "* ", "+ "], ids=["bare", "dash", "star", "plus"])
-def test_a_body_status_line_fails_even_when_it_agrees(sandbox, root_index, bullet) -> None:
+@pytest.mark.parametrize("indent", [0, 1, 2, 3])
+def test_a_body_status_line_fails_even_when_it_agrees(sandbox, root_index, bullet, indent) -> None:
     """Absence, not agreement — the rule that makes the retirement durable.
 
     This is the case the old agreement check let through, and the one that
@@ -120,11 +121,24 @@ def test_a_body_status_line_fails_even_when_it_agrees(sandbox, root_index, bulle
     stale.
     """
     path = _an_adr(sandbox.DOC_ROOTS[root_index])
-    path.write_text(_with_status_line(path.read_text(), _front_matter_status(path), bullet=bullet))
+    path.write_text(
+        _with_status_line(
+            path.read_text(), _front_matter_status(path), bullet=bullet, indent=indent
+        )
+    )
 
     problems = sandbox.audit()
 
     assert any(p.path == path and p.kind == "body-status-line" for p in problems)
+
+
+@pytest.mark.parametrize("bullet", ["", "- "])
+def test_four_space_code_is_not_a_body_status_declaration(sandbox, bullet) -> None:
+    """Four initial spaces make a code block rather than a body declaration."""
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    path.write_text(_with_status_line(path.read_text(), "Accepted", bullet=bullet, indent=4))
+
+    assert not any(p.path == path and p.kind == "body-status-line" for p in sandbox.audit())
 
 
 @pytest.mark.ac("ADR-092126-a28a/AC-1")
@@ -254,10 +268,10 @@ def _front_matter_status(path: Path) -> str:
 
 #: A body status declaration in either spelling: bare, or as a Markdown list
 #: item. Multiline so it can be searched against a whole document.
-_BODY_STATUS_LINE_RE = re.compile(r"^([-*+]\s+)?\*\*Status:\*\*.*$", re.M)
+_BODY_STATUS_LINE_RE = re.compile(r"^ {0,3}(?:[-*+][ \t]+)?\*\*Status:\*\*.*$", re.M)
 
 
-def _with_status_line(text: str, value: str, *, bullet: str = "") -> str:
+def _with_status_line(text: str, value: str, *, bullet: str = "", indent: int = 0) -> str:
     """Put a body status line under the document's title.
 
     Written below the `# ` heading rather than appended, which is where the 83
@@ -266,7 +280,7 @@ def _with_status_line(text: str, value: str, *, bullet: str = "") -> str:
     """
     lines = text.splitlines()
     index = next(i for i, line in enumerate(lines) if line.startswith("# "))
-    lines.insert(index + 1, f"{bullet}**Status:** {value}")
+    lines.insert(index + 1, f"{' ' * indent}{bullet}**Status:** {value}")
     return "\n".join(lines) + "\n"
 
 
@@ -373,7 +387,7 @@ def test_a_reintroduced_body_status_line_is_not_absorbed_by_the_baseline(sandbox
     With the ledger drained it is simpler still: every finding is new, and the
     run that reports one exits non-zero.
     """
-    test_a_body_status_line_fails_even_when_it_agrees(sandbox, 0, "")
+    test_a_body_status_line_fails_even_when_it_agrees(sandbox, 0, "", 0)
 
     assert sandbox.main([]) == 1
     assert "new body-status-language finding" in capsys.readouterr().out

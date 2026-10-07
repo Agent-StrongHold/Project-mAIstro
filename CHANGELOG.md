@@ -1055,7 +1055,7 @@ or placeholder-only section.
 ### Changed
 
 - **A document's status lives in front matter and nowhere else
-  (`ADR-092126-a28a`).** The duplicated body `**Status:**` line is removed
+  (`ADR-092126-a28a`).** (#1532) The duplicated body `**Status:**` line is removed
   from all 91 documents under `docs/adr/` and `docs/specs/` that carried one,
   in both the bare and list-item spellings. Nothing but the gate written to
   police them ever read those lines -- every other tool already read front
