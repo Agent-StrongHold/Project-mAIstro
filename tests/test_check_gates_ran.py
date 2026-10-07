@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -580,6 +581,71 @@ class TestTheCliScopeEnvelope:
         assert scope is not None
         # The hive_e2e leg should be in scope due to the new path
         assert scope.get("hive_e2e") is True
+
+    @pytest.mark.skipif(
+        shutil.which("node") is None,
+        reason="node executes the workflow's github-script collection step",
+    )
+    def test_the_collection_script_emits_both_paths_for_a_rename(
+        self, tmp_path: Path
+    ) -> None:
+        """The envelope tests above hand-craft `changed-files.json`, so they
+        cannot catch a collector that drops `previous_filename`. This one
+        executes the actual collection `script:` from gates-ran.yml against a
+        mocked `listFiles` response and asserts what it writes."""
+        import yaml
+
+        doc = yaml.safe_load((ROOT / ".github" / "workflows" / "gates-ran.yml").read_text())
+        scripts = [
+            step["with"]["script"]
+            for job in doc["jobs"].values()
+            for step in job.get("steps") or []
+            if step.get("name") == "Collect changed files for pull-request scope"
+        ]
+        assert len(scripts) == 1, "collection step missing from or duplicated in gates-ran.yml"
+        harness = (
+            "'use strict';\n"
+            "const github = {\n"
+            "  rest: { pulls: { listFiles: {} } },\n"
+            "  paginate: async () => [\n"
+            "    { filename: 'docs/a.md', status: 'renamed',\n"
+            "      previous_filename: 'packages/maistro-core/a.py' },\n"
+            "    { filename: 'tools/b.txt', status: 'added' },\n"
+            "    { filename: 'c.md', status: 'renamed' },\n"
+            "  ],\n"
+            "};\n"
+            "const core = { info: () => {}, warning: () => {} };\n"
+            "const context = { repo: { owner: 'owner', repo: 'repo' } };\n"
+            "(async () => {\n" + scripts[0] + "\n})().then(\n"
+            "  () => process.exit(0),\n"
+            "  (err) => { console.error(err); process.exit(1); },\n"
+            ");\n"
+        )
+        harness_path = tmp_path / "collect-changed-files.js"
+        harness_path.write_text(harness, encoding="utf-8")
+        proc = subprocess.run(
+            [shutil.which("node") or "node", str(harness_path)],
+            cwd=tmp_path,
+            env={"PR_NUMBER": "4242"},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr
+
+        envelope = json.loads((tmp_path / "changed-files.json").read_text(encoding="utf-8"))
+        # A rename contributes both paths in listFiles order; an unrenamed
+        # file contributes only itself; a rename lacking previous_filename
+        # must not leak an undefined entry into the envelope.
+        assert envelope == {
+            "measured": True,
+            "files": [
+                "docs/a.md",
+                "packages/maistro-core/a.py",
+                "tools/b.txt",
+                "c.md",
+            ],
+        }
 
 
 class TestTheReport:
