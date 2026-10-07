@@ -6,9 +6,35 @@ import pytest
 from scripts import ci_merge_group_scope as helper
 
 
-def test_pull_request_keeps_every_specialized_leg_enabled() -> None:
-    assert all(helper.scope_for_event("pull_request", ["docs/README.md"]).values())
+def test_pull_request_classifies_measured_changed_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files = ["docs/ci/BRANCH-PROTECTION.md"]
+    assert helper.scope_for_event("pull_request", files) == helper.classify(files)
+    monkeypatch.setattr(helper, "resolve_base_revision_from_env", lambda: "a" * 40)
+    monkeypatch.setattr(helper, "changed_paths_from_git", lambda _base: files)
+    assert helper.scope_from_environment("pull_request") == helper.classify(files)
+
+
+def test_pull_request_without_diff_evidence_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert all(helper.scope_for_event("pull_request", None).values())
+
+    def fail_base() -> str:
+        raise helper.BaseRevisionError("missing base")
+
+    monkeypatch.setattr(helper, "resolve_base_revision_from_env", fail_base)
     assert all(helper.scope_from_environment("pull_request").values())
+    assert (
+        "pull_request scope is unmeasured; enabling every specialized leg"
+        in capsys.readouterr().err
+    )
+
+
+def test_push_keeps_every_specialized_leg_enabled() -> None:
+    # Protected-branch pushes are not path-scoped candidates.
+    assert all(helper.scope_from_environment("push").values())
 
 
 def test_merge_group_uses_changed_paths(monkeypatch: pytest.MonkeyPatch) -> None:

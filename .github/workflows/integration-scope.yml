@@ -47,7 +47,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_EVENT_NAME" == "merge_group" ]]; then
+          # Pull requests and merge groups are path-scoped by the same
+          # classifier (#1351): the required set is exactly the legs the
+          # candidate's changed files can affect. Missing or malformed
+          # evidence fails closed (ci_merge_group_scope.py/classify) to
+          # every specialized leg.
+          if [[ "$GITHUB_EVENT_NAME" == "merge_group" || "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             base_sha="$(python3 scripts/ci_base_revision.py)"
             git diff --name-only "$base_sha"...HEAD > /tmp/changed-paths.txt
             mapfile -t changed_paths < /tmp/changed-paths.txt
