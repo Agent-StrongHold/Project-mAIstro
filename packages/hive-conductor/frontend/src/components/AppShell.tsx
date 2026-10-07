@@ -24,6 +24,12 @@ import {
   Zap,
   Repeat,
   ListTodo,
+  CalendarClock,
+  Inbox,
+  Gauge,
+  ScrollText,
+  Terminal,
+  Container,
 } from "lucide-react";
 
 const fullNav = [
@@ -36,6 +42,11 @@ const fullNav = [
   { to: "/design-studio", icon: Palette, label: "Design Studio" },
   { to: "/dags", icon: Workflow, label: "DAG Builder" },
   { to: "/dag-runs", icon: PlayCircle, label: "DAG Runs" },
+  // #1417: Schedules is a retained shipped surface (retirement ledger:
+  // PROJECT onto the canonical ScheduleStore, #92) that no link anywhere
+  // reached; it is entry-point discoverability, not a promotion decision —
+  // its replacement still owns the cutover, see docs/route-inventory.md.
+  { to: "/schedules", icon: CalendarClock, label: "Schedules" },
   // Missions was reachable only from `pocNav`, so retiring POC mode left a
   // live route with no entry point anywhere in the app — the page still
   // renders, `App.tsx` still registers it, and a repo-wide search finds no
@@ -46,12 +57,26 @@ const fullNav = [
   { to: "/agents", icon: Bot, label: "Agents" },
   { to: "/topology", icon: Network, label: "Topology" },
   { to: "/optimizer", icon: Zap, label: "Optimizer" },
+  // #1417: Messages, Quotas, Containers, CLI and Audit were all registered,
+  // implemented routes with no navigation entry (audit GLO-01). Each is a
+  // retained surface per the cutover plan (PROJECT rows, and CLI/Containers
+  // under contracts #292/#382), so they get discoverable entries here; the
+  // legacy pages scheduled for replacement (Skills, Work Items, Memory,
+  // Evolution) deliberately stay off this list — docs/route-inventory.md
+  // records their URL-only dispositions and owning issues.
+  { to: "/messages", icon: Inbox, label: "Messages" },
+  { to: "/quotas", icon: Gauge, label: "Quotas" },
   { to: "/knowledge", icon: Brain, label: "Inner Temple" },
   // M0 containment for #311: Deck Builder is intentionally absent until
   // model-authored HTML/SVG has a canonical sanitizer/structured renderer.
   { to: "/rsi", icon: Repeat, label: "RSI" },
   { to: "/mcp", icon: Plug, label: "Integrations" },
+  // #1417: CLI and Containers keep their v1.0 contract lanes (#292, #382),
+  // so they stay shipped and must stay reachable while those run.
+  { to: "/containers", icon: Container, label: "Containers" },
+  { to: "/cli", icon: Terminal, label: "CLI" },
   { to: "/credentials", icon: KeyRound, label: "Credentials" },
+  { to: "/audit", icon: ScrollText, label: "Audit" },
   { to: "/settings", icon: Settings, label: "Settings" },
 ];
 
