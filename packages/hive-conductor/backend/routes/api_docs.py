@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 from typing import Final
 
@@ -76,25 +77,30 @@ class _Asset:
 #: names that exist in upstream's dist but nothing here references (the
 #: standalone preset, the maps, the oauth2 redirect).
 _ASSETS: Final[dict[str, _Asset]] = {
+    # The sha256 column is a content fingerprint of the pinned upstream
+    # release, checked at test time and at serve time — DevSkim's key-shape
+    # heuristic cannot tell it from a credential, so each line carries the
+    # rule's inline suppression with that reason (same mechanism the
+    # loopback URLs in `config.py` use).
     "swagger-ui-bundle.js": _Asset(
         media_type="text/javascript; charset=utf-8",
-        sha256="050bc415ee7048dcd881682678f720264e7da5e373f7461d7c58c755305255f7",
+        sha256="050bc415ee7048dcd881682678f720264e7da5e373f7461d7c58c755305255f7",  # devskim: ignore DS173237 -- vendored-file fingerprint, not a credential
     ),
     "swagger-ui.css": _Asset(
         media_type="text/css; charset=utf-8",
-        sha256="1ac324f7dcd27e4b9386b4bd6421271ec147e922a22c05ba24b11515e9aa6321",
+        sha256="1ac324f7dcd27e4b9386b4bd6421271ec147e922a22c05ba24b11515e9aa6321",  # devskim: ignore DS173237 -- vendored-file fingerprint, not a credential
     ),
     "swagger-initializer.js": _Asset(
         media_type="text/javascript; charset=utf-8",
-        sha256="96d494c655e51cb4455d21a0c47102ded63070f6dd1381e7fb752c51e51d87ff",
+        sha256="96d494c655e51cb4455d21a0c47102ded63070f6dd1381e7fb752c51e51d87ff",  # devskim: ignore DS173237 -- vendored-file fingerprint, not a credential
     ),
     "favicon-32x32.png": _Asset(
         media_type="image/png",
-        sha256="3ed612f41e050ca5e7000cad6f1cbe7e7da39f65fca99c02e99e6591056e5837",
+        sha256="3ed612f41e050ca5e7000cad6f1cbe7e7da39f65fca99c02e99e6591056e5837",  # devskim: ignore DS173237 -- vendored-file fingerprint, not a credential
     ),
     "favicon-16x16.png": _Asset(
         media_type="image/png",
-        sha256="af24ad604dd7b3bcda8f975ab973075f4a2f70a4087944a12f8ef8b63a3e07c2",
+        sha256="af24ad604dd7b3bcda8f975ab973075f4a2f70a4087944a12f8ef8b63a3e07c2",  # devskim: ignore DS173237 -- vendored-file fingerprint, not a credential
     ),
 }
 
@@ -130,11 +136,20 @@ async def api_docs(request: Request) -> HTMLResponse:
     # Same treatment FastAPI's swagger_ui_html applies: the gateway's mount
     # prefix, if any, prefixes every URL the document names.
     root_path = request.scope.get("root_path", "").rstrip("/")
+    # Every value the document interpolates is request-derived — the ASGI
+    # root_path a gateway (or a misbehaving proxy) hands the app, and the
+    # configured app title — so each is HTML-escaped on the way in. The
+    # template has no other holes: it is a module constant, not built from
+    # response data, and escaping keeps a hostile prefix from breaking out of
+    # an attribute into markup. (The rule's only sanitizer is
+    # `django.utils.html.escape`, which is not a dependency of this service;
+    # the stdlib escape above does the same job, so the finding is reviewed
+    # and suppressed rather than rewritten to dodge the pattern.)
     return HTMLResponse(
-        _DOCS_HTML.format(
-            title=f"{request.app.title} - Swagger UI",
-            openapi_url=f"{root_path}/openapi.json",
-            asset_base=f"{root_path}/docs/static",
+        _DOCS_HTML.format(  # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format -- interpolates deployment config (gateway root_path, app title), never request parameters, and each value is stdlib html.escape()'d immediately above
+            title=escape(f"{request.app.title} - Swagger UI"),
+            openapi_url=escape(f"{root_path}/openapi.json"),
+            asset_base=escape(f"{root_path}/docs/static"),
         )
     )
 
@@ -157,6 +172,22 @@ async def api_docs_asset(asset_name: str) -> FileResponse:
         # asks for: the docs page would otherwise blank out with no signal.
         raise HTTPException(status_code=404, detail="docs asset missing from deployment")
     return FileResponse(path, media_type=asset.media_type)
+
+
+@router.get("/docs/static/{_nested:path}", include_in_schema=False)
+async def api_docs_asset_reject(_nested: str) -> None:
+    """Reject nested docs-asset paths before the SPA fallback can claim them.
+
+    The whitelist route above matches a single segment only, so a path with a
+    second segment — `/docs/static/missing/file.js`, or the encoded-separator
+    form `..%2Fmain.py` (the ASGI path is percent-decoded before routing) —
+    matches nothing here and would fall through to `main.py`'s SPA catch-all,
+    which answers `index.html` with 200 once the image ships `frontend/dist`.
+    Registered after the whitelist, this route matches exactly what the
+    whitelist did not and keeps the explicit-404 contract: nothing under
+    `/docs/static/` is ever an SPA page.
+    """
+    raise HTTPException(status_code=404, detail="not a docs asset")
 
 
 def asset_fingerprints() -> dict[str, str]:

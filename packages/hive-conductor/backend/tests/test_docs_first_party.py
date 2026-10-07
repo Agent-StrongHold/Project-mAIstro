@@ -222,6 +222,35 @@ class TestTheVendoredAssets:
         assert escaped.status_code == 404
         assert b"import" not in escaped.content
 
+    def test_nested_docs_asset_paths_are_rejected_with_the_spa_built(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The route contract must hold in production, where the image ships
+        `frontend/dist` and `main.py` registers its SPA catch-all. A docs-asset
+        path with a second segment — a missing nested resource, or the
+        encoded-separator form `..%2Fmain.py` (the ASGI path is percent-decoded
+        before routing) — does not match the single-segment whitelist route, so
+        only a dedicated rejection route keeps it from being answered by the
+        SPA shell with 200. The module-level `app` here was created while
+        `frontend/dist` was absent, which is exactly why the traversal test
+        above passes for the wrong reason; this one builds an app with the
+        directory present so the fallback it guards against actually exists
+        (AGENTS.md: a test must fail against the regression it names)."""
+        import main as main_module
+
+        dist = tmp_path / "dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text(
+            '<!DOCTYPE html><html><body><div id="root"></div></body></html>'
+        )
+        monkeypatch.setattr(main_module, "STATIC_DIR", dist)
+        client = TestClient(main_module.create_app())
+        for path in ("/docs/static/missing/file.js", "/docs/static/..%2Fmain.py"):
+            response = client.get(path)
+            assert response.status_code == 404, path
+            assert response.json()["detail"] == "not a docs asset", path
+            assert SPA_SHELL_MARKER not in response.text, path
+
     def test_the_default_docs_route_exists_exactly_once(self) -> None:
         """`docs_url=None` retired FastAPI's built-in page; the vendored route
         replaced it. A duplicate would leave whichever registered first
