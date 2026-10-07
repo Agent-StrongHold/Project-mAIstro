@@ -20,6 +20,7 @@ from maistro.runs.lifecycle import (
     check_completion_is_earned,
     lease_is_expired,
     reclaim_attempt,
+    refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
     settle_open_node_run,
@@ -1461,6 +1462,14 @@ class SqliteRunStore:
                 error=error,
                 metrics=metrics,
             )
+            if target is AttemptStatus.COMPLETED:
+                # Same lock `transition_run` holds, so a cancellation either
+                # committed before the parent read below (refused) or waits
+                # until this write commits (#1335). The fence the executor
+                # reads cannot close that window; this one does.
+                node_run = await self._require_node_run(attempt.node_run_id)
+                run = await self._require_run(node_run.run_id)
+                refuse_completion_under_terminal_run(run.status, attempt_id)
             await self._update_payload(
                 "canonical_attempts",
                 "attempt_id",

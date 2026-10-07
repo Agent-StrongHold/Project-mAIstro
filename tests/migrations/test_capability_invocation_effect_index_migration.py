@@ -176,8 +176,8 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     directory = ScriptDirectory.from_config(config)
 
-    assert directory.get_heads() == ["058"]
-    walked = {item.revision for item in directory.walk_revisions("base", "058")}
+    assert directory.get_heads() == ["060"]
+    walked = {item.revision for item in directory.walk_revisions("base", "060")}
     # The claim chain this branch folded the #1194 corrections into, and every
     # develop collision the chronicle above records, must stay on the one
     # linear path to the head. Develop's #1756 learning-applicability
@@ -191,7 +191,11 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     # two collisions — revise the quota door; and #863's planner-stability
     # revision — numbered `052` when written, re-parented onto each tip in
     # the earlier collisions — follows develop's `056_user_model_facts` tip
-    # as `057`. Gauntlet provenance follows it as `058`, the single head.
+    # as `057`. Develop's Gauntlet provenance ledger (#118, M4-B2) follows
+    # that as `058_learning_validation_provenance`; the backlog work-source
+    # migration (#98) and the authority-cutover ledger (#102) — which took
+    # `058`/`059` in the previous sync — re-parent past it as `059`/`060`,
+    # the single linear head this sync lands.
     assert {
         "034_canonical_run_effect_claim",
         "034",
@@ -212,6 +216,8 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
         "056",
         "057",
         "058",
+        "059",
+        "060",
     } <= walked
     # The superseded standalone revisions must stay gone: resurrecting either
     # re-forks the chain (a second head) or re-applies DDL no store declares —
