@@ -101,3 +101,76 @@ failure. All earlier work is preserved; no GitHub mutations performed.
 Progress: checked 1 assigned item, done 0 repairs, skipped 0 items, errors 1
 blocking lifecycle policy failure (plus unavailable Docker). Locally commit
 this report as the checkpoint; the issue is not ready for integration.
+
+## Recheck at assigned head 8bd7933ed01f (job 61df6df1)
+
+This is a new first-hand check, not reliance on the earlier results above.
+Frozen scope remains #1572 only. Starting HEAD was
+`8bd7933ed01fd18dff66a5256beff4142074ef84`, with a clean worktree; supplied
+base was `b1f17b8d6246d347f617fb2c0b969e6798e0152b`. Their actual merge base
+is `9bd1a93eefc4e564041b3cc512f20b229cde64b9`, which the lifecycle gate
+selected. The supplied base's authorization file also has no GoalStatus grant.
+No merge conflict exists to resolve. No remote enumeration or mutation occurred.
+
+Read the supplied dispatch issue body, prior result, driver check-0 through
+check-4 logs, accepted ADRs listed above, and the adjacent Goal authorization,
+wiring, model, conformance, binding, restart, and installed-base tests. The
+canonical spine and shared PostgreSQL decision stand; the interview ADR governs
+the downstream consumer, not a new scheduler or Goal owner in this repair.
+
+Executed again with long timeouts:
+
+| Command | Outcome |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1328 reviewed identities / 1328 findings; zero unclassified or forbidden. No ledger amendment warranted. |
+| `uv run python scripts/check-execution-lifecycles.py` | FAIL: GoalStatus has no already-landed authorization, 19 classified / 20 discovered. This is CI's exact command at `.github/workflows/quality.yml:1501`. |
+| `uv run pytest tests/test_check_execution_lifecycles.py -x -q` | 28 passed, 1 failed: shipped-ledger assertion at line 374 reproduces the gate. |
+| `uv run pytest packages/maistro-core/tests/goals packages/maistro-core/tests/runs packages/maistro-core/tests/graph/durable_runs packages/maistro-core/tests/workspaces/test_sqlite_alembic_schema_parity.py -x -q` | 1813 passed, 311 skipped, **6** aiosqlite closed-loop worker-thread warnings; output in job `worker-core.log`. |
+| `uv run pytest tests/migrations -x -q` | 38 passed, 125 skipped. No live PostgreSQL upgrade claimed. |
+| `uv run ruff check .` | PASS. |
+| `uv run ruff format --check .` | PASS, 3145 files. |
+| `uv run python scripts/check-m1-convergence-freeze.py --base b1f17b8d6246d347f617fb2c0b969e6798e0152b` | PASS. |
+| `uv run alembic heads` | PASS: single head `061`. |
+| `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests` | PASS: 14961 tests, zero duplicate evidence. |
+| `git diff --check` | PASS. |
+| `DOCKER_HOST=unix:///var/run/docker.sock docker info --format '{{.ServerVersion}}'` | FAIL: cannot connect to Docker daemon. |
+
+### Current acceptance disposition
+
+- **Round-trip, append-only/stale CAS/single winner, lineage/recorded owner
+  change, terminal finality, Workspace isolation and foreign=missing:** the
+  shared conformance tests passed memory/SQLite again; PostgreSQL UNVERIFIED.
+  CAS concurrency uses a single store instance, not independent SQLite writers.
+- **Run binding:** real `admit_direct_work` forwards both fields at
+  `runs/admission.py:136`; binding round-trip and preservation across terminal
+  transitions passed memory/SQLite. PostgreSQL and a Goal revision advanced
+  *after* admission remain UNVERIFIED. No implicit Goal transition test passed.
+- **Production composition:** Container exposure and principal seam tests
+  passed. Source confirms server `main.py:344` and Hive
+  `backend/adapters/maistro_core.py:194` call `create_container`, which wires
+  Goals at `container.py:2377`. Deployed Hive/server processes UNVERIFIED.
+- **Restart:** SQLite store connections close/reopen with Goal revisions and
+  bound Run readback passed; this is not a deployed-process restart.
+  PostgreSQL and deployed restart UNVERIFIED.
+- **Single execution authority:** convergence freeze passed. Separately, the
+  required lifecycle policy gate still fails; DOMAIN classification does not
+  exempt a new vocabulary from trusted-base authorization.
+- **Migration identities:** installed-base graph and snapshot-byte tests passed,
+  preserving merged 056/057 and appending Goals as 061 after 060. Central
+  reservation UNVERIFIED. Actual c560d4c/4675101 populated upgrades, durable
+  post-upgrade readback/data/index preservation, fresh install, downgrade/refusal,
+  reapplication on PG17/PG18, and complete older quota-history compatibility
+  remain UNVERIFIED because the live database legs skipped.
+
+**Disposition: BLOCKED.** Only this zero-delta evidence note changed; no source,
+tests, grants, ledgers, or gates changed. The vulture exception cannot authorize
+an execution-lifecycle grant. An authorized owner must independently land that
+grant on develop before branch synchronization and revalidation; this worker
+must not do either GitHub mutation. Provision PostgreSQL 17/18 and prove the
+remaining acceptance legs before integration. Integration-scope is a CI
+aggregation, not a locally executed green check.
+
+Progress: checked 1, done 0 repairs, skipped 0 items, errors 1 blocking policy
+failure (also reproduced by its test); Docker is an additional environment
+blocker. Next is owner authorization and database availability, not scanner
+suppression. Commit this evidence-only handoff locally; no closure claimed.
