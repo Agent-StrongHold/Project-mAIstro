@@ -145,6 +145,17 @@ or placeholder-only section.
   execution. Capable adapters still route cancellation through the canonical
   Run/Attempt service unchanged.
 
+- **Governed harness waits can re-enter on the existing recovery timer (#1192).**
+  New `agent.spawn_harness` waits persist the original dispatch receipt,
+  fixed deadline and canonical poll observation identity before their first
+  read. Recovery can consume a completion without redispatching, and local
+  expiry preserves uncertain remote outcomes. Registered-DAG recovery receives
+  the Container's configured harness adapters. Approval answers cannot become
+  fabricated harness completions, and compatibility terminal answers no longer
+  authorize ungoverned provider polling. Historical waits without a resume
+  instant, the production approval/expiry bridge, and adapter-specific restart
+  readiness remain separately gated; this does not close #1192.
+
 - **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
   always invokes Compose with explicit `-f` files, which disables Compose's own
   automatic override loading, so an override copied into the checkout was
@@ -160,6 +171,14 @@ or placeholder-only section.
   `MAISTRO_COMPOSE_PROFILES` activates profiles an override assigns.
 
 ### Security
+
+- **Boot Agent model tools retain governed admission and logical identity** (#1954 follow-up; [review finding](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1954#discussion_r4189499393)).
+  Clarification and model-fallback search use the persisted Run actor/scope and
+  configured model Binding through the existing Provider/Invocation boundary.
+  Agent, delegation, response-round and ToolCall identity distinguish intentional
+  calls while preserving replay. Ambiguous outcomes stop the strategy. The tool
+  deadline also bounds third-party adapters, without replacing their catalog or
+  retry authority. Hive's configured API prefix and omitted sampling are retained.
 
 - **Hive DAG model-backed tools use governed model egress (#1085, #1370).**
   `clarify` and the model fallback of `web_search` require a configured
