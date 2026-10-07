@@ -167,6 +167,54 @@ class TestStrictFlag:
         assert main(["walk", str(repo_root)]) == 1
 
 
+class TestContractsWithoutTests:
+    """Contracts declared with no cited tests are surfaced, never silent (#812)."""
+
+    def _with_contracts(self, repo_root: Path, spec_id: str, status: str) -> Path:
+        body = (
+            _VALID_SPEC.replace("contracts: []", "contracts:\n  - behavioral")
+            .replace("status: Proposed", f"status: {status}")
+            .replace("SPEC-001", spec_id)
+        )
+        path = repo_root / "docs" / "specs" / f"{spec_id}-contracts-no-tests.md"
+        path.write_text(body)
+        return repo_root
+
+    def test_proof_claiming_status_warns_and_fails_strict(
+        self, repo_root: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        root = self._with_contracts(repo_root, "SPEC-010", "Implemented")
+        assert main(["lint", str(root)]) == 0  # warning only, non-strict passes
+        assert main(["lint", str(root), "--strict"]) == 1  # strict fails: silent proof refused
+        assert "declares contracts but cites no tests while claiming status 'Implemented'" in (
+            capsys.readouterr().out
+        )
+
+    def test_tests_passing_status_warns_too(self, repo_root: Path) -> None:
+        root = self._with_contracts(repo_root, "SPEC-011", "Tests Passing")
+        assert main(["lint", str(root), "--strict"]) == 1
+
+    def test_other_status_records_debt_without_failing(
+        self, repo_root: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        root = self._with_contracts(repo_root, "SPEC-012", "Proposed")
+        assert main(["lint", str(root), "--strict"]) == 0
+        out = capsys.readouterr()
+        assert "DEBT:  declares contracts but cites no tests (test-evidence debt)" in out.out
+        assert "1 test-evidence debts" in out.err
+
+    def test_tests_and_contracts_together_stay_clean(self, repo_root: Path) -> None:
+        body = (
+            _VALID_SPEC.replace("contracts: []", "contracts:\n  - behavioral")
+            .replace("tests: []", "tests:\n  - packages/real.py")
+            .replace("SPEC-001", "SPEC-013")
+        )
+        (repo_root / "packages").mkdir()
+        (repo_root / "packages" / "real.py").write_text("def test_ok():\n    pass\n")
+        (repo_root / "docs" / "specs" / "SPEC-013-evidenced.md").write_text(body)
+        assert main(["lint", str(repo_root), "--strict"]) == 0
+
+
 class TestSharedCommandPipeline:
     def test_lint_and_generate_share_missing_root_error(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -194,3 +242,47 @@ class TestSharedCommandPipeline:
             "error: refusing to generate registry with 1 errored files; "
             "pass --allow-errors to skip them and generate anyway"
         ) in err
+
+
+class TestCitedTestPaths:
+    """Cited `tests:` paths must resolve against the repo root (#812)."""
+
+    def _with_dead_test_citation(self, repo_root: Path) -> Path:
+        citing = _VALID_SPEC.replace(
+            "tests: []", "tests:\n  - packages/maistro-core/tests/agents/test_gone.py"
+        ).replace("SPEC-001", "SPEC-002")
+        (repo_root / "docs" / "specs" / "SPEC-002-dead-citation.md").write_text(citing)
+        return repo_root
+
+    def test_dead_cited_path_fails_strict_lint(
+        self, repo_root: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        root = self._with_dead_test_citation(repo_root)
+        assert main(["lint", str(root), "--strict"]) == 1
+        out = capsys.readouterr().out
+        assert "TEST-PATH: maistro-engine#SPEC-002.tests" in out
+        assert "does not exist under the repository root" in out
+
+    def test_dead_cited_path_fails_lint_even_without_strict(self, repo_root: Path) -> None:
+        # A dead citation is a false evidence claim, not a style nit: it must
+        # not survive the non-strict run that CI never invokes.
+        assert main(["lint", str(self._with_dead_test_citation(repo_root))]) == 1
+
+    def test_live_cited_path_passes_strict_lint(self, repo_root: Path) -> None:
+        citing = _VALID_SPEC.replace("tests: []", "tests:\n  - packages/real.py").replace(
+            "SPEC-001", "SPEC-003"
+        )
+        (repo_root / "packages").mkdir()
+        (repo_root / "packages" / "real.py").write_text("def test_ok():\n    pass\n")
+        (repo_root / "docs" / "specs" / "SPEC-003-live-citation.md").write_text(citing)
+        assert main(["lint", str(repo_root), "--strict"]) == 0
+
+    def test_node_id_suffix_does_not_mask_a_dead_file(
+        self, repo_root: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        citing = _VALID_SPEC.replace("tests: []", "tests:\n  - packages/gone.py::test_ok").replace(
+            "SPEC-001", "SPEC-004"
+        )
+        (repo_root / "docs" / "specs" / "SPEC-004-dead-node-id.md").write_text(citing)
+        assert main(["lint", str(repo_root), "--strict"]) == 1
+        assert "packages/gone.py" in capsys.readouterr().out

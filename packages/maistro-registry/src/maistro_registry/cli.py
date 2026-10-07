@@ -30,6 +30,7 @@ from maistro_registry.linker import (
     check_links,
 )
 from maistro_registry.schema import FrontMatter
+from maistro_registry.test_paths import TestPathProblem, check_test_paths
 from maistro_registry.validator import ValidationResult, validate_file
 
 # The walk — recursive discovery and the total declared disposition surface —
@@ -75,9 +76,19 @@ def _load_walk_validation(root: Path) -> WalkValidation | int:
 
 
 def _print_result(result: ValidationResult, *, quiet_ok: bool) -> None:
+    # Debts never affect the exit status, and --quiet promises failures only;
+    # the stderr summary still reports the aggregate debt count.
     if quiet_ok and result.ok and not result.warnings:
         return
     print(result.render())
+
+
+def _count_results(results: list[ValidationResult]) -> tuple[int, int, int, int]:
+    """Aggregate ``(files, errors, warnings, debts)`` over one lint run."""
+    n_errors = sum(1 for r in results if r.errors)
+    n_warnings = sum(1 for r in results if r.warnings)
+    n_debts = sum(len(r.debts) for r in results)
+    return len(results), n_errors, n_warnings, n_debts
 
 
 def _exit_status(
@@ -87,10 +98,8 @@ def _exit_status(
     quiet_ok: bool,
     extra_errors: int = 0,
 ) -> int:
-    n_files = len(results)
-    n_errors = sum(1 for r in results if r.errors)
-    n_warnings = sum(1 for r in results if r.warnings)
-    n_clean = n_files - n_errors - n_warnings
+    n_files, n_errors, n_warnings, n_debts = _count_results(results)
+    n_clean = n_files - n_errors - n_warnings - sum(1 for r in results if r.debts)
 
     for r in results:
         _print_result(r, quiet_ok=quiet_ok)
@@ -98,7 +107,8 @@ def _exit_status(
     print(
         f"\n{n_files} files checked: {n_clean} clean, "
         f"{n_errors} errors, {n_warnings} warnings, "
-        f"{extra_errors} extra (DAG / dangling refs)",
+        f"{extra_errors} extra (DAG / dangling refs / cited test paths), "
+        f"{n_debts} test-evidence debts",
         file=sys.stderr,
     )
 
@@ -180,7 +190,15 @@ def cmd_lint(args: argparse.Namespace) -> int:
     for problem in citations:
         print(f"  CITATION: {problem.render()}")
 
-    extra = len(cycles) + len(dangling) + len(duplicates)
+    # A cited test path is evidence other gates consume (ADR-097 requires
+    # non-empty `tests:` for proof-claiming specs), so a path that does not
+    # resolve is a false evidence claim, not a style nit (#812). Resolved like
+    # the link check but against the repository root, failing lint outright.
+    test_problems: list[TestPathProblem] = check_test_paths(valid_fms, root)
+    for test_problem in test_problems:
+        print(f"  TEST-PATH: {test_problem.render()}")
+
+    extra = len(cycles) + len(dangling) + len(duplicates) + len(test_problems)
     return _exit_status(loaded.results, strict=args.strict, quiet_ok=args.quiet, extra_errors=extra)
 
 
@@ -244,7 +262,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_lint = sub.add_parser(
         "lint",
-        help="walk + validate + DAG cycle check + local link check",
+        help="walk + validate + DAG cycle check + local link check + cited test paths",
     )
     p_lint.add_argument("root", nargs="?", default=".", help="repo root (default: cwd)")
     p_lint.set_defaults(func=cmd_lint)
