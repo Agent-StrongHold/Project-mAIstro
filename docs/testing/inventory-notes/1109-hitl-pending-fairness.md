@@ -237,3 +237,52 @@ Workspace scope clause from `_hitl_paused_candidate` fails 3 tests of
 `_admit_pending_items` fails `test_walk_bounds_items_not_records`; the
 restored tree is green again.
 
+## Repair round: develop sync to 347959625, migration-pin conflict resolved
+
+This round inherited a mid-merge worktree: the in-progress develop merge was
+completed in two steps (af7996883 first, whose only conflict was CHANGELOG.md,
+both `### Fixed` entries kept; then origin/develop 347959625, five commits
+further), so `git merge-base HEAD origin/develop` now is the develop tip
+347959625 itself. The one content conflict of the second step was the chain-tip
+conformance pin `test_capability_invocation_effect_index_migration.py`: develop's
+M1-B2 work (#1326) had deleted the superseded standalone `043`/`045` revisions
+(the chain runs 044 -> 046 directly), while the branch side still asserted them
+in the walk and named `061` the head. Resolved to the merged tree's truth: the
+pin walks to `061`, asserts the whole ancestor path through `060` plus `061`
+itself, keeps develop's absence guards (`"043" not in walked`, `"045" not in
+walked`), and pins `get_heads() == ["061"]` — the #1109 pause-kind projection
+re-parented onto develop's `060`, single linear head.
+
+Evidence at the merged head 2e5321ce9, gates run with CI's exact arguments:
+`check-radon-baseline.py` exits 0 (137 current C/D/E/F blocks = 137 baseline
+entries, no new/regressed/stale rows — the count moved from the previously
+documented 138 because develop-side refactors removed a block, both directions
+ratcheted clean); `check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` exits 0 with 1326 reviewed = 1326 findings and no
+ledger amendment; xenon (ten package trees, `-i third_party`, XENON_BASELINE
+145) reports 139 block violations, 0 module-rank, 0 project-average;
+interrogate passes all seven floors; ruff check and ruff format --check clean;
+`mypy --strict packages/maistro-core/src` clean (770 files);
+check-suite-inventory reports all 17 suites at the recorded counts (the
+delta above is unchanged); check-backlog-consistency, check-merge-markers,
+check-release-consistency and verify-monorepo-layout pass; the #1048 OpenAPI
+drift check passes with `dump-hive-openapi.py` + `gen:api` re-run for real
+(openapi.json and types.gen.ts both byte-identical).
+
+Live PostgreSQL 18 re-verification after the sync: the compose server was
+stamped at 047, `alembic upgrade head` applied 048 -> 061 in order — including
+`055 -> 043_invocation_quota_door` and `060 -> 061_hitl_pause_kind_index` —
+with no error; with the PG legs enabled, `packages/maistro-core/tests/graph/
+durable_runs` is 720 passed 0 skipped and the full `tests/migrations` suite is
+157 passed 0 skipped. The AC mutation claim was re-proven from scratch at this
+head against the restored tree: reintroducing the pre-#1109 store shape (one
+generic PAUSED read bounded by the limit, eligibility filtered in memory
+afterwards, no paging past dropped rows, walk told the projection ran out)
+fails `test_machine_only_paused_prefix_cannot_occupy_the_page` plus four other
+fairness regressions (5 failed); the restored tree is byte-identical to the
+commit and green again (27 passed without the PG leg, 32 with it). A lesser
+mutation — swapping only the projection read for the generic status listing —
+passes the prefix test, recorded here because it shows where the invariant
+actually lives: in the ScanPage paging past dropped rows plus the inspection
+ceiling, not in the index choice alone.
+
