@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +7
+  packages/maistro-core/tests: +8
 ---
 # 942-m9e-family-install
 
@@ -10,9 +10,9 @@ installed independently**, and the installed packages meet the epic's
 cross-cutting criteria (canonical seams, secret authority, undeclared access
 blocked, shared conformance).
 
-**+7 `packages/maistro-core/tests/extensions/test_m9e_family_install.py`**
+**+8 `packages/maistro-core/tests/extensions/test_m9e_family_install.py`**
 (`TestFamilyPackagesInstallIndependently` 4, `TestInstalledFamilySecuritySeams`
-1, `TestRegistrationIsolationAndSharedConformance` 2), each driving production
+2, `TestRegistrationIsolationAndSharedConformance` 2), each driving production
 seams only:
 
 - **Governed install, per family (4)** — the three external-style packages
@@ -30,10 +30,16 @@ seams only:
   attribution. All three install into one host as three distinct records with
   no cross-dependency.
 
-- **Security seams on installed packages (1)** — the installed connector
+- **Security seams on installed packages (2)** — the installed connector
   cannot sync an undeclared Workspace (refused before connector code runs, no
   records or checkpoints), the session refuses undeclared secret names, and a
-  declared-but-unprovisioned name stays an operator `LookupError`.
+  declared-but-unprovisioned name stays an operator `LookupError`. Plus the
+  committed teeth for the activation identity pin: an artifact whose
+  entrypoint misdeclares its id (plugin name `acme.evil` against an embedded
+  contract declaring `acme-labs.notary`) passes inspect → authorize (bytes,
+  not behavior) and is refused at activation — `ExtensionLifecycleError`, the
+  record persists `FAILED` with the mismatch in `failure_reason`, and neither
+  an active record nor a retained activation exists afterwards.
 
 - **Isolation + shared suites (2)** — a lying adapter's package *installs*
   (the lifecycle authorizes bytes, not behavior) but its registration is
@@ -42,11 +48,15 @@ seams only:
   adapter/connector and the external-style implementations pass the identical
   conformance runs (AC6, "where semantically equivalent").
 
-Teeth evidence: a package whose plugin misdeclares its identity is refused at
-install (`ExtensionLifecycleError`, record `FAILED`) — verified by a
-throwaway drive of the same loader/service before commit. The suite-level
-negatives (undeclared Workspace/secret, conformance-lying adapter, secret-
-shaped spec field) are asserted inside the tests themselves.
+Teeth evidence: the identity-mismatch refusal is a committed test
+(`test_misdeclared_plugin_identity_is_refused_and_recorded_failed`), verified
+live to fail when the loader's identity pin is disabled and pass when enabled.
+The suite-level negatives (undeclared Workspace/secret, conformance-lying
+adapter, secret-shaped spec field) are asserted inside the tests themselves.
+Registration is also driven from the install-time activation itself — the
+host loader captures what the governed install built
+(`InstalledFamilyLoader.activations`) and every registration exercises that
+captured object, never a re-load of the presented bytes.
 
 Scope note: no production source changed; the epic lane's child SDKs (#961
 provider, #963 connector, #964 tool/Skill, and their shared conformance) were

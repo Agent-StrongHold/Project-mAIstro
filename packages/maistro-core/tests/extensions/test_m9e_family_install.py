@@ -34,7 +34,7 @@ import json
 import sys
 import types
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +68,7 @@ from maistro.connectors import (
 )
 from maistro.extensions import (
     ExtensionInstallService,
+    ExtensionLifecycleError,
     ExtensionPackage,
     ExtensionScope,
 )
@@ -76,6 +77,7 @@ from maistro.extensions.store import InMemoryExtensionStore
 from maistro.extensions.tool_skill import (
     ExtensionContract,
     ExtensionToolCatalog,
+    PermissionBeyondGrant,
     invoke_extension_tool,
 )
 from maistro.extensions.trust import TrustPolicy
@@ -203,11 +205,11 @@ def build_connector():
     return RepoFeedConnector()
 '''
 
-TOOL_PLUGIN = '''"""acme.notary 1.0.0 entrypoint (installed artifact)."""
+TOOL_PLUGIN = '''"""acme-labs.notary 1.0.0 entrypoint (installed artifact)."""
 
 PLUGIN = {
     "kind": "tool",
-    "name": "acme.notary",
+    "name": "acme-labs.notary",
     "version": "1.0.0",
     "capabilities": ["workspace.write"],
     "handler": "notarize",
@@ -225,8 +227,8 @@ async def notarize(document_id: str) -> dict:
 #: The tool family's authority declaration, carried inside the artifact. The
 #: host classifies from these exact bytes (pinned by the artifact digest).
 TOOL_CONTRACT: dict[str, Any] = {
-    "id": "acme.notary",
-    "publisher": "acme",
+    "id": "acme-labs.notary",
+    "publisher": "acme-labs",
     "version": "1.0.0",
     "title": "Acme notary",
     "description": "Records documents into an install-scoped notary ledger.",
@@ -248,6 +250,9 @@ class FamilyPackageSpec:
     module_name: str
     plugin_source: str
     extra_entries: tuple[tuple[str, str], ...] = ()
+    #: Authority the install envelope presents at inspect/authorize, derived
+    #: from the family contract so the grant can never lag the declaration.
+    permissions: tuple[str, ...] = ()
 
     @property
     def key(self) -> str:
@@ -275,6 +280,7 @@ def _family_package_specs() -> dict[str, FamilyPackageSpec]:
             module_name="acme_notary.plugin",
             plugin_source=TOOL_PLUGIN,
             extra_entries=(("extension.json", json.dumps(TOOL_CONTRACT, sort_keys=True)),),
+            permissions=tuple(TOOL_CONTRACT["capabilities"]),
         ),
     )
     return {spec.key: spec for spec in specs}
@@ -305,7 +311,7 @@ def _install_envelope(spec: FamilyPackageSpec, artifact: bytes) -> bytes:
         "version": spec.version,
         "publisher": PUBLISHER_ID,
         "api_version": "1.0.0",
-        "permissions": [],
+        "permissions": list(spec.permissions),
         "entry_points": [{"name": "plugin", "module": spec.module_name, "attribute": "PLUGIN"}],
         "artifact": {"sha256": sha256_hex(artifact), "size": len(artifact)},
     }
@@ -360,6 +366,16 @@ class InstalledFamilyLoader:
 
     def __init__(self, install_root: Path) -> None:
         self._install_root = install_root
+        #: The activation each governed install produced, keyed by install id.
+        #: Hosts register the object the install-time load built — never a
+        #: re-load of the presented bytes — so every use below is driven from
+        #: this capture, and an install that never produced a usable activation
+        #: has nothing to hand out.
+        self.activations: dict[str, LoadedFamily] = {}
+
+    def activation(self, install_id: str) -> LoadedFamily | None:
+        """The object this loader built during the governed install, if any."""
+        return self.activations.get(install_id)
 
     async def load(self, record: ExtensionInstallRecord, payload: bytes) -> LoadedFamily:
         assert record.artifact_sha256 is not None
@@ -367,12 +383,24 @@ class InstalledFamilyLoader:
         point = record.manifest.entry_points[0]
         module = _import_from(target, point.module, record.artifact_sha256)
         plugin = getattr(module, point.attribute)
-        if plugin["name"] != record.extension_id or plugin["version"] != record.version:
+        # Entrypoint identity is pinned to the embedded contract id when the
+        # artifact carries one — contract ids are '<publisher>.<name>' and may
+        # use hyphens, which install envelope ids (_ID_RE) cannot — else to
+        # the install id itself.
+        contract_doc = target / "extension.json"
+        identity_id = (
+            json.loads(contract_doc.read_text())["id"]
+            if contract_doc.is_file()
+            else record.extension_id
+        )
+        if plugin["name"] != identity_id or plugin["version"] != record.version:
             raise ValueError(
                 f"plugin identity {plugin['name']} {plugin['version']} does not match "
-                f"the install record {record.extension_id} {record.version}"
+                f"the embedded contract {identity_id} {record.version}"
             )
-        return LoadedFamily(record, plugin, module, target)
+        loaded = LoadedFamily(record, plugin, module, target)
+        self.activations[record.install_id] = loaded
+        return loaded
 
 
 class LoadedFamily(LoadedExtension):
@@ -391,12 +419,16 @@ class LoadedFamily(LoadedExtension):
         self.install_dir = install_dir
 
 
-def _install_service(install_root: Path) -> ExtensionInstallService:
-    return ExtensionInstallService(
+def _install_service(
+    install_root: Path,
+) -> tuple[ExtensionInstallService, InstalledFamilyLoader]:
+    loader = InstalledFamilyLoader(install_root)
+    service = ExtensionInstallService(
         InMemoryExtensionStore(),
-        loader=InstalledFamilyLoader(install_root),
+        loader=loader,
         trust_policy=TrustPolicy(trusted_publishers=frozenset({PUBLISHER_ID})),
     )
+    return service, loader
 
 
 async def _install_package(
@@ -469,7 +501,7 @@ class TestFamilyPackagesInstallIndependently:
         self, tmp_path: Path
     ) -> None:
         artifacts, manifests = build_family_packages()
-        service = _install_service(tmp_path / "install-root")
+        service, loader = _install_service(tmp_path / "install-root")
         record = await _install_package(
             service,
             _scope(),
@@ -478,9 +510,11 @@ class TestFamilyPackagesInstallIndependently:
         )
         assert record.install_id
 
-        loaded = await InstalledFamilyLoader(tmp_path / "install-root").load(
-            record, artifacts["acme.inference@1.0.0"]
-        )
+        # Exercise the very instance the governed install activated — not a
+        # re-load of the presented bytes: registration is driven from the
+        # install-time activation, so ACTIVE-without-activation cannot hide.
+        loaded = loader.activation(record.install_id)
+        assert isinstance(loaded, LoadedFamily)
         adapter = loaded.module.build_adapter()
 
         # The one registration seam: models land in the canonical registry,
@@ -504,7 +538,7 @@ class TestFamilyPackagesInstallIndependently:
     ) -> None:
         artifacts, manifests = build_family_packages()
         install_root = tmp_path / "install-root"
-        service = _install_service(install_root)
+        service, loader = _install_service(install_root)
         record = await _install_package(
             service,
             _scope(),
@@ -512,9 +546,9 @@ class TestFamilyPackagesInstallIndependently:
             artifacts["acme.repo_feed@1.0.0"],
         )
 
-        loaded = await InstalledFamilyLoader(install_root).load(
-            record, artifacts["acme.repo_feed@1.0.0"]
-        )
+        # Ingestion runs from the install-time activation itself.
+        loaded = loader.activation(record.install_id)
+        assert isinstance(loaded, LoadedFamily)
         source = loaded.module.build_connector()
 
         # The installed connector passes the same shared conformance suite a
@@ -549,14 +583,14 @@ class TestFamilyPackagesInstallIndependently:
     ) -> None:
         artifacts, manifests = build_family_packages()
         install_root = tmp_path / "install-root"
-        service = _install_service(install_root)
+        service, loader = _install_service(install_root)
         record = await _install_package(
             service, _scope(), manifests["acme.notary@1.0.0"], artifacts["acme.notary@1.0.0"]
         )
 
-        loaded = await InstalledFamilyLoader(install_root).load(
-            record, artifacts["acme.notary@1.0.0"]
-        )
+        # The tool contract is read from the activation produced by install.
+        loaded = loader.activation(record.install_id)
+        assert isinstance(loaded, LoadedFamily)
 
         # The contract is parsed from the artifact's own bytes — the digest is
         # pinned to what was installed, not to anything in the source tree.
@@ -567,13 +601,36 @@ class TestFamilyPackagesInstallIndependently:
         assert contract.family == "tool"
         assert contract.manifest_sha256 == sha256_hex(contract_bytes)
         assert contract.version == record.version
+        # Publisher binding: the embedded contract may only claim the publisher
+        # the authenticated install record proves, and its id must be that
+        # publisher's namespace — checked before registration is attempted.
+        assert contract.publisher == record.manifest.publisher == PUBLISHER_ID
+        assert contract.extension_id == f"{contract.publisher}.notary"
+        # The governed grant covers the contract: the envelope presented the
+        # family contract's capabilities at inspect/authorize, so what the
+        # runtime binding carries is exactly what the operator approved.
+        assert record.granted_permissions == tuple(TOOL_CONTRACT["capabilities"])
 
         catalog = ExtensionToolCatalog()
-        tool = catalog.register(contract, loaded.plugin, handler=loaded.module.notarize)
+        # Registration reconciles the contract against the install record:
+        # authority beyond the grant is refused, fail-closed, before any
+        # Binding can carry it. The empty-grant attempt below proves the
+        # check binds to the record, not to the contract's self-description.
+        with pytest.raises(PermissionBeyondGrant):
+            ExtensionToolCatalog().register(
+                contract, loaded.plugin, handler=loaded.module.notarize, granted_permissions=()
+            )
+        tool = catalog.register(
+            contract,
+            loaded.plugin,
+            handler=loaded.module.notarize,
+            granted_permissions=record.granted_permissions,
+        )
         binding = catalog.tool_binding(tool, workspace_id=WORKSPACE, project_id="pr-1")
         # Host-derived classification, not the package's self-description.
         assert binding.config["effect"] == tool.reversibility
         assert binding.config["manifest_sha256"] == sha256_hex(contract_bytes)
+        assert binding.config["permissions"]["capabilities"] == list(record.granted_permissions)
 
         effects = new_in_memory_effect_context(policy_evaluator=_allow)
         outcome = await invoke_extension_tool(
@@ -599,7 +656,7 @@ class TestFamilyPackagesInstallIndependently:
         self, tmp_path: Path
     ) -> None:
         artifacts, manifests = build_family_packages()
-        service = _install_service(tmp_path / "install-root")
+        service, _loader = _install_service(tmp_path / "install-root")
         scope = _scope()
 
         records: dict[str, ExtensionInstallRecord] = {}
@@ -624,16 +681,17 @@ class TestInstalledFamilySecuritySeams:
     async def test_installed_connector_cannot_leave_declared_scope(self, tmp_path: Path) -> None:
         artifacts, manifests = build_family_packages()
         install_root = tmp_path / "install-root"
-        service = _install_service(install_root)
+        service, loader = _install_service(install_root)
         record = await _install_package(
             service,
             _scope(),
             manifests["acme.repo_feed@1.0.0"],
             artifacts["acme.repo_feed@1.0.0"],
         )
-        loaded = await InstalledFamilyLoader(install_root).load(
-            record, artifacts["acme.repo_feed@1.0.0"]
-        )
+        # The out-of-scope attempts run the install-time activation, not a
+        # re-load: whatever was activated is exactly what gets exercised.
+        loaded = loader.activation(record.install_id)
+        assert isinstance(loaded, LoadedFamily)
         source = loaded.module.build_connector()
 
         ingest = MemoryIngestStore()
@@ -669,18 +727,56 @@ class TestInstalledFamilySecuritySeams:
         with pytest.raises(LookupError, match="ACME_TOKEN"):
             await dry_session.resolve_secret("ACME_TOKEN")
 
+    async def test_misdeclared_plugin_identity_is_refused_and_recorded_failed(
+        self, tmp_path: Path
+    ) -> None:
+        """Committed teeth for the activation identity pin: an artifact whose
+        entrypoint claims an id its embedded contract never declares travels
+        inspect → authorize (the lifecycle authorizes bytes, not behavior)
+        and is refused at activation — ``ExtensionLifecycleError``, the record
+        persists ``FAILED``, and no activation survives the failure."""
+        spec = _family_package_specs()["acme.notary@1.0.0"]
+        # The entrypoint lies about which extension it is; the contract document
+        # in the same artifact still says acme-labs.notary.
+        lying_source = TOOL_PLUGIN.replace('"name": "acme-labs.notary"', '"name": "acme.evil"')
+        assert lying_source != TOOL_PLUGIN, "the lie must actually change the plugin"
+        artifact = _artifact_zip(replace(spec, plugin_source=lying_source))
+        manifest = _install_envelope(spec, artifact)  # the envelope pins the lying bytes
+        service, loader = _install_service(tmp_path / "install-root")
+        scope = _scope()
+
+        inspected = await service.inspect(
+            actor=OPERATOR,
+            scope=scope,
+            package=ExtensionPackage(manifest_bytes=manifest, payload=artifact),
+            trust_evidence=TrustClaim(
+                publisher_id=PUBLISHER_ID,
+                signature_present=True,
+                signer_key_id="acme-labs-key",
+                package_sha256=sha256_hex(artifact),
+            ),
+        )
+        await service.authorize(
+            inspected.install_id, actor=OPERATOR, scope=scope, approve=True, reason="epic proof"
+        )
+        with pytest.raises(ExtensionLifecycleError, match="recorded FAILED"):
+            await service.install(
+                inspected.install_id, actor=OPERATOR, scope=scope, payload=artifact
+            )
+
+        failed = await service.get(inspected.install_id, scope=scope)
+        assert failed.state is ExtensionState.FAILED
+        assert failed.failure_reason is not None and "does not match" in failed.failure_reason
+        assert failed.install_attempts == 1
+        # Nothing became usable: no active record, no retained activation —
+        # the refused package is observable as FAILED, never silently absent.
+        assert await service.active(scope, spec.extension_id) is None
+        assert loader.activation(inspected.install_id) is None
+
 
 # ---------------------------------------------------------------------------
 # AC1 (isolation of refusals) and AC6 (shared suites) at epic level
 # ---------------------------------------------------------------------------
-
-
-class LyingAdapter(ReferenceChatAdapter):
-    """Reports usage numbers that contradict its own normalized body."""
-
-    def usage_from(self, payload: dict[str, object]) -> tuple[int, int] | None:
-        del payload
-        return (999, 999)
 
 
 class BuiltinStyleConnector:
@@ -722,20 +818,34 @@ class TestRegistrationIsolationAndSharedConformance:
         authorizes bytes, not behavior) but its registration is refused by
         the shared suite — and the other families' installs stay ACTIVE and
         register normally."""
-        liar = LyingAdapter(ProviderAdapterSpec.model_validate(_acme_spec_values()))
-        report = run_adapter_conformance(liar)
-        assert report.failures, "the lying adapter must fail the shared suite"
-
         artifacts, manifests = build_family_packages()
         install_root = tmp_path / "install-root"
-        service = _install_service(install_root)
+        service, loader = _install_service(install_root)
         scope = _scope()
-        await _install_package(
+        provider_record = await _install_package(
             service, scope, manifests["acme.inference@1.0.0"], artifacts["acme.inference@1.0.0"]
         )
         connector_record = await _install_package(
             service, scope, manifests["acme.repo_feed@1.0.0"], artifacts["acme.repo_feed@1.0.0"]
         )
+
+        # The lie is built from the *installed* artifact: activation returns the
+        # module the install wrote, so the subclassed adapter is exactly the
+        # object a registration attempt on this package would receive.
+        loaded = loader.activation(provider_record.install_id)
+        assert isinstance(loaded, LoadedFamily)
+        installed_adapter = loaded.module.build_adapter()
+
+        class LyingAdapter(type(installed_adapter)):
+            """The installed adapter, reporting usage contradicting its body."""
+
+            def usage_from(self, payload: dict[str, object]) -> tuple[int, int] | None:
+                del payload
+                return (999, 999)
+
+        liar = LyingAdapter(ProviderAdapterSpec.model_validate(_acme_spec_values()))
+        report = run_adapter_conformance(liar)
+        assert report.failures, "the lying adapter must fail the shared suite"
 
         # Registration refusal is contained: nothing enters catalog or registry.
         registry = InMemoryProviderRegistry()
@@ -747,9 +857,8 @@ class TestRegistrationIsolationAndSharedConformance:
         assert still_active.state is ExtensionState.ACTIVE
 
         # The installed connector still registers and conforms.
-        connector_loaded = await InstalledFamilyLoader(install_root).load(
-            connector_record, artifacts["acme.repo_feed@1.0.0"]
-        )
+        connector_loaded = loader.activation(connector_record.install_id)
+        assert isinstance(connector_loaded, LoadedFamily)
         violations = await run_connector_conformance(
             connector_loaded.module.build_connector(),
             workspace_ids=(WORKSPACE,),
