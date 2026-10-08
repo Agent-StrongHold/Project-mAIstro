@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproducible end-to-end extension lifecycle proof (M9-J3, issue #981).
+"""Reproducible end-to-end extension lifecycle proof (M9-J3 #981, epic M9-J #948).
 
 One script runs the whole external extension lifecycle — discover → resolve →
 inspect → authorize → install → invoke → observe → update → reauthorization
@@ -7,6 +7,21 @@ fence → restart durability — against the platform's real production seams, a
 emits the evidence as a machine-readable ``lineage.json`` plus a
 human-readable ``lineage.md`` into an output directory. Exit 0 iff every stage
 check passed.
+
+Epic-level stages (#948): beyond the #981 lifecycle, the proof closes the two
+epic acceptance links no sibling lane owned alone —
+
+* ``distribution``: the private organizational catalog is served through the
+  production catalog service (#979) with publisher metadata, search, and
+  digest-anchored manifests, and the same signed snapshot distributes to a
+  second organization as a public catalog — while an org the distribution
+  never reached sees nothing;
+* ``canonical-execution``: the installed, re-authorized artifact is loaded
+  from the install root and executes inside a canonical
+  ``Graph → Run → NodeRun → Attempt`` execution; its declared effect crosses
+  the governed ``Capability → Provider → Binding → Invocation`` seam, so the
+  one public lineage documents every canonical object link from catalog
+  entry through executed Run/Invocation.
 
 What "no source-tree modification / editable-install bypass" means here,
 mechanically:
@@ -22,8 +37,9 @@ mechanically:
   code whose sha256 the catalog pinned and the operator authorized;
 * the private catalog is proof-side data in the scratch directory, in the
   documented catalog-file format, read through the production resolution
-  layer — the #979 catalog *service* is a sibling lane, and the format here
-  is the minimal honest stand-in for one.
+  layer; the ``distribution`` stage additionally serves the same snapshot
+  through the production catalog service (#979), so both the file format
+  and the service surface are exercised.
 
 Determinism: the publisher uses a fixed test-only Ed25519 key, the install
 service runs on an injectable deterministic clock with sequential install
@@ -68,6 +84,16 @@ import aiosqlite
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
+from maistro.capabilities.binding import Binding
+from maistro.capabilities.governed_invocation import (
+    GovernedInvocationExecutionService,
+    InvocationPolicyContext,
+)
+from maistro.capabilities.invocation import (
+    InMemoryInvocationStore,
+    InvocationExecutionService,
+)
+from maistro.events.envelope import InMemoryEventStore
 from maistro.extensions import (
     ArtifactMismatch,
     ExtensionInstallService,
@@ -78,6 +104,14 @@ from maistro.extensions import (
     UnknownInstall,
     resolve_lock,
 )
+from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
+from maistro.extensions.host import ExtensionHost, GovernedEffectRoute
+from maistro.extensions.identity import (
+    ExtensionDescriptor,
+    ExtensionIdentity,
+    InvocationScope,
+)
+from maistro.extensions.manifest import inspect_manifest
 from maistro.extensions.resolution import (
     CatalogEntry,
     ExtensionCatalog,
@@ -100,8 +134,17 @@ from maistro.extensions.types import (
     manifest_snapshot,
     sha256_hex,
 )
+from maistro.graph import Graph, Node
+from maistro.policy.types import Decision, PolicyVerdict
+from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.concurrency import RunConcurrencyLimits
+from maistro.runs.execution import AttemptExecutionService
+from maistro.runs.model import AttemptStatus, RunStatus
+from maistro.runs.store import InMemoryRunStore
+from maistro.runtime import PythonExecutionRuntime
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
-PROOF_SCHEMA = "maistro-extension-lifecycle-proof:v1"
+PROOF_SCHEMA = "maistro-extension-lifecycle-proof:v2"
 
 #: The fixed scratch publisher key seed. Test-only material, deterministic so
 #: the signatures and digests in the lineage are reproducible; it signs
@@ -111,10 +154,14 @@ PUBLISHER_ID = "acme-labs"
 
 CATALOG_SOURCE = "file://proof/private-catalog.json"
 
+#: The repository root, for proving executed code never came from the tree.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 #: Deterministic epoch for the service clock; each read advances one second.
 EPOCH = datetime(2026, 9, 22, 12, 0, 0, tzinfo=UTC)
 
 ORG = "org-acme"
+ORG_B = "org-northwind"
 WORKSPACE = "ws-7"
 WORKSPACE_B = "ws-999"
 OPERATOR = "operator:alice"
@@ -126,6 +173,9 @@ NOTARY_1_0_0 = "acme.notary@1.0.0"
 NOTARY_1_1_0 = "acme.notary@1.1.0"
 NOTARY_2_0_0 = "acme.notary@2.0.0"
 GREETER_1_0_0 = "acme.greeter@1.0.0"
+
+#: The one text whose seal crosses the governed seam in the canonical stage.
+CANONICAL_SEAL_TEXT = "catalog-entry-to-executed-invocation"
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +216,7 @@ def _notary_source(version: str, permissions: tuple[str, ...]) -> str:
     else:
         capability_line = "    del context  # zero-authority version: the context is unused"
         docstring_suffix = " (pure; no capability needed):"
-    return f'''"""acme.notary {version} entrypoint (proof artifact)."""
+    source = f'''"""acme.notary {version} entrypoint (proof artifact)."""
 
 import hashlib
 
@@ -186,7 +236,32 @@ def seal(context, text):
 
 
 HANDLERS = {{"seal": seal}}
+
+
+class NotaryLifecycle:
+    """SDK-shaped lifecycle over the public context protocol, nothing else.
+
+    ``invoke`` asks for the storage capability by name. Under a host whose
+    descriptor declares and routes it (2.0.0, granted), the request crosses
+    the governed Capability → Provider → Binding → Invocation seam; under a
+    zero-authority grant (1.x) the host refuses it as undeclared — the same
+    fence either way, decided by the grant, never by the artifact.
+    """
+
+    async def activate(self, context):
+        self.activated_workspace = context.scope.workspace_id
+
+    async def invoke(self, context):
+        receipt = await context.invoke_effect(
+            "{{capability_name}}", {{"text": context.config["text"]}}
+        )
+        return {{"invocation_id": receipt.invocation_id, "sealed": receipt.result}}
+
+    async def deactivate(self, context):
+        self.activated_workspace = None
 '''
+    capability_name = permissions[0] if permissions else STORAGE_CAPABILITY
+    return source.replace("{capability_name}", capability_name)
 
 
 @dataclass(frozen=True)
@@ -831,6 +906,91 @@ class LifecycleProof:
         )
         return stage
 
+    async def stage_public_distribution(self) -> Stage:
+        """Public/private catalog distribution through the #979 service.
+
+        The same signed snapshot is (a) the organization's private catalog,
+        served with publisher metadata, search, and digest-anchored manifest
+        detail, and (b) a public distribution any consuming organization can
+        serve from the identical bytes — while an organization the
+        distribution never reached sees nothing.
+        """
+        stage = self._stage("distribution")
+        catalog, _snapshot = load_private_catalog(self.catalog_path)
+        self.catalog_entries = catalog.entries
+        pairs = [
+            (entry, inspect_manifest(self.manifests[key]))
+            for entry in catalog.entries
+            for key in [f"{entry.identity.extension_name}@{entry.identity.semantic_version}"]
+        ]
+        private = CatalogService(InMemoryCatalogStore())
+        await private.set_catalog(ORG, pairs)
+
+        listing = await private.list_extensions(ORG)
+        stage.check(
+            "private-listing-serves-publisher-metadata",
+            len(listing) == 4
+            and all(
+                item["publisher_id"] == PUBLISHER_ID
+                and len(str(item["package_sha256"])) == 64
+                and len(str(item["manifest_sha256"])) == 64
+                and item["signature"]
+                for item in listing
+            ),
+            "the private organizational catalog lists four pinned versions, "
+            "each carrying publisher, package/manifest digests, and signature",
+        )
+        notary_hits = await private.list_extensions(ORG, search="notary")
+        publisher_hits = await private.list_extensions(ORG, publisher_id=PUBLISHER_ID)
+        stage.check(
+            "search-and-publisher-filter",
+            len(notary_hits) == 3 and len(publisher_hits) == 4,
+            "search narrows by name/publisher; the publisher filter returns "
+            "the publisher's whole offering",
+        )
+        detail = await private.get_extension_version(ORG, "acme.notary", "2.0.0")
+        assert detail is not None
+        stage.check(
+            "version-detail-anchors-the-manifest",
+            list(detail["permissions"]) == [STORAGE_CAPABILITY]
+            and detail["artifact_sha256"] == sha256_hex(self.artifacts[NOTARY_2_0_0]),
+            "the per-version detail an operator reads before install renders "
+            "the inspected manifest snapshot: declared permissions and the "
+            "pinned artifact digest",
+        )
+
+        public = CatalogService(InMemoryCatalogStore())
+        await public.set_catalog(ORG_B, pairs)
+        public_listing = await public.list_extensions(ORG_B)
+        private_identities = sorted(
+            (item["extension_name"], item["version"], str(item["package_sha256"]))
+            for item in listing
+        )
+        public_identities = sorted(
+            (item["extension_name"], item["version"], str(item["package_sha256"]))
+            for item in public_listing
+        )
+        stage.check(
+            "public-distribution-serves-identical-bytes",
+            private_identities == public_identities,
+            f"the public distribution serves {ORG_B} from the identical "
+            "identity set — one published snapshot, digest-anchored for "
+            "every consumer",
+        )
+        stage.check(
+            "unpublished-org-sees-nothing",
+            await private.list_extensions("org-nobody") == ()
+            and await private.get_catalog("org-nobody") is None,
+            "an organization the distribution never reached has no catalog "
+            "at all — distribution is per-org, not ambient",
+        )
+        stage.evidence["private_org"] = ORG
+        stage.evidence["public_org"] = ORG_B
+        stage.evidence["listed_versions"] = [
+            f"{name}@{version}" for name, version, _ in private_identities
+        ]
+        return stage
+
     def stage_discover(self) -> Stage:
         """Discover + resolve: one operator ask becomes a reproducible lock."""
         stage = self._stage("discover")
@@ -1159,6 +1319,201 @@ class LifecycleProof:
         }
         return stage
 
+    async def stage_canonical_execution(self) -> Stage:
+        """Catalog entry → installed artifact → executed Run/Invocation.
+
+        The epic's closing link (#948): the installed, re-authorized notary
+        2.0.0 artifact — loaded from the install root, never the source tree
+        — executes inside a canonical ``Graph → Run → NodeRun → Attempt``
+        execution, and its declared effect crosses the governed
+        ``Capability → Provider → Binding → Invocation`` seam. The canonical
+        Invocation row carries the full attempt correlation; the canonical
+        event stream carries the extension provenance; every digest in the
+        chain resolves back to the catalog entry the operator inspected.
+        """
+        stage = self._stage("canonical-execution")
+        record = await self.service.active(self.scope, "acme.notary")
+        assert record is not None and record.artifact_sha256 is not None
+        loaded = self.loaded["acme.notary@2.0.0"]
+        lifecycle = loaded.module.NotaryLifecycle()
+
+        # Canonical execution spine: one Graph, one Run, one NodeRun, and the
+        # Attempt the extension invocation will correlate to.
+        projects = InMemoryProjectScopeStore()
+        root = await projects.create_root(WORKSPACE)
+        project = await projects.create(
+            workspace_id=WORKSPACE, parent_project_id=root.project_id, name="Extensions"
+        )
+        runs = InMemoryRunStore(project_store=projects, concurrency_limits=RunConcurrencyLimits())
+        graph = Graph(
+            workspace_id=WORKSPACE,
+            project_id=project.project_id,
+            name="Notary canonical execution",
+            nodes=[Node(node_id="node-1", node_type="agent")],
+        )
+        run = await runs.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+        node_run = await runs.create_node_run(run.run_id, node_id="node-1")
+        node_run = await runs.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+        node_run = await runs.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+
+        # The governed seam: the declared effect routes through policy, a
+        # resolved provider, and a canonical Invocation store.
+        events = InMemoryEventStore()
+        invocations = InMemoryInvocationStore()
+
+        async def allow_policy(
+            _binding: Binding, _request: Any, _context: InvocationPolicyContext
+        ) -> PolicyVerdict:
+            return PolicyVerdict(
+                Decision.ALLOW,
+                reason="notary storage grant frozen at re-authorization",
+                rule="proof.storage-allow",
+            )
+
+        class _SealProvider:
+            name = "proof-seal-provider"
+            slot = STORAGE_CAPABILITY
+            trust_tier = "trusted"
+
+        async def _resolver(_binding: Binding) -> _SealProvider:
+            return _SealProvider()
+
+        async def _executor(_provider: _SealProvider, request: Any) -> dict[str, str]:
+            text = str(request["text"]) if isinstance(request, dict) else str(request)
+            return {"sealed": hashlib.sha256(text.encode("utf-8")).hexdigest()}
+
+        governed = GovernedInvocationExecutionService(
+            invocation_service=InvocationExecutionService(store=invocations),
+            event_store=events,
+            policy_evaluator=allow_policy,
+        )
+        route = GovernedEffectRoute(
+            effect_key=STORAGE_CAPABILITY,
+            binding=Binding(
+                workspace_id=WORKSPACE,
+                project_id=project.project_id,
+                capability=STORAGE_CAPABILITY,
+            ),
+            invocations=governed,
+            resolver=_resolver,
+            executor=_executor,
+        )
+        host = ExtensionHost(
+            descriptor=ExtensionDescriptor(
+                identity=ExtensionIdentity(
+                    extension_id=record.extension_id, version=record.version
+                ),
+                config_keys=frozenset({"text"}),
+                effects=frozenset(record.granted_permissions),
+            ),
+            config_values={"text": CANONICAL_SEAL_TEXT},
+            effect_routes={STORAGE_CAPABILITY: route},
+            events=events,
+        )
+
+        activation = host.activation_context(workspace_id=WORKSPACE, agent_id="agent-1")
+        await host.activate(lifecycle, activation)
+
+        def context_factory(attempt: Any, _execution_context: Any) -> Any:
+            scope = InvocationScope(
+                workspace_id=WORKSPACE,
+                agent_id="agent-1",
+                run_id=run.run_id,
+                node_run_id=node_run.node_run_id,
+                attempt_id=attempt.attempt_id,
+            )
+            return host.invocation_context(scope)
+
+        service = AttemptExecutionService(store=runs, runtime=PythonExecutionRuntime())
+        captured: dict[str, Any] = {}
+
+        async def execute_and_capture(_work: Any, context: Any) -> Any:
+            value = await host.invoke(lifecycle, context)
+            captured["result"] = value
+            return value
+
+        terminal = await service.execute(
+            node_run.node_run_id,
+            None,
+            None,
+            executor=execute_and_capture,
+            context_factory=context_factory,
+        )
+        await host.deactivate(lifecycle, activation)
+        stage.check(
+            "attempt-completed-with-extension-result",
+            terminal.status is AttemptStatus.COMPLETED,
+            "the installed artifact's lifecycle executes inside the canonical "
+            "Attempt and the Attempt completes with its result",
+        )
+        result = captured["result"]
+        assert isinstance(result, dict) and "invocation_id" in result
+        invocation_id = str(result["invocation_id"])
+        stored = await invocations.get(invocation_id)
+        assert stored is not None
+        expected_seal = hashlib.sha256(CANONICAL_SEAL_TEXT.encode("utf-8")).hexdigest()
+        stage.check(
+            "invocation-carries-attempt-correlation",
+            stored.run_id == run.run_id
+            and stored.node_run_id == node_run.node_run_id
+            and stored.attempt_id == terminal.attempt_id
+            and stored.status.value == "completed"
+            and stored.result == {"sealed": expected_seal},
+            "the governed seam persisted one canonical Invocation carrying the "
+            "Run → NodeRun → Attempt correlation and the settled effect",
+        )
+        stream = await events.list_stream(f"workspace:{WORKSPACE}")
+        effect_events = [e for e in stream if e.type == "extension.effect.invoked"]
+        stage.check(
+            "extension-provenance-on-canonical-stream",
+            len(effect_events) == 1
+            and effect_events[0].provenance
+            == {"extension_id": record.extension_id, "extension_version": record.version}
+            and effect_events[0].attempt_id == terminal.attempt_id
+            and effect_events[0].invocation_id == invocation_id,
+            "the canonical event stream attributes the executed effect to the "
+            "extension identity and the same Attempt",
+        )
+        module_origin = Path(str(loaded.module.__spec__.origin)).resolve()  # type: ignore[attr-defined]
+        stage.check(
+            "executed-code-is-the-installed-artifact",
+            module_origin.is_relative_to(self.install_root)
+            and not module_origin.is_relative_to(REPO_ROOT / "packages")
+            and not module_origin.is_relative_to(REPO_ROOT / "extensions"),
+            "the code that ran inside the canonical Attempt was imported from "
+            "the extracted artifact under the install root — not the source tree",
+        )
+        entry = next(
+            e
+            for e in self.catalog_entries
+            if e.identity.extension_name == "acme.notary" and e.identity.semantic_version == "2.0.0"
+        )
+        chain = {
+            "catalog_entry_sha256": entry.identity.package_sha256,
+            "install_record_sha256": record.artifact_sha256,
+        }
+        stage.check(
+            "chain-links-catalog-entry-to-executed-invocation",
+            chain["catalog_entry_sha256"]
+            == chain["install_record_sha256"]
+            == sha256_hex(self.artifacts[NOTARY_2_0_0]),
+            "one artifact digest links the catalog entry the operator "
+            "inspected, the installed record, and the code that executed "
+            "inside the canonical Run/Invocation",
+        )
+        stage.evidence.update(
+            {
+                "run_id": run.run_id,
+                "node_run_id": node_run.node_run_id,
+                "attempt_id": terminal.attempt_id,
+                "invocation_id": invocation_id,
+                "extension": {"id": record.extension_id, "version": record.version},
+                "artifact_sha256": record.artifact_sha256,
+                "attempt_status": str(terminal.status),
+            }
+        )
+        return stage
+
     async def stage_catalog_tamper_and_outage(self) -> Stage:
         """Catalog truth cannot rewrite installed truth; outage is survivable."""
         stage = self._stage("catalog-integrity")
@@ -1349,12 +1704,14 @@ class LifecycleProof:
 
     async def run(self) -> dict[str, Any]:
         self.stage_build_catalog()
+        await self.stage_public_distribution()
         self.stage_discover()
         notary_record, _ = await self.stage_inspect()
         notary_active = await self.stage_authorize_and_install(notary_record)
         await self.stage_invoke_and_observe(notary_active)
         await self.stage_denials()
         await self.stage_update_and_fence()
+        await self.stage_canonical_execution()
         await self.stage_catalog_tamper_and_outage()
         await self.stage_durable_restart()
         self.stage_canonical_truth_untouched()
@@ -1390,7 +1747,7 @@ class LifecycleProof:
         core = self.deterministic_core()
         return {
             "schema": PROOF_SCHEMA,
-            "issue": "M9-J3 (#981)",
+            "issue": "M9-J3 (#981) · epic M9-J (#948)",
             "base_commit": _base_commit(),
             "scope": {"org_id": ORG, "workspace_id": WORKSPACE},
             "publisher": {

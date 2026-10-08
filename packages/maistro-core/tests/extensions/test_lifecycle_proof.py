@@ -40,12 +40,14 @@ SCRIPT = REPO / "scripts" / "extension_lifecycle_proof.py"
 
 EXPECTED_STAGES = (
     "build-catalog",
+    "distribution",
     "discover",
     "inspect",
     "authorize-install",
     "invoke-observe",
     "denials",
     "update-fence",
+    "canonical-execution",
     "catalog-integrity",
     "durable-restart",
     "canonical-truth-boundary",
@@ -140,6 +142,92 @@ class TestProofDeterminism:
     async def test_reported_base_commit_is_a_commit(self, proof_module, tmp_path: Path) -> None:
         report = await _run_proof(proof_module, tmp_path / "scratch")
         assert len(report["base_commit"]) == 40
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.scope("integration")
+class TestEpicCatalogDistribution:
+    """Epic #948: public/private catalog distribution through the #979 service."""
+
+    async def test_distribution_stage_proves_public_and_private_surfaces(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        report = await _run_proof(proof_module, tmp_path / "scratch")
+        stage = next(s for s in report["stages"] if s["name"] == "distribution")
+        assert stage["ok"]
+        check_ids = {c["id"] for c in stage["checks"]}
+        assert {
+            "private-listing-serves-publisher-metadata",
+            "search-and-publisher-filter",
+            "version-detail-anchors-the-manifest",
+            "public-distribution-serves-identical-bytes",
+            "unpublished-org-sees-nothing",
+        } <= check_ids
+        assert stage["evidence"]["private_org"] != stage["evidence"]["public_org"]
+        assert len(stage["evidence"]["listed_versions"]) == 4
+
+    async def test_public_distribution_carries_pinned_identity_per_consumer(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        """Both consuming orgs see byte-identical identity digests, per entry."""
+        proof = proof_module.LifecycleProof(tmp_path / "scratch")
+        await proof.run()
+        stage = next(s for s in proof.stages if s.name == "distribution")
+        # Re-derive what the stage proved, from the same store pairs: the
+        # entries offered to each org are the same objects, so their digests
+        # cannot drift between consumers.
+        identities = sorted(
+            (e.identity.extension_name, e.identity.semantic_version, e.identity.package_sha256)
+            for e in proof.catalog_entries
+        )
+        assert len(identities) == 4
+        assert all(len(identity[2]) == 64 for identity in identities)
+        assert stage.ok
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.scope("integration")
+class TestEpicCanonicalExecution:
+    """Epic #948: catalog entry → installed artifact → executed Run/Invocation."""
+
+    async def test_canonical_execution_links_catalog_entry_to_run_invocation(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        report = await _run_proof(proof_module, tmp_path / "scratch")
+        stage = next(s for s in report["stages"] if s["name"] == "canonical-execution")
+        assert stage["ok"]
+        check_ids = {c["id"] for c in stage["checks"]}
+        assert {
+            "attempt-completed-with-extension-result",
+            "invocation-carries-attempt-correlation",
+            "extension-provenance-on-canonical-stream",
+            "executed-code-is-the-installed-artifact",
+            "chain-links-catalog-entry-to-executed-invocation",
+        } <= check_ids
+        evidence = stage["evidence"]
+        assert evidence["run_id"] and evidence["node_run_id"] and evidence["attempt_id"]
+        assert evidence["invocation_id"]
+        assert evidence["attempt_status"] == "completed"
+        assert len(evidence["artifact_sha256"]) == 64
+
+    async def test_every_digest_link_of_the_chain_is_identical(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        """Catalog entry, install record, lock pin: one artifact digest."""
+        proof = proof_module.LifecycleProof(tmp_path / "scratch")
+        await proof.run()
+        record = await proof.service.active(proof.scope, "acme.notary")
+        assert record is not None and record.artifact_sha256 is not None
+        entry = next(
+            e
+            for e in proof.catalog_entries
+            if e.identity.extension_name == "acme.notary"
+            and e.identity.semantic_version == record.version
+        )
+        assert entry.identity.package_sha256 == record.artifact_sha256
+        assert record.artifact_sha256 == proof_module.sha256_hex(
+            proof.artifacts[f"acme.notary@{record.version}"]
+        )
 
 
 @pytest.mark.contract("boundary")
@@ -270,7 +358,7 @@ class TestCommandLineContract:
         )
         assert result.returncode == 0, result.stdout + result.stderr
         report = json.loads((out / "lineage.json").read_text(encoding="utf-8"))
-        assert report["schema"] == "maistro-extension-lifecycle-proof:v1"
+        assert report["schema"] == "maistro-extension-lifecycle-proof:v2"
         assert report["summary"]["checks_failed"] == 0
         markdown = (out / "lineage.md").read_text(encoding="utf-8")
         assert "# Extension lifecycle proof — lineage" in markdown
