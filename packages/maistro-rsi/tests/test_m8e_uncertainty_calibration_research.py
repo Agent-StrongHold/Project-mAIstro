@@ -8,9 +8,10 @@ calibration), #932 (heterogeneous-model disagreement and verifier signals),
 This module is a RESEARCH ARTIFACT, not product code. It implements the
 metric machinery the M8-E contract demands — discrimination (AUROC/AUPRC),
 calibration error (ECE), Brier score, risk-coverage, outcome-based historical
-calibration, variation-based agreement signals, and an abstention-policy
-utility frontier — so each leaf's benchmark procedure is reproducible before
-any provider experiment is run.
+calibration, variation-based agreement signals, an abstention-policy
+utility frontier, and a destination-aware escalation frontier (#933:
+stronger model / specialist Agent / verifier / HITL) — so each leaf's
+benchmark procedure is reproducible before any provider experiment is run.
 
 Trust boundary (the epic's contract, enforced by construction):
 
@@ -102,11 +103,11 @@ class EscalationCosts:
     """Utility model for the abstention/defer policy frontier (#933).
 
     ``defer_cost`` is the cost of routing a decision to a human or another
-    destination instead of answering. Destinations (stronger model,
-    specialist Agent, verifier, HITL) differ in cost and in the quality of
-    the answer they eventually produce; measuring destination quality needs
-    real cascade outcome data (#915), so the frontier models deferral as a
-    single measured cost and never simulates an authority acting.
+    destination instead of answering. This single measured cost is the
+    conservative baseline; :func:`m8e_escalation_frontier` below refines it
+    with operator-supplied destination parameters (stronger model,
+    specialist Agent, verifier, HITL) measured from cascade/outcome data
+    (#915). Neither frontier simulates an authority acting.
     """
 
     correct_reward: float = 1.0
@@ -124,6 +125,53 @@ class PolicyPoint:
     unsafe_action_rate: float  # wrong answers / all decisions
     defer_rate: float
     unnecessary_deferral_rate: float  # deferred but would have succeeded / all
+
+
+@dataclass(frozen=True)
+class EscalationDestination:
+    """One escalation destination with operator-supplied measured parameters.
+
+    #933 requires the frontier to compare *where* a low-confidence decision
+    goes, not merely whether it defers. Each destination carries the three
+    parameters the utility math needs — the probability that its involvement
+    eventually yields a correct outcome, its marginal utility cost, and its
+    latency — which an operator measures from cascade/outcome data and
+    supplies here; nothing in this module invents or measures them. A
+    destination is a *description* of where help could come from, never an
+    authority: this module cannot invoke a stronger model, a specialist
+    Agent, a verifier, or a human. The canonical Warden/HITL/delegation
+    controls (ADR-068) remain the only paths that act.
+    """
+
+    name: str
+    eventual_success_rate: float  # P(eventual outcome correct | escalated here)
+    marginal_cost: float  # utility delta per escalation, negative = spend
+    latency: float  # per-escalation latency, comparable units across destinations
+    human_intervention: bool = False  # True only for HITL-class destinations
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("destination name must be non-empty")
+        if not 0.0 <= self.eventual_success_rate <= 1.0:
+            raise ValueError(f"eventual_success_rate {self.eventual_success_rate} outside [0, 1]")
+        if self.latency < 0.0:
+            raise ValueError(f"latency {self.latency} must be non-negative")
+
+
+@dataclass(frozen=True)
+class EscalationPolicyPoint:
+    """Measured outcome of one threshold of a destination-routing policy. Evidence only."""
+
+    threshold: float
+    expected_utility: float
+    answer_rate: float
+    unsafe_action_rate: float  # wrong answers / all decisions
+    escalation_rate: float  # escalated decisions / all
+    human_intervention_rate: float  # HITL-class escalations / all
+    unnecessary_escalation_rate: float  # escalated but would have succeeded / all
+    escalation_cost: float  # mean marginal destination cost per decision
+    escalation_latency: float  # mean destination latency per decision
+    destination_shares: tuple[tuple[str, float], ...]  # (name, share of all), name-ascending
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +530,158 @@ def m8e_apply_overconfidence_drift(
     return drifted
 
 
+def m8e_route_to_destination(
+    score: float, bands: Sequence[tuple[float, EscalationDestination]]
+) -> EscalationDestination:
+    """Route one deferred decision by ascending confidence bands.
+
+    ``bands`` pairs strictly ascending upper bounds with destinations: a
+    deferred decision routes to the first band whose bound strictly exceeds
+    its score, so an operator can send the least-confident work to HITL and
+    the nearly-confident work to a cheap verifier. A score at or above every
+    bound routes to the final destination. The band table is validated on
+    every call: a malformed table is an error, never a silent misroute.
+    """
+    if not bands:
+        raise ValueError("at least one escalation band is required")
+    previous_bound = -math.inf
+    for bound, _ in bands:
+        if bound <= previous_bound:
+            raise ValueError("escalation band bounds must be strictly ascending")
+        previous_bound = bound
+    for bound, destination in bands:
+        if score < bound:
+            return destination
+    return bands[-1][1]
+
+
+def _m8e_measure_escalation_threshold(
+    observations: Sequence[UncertaintyObservation],
+    scores: Sequence[float],
+    threshold: float,
+    bands: Sequence[tuple[float, EscalationDestination]],
+    costs: EscalationCosts,
+) -> dict[str, float]:
+    """Measure one answer-or-escalate threshold; returns raw totals and rates."""
+    total = len(observations)
+    utility = 0.0
+    answered = 0
+    wrong_answers = 0
+    escalated = 0
+    human_escalations = 0
+    escalated_would_succeed = 0
+    escalation_cost = 0.0
+    escalation_latency = 0.0
+    for o, score in zip(observations, scores, strict=True):
+        if score >= threshold:
+            answered += 1
+            if o.success:
+                utility += costs.correct_reward
+            else:
+                utility += costs.wrong_penalty
+                wrong_answers += 1
+            continue
+        destination = m8e_route_to_destination(score, bands)
+        escalated += 1
+        utility += (
+            destination.eventual_success_rate * costs.correct_reward
+            + (1.0 - destination.eventual_success_rate) * costs.wrong_penalty
+            + destination.marginal_cost
+        )
+        escalation_cost += destination.marginal_cost
+        escalation_latency += destination.latency
+        if destination.human_intervention:
+            human_escalations += 1
+        if o.success:
+            escalated_would_succeed += 1
+    return {
+        "expected_utility": utility / total,
+        "answer_rate": answered / total,
+        "unsafe_action_rate": wrong_answers / total,
+        "escalation_rate": escalated / total,
+        "human_intervention_rate": human_escalations / total,
+        "unnecessary_escalation_rate": escalated_would_succeed / total,
+        "escalation_cost": escalation_cost / total,
+        "escalation_latency": escalation_latency / total,
+    }
+
+
+def m8e_escalation_frontier(
+    observations: Sequence[UncertaintyObservation],
+    scores: Sequence[float],
+    thresholds: Sequence[float],
+    bands: Sequence[tuple[float, EscalationDestination]],
+    costs: EscalationCosts | None = None,
+) -> tuple[EscalationPolicyPoint, ...]:
+    """Measured utility frontier of answer-or-escalate policies over thresholds.
+
+    The policy answers when the score reaches the threshold and otherwise
+    escalates to the destination its confidence band selects (:func:
+    `m8e_route_to_destination`). An escalated decision contributes
+    ``dest.eventual_success_rate * correct_reward + (1 -
+    dest.eventual_success_rate) * wrong_penalty + dest.marginal_cost`` of
+    utility — expected utility under the operator's stated destination
+    parameters, not a simulated authority acting. Every returned field is a
+    measurement (rates, means, shares); the frontier proposes, it never
+    acts, and any real escalation remains with the canonical
+    Warden/HITL/delegation controls (ADR-068).
+    """
+    if len(observations) != len(scores):
+        raise ValueError("scores must align with observations")
+    if not observations:
+        raise ValueError("frontier needs at least one observation")
+    if not bands:
+        raise ValueError("at least one escalation band is required")
+    previous_bound = -math.inf
+    for bound, _ in bands:
+        if bound <= previous_bound:
+            raise ValueError("escalation band bounds must be strictly ascending")
+        previous_bound = bound
+    names = [destination.name for _, destination in bands]
+    if len(set(names)) != len(names):
+        raise ValueError("escalation destination names must be unique")
+    if costs is None:
+        costs = EscalationCosts()
+    total = len(observations)
+    names = [destination.name for _, destination in bands]
+    points: list[EscalationPolicyPoint] = []
+    for threshold in thresholds:
+        measured = _m8e_measure_escalation_threshold(observations, scores, threshold, bands, costs)
+        per_destination = _m8e_count_destinations(observations, scores, threshold, bands)
+        points.append(
+            EscalationPolicyPoint(
+                threshold=threshold,
+                expected_utility=measured["expected_utility"],
+                answer_rate=measured["answer_rate"],
+                unsafe_action_rate=measured["unsafe_action_rate"],
+                escalation_rate=measured["escalation_rate"],
+                human_intervention_rate=measured["human_intervention_rate"],
+                unnecessary_escalation_rate=measured["unnecessary_escalation_rate"],
+                escalation_cost=measured["escalation_cost"],
+                escalation_latency=measured["escalation_latency"],
+                destination_shares=tuple(
+                    (name, per_destination.get(name, 0) / total) for name in sorted(names)
+                ),
+            )
+        )
+    return tuple(points)
+
+
+def _m8e_count_destinations(
+    observations: Sequence[UncertaintyObservation],
+    scores: Sequence[float],
+    threshold: float,
+    bands: Sequence[tuple[float, EscalationDestination]],
+) -> dict[str, int]:
+    """Count routed escalations per destination name below one threshold."""
+    counts: Counter[str] = Counter()
+    for _, score in zip(observations, scores, strict=True):
+        if score >= threshold:
+            continue
+        counts[m8e_route_to_destination(score, bands).name] += 1
+    return dict(counts)
+
+
 # ---------------------------------------------------------------------------
 # Deterministic synthetic corpora — fixtures for the metric math, NOT results
 # ---------------------------------------------------------------------------
@@ -502,6 +702,28 @@ def m8e_synthetic_corpus(seed: int = 904, n: int = 400) -> list[UncertaintyObser
         success = rng.random() < skill[context]
         corpus.append(UncertaintyObservation(context, claimed, success))
     return corpus
+
+
+def m8e_destination_fixture() -> tuple[tuple[float, EscalationDestination], ...]:
+    """Deterministic escalation-band fixture for the metric math — NOT results.
+
+    The four #933 destination classes with hand-picked parameters that make
+    the frontier arithmetic hand-checkable: the least-confident decisions
+    (score < 0.25) route to HITL, then a specialist Agent, then a stronger
+    model, and the nearly-confident remainder to a verifier. Like the
+    synthetic corpora, these parameters are fixtures — they assert nothing
+    about any real model, Agent, verifier, or human escalation path.
+    """
+    hitl = EscalationDestination("human-hitl", 1.0, -0.5, 10.0, human_intervention=True)
+    specialist = EscalationDestination("specialist-agent", 0.9, -0.4, 5.0)
+    stronger = EscalationDestination("stronger-model", 0.85, -0.3, 3.0)
+    verifier = EscalationDestination("verifier", 1.0, -0.1, 1.0)
+    return (
+        (0.25, hitl),
+        (0.55, specialist),
+        (0.85, stronger),
+        (2.0, verifier),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -790,6 +1012,231 @@ class TestAbstentionPolicy:
         assert first != other
         with pytest.raises(ValueError, match="non-negative"):
             m8e_apply_overconfidence_drift(observations, -0.1, random.Random(1))
+
+
+# ---------------------------------------------------------------------------
+# Tests: destination-aware escalation policy frontier (#933)
+# ---------------------------------------------------------------------------
+
+
+class TestEscalationPolicyDestinations:
+    def test_destination_parameters_are_validated(self) -> None:
+        with pytest.raises(ValueError, match="name"):
+            EscalationDestination("", 0.5, -0.1, 1.0)
+        with pytest.raises(ValueError, match="eventual_success_rate"):
+            EscalationDestination("d", 1.5, -0.1, 1.0)
+        with pytest.raises(ValueError, match="latency"):
+            EscalationDestination("d", 0.5, -0.1, -1.0)
+
+    def test_bands_route_by_confidence_with_urgency_first(self) -> None:
+        bands = m8e_destination_fixture()
+        # The least-confident decisions reach the human; the nearly-confident
+        # ones reach the cheap verifier; band bounds are exclusive lower edges.
+        assert m8e_route_to_destination(0.0, bands).human_intervention is True
+        assert m8e_route_to_destination(0.24, bands).name == "human-hitl"
+        assert m8e_route_to_destination(0.25, bands).name == "specialist-agent"
+        assert m8e_route_to_destination(0.54, bands).name == "specialist-agent"
+        assert m8e_route_to_destination(0.84, bands).name == "stronger-model"
+        assert m8e_route_to_destination(0.99, bands).name == "verifier"
+        # A score above every bound routes to the final destination.
+        assert m8e_route_to_destination(5.0, bands).name == "verifier"
+        with pytest.raises(ValueError, match="at least one"):
+            m8e_route_to_destination(0.5, [])
+        with pytest.raises(ValueError, match="ascending"):
+            m8e_route_to_destination(0.5, [(0.5, bands[0][1]), (0.4, bands[1][1])])
+
+    def test_escalation_frontier_hand_checked_all_deferred(self) -> None:
+        # Four deferred decisions, one per band, hand-checked arithmetic.
+        # Deferred utility per destination: hitl 1*1 + 0*(-1) - 0.5 = 0.5;
+        # specialist 0.9 - 0.1 - 0.4 = 0.4; stronger 0.85 - 0.15 - 0.3 = 0.4;
+        # verifier 1 - 0.1 = 0.9. Sum 2.2 over 4 decisions.
+        observations = [
+            UncertaintyObservation("c", 0.99, True, {"s": 0.10}),
+            UncertaintyObservation("c", 0.99, False, {"s": 0.30}),
+            UncertaintyObservation("c", 0.99, True, {"s": 0.60}),
+            UncertaintyObservation("c", 0.99, True, {"s": 0.90}),
+        ]
+        scores = [o.signals["s"] for o in observations]
+        point = m8e_escalation_frontier(observations, scores, [1.1], m8e_destination_fixture())[0]
+        assert point.expected_utility == pytest.approx(0.55)
+        assert point.answer_rate == pytest.approx(0.0)
+        assert point.unsafe_action_rate == pytest.approx(0.0)
+        assert point.escalation_rate == pytest.approx(1.0)
+        assert point.human_intervention_rate == pytest.approx(0.25)
+        # Three escalations were avoidable: the decision would have succeeded.
+        assert point.unnecessary_escalation_rate == pytest.approx(0.75)
+        assert point.escalation_cost == pytest.approx(-0.325)
+        assert point.escalation_latency == pytest.approx(4.75)
+        assert dict(point.destination_shares) == {
+            "human-hitl": 0.25,
+            "specialist-agent": 0.25,
+            "stronger-model": 0.25,
+            "verifier": 0.25,
+        }
+
+    def test_escalation_frontier_hand_checked_mixed_threshold(self) -> None:
+        # At threshold 0.5 the two high scores answer (both succeed, +1 each)
+        # and the two low scores escalate: hitl 0.5, specialist 0.4.
+        observations = [
+            UncertaintyObservation("c", 0.99, True, {"s": 0.10}),
+            UncertaintyObservation("c", 0.99, False, {"s": 0.30}),
+            UncertaintyObservation("c", 0.99, True, {"s": 0.60}),
+            UncertaintyObservation("c", 0.99, True, {"s": 0.90}),
+        ]
+        scores = [o.signals["s"] for o in observations]
+        point = m8e_escalation_frontier(observations, scores, [0.5], m8e_destination_fixture())[0]
+        assert point.expected_utility == pytest.approx((1 + 1 + 0.5 + 0.4) / 4)
+        assert point.answer_rate == pytest.approx(0.5)
+        assert point.unsafe_action_rate == pytest.approx(0.0)
+        assert point.escalation_rate == pytest.approx(0.5)
+        assert point.human_intervention_rate == pytest.approx(0.25)
+        assert point.unnecessary_escalation_rate == pytest.approx(0.25)
+        assert point.escalation_cost == pytest.approx((-0.5 - 0.4) / 4)
+        assert point.escalation_latency == pytest.approx((10 + 5) / 4)
+
+    def test_escalation_and_human_intervention_rates_are_monotone_in_threshold(self) -> None:
+        observations = m8e_synthetic_corpus()
+        scores = m8e_policy_scores(observations)
+        thresholds = [0.0, 0.25, 0.5, 0.75, 1.0]
+        frontier = m8e_escalation_frontier(
+            observations, scores, thresholds, m8e_destination_fixture()
+        )
+        escalation = [p.escalation_rate for p in frontier]
+        human = [p.human_intervention_rate for p in frontier]
+        assert escalation == sorted(escalation)
+        assert human == sorted(human)
+
+    def test_destination_quality_and_cost_move_utility_as_stated(self) -> None:
+        # The frontier prices destinations from the operator's parameters: a
+        # better eventual success rate must raise deferred utility, a
+        # costlier destination must lower it. It privileges no destination.
+        observations = [UncertaintyObservation("c", 0.4, False)]  # deferred either way
+        low = EscalationDestination("d", 0.0, 0.0, 0.0)
+        high = EscalationDestination("d", 1.0, 0.0, 0.0)
+        costly = EscalationDestination("d", 1.0, -0.5, 0.0)
+        assert m8e_escalation_frontier(observations, [0.4], [0.5], [(1.0, low)])[
+            0
+        ].expected_utility == pytest.approx(-1.0)
+        assert m8e_escalation_frontier(observations, [0.4], [0.5], [(1.0, high)])[
+            0
+        ].expected_utility == pytest.approx(1.0)
+        assert m8e_escalation_frontier(observations, [0.4], [0.5], [(1.0, costly)])[
+            0
+        ].expected_utility == pytest.approx(0.5)
+
+    def test_variation_signal_beats_self_report_at_routing_escalations(self) -> None:
+        # The #933 experiment in miniature: policy scores from a #930-style
+        # agreement signal against self-report on the same corpus, same
+        # threshold, same bands. Self-report cannot distinguish the
+        # confidently-wrong from the genuinely-sure, so it acts on the wrong
+        # answer (-2) and abstains on a would-be success; the signal routes
+        # the confidently-wrong decision to the human instead.
+        observations = [
+            UncertaintyObservation("mix", 0.9, False, {"agreement": 0.1}),
+            UncertaintyObservation("mix", 0.9, True, {"agreement": 0.9}),
+            UncertaintyObservation("mix", 0.1, True, {"agreement": 0.9}),
+            UncertaintyObservation("mix", 0.1, False, {"agreement": 0.1}),
+        ]
+        bands = m8e_destination_fixture()
+        costs = EscalationCosts(correct_reward=1.0, wrong_penalty=-2.0)
+        by_self_report = m8e_escalation_frontier(
+            observations, [o.claimed for o in observations], [0.5], bands, costs
+        )[0]
+        by_agreement = m8e_escalation_frontier(
+            observations, [o.signals["agreement"] for o in observations], [0.5], bands, costs
+        )[0]
+        assert by_self_report.unsafe_action_rate == pytest.approx(0.25)
+        assert by_agreement.unsafe_action_rate == pytest.approx(0.0)
+        assert by_agreement.human_intervention_rate == pytest.approx(0.5)
+        assert by_agreement.expected_utility > by_self_report.expected_utility
+
+    def test_escalation_policy_evaluates_on_the_held_out_split(self) -> None:
+        # The leaf's procedure: fit historical calibration (#931) on the
+        # earlier split only, then measure the escalation frontier on
+        # held-out tasks under asymmetric costs.
+        corpus = m8e_synthetic_corpus(seed=933, n=60)
+        train, holdout = m8e_temporal_split(corpus, 0.5)
+        calibration = m8e_historical_calibration(train)
+        scores = [calibration[o.context] for o in holdout]
+        costs = EscalationCosts(correct_reward=1.0, wrong_penalty=-2.0, defer_cost=-0.2)
+        bands = m8e_destination_fixture()
+        point = m8e_escalation_frontier(holdout, scores, [0.6], bands, costs)[0]
+        baseline = m8e_policy_frontier(holdout, scores, [0.0], costs)[0]  # always answer
+        assert point.escalation_rate > 0.0
+        assert point.unsafe_action_rate < baseline.unsafe_action_rate
+        assert point.expected_utility > baseline.expected_utility
+
+    def test_drift_suppresses_escalation_when_scores_are_not_recalibrated(self) -> None:
+        # Threshold robustness under model drift (#933's measure): with
+        # historical calibration the policy holds; with a stale self-report
+        # threshold the inflated confidence answers more, escalates less —
+        # including less human oversight — exactly when the model got worse.
+        observations = m8e_synthetic_corpus()
+        threshold = 0.5
+        # Wider low-confidence bands so the historical scores (~0.50 for the
+        # coin-flip context) actually straddle the HITL band.
+        bands = [
+            (0.55, EscalationDestination("human-hitl", 1.0, -0.5, 10.0, human_intervention=True)),
+            (0.75, EscalationDestination("specialist-agent", 0.9, -0.4, 5.0)),
+            (0.85, EscalationDestination("stronger-model", 0.85, -0.3, 3.0)),
+            (2.0, EscalationDestination("verifier", 1.0, -0.1, 1.0)),
+        ]
+        before = m8e_escalation_frontier(
+            observations, m8e_policy_scores(observations), [threshold], bands
+        )[0]
+        drifted = m8e_apply_overconfidence_drift(observations, shift=0.3, rng=random.Random(7))
+        recalibrated = m8e_escalation_frontier(
+            drifted, m8e_policy_scores(drifted), [threshold], bands
+        )[0]
+        stale = m8e_escalation_frontier(drifted, [o.claimed for o in drifted], [threshold], bands)[
+            0
+        ]
+        assert recalibrated.escalation_rate == pytest.approx(before.escalation_rate)
+        assert recalibrated.unsafe_action_rate == pytest.approx(before.unsafe_action_rate)
+        assert stale.escalation_rate < before.escalation_rate
+        assert stale.human_intervention_rate < before.human_intervention_rate
+        assert stale.unsafe_action_rate > before.unsafe_action_rate
+
+    def test_escalation_frontier_rejects_malformed_input(self) -> None:
+        observations = [UncertaintyObservation("c", 0.5, True)]
+        bands = m8e_destination_fixture()
+        with pytest.raises(ValueError, match="align"):
+            m8e_escalation_frontier(observations, [], [0.5], bands)
+        with pytest.raises(ValueError, match="at least one"):
+            m8e_escalation_frontier([], [], [0.5], bands)
+        with pytest.raises(ValueError, match="at least one"):
+            m8e_escalation_frontier(observations, [0.5], [0.5], [])
+        with pytest.raises(ValueError, match="ascending"):
+            m8e_escalation_frontier(
+                observations, [0.5], [0.5], [(0.5, bands[1][1]), (0.4, bands[0][1])]
+            )
+        duplicate = [(0.3, bands[0][1]), (0.6, bands[0][1])]
+        with pytest.raises(ValueError, match="unique"):
+            m8e_escalation_frontier(observations, [0.5], [0.5], duplicate)
+
+    def test_escalation_outputs_are_measurements_not_actions(self) -> None:
+        observations = m8e_synthetic_corpus(n=30)
+        scores = m8e_policy_scores(observations)
+        point = m8e_escalation_frontier(observations, scores, [0.5], m8e_destination_fixture())[0]
+        for value in vars(point).values():
+            assert not callable(value)
+        assert set(vars(point)) == {
+            "threshold",
+            "expected_utility",
+            "answer_rate",
+            "unsafe_action_rate",
+            "escalation_rate",
+            "human_intervention_rate",
+            "unnecessary_escalation_rate",
+            "escalation_cost",
+            "escalation_latency",
+            "destination_shares",
+        }
+        with pytest.raises(AttributeError):
+            point.expected_utility = 100.0  # type: ignore[misc]
+        destination = EscalationDestination("d", 0.5, 0.0, 1.0)
+        with pytest.raises(AttributeError):
+            destination.eventual_success_rate = 1.0  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
