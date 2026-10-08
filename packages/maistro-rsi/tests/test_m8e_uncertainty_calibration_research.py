@@ -1197,6 +1197,14 @@ class TestEscalationPolicyDestinations:
         # historical calibration the policy holds; with a stale self-report
         # threshold the inflated confidence answers more, escalates less —
         # including less human oversight — exactly when the model got worse.
+        # Each comparison holds the scoring method fixed: the recalibrated
+        # frontier is checked against the calibrated pre-drift baseline, and
+        # the stale frontier against a raw-self-report pre-drift point, so
+        # the deltas isolate overconfidence drift rather than a change of
+        # scoring method. All frontiers are measured on the held-out half
+        # only, with calibration fitted on the earlier half (drift preserves
+        # observed outcomes, so post-drift refitting is well defined), so no
+        # row's own outcome contributes to its score.
         observations = m8e_synthetic_corpus()
         threshold = 0.5
         # Wider low-confidence bands so the historical scores (~0.50 for the
@@ -1207,21 +1215,31 @@ class TestEscalationPolicyDestinations:
             (0.85, EscalationDestination("stronger-model", 0.85, -0.3, 3.0)),
             (2.0, EscalationDestination("verifier", 1.0, -0.1, 1.0)),
         ]
+        train, holdout = m8e_temporal_split(observations, 0.5)
+        calibration = m8e_historical_calibration(train)
         before = m8e_escalation_frontier(
-            observations, m8e_policy_scores(observations), [threshold], bands
+            holdout, [calibration[o.context] for o in holdout], [threshold], bands
+        )[0]
+        raw_before = m8e_escalation_frontier(
+            holdout, [o.claimed for o in holdout], [threshold], bands
         )[0]
         drifted = m8e_apply_overconfidence_drift(observations, shift=0.3, rng=random.Random(7))
+        drifted_train, drifted_holdout = m8e_temporal_split(drifted, 0.5)
+        recalibration = m8e_historical_calibration(drifted_train)
         recalibrated = m8e_escalation_frontier(
-            drifted, m8e_policy_scores(drifted), [threshold], bands
+            drifted_holdout,
+            [recalibration[o.context] for o in drifted_holdout],
+            [threshold],
+            bands,
         )[0]
-        stale = m8e_escalation_frontier(drifted, [o.claimed for o in drifted], [threshold], bands)[
-            0
-        ]
+        stale = m8e_escalation_frontier(
+            drifted_holdout, [o.claimed for o in drifted_holdout], [threshold], bands
+        )[0]
         assert recalibrated.escalation_rate == pytest.approx(before.escalation_rate)
         assert recalibrated.unsafe_action_rate == pytest.approx(before.unsafe_action_rate)
-        assert stale.escalation_rate < before.escalation_rate
-        assert stale.human_intervention_rate < before.human_intervention_rate
-        assert stale.unsafe_action_rate > before.unsafe_action_rate
+        assert stale.escalation_rate < raw_before.escalation_rate
+        assert stale.human_intervention_rate < raw_before.human_intervention_rate
+        assert stale.unsafe_action_rate > raw_before.unsafe_action_rate
 
     def test_escalation_frontier_rejects_malformed_input(self) -> None:
         observations = [UncertaintyObservation("c", 0.5, True)]

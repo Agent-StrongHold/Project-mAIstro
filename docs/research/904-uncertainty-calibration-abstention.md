@@ -69,11 +69,13 @@ real data: a disagreement-family signal outranking self-report as an error predi
 (AUROC 1.0 vs 0.0 on the trap corpus); a calibrated defer threshold strictly dominating
 always-answer under asymmetric costs while a fixed self-report threshold degrades under drift;
 and a destination-aware escalation policy dominating always-answer on the held-out half of the
-temporal split (expected utility 0.47 vs 0.20, unsafe-action rate 0.10 vs 0.27, escalation rate
-0.33). Under injected overconfidence drift, a stale self-report threshold suppresses escalation
-exactly when it is most needed — human-intervention share 33% → 0% while the unsafe-action rate
-rises 14% → 31% — whereas recalibrated historical scores absorb the drift. These are fixture
-numbers validating the machinery, not evidence about real models.
+temporal split (expected utility 0.47 vs 0.20, unsafe-action rate 0.13 vs 0.27, escalation rate
+0.33). Under injected overconfidence drift — measured like-for-like on the held-out half, raw
+self-report against raw self-report — a stale self-report threshold suppresses escalation
+exactly when it is most needed: human-intervention share 21% → 0% while the unsafe-action rate
+rises 18.5% → 29%, whereas recalibrated historical scores hold the frontier exactly fixed
+(outcomes are drift-invariant, so refitting on the drifted earlier half reproduces the same
+calibration). These are fixture numbers validating the machinery, not evidence about real models.
 
 ## Benchmark procedure (what a real experiment must do)
 
