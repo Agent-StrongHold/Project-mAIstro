@@ -1788,3 +1788,64 @@ regression. The #1841 security signature is intact at this head:
 and test readiness proven, the four red jobs are the issue-predicted explicit
 merge blocker, and the stack stays unmerged pending the separately authorized
 parent #1845 integration.
+
+## Round 24 — develop sync to 2a11c1cc0 and independent four-job re-attribution at the new base
+
+The two prior repair attempts for the round-24 brief died on provider timeouts
+before doing anything, so this round re-ran the whole battery from the declared
+head `f5d4dc4825da`. The declared base moved to `2a11c1cc006a` (current
+`origin/develop` tip, 9 commits past the old merge base `34795962548a`), so the
+lane-brief-sanctioned sync was performed first: `git merge origin/develop` at
+`9c7deb4bcc7b`, conflict-free — the 9 develop commits (#2019 package
+certification, #2047 renamed-PR scope, #2072 M8-D harness, #2028 HITL fairness,
+the M8 research set) have zero file overlap with the leaf's 3-file delta, and
+the branch delta vs the new base remains exactly the three in-scope leaf files
+with `quality/` and `docs/testing/inventory/baseline.json` unchanged
+(`git diff --numstat 2a11c1cc0..HEAD` on both: empty).
+
+Fresh independent re-execution at the post-sync head, `RATCHET_BASE_REV` as CI
+sets it (trusted base now resolves to `2a11c1cc0`):
+
+- `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → rc=1, same five `AdmissionAssessment`
+  identities (`admission_identity.py:515-520`, `PENDING` name-masked tree-wide),
+  `1326 reviewed identities -> 1331 findings`, "not authorized by the trusted
+  base": the new base's `quality/ratchet-authorizations.json` carries 102
+  vulture grants and zero for `admission_identity`. The round brief's generic
+  ledger-amendment instruction was evaluated again and declined on the same
+  three grounds as round 23, now re-proven at the new base: the issue's staging
+  constraint forbids baseline additions, two verifier rounds enforced removal,
+  and banking is inert — the gate exits 1 with or without the rows.
+  `packages/maistro-core/src/_vulture_whitelist.py` newly landed on develop
+  (#2019) was considered and rejected: referencing the five members there would
+  be exactly the suppression the issue prohibits, and the leaf gains nothing
+  that the parent integration head does not already provide.
+- `check-reachability.py` → rc=1, still exactly one NEWLY UNREACHABLE module
+  (`maistro.runs.admission_identity`).
+- `check-ratchet-provenance.py` → rc=1, solely via the reachability sub-gate
+  ("trusted-base gate returned 1"); `check-shipped-surface-truth.py`,
+  `check-reachability-dispositions.py`, `check-promotion-surface.py` → rc=0.
+- Root suite with CI's env (`REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 pytest tests/
+  --ignore=tests/tools/registry`): 4817 passed, 128 skipped, exactly 3 failed —
+  `tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `tests/test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`.
+  That is the complete `test`-job red; the Coverage gate's root producer aborts
+  on the same three, and its actual criterion passes: `check-diff-coverage.py
+  coverage.xml --base 2a11c1cc0` → ok at the 90% lines / 80% branch floors,
+  with the test file exempt.
+- `maistro-core` chunk: 14723 passed, 1011 skipped, 1 xfailed, exit 0 (develop's
+  new tests included). Focused leaf suite 79/79; tree-wide ruff check/format
+  clean; `mypy` clean on the module; suite-inventory gate ok.
+- The #1841 security signature survives the sync: `store_boundary.py:56`
+  `require_admitted_actor(actor_principal_id: str | None) -> str`;
+  `store.py` `create_run`/`claim_run_by_effect` retain
+  `actor_principal_id: str | None = None`; `model.py:300` `Run.actor_principal_id`.
+- The module is still fully inert: zero importers outside its own test,
+  no `maistro.runs.__init__` export.
+
+Conclusion unchanged and now re-proven at this round's exact declared base:
+implementation and test readiness are proven; the four red merge-queue jobs are
+the issue-predicted explicit merge blocker of a deliberately unwired staging
+leaf, uncurable inside the leaf without violating the issue's prohibitions; the
+stack stays unmerged pending the separately authorized parent #1845 integration.
