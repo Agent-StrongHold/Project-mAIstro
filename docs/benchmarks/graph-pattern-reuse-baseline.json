@@ -1,6 +1,14 @@
 {
-  "benchmark": "graph-pattern-induction-reuse",
-  "corpus_runs": 600,
+  "config": {
+    "budget": 60,
+    "corpus_runs": 600,
+    "drift_at": 200,
+    "episodes": 400,
+    "min_instances": 2,
+    "min_support": 3,
+    "reindex_every": 50,
+    "seeds": 5
+  },
   "cost_model": {
     "adapt_tokens_per_edit": 90,
     "retrieve_tokens": 120,
@@ -8,22 +16,21 @@
     "scratch_tokens_per_candidate": 60,
     "scratch_tokens_per_node": 45
   },
-  "drift_at": 200,
-  "epic": "903",
-  "episodes": 400,
-  "issue": "929",
-  "min_instances": 2,
-  "min_support": 3,
+  "issue": 929,
   "per_seed": [
     {
       "arms": {
         "reuse-guarded": {
           "cross_family_hits": 0,
           "cross_family_success_rate": null,
+          "episodes": 400,
           "guard_quarantines": 1,
           "mean_adaptation_edits": 0.0,
           "mean_roundtrips": 1.0,
+          "mean_structure_divergence_vs_scratch": 0.142,
           "mean_tokens": 120.0,
+          "planner": "reuse-guarded",
+          "reuse_hits": 400,
           "scratch_fallbacks": 0,
           "stale_attributable_failures": 3,
           "success_rate": 0.74
@@ -31,10 +38,14 @@
         "reuse-naive": {
           "cross_family_hits": 0,
           "cross_family_success_rate": null,
+          "episodes": 400,
           "guard_quarantines": 0,
           "mean_adaptation_edits": 0.0,
           "mean_roundtrips": 1.0,
+          "mean_structure_divergence_vs_scratch": 0.26,
           "mean_tokens": 120.0,
+          "planner": "reuse-naive",
+          "reuse_hits": 400,
           "scratch_fallbacks": 0,
           "stale_attributable_failures": 25,
           "success_rate": 0.685
@@ -42,10 +53,14 @@
         "reuse-transfer": {
           "cross_family_hits": 296,
           "cross_family_success_rate": 0.7432,
+          "episodes": 400,
           "guard_quarantines": 0,
           "mean_adaptation_edits": 0.505,
           "mean_roundtrips": 5.41,
+          "mean_structure_divergence_vs_scratch": 0.235,
           "mean_tokens": 628.2,
+          "planner": "reuse-transfer",
+          "reuse_hits": 296,
           "scratch_fallbacks": 104,
           "stale_attributable_failures": 3,
           "success_rate": 0.7325
@@ -53,23 +68,88 @@
         "scratch": {
           "cross_family_hits": 0,
           "cross_family_success_rate": null,
+          "episodes": 400,
           "guard_quarantines": 0,
           "mean_adaptation_edits": 0.0,
           "mean_roundtrips": 10.28,
+          "mean_structure_divergence_vs_scratch": 0.0,
           "mean_tokens": 1579.5,
+          "planner": "scratch",
+          "reuse_hits": 0,
           "scratch_fallbacks": 0,
           "stale_attributable_failures": 0,
           "success_rate": 0.745
         }
       },
+      "checkpoints": [
+        {
+          "drifted": false,
+          "episode": 0,
+          "reuse_guarded_quarantined": 0,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        },
+        {
+          "drifted": false,
+          "episode": 100,
+          "reuse_guarded_quarantined": 0,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        },
+        {
+          "drifted": false,
+          "episode": 199,
+          "reuse_guarded_quarantined": 0,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        },
+        {
+          "drifted": true,
+          "episode": 200,
+          "reuse_guarded_quarantined": 0,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        },
+        {
+          "drifted": true,
+          "episode": 300,
+          "reuse_guarded_quarantined": 1,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        },
+        {
+          "drifted": true,
+          "episode": 399,
+          "reuse_guarded_quarantined": 1,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": false
+        }
+      ],
+      "drift_at": 200,
+      "episodes": 400,
       "inspectability": {
-        "all_candidates_not_active": true,
-        "documented_fraction": 1.0,
-        "execution_door_closed": true,
-        "max_motif_nodes": 4,
-        "mean_motif_nodes": 2.42,
-        "motifs": 12,
-        "provenance_on_instantiate": true
+        "reuse-guarded": {
+          "all_candidates_not_active": true,
+          "documented_fraction": 1.0,
+          "execution_door_closed": true,
+          "max_motif_nodes": 4,
+          "mean_motif_nodes": 2.42,
+          "motifs": 12,
+          "provenance_on_instantiate": true
+        },
+        "reuse-naive": {
+          "all_candidates_not_active": true,
+          "documented_fraction": 1.0,
+          "execution_door_closed": true,
+          "max_motif_nodes": 4,
+          "mean_motif_nodes": 2.42,
+          "motifs": 12,
+          "provenance_on_instantiate": true
+        }
+      },
+      "motifs_inducted_final": {
+        "reuse-guarded": 12,
+        "reuse-naive": 12
       },
       "motifs_inducted_initial": 12,
       "seed": 0
@@ -79,10 +159,14 @@
         "reuse-guarded": {
           "cross_family_hits": 0,
           "cross_family_success_rate": null,
+          "episodes": 400,
           "guard_quarantines": 1,
           "mean_adaptation_edits": 0.0,
           "mean_roundtrips": 1.0,
+          "mean_structure_divergence_vs_scratch": 0.18,
           "mean_tokens": 120.0,
+          "planner": "reuse-guarded",
+          "reuse_hits": 400,
           "scratch_fallbacks": 0,
           "stale_attributable_failures": 3,
           "success_rate": 0.7325
@@ -90,10 +174,14 @@
         "reuse-naive": {
           "cross_family_hits": 0,
           "cross_family_success_rate": null,
+          "episodes": 400,
           "guard_quarantines": 0,
           "mean_adaptation_edits": 0.0,
           "mean_roundtrips": 1.0,
+          "mean_structure_divergence_vs_scratch": 0.263,
           "mean_tokens": 120.0,
+          "planner": "reuse-naive",
+          "reuse_hits": 400,
           "scratch_fallbacks": 0,
           "stale_attributable_failures": 19,
           "success_rate": 0.6925
@@ -101,10 +189,14 @@
         "reuse-transfer": {
           "cross_family_hits": 295,
           "cross_family_success_rate": 0.7051,
+          "episodes": 400,
           "guard_quarantines": 0,
           "mean_adaptation_edits": 0.482,
           "mean_roundtrips": 5.42,
+          "mean_structure_divergence_vs_scratch": 0.255,
           "mean_tokens": 630.7,
+          "planner": "reuse-transfer",
+          "reuse_hits": 295,
           "scratch_fallbacks": 105,
           "stale_attributable_failures": 3,
           "success_rate": 0.72
@@ -112,23 +204,88 @@
         "scratch": {
           "cross_family_hits": 0,
           "cross_family_success_rate": null,
+          "episodes": 400,
           "guard_quarantines": 0,
           "mean_adaptation_edits": 0.0,
           "mean_roundtrips": 10.38,
+          "mean_structure_divergence_vs_scratch": 0.0,
           "mean_tokens": 1584.7,
+          "planner": "scratch",
+          "reuse_hits": 0,
           "scratch_fallbacks": 0,
           "stale_attributable_failures": 0,
           "success_rate": 0.7375
         }
       },
+      "checkpoints": [
+        {
+          "drifted": false,
+          "episode": 0,
+          "reuse_guarded_quarantined": 0,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        },
+        {
+          "drifted": false,
+          "episode": 100,
+          "reuse_guarded_quarantined": 0,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        },
+        {
+          "drifted": false,
+          "episode": 199,
+          "reuse_guarded_quarantined": 0,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": false
+        },
+        {
+          "drifted": true,
+          "episode": 200,
+          "reuse_guarded_quarantined": 0,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": false
+        },
+        {
+          "drifted": true,
+          "episode": 300,
+          "reuse_guarded_quarantined": 1,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        },
+        {
+          "drifted": true,
+          "episode": 399,
+          "reuse_guarded_quarantined": 1,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        }
+      ],
+      "drift_at": 200,
+      "episodes": 400,
       "inspectability": {
-        "all_candidates_not_active": true,
-        "documented_fraction": 1.0,
-        "execution_door_closed": true,
-        "max_motif_nodes": 4,
-        "mean_motif_nodes": 2.42,
-        "motifs": 12,
-        "provenance_on_instantiate": true
+        "reuse-guarded": {
+          "all_candidates_not_active": true,
+          "documented_fraction": 1.0,
+          "execution_door_closed": true,
+          "max_motif_nodes": 4,
+          "mean_motif_nodes": 2.42,
+          "motifs": 12,
+          "provenance_on_instantiate": true
+        },
+        "reuse-naive": {
+          "all_candidates_not_active": true,
+          "documented_fraction": 1.0,
+          "execution_door_closed": true,
+          "max_motif_nodes": 4,
+          "mean_motif_nodes": 2.42,
+          "motifs": 12,
+          "provenance_on_instantiate": true
+        }
+      },
+      "motifs_inducted_final": {
+        "reuse-guarded": 12,
+        "reuse-naive": 12
       },
       "motifs_inducted_initial": 12,
       "seed": 1
@@ -138,10 +295,14 @@
         "reuse-guarded": {
           "cross_family_hits": 0,
           "cross_family_success_rate": null,
+          "episodes": 400,
           "guard_quarantines": 4,
           "mean_adaptation_edits": 0.0,
           "mean_roundtrips": 2.5,
+          "mean_structure_divergence_vs_scratch": 0.285,
           "mean_tokens": 298.0,
+          "planner": "reuse-guarded",
+          "reuse_hits": 360,
           "scratch_fallbacks": 40,
           "stale_attributable_failures": 6,
           "success_rate": 0.72
@@ -149,10 +310,14 @@
         "reuse-naive": {
           "cross_family_hits": 0,
           "cross_family_success_rate": null,
+          "episodes": 400,
           "guard_quarantines": 0,
           "mean_adaptation_edits": 0.0,
           "mean_roundtrips": 1.0,
+          "mean_structure_divergence_vs_scratch": 0.25,
           "mean_tokens": 120.0,
+          "planner": "reuse-naive",
+          "reuse_hits": 400,
           "scratch_fallbacks": 0,
           "stale_attributable_failures": 14,
           "success_rate": 0.7025
@@ -160,10 +325,14 @@
         "reuse-transfer": {
           "cross_family_hits": 300,
           "cross_family_success_rate": 0.7367,
+          "episodes": 400,
           "guard_quarantines": 0,
           "mean_adaptation_edits": 0.487,
           "mean_roundtrips": 5.24,
+          "mean_structure_divergence_vs_scratch": 0.263,
           "mean_tokens": 608.9,
+          "planner": "reuse-transfer",
+          "reuse_hits": 300,
           "scratch_fallbacks": 100,
           "stale_attributable_failures": 5,
           "success_rate": 0.72
@@ -171,23 +340,88 @@
         "scratch": {
           "cross_family_hits": 0,
           "cross_family_success_rate": null,
+          "episodes": 400,
           "guard_quarantines": 0,
           "mean_adaptation_edits": 0.0,
           "mean_roundtrips": 10.3,
+          "mean_structure_divergence_vs_scratch": 0.0,
           "mean_tokens": 1579.9,
+          "planner": "scratch",
+          "reuse_hits": 0,
           "scratch_fallbacks": 0,
           "stale_attributable_failures": 0,
           "success_rate": 0.7375
         }
       },
+      "checkpoints": [
+        {
+          "drifted": false,
+          "episode": 0,
+          "reuse_guarded_quarantined": 0,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        },
+        {
+          "drifted": false,
+          "episode": 100,
+          "reuse_guarded_quarantined": 2,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        },
+        {
+          "drifted": false,
+          "episode": 199,
+          "reuse_guarded_quarantined": 2,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": false
+        },
+        {
+          "drifted": true,
+          "episode": 200,
+          "reuse_guarded_quarantined": 2,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": false
+        },
+        {
+          "drifted": true,
+          "episode": 300,
+          "reuse_guarded_quarantined": 4,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": false
+        },
+        {
+          "drifted": true,
+          "episode": 399,
+          "reuse_guarded_quarantined": 4,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        }
+      ],
+      "drift_at": 200,
+      "episodes": 400,
       "inspectability": {
-        "all_candidates_not_active": true,
-        "documented_fraction": 1.0,
-        "execution_door_closed": true,
-        "max_motif_nodes": 4,
-        "mean_motif_nodes": 2.42,
-        "motifs": 12,
-        "provenance_on_instantiate": true
+        "reuse-guarded": {
+          "all_candidates_not_active": true,
+          "documented_fraction": 1.0,
+          "execution_door_closed": true,
+          "max_motif_nodes": 4,
+          "mean_motif_nodes": 2.42,
+          "motifs": 12,
+          "provenance_on_instantiate": true
+        },
+        "reuse-naive": {
+          "all_candidates_not_active": true,
+          "documented_fraction": 1.0,
+          "execution_door_closed": true,
+          "max_motif_nodes": 4,
+          "mean_motif_nodes": 2.42,
+          "motifs": 12,
+          "provenance_on_instantiate": true
+        }
+      },
+      "motifs_inducted_final": {
+        "reuse-guarded": 12,
+        "reuse-naive": 12
       },
       "motifs_inducted_initial": 12,
       "seed": 2
@@ -197,10 +431,14 @@
         "reuse-guarded": {
           "cross_family_hits": 68,
           "cross_family_success_rate": 0.6765,
+          "episodes": 400,
           "guard_quarantines": 6,
           "mean_adaptation_edits": 0.01,
           "mean_roundtrips": 2.1,
+          "mean_structure_divergence_vs_scratch": 0.42,
           "mean_tokens": 249.9,
+          "planner": "reuse-guarded",
+          "reuse_hits": 371,
           "scratch_fallbacks": 29,
           "stale_attributable_failures": 18,
           "success_rate": 0.66
@@ -208,10 +446,14 @@
         "reuse-naive": {
           "cross_family_hits": 0,
           "cross_family_success_rate": null,
+          "episodes": 400,
           "guard_quarantines": 0,
           "mean_adaptation_edits": 0.0,
           "mean_roundtrips": 1.0,
+          "mean_structure_divergence_vs_scratch": 0.242,
           "mean_tokens": 120.0,
+          "planner": "reuse-naive",
+          "reuse_hits": 400,
           "scratch_fallbacks": 0,
           "stale_attributable_failures": 16,
           "success_rate": 0.67
@@ -219,10 +461,14 @@
         "reuse-transfer": {
           "cross_family_hits": 303,
           "cross_family_success_rate": 0.6898,
+          "episodes": 400,
           "guard_quarantines": 0,
           "mean_adaptation_edits": 0.505,
           "mean_roundtrips": 5.14,
+          "mean_structure_divergence_vs_scratch": 0.253,
           "mean_tokens": 597.1,
+          "planner": "reuse-transfer",
+          "reuse_hits": 303,
           "scratch_fallbacks": 97,
           "stale_attributable_failures": 8,
           "success_rate": 0.6825
@@ -230,23 +476,88 @@
         "scratch": {
           "cross_family_hits": 0,
           "cross_family_success_rate": null,
+          "episodes": 400,
           "guard_quarantines": 0,
           "mean_adaptation_edits": 0.0,
           "mean_roundtrips": 10.19,
+          "mean_structure_divergence_vs_scratch": 0.0,
           "mean_tokens": 1574.3,
+          "planner": "scratch",
+          "reuse_hits": 0,
           "scratch_fallbacks": 0,
           "stale_attributable_failures": 0,
           "success_rate": 0.71
         }
       },
+      "checkpoints": [
+        {
+          "drifted": false,
+          "episode": 0,
+          "reuse_guarded_quarantined": 0,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        },
+        {
+          "drifted": false,
+          "episode": 100,
+          "reuse_guarded_quarantined": 0,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        },
+        {
+          "drifted": false,
+          "episode": 199,
+          "reuse_guarded_quarantined": 1,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": false
+        },
+        {
+          "drifted": true,
+          "episode": 200,
+          "reuse_guarded_quarantined": 1,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": false
+        },
+        {
+          "drifted": true,
+          "episode": 300,
+          "reuse_guarded_quarantined": 5,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        },
+        {
+          "drifted": true,
+          "episode": 399,
+          "reuse_guarded_quarantined": 6,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        }
+      ],
+      "drift_at": 200,
+      "episodes": 400,
       "inspectability": {
-        "all_candidates_not_active": true,
-        "documented_fraction": 1.0,
-        "execution_door_closed": true,
-        "max_motif_nodes": 4,
-        "mean_motif_nodes": 2.42,
-        "motifs": 12,
-        "provenance_on_instantiate": true
+        "reuse-guarded": {
+          "all_candidates_not_active": true,
+          "documented_fraction": 1.0,
+          "execution_door_closed": true,
+          "max_motif_nodes": 4,
+          "mean_motif_nodes": 2.42,
+          "motifs": 12,
+          "provenance_on_instantiate": true
+        },
+        "reuse-naive": {
+          "all_candidates_not_active": true,
+          "documented_fraction": 1.0,
+          "execution_door_closed": true,
+          "max_motif_nodes": 4,
+          "mean_motif_nodes": 2.42,
+          "motifs": 12,
+          "provenance_on_instantiate": true
+        }
+      },
+      "motifs_inducted_final": {
+        "reuse-guarded": 12,
+        "reuse-naive": 12
       },
       "motifs_inducted_initial": 12,
       "seed": 3
@@ -256,10 +567,14 @@
         "reuse-guarded": {
           "cross_family_hits": 0,
           "cross_family_success_rate": null,
+          "episodes": 400,
           "guard_quarantines": 2,
           "mean_adaptation_edits": 0.0,
           "mean_roundtrips": 1.0,
+          "mean_structure_divergence_vs_scratch": 0.37,
           "mean_tokens": 120.0,
+          "planner": "reuse-guarded",
+          "reuse_hits": 400,
           "scratch_fallbacks": 0,
           "stale_attributable_failures": 7,
           "success_rate": 0.7325
@@ -267,10 +582,14 @@
         "reuse-naive": {
           "cross_family_hits": 0,
           "cross_family_success_rate": null,
+          "episodes": 400,
           "guard_quarantines": 0,
           "mean_adaptation_edits": 0.0,
           "mean_roundtrips": 1.0,
+          "mean_structure_divergence_vs_scratch": 0.27,
           "mean_tokens": 120.0,
+          "planner": "reuse-naive",
+          "reuse_hits": 400,
           "scratch_fallbacks": 0,
           "stale_attributable_failures": 19,
           "success_rate": 0.71
@@ -278,10 +597,14 @@
         "reuse-transfer": {
           "cross_family_hits": 292,
           "cross_family_success_rate": 0.7466,
+          "episodes": 400,
           "guard_quarantines": 0,
           "mean_adaptation_edits": 0.495,
           "mean_roundtrips": 5.54,
+          "mean_structure_divergence_vs_scratch": 0.235,
           "mean_tokens": 645.1,
+          "planner": "reuse-transfer",
+          "reuse_hits": 292,
           "scratch_fallbacks": 108,
           "stale_attributable_failures": 2,
           "success_rate": 0.74
@@ -289,32 +612,94 @@
         "scratch": {
           "cross_family_hits": 0,
           "cross_family_success_rate": null,
+          "episodes": 400,
           "guard_quarantines": 0,
           "mean_adaptation_edits": 0.0,
           "mean_roundtrips": 10.37,
+          "mean_structure_divergence_vs_scratch": 0.0,
           "mean_tokens": 1584.5,
+          "planner": "scratch",
+          "reuse_hits": 0,
           "scratch_fallbacks": 0,
           "stale_attributable_failures": 0,
           "success_rate": 0.755
         }
       },
+      "checkpoints": [
+        {
+          "drifted": false,
+          "episode": 0,
+          "reuse_guarded_quarantined": 0,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        },
+        {
+          "drifted": false,
+          "episode": 100,
+          "reuse_guarded_quarantined": 1,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": false
+        },
+        {
+          "drifted": false,
+          "episode": 199,
+          "reuse_guarded_quarantined": 1,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        },
+        {
+          "drifted": true,
+          "episode": 200,
+          "reuse_guarded_quarantined": 1,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        },
+        {
+          "drifted": true,
+          "episode": 300,
+          "reuse_guarded_quarantined": 2,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        },
+        {
+          "drifted": true,
+          "episode": 399,
+          "reuse_guarded_quarantined": 2,
+          "reuse_naive_quarantined": 0,
+          "scratch_success": true
+        }
+      ],
+      "drift_at": 200,
+      "episodes": 400,
       "inspectability": {
-        "all_candidates_not_active": true,
-        "documented_fraction": 1.0,
-        "execution_door_closed": true,
-        "max_motif_nodes": 4,
-        "mean_motif_nodes": 2.42,
-        "motifs": 12,
-        "provenance_on_instantiate": true
+        "reuse-guarded": {
+          "all_candidates_not_active": true,
+          "documented_fraction": 1.0,
+          "execution_door_closed": true,
+          "max_motif_nodes": 4,
+          "mean_motif_nodes": 2.42,
+          "motifs": 12,
+          "provenance_on_instantiate": true
+        },
+        "reuse-naive": {
+          "all_candidates_not_active": true,
+          "documented_fraction": 1.0,
+          "execution_door_closed": true,
+          "max_motif_nodes": 4,
+          "mean_motif_nodes": 2.42,
+          "motifs": 12,
+          "provenance_on_instantiate": true
+        }
+      },
+      "motifs_inducted_final": {
+        "reuse-guarded": 12,
+        "reuse-naive": 12
       },
       "motifs_inducted_initial": 12,
       "seed": 4
     }
   ],
-  "planner_budget": 60,
-  "reindex_every": 50,
-  "research_note": "docs/research/929-graph-pattern-induction-reuse.md",
-  "seeds": 5,
+  "research": "M8-D5 Graph pattern induction and reuse across Goals",
   "summary": {
     "reuse-guarded": {
       "cross_family_hits": {

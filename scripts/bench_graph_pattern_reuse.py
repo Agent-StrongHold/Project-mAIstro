@@ -853,7 +853,11 @@ def generate_corpus(
     instance_base: int = 0,
 ) -> list[Run]:
     """Historical Runs across the four families, recorded on the real spine."""
-    rng = random.Random(seed)
+    # Every RNG in this bench is a seeded Mersenne Twister whose only job is
+    # reproducibility of an offline experiment — there is no secret here to
+    # guess and no security function to weaken, so a cryptographic generator
+    # would be the wrong tool (it cannot be seeded, hence not reproducible).
+    rng = random.Random(seed)  # DevSkim: ignore DS148264 until 2027-12-31
     runs: list[Run] = []
     for i in range(runs_count):
         family = FAMILIES[i % len(FAMILIES)]
@@ -869,7 +873,7 @@ def generate_corpus(
 
 def heldout_goals(*, episodes: int, instance_base: int, seed: int) -> list[Instance]:
     """The held-out goal stream: deterministic, disjoint instance ids."""
-    rng = random.Random(seed + 10_000)
+    rng = random.Random(seed + 10_000)  # DevSkim: ignore DS148264 until 2027-12-31
     goals: list[Instance] = []
     for i in range(episodes):
         family = FAMILIES[rng.randrange(len(FAMILIES))]
@@ -1049,11 +1053,12 @@ def run_seed(
 
     for index, goal in enumerate(goals):
         drifted = index >= drift_at
-        episode_seed = random.Random(seed).randrange(2**31) ^ index
+        episode_rng = random.Random(seed)  # DevSkim: ignore DS148264 until 2027-12-31
+        episode_seed = episode_rng.randrange(2**31) ^ index
 
         # One shared from-scratch plan (all fallbacks and the scratch arm).
         scratch_plan = scratch.plan(goal.spec)
-        exec_rng = random.Random(episode_seed)
+        exec_rng = random.Random(episode_seed)  # DevSkim: ignore DS148264 until 2027-12-31
         scratch_success = exec_rng.random() < true_success_prob(
             scratch_plan.structure, goal.spec, drifted=drifted
         )
@@ -1061,7 +1066,7 @@ def run_seed(
         for name, planner in planners.items():
             plan = planner.plan(goal.spec)
             # Common random numbers: same draw for the same structure.
-            arm_rng = random.Random(episode_seed)
+            arm_rng = random.Random(episode_seed)  # DevSkim: ignore DS148264 until 2027-12-31
             success = arm_rng.random() < true_success_prob(
                 plan.structure, goal.spec, drifted=drifted
             )
