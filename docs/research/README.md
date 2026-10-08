@@ -86,6 +86,7 @@ Every child research epic/leaf defines:
 |---|---|---|---|
 | [896 — coverage-guided fuzzing of parser surfaces](896-coverage-guided-fuzzing-parser-surfaces.md) | M8-A15 | leaf [#896](https://github.com/Agent-StrongHold/Project-mAIstro/issues/896), epic #880 | INCUBATE |
 | [904 — uncertainty, calibration, abstention](904-uncertainty-calibration-abstention.md) | M8-E | [#904](https://github.com/Agent-StrongHold/Project-mAIstro/issues/904) (leaves #930–#933) | WATCH (per leaf) |
+| [931 — historical Run-outcome calibration](931-historical-outcome-calibration.md) | M8-E2 | leaf [#931](https://github.com/Agent-StrongHold/Project-mAIstro/issues/931), epic #904 | WATCH |
 | [905 — inference systems, open-model fleets, caching, batching, specialization](905-inference-systems-open-model-fleets-caching-batching-specialization.md) | M8-F | [#905](https://github.com/Agent-StrongHold/Project-mAIstro/issues/905) | WATCH (epic) |
 | [906 — information-flow, provenance, agent security](906-information-flow-provenance-agent-security.md) | M8-G | [#906](https://github.com/Agent-StrongHold/Project-mAIstro/issues/906) | WATCH (per candidate) |
 | [907 — autonomous SWE orchestration, multi-agent repo execution](907-autonomous-swe-orchestration-multi-agent-repo-execution.md) | M8-H | [#907](https://github.com/Agent-StrongHold/Project-mAIstro/issues/907) | WATCH (per direction) |
