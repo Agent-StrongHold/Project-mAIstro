@@ -51,13 +51,14 @@ What it adds is the reproducible measurement machinery the issue's benchmark pro
 demands, as a separated research artifact:
 `packages/maistro-rsi/tests/test_m8d3_replanning_benchmark_research.py` (test suite only;
 it imports no maistro module, so it cannot become an authority by accident — M8
-guardrails 1-2). Validated on deterministic hand-checked fixtures (46 checks), it
+guardrails 1-2). Validated on deterministic hand-checked fixtures (57 checks), it
 implements:
 
 - the issue's six surprise injections as a scheduled world clock — unavailable provider,
   changed artifact, failed tool, denied capability, stale assumption, newly satisfied
-  subgoal — each firing after N completed attempts, with observations free and
-  instantaneous;
+  subgoal — each firing after N completed actions, with observations free and
+  instantaneous (a repair requeue may spend one explicit wait action that advances the
+  clock without executing a task, paying nothing);
 - the three policies on one shared sequential NodeRun spine: **no-replan** (blind
   attempt-in-place retry; never re-observes), **local repair** (re-observes; requeues on
   favorable change, re-derives exactly the invalidated producer chain, skips subgoals the
@@ -68,10 +69,14 @@ implements:
   never counts as recovery), duplicated work (task executions spent on subgoals the world
   had already satisfied), invalidated-work reuse (skips and planner drops of externally
   satisfied subgoals), cost (every attempt and every replan pays in full, failed or not),
-  latency (sequential attempt durations plus planner latency), oscillation (same-structure
-  replans, with a consecutive-run loop guard that stops loudly with the budget named), and
+  latency (sequential attempt durations plus planner latency), oscillation
+  (same-structure replans, with a consecutive-run loop guard that stops loudly with the
+  budget named — and the blind policy's own retry exhaustion is a recorded, budget-named
+  outcome, never a silent drop), and
   provenance correctness (a completion walk over the derivation chain that names each
   consumed-version, emitted-version, and assumption edge the world has since falsified);
+  duplicated work counts every attempt — retries included — spent on a subgoal the world
+  had already satisfied;
 - trust-boundary accounting: capability denial is an authority decision —
   observation-aware policies never attempt without the grant and never re-attempt into a
   denial, while blind re-attempts against a denial are counted
@@ -108,12 +113,16 @@ tests):
   denied capability is the blind one, and the attempt is counted; the full replanner ends
   the denial scenario in a loud `no-viable-plan` rather than working around the authority.
 
-Executed probe record (head af7996883, 2026-10-08):
+Executed probe record (salvage head after PR #2074 review round, 2026-10-08):
 `uv run pytest packages/maistro-rsi/tests/test_m8d3_replanning_benchmark_research.py -q`
-→ 46 passed; `uv run ruff check` and `uv run ruff format --check` clean on the module;
-mutation-checked (blind-assumption judgment, denial requeue, free replans, dirty
-recoveries each caught by the test that names them); full `packages/maistro-rsi/tests`
-suite 1241 passed.
+→ 57 passed; `uv run ruff check` and `uv run ruff format --check` clean on the module;
+ten targeted mutations of the module each fail the test that names them (undeclared
+alternate fallback, stale external satisfaction, unreachable precheck recovery,
+invisible zero-action surprise, silent blind exhaustion, per-pass duplicated work,
+repeated subgoal event preserving the old version, empty catalog accepted, negative
+requeues accepted, mutable observation versions); full `packages/maistro-rsi/tests`
+suite 1290 passed, 3 skipped. The fixture-suite arithmetic (the frontier numbers
+below) is unchanged by the hardening round.
 
 ## Benchmark procedure (what a real experiment must do)
 

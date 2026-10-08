@@ -47,6 +47,11 @@ Accounting rules (stated because they decide every number):
 - Every attempt pays its task's cost and duration in full, failed or not —
   sunk spend is never hidden. Each attempt is one world action; surprise
   deltas fire after N completed actions.
+- A repair wait is also one world action: an explicit observation point that
+  advances the clock (so a scheduled recovery can land) without executing a
+  task, and it pays nothing.
+- A blind attempt on a subgoal the world already satisfied is duplicated
+  work, and every retry of that attempt is duplicated work too.
 - Each replan pays the planner's cost and latency, failed replans included.
 - Skips pay nothing; a task whose subgoal the world already satisfied and
   whose artifact is current is reused, not re-executed.
@@ -85,6 +90,7 @@ import ast
 import dataclasses
 import inspect
 import sys
+import types
 from collections import Counter, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -228,6 +234,15 @@ class WorldObservation:
     satisfied_subgoals: frozenset[str] = frozenset()
     artifact_versions: Mapping[str, int] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        # A frozen record must not expose a mutable mapping through the frozen
+        # shell: wrap whatever the caller handed us (dict or proxy) in a
+        # read-only proxy over a copy, so a scenario base cannot be revised
+        # in place and skew later benchmark invocations.
+        object.__setattr__(
+            self, "artifact_versions", types.MappingProxyType(dict(self.artifact_versions))
+        )
+
 
 class World:
     """Deterministic world clock: deltas fire after N completed actions.
@@ -274,7 +289,11 @@ class World:
             self._versions[delta.artifact] = delta.new_version
         else:
             self._satisfied.add(delta.subgoal)
-            self._versions.setdefault(delta.artifact, delta.artifact_version)
+            # The event's declared version always applies — a repeated
+            # external completion re-versions an artifact the run (or an
+            # earlier event) already produced; ``setdefault`` would hide the
+            # external change from provenance and reuse accounting.
+            self._versions[delta.artifact] = delta.artifact_version
             self._external[delta.subgoal] = delta.artifact
 
     @staticmethod
@@ -291,7 +310,7 @@ class World:
             granted_capabilities=frozenset(self._capabilities),
             assumptions_holding=frozenset(self._assumptions),
             satisfied_subgoals=frozenset(self._satisfied),
-            artifact_versions=dict(self._versions),
+            artifact_versions=types.MappingProxyType(dict(self._versions)),
         )
 
     def external_artifact(self, subgoal: str) -> str | None:
@@ -534,14 +553,29 @@ def _first_viable_producer(
     outputs: Mapping[str, OutputRecord],
     world_versions: Mapping[str, int],
     resolve,
+    by_id: Mapping[str, Task],
 ) -> Task | None:
-    """First catalog producer of ``artifact`` viable under ``obs``.
+    """First viable producer of ``artifact`` under ``obs``, via declared alternates.
 
-    A subgoal claimed satisfied externally without a current artifact cannot
-    have its producer skipped. Input artifacts recurse through ``resolve``.
+    The preferred producer is the first catalog task that produces the
+    artifact; fallbacks are exactly the substitute ids it declares in
+    ``alternates``. Tasks that merely share the output artifact but were
+    never declared are not considered, so a replan cannot credit an
+    undeclared structural recovery. A subgoal claimed satisfied externally
+    without a current artifact cannot have its producer skipped. Input
+    artifacts recurse through ``resolve``.
     """
-    for task in (t for t in catalog if t.produces_artifact == artifact):
-        if task.satisfies_subgoal in obs.satisfied_subgoals and not _output_current(
+    producers = [t for t in catalog if t.produces_artifact == artifact]
+    if not producers:
+        return None
+    candidates = (producers[0], *(by_id[alt] for alt in producers[0].alternates))
+    for task in candidates:
+        # Mirrors the engine's redundant-work check: skip an externally
+        # satisfied subgoal only when its artifact is current. A stale
+        # artifact must fall through so the producer re-derives it —
+        # ``resolve`` only reaches producer lookup for non-current
+        # artifacts, which is exactly when regeneration is required.
+        if task.satisfies_subgoal in obs.satisfied_subgoals and _output_current(
             task.produces_artifact, outputs, world_versions, obs
         ):
             continue
@@ -553,6 +587,22 @@ def _first_viable_producer(
     return None
 
 
+def _validate_alternates(catalog: Sequence[Task], by_id: Mapping[str, Task]) -> None:
+    """Reject catalogs whose declared alternates do not name a same-artifact
+    producer: a fallback that produces something else would fabricate a plan
+    that never satisfies the goal."""
+    for task in catalog:
+        for alt in task.alternates:
+            alternate = by_id.get(alt)
+            if alternate is None:
+                raise ValueError(f"task {task.id!r} names unknown alternate {alt!r}")
+            if alternate.produces_artifact != task.produces_artifact:
+                raise ValueError(
+                    f"task {task.id!r} names alternate {alt!r} producing "
+                    f"{alternate.produces_artifact!r}, not {task.produces_artifact!r}"
+                )
+
+
 def synthesize_plan(
     goal: Goal,
     obs: WorldObservation,
@@ -562,7 +612,8 @@ def synthesize_plan(
 ) -> tuple[Task, ...] | None:
     """Deterministically re-derive a plan for ``goal`` from the observation.
 
-    Prefers the primary task over alternates (catalog order), skips tasks
+    Prefers the primary producer over its declared alternates (catalog
+    order), skips tasks
     whose subgoal is already satisfied with a current artifact, and treats
     stale cached outputs as absent so invalidated work is re-derived. Returns
     ``None`` when no viable derivation exists — a loud NoViablePlan outcome,
@@ -571,6 +622,7 @@ def synthesize_plan(
     by_id = {t.id: t for t in catalog}
     if len(by_id) != len(catalog):
         raise ValueError("duplicate task ids in catalog")
+    _validate_alternates(catalog, by_id)
     plan: list[Task] = []
     resolved: set[str] = set()
     in_progress: set[str] = set()
@@ -586,7 +638,7 @@ def synthesize_plan(
                 resolved.add(artifact)
                 return True
             producer = _first_viable_producer(
-                artifact, obs, catalog, outputs, world_versions, resolve
+                artifact, obs, catalog, outputs, world_versions, resolve, by_id
             )
             if producer is None:
                 return False
@@ -727,8 +779,9 @@ class _SpineEngine:
         self.max_requeue_passes = max_requeue_passes
         self.world = World(scenario.base, scenario.deltas)
         self.outputs: dict[str, OutputRecord] = {}
-        self.state = self.world.observe()
+        self.sync(0)  # fire any at_action == 0 deltas before initial planning
         self.attempts = 0
+        self.clock = 0  # world-action clock: attempts + observation waits
         self.cost = 0
         self.latency = 0
         self.replans = 0
@@ -740,6 +793,7 @@ class _SpineEngine:
         self.executed: list[ExecutedTask] = []
         self.requeue_passes: Counter[str] = Counter()
         self.gave_up: GiveUp | None = None
+        self.last_retry_exhaustion: GiveUp | None = None
         self.last_plan_ids: tuple[str, ...] | None = None
         self.next_plan: list[Task] = []
 
@@ -887,13 +941,18 @@ class _SpineEngine:
             else:
                 self.gave_up = GiveUp("capability-denied")
             return _Action.RESTART
-        # Tool / assumption: requeue only if the world changed in the task's
-        # favor since this pass began; otherwise give up — or, for full
-        # replan, re-derive the remaining plan.
-        if self.state != failure_obs and self.requeue_passes[task.id] < self.max_requeue_passes:
-            self.requeue_passes[task.id] += 1
-            queue.appendleft(task)
-            return _Action.NEXT
+        # Tool / assumption: spend one wait action — an explicit observation
+        # point that advances the world clock without executing the task — so
+        # a transient failure's scheduled recovery can land, then requeue only
+        # if the observation changed since this pass began; otherwise give up
+        # — or, for full replan, re-derive the remaining plan.
+        if self.requeue_passes[task.id] < self.max_requeue_passes:
+            self.clock += 1
+            self.sync(self.clock)
+            if self.state != failure_obs:
+                self.requeue_passes[task.id] += 1
+                queue.appendleft(task)
+                return _Action.NEXT
         self.executed.append(ExecutedTask(task.id, 0, False, pre.failure, False))
         if self.policy is Policy.FULL_REPLAN:
             self.full_replan(None)
@@ -905,7 +964,8 @@ class _SpineEngine:
         self, task: Task, blind_duplicate: bool
     ) -> tuple[bool, int, FailureKind | None]:
         """Attempt loop: initial attempt + in-place retries. Every attempt
-        pays full cost/latency whether it succeeds or not (sunk spend)."""
+        pays full cost/latency whether it succeeds or not (sunk spend), and
+        a blind duplicate is counted per attempt, not per pass."""
         task_attempts = 0
         outcome = _Check()
         for _ in range(self.retry_budget + 1):
@@ -913,19 +973,22 @@ class _SpineEngine:
                 task, self.state, self.outputs, observation_aware=self.observation_aware
             )
             self.attempts += 1
+            self.clock += 1
             task_attempts += 1
+            if blind_duplicate:
+                self.duplicated += 1  # every retry of satisfied work duplicates too
             self.cost += task.cost_units
             self.latency += task.duration_ms
             if outcome.failure is None:
                 self.record_output(task)
-                self.sync(self.attempts)
+                self.sync(self.clock)
                 self.executed.append(
                     ExecutedTask(task.id, task_attempts, True, None, blind_duplicate)
                 )
                 return True, task_attempts, None
             if outcome.failure is FailureKind.CAPABILITY_DENIED and task_attempts > 1:
                 self.denied_reattempts += 1
-            self.sync(self.attempts)
+            self.sync(self.clock)
         return False, task_attempts, outcome.failure
 
     def _exhausted(
@@ -941,6 +1004,10 @@ class _SpineEngine:
         audit = ExecutedTask(task.id, task_attempts, False, last_failure, blind_duplicate)
         if self.policy is Policy.NO_REPLAN:
             self.executed.append(audit)
+            # The blind policy never revises its plan, so the spine keeps
+            # walking; carry the exhaustion so the measurement can name the
+            # budget that blocked the goal instead of dropping it silently.
+            self.last_retry_exhaustion = GiveUp(f"retry-budget-exhausted:{last_failure.value}")
             return _Action.NEXT
         if self.policy is Policy.LOCAL_REPAIR:
             if last_failure is FailureKind.CAPABILITY_DENIED:
@@ -977,8 +1044,6 @@ class _SpineEngine:
         blind_duplicate = (
             not self.observation_aware and task.satisfies_subgoal in self.state.satisfied_subgoals
         )
-        if blind_duplicate:
-            self.duplicated += 1
         ok, task_attempts, last_failure = self._attempt_phase(task, blind_duplicate)
         if ok:
             return _Action.NEXT
@@ -1009,7 +1074,7 @@ class _SpineEngine:
         return self._final_measurement()
 
     def _final_measurement(self) -> PolicyMeasurement:
-        self.world.apply_completed(self.attempts)
+        self.world.apply_completed(self.clock)
         final_state = self.world.observe()
         goal_record = self.outputs.get(self.goal.artifact)
         violations: tuple[str, ...] = ()
@@ -1019,6 +1084,9 @@ class _SpineEngine:
             violations = chain_violations(
                 goal_record, self.outputs, final_state.artifact_versions, final_state
             )
+        gave_up = self.gave_up
+        if not completed and gave_up is None and self.last_retry_exhaustion is not None:
+            gave_up = self.last_retry_exhaustion
         return PolicyMeasurement(
             policy=self.policy,
             scenario=self.scenario_name,
@@ -1034,7 +1102,7 @@ class _SpineEngine:
             replans=self.replans,
             oscillation_replans=self.oscillation_replans,
             denied_reattempts=self.denied_reattempts,
-            gave_up=self.gave_up,
+            gave_up=gave_up,
         )
 
 
@@ -1052,10 +1120,16 @@ def measure(
     max_requeue_passes: int = MAX_REQUEUE_PASSES,
 ) -> PolicyMeasurement:
     """Execute ``scenario`` under ``policy`` and return the frozen row."""
+    if not catalog:
+        raise ValueError("empty task catalog")
     if retry_budget < 0:
         raise ValueError("retry budget must be >= 0")
     if max_replans is not None and max_replans < 0:
         raise ValueError("replan budget must be >= 0")
+    if max_requeue_passes < 0:
+        raise ValueError("requeue budget must be >= 0")
+    if max_consecutive_oscillations < 0:
+        raise ValueError("oscillation budget must be >= 0")
     by_id = {t.id: t for t in catalog}
     if len(by_id) != len(catalog):
         raise ValueError("duplicate task ids in catalog")
@@ -1243,6 +1317,24 @@ SCN_TOOL = _scenario(
     (SurpriseKind.TOOL_FAILED,),
     ToolHealth(2, "tool-x", healthy=False),
 )
+#: C2 — the world violates a requirement before the Run even starts (the
+#: delta is scheduled at action 0): initial planning must see it, so an
+#: observation-aware policy refuses to spend instead of recovering cleanly
+#: from a surprise that already happened. One-task catalog, one artifact.
+SCN_SOLO_TOOL_DOWN = _scenario(
+    "tool-down-at-start",
+    (SurpriseKind.TOOL_FAILED,),
+    ToolHealth(0, "tool-x", healthy=False),
+)
+#: H — the publish tool is already down when publish's pass begins and
+#: recovers mid-Run (precheck-time transient; only reachable through the
+#: precondition phase's wait-and-observe requeue).
+SCN_TOOL_TRANSIENT = _scenario(
+    "tool-transient",
+    (SurpriseKind.TOOL_FAILED,),
+    ToolHealth(1, "tool-x", healthy=False),
+    ToolHealth(3, "tool-x", healthy=True),
+)
 #: D — the capability family is revoked; no alternate is grantable.
 SCN_CAPABILITY = _scenario(
     "capability-denied",
@@ -1261,6 +1353,17 @@ SCN_SUBGOAL = _scenario(
     "subgoal-satisfied",
     (SurpriseKind.SUBGOAL_SATISFIED,),
     SubgoalEvent(1, "review", "review", 1),
+)
+#: F2 — the review subgoal is satisfied outside the Run while the provider
+#: review needs is down: the blind policy burns its full retry budget on the
+#: already-satisfied subgoal, so duplicated work must count per attempt, not
+#: per pass.
+SCN_SUBGOAL_OUTAGE = _scenario(
+    "subgoal-satisfied-provider-outage",
+    (SurpriseKind.SUBGOAL_SATISFIED, SurpriseKind.PROVIDER_UNAVAILABLE),
+    SubgoalEvent(1, "review", "review", 1),
+    ProviderAvailability(1, "llm-a", up=False),
+    ProviderAvailability(4, "llm-a", up=True),
 )
 #: G — hot world: the draft artifact is revised after every action.
 SCN_HOT_WORLD = _scenario(
@@ -1323,17 +1426,41 @@ def test_outputs_are_measurements_not_actions() -> None:
     assert row.gave_up is None or isinstance(row.gave_up, GiveUp)
 
 
+def _maistro_import_roots(source: str) -> set[str]:
+    """Top-level module roots ``source`` imports, across every import form.
+
+    ``ast.ImportFrom.names`` holds the imported symbols, not the source
+    module, and one ``ast.Import`` may bind several modules — both are
+    handled here so the trust-boundary guard cannot be walked around by
+    ``from maistro.graph import executor`` or ``import maistro.core, os``.
+    Relative imports (``node.level > 0``) have no absolute root and
+    attribute to the importing module itself.
+    """
+    roots: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = None if node.level else node.module
+            if module is not None:
+                roots.add(module.split(".")[0])
+    return roots
+
+
 def test_module_imports_no_maistro_module() -> None:
-    tree = ast.parse(inspect.getsource(sys.modules[__name__]))
-    imported = {
-        node.names[0].name.split(".")[0]
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-    }
-    assert "maistro" not in imported
+    assert "maistro" not in _maistro_import_roots(inspect.getsource(sys.modules[__name__]))
+
+
+def test_import_guard_covers_every_import_form() -> None:
+    assert _maistro_import_roots("from maistro.graph import executor") == {"maistro"}
+    assert _maistro_import_roots("import maistro.core, os.path") == {"maistro", "os"}
+    assert _maistro_import_roots("from . import sibling") == set()
+    assert _maistro_import_roots("import collections.abc") == {"collections"}
 
 
 def test_empty_catalog_and_bad_alternates_are_rejected() -> None:
+    with pytest.raises(ValueError, match="empty task catalog"):
+        measure(Policy.NO_REPLAN, SCN_PROVIDER, GOAL, ())
     with pytest.raises(ValueError, match="duplicate task ids"):
         measure(Policy.NO_REPLAN, SCN_PROVIDER, GOAL, (T_DRAFT, T_DRAFT))
     with pytest.raises(ValueError, match="unknown alternate"):
@@ -1350,6 +1477,10 @@ def test_negative_budgets_are_rejected() -> None:
         measure(Policy.NO_REPLAN, SCN_PROVIDER, GOAL, CATALOG, retry_budget=-1)
     with pytest.raises(ValueError, match="replan budget"):
         measure(Policy.FULL_REPLAN, SCN_PROVIDER, GOAL, CATALOG, max_replans=-1)
+    with pytest.raises(ValueError, match="requeue budget"):
+        measure(Policy.LOCAL_REPAIR, SCN_TOOL, GOAL, CATALOG, max_requeue_passes=-1)
+    with pytest.raises(ValueError, match="oscillation budget"):
+        measure(Policy.FULL_REPLAN, SCN_HOT_WORLD, GOAL, CATALOG, max_consecutive_oscillations=-1)
 
 
 def test_world_rejects_negative_delta_schedule() -> None:
@@ -1367,6 +1498,75 @@ def test_planner_rejects_resolution_cycles() -> None:
 def test_planner_returns_none_when_nothing_is_viable() -> None:
     dark = WorldObservation()  # nothing up, nothing granted
     assert synthesize_plan(GOAL, dark, CATALOG, {}, {}) is None
+
+
+def test_planner_rederives_stale_externally_satisfied_artifact() -> None:
+    """An external satisfaction does not shield a stale artifact.
+
+    ``review`` was satisfied externally at v1, then the world revised it
+    to v2: the cached output is no longer current, so the replanner must
+    re-derive it through the primary producer (or a declared alternate)
+    instead of reporting NoViablePlan.
+    """
+    outputs = {"review": OutputRecord(artifact="review", emitted_version=1, produced_by="external")}
+    world = World(
+        BASE_OBS, (SubgoalEvent(1, "review", "review", 1), ArtifactRevised(2, "review", 2))
+    )
+    world.apply_completed(2)
+    obs = world.observe()
+    assert "review" in obs.satisfied_subgoals
+    assert obs.artifact_versions["review"] == 2
+    assert _output_current("review", outputs, obs.artifact_versions, obs) is False
+    plan = synthesize_plan(GOAL, obs, CATALOG, outputs, obs.artifact_versions)
+    assert [t.id for t in plan] == ["draft", "review", "publish"]
+
+
+def test_planner_only_reaches_declared_alternates() -> None:
+    """A same-artifact producer not named in ``alternates`` is never a fallback.
+
+    With ``schema-v2`` dropped, the primary ``review`` is not viable; the
+    replanner must reach ``review-manual`` only because ``T_REVIEW`` declares
+    it. An undeclared producer of the same artifact stays unreachable and
+    the derivation fails loudly instead of crediting a phantom recovery.
+    """
+    no_schema = dataclasses.replace(BASE_OBS, assumptions_holding=frozenset())
+    undeclared = Task(
+        id="review-shadow",
+        satisfies_subgoal="review",
+        produces_artifact="review",
+        requires_tool="tool-y",
+        reads_artifact="draft",
+    )
+    primary = dataclasses.replace(T_REVIEW, alternates=())
+    assert (
+        synthesize_plan(
+            GOAL, no_schema, (T_DRAFT, primary, undeclared, T_PUBLISH, T_PUBLISH_BATCH), {}, {}
+        )
+        is None
+    )
+    plan = synthesize_plan(GOAL, no_schema, CATALOG, {}, {})
+    assert [t.id for t in plan] == ["draft", "review-manual", "publish"]
+
+
+def test_planner_rederives_stale_external_via_declared_alternate() -> None:
+    """Same as above, but the primary producer lost its assumption, so the
+    stale externally satisfied artifact is re-derived via ``review-manual``."""
+    outputs = {"review": OutputRecord(artifact="review", emitted_version=1, produced_by="external")}
+    world = World(
+        BASE_OBS, (SubgoalEvent(1, "review", "review", 1), ArtifactRevised(2, "review", 2))
+    )
+    world.apply_completed(2)
+    obs = world.observe()
+    no_schema = dataclasses.replace(obs, assumptions_holding=frozenset())
+    plan = synthesize_plan(GOAL, no_schema, CATALOG, outputs, no_schema.artifact_versions)
+    assert [t.id for t in plan] == ["draft", "review-manual", "publish"]
+
+
+def test_planner_rejects_alternates_producing_a_different_artifact() -> None:
+    stray = Task(id="stray", satisfies_subgoal="stray", produces_artifact="other")
+    bad = dataclasses.replace(T_REVIEW, alternates=("stray",))
+    with pytest.raises(ValueError, match="not 'review'"):
+        synthesize_plan(GOAL, BASE_OBS, (T_DRAFT, bad, stray, T_PUBLISH, T_PUBLISH_BATCH), {}, {})
 
 
 # ---------------------------------------------------------------------------
@@ -1401,6 +1601,41 @@ def test_subgoal_event_delivers_artifact_at_declared_version() -> None:
     assert world.external_artifact("review") == "review"
 
 
+def test_subgoal_event_applies_its_declared_version_over_an_existing_one() -> None:
+    """A repeated external completion re-versions the artifact it delivers.
+
+    ``register_production`` had already moved the world to v1; the event
+    declaring v2 must win, so provenance and reuse accounting observe the
+    external change instead of a silently preserved old version.
+    """
+    world = World(BASE_OBS, (SubgoalEvent(2, "review", "review", 2),))
+    world.register_production("review", 1)
+    world.apply_completed(2)
+    obs = world.observe()
+    assert "review" in obs.satisfied_subgoals
+    assert obs.artifact_versions["review"] == 2
+
+
+def test_observation_versions_resist_in_place_mutation() -> None:
+    """Frozen observations expose immutable version maps.
+
+    ``WorldObservation`` is frozen, but a plain dict field stays mutable
+    through the frozen shell: a caller could revise ``scenario.base``
+    mid-benchmark and skew every later invocation. The mapping is stored
+    behind a read-only proxy instead.
+    """
+    base = WorldObservation(artifact_versions={"draft": 1})
+    scenario = Scenario(name="tamper", surprise_classes=(), base=base, deltas=())
+    with pytest.raises(TypeError):
+        scenario.base.artifact_versions["draft"] = 99  # type: ignore[index]
+    world = World(scenario.base, scenario.deltas)
+    obs = world.observe()
+    assert obs.artifact_versions == {"draft": 1}
+    with pytest.raises(TypeError):
+        obs.artifact_versions["draft"] = 99  # type: ignore[index]
+    assert world.observe() == obs
+
+
 # ---------------------------------------------------------------------------
 # Hand-checked per-surprise fixtures (exact units; synthetic, not evidence)
 # ---------------------------------------------------------------------------
@@ -1411,6 +1646,10 @@ class TestNoReplanBlindBaseline:
         row = measure(Policy.NO_REPLAN, SCN_PROVIDER, GOAL, CATALOG)
         assert row.recovered is False
         assert row.completed is False
+        # The last blocked task (publish, missing input) names the budget
+        # that exhausted — never a silent drop.
+        assert row.gave_up is not None
+        assert row.gave_up.reason == "retry-budget-exhausted:missing_input"
         assert (row.attempts, row.total_cost_units, row.total_latency_ms) == (5, 10, 500)
         assert row.replans == 0
 
@@ -1418,18 +1657,24 @@ class TestNoReplanBlindBaseline:
         row = measure(Policy.NO_REPLAN, SCN_ARTIFACT, GOAL, CATALOG)
         assert row.completed is True
         assert row.recovered is False
+        # A completion is not an exhaustion: no give-up is fabricated.
+        assert row.gave_up is None
         assert len(row.provenance_violations) == 2
         assert (row.attempts, row.total_cost_units) == (3, 6)
 
     def test_failed_tool_exhausts_retries_and_never_considers_alternates(self) -> None:
         row = measure(Policy.NO_REPLAN, SCN_TOOL, GOAL, CATALOG)
         assert row.recovered is False
+        assert row.gave_up is not None
+        assert row.gave_up.reason == "retry-budget-exhausted:tool_failed"
         assert (row.attempts, row.total_cost_units, row.total_latency_ms) == (4, 8, 400)
 
     def test_denied_capability_is_retried_blindly_and_counted(self) -> None:
         row = measure(Policy.NO_REPLAN, SCN_CAPABILITY, GOAL, CATALOG)
         assert row.recovered is False
         assert row.denied_reattempts == 1
+        assert row.gave_up is not None
+        assert row.gave_up.reason == "retry-budget-exhausted:capability_denied"
         assert (row.attempts, row.total_cost_units) == (4, 8)
 
     def test_stale_assumption_ships_a_wrong_output(self) -> None:
@@ -1444,7 +1689,18 @@ class TestNoReplanBlindBaseline:
         assert row.recovered is True
         assert row.duplicated_work_units == 1
         assert row.reuse_units == 0
+        assert row.gave_up is None
         assert (row.total_cost_units, row.total_latency_ms) == (6, 300)
+
+    def test_blind_retries_of_a_satisfied_subgoal_count_per_attempt(self) -> None:
+        row = measure(Policy.NO_REPLAN, SCN_SUBGOAL_OUTAGE, GOAL, CATALOG)
+        assert row.completed is False
+        # Review burns both blind attempts on an already-satisfied subgoal:
+        # each attempt is duplicated work, not just the single pass.
+        assert row.duplicated_work_units == 2
+        assert row.attempts == 5
+        assert row.gave_up is not None
+        assert row.gave_up.reason == "retry-budget-exhausted:missing_input"
 
 
 class TestLocalRepair:
@@ -1455,6 +1711,45 @@ class TestLocalRepair:
         assert (row.attempts, row.total_cost_units, row.total_latency_ms) == (5, 10, 500)
         assert row.replans == 0
         assert row.gave_up is None
+
+    def test_precheck_tool_failure_waits_out_a_transient_outage(self) -> None:
+        """A tool already down at precheck time still reaches its recovery.
+
+        The precondition phase spends one wait action — an explicit
+        observation point — so the scheduled ToolHealth recovery lands,
+        the observation differs from the pass-start snapshot, and the task
+        is requeued instead of given up on without advancing the world.
+        """
+        row = measure(Policy.LOCAL_REPAIR, SCN_TOOL_TRANSIENT, GOAL, CATALOG)
+        assert row.recovered is True
+        assert row.provenance_violations == ()
+        assert row.gave_up is None
+        assert (row.attempts, row.total_cost_units, row.total_latency_ms) == (3, 6, 300)
+        assert row.replans == 0
+
+    def test_zero_action_surprise_is_visible_before_the_first_attempt(self) -> None:
+        """A delta scheduled at action 0 is world state before the Run starts.
+
+        The world is synced before initial planning, so a one-task Run whose
+        only requirement is already violated never attempts blind into the
+        outage: initial synthesis refuses loudly under every policy — before
+        any spend, and without recording a clean recovery from a surprise
+        that had already happened.
+        """
+        solo = Task(
+            id="solo", satisfies_subgoal="solo", produces_artifact="final", requires_tool="tool-x"
+        )
+        row = measure(Policy.LOCAL_REPAIR, SCN_SOLO_TOOL_DOWN, GOAL, (solo,))
+        assert row.recovered is False
+        assert row.attempts == 0
+        assert row.replans == 0
+        assert row.gave_up is not None
+        assert row.gave_up.reason == "no-viable-plan"
+        replan = measure(Policy.FULL_REPLAN, SCN_SOLO_TOOL_DOWN, GOAL, (solo,))
+        assert replan.recovered is False
+        assert (replan.attempts, replan.replans) == (0, 0)
+        assert replan.gave_up is not None
+        assert replan.gave_up.reason == "no-viable-plan"
 
     def test_changed_artifact_invalidates_exactly_the_stale_chain(self) -> None:
         row = measure(Policy.LOCAL_REPAIR, SCN_ARTIFACT, GOAL, CATALOG)
@@ -1514,6 +1809,19 @@ class TestFullReplan:
         assert row.provenance_violations == ()
         assert (row.attempts, row.total_cost_units, row.total_latency_ms) == (3, 8, 400)
         assert row.replans == 1
+
+    def test_precheck_tool_failure_requeues_on_observed_recovery(self) -> None:
+        """Full replan also waits and observes before spending the planner.
+
+        When the wait exposes the scheduled recovery, the requeue resolves
+        the surprise structurally-for-free; the planner is only paid when
+        the observation did not change in the task's favor.
+        """
+        row = measure(Policy.FULL_REPLAN, SCN_TOOL_TRANSIENT, GOAL, CATALOG)
+        assert row.recovered is True
+        assert row.provenance_violations == ()
+        assert (row.attempts, row.total_cost_units, row.total_latency_ms) == (3, 6, 300)
+        assert (row.replans, row.oscillation_replans) == (0, 0)
 
     def test_denied_capability_ends_in_a_loud_no_viable_plan(self) -> None:
         row = measure(Policy.FULL_REPLAN, SCN_CAPABILITY, GOAL, CATALOG)

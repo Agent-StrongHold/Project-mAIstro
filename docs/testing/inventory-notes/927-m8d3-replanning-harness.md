@@ -1,8 +1,8 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +46
+  packages/maistro-rsi/tests: +57
 ---
-# 927 M8-D3: observation-driven replanning benchmark harness (+46)
+# 927 M8-D3: observation-driven replanning benchmark harness (+57)
 
 <!-- Say what moved and why, not just how much. The count alone hides
      compensating changes; that is the case these notes exist for. -->
@@ -15,7 +15,7 @@ executions with injected surprises — so the research record
 (`docs/research/927-observation-driven-replanning.md`) registers WATCH and this change
 adds the reproducible benchmark machinery the issue's measure list demands, as one
 self-contained test module in `packages/maistro-rsi/tests/`
-(`test_m8d3_replanning_benchmark_research.py`, +46 node IDs).
+(`test_m8d3_replanning_benchmark_research.py`, +57 node IDs).
 
 The module is deliberately test-side and imports no maistro module (asserted via AST):
 it is research evidence, not product code (M8 guardrails 1-2), so no vulture/reachability
@@ -40,3 +40,21 @@ once, and the evidence-only contract itself (advisory marker, frozen records,
 measurement-only outputs, no maistro imports, empty/duplicate/negative-budget rejection,
 planner cycle rejection). Four mutation checks (blind assumption judgment, denial
 requeue, free replans, dirty recoveries) each fail the test that names them.
+
+The PR-review hardening round (+11 cases, no fixture-suite arithmetic changed): the
+replanner reaches only declared alternates (never an undeclared same-artifact producer,
+which overstated recovery) and re-derives externally satisfied artifacts once stale
+instead of reporting a false `NoViablePlan`; a precheck-time transient failure now
+spends an explicit wait action — one clock advance, zero cost — so its scheduled
+recovery is reachable instead of the policy giving up on a world it never advanced
+(fixtures `tool-transient` x local repair/full replan); a surprise scheduled at action 0
+is visible to initial planning, so a one-task Run refuses before spending instead of
+recording a clean recovery from an outage that predated it; the blind policy's retry
+exhaustion is named in the returned row (`retry-budget-exhausted:<failure>`) instead of
+being dropped silently; duplicated work counts every blind retry of a satisfied subgoal,
+not just the pass; a repeated subgoal event applies its declared version over an
+existing one; the empty catalog and negative requeue/oscillation budgets are rejected
+as setup errors rather than reported as policy outcomes; the no-maistro-import guard
+resolves `ImportFrom` modules and multi-alias `Import` statements (with a self-test
+over the forms the naive alias check missed); and observation version maps are wrapped
+in a read-only proxy so a frozen record cannot be revised through its shell.
