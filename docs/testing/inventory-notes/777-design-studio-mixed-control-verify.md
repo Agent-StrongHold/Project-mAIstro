@@ -17595,3 +17595,92 @@ confirms zero dependency movement: every #777 prerequisite (#804/#805/#806,
 deterministic gates and targeted suites are green at this exact head, and no
 lawful repair exists while the canonical owners are unlanded — the issue's
 own stop condition forbids a Design-Studio-private substitute. (Refs #777)
+
+## Round 255 (2026-10-08, repair round at 552cbc67ec + develop sync to b90df19a24)
+
+Starting head matched the manifest exactly (`552cbc67eec2`); clean tree, nothing
+to salvage. This round's driver checks were again empty (`checks=[]`, no
+`check-*.log` in job `5b4bf51394f5445a91ac1d26fed4a531`), so the only stale
+prior-findings pointer (job `53d5e08bf027` check-2.log, ruff format failure on
+`agent_loop.py` at old head `a99c6bd`) was re-disproven an eighth time by this
+round's own whole-tree format check below (3201 files clean, `agent_loop.py`
+itself a manifest surface).
+
+#### Develop sync (the round's state transition)
+
+`origin/develop` advanced past the previous merge-base `e46ad6708fda` by exactly
+3 commits to `b90df19a24a1` — which **is this job's declared base** — so the
+"previous block: worker requested attention: BLOCKED" resolves as a develop-sync
+item, not a new dependency event. Merged `origin/develop` into `auto-777`
+(merge commit `f00d117b75b3`, `ort` strategy, zero conflicts: develop's 6
+touched files — M8-A7 pg race harness research `#2061`, adversarial `#1041`
+credential-routing consumer proof `#2090`, `#1796` ontology docstring/ledger
+alignment `#2091` — do not overlap the branch's 16 manifest surfaces). Post-merge
+invariants: `HEAD..origin/develop = 0`, `origin/develop` is ancestor of HEAD;
+`git diff --numstat origin/develop..HEAD -- quality/` = the branch's own
+pre-existing 1-row ledger delta (`tool_definitions` row removed when that dead
+seam was eliminated in an earlier round) — the merge touched no `quality/*`
+file, so no rows could be lost; branch diff vs the new base remains exactly the
+16 manifest surfaces.
+
+#### Dependency block re-proven from the freshest capture (2026-10-08T23:13Z)
+
+Frozen complete-for-scope capture (61 sources, sha-pinned in
+`dispatch-context.json`): **#804/#805/#806/#774/#776/#53/#93/#95 all OPEN**,
+#39/#458/#775 closed, #94 not captured, PR #1660 an open **draft** (head
+`6280009610e8`, an ancestor of this branch). All 6 newest #777 comments are
+automated campaign progress markers — no maintainer guidance. The body gate is
+verbatim unchanged: `Depends on: #804/#805/#806 persistent Workspace Agent +
+Goal reconciliation …`, with the stop condition forbidding a
+Design-Studio-private Agent runtime / Goal owner / reconciliation loop
+substitute.
+
+#### AC prerequisites re-proven absent at merged HEAD f00d117b75 (this round's own greps)
+
+- `GoalReconciler|delegate_goal|WorkspaceAgentReconciler` in `packages/*/src`:
+  **0 hits**.
+- `goals` modules under `packages/*/src`: **0**.
+- `packages/maistro-core/src/maistro/runs/reconciliation.py:1-8` remains
+  lifecycle-only ("owns universal lifecycle bookkeeping only").
+
+#### Gate battery at f00d117b75 (all executed this round)
+
+- `uv run ruff check .` — exit 0, All checks passed.
+- `uv run ruff format --check .` — exit 0, **3201** files already formatted
+  (+1 = merged-in pg race harness test).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (CI-exact arguments) —
+  exit 0, base auto-detects the new `b90df19a24a1`, candidate `f00d117b75b3`,
+  1326 reviewed identities -> 1325 findings, unclassified 0, never-allowlist 0,
+  **no amendment needed** (the lane's CI-repair ledger exception does not
+  apply: zero unbanked identities).
+- `uv run python scripts/check-suite-inventory.py` — exit 0, 17 suites match
+  the recorded inventory.
+- `uv run python scripts/check-test-duplicates.py` — exit 0, 0 byte-identical
+  groups.
+- `uv run python scripts/check-backlog-consistency.py` — exit 0, 167 items.
+- `uv run python scripts/check-closure-targets.py` — exit 0 (skip: no PR body
+  outside a pull_request event).
+- `uv run python scripts/check-doc-links.py` — exit 0, every relative markdown
+  link resolves.
+- Targeted pytest (both green, exact rounds 250-254 parity anchors):
+  `packages/maistro-design/tests packages/maistro-bootstrap/tests` —
+  **805 passed, 8 skipped**;
+  `packages/hive-conductor/backend/tests -k 'design or workspace'` —
+  **375 passed, 5 skipped, 3170 deselected**.
+- Merge-touched `packages/maistro-core/src/maistro/ontology/registry.py`
+  verified: `packages/maistro-core/tests/ontology` — **62 passed**.
+
+#### Inventory delta
+
+Documentation-only append; delta remains +0 across all recorded suites.
+
+#### Verdict
+
+BLOCKED — dependency-blocking (72nd consecutive round). The develop-sync
+obligation is discharged (HEAD now contains the declared base `b90df19a24a1`),
+all gates and targeted suites are green at the merged head, and the freshest
+capture re-proves every #777 prerequisite (#804/#805/#806, #774, #776, #53,
+#93, #95) open with PR #1660 an unmerged draft — no lawful repair exists until
+the canonical owners land; the issue's own stop condition forbids the only
+substitute implementation. (Refs #777)
