@@ -84,6 +84,7 @@ Every child research epic/leaf defines:
 
 | Note | Family | Epic / leaf | Disposition at this head |
 |---|---|---|---|
+| [894 — critical-zone mutation strategy](894-critical-zone-mutation-strategy.md) | M8-A14 | leaf [#894](https://github.com/Agent-StrongHold/Project-mAIstro/issues/894), epic #880 | INCUBATE |
 | [904 — uncertainty, calibration, abstention](904-uncertainty-calibration-abstention.md) | M8-E | [#904](https://github.com/Agent-StrongHold/Project-mAIstro/issues/904) (leaves #930–#933) | WATCH (per leaf) |
 | [905 — inference systems, open-model fleets, caching, batching, specialization](905-inference-systems-open-model-fleets-caching-batching-specialization.md) | M8-F | [#905](https://github.com/Agent-StrongHold/Project-mAIstro/issues/905) | WATCH (epic) |
 | [906 — information-flow, provenance, agent security](906-information-flow-provenance-agent-security.md) | M8-G | [#906](https://github.com/Agent-StrongHold/Project-mAIstro/issues/906) | WATCH (per candidate) |
@@ -102,9 +103,9 @@ Every child research epic/leaf defines:
 | [921 — learned reranking and query rewriting](921-reranking-query-rewriting.md) | M8-C2 | leaf [#921](https://github.com/Agent-StrongHold/Project-mAIstro/issues/921), epic #901 | WATCH |
 | [935 — cross-Agent batching, prefix/KV reuse, semantic caching](935-cross-agent-batching-kv-reuse.md) | M8-F2 | leaf [#935](https://github.com/Agent-StrongHold/Project-mAIstro/issues/935), epic #905 | WATCH |
 
-No leaf currently holds a GRADUATE or REJECT disposition; two are INCUBATE (model-routing
-leaves #914, #916) and the rest are WATCH. Dispositions are owned by the individual notes —
-update the note first, then this table.
+No leaf currently holds a GRADUATE or REJECT disposition; three are INCUBATE (model-routing
+leaves #914, #916; critical-zone mutation #894) and the rest are WATCH. Dispositions are
+owned by the individual notes — update the note first, then this table.
 
 The initial research family, M8-A advanced software verification and assurance
 ([#880](https://github.com/Agent-StrongHold/Project-mAIstro/issues/880), leaves #881–#897), is
