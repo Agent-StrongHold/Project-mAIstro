@@ -2711,6 +2711,15 @@ name = "maistro-ext-harness"
 version = "0.9.0"
 source = { editable = "packages/maistro-ext-harness" }
 
+[package.optional-dependencies]
+signing = [
+    { name = "cryptography" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "cryptography", marker = "extra == 'signing'", specifier = ">=42" }]
+provides-extras = ["signing"]
+
 [[package]]
 name = "maistro-ext-sdk"
 version = "0.9.0"
