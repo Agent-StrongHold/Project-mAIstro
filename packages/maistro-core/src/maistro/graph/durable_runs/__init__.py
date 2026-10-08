@@ -30,13 +30,17 @@ from .continuation import (
 from .execution_store import DurableRunExecutionStore
 from .fair_scan import ScanContinuation, cursor_time
 from .hitl import (
+    MAX_PENDING_SCAN_RECORDS,
     HitlAuthorization,
     HitlAuthorizationRequired,
     HitlDeadlineElapsed,
     HitlDeadlinePending,
     HitlDelegationEvidence,
     HitlSettlementError,
+    PendingHitlScan,
     expire_hitl_pauses,
+    pending_hitl_node_ids,
+    pending_hitl_records,
 )
 from .launch import durable_graph_launch_provenance
 from .legacy_archive import (
@@ -58,6 +62,7 @@ from .types import DurableRunRecord
 
 __all__ = [
     "DEFAULT_MAX_STEPS",
+    "MAX_PENDING_SCAN_RECORDS",
     "ArchivedGraphRun",
     "CanonicalDurableRunStore",
     "DurableRunExecutionStore",
@@ -78,6 +83,7 @@ __all__ = [
     "LegacyGraphRunArchive",
     "LegacyRunNotResumable",
     "NodeResolver",
+    "PendingHitlScan",
     "RecoveryInfrastructureError",
     "RunStatus",
     "ScanContinuation",
@@ -89,6 +95,8 @@ __all__ = [
     "cursor_time",
     "durable_graph_launch_provenance",
     "expire_hitl_pauses",
+    "pending_hitl_node_ids",
+    "pending_hitl_records",
     "recover_queued_graph_runs",
     "resume_due_graph_runs",
     "resume_durable_graph",
