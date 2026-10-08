@@ -37,11 +37,6 @@ from maistro.cli._extensions import (
     extensions_show,
 )
 from maistro.container import Container
-from maistro.extensions.metering import (
-    ExtensionMeter,
-    ExtensionQuotaLedger,
-    ExtensionUsageEvent,
-)
 from maistro.extensions.compat import (
     FEATURE_DEPRECATED,
     FEATURE_REMOVED,
@@ -59,6 +54,11 @@ from maistro.extensions.context import ExtensionCancellation, ExtensionConfigVie
 from maistro.extensions.effective_authority import EffectiveAuthority
 from maistro.extensions.host import ExtensionHost
 from maistro.extensions.isolation import SandboxViolationLog
+from maistro.extensions.metering import (
+    ExtensionMeter,
+    ExtensionQuotaLedger,
+    ExtensionUsageEvent,
+)
 from maistro.extensions.resolution import LockState
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
