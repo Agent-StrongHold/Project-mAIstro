@@ -42,85 +42,124 @@ recorded with the reason each was not:
 
 **Prototype** (this head):
 `packages/maistro-core/tests/runs/test_m8a5_differential_reference_model_research.py`,
-one test-side module (+31 node IDs, see
+one test-side module (+32 node IDs, see
 `docs/testing/inventory-notes/885-m8a5-differential-harness.md`). It contains:
 
 - a `ReferenceModel` — ~330 lines of plain dataclasses and dicts whose
   transition tables, stamping, cascade, acceptance, completion, and lease
   rules were transcribed from the contract prose (lifecycle docstrings,
   ADR-082426-a47f/e3ff/f170, #43/#48/#230/#233/#241/#1335). An AST-pinned
-  contract test keeps it free of `maistro` imports, so it cannot drift into
-  a re-import of the thing it oracles;
+  contract test keeps it free of `maistro` imports *and* of references to
+  the production symbols the driver imports, so it cannot drift into
+  delegating to the thing it oracles;
 - an `Executor` that drives the real functions (`transition_run`,
   `transition_node_run`, `transition_attempt`, `settle_open_node_run`,
   `check_completion_is_earned`, `refuse_completion_under_terminal_run`, the
   lease/reclaim helpers) over the same operation stream;
 - `run_stream`, the differential driver: every op is applied to both sides;
   agreement is (both accept **and** full normalized state matches) or (both
-  refuse **with the same category**); one operation kind (`tick`) advances a
-  driver-owned logical clock and re-compares the observable state, because
-  lease-expiry predicates are functions of time, not stored fields;
+  refuse with the same category **and** the post-refusal state still
+  matches — a refusal is expected to be atomic); one operation kind (`tick`)
+  advances a driver-owned logical clock and re-compares the observable
+  state, because lease-expiry predicates are functions of time, not stored
+  fields; lease renewals present the *model's* fencing token, so token
+  rotation or mis-derivation on the real side cannot renew against its own
+  drift;
 - ten hand-written semantic mutants (`Drift*` Executor subclasses), each
   emulating one plausible implementation drift, each proven non-vacuous by a
   minimal probe stream that is clean on the real implementation;
-- a 12-assertion ordinary-assertion control group, matched to the coverage
+- a 13-assertion ordinary-assertion control group, matched to the coverage
   the existing lifecycle suite actually has at this head (first-start
   stamping, one refusal edge, acceptance requirement, supersession,
-  earned-completion refusals, cascade/reclaim error text, lease expiry after
-  the fact, wrong-token renewal) — with a guard test that the control group
-  is green on the real implementation.
+  earned-completion refusals, the retried-node newest-wins rule, cascade/
+  reclaim error text, lease expiry after the fact, wrong-token renewal) —
+  with a guard test that the control group is green on the real
+  implementation.
 
 **Real drift found at this head: zero.** The differential property holds
-over 150 generated streams per CI run, a one-off deep sweep of 1,000 streams
-(~6,500 operations, seed-recorded in the job evidence), and a frozen
+over 150 generated streams per CI run, a reproducible deep sweep of 1,000
+seeded streams (18,000 generated / 5,764 driven operations — replayed by
+`test_deep_sweep_replays_one_thousand_seeded_streams`, which regenerates
+`corpus_stream(seed)` for seeds 0–999 deterministically), and a frozen
 32-stream / 576-op corpus (243 driver-applicable ops). This is the answer to
 "how often does the reference model reveal implementation drift?" for a
-green implementation: not once in ~7,000 driven operations — which is the
+green implementation: not once in ~24,000 driven operations — which is the
 expected result on a machine guarded by the existing suite plus mutation
 testing, and is itself evidence that the oracle is not tuning out the
 implementation (the same harness catches all ten injected drifts below).
 
 **Defect-yield comparison** (the issue's deliverable). Ten semantic mutants;
-detection = at least one failure. Ordinary assertions detected **6/10**; the
-differential harness detected **10/10**:
+detection = at least one failure. Scored on **matched scenarios**: the
+ordinary control group and the differential harness both face every mutant
+with the same shared material (13 fixed assertions; the same 32-stream
+corpus for every mutant), and each mutant's own hand-written probe is
+reported as a **separate column** — a probe is written from its mutant, so
+it proves non-vacuity and bounds targeted-harness power, but folding it into
+the comparison column would make detection true by construction. Ordinary
+assertions detected **7/10**; the differential harness on the shared
+generated corpus alone detected **4/10**; with the mutant's targeted probe
+added, the harness detected **10/10**:
 
-| Injected drift                                                | Ordinary | Differential |
-| ------------------------------------------------------------- | -------- | ------------ |
-| M1 terminal states lose absorbing edges                        | yes      | yes          |
-| M2 completion accepted without evidence                        | yes      | yes          |
-| M3 superseded acceptance survives resumption                   | yes      | yes          |
-| M4 completion consults the oldest NodeRun per node             | **no**   | yes          |
-| M5 a paused human wait no longer blocks completion             | yes      | yes          |
-| M6 lease expiry compares `<` instead of `<=` at the boundary   | **no**   | yes          |
-| M7 an expired lease can be renewed with its old token          | **no**   | yes          |
-| M8 `started_at` re-stamped on every RUNNING re-entry           | **no**   | yes          |
-| M9 reclaim error anonymized (holder no longer named)           | yes      | yes          |
-| M10 cascade error anonymized (Run outcome no longer named)     | yes      | yes          |
+| Injected drift                                                | Ordinary | Differential (shared corpus) | Differential (+ own probe) |
+| ------------------------------------------------------------- | -------- | ---------------------------- | -------------------------- |
+| M1 terminal states lose absorbing edges                        | yes      | yes                          | yes                        |
+| M2 completion accepted without evidence                        | yes      | yes                          | yes                        |
+| M3 superseded acceptance survives resumption                   | yes      | **no**                       | yes                        |
+| M4 completion consults the oldest NodeRun per node             | yes      | **no**                       | yes                        |
+| M5 a paused human wait no longer blocks completion             | yes      | **no**                       | yes                        |
+| M6 lease expiry compares `<` instead of `<=` at the boundary   | **no**   | **no**                       | yes                        |
+| M7 an expired lease can be renewed with its old token          | **no**   | **no**                       | yes                        |
+| M8 `started_at` re-stamped on every RUNNING re-entry           | **no**   | **no**                       | yes                        |
+| M9 reclaim error anonymized (holder no longer named)           | yes      | yes                          | yes                        |
+| M10 cascade error anonymized (Run outcome no longer named)     | yes      | yes                          | yes                        |
 
-The four differential-only rows are exactly the "semantic drift that
-ordinary assertions miss" the issue hypothesizes: M4 is a *which-record*
-error invisible when a node has one NodeRun; M6 and M7 are *boundary*
-errors invisible to after-the-fact assertions; M8 is a *preservation* error
-invisible to set-once assertions. Honest caveats: these are injected
-mutants, not historical defects — synthetic-drift yield bounds, not proves,
-real-drift yield; the ordinary control group is a 12-assertion sample of the
-real suite's coverage, so its 6/10 is a lower bound on the real suite's
-yield; and the differential harness's detection surface includes the
-hand-written probes, not only the generated corpus — the generated corpus
-alone does not reach M3's eight-operation precondition chain or M4's
-re-execution-then-complete pattern within 32 seeds, which is itself a
-finding: **differential power is bounded by stream reachability**, and rare
-contract paths need targeted probes even under model-based generation.
+Read honestly, the table records **two** findings, not one:
 
-**Hypothesis shrinking.** Useful, with one asymmetry. For drifts whose
-precondition chain random search can reach (M10: `add_node → queued →
-settle`), `hypothesis.find` shrank a realistic 20-op counterexample to a
-≤4-op minimal trace, byte-stable across reruns under `derandomize=True, database=None`
-— quotable directly in a defect report. For chain-shaped drifts (M3's
-acceptance-supersession chain) random search does not reach the divergence
-in a 300-example budget over even a one-node alphabet; those drifts are
-covered by hand-written probes instead. So: shrinking works when generation
-reaches the defect; reachability, not shrinking, is the bottleneck.
+- The probe-completed harness detects everything the ordinary suite detects
+  and three rows only it catches. M6 and M7 are *boundary* errors invisible
+to after-the-fact assertions; M8 is a *preservation* error invisible to
+set-once assertions. M4 is *not* one of them: the control group deliberately
+matches the existing suite's coverage, and the real suite already covers the
+retried-node case
+(`test_spine_conformance.py::_assert_a_retried_node_does_not_condemn_its_run`),
+so an ordinary assertion mirroring it detects M4 — claiming otherwise would
+have understated the ordinary suite by construction.
+- On the shared generated corpus alone the differential harness detects
+  **fewer** mutants than the ordinary suite (4/10 vs 7/10). Model-based
+generation does not replace targeted scenarios; it extends *coverage width*
+(every step's full state compared) while remaining bounded by stream
+reachability — the generated corpus alone does not reach M3's
+acceptance-supersession chain, M4's re-execution-then-complete pattern, or
+the M6–M8 timing/preservation boundaries within 32 seeds. **Differential
+power is bounded by stream reachability**, and rare contract paths need
+targeted probes even under model-based generation. That is the honest cost
+line for the runs owners, not a detraction: the oracle's marginal value over
+a good point-assertion suite is the three boundary/preservation rows plus
+whole-state observation, and both of those required targeted material to
+measure.
+
+Honest caveats: these are injected mutants, not historical defects —
+synthetic-drift yield bounds, not proves, real-drift yield; the ordinary
+control group is a 13-assertion sample of the real suite's coverage, so its
+7/10 is a lower bound on the real suite's yield.
+
+**Hypothesis shrinking.** Useful, with two recorded asymmetries. First, the
+recorded long counterexample itself (18 operations of realistic traffic
+around an M10 divergence) fed through a deterministic delta-debug pass
+(chunk halving down to unit removals, committed as
+`TestShrinkingEvidence._delta_debug`) shrinks to a **2-operation** minimal
+divergence (`add_node n0` → `settle_open n0 failed`), byte-stable by
+construction — quotable directly in a defect report. Second,
+`hypothesis.find` run independently in a deliberately reduced one-node
+alphabet (the reduction a human debugger performs) both reaches and shrinks
+an M10 divergence to a ≤4-operation trace, byte-stable across reruns under
+`derandomize=True, database=None`. That reduced space cannot express the
+recorded trace — the two results are separate measurements, not one. For
+chain-shaped drifts (M3's acceptance-supersession chain) random search does
+not reach the divergence in a 300-example budget over even a one-node
+alphabet; those drifts are covered by hand-written probes instead. So:
+shrinking works when generation reaches the defect; reachability, not
+shrinking, is the bottleneck.
 
 **Transcription judgment calls** (the "how difficult is it to keep the model
 independent" answer, itemized — this is the maintenance-cost evidence):
@@ -156,12 +195,19 @@ independent" answer, itemized — this is the maintenance-cost evidence):
   (presence/ordering) would survive;
 - statuses compare as strings; acceptance records compare by projection
   (`logical_status`/`result`/`error`), not identity;
+- lease identity compares in full — holder, fencing token, and expiry — not
+  just the expiry; renewal presents the oracle's token (one shared token
+  source), so a real side that rotated tokens on renew, reused a stale
+  token, or drifted the holder diverges either at the refusal or in the
+  snapshot;
 - constructor-side stamps (`created_at`, `issued_at`, `accepted_at`)
   compare by presence only;
 - the legacy completed→completed hydration path is excluded from the op
   vocabulary (a migration compatibility shim, not a lifecycle rule);
-- refusal comparison is two-level: agreed refusal + agreed category, so a
-  drift that merely changes *which rule* fires is still visible.
+- refusal comparison is three-level: agreed refusal, agreed category, and
+  agreed post-refusal state — so a drift that changes *which rule* fires, or
+  one that mutates a record before refusing (breaking refusal atomicity),
+  is still visible.
 
 **Costs.** The oracle is ~330 lines against the implementation's ~560; the
 suite runs in ~2s. Contract evolution surfaces as loud harness failures, not
@@ -187,11 +233,15 @@ Attempt remains the one execution identity.
 ## Disposition
 
 - **#885 (differential reference-model testing): INCUBATE** — the prototype
-  is real, offline, cheap (~2s CI), and demonstrated a 4-mutant detection
+  is real, offline, cheap (~2s CI), and demonstrated a 3-mutant detection
   advantage over a faithful ordinary-assertion control group on the
-  canonical execution spine; adoption as a standing gate is a product
-  decision for the Run/NodeRun/Attempt owners, not something this note
-  authorizes.
+  canonical execution spine (boundary/preservation drifts only an
+  always-on oracle sees), alongside an honestly recorded weakness: on the
+  shared generated corpus alone it under-detects a good point-assertion
+  suite (4/10 vs 7/10), so its value is whole-state observation plus
+  targeted probes, not blind generation. Adoption as a standing gate is a
+  product decision for the Run/NodeRun/Attempt owners, not something this
+  note authorizes.
 - Move to **GRADUATE** when the harness catches a real (non-injected)
   implementation drift on a production seam, or when the runs owners adopt
   the differential property as a standing CI gate with an explicit

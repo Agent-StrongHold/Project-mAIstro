@@ -428,6 +428,8 @@ class ReferenceModel:
                                 "finished_at": att.finished_at,
                                 "result": att.result,
                                 "error": att.error,
+                                "lease_holder": att.lease_holder,
+                                "lease_token": att.lease_token,
                                 "lease_expires_at": att.lease_expires_at,
                                 "lease_expired": self.attempt_lease_expired(att, now),
                             }
@@ -606,9 +608,12 @@ class Executor:
     def op_lease_renew(self, node_id: str, wrong_token: bool, at: datetime) -> None:
         attempt = self.latest_attempt(node_id)
         assert attempt is not None
-        token = "intruder"
-        if not wrong_token and attempt.execution_lease is not None:
-            token = attempt.execution_lease.fencing_token
+        # One shared token source: the *model's* recorded fencing token. The
+        # driver must not read back the real side's token here — a mutant that
+        # rotated or mis-derived tokens would then renew against its own drift
+        # and never diverge. Presenting the oracle's token makes any identity
+        # drift surface as a refusal disagreement or a snapshot mismatch.
+        token = "intruder" if wrong_token else _model_token(self.model, node_id, False)
         renewed = renew_attempt_lease(attempt, fencing_token=token, ttl=LEASE_TTL, at=at)
         self._replace_attempt(attempt, renewed)
 
@@ -649,6 +654,16 @@ class Executor:
                                 "finished_at": att.finished_at,
                                 "result": att.result,
                                 "error": att.error,
+                                "lease_holder": (
+                                    att.execution_lease.holder
+                                    if att.execution_lease is not None
+                                    else None
+                                ),
+                                "lease_token": (
+                                    att.execution_lease.fencing_token
+                                    if att.execution_lease is not None
+                                    else None
+                                ),
                                 "lease_expires_at": (
                                     att.execution_lease.expires_at
                                     if att.execution_lease is not None
@@ -787,13 +802,46 @@ def _exception_category(exc: BaseException) -> str:
     return "other"
 
 
+def _compare_agreed_refusal(
+    executor: Executor,
+    op: tuple[Any, ...],
+    index: int,
+    clock: datetime,
+    real_error: BaseException,
+    model_error: BaseException,
+    divergences: list[str],
+) -> None:
+    """Both sides refused the same operation. The refusal categories must
+    agree, and the refusals must be atomic: an implementation that mutates a
+    record and *then* raises the same refusal the model predicted still
+    diverges, because the model never mutates on refusal.
+
+    Refusal comparison is therefore two-level: agreed refusal + agreed
+    category + agreed post-refusal state, so a drift that merely changes
+    *which rule* fires — or one that mutates before refusing — is visible.
+    """
+    real_category = _exception_category(real_error)
+    model_category = _exception_category(model_error)
+    if real_category != model_category:
+        divergences.append(
+            f"step {index} op {op!r}: refusal categories differ: "
+            f"real={real_category} model={model_category}"
+        )
+    expected = executor.model.snapshot(clock)
+    actual = executor.snapshot(clock)
+    if expected != actual:
+        divergences.append(f"step {index} op {op!r}: state diverged after an agreed refusal")
+
+
 def run_stream(ops: list[tuple[Any, ...]], executor: Executor | None = None) -> list[str]:
     """Drive one op stream against both sides; return divergence records.
 
     Agreement per step is: both accept (and then the full normalized
-    snapshots must match exactly), or both refuse with the same category.
-    The driver owns one logical clock so timestamps compare exactly — the
-    first normalization boundary recorded in the research note.
+    snapshots must match exactly), or both refuse with the same category
+    (and then the post-refusal snapshots must still match — a refusal is
+    expected to be atomic). The driver owns one logical clock so timestamps
+    compare exactly — the first normalization boundary recorded in the
+    research note.
     """
     executor = executor if executor is not None else Executor()
     divergences: list[str] = []
@@ -821,14 +869,10 @@ def run_stream(ops: list[tuple[Any, ...]], executor: Executor | None = None) -> 
                 )
                 continue
             if real_error is not None:
-                real_category = _exception_category(real_error)
-                model_category = _exception_category(model_error)
                 assert model_error is not None
-                if real_category != model_category:
-                    divergences.append(
-                        f"step {index} op {op!r}: refusal categories differ: "
-                        f"real={real_category} model={model_category}"
-                    )
+                _compare_agreed_refusal(
+                    executor, op, index, clock, real_error, model_error, divergences
+                )
                 continue
         else:
             clock = clock + timedelta(seconds=op[1])
@@ -1199,6 +1243,8 @@ PROBES: dict[str, list[tuple[Any, ...]]] = {
         ("attempt_new", "n0"),
         ("attempt_move", "n0", "running"),
         ("lease_new", "n0"),
+        ("tick", 1),
+        ("lease_renew", "n0", False),
         ("tick", 6),
         ("lease_renew", "n0", False),
     ],
@@ -1444,6 +1490,38 @@ def ordinary_renewal_wrong_token_refused(make: type[Executor]) -> None:
     raise AssertionError("renewal accepted a token the Attempt does not hold")
 
 
+def ordinary_retried_node_completion_uses_newest(make: type[Executor]) -> None:
+    """Mirrors the existing suite's retried-node coverage
+    (``test_spine_conformance.py::_assert_a_retried_node_does_not_condemn_its_run``):
+    a node holds a FAILED older NodeRun and a COMPLETED newest one, and only
+    the newest states its outcome."""
+    executor = make()
+    at = T0
+    executor.op_add_node("n0", at)
+    at = _advance(at)
+    executor.op_node_move("n0", "queued", False, at)
+    at = _advance(at)
+    executor.op_node_move("n0", "running", False, at)
+    at = _advance(at)
+    executor.op_node_move("n0", "failed", False, at)
+    at = _advance(at)
+    executor.op_add_node("n0", at)
+    at = _advance(at)
+    executor.op_node_move("n0", "queued", False, at)
+    at = _advance(at)
+    executor.op_node_move("n0", "running", False, at)
+    at = _advance(at)
+    executor.op_attempt_new("n0", at)
+    at = _advance(at)
+    executor.op_attempt_move("n0", "running", at)
+    at = _advance(at)
+    executor.op_attempt_move("n0", "completed", at)
+    at = _advance(at)
+    executor.op_node_move("n0", "completed", True, at)
+    at = _advance(at)
+    executor.op_check_complete(at)  # must not raise
+
+
 def ordinary_attempt_yield_is_terminal(make: type[Executor]) -> None:
     executor = make()
     at = T0
@@ -1472,6 +1550,7 @@ ORDINARY_ASSERTIONS = [
     ordinary_supersession_clears_acceptance,
     ordinary_completion_over_failed_node_refused,
     ordinary_completion_over_paused_node_refused,
+    ordinary_retried_node_completion_uses_newest,
     ordinary_cascade_error_names_run_outcome,
     ordinary_reclaim_error_names_holder,
     ordinary_lease_expiry_after_ttl,
@@ -1489,14 +1568,25 @@ def assertion_detects(assertion: Any, mutant: type[Executor]) -> bool:
 
 
 def defect_yield_table() -> dict[str, dict[str, bool]]:
-    """The measured comparison: one row per mutant, one column per suite."""
+    """The measured comparison: one row per mutant, three scored columns.
+
+    - ``ordinary``  — the hand-written point-assertion control group (matched
+      to the coverage the existing lifecycle suite actually has).
+    - ``generated`` — detection on the *shared* 32-stream corpus: the same
+      matched scenarios for every mutant, no mutant-specific material. This
+      is the apples-to-apples column.
+    - ``probe``     — the mutant's own hand-written targeted probe. Reported
+      separately because each probe was written *from* its mutant: it proves
+      non-vacuity and bounds targeted-harness power, but it is not a fair
+      measure of blind detection and must not be folded into the comparison
+      column.
+    """
     table: dict[str, dict[str, bool]] = {}
     for mutant in MUTANTS:
         table[mutant.id] = {
             "ordinary": any(assertion_detects(a, mutant) for a in ORDINARY_ASSERTIONS),
-            "differential": any(
-                run_stream(stream, mutant()) for stream in [*PROBES.values(), *CORPUS]
-            ),
+            "generated": any(run_stream(stream, mutant()) for stream in CORPUS),
+            "probe": bool(run_stream(PROBES[mutant.id], mutant())),
         }
     return table
 
@@ -1552,62 +1642,87 @@ class TestDefectYieldComparison:
             assertion(Executor)  # must not raise
 
     def test_yield_table_freezes_the_measured_comparison(self) -> None:
-        """The recorded defect-yield table (research note, 'Record'). The
-        differential harness must detect at least everything the ordinary
-        suite detects — its claim to value is the rows only it catches."""
+        """The recorded defect-yield table (research note, 'Record'), scored
+        on matched scenarios: the ordinary control group and the generated
+        corpus see the same material for every mutant; the mutant-specific
+        probe is a separate column, never folded into the comparison."""
         table = defect_yield_table()
-        differential = {m.id: run_stream(PROBES[m.id], m()) != [] for m in MUTANTS}
         assert table == {
             "M1-terminal-absorbing-edges-lost": {
                 "ordinary": True,
-                "differential": True,
+                "generated": True,
+                "probe": True,
             },
             "M2-completion-without-acceptance": {
                 "ordinary": True,
-                "differential": True,
+                "generated": True,
+                "probe": True,
             },
             "M3-stale-acceptance-not-superseded": {
                 "ordinary": True,
-                "differential": True,
+                "generated": False,
+                "probe": True,
             },
             "M4-oldest-node-run-counts": {
-                "ordinary": False,
-                "differential": True,
+                "ordinary": True,
+                "generated": False,
+                "probe": True,
             },
             "M5-paused-node-cascadable": {
                 "ordinary": True,
-                "differential": True,
+                "generated": False,
+                "probe": True,
             },
             "M6-lease-expiry-off-by-one": {
                 "ordinary": False,
-                "differential": True,
+                "generated": False,
+                "probe": True,
             },
             "M7-expired-lease-renewable": {
                 "ordinary": False,
-                "differential": True,
+                "generated": False,
+                "probe": True,
             },
             "M8-started-at-overwritten-on-resume": {
                 "ordinary": False,
-                "differential": True,
+                "generated": False,
+                "probe": True,
             },
             "M9-reclaim-error-anonymized": {
                 "ordinary": True,
-                "differential": True,
+                "generated": True,
+                "probe": True,
             },
             "M10-cascade-error-anonymized": {
                 "ordinary": True,
-                "differential": True,
+                "generated": True,
+                "probe": True,
             },
         }
-        assert differential == {mutant.id: True for mutant in MUTANTS}
 
-    def test_differential_yield_dominates_ordinary_yield(self) -> None:
+    def test_probe_completed_harness_dominates_ordinary_but_generated_alone_does_not(
+        self,
+    ) -> None:
+        """The two recorded findings, both frozen. (1) With its targeted
+        probes the differential harness detects every mutant the ordinary
+        suite detects and more. (2) On the shared generated corpus alone the
+        differential harness detects *fewer* mutants than the ordinary suite:
+        random generation's reachability, not oracle power, is the binding
+        constraint — the research note's central maintenance-cost caveat."""
         table = defect_yield_table()
         for mutant_id, row in table.items():
-            assert row["differential"] >= row["ordinary"], mutant_id
+            assert row["probe"] or row["generated"], mutant_id
+            assert row["probe"] >= row["ordinary"] or row["generated"], mutant_id
         ordinary_total = sum(row["ordinary"] for row in table.values())
-        differential_total = sum(row["differential"] for row in table.values())
-        assert differential_total > ordinary_total, (ordinary_total, differential_total)
+        generated_total = sum(row["generated"] for row in table.values())
+        harness_total = sum(row["generated"] or row["probe"] for row in table.values())
+        assert harness_total == len(table)  # probes complete the harness
+        assert harness_total > ordinary_total, (harness_total, ordinary_total)
+        assert generated_total < ordinary_total, (
+            "the matched-corpus comparison recorded in the research note "
+            "(generation under-detects) no longer holds — re-measure and "
+            "update the note"
+        )
 
     def test_yield_measurement_is_deterministic(self) -> None:
         assert defect_yield_table() == defect_yield_table()
@@ -1616,15 +1731,21 @@ class TestDefectYieldComparison:
 
 
 class TestShrinkingEvidence:
-    """Evidence question: can Hypothesis shrinking produce useful minimal
-    divergence traces? A divergence is only shrinkable when generation can
-    reach it: the harness targets the M10 drift (a three-operation chain) so
-    random search finds a first counterexample, and uses a one-node reduction
-    of the alphabet — the same reduction a human debugger performs — while
-    the shrinking does the rest. Chain-shaped drifts whose precondition
-    sequence random search cannot hit in a bounded budget (the M3 acceptance
-    chain) are covered by their hand-written probes instead; that asymmetry
-    is itself a recorded finding."""
+    """Evidence question: can shrinking produce useful minimal divergence
+    traces? Two complementary experiments, both on the record:
+
+    1. The *recorded* long counterexample is itself fed to a deterministic
+       delta-debug pass (chunk halving down to unit removals), so the trace a
+       real run would report is the trace that gets minimized.
+    2. ``hypothesis.find`` runs an independent search in a deliberately
+       reduced one-node alphabet (the reduction a human debugger performs).
+       That space cannot express the recorded trace — the two results are
+       reported as separate measurements, not conflated.
+
+    Chain-shaped drifts whose precondition sequence random search cannot hit
+    in a bounded budget (the M3 acceptance chain) are covered by their
+    hand-written probes instead; that asymmetry is itself a recorded finding.
+    """
 
     SHRINK_OPS = st.one_of(
         st.just(("add_node", "n0")),
@@ -1641,10 +1762,32 @@ class TestShrinkingEvidence:
 
     _SHRINK_SETTINGS = settings(max_examples=300, database=None, derandomize=True, deadline=None)
 
-    def test_hypothesis_shrinks_a_divergence_to_a_minimal_trace(self) -> None:
+    @staticmethod
+    def _delta_debug(stream: list[tuple[Any, ...]], make: type[Executor]) -> list[tuple[Any, ...]]:
+        """Deterministic delta-debugging of one recorded divergent trace:
+        repeatedly try to delete a chunk, halving the chunk size down to
+        single operations. Keeps every deletion that preserves divergence."""
+        current = list(stream)
+        assert current and run_stream(current, make())
+        chunk = max(1, len(current) // 2)
+        while chunk >= 1:
+            index = 0
+            while index < len(current):
+                candidate = current[:index] + current[index + chunk :]
+                if candidate and run_stream(candidate, make()):
+                    current = candidate
+                else:
+                    index += chunk
+            if chunk == 1:
+                break
+            chunk = max(1, chunk // 2)
+        return current
+
+    def test_the_recorded_trace_is_shrunk_to_a_minimal_divergence(self) -> None:
         """A realistic first counterexample is a long stream with irrelevant
-        traffic around the defect. ``find`` must return a strictly shorter
-        trace that still diverges — the shrinking usefulness evidence."""
+        traffic around the defect. Feeding the recorded trace itself through
+        delta-debugging must return a strictly shorter trace that still
+        diverges — quotable directly in a defect report."""
         naive: list[tuple[Any, ...]] = [
             ("add_node", "n1"),
             ("node_move", "n1", "queued", False),
@@ -1665,18 +1808,26 @@ class TestShrinkingEvidence:
         ]
         assert run_stream(naive, DriftCascadeAnonymized())
         assert run_stream(naive, Executor()) == []
+        minimal = self._delta_debug(naive, DriftCascadeAnonymized)
+        assert run_stream(minimal, DriftCascadeAnonymized())
+        assert run_stream(minimal, Executor()) == []
+        assert len(minimal) < len(naive)
+        assert len(minimal) <= 4
+        # Deterministic: the same input always shrinks to the same trace.
+        assert self._delta_debug(naive, DriftCascadeAnonymized) == minimal
+
+    def test_hypothesis_independently_finds_and_shrinks_a_divergence(self) -> None:
+        """A separate measurement: in the reduced one-node alphabet,
+        ``hypothesis.find`` both reaches and shrinks an M10 divergence to a
+        minimal trace, byte-stable across reruns under
+        ``derandomize=True, database=None``."""
         minimal = find(
             self.SHRINK_STREAMS,
             lambda ops: bool(run_stream(list(ops), DriftCascadeAnonymized())),
             settings=self._SHRINK_SETTINGS,
         )
         assert run_stream(list(minimal), DriftCascadeAnonymized())
-        assert len(minimal) < len(naive)
         assert len(minimal) <= 4
-
-    def test_shrunken_trace_is_stable_across_reruns(self) -> None:
-        """derandomize + no database: the shrunken trace is byte-stable, so a
-        recorded divergence trace can be quoted in a defect report."""
         traces = [
             find(
                 self.SHRINK_STREAMS,
@@ -1687,6 +1838,16 @@ class TestShrinkingEvidence:
         ]
         assert traces[0] == traces[1]
         assert len(traces[0]) <= 4
+
+    def test_deep_sweep_replays_one_thousand_seeded_streams(self) -> None:
+        """The recorded deep sweep, made reproducible: replay
+        ``corpus_stream(seed)`` for seeds 0..999 (the documented procedure in
+        the research note — deterministic by construction) and expect zero
+        divergences on the green implementation."""
+        divergences = [
+            (seed, found) for seed in range(1000) if (found := run_stream(corpus_stream(seed)))
+        ]
+        assert divergences == []
 
 
 class TestEvidenceOnlyContract:
@@ -1699,7 +1860,10 @@ class TestEvidenceOnlyContract:
         """The oracle half of the harness imports no maistro module — only the
         driver does. Pinned by AST so the model cannot silently start
         delegating to the implementation it is supposed to be independent
-        of."""
+        of. The pin covers both Import statements *and* bare references to
+        production symbols already bound in the module globals: a model
+        method that calls ``transition_run`` directly contains no Import
+        node, and only a name-resolution check catches that."""
         source = Path(__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
         model_class = next(
@@ -1707,10 +1871,37 @@ class TestEvidenceOnlyContract:
             for node in ast.walk(tree)
             if isinstance(node, ast.ClassDef) and node.name == "ReferenceModel"
         )
+        production_symbols: set[str] = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                and (node.module == "maistro" or node.module.startswith("maistro."))
+            ):
+                production_symbols.update(alias.asname or alias.name for alias in node.names)
+            elif isinstance(node, ast.Import):
+                production_symbols.update(
+                    (alias.asname or alias.name.split(".")[0])
+                    for alias in node.names
+                    if alias.name == "maistro" or alias.name.startswith("maistro.")
+                )
+        assert production_symbols  # the guard itself must not rot to empty
         for node in ast.walk(model_class):
             assert not isinstance(node, (ast.Import, ast.ImportFrom)), (
                 "ReferenceModel must stay maistro-free"
             )
+            if isinstance(node, ast.Name):
+                assert node.id not in production_symbols, (
+                    f"ReferenceModel must not reference production symbol {node.id!r}"
+                )
+            elif isinstance(node, ast.Attribute):
+                root: ast.expr = node
+                while isinstance(root, ast.Attribute):
+                    root = root.value
+                if isinstance(root, ast.Name):
+                    assert root.id not in production_symbols, (
+                        f"ReferenceModel must not reference production symbol {root.id!r}"
+                    )
 
     def test_harness_resides_under_tests_and_declares_no_authority(
         self,

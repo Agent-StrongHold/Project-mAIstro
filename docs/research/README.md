@@ -84,6 +84,7 @@ Every child research epic/leaf defines:
 
 | Note | Family | Epic / leaf | Disposition at this head |
 |---|---|---|---|
+| [885 — differential reference-model testing for canonical state machines](885-differential-reference-model-testing.md) | M8-A5 | leaf [#885](https://github.com/Agent-StrongHold/Project-mAIstro/issues/885), epic #880 | INCUBATE |
 | [896 — coverage-guided fuzzing of parser surfaces](896-coverage-guided-fuzzing-parser-surfaces.md) | M8-A15 | leaf [#896](https://github.com/Agent-StrongHold/Project-mAIstro/issues/896), epic #880 | INCUBATE |
 | [904 — uncertainty, calibration, abstention](904-uncertainty-calibration-abstention.md) | M8-E | [#904](https://github.com/Agent-StrongHold/Project-mAIstro/issues/904) (leaves #930–#933) | WATCH (per leaf) |
 | [931 — historical Run-outcome calibration](931-historical-outcome-calibration.md) | M8-E2 | leaf [#931](https://github.com/Agent-StrongHold/Project-mAIstro/issues/931), epic #904 | WATCH |
@@ -107,16 +108,18 @@ Every child research epic/leaf defines:
 | [929 — Graph pattern induction and reuse across Goals](929-graph-pattern-induction-reuse.md) | M8-D5 | leaf [#929](https://github.com/Agent-StrongHold/Project-mAIstro/issues/929), epic #903 | INCUBATE |
 | [935 — cross-Agent batching, prefix/KV reuse, semantic caching](935-cross-agent-batching-kv-reuse.md) | M8-F2 | leaf [#935](https://github.com/Agent-StrongHold/Project-mAIstro/issues/935), epic #905 | WATCH |
 
-No leaf currently holds a GRADUATE or REJECT disposition; four are INCUBATE (fuzzing leaf
-#896, model-routing leaves #914 and #916, and graph-pattern reuse leaf #929) and the rest
-are WATCH. Dispositions are owned by the individual notes — update the note first, then
+No leaf currently holds a GRADUATE or REJECT disposition; five are INCUBATE
+(differential-oracle leaf #885, fuzzing leaf #896, model-routing leaves #914
+and #916, and graph-pattern reuse leaf #929) and the rest are WATCH.
+Dispositions are owned by the individual notes — update the note first, then
 this table.
 
 The initial research family, M8-A advanced software verification and assurance
 ([#880](https://github.com/Agent-StrongHold/Project-mAIstro/issues/880), leaves #881–#897), is
 tracked on GitHub with its in-repo evidence infrastructure in [`formal/`](../../formal/)
-([INVARIANTS](../../formal/INVARIANTS.md), [README](../../formal/README.md)); the M8-A15
-fuzzing prototype above is its first note in this folder.
+([INVARIANTS](../../formal/INVARIANTS.md), [README](../../formal/README.md)); M8-A leaf notes
+in this folder include the differential reference-model prototype (#885) and the fuzzing
+prototype (#896).
 
 ## Milestone object note
 
