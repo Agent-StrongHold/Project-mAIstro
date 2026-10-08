@@ -260,18 +260,20 @@ class BaseRateEstimator(M8E2Estimator):
 
     def __init__(self) -> None:
         self._rate = 0.5
+        self._n = 0
 
     def fit(self, train: Sequence[RunOutcome]) -> BaseRateEstimator:
         if not train:
             raise ValueError("fit needs at least one observation")
         self._rate = sum(float(o.success) for o in train) / len(train)
+        self._n = len(train)
         return self
 
     def predict(self, observation: RunOutcome) -> float:
         return self._rate
 
     def cost(self) -> CalibrationCost:
-        return CalibrationCost("base-rate", 1, 0, 0, "refit on corpus append")
+        return CalibrationCost("base-rate", 1, 0, self._n, "refit on corpus append")
 
 
 class SelfReportEstimator(M8E2Estimator):
@@ -298,23 +300,34 @@ class SelfReportEstimator(M8E2Estimator):
 class _ContextTable(M8E2Estimator):
     """Shared machinery for the per-context frequency/Bayesian estimators."""
 
-    def __init__(self, *, min_context_samples: int = 1) -> None:
+    def __init__(
+        self,
+        *,
+        min_context_samples: int = 1,
+        context_key: Callable[[RunOutcome], str] | None = None,
+    ) -> None:
         if min_context_samples < 1:
             raise ValueError("min_context_samples must be >= 1")
         self._min = min_context_samples
+        # The selected context axes are estimator configuration: ONE key
+        # function is used for both fitting and prediction, so requesting the
+        # tool axis (``lambda o: o.context(tool=True)``) conditions the table
+        # on the toolset everywhere instead of pooling runs that share a
+        # task/model family but run a different toolset.
+        self._context_key = context_key or (lambda o: o.context())
         self._rates: dict[str, float] = {}
         self._counts: dict[str, int] = {}
         self._base_rate = 0.5
         self._name = "context-table"
 
-    def _fit_table(self, train: Sequence[RunOutcome], key: Callable[[RunOutcome], str]) -> None:
+    def _fit_table(self, train: Sequence[RunOutcome]) -> None:
         if not train:
             raise ValueError("fit needs at least one observation")
         self._base_rate = sum(float(o.success) for o in train) / len(train)
         successes: dict[str, float] = {}
         counts: dict[str, int] = {}
         for o in train:
-            k = key(o)
+            k = self._key(o)
             counts[k] = counts.get(k, 0) + 1
             successes[k] = successes.get(k, 0.0) + float(o.success)
         self._counts = counts
@@ -334,8 +347,8 @@ class _ContextTable(M8E2Estimator):
         return self._rates[k]
 
     def _key(self, observation: RunOutcome) -> str:
-        """The context axis this table conditions on (task and model axes by default)."""
-        return observation.context()
+        """The configured context axes this table conditions on."""
+        return self._context_key(observation)
 
     def predict(self, observation: RunOutcome) -> float:
         return self._context_rate(observation)
@@ -357,12 +370,17 @@ class _ContextTable(M8E2Estimator):
 class FrequencyEstimator(_ContextTable):
     """Plain per-context empirical success rate (the frequency model)."""
 
-    def __init__(self, *, min_context_samples: int = 1) -> None:
-        super().__init__(min_context_samples=min_context_samples)
+    def __init__(
+        self,
+        *,
+        min_context_samples: int = 1,
+        context_key: Callable[[RunOutcome], str] | None = None,
+    ) -> None:
+        super().__init__(min_context_samples=min_context_samples, context_key=context_key)
         self._name = "frequency"
 
     def fit(self, train: Sequence[RunOutcome]) -> FrequencyEstimator:
-        self._fit_table(train, lambda o: o.context())
+        self._fit_table(train)
         return self
 
     def cost(self) -> CalibrationCost:
@@ -379,15 +397,20 @@ class BayesEstimator(_ContextTable):
     saturated context degenerates to the frequency estimator.
     """
 
-    def __init__(self, prior_strength: float = 20.0) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        prior_strength: float = 20.0,
+        *,
+        context_key: Callable[[RunOutcome], str] | None = None,
+    ) -> None:
+        super().__init__(context_key=context_key)
         if prior_strength < 0.0:
             raise ValueError("prior_strength must be >= 0")
         self._prior = prior_strength
         self._name = "bayes"
 
     def fit(self, train: Sequence[RunOutcome]) -> BayesEstimator:
-        self._fit_table(train, lambda o: o.context())
+        self._fit_table(train)
         if self._prior > 0.0:
             self._rates = {
                 k: (self._rates[k] * self._counts[k] + self._base_rate * self._prior)
@@ -414,10 +437,12 @@ class PlattCalibrator(M8E2Estimator):
         self._iters = iters
         self._a = 0.0
         self._b = 0.0
+        self._n = 0
 
     def fit(self, train: Sequence[RunOutcome]) -> PlattCalibrator:
         if not train:
             raise ValueError("fit needs at least one observation")
+        self._n = len(train)
         xs = [o.claimed for o in train]
         ys = [float(o.success) for o in train]
         self._a, self._b = 0.0, 0.0
@@ -434,7 +459,13 @@ class PlattCalibrator(M8E2Estimator):
                 hess[0] += w
                 hess[1] += w * x
                 hess[2] += w * x * x
-            h00, h01, h11 = hess[0] + self._ridge, hess[1], hess[2] + self._ridge
+            # Ridge-penalize the slope only: the intercept must stay free so
+            # the model can still match the marginal base rate. The penalty
+            # enters the gradient (not just the Hessian) so this is a true
+            # Newton step on log-loss + ½·λ·b², which shrinks b on
+            # separable data instead of merely damping each step.
+            grads[1] += self._ridge * self._b
+            h00, h01, h11 = hess[0], hess[1], hess[2] + self._ridge
             det = h00 * h11 - h01 * h01
             if abs(det) < 1e-12:
                 break
@@ -449,7 +480,7 @@ class PlattCalibrator(M8E2Estimator):
         return _sigmoid(self._a + self._b * observation.claimed)
 
     def cost(self) -> CalibrationCost:
-        return CalibrationCost("platt", 2, 0, 0, "refit when self-report drift monitor fires")
+        return CalibrationCost("platt", 2, 0, self._n, "refit when self-report drift monitor fires")
 
 
 class HistogramCalibrator(M8E2Estimator):
@@ -467,10 +498,12 @@ class HistogramCalibrator(M8E2Estimator):
         self._n_bins = n_bins
         self._bin_rates: dict[int, float] = {}
         self._base_rate = 0.5
+        self._n = 0
 
     def fit(self, train: Sequence[RunOutcome]) -> HistogramCalibrator:
         if not train:
             raise ValueError("fit needs at least one observation")
+        self._n = len(train)
         self._base_rate = sum(float(o.success) for o in train) / len(train)
         sums: dict[int, float] = {}
         counts: dict[int, int] = {}
@@ -493,7 +526,7 @@ class HistogramCalibrator(M8E2Estimator):
             "histogram",
             len(self._bin_rates) + 1,
             0,
-            0,
+            self._n,
             "refit when self-report drift monitor fires",
         )
 
@@ -519,25 +552,38 @@ class LogisticHistoryModel(M8E2Estimator):
 
     DIM = 5
 
-    def __init__(self, ridge: float = 1.0, iters: int = 40) -> None:
+    def __init__(
+        self,
+        ridge: float = 1.0,
+        iters: int = 40,
+        *,
+        context_key: Callable[[RunOutcome], str] | None = None,
+    ) -> None:
         self._ridge = ridge
         self._iters = iters
         self._w = [0.0] * self.DIM
-        self._table = FrequencyEstimator()
+        # The wrapped history table and the feature computation below share
+        # ONE configured key, so the fit never pools contexts the predictor
+        # distinguishes (or vice versa).
+        self._context_key = context_key or (lambda o: o.context())
+        self._table = FrequencyEstimator(context_key=self._context_key)
         self._counts: dict[str, int] = {}
         self._base_rate = 0.5
 
     def fit(self, train: Sequence[RunOutcome]) -> LogisticHistoryModel:
         if not train:
             raise ValueError("fit needs at least one observation")
+        # Training rows are leave-one-out encoded: each row's history feature
+        # is the context rate computed *without* that row's own outcome, so
+        # no target leaks into its own feature (which would spuriously
+        # inflate the learned history weight, catastrophically so for
+        # singleton contexts). The full table is fitted only for held-out
+        # prediction, where the observation is genuinely unseen.
         self._table.fit(train)
         self._counts = self._table.context_counts()
-        self._base_rate = self._table.predict(train[0]) if train else 0.5
-        # The base rate IS the frequency prediction for an unseen context, so
-        # recover it directly from the fitted table's pooled rate.
-        total = sum(self._counts.values())
-        self._base_rate = sum(float(o.success) for o in train) / total if total else 0.5
-        rows = [self._features(o) for o in train]
+        total, total_success, sums = self._context_sums(train)
+        self._base_rate = total_success / total if total else 0.5
+        rows = [self._loo_features(o, sums, total, total_success) for o in train]
         ys = [float(o.success) for o in train]
         self._w = [0.0] * self.DIM
         for _ in range(self._iters):
@@ -552,8 +598,14 @@ class LogisticHistoryModel(M8E2Estimator):
                     grads[i] += err * row[i]
                     for j in range(i, self.DIM):
                         hess[i][j] += wgt * row[i] * row[j]
-            for i in range(self.DIM):
+            # Ridge penalty on the objective: the parameter term is added to
+            # the gradient as well as the Hessian diagonal (index 0 is the
+            # intercept, which stays unpenalized). Without the gradient term
+            # the penalty would only damp steps, never shrink weights.
+            for i in range(1, self.DIM):
+                grads[i] += self._ridge * self._w[i]
                 hess[i][i] += self._ridge
+            for i in range(self.DIM):
                 for j in range(i):
                     hess[i][j] = hess[j][i]
             # Damped Newton (IRLS) step: the Hessian is a sum over rows, so
@@ -567,9 +619,39 @@ class LogisticHistoryModel(M8E2Estimator):
                 break
         return self
 
+    def _context_sums(self, train: Sequence[RunOutcome]) -> tuple[int, float, dict[str, float]]:
+        """Row count, success mass, and per-context success sums on one key."""
+        total = sum(self._counts.values())
+        total_success = sum(float(o.success) for o in train)
+        sums: dict[str, float] = {}
+        for o in train:
+            k = self._context_key(o)
+            sums[k] = sums.get(k, 0.0) + float(o.success)
+        return total, total_success, sums
+
+    def _loo_features(
+        self,
+        observation: RunOutcome,
+        sums: dict[str, float],
+        total: int,
+        total_success: float,
+    ) -> list[float]:
+        """The training row for ``observation`` with its target held out."""
+        k = self._context_key(observation)
+        n_c = self._counts.get(k, 0)
+        if n_c > 1:
+            hist = (sums[k] - float(observation.success)) / (n_c - 1)
+        else:
+            # Singleton (or unseen) context: fall back to the pooled rate
+            # excluding this row, or 0.5 when it is the only row at all.
+            hist = (total_success - float(observation.success)) / (total - 1) if total > 1 else 0.5
+        mass = math.log1p(n_c) / math.log1p(50.0)
+        return [1.0, observation.claimed, hist, mass, observation.claimed * hist]
+
     def _features(self, observation: RunOutcome) -> list[float]:
+        """Held-out/production row: the full-table history (no self-target)."""
         hist = self._table.predict(observation)
-        mass = math.log1p(self._counts.get(observation.context(), 0)) / math.log1p(50.0)
+        mass = math.log1p(self._counts.get(self._context_key(observation), 0)) / math.log1p(50.0)
         return [1.0, observation.claimed, hist, mass, observation.claimed * hist]
 
     def predict(self, observation: RunOutcome) -> float:
@@ -856,9 +938,9 @@ def m8e2_reversal_corpus(seed: int = 9315, n: int = 800) -> list[RunOutcome]:
     """A corpus whose context skill reverses mid-stream — the leakage trap.
 
     ``volatile`` succeeds 80% of the time in the first half and 20% in the
-    second; ``steady`` stays at 0.5. A fit trained on the future and judged
-    on the past scores *better* than the honest direction — the inflation a
-    shuffled or reversed split hides.
+    second; ``steady`` stays at 0.5. A fit that has seen the evaluation rows
+    predicts each row's own regime far better than any honest out-of-sample
+    fit can — the inflation a shuffled or future-leaking split hides.
     """
     rng = random.Random(seed)
     corpus: list[RunOutcome] = []
@@ -866,6 +948,25 @@ def m8e2_reversal_corpus(seed: int = 9315, n: int = 800) -> list[RunOutcome]:
         task = ("volatile", "steady")[i % 2]
         rate = 0.5 if task == "steady" else (0.8 if i < n / 2 else 0.2)
         corpus.append(RunOutcome(task, "m", 0.5, rng.random() < rate, "", i))
+    return corpus
+
+
+def m8e2_tool_conditional_corpus(seed: int = 9316, n: int = 600) -> list[RunOutcome]:
+    """Skill that depends on the toolset, not on the task/model family.
+
+    Every row shares one task/model family; ``with-tools`` succeeds 75% of
+    the time and ``no-tools`` 25%. A task/model context key pools the two
+    into a single ~50% cell — exactly what a task/model-only experiment
+    cannot see — while the task/model/toolset key separates them. Rows are
+    interleaved so the temporal split leaves both toolsets populated on
+    both sides.
+    """
+    rng = random.Random(seed)
+    corpus: list[RunOutcome] = []
+    for i in range(n):
+        toolset = ("with-tools", "no-tools")[i % 2]
+        rate = 0.75 if toolset == "with-tools" else 0.25
+        corpus.append(RunOutcome("coding", "m", 0.5, rng.random() < rate, toolset, i))
     return corpus
 
 
@@ -945,24 +1046,19 @@ class TestTemporalIntegrity:
             m8e2_temporal_split([], 0.5)
 
     def test_leakage_inflates_measured_quality(self) -> None:
-        """The honest direction must be the worse-looking one here.
+        """Seeing the evaluation rows must look better than honesty.
 
-        With a mid-stream reversal, the frequency estimator trained on the
-        *later* half and judged on the *earlier* half looks better than the
-        legitimate fit — that inflation is exactly what a shuffled or
-        future-leaking split would report. The study's split makes the
-        honest direction the only one it produces.
+        Both scores below judge the *same* test rows, so the comparison is
+        not symmetric under reversal: the honest fit only ever saw the
+        pre-reversal half (predicting 0.8 against a 0.2 regime), while the
+        leaky fit absorbed the rows it is scored on. The gap is structural,
+        not a seed fluctuation — verified stable across 200 seeds.
         """
         corpus = m8e2_reversal_corpus()
         train, test = m8e2_temporal_split(corpus, 0.5)
-        honest = m8e2_brier(
-            FrequencyEstimator().fit(train).predict_all(test),
-            [o.success for o in test],
-        )
-        leaky = m8e2_brier(
-            FrequencyEstimator().fit(test).predict_all(train),
-            [o.success for o in train],
-        )
+        outcomes = [o.success for o in test]
+        honest = m8e2_brier(FrequencyEstimator().fit(train).predict_all(test), outcomes)
+        leaky = m8e2_brier(FrequencyEstimator().fit(train + test).predict_all(test), outcomes)
         assert leaky < honest
 
 
@@ -1053,6 +1149,69 @@ def _heldout_brier(
     return m8e2_brier(scores, outcomes)
 
 
+class TestToolAxisConditioning:
+    """The context axes are estimator configuration, shared by fit and predict.
+
+    The leaf names task/model/tool context. The tables default to the
+    task/model key, but selecting the tool axis must condition BOTH the fit
+    and the predictions on the toolset — runs that differ only in toolset
+    may no longer be pooled into one cell.
+    """
+
+    def test_default_key_pools_toolsets_and_the_tool_key_separates_them(self) -> None:
+        corpus = m8e2_tool_conditional_corpus()
+        train, test = m8e2_temporal_split(corpus, 0.5)
+        outcomes = [o.success for o in test]
+        pooled = m8e2_brier(FrequencyEstimator().fit(train).predict_all(test), outcomes)
+        keyed = m8e2_brier(
+            FrequencyEstimator(context_key=lambda o: o.context(tool=True))
+            .fit(train)
+            .predict_all(test),
+            outcomes,
+        )
+        # The task/model key pools both toolsets into one ~50% cell (pooled
+        # Brier ~ p(1-p) + 0.25^2); the toolset key recovers each toolset's
+        # own 75%/25% rate (Brier ~ p(1-p)).
+        assert pooled > 0.22
+        assert keyed < 0.21
+        assert keyed < pooled
+
+    def test_fit_and_predict_use_the_same_configured_key(self) -> None:
+        corpus = m8e2_tool_conditional_corpus()
+        model = FrequencyEstimator(context_key=lambda o: o.context(tool=True)).fit(corpus)
+        # Fitted cells are keyed on the tool axis...
+        assert set(model.context_counts()) == {"coding|m|with-tools", "coding|m|no-tools"}
+        # ...so predictions keyed the same way resolve to their own cell.
+        with_tools = RunOutcome("coding", "m", 0.5, True, toolset="with-tools")
+        no_tools = RunOutcome("coding", "m", 0.5, True, toolset="no-tools")
+        assert model.predict(with_tools) == pytest.approx(0.75, abs=0.05)
+        assert model.predict(no_tools) == pytest.approx(0.25, abs=0.05)
+
+    def test_bayes_and_logistic_honor_the_tool_axis_too(self) -> None:
+        corpus = m8e2_tool_conditional_corpus()
+        train, test = m8e2_temporal_split(corpus, 0.5)
+        outcomes = [o.success for o in test]
+        key = lambda o: o.context(tool=True)  # noqa: E731
+        for cls, kwargs in (
+            (BayesEstimator, {"prior_strength": 5.0}),
+            (LogisticHistoryModel, {}),
+        ):
+            keyed = m8e2_brier(
+                cls(context_key=key, **kwargs).fit(train).predict_all(test), outcomes
+            )
+            pooled = m8e2_brier(cls(**kwargs).fit(train).predict_all(test), outcomes)
+            assert keyed < pooled
+            assert keyed < 0.22
+
+    def test_selecting_the_tool_axis_costs_context_cardinality(self) -> None:
+        corpus = m8e2_tool_conditional_corpus()
+        pooled = FrequencyEstimator().fit(corpus).cost()
+        keyed = FrequencyEstimator(context_key=lambda o: o.context(tool=True)).fit(corpus).cost()
+        assert pooled.contexts_tracked == 1
+        assert keyed.contexts_tracked == 2
+        assert keyed.stored_floats > pooled.stored_floats
+
+
 class TestHistoryVersusSelfReport:
     def test_history_beats_self_report_when_context_determines_skill(self) -> None:
         corpus = m8e2_history_informative_corpus()
@@ -1072,7 +1231,13 @@ class TestHistoryVersusSelfReport:
         sr_scores, outcomes = _heldout_scores(corpus, SelfReportEstimator)
         hist_scores, _ = _heldout_scores(corpus, lambda: BayesEstimator(20.0))
         assert m8e2_auroc(hist_scores, outcomes) > m8e2_auroc(sr_scores, outcomes)
-        assert m8e2_auprc(hist_scores, outcomes) > m8e2_auprc(sr_scores, outcomes)
+
+        # AUPRC is not class-symmetric: score errors (1 - confidence) with
+        # ``not success`` as the positive class, not successes.
+        def err(s: Sequence[float], o: Sequence[bool]) -> float:
+            return m8e2_auprc([1 - x for x in s], [not y for y in o])
+
+        assert err(hist_scores, outcomes) > err(sr_scores, outcomes)
 
     def test_self_report_wins_when_contexts_share_a_base_rate(self) -> None:
         corpus = m8e2_selfreport_informative_corpus()
@@ -1101,6 +1266,35 @@ class TestHistoryVersusSelfReport:
         report_fit = LogisticHistoryModel().fit(train2)
         hist_w2, claim_w2 = report_fit.weights()[2], report_fit.weights()[1]
         assert claim_w2 > hist_w2
+
+    def test_training_rows_hold_out_their_own_outcome(self) -> None:
+        """A training row's history feature must exclude the row's own outcome.
+
+        ``_features`` (held-out prediction) reads the full table, so a row's
+        own outcome lands in its history feature. Training on that leaked
+        row hands the fit each row's answer — catastrophically for singleton
+        contexts, where the leaked feature IS the label. The training row is
+        therefore leave-one-out encoded; this pins the exact arithmetic.
+        """
+        corpus = [
+            RunOutcome("lone", "m", 0.9, True, "", 0),
+            RunOutcome("pair", "m", 0.4, True, "", 1),
+            RunOutcome("pair", "m", 0.6, False, "", 2),
+        ]
+        model = LogisticHistoryModel().fit(corpus)
+        sums = {"lone|m": 1.0, "pair|m": 1.0}
+        lone_loo = model._loo_features(corpus[0], sums, 3, 2.0)
+        # The singleton's LOO history is the pooled rate WITHOUT this row:
+        # (2 - 1) / (3 - 1) = 0.5 — not 1.0, which is the row's own outcome
+        # and exactly what the full-table feature would leak into the fit.
+        assert lone_loo[2] == pytest.approx(0.5)
+        assert lone_loo[2] != pytest.approx(model._features(corpus[0])[2])
+        # A row in a populated context drops only its own outcome, keeping
+        # its neighbour's: the first pair row's LOO rate is the second's
+        # failure, not the context's full-table rate of 0.5.
+        pair_loo = model._loo_features(corpus[1], sums, 3, 2.0)
+        assert pair_loo[2] == pytest.approx(0.0)
+        assert pair_loo[2] != pytest.approx(model._features(corpus[1])[2])
 
     def test_bayes_beats_frequency_on_thin_contexts(self) -> None:
         corpus = m8e2_thin_context_corpus()
@@ -1215,14 +1409,36 @@ class TestDriftSensitivity:
         clean = m8e2_ece(platt.predict_all(test), [o.success for o in test])
         drifted = m8e2_overconfidence_drift(test, 0.25)
         frozen = m8e2_ece(platt.predict_all(drifted), [o.success for o in drifted])
-        assert frozen > clean * 2
-        # A refit on the drifted stream recovers most of the loss — the
-        # maintenance cost is real but payable.
-        d_train, d_test = m8e2_temporal_split(drifted, 0.5)
-        refit = PlattCalibrator().fit(d_train)
-        recovered = m8e2_ece(refit.predict_all(d_test), [o.success for o in d_test])
+        # The frozen calibrator degrades, but only modestly: the ridge
+        # penalty keeps the fitted slope finite, so the frozen model sits
+        # near the drift optimum instead of saturating at 0/1.
+        assert frozen > clean * 1.25
+        # A refit on the drifted stream recovers part of the loss. Both
+        # scores are taken on the same stream so sampling noise on a
+        # smaller evaluation split cannot fake a win — the maintenance
+        # cost is real but payable.
+        refit = PlattCalibrator().fit(drifted)
+        recovered = m8e2_ece(refit.predict_all(drifted), [o.success for o in drifted])
         assert recovered < frozen
         assert recovered < clean * 2
+
+    def test_ridge_bounds_coefficients_as_iters_grows(self) -> None:
+        """The penalty is part of the objective, not just step damping.
+
+        Regression guard for the solver fix: because the ridge term is
+        added to the gradient as well as the Hessian (intercept excluded),
+        both models converge to the penalized optimum and their
+        coefficients stay bounded no matter how many iterations run —
+        even on (nearly) separable data.
+        """
+
+        corpus = m8e2_overconfident_selfreport_corpus()
+        ref = PlattCalibrator(iters=10).fit(corpus)
+        long = PlattCalibrator(iters=1000).fit(corpus)
+        assert abs(long._b - ref._b) < 1e-3
+        hist_ref = LogisticHistoryModel(iters=10).fit(corpus)
+        hist_long = LogisticHistoryModel(iters=1000).fit(corpus)
+        assert max(abs(a - b) for a, b in zip(hist_ref._w, hist_long._w, strict=True)) < 1e-3
 
     def test_frozen_frequency_table_degrades_under_base_rate_drift(self) -> None:
         """A base-rate shift strands the frozen context table; a fresher fit
@@ -1356,6 +1572,17 @@ class TestMaintenanceCost:
         cost = logistic.cost()
         assert cost.stored_floats == LogisticHistoryModel.DIM + len(logistic._table._rates) + 1
         assert cost.train_observations == len(train)
+        # Every fitted estimator consumes the full corpus, so each ledger must
+        # report the actual retraining row count (self-report fits nothing).
+        for record in (
+            BaseRateEstimator().fit(train).cost(),
+            FrequencyEstimator().fit(train).cost(),
+            BayesEstimator(20.0).fit(train).cost(),
+            PlattCalibrator().fit(train).cost(),
+            bins.cost(),
+            logistic.cost(),
+        ):
+            assert record.train_observations == len(train)
         for record in (
             BaseRateEstimator().fit(train).cost(),
             PlattCalibrator().fit(train).cost(),

@@ -16,9 +16,14 @@ confidence estimates than prompt-time self-report alone.
 
 The outcome seam is the canonical (context, outcome) record: the ADR-017 outcome store
 (`packages/maistro-core/src/maistro/memory/outcomes.py`, row shape in
-`packages/maistro-core/src/maistro/types/memory.py::Outcome`) records `task_type`,
-`model_used`, tool-call presence, and the observed `success` bit per completed Run — exactly
-the context axes this leaf conditions on. The prompt-time self-reported confidence is the
+`packages/maistro-core/src/maistro/types/memory.py::Outcome`) has columns for `task_type`,
+`model_used`, tool-call presence, and the observed `success` bit per completed Run — the
+context axes this leaf conditions on. **Known gap:** the only production `Outcome` writer
+(`packages/maistro-core/src/maistro/agents/base.py`) currently stores `task_type=""`, so a
+naive export collapses all Runs into one empty task family. Populating that column (from the
+agent's already-classified `classified_task_type` at the same seam) or joining it via
+`run_id` is a hard prerequisite for step 1 of the benchmark procedure below; until then the
+task-conditioned subgroup and context-volume results are fixture-only. The prompt-time self-reported confidence is the
 signal to be judged; it is not part of the row today, so a real experiment attaches it at the
 prompt boundary and joins on the Run. Governed inference — where any adopted calibrated score
 would eventually have to act — runs through Binding → Invocation → the single approved gateway
@@ -34,7 +39,7 @@ estimand from calibrating model/Agent confidence against observed task outcomes.
 The epic note's harness (`packages/maistro-rsi/tests/test_m8e_uncertainty_calibration_research.py`)
 provides one Beta-smoothed history estimator and the shared metric math. This leaf adds the
 comparative study the leaf text defines, as a self-contained test-side module
-(`packages/maistro-rsi/tests/test_m8e2_historical_calibration_research.py`, 44 node IDs, no
+(`packages/maistro-rsi/tests/test_m8e2_historical_calibration_research.py`, 50 node IDs, no
 `maistro` imports):
 
 - **Estimator families fit on a chronological train split only**: frequency (per-context MLE
@@ -49,8 +54,9 @@ comparative study the leaf text defines, as a self-contained test-side module
   per-estimator maintenance-cost ledger (stored floats, context cardinality, train rows,
   retrain policy);
 - **Leakage guard**: an order-preserving temporal split is the only split the study exposes,
-  and a reversal corpus demonstrates why — a future-trained fit scores *better* than the
-  honest one, so a shuffled or reversed split inflates every comparison.
+  and a reversal corpus demonstrates why — a fit that has seen the rows it is scored on
+  (train+test) measures *better* than the honest train-only fit on those same rows, so a
+  shuffled or future-leaking split inflates every comparison.
 
 ## Fixture findings (machinery validation, NOT real-model evidence)
 
@@ -68,8 +74,8 @@ comparison asserted in tests:
   estimator ranking inverts exactly as the hypothesis predicts, so neither signal is
   categorically superior.
 - **The logistic model reads out which signal the data supports.** Its learned history weight
-  dominates on the first fixture (4.48 vs 0.07) and the ordering reverses on the control — a
-  built-in diagnostic for the real-corpus run.
+  dominates on the first fixture (3.45 vs 0.22) and the ordering reverses on the control
+  (self-report 2.56 vs history −0.22) — a built-in diagnostic for the real-corpus run.
 - **Shrinkage earns its keep on thin contexts.** With ~3 rows per context, the Beta posterior
   (prior 5) beats the MLE on held-out Brier (0.225 vs 0.250) and converges to it as data
   grows (< 0.03 max gap at scale).
@@ -78,15 +84,17 @@ comparison asserted in tests:
   bit-identical (a monotone map), and stays harmless on an honest self-report.
 - **Data volume has a real threshold.** At 1 row per context the MLE's held-out Brier is
   0.339 — far worse than doing nothing (0.250); the crossing of the self-report baseline sits
-  between 8 and 16 rows per context on this fixture, and quality keeps improving to 0.177 at
-  150 rows per context. The `min_context_samples` floor caps thin-slice damage at the
-  no-confidence baseline and stops binding at volume — the knob a production system would
+  between 1 and 2 rows per context on this fixture (8 → 16 total rows across its eight
+  task/model families: 0.339 → 0.217 against a 0.219 baseline), and quality keeps improving
+  to 0.177 at 150 rows per context. The `min_context_samples` floor caps thin-slice damage at
+  the no-confidence baseline and stops binding at volume — the knob a production system would
   ship with.
-- **Frozen calibrators rot.** A +0.25 overconfidence drift more than doubles a frozen Platt
-  model's ECE (0.055 → 0.124); refitting on the drifted window recovers most of it. A 50%
-  late-window base-rate shift likewise strands the frozen frequency table (0.184 → 0.252 on
-  the mixed window; 0.329 vs 0.099 for frozen vs refit on the fully drifted tail). Retraining
-  discipline is not optional — it is the dominant maintenance cost.
+- **Frozen calibrators rot.** A +0.25 overconfidence drift raises a frozen Platt model's ECE
+  roughly a third (0.079 → 0.105); refitting on the drifted window recovers most of the gap
+  (0.082). A 50% late-window base-rate shift hits much harder: it strands the frozen
+  frequency table (0.184 → 0.252 on the mixed window; 0.329 vs 0.099 for frozen vs refit on
+  the fully drifted tail — a 3× gap). Retraining discipline is not optional — it is the
+  dominant maintenance cost.
 - **Aggregate calibration hides the worst subgroup.** Two families with opposite-signed
   miscalibration sharing one self-report bin produce aggregate ECE ≈ 0 while each family sits
   0.2 off; the subgroup report is mandatory reading, not a nice-to-have.
@@ -98,7 +106,9 @@ comparison asserted in tests:
 
 1. Export judged Runs from the outcome seam: (task family, model family, toolset,
    self-reported confidence, observed outcome, arrival order), joining the self-report at the
-   prompt boundary.
+   prompt boundary. Prerequisite: a non-degenerate task-family source — the production
+   writer must populate `task_type` (e.g. from `classified_task_type`) or the export must
+   join it, else per-task-family conditioning is impossible.
 2. Split with `m8e2_temporal_split`; fit every estimator on the earlier split only.
 3. Score every estimator against both baselines on the held-out split: ECE, Brier, error
    AUROC/AUPRC, plus per-task-family and per-model-family subgroup reports.
@@ -126,8 +136,9 @@ owning milestone and the canonical authorization paths (ADR-068); a calibrated s
 validated on deterministic fixtures, but no real-model outcome corpus has been run through
 them, so the hypothesis is untested on MAIstro workloads.
 
-- **Move to INCUBATE** when: the benchmark procedure above runs on a real exported outcome
-  corpus of sufficient volume (learning-curve crossing reached — on the fixture, ~10–20 rows
+- **Move to INCUBATE** when: `task_type` is populated for exported Runs (the empty-string
+  collapse above is fixed at the writer or repaired by join), and the benchmark procedure
+  above runs on a real exported outcome corpus of sufficient volume (learning-curve crossing reached — on the fixture, a couple of rows
   per context; the real threshold is measured, not assumed), and at least one learned
   estimator beats the raw self-report baseline on held-out ECE *and* Brier at acceptable
   drift-refit cadence and state size.
