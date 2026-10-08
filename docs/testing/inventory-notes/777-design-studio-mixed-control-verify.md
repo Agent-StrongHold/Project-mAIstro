@@ -16952,3 +16952,43 @@ which provably do not exist in this tree (GoalReconciler|delegate_goal,
 WorkspaceAgentReconciler, any maistro/goals module: zero hits), and the
 issue's stop condition forbids the Design-Studio-private substitute.
 (Refs #777)
+
+### Round 246 (develop sync to declared base 34795962548a)
+
+- origin/develop advanced one commit past the prior sync (347959625, M8-C
+  epic #2067: adaptive context budgeting tests + research note, additive
+  only). Discharged by merge commit 395e610f2 (ort, zero overlap with our
+  16 surfaces, no conflicts); `HEAD..origin/develop` = 0 and
+  `git merge-base HEAD origin/develop` == declared base 34795962548a.
+- Dependency set re-confirmed from frozen capture 2026-10-08T17:17Z
+  (complete_for_scope): #804/#805/#806/#774/#776/#53/#93/#95 OPEN,
+  #775/#39/#458 CLOSED, PR1660 open draft head 6280009610e8 not merged;
+  the new develop commit lands none of them. #775's creative nodes
+  consume a brief-shaped payload but the versioned CreativeBrief contract
+  is #774 (brief_store.py:5 explicitly disclaims being one).
+- AC prerequisites re-proven absent at merged HEAD 395e610f2:
+  GoalReconciler|delegate_goal 0 hits, WorkspaceAgentReconciler 0 hits,
+  no maistro goals modules in packages/*/src; salvage tree
+  docs/research/777-design-studio-salvage/ is docs-only (no production
+  import or pyproject wiring).
+- Battery at 395e610f2 all EXIT 0: ruff check; ruff format (3175 files);
+  check-vulture-baseline.py CI-exact (base 34795962548a, candidate
+  395e610f208b, 1326 -> 1325, no amendment); check-suite-inventory.py
+  (17 suites, re-run after this append EXIT 0);
+  check-backlog-consistency.py (167 items); check-closure-targets.py.
+- Targeted pytest at 395e610f2: tests/test_check_closure_targets.py 63
+  passed; maistro-design + maistro-bootstrap 805 passed 8 skipped;
+  hive-conductor backend -k 'design or workspace' 374 passed 5 skipped;
+  newly merged develop suite
+  packages/maistro-core/tests/memory/test_context_assembly.py 77 passed.
+
+### Verdict
+
+BLOCKED — dependency-blocking (63rd consecutive round). This round's new
+actionable item — develop sync to the moved declared base 34795962548a —
+is discharged by merge commit 395e610f2. No lawful repair for #777 exists
+until #804/#805/#806 (+#774/#776) land: AC#1 requires consuming #804's
+reconciliation APIs, which provably do not exist in this tree
+(GoalReconciler|delegate_goal, WorkspaceAgentReconciler, any maistro/goals
+module: zero hits at merged HEAD), and the issue's stop condition forbids
+the Design-Studio-private substitute. (Refs #777)
