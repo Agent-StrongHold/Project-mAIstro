@@ -94,6 +94,7 @@ from maistro.events.trigger_store import TriggerDefinition  # noqa: E402
 from maistro.graph import Graph, Node  # noqa: E402
 from maistro.persistence import _register_json_codecs  # noqa: E402
 from maistro.projects.pg_scope_store import PgProjectScopeStore  # noqa: E402
+from maistro.runs import pg_store as pg_run_store_module  # noqa: E402
 from maistro.runs.consumer_claim import ClaimingPgRunStore, ConsumerClaimLost  # noqa: E402
 from maistro.runs.lifecycle import InvalidLifecycleTransition  # noqa: E402
 from maistro.runs.model import AttemptStatus, RunStatus  # noqa: E402
@@ -384,38 +385,45 @@ async def test_store_effect_claim_race_yields_one_created_and_shared_identity(
     ``PgRunStore`` objects on private pools and race the real method with
     the vulnerable window held open -- every actor's read-none SELECT
     completes before any actor inserts, gated at
-    ``_require_locked_parent_scope`` (the one seam strictly between that
-    SELECT and the INSERT inside the method's transaction). The method
+    ``validate_effect_claim_parent`` (the one seam strictly between that
+    SELECT and the INSERT inside the method's transaction; the develop
+    merge moved it from a private method onto the module). The method
     must return ``created=True`` exactly once and the same canonical run
     to everyone.
     """
     _projects, workspace, project_id = await _scoped_workspace(pg_pool, "effect-store")
     effect_key = f"m8a7-store-{uuid4().hex}"
     window = threading.Barrier(ACTORS)
-    unpatched_scope_check = PgRunStore._require_locked_parent_scope
+    unpatched_parent_check = pg_run_store_module.validate_effect_claim_parent
 
-    async def at_read_insert_window(
-        self: PgRunStore,
-        conn: Any,
-        graph: Graph,
+    def at_read_insert_window(
+        parent: Any,
+        parent_node_run: Any,
         *,
         parent_run_id: str | None,
         parent_node_run_id: str | None,
+        workspace_id: str,
+        project_id: str,
         allow_cross_project: bool,
     ) -> None:
-        """Hold every actor's claim transaction open after its read-none SELECT."""
-        await asyncio.get_running_loop().run_in_executor(None, window.wait, 30)
-        if parent_run_id is not None:
-            await unpatched_scope_check(
-                self,
-                conn,
-                graph,
-                parent_run_id=parent_run_id,
-                parent_node_run_id=parent_node_run_id,
-                allow_cross_project=allow_cross_project,
-            )
+        """Hold every actor's claim transaction open after its read-none SELECT.
 
-    monkeypatch.setattr(PgRunStore, "_require_locked_parent_scope", at_read_insert_window)
+        Blocking the call is safe here: each actor runs its own loop on its
+        own thread, so no actor needs its loop serviced for the others to
+        reach the barrier (the same pattern the raw-SQL window leg uses).
+        """
+        window.wait(30)
+        unpatched_parent_check(
+            parent,
+            parent_node_run,
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            allow_cross_project=allow_cross_project,
+        )
+
+    monkeypatch.setattr(pg_run_store_module, "validate_effect_claim_parent", at_read_insert_window)
 
     def contender() -> Callable[[Any], Awaitable[Any]]:
         async def _claim(pool: Any) -> tuple[bool, str]:

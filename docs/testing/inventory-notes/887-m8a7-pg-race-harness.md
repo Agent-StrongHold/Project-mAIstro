@@ -31,7 +31,7 @@ the final assertion; note `pg_blocking_pids` reports direct blockers, so the
 witness checks the chain is rooted at the holder, not that every waiter names
 it); both effect-claim races put a `threading.Barrier` between the read-none
 SELECT and the INSERT to make the read-none/read-none/insert window
-deterministic (at the store level via the `_require_locked_parent_scope` seam
+deterministic (at the store level via the `validate_effect_claim_parent` seam
 inside the real method); the event-ordering race requires two distinct actors'
 id ranges to overlap pairwise, which per-session serialization cannot produce.
 
@@ -62,7 +62,7 @@ terminal exclusion) is pinned by the terminal re-claim leg reading the claim
 upsert's `WHERE status <> ALL(...)` guard directly. No product code changed in
 this delta.
 
-CI repair at this head (the harness's first and only real flake): quality.yml
+CI repair at this head (the harness's first real flake): quality.yml
 run 37789491251 (`coverage (PostgreSQL)`) failed `test_invocation_claims_...`
 with "exactly one dispatch … got 2" — the race used a 50 ms lease, and
 `PgInvocationStore.claim` correctly re-claims a PENDING invocation whose lease
@@ -74,6 +74,23 @@ executed. The repair makes the verdict load-independent: the race phase now
 leases for 30 s (no in-race re-claim can be legitimate) and expiration is
 exercised deterministically afterwards, sequentially. Node identities are
 unchanged — the +9 delta and every node ID are exactly as first recorded.
+
+Second CI repair at this lane's merged head (deterministic seam drift, not a
+flake): the develop merge (f6c3044523ea, M1-B2 #1326) replaced
+`PgRunStore._require_locked_parent_scope` with the module-level
+`validate_effect_claim_parent`, so `test_store_effect_claim_race_...` crashed
+at patch setup on every run (`AttributeError`) and took quality.yml's
+`coverage (PostgreSQL)` down with it at f6c3044523ea (the dependent Coverage
+gate then skipped, which `gates-ran` reads as a required gate that never
+executed). Repaired by patching `maistro.runs.pg_store.validate_effect_claim_parent`
+— the same seam position strictly between the method's read-none SELECT and
+its INSERT — and by recording the rename in the research note. Node identities
+unchanged (+9 as first recorded). Re-executed at the repaired head against the
+real migrated PostgreSQL 18.6: the module 5/5 consecutive green (~2.2s each)
+and the whole `packages/maistro-core/tests/runs` suite green (1464 passed,
+3 skipped), which is the suite that job's coverage step actually runs. The
+vulture ledger gate was re-run with CI's exact arguments at the same head and
+passes unchanged (1326 reviewed identities → 1326 findings, unclassified 0).
 
 Environment trap worth recording (pre-existing, not introduced here): 17 node
 IDs elsewhere in `packages/maistro-core/tests` appear in collection only when

@@ -49,7 +49,7 @@ Per-case topology (the concurrency evidence is per case, not a blanket four):
 | --- | --- | --- |
 | duplicate consumer claims | 4 + lock holder | `pg_blocking_pids` wait graph (below) |
 | raw read-none/read-none/insert window | 4 | `threading.Barrier` between SELECT and INSERT |
-| `claim_run_by_effect` from real stores | 4 | barrier at `_require_locked_parent_scope`, the seam between the method's read-none SELECT and its INSERT |
+| `claim_run_by_effect` from real stores | 4 | barrier at `validate_effect_claim_parent` (pg_store's imported parent-scope check), the seam between the method's read-none SELECT and its INSERT |
 | stale writers under a terminal Run | sequential (fixture) | lifecycle refusal is order-theoretic, not load-dependent |
 | dueling terminalizations | 2 | row lock elects; loser's re-read refuses |
 | `(trigger, event)` invocation claims | 4 | single conditional upsert; one winner |
@@ -76,9 +76,14 @@ this note is mostly about:
   real `PgRunStore.claim_run_by_effect`) put a `threading.Barrier` between the
   read-none SELECT and the INSERT inside each actor's transaction —
   read-none/read-none/insert is *constructed*, not hoped for. At the store
-  level the barrier hangs off `_require_locked_parent_scope`, the one
+  level the barrier hangs off `validate_effect_claim_parent`, the one
   production seam that runs strictly between those two statements, so the real
-  method — not a copy of it — executes the widened window.
+  method — not a copy of it — executes the widened window. (The develop merge
+  at this lane's head moved that check out of the private
+  `_require_locked_parent_scope` method onto the module-level
+  `maistro.runs.store.validate_effect_claim_parent` imported by pg_store; the
+  harness follows the seam, which keeps the same strict between-SELECT-and-INSERT
+  position inside the method's transaction.)
 - **Interleaving witness.** The event race requires two distinct actors' id
   ranges to overlap pairwise; per-session serialization would produce disjoint
   contiguous blocks and the test fails itself before it can pass vacuously.
@@ -94,6 +99,21 @@ this note is mostly about:
   scheduling delay, so no in-race re-claim can be legitimate) and expiration is
   exercised deterministically afterwards, sequentially. Re-validated under full
   CPU saturation: 3/3 consecutive green runs where the draft failed within two.
+- **Seam drift (second CI failure, deterministic — not a flake).** The develop
+  merge at the lane head (f6c3044523ea, carrying M1-B2 #1326) replaced
+  `PgRunStore._require_locked_parent_scope` with the module-level
+  `maistro.runs.store.validate_effect_claim_parent` imported into pg_store, so
+  the store-effect race's barrier seam vanished and the case crashed at patch
+  setup (`AttributeError: type object 'PgRunStore' has no attribute
+  '_require_locked_parent_scope'`) on every run — quality.yml's
+  `coverage (PostgreSQL)` failed this way at f6c3044523ea. Repaired by
+  following the seam: the harness now patches
+  `maistro.runs.pg_store.validate_effect_claim_parent`, which occupies the same
+  strict between-SELECT-and-INSERT position inside the method's transaction
+  (the blocking barrier wait is safe because each actor owns its loop and
+  thread). Re-validated: five consecutive green runs of the module and the full
+  `packages/maistro-core/tests/runs` suite (1464 passed, 3 skipped) against a
+  real migrated PostgreSQL 18.6 at the repaired head.
 
 ## Results
 
