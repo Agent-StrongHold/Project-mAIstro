@@ -26,8 +26,8 @@
  * pinned by `backend/tests/test_rum_routes.py`.
  */
 
-import { expect, test, type Page } from "@playwright/test";
-import { loginAsPM, setupIfNeeded } from "./session";
+import { expect, request as playwrightRequest, test, type Page } from "@playwright/test";
+import { ADMIN_PASS, ADMIN_USER, loginAsPM, setupIfNeeded } from "./session";
 import {
   buildApiRequestEvent,
   buildEnvelope,
@@ -304,8 +304,21 @@ test.describe("RUM live collection", () => {
   });
 
   test("the collector stored the observations and groups them by build and route", async () => {
-    // Read back through the same session: this is the maintainer's view.
-    const listing = await page.request.get("/v1/rum/events?limit=200");
+    // Read back through an OPERATOR session: the ring aggregates every
+    // principal's navigation telemetry, so GET /v1/rum/* answers only the
+    // admin role (or an account assigned rum.read and elevated) — the same
+    // posture as persona-wide feedback. The daily session that reported the
+    // traffic must be refused, while its beacons were accepted above.
+    const refused = await page.request.get("/v1/rum/events");
+    expect(refused.status()).toBe(403);
+
+    const operator = await playwrightRequest.newContext({
+      baseURL: test.info().project.use.baseURL,
+    });
+    await operator.post("/v1/auth/login", {
+      data: { username: ADMIN_USER, password: ADMIN_PASS },
+    });
+    const listing = await operator.get("/v1/rum/events?limit=200");
     expect(listing.status()).toBe(200);
     const body = (await listing.json()) as {
       events: Array<Record<string, unknown>>;
@@ -324,7 +337,7 @@ test.describe("RUM live collection", () => {
       .filter((id): id is string => typeof id === "string");
     expect(storedIds.length).toBeGreaterThan(0);
 
-    const summary = await page.request.get("/v1/rum/events/summary");
+    const summary = await operator.get("/v1/rum/events/summary");
     expect(summary.status()).toBe(200);
     const grouped = (await summary.json()) as {
       groups: Array<{ type: string; metric: string; route: string; count: number }>;
@@ -341,5 +354,6 @@ test.describe("RUM live collection", () => {
     // maintainer compares across builds or time windows.
     expect(grouped.groups.some((g) => g.type === "web_vital")).toBe(true);
     expect(grouped.groups.some((g) => g.type === "api_request")).toBe(true);
+    await operator.dispose();
   });
 });

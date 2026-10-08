@@ -15,7 +15,7 @@ threshold. Nothing here introduces one.
 | Decision | Value |
 |---|---|
 | Receiving collector | The Hive Conductor backend itself, same origin as the SPA: `POST /v1/rum/events`. No third-party vendor. |
-| Who operates it | The instance maintainer — the person who runs the Conductor. Access is exactly "can authenticate to this instance" (the session AuthMiddleware already issues). |
+| Who operates it | The instance maintainer — the person who runs the Conductor. Ingest accepts any authenticated session (every browser must be able to report); the read-back/summary endpoints additionally require the `rum.read` scope (admin role, or an account assigned `rum.read` and task-elevated) — the ring is an instance-wide aggregate of every principal's navigation telemetry, the same operator-only posture as persona-wide feedback. |
 | Where observations are retrieved | `GET /v1/rum/events?limit=N` (raw ring, newest last) and `GET /v1/rum/events/summary` (grouped aggregation with percentiles). |
 | Enable/disable | Two independent switches, both default **off**: the SPA collects only when its build set `VITE_RUM_ENABLED=true`; the backend stores only when `RUM_INGEST_ENABLED=true`. Either side alone produces nothing — an enabled client facing a disabled collector gets a bounded `202` and discards. There is no runtime way for a page to switch collection on. |
 | Sampling | Per page-load session, Bernoulli at `VITE_RUM_SAMPLE_RATE` (default `1.0`, clamped to `[0,1]`). A sampled-out session buffers nothing and sends nothing. The server does no further sampling. |
@@ -145,7 +145,8 @@ docker compose -f docker-compose.test.yml up --build -d hive
 docker compose -f docker-compose.test.yml run --rm e2e-tests \
   npx playwright test --config=tests/e2e/playwright.config.ts rum-telemetry.spec.ts
 
-# 3. Read the receipts (any authenticated session, from the host):
+# 3. Read the receipts (an operator session — the admin account, or one
+#    assigned the rum.read scope and elevated; from the host):
 curl -s localhost:8101/v1/rum/events/summary   # grouped by metric/route/outcome
 #    (login first: POST /v1/auth/login, keep the session cookie)
 ```

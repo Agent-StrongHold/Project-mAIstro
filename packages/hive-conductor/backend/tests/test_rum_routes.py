@@ -21,7 +21,13 @@ to `POST /v1/rum/events`; this suite pins the receiving side's behavior:
   a request that never got a response — while a response-carried
   `X-Request-ID` is stored verbatim, matching what `RequestIDMiddleware`
   stamps on responses and log lines (asserted here against a live response
-  through the app, the same correlation the browser reporter relies on).
+  through the app, the same correlation the browser reporter relies on);
+- who may read: the ring is an instance-wide aggregate of every principal's
+  navigation telemetry, so the read-back/summary endpoints gate on the
+  `rum.read` scope (`middleware/auth.py` `_PROTECTED_OPS`, the same
+  operator-only posture as persona-wide feedback) and these tests read it
+  back through the admin session, while ingest accepts every authenticated
+  session — the reporter's own beacon must never need elevation.
 """
 
 from __future__ import annotations
@@ -99,15 +105,17 @@ def ingest_enabled(monkeypatch: pytest.MonkeyPatch):
 # --- the disabled default ---------------------------------------------------
 
 
-def test_disabled_collector_discards_a_valid_batch(authed_client: Any, rum_store: Any) -> None:
+def test_disabled_collector_discards_a_valid_batch(
+    authed_client: Any, admin_client: Any, rum_store: Any
+) -> None:
     r = authed_client.post(RUM_URL, json=_envelope([_web_vital(), _api_event()]))
     assert r.status_code == 202, r.text
     body = r.json()
     assert body == {"accepted": 0, "enabled": False}
     # Nothing reachable afterwards: the read-back and the summary are empty.
-    listing = authed_client.get(RUM_URL).json()
+    listing = admin_client.get(RUM_URL).json()
     assert listing == {"events": [], "total": 0, "truncated": False}
-    assert authed_client.get(f"{RUM_URL}/summary").json()["groups"] == []
+    assert admin_client.get(f"{RUM_URL}/summary").json()["groups"] == []
 
 
 def test_disabled_collector_still_refuses_a_malformed_envelope(
@@ -124,13 +132,13 @@ def test_disabled_collector_still_refuses_a_malformed_envelope(
 
 
 def test_enabled_collector_stores_and_serves_observations(
-    authed_client: Any, rum_store: Any, ingest_enabled: None
+    authed_client: Any, admin_client: Any, rum_store: Any, ingest_enabled: None
 ) -> None:
     r = authed_client.post(RUM_URL, json=_envelope([_web_vital(), _api_event()]))
     assert r.status_code == 200, r.text
     assert r.json() == {"accepted": 2, "enabled": True}
 
-    listing = authed_client.get(RUM_URL).json()
+    listing = admin_client.get(RUM_URL).json()
     assert listing["truncated"] is False
     assert listing["total"] == 2
     by_type = {event["type"]: event for event in listing["events"]}
@@ -175,7 +183,7 @@ def test_enabled_collector_stores_and_serves_observations(
 
 
 def test_summary_groups_by_metric_route_and_outcome(
-    authed_client: Any, rum_store: Any, ingest_enabled: None
+    authed_client: Any, admin_client: Any, rum_store: Any, ingest_enabled: None
 ) -> None:
     authed_client.post(
         RUM_URL,
@@ -188,7 +196,7 @@ def test_summary_groups_by_metric_route_and_outcome(
             ]
         ),
     )
-    summary = authed_client.get(f"{RUM_URL}/summary").json()
+    summary = admin_client.get(f"{RUM_URL}/summary").json()
     assert summary["window_events"] == 4
     groups = {
         (
@@ -215,16 +223,16 @@ def test_summary_groups_by_metric_route_and_outcome(
 
 
 def test_summary_groups_are_split_per_build(
-    authed_client: Any, rum_store: Any, ingest_enabled: None
+    authed_client: Any, admin_client: Any, rum_store: Any, ingest_enabled: None
 ) -> None:
     """Two builds resident in the ring produce separate summary rows per
     (build, metric, route) — the build-over-build comparison the ring exists
     to serve; raw read-back carries `build_id` on every event too."""
     authed_client.post(RUM_URL, json=_envelope([_web_vital(value_ms=100.0)], build_id="build-a"))
     authed_client.post(RUM_URL, json=_envelope([_web_vital(value_ms=250.0)], build_id="build-b"))
-    listing = authed_client.get(RUM_URL).json()
+    listing = admin_client.get(RUM_URL).json()
     assert {event["build_id"] for event in listing["events"]} == {"build-a", "build-b"}
-    summary = authed_client.get(f"{RUM_URL}/summary").json()
+    summary = admin_client.get(f"{RUM_URL}/summary").json()
     rows = {(g["build_id"], g["metric"], g["route"]): g for g in summary["groups"]}
     assert set(rows) == {
         ("build-a", "LCP", "/dashboard"),
@@ -296,14 +304,14 @@ def test_oversized_body_is_refused_while_enabled_too(
 
 
 def test_percentiles_are_nearest_rank(
-    authed_client: Any, rum_store: Any, ingest_enabled: None
+    authed_client: Any, admin_client: Any, rum_store: Any, ingest_enabled: None
 ) -> None:
     """The advertised comparison output uses nearest-rank percentiles: for 20
     samples the p95 rank is the 19th ordered value (not the maximum, which
     `int(n * 0.95)` selects), and an even-sized p50 is the lower middle."""
     events = [_api_event(duration_ms=float(i)) for i in range(1, 21)]  # 1..20 ms
     authed_client.post(RUM_URL, json=_envelope(events))
-    group = authed_client.get(f"{RUM_URL}/summary").json()["groups"][0]
+    group = admin_client.get(f"{RUM_URL}/summary").json()["groups"][0]
     assert group["count"] == 20
     assert group["min_ms"] == 1.0
     assert group["p50_ms"] == 10.0  # ceil(0.5*20) - 1 = rank 10
@@ -344,7 +352,7 @@ def test_unknown_schema_version_is_refused(
 
 
 def test_extra_fields_are_not_stored_and_secrets_do_not_leak(
-    authed_client: Any, rum_store: Any, ingest_enabled: None
+    authed_client: Any, admin_client: Any, rum_store: Any, ingest_enabled: None
 ) -> None:
     """A client that ignored the frontend redaction rules — attaching the raw
     URL (with a token in its query string), a response body and a credential —
@@ -360,7 +368,7 @@ def test_extra_fields_are_not_stored_and_secrets_do_not_leak(
     assert r.status_code == 200, r.text
     assert r.json()["accepted"] == 1
 
-    dump = jsonlib.dumps(authed_client.get(RUM_URL).json())
+    dump = jsonlib.dumps(admin_client.get(RUM_URL).json())
     for secret in ("supersecret-token", "hunter2", "the user's entire chat history", "agent-77"):
         assert secret not in dump
     assert "url" not in dump and "password" not in dump and "prompt" not in dump
@@ -379,7 +387,7 @@ def test_request_id_outside_the_server_charset_is_refused(
 
 
 def test_response_request_id_is_storable_and_the_collector_response_carries_one(
-    authed_client: Any, rum_store: Any, ingest_enabled: None
+    authed_client: Any, admin_client: Any, rum_store: Any, ingest_enabled: None
 ) -> None:
     """Round trip: a request through the app gets the middleware's
     X-Request-ID; a rum event carrying that exact id is stored verbatim."""
@@ -391,13 +399,13 @@ def test_response_request_id_is_storable_and_the_collector_response_carries_one(
     # The collector's own response carries an id too — same middleware, so a
     # client-side event about the ingest itself can be correlated as well.
     assert r.headers.get("X-Request-ID")
-    stored = authed_client.get(RUM_URL).json()["events"]
+    stored = admin_client.get(RUM_URL).json()["events"]
     assert len(stored) == 1
     assert stored[0]["request_id"] == server_id
 
 
 def test_transport_failure_stores_no_fabricated_request_id(
-    authed_client: Any, rum_store: Any, ingest_enabled: None
+    authed_client: Any, admin_client: Any, rum_store: Any, ingest_enabled: None
 ) -> None:
     r = authed_client.post(
         RUM_URL,
@@ -413,7 +421,7 @@ def test_transport_failure_stores_no_fabricated_request_id(
         ),
     )
     assert r.status_code == 200, r.text
-    stored = authed_client.get(RUM_URL).json()["events"]
+    stored = admin_client.get(RUM_URL).json()["events"]
     assert stored[0]["status_class"] == 0
     assert stored[0]["outcome"] == "timeout"
     assert stored[0]["request_id"] is None
@@ -664,6 +672,50 @@ def test_batch_size_caps_match_the_frontend_contract() -> None:
     py_schema = re_mod.search(r'RUM_SCHEMA = "([^"]+)"', py)
     assert ts_schema and py_schema
     assert ts_schema.group(1) == py_schema.group(1)
+
+
+# --- who may read the ring (#1420's operator boundary) -----------------------
+
+
+class TestReadBackScope:
+    """The read-back is an operator surface, the beacon is not.
+
+    The ring aggregates every principal's navigation telemetry into one
+    instance-wide record, so `GET /v1/rum/events` and `/summary` gate on the
+    `rum.read` scope the way persona-wide feedback does; `POST /v1/rum/events`
+    accepts any authenticated session, because a reporter that needed
+    task-scoped elevation would starve the ring of exactly the ordinary
+    traffic it exists to measure. This is the boundary
+    `quality/route-permissions.json` declares for the prefix (the
+    permission entry, not an exemption) and `middleware/auth.py`
+    `_PROTECTED_OPS` enforces.
+    """
+
+    def test_daily_session_beacons_are_accepted_but_the_ring_is_not_readable(
+        self, authed_client: Any, admin_client: Any, rum_store: Any, ingest_enabled: None
+    ) -> None:
+        r = authed_client.post(RUM_URL, json=_envelope([_web_vital(), _api_event()]))
+        assert r.status_code == 200, r.text
+        assert r.json()["accepted"] == 2
+        for path in (RUM_URL, f"{RUM_URL}/summary"):
+            refused = authed_client.get(path)
+            assert refused.status_code == 403, path
+            assert "rum.read" in refused.json()["detail"], path
+        # The same ring is readable through the operator (admin) session —
+        # the events the daily session just reported are all there.
+        listing = admin_client.get(RUM_URL).json()
+        assert listing["total"] == 2
+
+    def test_unauthenticated_read_back_is_401_not_403(self) -> None:
+        from fastapi.testclient import (
+            TestClient,
+        )
+        from main import app
+
+        anonymous = TestClient(app)
+        for path in (RUM_URL, f"{RUM_URL}/summary"):
+            r = anonymous.get(path)
+            assert r.status_code == 401, path
 
 
 # --- the documented OpenAPI contract ----------------------------------------

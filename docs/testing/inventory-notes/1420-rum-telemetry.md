@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +24
+  packages/hive-conductor/backend/tests: +30
 ---
 
 # 1420 — RUM collector contract tests
@@ -248,3 +248,66 @@ switch, never an exception that would 500 a beacon). Post-change the gate is
 green at the CI thresholds: "every measured file this change touches is at or
 above 90% lines / 80% branch arcs", with the backend suite at 3551 passed +
 19 skipped.
+
+## Route-permissions resolution (+6, 2026-10-08, the merge-queue red)
+
+The merge-queue's `integration-scope` aggregator was red because the Quality
+gate's `check-route-permissions.py` failed on exactly one finding: `/v1/rum`
+was a NEW undeclared route prefix, and the previously documented resolution
+path (maintainer lands an `exempt::/v1/rum` grant at the merge base, then the
+PR declares `exempt_reason: authenticated-only`) is outside a worker branch's
+authority — the two-merge doctrine means a same-branch grant is invisible.
+
+The path that IS inside one merge is the one the gate's own docstring names:
+"Declaring a permission is a tightening and needs nothing more." Declaring
+one truthfully required making the middleware actually enforce it, and the
+place enforcement belongs was already a real gap, not an invented one: the
+read-back endpoints serve an instance-wide aggregate of every principal's
+navigation telemetry (route templates, session ids, timings) to ANY
+authenticated session, while the middleware's own philosophy (the
+persona-wide feedback check) keeps exactly that kind of cross-principal
+aggregate operator-only. So this round:
+
+- `middleware/auth.py` `_PROTECTED_OPS["GET"]` gains `/v1/rum -> rum.read`:
+  the raw ring and the summary are operator reads; POST ingest stays
+  authenticated-only on purpose — every session's reporter must beacon
+  without task-scoped elevation or the ring starves of ordinary traffic
+  (the ROUTE_EXEMPT entry for the POST is kept, its reason updated);
+- `quality/route-permissions.json` declares `/v1/rum` with
+  `permission: rum.read` (owner, disposition, and the reason spelling out
+  both halves: GET gated, POST authenticated-only), and
+  `quality/route-permissions-baseline.json` drops its tolerated row — the
+  ratchet is back to zero undeclared prefixes, with no grant required;
+- `docs/RUM.md`'s operator row and smoke procedure now say what is true:
+  ingest accepts any authenticated session, read-back needs the admin role
+  or an assigned + elevated `rum.read`;
+- six node IDs pin the boundary from both files: in `test_rum_routes.py`,
+  `TestReadBackScope` proves a daily session's beacons are accepted while
+  its read-back is 403 naming `rum.read` (and the admin session then reads
+  the same ring), plus the unauthenticated 401-not-403 degenerate path; in
+  `test_auth_middleware.py`, `TestRumReadBackScope` runs the standard
+  capability matrix for the new scope — no scope 403, scope without
+  elevation 403, scope + task elevation passes, ingest without any scope
+  passes the gate. Against the pre-change tree (enforcement entry removed)
+  the three refusal assertions fail with 200s — they pin the regression
+  they name.
+
+The e2e read-back (`rum-telemetry.spec.ts`) now reads the receipts through
+an admin API context and asserts the PM session's own read-back is refused
+403 — the maintainer's-view comment made literal. Backend suite after this
+round: 3557 passed + 19 skipped (3576 collected).
+
+Executed evidence (this worktree, compose images rebuilt from this tree):
+`check-route-permissions.py` → "ok: 41 declared, 0 tolerated undeclared
+prefix(es), none new"; enumerations + provenance, vulture (CI invocation,
+1328/1328 banked), shipped-surface, typed-client, doc-links, ruff
+check/format, suite inventory (3576 == baseline + all note deltas) all
+green; the #1048 drift sequence green with `types.gen.ts` byte-identical
+(re-verified before and after this round's edits — the prior round's fix
+holds); the diff-coverage gate re-run with CI's own producers over the
+two measured roots this branch touches (`--source=packages/hive-conductor/backend`
+over the backend suite, `--source=scripts` over the root suite) → "every
+measured file this change touches is at or above 90% lines / 80% branch
+arcs"; compose e2e-ui leg 158 passed in 3.0 m (both rum specs included,
+the operator/403 assertions live), compose api-tests leg 10 passed +
+13 skipped.
