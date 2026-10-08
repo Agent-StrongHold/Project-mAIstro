@@ -1,4 +1,7 @@
-"""Canonical public surface of the ``maistro.extensions`` package.
+"""Canonical public surface of the ``maistro.extensions`` package: the
+governed registry, activation flow, dependency resolution, contract
+negotiation, preflight, and certification (M9-B/M9-C/M9-H3, issues
+#952/#953/#956/#975).
 
 This package carries the extension surface of epic #938, in four layers:
 
@@ -48,6 +51,13 @@ This package carries the extension surface of epic #938, in four layers:
   (``semver``), a deterministic resolver producing a reproducible
   :class:`LockState` (``resolution``), and lock-driven reinstall through the
   install store (:func:`materialize_lock`).
+- **M9-H3 certification (issue #975)**: the pre-publication workflow —
+  package structure validation, static public-import and security scans,
+  conformance-suite orchestration, Ed25519 sealing of the report digest,
+  and truthful certification reports whose claims can only come from checks
+  that executed and passed (:mod:`maistro.extensions.certification`).
+  Certification is install-time *evidence* (a trust-claim input), never an
+  authorization by itself.
 - **M9-I2 metering (issue #977)**: usage attribution and Workspace/org quota
   enforcement at the extension seam (``metering``) — physical usage recorded
   once against canonical Invocation ids, nested delegation lineage, atomic
@@ -67,8 +77,8 @@ This package carries the extension surface of epic #938, in four layers:
   server-side, and carry sandbox policy and provenance on every render.
 
 No layer executes extension code: verification, evaluation, authorization,
-resolution, contract negotiation and metering all operate on bytes,
-declarations, identity and amounts alone.
+resolution, contract negotiation, certification and metering all operate on
+bytes, declarations, identity and amounts alone.
 
 Naming note: ``ExtensionLifecycleError`` is the governed-install failure base
 (#952/#953). The #950 hook-failure wrapper — the error raised when an
@@ -83,6 +93,54 @@ from maistro.extensions.authority import (
     AuthorityDelta,
     compute_authority_delta,
     normalize_permission,
+)
+from maistro.extensions.certification import (
+    BUNDLE_FORMAT,
+    CERTIFICATION_FORMAT,
+    CERTIFIER_VERSION,
+    CONFORMANCE_CHECK_ID,
+    ENTRYPOINTS_CHECK_ID,
+    MANIFEST_PROFILE,
+    PUBLIC_IMPORTS_CHECK_ID,
+    PUBLICATION_PROFILE,
+    SEAL_FORMAT,
+    SECURITY_SCAN_CHECK_ID,
+    STRUCTURE_CHECK_ID,
+    CertificationCheck,
+    CertificationEnvironment,
+    CertificationError,
+    CertificationInvalid,
+    CertificationPackageMismatch,
+    CertificationProfile,
+    CertificationReport,
+    CertificationSeal,
+    CertificationSubject,
+    CheckOutcome,
+    CheckResult,
+    ConformanceCheck,
+    ConformanceOutcome,
+    ConformanceSuite,
+    DuplicateCheckError,
+    EntryPointPresenceCheck,
+    ExtensionBundle,
+    ImportPolicy,
+    PackageStructureCheck,
+    PublicImportCheck,
+    SecurityScanCheck,
+    UnboundCheckError,
+    bundle_digest,
+    certification_as_trust_claim,
+    certify,
+    detect_environment,
+    render_summary,
+    report_digest,
+    report_from_json,
+    report_to_json,
+    seal_from_json,
+    seal_to_json,
+    sign_certification,
+    verify_certification,
+    verify_certified_package,
 )
 from maistro.extensions.compat import (
     CONTRACT_VERSION,
@@ -343,9 +401,14 @@ from maistro.extensions.ui import (
 )
 
 __all__ = [
+    "BUNDLE_FORMAT",
+    "CERTIFICATION_FORMAT",
+    "CERTIFIER_VERSION",
+    "CONFORMANCE_CHECK_ID",
     "CONTRACT_VERSION",
     "DEFAULT_MIN_TIER",
     "DIGEST_ALGORITHM",
+    "ENTRYPOINTS_CHECK_ID",
     "FEATURE_DEPRECATED",
     "FEATURE_REMOVED",
     "FEATURE_STATUSES",
@@ -354,11 +417,17 @@ __all__ = [
     "FILESYSTEM_WRITE_PERMISSION",
     "HOST_FEATURES",
     "LOCK_FORMAT",
+    "MANIFEST_PROFILE",
     "NETWORK_OUTBOUND_PERMISSION",
+    "PUBLICATION_PROFILE",
+    "PUBLIC_IMPORTS_CHECK_ID",
     "REAL_ISOLATION_TIERS",
     "REMOVABLE_STATES",
     "ROOT_REQUEST_ORIGIN",
+    "SEAL_FORMAT",
+    "SECURITY_SCAN_CHECK_ID",
     "SELECTION_POLICY",
+    "STRUCTURE_CHECK_ID",
     "SUPPORTED_CONTRACT_MAJORS",
     "SUPPORTED_MANIFEST_VERSION",
     "TERMINAL_STATES",
@@ -374,6 +443,17 @@ __all__ = [
     "CallerAuthority",
     "CatalogEntry",
     "CatalogRejected",
+    "CertificationCheck",
+    "CertificationEnvironment",
+    "CertificationError",
+    "CertificationInvalid",
+    "CertificationPackageMismatch",
+    "CertificationProfile",
+    "CertificationReport",
+    "CertificationSeal",
+    "CertificationSubject",
+    "CheckOutcome",
+    "CheckResult",
     "ClientStateRejected",
     "CompatError",
     "CompatMetadataError",
@@ -382,6 +462,9 @@ __all__ = [
     "ComponentAsset",
     "ComponentProvenance",
     "ConfigurationKeyNotDeclared",
+    "ConformanceCheck",
+    "ConformanceOutcome",
+    "ConformanceSuite",
     "ConstraintRecord",
     "ContractRange",
     "ContractVersion",
@@ -389,14 +472,17 @@ __all__ = [
     "Degradation",
     "DependencyCycle",
     "DeprecationNotice",
+    "DuplicateCheckError",
     "EffectDispatcher",
     "EffectNotDeclared",
     "EffectReceipt",
     "EffectRoute",
     "EffectiveAuthority",
+    "EntryPointPresenceCheck",
     "EventStoreProgressSink",
     "ExtensionAuthorityEvidence",
     "ExtensionAuthorityInputs",
+    "ExtensionBundle",
     "ExtensionCancellation",
     "ExtensionCancelled",
     "ExtensionCatalog",
@@ -456,6 +542,7 @@ __all__ = [
     "GovernedRoute",
     "HostContractMetadata",
     "HostExtensionPolicy",
+    "ImportPolicy",
     "InMemoryExtensionInstallStore",
     "InMemoryExtensionStore",
     "InProcessExtensionLoader",
@@ -481,11 +568,13 @@ __all__ = [
     "PackageDigestMismatch",
     "PackageIdentity",
     "PackageSignatureInvalid",
+    "PackageStructureCheck",
     "PermissionDenial",
     "PreflightPolicy",
     "PreflightReport",
     "ProgressReporter",
     "ProgressSink",
+    "PublicImportCheck",
     "PublisherIdentity",
     "PublisherKeyConflict",
     "PublisherTrust",
@@ -501,6 +590,7 @@ __all__ = [
     "SandboxPolicy",
     "SandboxViolationLog",
     "ScopeMismatch",
+    "SecurityScanCheck",
     "SelectionExplanation",
     "SemVer",
     "ServiceNotGranted",
@@ -517,6 +607,7 @@ __all__ = [
     "UiComponentManifest",
     "UiExtensionError",
     "UiProjectionService",
+    "UnboundCheckError",
     "UngrantedProgressReporter",
     "UnknownAction",
     "UnknownCatalog",
@@ -533,9 +624,13 @@ __all__ = [
     "assert_snapshot_intact",
     "assert_ui_snapshot_intact",
     "build_sandbox_config",
+    "bundle_digest",
     "canonical_install_payload",
+    "certification_as_trust_claim",
+    "certify",
     "compute_authority_delta",
     "compute_effective_authority",
+    "detect_environment",
     "diff_locks",
     "ensure_compatible",
     "evaluate_compatibility",
@@ -553,6 +648,10 @@ __all__ = [
     "parse_contract_version",
     "parse_feature_status",
     "parse_range",
+    "render_summary",
+    "report_digest",
+    "report_from_json",
+    "report_to_json",
     "resolve_lock",
     "resolve_publisher_trust",
     "risk_tier_for",
@@ -560,8 +659,13 @@ __all__ = [
     "run_deactivation",
     "run_invocation",
     "run_preflight",
+    "seal_from_json",
+    "seal_to_json",
     "select_isolation_profile",
     "sha256_hex",
+    "sign_certification",
+    "verify_certification",
+    "verify_certified_package",
     "verify_component_asset",
     "verify_package_payload",
 ]
