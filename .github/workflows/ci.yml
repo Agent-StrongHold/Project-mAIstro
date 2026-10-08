@@ -103,8 +103,17 @@ jobs:
       # reads (#154).
       - name: No conflict markers in tracked files
         run: python scripts/check-merge-markers.py
+      # Quality owns the locked Ruff pair on ordinary PRs, merge groups and
+      # shared pushes. CI alone receives PR edits and this exceptional push;
+      # retain Ruff on both without repeating scans on common events (#1357).
       - run: uv run ruff check .
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/merge/main-into-integration') ||
+          (github.event_name == 'pull_request' && github.event.action == 'edited')
       - run: uv run ruff format --check .
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/merge/main-into-integration') ||
+          (github.event_name == 'pull_request' && github.event.action == 'edited')
       - run: >-
           uv run mypy
           packages/maistro-core/src
