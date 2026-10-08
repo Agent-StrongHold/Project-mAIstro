@@ -122,9 +122,14 @@ async def _probe_canonical_retry_charges_once(ledger: Any) -> None:
     first = await ledger.charge_usage(**_charge())
     second = await ledger.charge_usage(**_charge())
     assert len(ledger.rows) == 1, "canonical-retry-charges-once: retried report wrote twice"
-    assert second["charged_microchips"] == first["charged_microchips"], (
-        "canonical-retry-charges-once: the retry did not return the original receipt"
-    )
+    # The contract requires the *original* receipt on a retry, and the agent
+    # persists both named fields into the Outcome — a matching amount is not
+    # enough if the pricing version drifted.
+    for field in ("charged_microchips", "pricing_version"):
+        assert second[field] == first[field], (
+            "canonical-retry-charges-once: the retry returned a recomputed receipt, not "
+            f"the original (receipt {field} changed: {first[field]!r} -> {second[field]!r})"
+        )
 
 
 async def _probe_client_request_id_cannot_collide(ledger: Any) -> None:
@@ -202,6 +207,24 @@ class TestAdapterConformance:
         assert await run_coin_ledger_conformance(DedupesOnRequestId) == [
             "client-request-id-cannot-collide",
             "unkeyed-charge-never-suppressed",
+        ]
+
+    async def test_a_ledger_that_recomputes_a_retry_receipt_fails_named(self) -> None:
+        """Dedupes on the charge key but re-mints the receipt on the retry —
+        same amount, drifted pricing version, as after a redeploy with new
+        pricing. The contract requires the original receipt, and the agent
+        persists what it gets, so this must fail named."""
+
+        class RecomputesRetryReceipt(MemoryCoinLedger):
+            async def charge_usage(self, **kwargs: Any) -> dict[str, Any]:
+                rows_before = len(self.rows)
+                receipt = await super().charge_usage(**kwargs)
+                if len(self.rows) == rows_before:  # deduped: a retried report
+                    return {**receipt, "pricing_version": "v2"}
+                return receipt
+
+        assert await run_coin_ledger_conformance(RecomputesRetryReceipt) == [
+            "canonical-retry-charges-once"
         ]
 
     async def test_a_ledger_that_suppresses_unkeyed_charges_fails_named(self) -> None:
@@ -309,6 +332,7 @@ class TestTheAgentChargesUnderTheContract:
         assert len(ledger.rows) == 1
         first, second = outcomes.recorded
         assert first.charged_microchips == second.charged_microchips == 7
+        assert first.pricing_version == second.pricing_version == "v1"
 
     @pytest.mark.ac("SPEC-100826-c0e1/AC-3")
     async def test_a_reused_client_request_id_charges_every_run(self) -> None:
