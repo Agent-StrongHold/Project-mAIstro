@@ -28,6 +28,7 @@ from maistro.cli._backlog import import_cmd as backlog_import_command
 from maistro.cli._backlog import revert as backlog_revert_command
 from maistro.cli._connectors import connectors_describe, connectors_verify
 from maistro.cli._extensions import (
+    extensions_certify,
     extensions_compat,
     extensions_contract,
     extensions_explain,
@@ -35,6 +36,7 @@ from maistro.cli._extensions import (
     extensions_lock,
     extensions_preflight,
     extensions_show,
+    extensions_verify_certification,
 )
 from maistro.container import Container
 from maistro.extensions.compat import (
@@ -496,6 +498,13 @@ _VULTURE_WHITELIST = (
     ExternalAgentRegistry.refresh_descriptor,
     ExternalAgentRegistry.report_availability,
     ExternalAgentRegistry.eligible_specialists,
+    # Pre-publication extension certification (M9-H3, #975). The
+    # `maistro extensions certify` / `verify-certification` commands are
+    # typer-dispatched like the lock commands above: their production caller
+    # is the command wiring, their consumers the CLI conformance suite
+    # (packages/maistro-core/tests/extensions/test_cli_certification.py).
+    extensions_certify,
+    extensions_verify_certification,
     # Governed UI/A2UI extension components (M9-F2, #967). The projection
     # contract ships first by design, the same contract-first posture as the
     # M9-B1 store seams and the M9-D1 registry above. `render_component` is
