@@ -1173,7 +1173,20 @@ class LifecycleProof:
         active = await self.service.active(self.scope, "acme.notary")
         assert active is not None
         served_before = await self.store.installed_versions(self.scope)
-        trail_len_before = len(await self.store.transitions_for(active.install_id))
+        # Snapshot the trail of every record this stage will transition — the
+        # active 2.0.0 record, the rollback's restore target (1.1.0) and the
+        # removal target (1.0.0) — so the closing audit check covers every
+        # touched install id, not just the one active at stage start.
+        restore_target = await self.store.latest_record(self.scope, "acme.notary", "1.1.0")
+        oldest = await self.store.latest_record(self.scope, "acme.notary", "1.0.0")
+        assert restore_target is not None and oldest is not None
+        trail_len_before = {
+            active.install_id: len(await self.store.transitions_for(active.install_id)),
+            restore_target.install_id: len(
+                await self.store.transitions_for(restore_target.install_id)
+            ),
+            oldest.install_id: len(await self.store.transitions_for(oldest.install_id)),
+        }
 
         disabled = await self.service.disable(
             active.install_id,
@@ -1283,8 +1296,6 @@ class LifecycleProof:
             "authority leaves the served set without executing anything",
         )
 
-        oldest = await self.store.latest_record(self.scope, "acme.notary", "1.0.0")
-        assert oldest is not None
         removed = await self.service.remove(
             oldest.install_id,
             actor=OPERATOR,
@@ -1312,24 +1323,31 @@ class LifecycleProof:
             "the record, its grant and its trail stay queryable",
         )
 
-        new_rows = (await self.store.transitions_for(active.install_id))[trail_len_before:]
+        new_trails = {
+            install_id: (await self.store.transitions_for(install_id))[before:]
+            for install_id, before in trail_len_before.items()
+        }
+        new_rows = [row for rows in new_trails.values() for row in rows]
         stage.check(
             "every-lifecycle-step-is-audited",
-            bool(new_rows)
+            all(bool(rows) for rows in new_trails.values())
             and all(row.actor == OPERATOR and row.reason.strip() for row in new_rows)
             and all(
                 row.from_state != row.to_state or row.reason.startswith(("pin:", "unpin:"))
                 for row in new_rows
             ),
-            "every lifecycle decision lands on the audit trail with an "
-            "accountable actor and a recorded reason; same-state pin rows "
-            "are the only rows that do not change state",
+            "every lifecycle decision lands on the audit trail of the record "
+            "it touched — the active, the rollback-restored and the removed "
+            "install alike — with an accountable actor and a recorded "
+            "reason; same-state pin rows are the only rows that do not "
+            "change state",
         )
         stage.evidence["lifecycle"] = {
             "disabled_install_id": disabled.install_id,
             "rollback_restored": {"version": restored.version, "install_id": restored.install_id},
             "removed_install_id": removed.install_id,
             "audited_rows": len(new_rows),
+            "audited_install_ids": len(new_trails),
         }
         return stage
 
