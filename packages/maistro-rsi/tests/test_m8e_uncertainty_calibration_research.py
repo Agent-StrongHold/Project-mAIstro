@@ -154,8 +154,13 @@ class EscalationDestination:
             raise ValueError("destination name must be non-empty")
         if not 0.0 <= self.eventual_success_rate <= 1.0:
             raise ValueError(f"eventual_success_rate {self.eventual_success_rate} outside [0, 1]")
-        if self.latency < 0.0:
-            raise ValueError(f"latency {self.latency} must be non-negative")
+        if self.latency < 0.0 or not math.isfinite(self.latency):
+            raise ValueError(f"latency {self.latency} must be finite and non-negative")
+        # NaN survives every comparison, so a bare `< 0` guard cannot reject it;
+        # require explicit finiteness or a single NaN measurement silently
+        # propagates into the whole reported frontier (cost, latency, utility).
+        if not math.isfinite(self.marginal_cost):
+            raise ValueError(f"marginal_cost {self.marginal_cost} must be finite")
 
 
 @dataclass(frozen=True)
@@ -1036,6 +1041,14 @@ class TestEscalationPolicyDestinations:
             EscalationDestination("d", 1.5, -0.1, 1.0)
         with pytest.raises(ValueError, match="latency"):
             EscalationDestination("d", 0.5, -0.1, -1.0)
+        with pytest.raises(ValueError, match="latency"):
+            EscalationDestination("d", 0.5, -0.1, math.nan)
+        with pytest.raises(ValueError, match="latency"):
+            EscalationDestination("d", 0.5, -0.1, math.inf)
+        with pytest.raises(ValueError, match="marginal_cost"):
+            EscalationDestination("d", 0.5, math.nan, 1.0)
+        with pytest.raises(ValueError, match="marginal_cost"):
+            EscalationDestination("d", 0.5, math.inf, 1.0)
 
     def test_bands_route_by_confidence_with_urgency_first(self) -> None:
         bands = m8e_destination_fixture()
