@@ -92,6 +92,21 @@ and the whole `packages/maistro-core/tests/runs` suite green (1464 passed,
 vulture ledger gate was re-run with CI's exact arguments at the same head and
 passes unchanged (1326 reviewed identities → 1326 findings, unclassified 0).
 
+Merged-head re-execution (this lane's repair round): every claim above was
+independently re-executed at the develop-merge head 807699ed9869 — the head
+this note previously had no recorded evidence for (the seam-drift repair was
+verified at its own pre-merge head, f6c3044523ea). Against a fresh migrated
+PostgreSQL 18.6 (`alembic upgrade head`, migration 061): the module 5/5
+green (2.12-2.82s each), all nine skip cleanly without a DSN and still
+collect 9 either way, the full `packages/maistro-core/tests/runs` suite is
+green (1464 passed, 3 skipped, 94.8s), `scripts/check-suite-inventory.py`
+reports 17/17 suites matching, the vulture ledger gate passes with CI's exact
+arguments (1326 reviewed identities -> 1326 findings), and ruff check/format
+are clean. The mutation oracle was re-proven live rather than trusted: after
+`DROP INDEX ix_canonical_runs_effect` the window case fails with "must elect
+exactly one winner, got 4", and the harness is green again immediately after
+recreating the identical index. Node identities unchanged (+9).
+
 Environment trap worth recording (pre-existing, not introduced here): 17 node
 IDs elsewhere in `packages/maistro-core/tests` appear in collection only when
 `MAISTRO_TEST_PG_DSN` is set (collect-with-DSN 15324 vs collect-without 15307
