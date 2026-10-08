@@ -31,12 +31,14 @@ from extensions.test_install_lifecycle import (
     PAYLOAD,
     POLICY,
     SCOPE,
+    RecordingLoader,
     authorize_and_install,
     inspect_default,
     make_service,
 )
 from maistro.extensions import (
     ArtifactMismatch,
+    ExtensionLifecycleError,
     ExtensionPinned,
     ExtensionState,
     InMemoryExtensionStore,
@@ -306,6 +308,8 @@ class TestDisableResume:
         trail = await service.transitions(record.install_id, scope=SCOPE)
         verbs = [t.reason for t in trail]
         assert any("resumed" in reason for reason in verbs)
+        # The mandatory operator rationale is carried verbatim on the trail.
+        assert any("all clear" in reason for reason in verbs)
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
@@ -318,6 +322,28 @@ class TestDisableResume:
         assert second.state is ExtensionState.DISABLED
         assert second.install_id == first.install_id
         assert len(await service.transitions(record.install_id, scope=SCOPE)) == trail_len
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_disable_retry_after_a_newer_disable_returns_latest_record(self) -> None:
+        """A repeated disable with no active pointer is idempotent on the most
+        recently disabled record, not the oldest one: disabling 1.4.0, then
+        installing and disabling 1.5.0, must report 1.5.0 on retry — the
+        records iterate oldest-first, so the newest DISABLED wins."""
+        service, _store, _loader, _clock = make_service()
+        first = await activate(service)
+        await service.disable(SCOPE, first.extension_id, actor="op", reason="pause 1.4.0")
+        second = await activate(service, version="1.5.0", payload=OTHER_PAYLOAD)
+        await service.disable(SCOPE, second.extension_id, actor="op", reason="pause 1.5.0")
+
+        retry = await service.disable(
+            SCOPE, second.extension_id, actor="op", reason="pause 1.5.0 again"
+        )
+
+        assert retry.state is ExtensionState.DISABLED
+        assert retry.install_id == second.install_id
+        assert retry.version == "1.5.0"
+        assert retry.install_id != first.install_id
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
@@ -375,6 +401,8 @@ class TestRollback:
         assert newer_trail[-1].to_state is ExtensionState.SUPERSEDED
         older_trail = await service.transitions(first.install_id, scope=SCOPE)
         assert any("rolled back" in t.reason for t in older_trail)
+        # The mandatory operator rationale is carried verbatim on the trail.
+        assert any("1.5.0 regressed" in t.reason for t in older_trail)
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
@@ -535,6 +563,77 @@ class TestRollback:
                 reason="wrong target",
                 to_install_id=other.install_id,
             )
+
+
+class TestFailedActivationRetry:
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_failed_rollback_cannot_reenter_through_the_install_gate(self) -> None:
+        """A FAILED record is not a free initial-install retry.
+
+        A rollback that passes its authority/compatibility gates but fails
+        in the loader leaves the target FAILED. If a narrower version has
+        since become active, reactivating the failed record through the
+        ordinary install endpoint must re-prove those gates first — else the
+        retry would activate authority the current grant does not hold
+        without a fresh inspect → authorize pass.
+        """
+        service, store, _loader, _clock = make_service()
+        wide = await activate(service, permissions=("network.http", "storage.workspace"))
+        mid = await activate(
+            service,
+            version="1.5.0",
+            permissions=("network.http", "storage.workspace"),
+            payload=OTHER_PAYLOAD,
+        )
+        assert mid.state is ExtensionState.ACTIVE
+
+        # The rollback's gates pass; the loader crashes. Wide ends FAILED and
+        # the failed rollback moved nothing else.
+        broken = ExtensionInstallService(
+            store,
+            loader=RecordingLoader(fail=True),
+            trust_policy=POLICY,
+            platform_api_version="1.0.0",
+        )
+        with pytest.raises(ExtensionLifecycleError, match="rolled back"):
+            await broken.rollback(
+                SCOPE,
+                "acme.chart_tools",
+                actor="op",
+                payload=PAYLOAD,
+                reason="1.5.0 regressed",
+                to_install_id=wide.install_id,
+            )
+        failed = await store.get_record(wide.install_id)
+        assert failed is not None and failed.state is ExtensionState.FAILED
+        assert mid.state is ExtensionState.ACTIVE
+
+        # A narrower version becomes active before anyone retries the failure.
+        narrow = await activate(service, version="2.0.0", permissions=("network.http",))
+        assert narrow.state is ExtensionState.ACTIVE
+
+        trail = len(await service.transitions(wide.install_id, scope=SCOPE))
+        narrow_trail = len(await service.transitions(narrow.install_id, scope=SCOPE))
+        with pytest.raises(RollbackRefused, match=r"storage\.workspace"):
+            await service.install(wide.install_id, actor="op", scope=SCOPE, payload=PAYLOAD)
+        active = await service.active(SCOPE, "acme.chart_tools")
+        assert active is not None and active.version == "2.0.0"
+        assert len(await service.transitions(wide.install_id, scope=SCOPE)) == trail
+        assert len(await service.transitions(narrow.install_id, scope=SCOPE)) == narrow_trail
+
+        # The retry is not blanket-refused: once the active grant covers the
+        # failed record's authority again, the ordinary retry re-crosses the
+        # loader and swaps the pointer.
+        await activate(
+            service,
+            version="2.1.0",
+            permissions=("network.http", "storage.workspace"),
+        )
+        revived = await service.install(wide.install_id, actor="op", scope=SCOPE, payload=PAYLOAD)
+        assert revived.state is ExtensionState.ACTIVE
+        active = await service.active(SCOPE, "acme.chart_tools")
+        assert active is not None and active.install_id == wide.install_id
 
 
 class TestRemove:

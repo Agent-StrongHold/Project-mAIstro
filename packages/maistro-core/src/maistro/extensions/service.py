@@ -179,8 +179,10 @@ class RetainAllJanitor:
 
 #: The live states each activation entry point accepts, keyed by the verb the
 #: audit reasons use. ``installed`` covers first install and the FAILED retry
-#: recovery path; ``resumed`` brings a disabled record back; ``rolled back``
-#: restores a superseded one. Each return path re-crosses the loader seam.
+#: recovery path — where the rollback gates are re-proven against the
+#: currently active version first (:meth:`_reactivation_gates`); ``resumed``
+#: brings a disabled record back; ``rolled back`` restores a superseded one.
+#: Each return path re-crosses the loader seam.
 _ACTIVATION_SOURCES: dict[str, frozenset[ExtensionState]] = {
     "installed": frozenset({ExtensionState.AUTHORIZED, ExtensionState.FAILED}),
     "resumed": frozenset({ExtensionState.DISABLED}),
@@ -592,7 +594,10 @@ class ExtensionInstallService:
         scope already had a different active version, that record is retired
         to ``SUPERSEDED`` — rollback-eligible, grant frozen — as part of the
         same locked swap. Activation of a different version while the
-        extension is pinned raises ``ExtensionPinned``.
+        extension is pinned raises ``ExtensionPinned``. Reactivating a
+        ``FAILED`` record re-proves the rollback gates against the currently
+        active version first, so a failed activation cannot bypass them by
+        re-entering through the install endpoint.
         """
         if not actor.strip():
             raise ValueError("actor is required: every transition needs an accountable actor")
@@ -623,6 +628,45 @@ class ExtensionInstallService:
             f"{record.artifact_sha256}; refusing to swap in {payload_digest}"
         )
 
+    async def _reactivation_gates(
+        self, record: ExtensionInstallRecord, *, scope: ExtensionScope
+    ) -> None:
+        """Re-prove the rollback gates before a FAILED record is reactivated.
+
+        A FAILED record's grant was frozen at its own authorization. If a
+        different version has since become active, letting the ordinary
+        install entry point revive the failed activation would displace that
+        version with authority it may not hold — the same side door a failed
+        rollback would otherwise leave open. The retry therefore re-runs the
+        checks a rollback would: the record's frozen grant must declare no
+        authority the current active grant does not hold, and its manifest
+        must still evaluate compatible. Broadened authority keeps requiring
+        a fresh inspect → authorize pass.
+        """
+        current = await self._store.active_record(scope, record.extension_id)
+        if current is None or current.state is not ExtensionState.ACTIVE:
+            return
+        broadened = sorted(set(record.granted_permissions) - set(current.granted_permissions))
+        if broadened:
+            raise RollbackRefused(
+                f"install {record.install_id} refused: reactivating this FAILED record "
+                f"would displace {current.version} with authority the active grant does "
+                f"not hold ({', '.join(broadened)}); broadened authority requires a "
+                "fresh inspect and explicit re-authorization"
+            )
+        compatibility = evaluate_compatibility(
+            record.manifest,
+            CompatibilityPolicy(
+                platform_api_version=self._platform_api_version,
+                installed_versions=await self._store.installed_versions(scope),
+            ),
+        )
+        if not compatibility.compatible:
+            raise RollbackRefused(
+                f"install {record.install_id} refused: this FAILED retry no longer "
+                "evaluates compatible: " + "; ".join(compatibility.failures)
+            )
+
     async def _activate(
         self,
         install_id: str,
@@ -631,15 +675,20 @@ class ExtensionInstallService:
         scope: ExtensionScope,
         payload: bytes,
         why: str,
+        reason: str = "",
     ) -> ExtensionInstallRecord:
         """Run one activation under the caller's extension lock.
 
         ``why`` names the lifecycle verb (installed / resumed / rolled back)
         for the audit reasons and selects the source states the entry point
-        accepts. Shared by install, resume and rollback: every path back to
+        accepts. ``reason`` carries the operator-supplied rationale that
+        resume and rollback require; it is quoted verbatim in the transition
+        evidence so the trail records not just that the artifact moved but
+        why. Shared by install, resume and rollback: every path back to
         running code digests the payload, re-crosses the loader, and swaps
         the active pointer under the same discipline.
         """
+        detail = f"{why}: {reason}" if reason else why
         record = await self._require(install_id, scope)
         now = self._clock()
         payload_digest = sha256_hex(payload)
@@ -663,6 +712,9 @@ class ExtensionInstallService:
                 f"{record.version} — a pinned version does not move silently"
             )
 
+        if record.state is ExtensionState.FAILED:
+            await self._reactivation_gates(record, scope=scope)
+
         if record.artifact_sha256 != payload_digest:
             raise ArtifactMismatch(
                 f"payload digest {payload_digest} does not match the artifact bound at "
@@ -673,7 +725,7 @@ class ExtensionInstallService:
             record,
             ExtensionState.INSTALLING,
             actor=actor,
-            reason=f"{why} artifact {payload_digest}",
+            reason=f"{detail} artifact {payload_digest}",
             now=now,
             mutate=lambda r: replace(
                 r, install_attempts=r.install_attempts + 1, installed_by=actor
@@ -713,10 +765,12 @@ class ExtensionInstallService:
             record,
             ExtensionState.ACTIVE,
             actor=actor,
-            reason=f"activated {record.extension_id} {record.version} ({why})",
+            reason=f"activated {record.extension_id} {record.version} ({detail})",
             now=self._clock(),
         )
-        await self._retire_displaced_active(record, actor=actor, scope=scope, why=why)
+        await self._retire_displaced_active(
+            record, actor=actor, scope=scope, detail=detail
+        )
         await self._store.set_active(record)
         return record
 
@@ -726,7 +780,7 @@ class ExtensionInstallService:
         *,
         actor: str,
         scope: ExtensionScope,
-        why: str,
+        detail: str,
     ) -> None:
         """Mark a previously active version SUPERSEDED after a new activation.
 
@@ -748,7 +802,7 @@ class ExtensionInstallService:
             actor=actor,
             reason=(
                 f"superseded by {activated.extension_id} {activated.version} "
-                f"(install {activated.install_id}, {why})"
+                f"(install {activated.install_id}, {detail})"
             ),
             now=self._clock(),
         )
@@ -929,7 +983,12 @@ class ExtensionInstallService:
         record = await self._require(install_id, scope)
         async with self._extension_lock(scope, record.extension_id):
             return await self._activate(
-                install_id, actor=actor, scope=scope, payload=payload, why="resumed"
+                install_id,
+                actor=actor,
+                scope=scope,
+                payload=payload,
+                why="resumed",
+                reason=reason,
             )
 
     async def _rollback_to_current(
@@ -1022,7 +1081,12 @@ class ExtensionInstallService:
                     + "; ".join(compatibility.failures)
                 )
             return await self._activate(
-                target.install_id, actor=actor, scope=scope, payload=payload, why="rolled back"
+                target.install_id,
+                actor=actor,
+                scope=scope,
+                payload=payload,
+                why="rolled back",
+                reason=reason,
             )
 
     async def _rollback_target(
@@ -1110,11 +1174,19 @@ class ExtensionInstallService:
     async def _suspended_record(
         self, scope: ExtensionScope, extension_id: str
     ) -> ExtensionInstallRecord | None:
-        """The disabled record for an extension, if one exists."""
-        for record in await self._store.records_for_extension(scope, extension_id):
-            if record.state is ExtensionState.DISABLED:
-                return record
-        return None
+        """The most recently disabled record for an extension, if one exists.
+
+        A scope can hold several DISABLED records (disable one version,
+        install and disable another), and ``records_for_extension`` is
+        oldest-first — so the idempotent-retry path must pick the newest,
+        the same convention ``_rollback_target`` uses for SUPERSEDED.
+        """
+        suspended = [
+            record
+            for record in await self._store.records_for_extension(scope, extension_id)
+            if record.state is ExtensionState.DISABLED
+        ]
+        return suspended[-1] if suspended else None
 
     async def _audit_mutation(
         self,
