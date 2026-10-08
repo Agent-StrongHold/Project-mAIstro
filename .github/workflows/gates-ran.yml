@@ -164,11 +164,35 @@ jobs:
                 per_page: 100,
               },
             );
+            // Keep both endpoints of a rename so classification sees the
+            // source path too, matching the --no-renames diff consumers.
+            const paths = files.flatMap(file =>
+              file.previous_filename ? [file.previous_filename, file.filename] : [file.filename],
+            );
+            // GitHub's list-files endpoint exposes at most 3,000 files per
+            // pull request even when fully paginated (#1350). A response at
+            // that cap cannot be told apart from a complete one, so it is
+            // recorded as truncated and the evaluator treats scope as
+            // ambiguous: skipped specialized checks then stay pending
+            // instead of being excused on partial evidence. The cap is
+            // measured on the API response (files.length), not on the
+            // rename-expanded path list.
+            const truncated = files.length >= 3000;
             fs.writeFileSync(
               'changed-files.json',
-              JSON.stringify({ measured: true, files: files.map(file => file.filename) }),
+              JSON.stringify({
+                measured: true,
+                truncated,
+                files: paths,
+              }),
             );
-            core.info(`${files.length} changed file(s) on PR #${number}`);
+            if (truncated) {
+              core.warning(
+                `changed-file list hit the 3,000-file cap on PR #${number}; specialized scope is ambiguous`,
+              );
+            } else {
+              core.info(`${files.length} changed file(s) on PR #${number}`);
+            }
 
       - name: Evaluate required execution evidence
         id: evaluate
@@ -195,9 +219,26 @@ jobs:
         env:
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
           EVALUATION_EXIT_CODE: ${{ steps.evaluate.outputs.exit_code }}
+          JOB_STATUS: ${{ job.status }}
         with:
           script: |
-            const code = Number(process.env.EVALUATION_EXIT_CODE || '1');
+            // A cancelled publisher is a superseded publisher: the
+            // concurrency group already started a newer evaluation for this
+            // exact head, and that successor owns the verdict. Publishing
+            // here (the historical behaviour, which read the cancelled
+            // evaluate step's blank exit code as failure) smeared a red
+            // gates-ran status onto heads whose evidence was merely still
+            // arriving. See run 36274594751.
+            if (process.env.JOB_STATUS === 'cancelled') {
+              core.info('publisher cancelled by successor; the successor owns the gates-ran verdict');
+              return;
+            }
+
+            // A blank exit code means the evaluate step never completed, so
+            // no verdict exists. The only honest status for missing evidence
+            // of the evaluation itself is pending, never failure.
+            const raw = process.env.EVALUATION_EXIT_CODE || '';
+            const code = raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : 2;
             const state = code === 0 ? 'success' : code === 2 ? 'pending' : 'failure';
             const description = code === 0
               ? 'All required checks executed on this exact head'

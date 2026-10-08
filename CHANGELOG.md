@@ -50,7 +50,7 @@ or placeholder-only section.
   into the outbound policy, boot probes per entry, the reference adapter
   honoring `litellm_url`, and `create_container` accepting a host-registered
   catalog through `provider_adapter_catalog`; configuring an adapter
-  authorizes nothing by itself). See ADR-104.
+  authorizes nothing by itself). See ADR-105.
 
 - **The extension SDK boundary is enforced and a reference extension ships outside the
   core tree (#951).** `extensions/namespace-policy.json` declares the public
@@ -129,6 +129,54 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A full Recent Runs page no longer waits on one serialized canonical Run
+  read per row (#1333).** Conductor's Recent Runs list overlays canonical
+  lifecycle truth through one batched, Workspace-scoped reader call, but the
+  reader resolved the page's per-Run lookups with a sequential `await` per id:
+  at the supported page cap of 100 and a durable PostgreSQL/SQLite store, one
+  dashboard request still serialized up to 100 `get_run` round trips on an
+  endpoint built to be polled. `ScopedRunReader.get_runs` now overlaps the
+  page's independent lookups (bounded, 16 in flight) while keeping the scoped
+  decisions exactly once per Workspace/Project, so the visible-Runs answer and
+  its refusal semantics are unchanged; a page resolves in a few overlapping
+  waves instead of one wait per row.
+- **Chat admission compensation is conditional on the unchanged, unstarted Run (#338).**
+  A QUEUED or RUNNING write that commits but loses its response is compensated
+  before the existing retryable refusal, without dispatching the turn. The
+  stranded-chat sweep now compares the Run snapshot and checks NodeRun absence
+  atomically; a concurrent node creation defeats cancellation. SQLite guards
+  the physical cancel, node insertion and lifecycle writes against the exact
+  persisted parent snapshot, including when a sibling store commits on its
+  shared connection. Validation refusals preserve sibling writes. This does not change
+  admission liveness policy or recover historical NodeRuns with no Attempt.
+
+- **Cancelling admitted work under a legacy two-method `TaskAdmitter` no longer
+  crashes, and no longer lies (#1338).** #1320 grew the protocol with
+  `cancel_run`, and `TaskQueue.cancel` called it unconditionally, so a
+  downstream adapter compiled against the earlier `admit`/`record_transition`
+  shape raised `AttributeError` on the first cancelled task. The queue now
+  probes the capability (`getattr`) — the Protocol is structural, so absence
+  is invisible to `isinstance`. An adapter without `cancel_run` keeps its
+  admitted work's receipt open and the refusal is logged as
+  `task_cancel_unsupported_by_admitter`: physical cancellation is genuinely
+  unavailable, and terminalizing the receipt CANCELLED over a Run nothing
+  signalled would make "stopped" mean "locally forgotten" (#1242). Work with
+  no canonical identity behind it (no admitter wired, no `run_id`) keeps its
+  documented receipt-only cancellation, visibly distinct from stopped physical
+  execution. Capable adapters still route cancellation through the canonical
+  Run/Attempt service unchanged.
+
+- **Governed harness waits can re-enter on the existing recovery timer (#1192).**
+  New `agent.spawn_harness` waits persist the original dispatch receipt,
+  fixed deadline and canonical poll observation identity before their first
+  read. Recovery can consume a completion without redispatching, and local
+  expiry preserves uncertain remote outcomes. Registered-DAG recovery receives
+  the Container's configured harness adapters. Approval answers cannot become
+  fabricated harness completions, and compatibility terminal answers no longer
+  authorize ungoverned provider polling. Historical waits without a resume
+  instant, the production approval/expiry bridge, and adapter-specific restart
+  readiness remain separately gated; this does not close #1192.
+
 - **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
   always invokes Compose with explicit `-f` files, which disables Compose's own
   automatic override loading, so an override copied into the checkout was
@@ -144,6 +192,14 @@ or placeholder-only section.
   `MAISTRO_COMPOSE_PROFILES` activates profiles an override assigns.
 
 ### Security
+
+- **Boot Agent model tools retain governed admission and logical identity** (#1954 follow-up; [review finding](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1954#discussion_r4189499393)).
+  Clarification and model-fallback search use the persisted Run actor/scope and
+  configured model Binding through the existing Provider/Invocation boundary.
+  Agent, delegation, response-round and ToolCall identity distinguish intentional
+  calls while preserving replay. Ambiguous outcomes stop the strategy. The tool
+  deadline also bounds third-party adapters, without replacing their catalog or
+  retry authority. Hive's configured API prefix and omitted sampling are retained.
 
 - **Hive DAG model-backed tools use governed model egress (#1085, #1370).**
   `clarify` and the model fallback of `web_search` require a configured
@@ -283,6 +339,15 @@ or placeholder-only section.
   for tool …` and logs why. The standalone ReAct and Artificer strategy paths
   apply the same rule. Callers that construct Agents directly must wire a
   Sentinel whose permission table grants the tools they need.
+- **Layer-1 episodic recall is scoped to the current Project (#1047,
+  partial).** `DefaultContextAssemblyPolicy.layer1` filtered by `agent_id`
+  only, so an agent id used in two Projects/Workspaces recalled Project A's
+  AGENT-scope memories inside Project B. `layer1` (and the
+  `ContextAssemblyPolicy` protocol) now take a keyword-only `project_id`,
+  which `assemble` passes through to the working-memory hot projection and
+  both ranked and unranked durable fallback reads; a memory with no project
+  is not guessed into one. An empty `project_id` keeps the agent-wide recall;
+  nonempty values, including whitespace, remain exact filters.
 
 - **Retired the process-local Home Assistant confirmation store and
   `/v1/confirms` (#48, partial).** `GET /v1/confirms`, `GET
@@ -1066,6 +1131,44 @@ or placeholder-only section.
   directly instead of passing `parallel_generations`.
 
 ### Fixed
+
+- **The live scheduler selects durable canonical due state (#46, #1199).**
+  Configured Hive ticks now enumerate `ScheduleStore.due()` and re-read each
+  definition under the existing route/manual-fire lock before admission.
+  A stale selection cannot undo a concurrent edit or resurrect a deletion;
+  the per-tick Hive insertion path is retired, while startup backfill and
+  canonical route write-through remain. Selection failures still allow
+  already-QUEUED Runs to reach the accounting consumer. Admission audits use
+  the canonical definition and materialized Run template, rather than a
+  drifted Hive projection. Real-tick tests cover no-fire due-cursor
+  persistence, one occurrence/Attempt, queued recovery, cursor-crash restart,
+  manual/tick serialization and SQLite/PostgreSQL parity. Enabled pending
+  manual-fire markers remain selectable even with a future recurrence cursor,
+  so lease-checked recovery retains its next-tick cadence without creating an
+  extra Run; disabled-marker policy is unchanged. Immediate in-window recovery
+  after a recurring cursor-write crash still preserves the same Run without
+  crediting the dead winner's count, an existing core limitation under #46.
+
+- **Mission detail does not name an agent the Run did not record (no linked issue: task detail must not name an agent a Run never had).** Hive mission
+  rows are a queue, not a Run. Seeded missions and steps named `agent-1`, and
+  the stub create path stored `assigned_agents` from the request, which the
+  Missions page rendered as an assignment and offered an Assign Agent control
+  for. List, detail, steps, status, and create now report no agent, the seed
+  names none, and Assign Agent is disabled with that reason. This does not
+  read a canonical Run agent; nothing is shown until a response does.
+- **Schedules and MCP work from the keyboard alone (#370, partial).** The
+  Schedules and MCP view tabs are now ARIA tabs (arrow keys, Home and End); a
+  schedule's enable toggle is a labelled switch, so a keyboard user can enable
+  or disable a schedule; cron presets are toggle buttons; and an MCP server
+  expands through a disclosure button, with its remove button a separate
+  control. For pointer users, an MCP server now expands or collapses only
+  from its header row, not from its details area or the card's padding.
+- **The Agent's dashboard-widget edit no longer overwrites a concurrent UI save (#1048).**
+  `create_dashboard_widget` now saves against the revision it read; on a conflict it
+  re-reads and re-applies the insertion once (via the pure
+  `dashboard_layouts.with_widget`), and on a second conflict reports `created: false`
+  instead of erasing the `PUT /v1/dashboard/layout` that landed in between. Partial: the rest
+  of #1048 (Workspace-scoped Home, pinned regions, projections) remains.
 
 - **Turing's synchronous bridge no longer blocks the event loop (#397).**
   The provider bridge used to answer event-loop callers by blocking on an
@@ -2035,6 +2138,12 @@ or placeholder-only section.
   application role cannot create tables, and ADR-086 carries a dated
   amendment recording the cursor's ownership, lease, fencing and gap
   semantics.
+
+- **Canvas retry-budget recovery regression coverage (#1550).** Exercise
+  repeated simulated pre-stage worker losses through the real executor,
+  canonical adapter and runner, including claim refusal, fenced reaper
+  terminalization and a fresh-job dispatch control. The existing retry and
+  lease-ownership behavior is unchanged.
 
 ## [1.0.0] - TBD
 

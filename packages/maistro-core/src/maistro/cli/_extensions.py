@@ -1,39 +1,72 @@
-"""`maistro extensions` subcommand — inspect durable extension install records.
+"""`maistro extensions` subcommand — inspect records, contracts, compat.
 
-Read-only throughout, like `maistro archive`: these commands open the SQLite
+Read-only throughout, like `maistro archive`: `history`/`show` open the SQLite
 install-record store in read-only mode and report what was installed, by whom,
 from which catalog, with which digest, and with what trust evidence. They never
 verify, never import, and never write — the install flow that produces records
 lands with #953, and these records outlive it either way.
+
+`contract` (M9-E3, #964) validates a package's tool/Skill manifest against the
+published closed vocabularies and reports the host classification — without
+importing the manifest's entrypoint module.
+
+`preflight` evaluates those same records against a *target* host release
+(#957): which installed extensions are compatible, deprecated,
+migration-required, or blocking — before the upgrade is applied, without
+activating the new host version, from public contract metadata only.
 
 The `lock` and `explain` commands (M9-C2, #956) read a resolved lock file —
 the reproducible output of dependency resolution: which extension versions are
 pinned, from which source, and why each one and its version were selected.
 They are likewise read-only: a lock file is evidence about a decision already
 made, and these commands never rewrite it.
+
+`compat` (#955) is the contract-compatibility preflight: it negotiates an
+extension's declared contract metadata against this host's — metadata only,
+so it runs before any extension code import by construction.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 from rich.console import Console
 from rich.table import Table
-from typer import Argument, Exit, Typer
+from typer import Argument, Exit, Option, Typer
 
+from maistro.extensions.compat import (
+    CompatibilityReport,
+    CompatMetadataError,
+    ExtensionCompatMetadata,
+    HostContractMetadata,
+    Verdict,
+    negotiate,
+    parse_compat_metadata,
+)
+from maistro.extensions.preflight import (
+    ManifestContractError,
+    PreflightPolicy,
+    PreflightReport,
+    TargetHostContract,
+    run_preflight,
+)
 from maistro.extensions.resolution import LockFormatError, LockState
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Awaitable, Callable
 
+    from maistro.extensions.tool_skill import ExtensionContract
     from maistro.extensions.types import InstallRecord
 
 console = Console()
-app = Typer(help="Inspect durable extension install records (publisher, digest, trust).")
+app = Typer(help="Inspect install records (publisher, digest, trust); preflight contract compat.")
 
 
 def _short_digest(digest: str) -> str:
@@ -224,3 +257,366 @@ def extensions_show(
             f"by key {_short_digest(record.evidence.verifier_key_fingerprint)} "
             f"at {_short_timestamp(record.evidence.verified_at.isoformat())}"
         )
+
+
+@app.command("contract")
+def extensions_contract(
+    manifest_path: Annotated[Path, Argument(help="Path to an extension.json manifest.")],
+) -> None:
+    """Validate a tool/Skill manifest and show the host classification (M9-E3).
+
+    Reads the manifest file, validates it against the published closed
+    vocabularies, and reports the canonical capability/effect classification
+    the host will hold the package to — the ADR-050 reversibility tier and
+    the effect floor derived from the manifest's declared effects AND
+    requested capabilities. Data-only: the manifest's entrypoint module is
+    never imported here.
+    """
+    loaded = _load_manifest_contract(manifest_path)
+    if loaded is None:
+        raise Exit(code=1)
+    _print_manifest_contract(*loaded)
+
+
+def _load_manifest_contract(
+    manifest_path: Path,
+) -> tuple[ExtensionContract, str] | None:
+    """Read and validate one manifest; report and return ``None`` on failure."""
+    from maistro.extensions.tool_skill import ExtensionContract
+
+    try:
+        body = manifest_path.read_bytes()
+        manifest = json.loads(body)
+    except OSError as exc:
+        console.print(f"[red]Cannot read {manifest_path}: {exc}[/red]")
+        return None
+    except json.JSONDecodeError as exc:
+        console.print(f"[red]{manifest_path} is not valid JSON: {exc}[/red]")
+        return None
+    if not isinstance(manifest, dict):
+        console.print(f"[red]{manifest_path} does not contain a JSON object.[/red]")
+        return None
+    digest = hashlib.sha256(body).hexdigest()
+    try:
+        return ExtensionContract.from_manifest(manifest, digest=digest), digest
+    except Exception as exc:
+        console.print(f"[red]{manifest_path}: {exc}[/red]")
+        return None
+
+
+def _print_manifest_contract(contract: ExtensionContract, digest: str) -> None:
+    """Render one validated contract and its host classification."""
+    console.print(f"[bold]{contract.extension_id}@{contract.version}[/bold]")
+    console.print(f"  family:        {contract.family}")
+    console.print(f"  contract:      {contract.contract_range}")
+    console.print(f"  manifest:      sha256:{digest}")
+    console.print(f"  entrypoint:    {contract.entrypoint.module}:{contract.entrypoint.object}")
+    console.print(f"  capabilities:  {', '.join(contract.capabilities) or '—'}")
+    console.print(f"  effects:       {', '.join(e.value for e in contract.effects) or '—'}")
+    console.print(f"  data scopes:   {', '.join(contract.data_scopes) or '—'}")
+    console.print(
+        f"  network:       {', '.join(contract.network_allow) or '—'}"
+        f" ports {contract.network_ports or '—'}"
+    )
+    console.print(f"  secret refs:   {', '.join(contract.secret_refs) or '—'}")
+    console.print(
+        f"  [bold]host classification[/bold]: effect floor "
+        f"[bold]{contract.effect_floor.value}[/bold] -> reversibility "
+        f"[bold]{contract.reversibility.value}[/bold] (ADR-050)"
+    )
+
+
+def _load_compat_metadata(metadata_path: Path) -> ExtensionCompatMetadata:
+    """Read and parse one extension's compatibility-metadata JSON file."""
+    try:
+        raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        console.print(f"[red]Cannot read {metadata_path}: {exc}[/red]")
+        raise Exit(code=1) from exc
+    except json.JSONDecodeError as exc:
+        console.print(f"[red]{metadata_path} is not valid JSON: {exc}[/red]")
+        raise Exit(code=1) from exc
+    try:
+        return parse_compat_metadata(raw)
+    except CompatMetadataError as exc:
+        console.print(f"[red]{metadata_path}: {exc}[/red]")
+        raise Exit(code=1) from exc
+
+
+def _print_compat_report(report: CompatibilityReport, host: HostContractMetadata) -> None:
+    """Render the negotiation report; the machine-readable form is --json."""
+    style = {
+        Verdict.COMPATIBLE: "green",
+        Verdict.DEGRADED: "yellow",
+        Verdict.INCOMPATIBLE: "red",
+    }[report.verdict]
+    console.print(f"[bold {style}]Verdict: {report.verdict.value}[/bold {style}]")
+    for reason in report.reasons:
+        console.print(f"[red]incompatible: {reason}[/red]")
+    if report.degradations:
+        table = Table("degraded feature", "why it is withheld")
+        for degradation in report.degradations:
+            table.add_row(degradation.feature, degradation.reason)
+        console.print(table)
+    if report.deprecations:
+        table = Table("deprecated feature", "status", "removal target", "migration")
+        for notice in report.deprecations:
+            table.add_row(
+                notice.feature,
+                notice.status.value,
+                "—" if notice.removal_target is None else str(notice.removal_target),
+                notice.migration,
+            )
+        console.print(table)
+    console.print(f"host contract: {host.contract_version} (majors {list(host.supported_majors)})")
+    granted = ", ".join(report.supported_features) if report.supported_features else "none"
+    console.print(f"features granted: {granted}")
+
+
+@app.command("compat")
+def extensions_compat(
+    metadata_path: Annotated[
+        Path, Argument(help="JSON file with the extension's compatibility metadata.")
+    ],
+    json_output: Annotated[
+        bool,
+        Option("--json", help="Emit the machine-readable report instead of the table."),
+    ] = False,
+) -> None:
+    """Negotiate an extension's contract metadata against this host.
+
+    Decides compatibility from metadata alone — the extension's code is never
+    imported, so a manifest can be rejected before anything executes. Exits
+    non-zero when the verdict is incompatible (the preflight signal), with the
+    actionable reasons on stderr-free stdout either way.
+    """
+    metadata = _load_compat_metadata(metadata_path)
+    host = HostContractMetadata.current()
+    report = negotiate(host, metadata)
+    if json_output:
+        console.print_json(json.dumps(report.to_dict()))
+    else:
+        _print_compat_report(report, host)
+    if report.verdict is Verdict.INCOMPATIBLE:
+        raise Exit(code=1)
+
+
+def _split_meta(entry: str, option: str) -> tuple[str, str]:
+    """Split a ``NAME=note`` CLI value; both halves must be present."""
+    name, separator, note = entry.partition("=")
+    if not separator or not name.strip():
+        console.print(f"[red]--{option} expects NAME=note, got {entry!r}[/red]")
+        raise Exit(code=1)
+    return name.strip(), note.strip()
+
+
+def _print_findings(report: PreflightReport) -> None:
+    """The two distinct sections: hard blockers first, then warnings."""
+    if report.blockers:
+        console.print("[red]Blocking extensions (must be resolved or disabled):[/red]")
+        for row in report.blockers:
+            console.print(f"  [red]{row.extension_name}@{row.semantic_version}[/red]")
+            for conflict in row.conflicts:
+                console.print(f"    - {conflict}")
+    if report.warning_rows:
+        console.print("[yellow]Warnings (upgrade proceeds):[/yellow]")
+        for row in report.warning_rows:
+            console.print(f"  [yellow]{row.extension_name}@{row.semantic_version}[/yellow]")
+            for warning in row.warnings:
+                console.print(f"    - {warning}")
+            for note in row.migration_notes:
+                console.print(f"    - {note}")
+
+
+def _print_preflight(report: PreflightReport) -> None:
+    """Render the compatibility matrix, then blockers, then warnings.
+
+    Blockers and warnings are separate sections on purpose (#957): a hard
+    blocker must never render as one warning among others.
+    """
+    console.print(
+        f"Upgrade preflight: target host {report.target_host_version}, "
+        f"contract {report.target_contract_version}, policy {report.policy.value}"
+    )
+    if not report.rows:
+        console.print("No installed extensions; nothing can block the upgrade.")
+        return
+    table = Table("extension", "version", "status", "enabled")
+    for row in report.rows:
+        table.add_row(
+            row.extension_name,
+            row.semantic_version,
+            row.status.value,
+            "yes" if row.enabled else "no",
+        )
+    console.print(table)
+    _print_findings(report)
+    if report.can_proceed:
+        console.print("[green]Verdict: the upgrade can proceed.[/green]")
+    else:
+        console.print(
+            "[red]Verdict: strict policy refuses the upgrade while blocking "
+            "extensions remain enabled.[/red]"
+        )
+
+
+def _meta_options(entries: Sequence[str], option: str) -> dict[str, str]:
+    """Turn repeated ``NAME=note`` option values into a mapping."""
+    return dict(_split_meta(entry, option) for entry in entries)
+
+
+def _preflight_enabled_set(all_disabled: bool, enabled: Sequence[str]) -> frozenset[str] | None:
+    """The operator's enabled lever as :func:`run_preflight` reads it.
+
+    An explicit ``--enabled`` set wins; ``--all-disabled`` is the empty set;
+    passing neither is the conservative default (every installed extension
+    treated as enabled).
+    """
+    if all_disabled:
+        return frozenset()
+    return frozenset(enabled) if enabled else None
+
+
+def _parse_preflight_inputs(
+    policy_name: str,
+    all_disabled: bool,
+    enabled: Sequence[str],
+    deprecated_capability: Sequence[str],
+    removed_capability: Sequence[str],
+) -> tuple[PreflightPolicy, dict[str, str], dict[str, str]]:
+    """Validate the CLI-only preflight inputs; exit non-zero on a bad one.
+
+    Typer hands the command raw repeatable options; the preflight takes
+    structured values. Parsing and contradiction checks live here so the
+    command body reads as the pipeline it is: validate → read → evaluate →
+    render → gate the exit.
+    """
+    if all_disabled and enabled:
+        console.print("[red]--all-disabled contradicts --enabled; pass one or the other.[/red]")
+        raise Exit(code=1)
+    try:
+        policy = PreflightPolicy.from_name(policy_name)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise Exit(code=1) from exc
+    return (
+        policy,
+        _meta_options(deprecated_capability, "deprecated-capability"),
+        _meta_options(removed_capability, "removed-capability"),
+    )
+
+
+def _render_preflight(report: PreflightReport, as_json: bool) -> None:
+    """Emit the canonical JSON or the operator report."""
+    if as_json:
+        # soft_wrap: the canonical JSON is one long token; rich would break it
+        # across lines and destroy byte-reproducibility for consumers.
+        # markup/highlight disabled: metadata is user-controlled, so sequences
+        # like "[red]...[/red]" in notes must pass through byte-for-byte.
+        console.print(report.canonical_json(), soft_wrap=True, markup=False, highlight=False)
+    else:
+        _print_preflight(report)
+
+
+@app.command("preflight")
+def extensions_preflight(
+    db_path: Annotated[Path, Argument(help="Path to the extension install SQLite database.")],
+    target_host: Annotated[
+        str, Argument(help="Target host release version to evaluate, e.g. 2.0.0.")
+    ],
+    contract_version: Annotated[
+        str,
+        Option(
+            "--contract-version",
+            help="Manifest-contract version the target host enforces (its public metadata).",
+        ),
+    ],
+    capability: Annotated[
+        list[str],
+        Option(
+            "--capability",
+            help="Capability name the target contract supports; repeatable. Omit to have "
+            "the preflight take no position on unknown capability names.",
+        ),
+    ] = [],  # noqa: B006 - typer collects repeats into a fresh list per invocation
+    deprecated_capability: Annotated[
+        list[str],
+        Option(
+            "--deprecated-capability",
+            metavar="NAME=REPLACEMENT",
+            help="Capability deprecated in the target, with its replacement; repeatable.",
+        ),
+    ] = [],  # noqa: B006
+    removed_capability: Annotated[
+        list[str],
+        Option(
+            "--removed-capability",
+            metavar="NAME=NOTE",
+            help="Capability removed in the target, with a note; repeatable.",
+        ),
+    ] = [],  # noqa: B006
+    policy_name: Annotated[
+        str,
+        Option(
+            "--policy",
+            help="permissive (report only) or strict (blockers refuse the upgrade).",
+        ),
+    ] = "permissive",
+    enabled: Annotated[
+        list[str],
+        Option(
+            "--enabled",
+            help="Extension the host currently has enabled; repeatable. Omit to treat "
+            "every installed extension as enabled (the conservative default).",
+        ),
+    ] = [],  # noqa: B006
+    all_disabled: Annotated[
+        bool,
+        Option(
+            "--all-disabled",
+            help="The host has every installed extension disabled. Without either "
+            "this flag or --enabled, every installed extension is treated as "
+            "enabled (the conservative default).",
+        ),
+    ] = False,
+    as_json: Annotated[
+        bool, Option("--json", help="Print the canonical machine-readable report.")
+    ] = False,
+) -> None:
+    """Evaluate installed extensions against a target host release.
+
+    Runs entirely on data: the install records in DB_PATH plus the target
+    release's public contract metadata given here. Nothing from the target
+    release is imported or activated, and nothing is written. Under
+    --policy strict the command exits non-zero while blocking extensions
+    remain enabled — that exit is the gate an upgrade flow must honor.
+    """
+    policy, deprecated_map, removed_map = _parse_preflight_inputs(
+        policy_name, all_disabled, enabled, deprecated_capability, removed_capability
+    )
+    try:
+        target = TargetHostContract(
+            host_version=target_host,
+            contract_version=contract_version,
+            capabilities=frozenset(capability),
+            deprecated=deprecated_map,
+            removed=removed_map,
+        )
+    except ManifestContractError as exc:
+        console.print(f"[red]Invalid target contract metadata: {exc}[/red]")
+        raise Exit(code=1) from exc
+    try:
+        records = asyncio.run(_read_only(db_path, lambda s: s.all_installs()))
+    except sqlite3.OperationalError as exc:
+        console.print(f"[red]Cannot open {db_path}: {exc}[/red]")
+        raise Exit(code=1) from exc
+    assert isinstance(records, list)
+    report = run_preflight(
+        records,
+        target,
+        policy=policy,
+        enabled=_preflight_enabled_set(all_disabled, enabled),
+    )
+    _render_preflight(report, as_json)
+    if not report.can_proceed:
+        raise Exit(code=1)

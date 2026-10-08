@@ -31,6 +31,8 @@ third-party extension looks from the outside.
 | [Manifest reference](manifest-reference.md) | Every `extension.json` field, the closed authority vocabulary, and the contract-versioning/deprecation rules. |
 | [Lifecycle](lifecycle.md) | What happens between discovery and teardown, and what an extension may do at each stage. |
 | [Capabilities](capabilities.md) | Worked examples for every capability, effect, and data scope — least authority by default. |
+| [Tool and Skill contracts](tool-skill-contracts.md) | How the host classifies `tool`/`skill` packages, who may call them, and the one governed path every call crosses (M9-E3). |
+| [Upgrade preflight](upgrade-preflight.md) | Evaluating installed extensions against a target host release before upgrading — compatible, deprecated, migration-required, or blocking. |
 
 The normative, machine-validatable manifest schema is the versioned extension
 SDK package itself (`maistro-ext-sdk`, M9-A1, #949); these guides explain how

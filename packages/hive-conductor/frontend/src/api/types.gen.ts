@@ -5336,11 +5336,6 @@ export interface components {
         /** CreateMissionBody */
         CreateMissionBody: {
             /**
-             * Assigned Agents
-             * @default []
-             */
-            assigned_agents: string[];
-            /**
              * Description
              * @default
              */
@@ -5974,6 +5969,8 @@ export interface components {
              * @default 0
              */
             progress: number;
+            /** Run Id */
+            run_id?: string | null;
             /** Started At */
             started_at?: string | null;
             /**

@@ -143,6 +143,7 @@ if TYPE_CHECKING:
     from maistro.events.invocations import InvocationStore
     from maistro.events.processing import HandlerCaller
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
+    from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
     from maistro.extensions.health import ExtensionHealthService, InMemoryExtensionHealthStore
     from maistro.extensions.service import ExtensionInstallService
     from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
@@ -495,6 +496,10 @@ class Container:
     # held extension flipping back to ready.
     extension_health_store: InMemoryExtensionHealthStore | SqliteExtensionHealthStore | None = None
     extension_health_service: ExtensionHealthService | None = None
+    # Private organizational extension catalog (#979). In-memory catalog per
+    # organization until a durable backend is configured.
+    catalog_store: InMemoryCatalogStore | None = None
+    catalog_service: CatalogService | None = None
 
     def __post_init__(self) -> None:
         if self.conduit is None:
@@ -918,7 +923,7 @@ class Container:
             # compensating write would be aborted by the same cancellation it
             # exists to clean up after — the `_close_chat_run` shield's reason,
             # one step earlier in the turn.
-            await asyncio.shield(self._cancel_incomplete_admission(run))
+            await asyncio.shield(self._cancel_incomplete_admission(run, admission_failed=True))
             self._release_chat_dispatch(run)
             raise
         except RunConcurrencyExceeded:
@@ -927,7 +932,7 @@ class Container:
             raise
         except Exception as exc:
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)
-            await self._cancel_incomplete_admission(run)
+            await self._cancel_incomplete_admission(run, admission_failed=True)
             self._release_chat_dispatch(run)
             raise ChatTurnRefused("chat turn could not be admitted as a Run") from exc
 
@@ -950,22 +955,16 @@ class Container:
             logger.warning("chat slot reclamation failed", exc_info=True)
             return 0
 
-    async def _cancel_incomplete_admission(self, run: Run | None) -> None:
-        """Compensate a chat Run whose admission never reached RUNNING (#338).
+    async def _cancel_incomplete_admission(
+        self, run: Run | None, *, admission_failed: bool = False
+    ) -> None:
+        """Compensate a failed admission without cancelling newly started work.
 
-        Admission persists CREATED, then QUEUED, then RUNNING. An exception
-        between any two of those writes used to strand the Run at the state it
-        had reached: the caller got `None`, so `_close_chat_run` had nothing to
-        settle, and no sweeper owns a QUEUED chat Run — durable state claiming
-        work is waiting to run that nothing will ever run.
-
-        CREATED and QUEUED both have a legal edge to CANCELLED, and CANCELLED
-        is the honest word: the turn was never dispatched, so nothing failed
-        (ADR-082426-f170's distinction). A Run past QUEUED reached RUNNING and
-        returned from admission, making it `_close_chat_run`'s to settle — not
-        this method's. Idempotent by the terminal guard; a concurrent settle
-        loses the race harmlessly because the compensating write is logged,
-        never re-raised — compensation must not replace the turn's answer.
+        An admission write may commit RUNNING and lose its response. The
+        admission caller knows it did not hand this Run to dispatch, and may
+        offer that state too. Other callers preserve the pre-RUNNING rule.
+        The store atomically rechecks the observed state and NodeRun absence;
+        a concurrent dispatch or lifecycle change defeats cancellation.
         """
         if run is None:
             return
@@ -973,14 +972,12 @@ class Container:
             current = await self.run_store.get_run(run.run_id)
             if current is None or current.status in TERMINAL_RUN_STATUSES:
                 return
-            if current.status not in (RunStatus.CREATED, RunStatus.QUEUED):
+            if current.status not in (RunStatus.CREATED, RunStatus.QUEUED) and not (
+                admission_failed and current.status is RunStatus.RUNNING
+            ):
                 return
-            await self.run_store.transition_run(
-                run.run_id,
-                RunStatus.CANCELLED,
-                error=ADMISSION_INCOMPLETE,
-            )
-            await self._sweep_chat_runs()
+            if await self.run_store.cancel_unstarted_chat_run(current, error=ADMISSION_INCOMPLETE):
+                await self._sweep_chat_runs()
         except Exception:
             logger.warning(
                 "stranded chat Run %s could not be compensated", run.run_id, exc_info=True
@@ -1472,12 +1469,10 @@ class Container:
     async def _compensate_if_stranded(self, run: Run, *, cutoff: datetime) -> bool:
         """Cancel `run` if it is a stranded chat admission; say whether it did.
 
-        Eligibility is `CHAT_SOURCE`, older than `cutoff`, and no NodeRun. The
-        source is re-checked here even though the listing query already filters
-        on it: the predicate narrows what the tick reads, and a store that
-        ignored it must still not get a foreign Run cancelled. The NodeRun
-        absence is read twice, the second immediately before the write, which
-        is the only window a turn starting between the two reads can close.
+        Eligibility is `CHAT_SOURCE`, older than `cutoff`, and no NodeRun.
+        The store compares the listed status/time and checks child absence in
+        one write transaction. A dispatch or newer lifecycle write wins even
+        when it lands after the last read in this process.
         """
         from maistro.runs.sources import ADMISSION_SOURCE, CHAT_SOURCE
 
@@ -1486,13 +1481,8 @@ class Container:
         if run.updated_at > cutoff:
             return False
         try:
-            if await self.run_store.list_node_runs(run.run_id):
-                return False
-            if await self.run_store.list_node_runs(run.run_id):
-                return False
-            await self.run_store.transition_run(
-                run.run_id,
-                RunStatus.CANCELLED,
+            return await self.run_store.cancel_unstarted_chat_run(
+                run,
                 # Never reached RUNNING: the same word the in-request
                 # compensation uses for an admission that did not finish.
                 error=(
@@ -1517,7 +1507,6 @@ class Container:
                 "stranded chat Run %s could not be compensated", run.run_id, exc_info=True
             )
             return False
-        return True
 
     async def execute_admitted_runs(self, *, limit: int = 100) -> int:
         """Tick the canonical consumer for admitted Runs (#251). Returns how many ran.
@@ -2099,6 +2088,21 @@ class Container:
                 self.extension_health_store or InMemoryExtensionHealthStore(),
             )
         return self.extension_health_service
+
+    def ensure_catalog_service(self) -> CatalogService:
+        """Return the private organizational extension catalog service (#979).
+
+        Lazily built over the process-lifetime in-memory store. The store is
+        cached back onto the container so callers that bypass the service see
+        the same snapshot the API serves.
+        """
+        from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
+
+        if self.catalog_service is None:
+            store = self.catalog_store or InMemoryCatalogStore()
+            self.catalog_store = store
+            self.catalog_service = CatalogService(store)
+        return self.catalog_service
 
 
 def _wire_schedule_admission(

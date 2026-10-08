@@ -49,6 +49,7 @@ from maistro.runs.lifecycle import (
     check_completion_is_earned,
     lease_is_expired,
     reclaim_attempt,
+    refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
     settle_open_node_run,
@@ -88,11 +89,13 @@ from maistro.runs.store import (
     RunNotFound,
     StaleExecutionFence,
     admit_in_state,
+    matches_chat_admission_snapshot,
     outcome_embeds_attempt,
     repaired_accepted_outcome,
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
+    validate_effect_claim_parent,
     validate_eval_score_spine,
 )
 from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
@@ -806,35 +809,19 @@ class PgRunStore:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
         return Run.model_validate(payload)
 
-    async def _require_locked_parent_scope(
-        self,
-        # PoolConnectionProxy at the one call site; `Any` like every other
-        # connection-taking helper in this store (#1194 repair).
-        conn: Any,
-        graph: Graph,
-        *,
-        parent_run_id: str | None,
-        parent_node_run_id: str | None,
-        allow_cross_project: bool,
-    ) -> None:
-        """Validate the optional parent chain inside the claim transaction."""
-        if parent_run_id is None:
-            return
-        parent_payload = await self._locked(conn, "canonical_runs", "run_id", parent_run_id)
-        parent = Run.model_validate(parent_payload)
-        validate_child_scope(
-            parent,
-            workspace_id=graph.workspace_id,
-            project_id=graph.project_id,
-            allow_cross_project=allow_cross_project,
+    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
+        # payload is JSONB (005), so the task admitter's provenance is a path
+        # expression. Cold-archived Runs (payload moved to the archive) are
+        # outside this search: they are hours past any retry window.
+        payload = await self._payload(
+            """
+            SELECT run_id, payload, archive_key FROM canonical_runs
+            WHERE payload->'provenance'->>'task_id' = $1
+            LIMIT 1
+            """,
+            task_id,
         )
-        if parent_node_run_id is None:
-            return
-        parent_node_run = NodeRun.model_validate(
-            await self._locked(conn, "canonical_node_runs", "node_run_id", parent_node_run_id)
-        )
-        if parent_node_run.run_id != parent_run_id:
-            raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
+        return Run.model_validate(payload) if payload is not None else None
 
     async def claim_run_by_effect(
         self,
@@ -854,8 +841,6 @@ class PgRunStore:
         if not effect_key:
             raise ValueError("effect_key must be non-empty")
         await self._validate_graph_scope(graph)
-        if parent_node_run_id is not None and parent_run_id is None:
-            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
         run = Run(
             workspace_id=graph.workspace_id,
             project_id=graph.project_id,
@@ -879,11 +864,29 @@ class PgRunStore:
                 return RunEffectClaim(
                     Run.model_validate(decode_evidence(decode_payload(existing_payload))), False
                 )
-            await self._require_locked_parent_scope(
-                conn,
-                graph,
+            parent = (
+                Run.model_validate(
+                    await self._locked(conn, "canonical_runs", "run_id", parent_run_id)
+                )
+                if parent_run_id is not None
+                else None
+            )
+            parent_node_run = (
+                NodeRun.model_validate(
+                    await self._locked(
+                        conn, "canonical_node_runs", "node_run_id", parent_node_run_id
+                    )
+                )
+                if parent is not None and parent_node_run_id is not None
+                else None
+            )
+            validate_effect_claim_parent(
+                parent,
+                parent_node_run,
                 parent_run_id=parent_run_id,
                 parent_node_run_id=parent_node_run_id,
+                workspace_id=graph.workspace_id,
+                project_id=graph.project_id,
                 allow_cross_project=allow_cross_project,
             )
             inserted = await conn.fetchrow(
@@ -1097,6 +1100,23 @@ class PgRunStore:
         oldest_raw = row["oldest"]
         oldest = datetime.fromisoformat(oldest_raw) if oldest_raw else None
         return int(row["open_runs"]), oldest
+
+    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
+        async with self._pool.acquire() as conn, conn.transaction():
+            current = Run.model_validate(
+                await self._locked(conn, "canonical_runs", "run_id", expected.run_id)
+            )
+            if not matches_chat_admission_snapshot(current, expected):
+                return False
+            # create_node_run locks this same parent before inserting: no
+            # physical dispatch can appear between this check and the write.
+            if await conn.fetchval(
+                "SELECT 1 FROM canonical_node_runs WHERE run_id = $1 LIMIT 1", expected.run_id
+            ):
+                return False
+            updated = transition_run(current, RunStatus.CANCELLED, error=error)
+            await self._write(conn, "canonical_runs", "run_id", expected.run_id, updated)
+            return True
 
     async def transition_run(
         self,
@@ -1358,6 +1378,40 @@ class PgRunStore:
         fencing_token: str | None = None,
     ) -> Attempt:
         async with self._pool.acquire() as conn, conn.transaction():
+            if target is AttemptStatus.COMPLETED:
+                # #1335: the executor's Run fence is check-then-act across two
+                # awaits, so the stale success of a provider that lost a cancel
+                # used to land COMPLETED under a terminal Run. This store-side
+                # guard re-reads the parent inside the same transaction that
+                # writes the Attempt, under a lock a concurrent `transition_run`
+                # also needs -- so the status it sees cannot move underneath
+                # it. The lock is taken parent-first (Run before Attempt, the
+                # order `transition_run` and `repair_attempt_result` use,
+                # #1888): Attempt-first would let a repair holding the Run row
+                # wait on this Attempt while this transaction waited on that
+                # Run. Only the COMPLETED path pays for the extra lock; the
+                # other targets stay legal under a terminal Run, because a
+                # run-level cancel and the reclaim path record CANCELLED (and
+                # siblings record true FAILURES) after the Run terminalized.
+                run_row = await conn.fetchrow(
+                    """SELECT r.status AS status
+                         FROM canonical_attempts a
+                         JOIN canonical_node_runs n ON n.node_run_id = a.node_run_id
+                         JOIN canonical_runs r ON r.run_id = n.run_id
+                        WHERE a.attempt_id = $1
+                        FOR SHARE OF r""",
+                    attempt_id,
+                )
+                if run_row is None:
+                    # One statement, not two: an attempt whose spine vanished
+                    # (delete_run under its own lock) and an attempt that never
+                    # existed both answer not-found here, so there is no
+                    # between-the-reads state to reason about -- and every
+                    # branch of the guard is reachable from a conformance test.
+                    # The failure names the target, not a parent it never had:
+                    # the same answer the stores give an unknown attempt.
+                    raise AttemptNotFound(attempt_id)
+                refuse_completion_under_terminal_run(RunStatus(run_row["status"]), attempt_id)
             attempt = Attempt.model_validate(
                 await self._locked(conn, "canonical_attempts", "attempt_id", attempt_id)
             )
