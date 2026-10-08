@@ -17,8 +17,9 @@ protocol, served over real httpx transport semantics):
    ``ExternalAgentRegistry``, projected (clamped, provenance retained,
    availability-unknown), made eligible by a reported probe, registered as a
    peer *from the projection's own endpoint*, dispatched under an authorized
-   ``agent_delegation`` Binding, and settled — with the remote Agent version
-   from the discovered card surviving into the canonical Attempt evidence.
+   ``agent_delegation`` Binding, and settled — with the peer's own status-reported
+   Agent version (independent of the discovery-side provenance) surviving into
+   the canonical Attempt evidence.
 2. **Authority stays attenuated across both halves.** The projected card
    carries only the authorized subset of the declared surface; a broadening
    refresh is refused without policy approval; a scope claim beyond the
@@ -160,8 +161,9 @@ class _ExternalResearchAgent:
     step per poll.
     """
 
-    def __init__(self, script: list[str]) -> None:
+    def __init__(self, script: list[str], *, version: str = "2.4.1") -> None:
         self.script = script
+        self.version = version
         self.creates = 0
         self._by_key: dict[str, str] = {}
         self._tasks: dict[str, dict[str, str]] = {}
@@ -200,7 +202,12 @@ class _ExternalResearchAgent:
         state = task["status"]
         if state in self.script and self.script.index(state) < len(self.script) - 1:
             task["status"] = self.script[self.script.index(state) + 1]
-        return httpx.Response(200, json={"task_id": task_id, "status": state})
+        # A real peer self-reports its own version on the status resource; the
+        # composition layer has no other wire source for it.
+        return httpx.Response(
+            200,
+            json={"task_id": task_id, "status": state, "agent_version": self.version},
+        )
 
 
 # --------------------------------------------------------------------------
@@ -284,12 +291,17 @@ def _inputs(**overrides: Any) -> dict[str, Any]:
     return values
 
 
-def _poll_status(agent: _ExternalResearchAgent, task_id: str) -> str:
+def _poll(agent: _ExternalResearchAgent, task_id: str) -> dict[str, Any]:
+    """Poll the peer's status resource (advancing its engine one step)."""
     transport = httpx.MockTransport(agent.handler)
     with httpx.Client(transport=transport) as client:
         response = client.get(f"{_PEER_BASE}/a2a/tasks/{task_id}")
     assert response.status_code == 200
-    return str(response.json()["status"])
+    return dict(response.json())
+
+
+def _poll_status(agent: _ExternalResearchAgent, task_id: str) -> str:
+    return _poll(agent, task_id)["status"]
 
 
 # --------------------------------------------------------------------------
@@ -356,10 +368,13 @@ async def test_a_discovered_external_agent_is_projected_eligible_and_invocable()
     assert progress.status == "paused", "progress re-parks; it never settles"
     assert progress.metadata[PROGRESS_HISTORY_KEY][0]["raw_state"] == "working"
 
-    # The engine completes; the terminal answer settles the same child, and
-    # the discovered card's remote version rides the settlement evidence.
+    # The engine completes; the terminal answer settles the same child. The
+    # answer's version is the peer's own status-report, not the discovery-side
+    # provenance: if composition stops carrying it across the boundary, this
+    # proof fails.
     with override_transport(httpx.MockTransport(agent.handler)):
-        assert _poll_status(agent, task_id) == "completed"
+        final = _poll(agent, task_id)
+        assert final["status"] == "completed"
         settled = await node.run(
             _inputs(),
             _ctx(
@@ -369,7 +384,7 @@ async def test_a_discovered_external_agent_is_projected_eligible_and_invocable()
                     "status": "completed",
                     "task_id": task_id,
                     "result": "X is documented",
-                    "remote_agent_version": projection.provenance.remote_version,
+                    "remote_agent_version": final["agent_version"],
                     "_pause": {"run_id": child_id, "metadata": dict(progress.metadata)},
                 },
             ),
@@ -388,7 +403,7 @@ async def test_a_discovered_external_agent_is_projected_eligible_and_invocable()
     assert len(terminal) == 1
     evidence = terminal[0].result
     assert evidence["remote_agent_version"] == "2.4.1", (
-        "the version discovered from the card survives into canonical evidence"
+        "the peer-reported version survives into canonical evidence"
     )
     assert evidence["a2a_peer_url"] == projection.descriptor.endpoint_url
     assert evidence["peer_name"] == projection.descriptor.agent_id
