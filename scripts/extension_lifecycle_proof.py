@@ -32,14 +32,18 @@ refusals) is therefore byte-reproducible. Wall-clock stamps that production
 stores record internally (the SQLite registry's ``installed_at``) are marked
 as such in the lineage and excluded from the deterministic core digest.
 
-Honesty boundary (stated, not hidden): rollback/disable/remove as durable
-lifecycle operations are #954's surface and do not exist at the proof's base
-commit; the proof pins every property they must preserve — append-only
-records, queryable history after deactivation, denial leaves the prior
-version active — and the lineage marks those stages accordingly. Canonical
-Goal/Run truth is likewise untouched by construction: the proof asserts the
-extension subsystem imports nothing from the canonical run/goal trees, so no
-extension status path exists that could override it.
+Honesty boundary (stated, not hidden): the post-install lifecycle surface
+(pin/upgrade/rollback/disable/remove) is #954's, and at the proof's base
+commit the durable durable operations did not exist; the proof pins every
+property they must preserve — append-only records, queryable history after
+deactivation, denial leaves the prior version active — and the lineage marks
+those stages accordingly. Since #954's semantics landed (superseded
+retirement, audited version displacement), this proof asserts the retired
+record's trail grows by exactly the audited retirement event rather than
+staying byte-frozen. Canonical Goal/Run truth is likewise untouched by
+construction: the proof asserts the extension subsystem imports nothing from
+the canonical run/goal trees, so no extension status path exists that could
+override it.
 
 Usage::
 
@@ -1047,12 +1051,21 @@ class LifecycleProof:
         )
         await self._load(upgraded_active)
         superseded_history = await self.store.transitions_for(first.install_id)
+        retirement = (
+            superseded_history[-1]
+            if superseded_history and superseded_history[-1].to_state is ExtensionState.SUPERSEDED
+            else None
+        )
         stage.check(
             "superseded-version-still-queryable",
-            len(superseded_history) == len(first_history)
-            and superseded_history[0].install_id == first.install_id,
+            len(superseded_history) == len(first_history) + 1
+            and superseded_history[0].install_id == first.install_id
+            and retirement is not None
+            and retirement.from_state is ExtensionState.ACTIVE,
             "the superseded 1.0.0 record keeps its full audited transition "
-            "trail — deactivation is not deletion",
+            "trail plus exactly one audited ACTIVE→SUPERSEDED retirement "
+            "event (#954) — deactivation is not deletion, and it is not "
+            "silent either",
         )
 
         broader = await self._inspect(NOTARY_2_0_0)
@@ -1307,11 +1320,12 @@ class LifecycleProof:
         stage.note = (
             "Activation-state restart durability (the B2 activation store) is "
             "in-memory by design at this base commit; the durable registry "
-            "layer (B1 + SQLite) is what restart proves here. Disable/remove/"
-            "rollback operations are #954's surface and are not reachable at "
-            "this base; the properties they must preserve — append-only "
-            "records, denial leaves the prior version active, history "
-            "queryable after deactivation — are pinned by the stages above."
+            "layer (B1 + SQLite) is what restart proves here. The #954 "
+            "post-install lifecycle (pin/upgrade/rollback/disable/remove) is "
+            "implemented on the service seam; this proof pins the properties "
+            "its durable siblings must preserve — append-only records, audited "
+            "version displacement, denial leaves the prior version active, "
+            "history queryable after deactivation."
         )
         return stage
 

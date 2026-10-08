@@ -3,7 +3,9 @@
 The routes are the operator surface of the inspect → authorize → install
 state machine. These tests drive the real service through the real router:
 the happy path, the denial path, scope containment, the fail-closed default
-loader, and the audit trail endpoint.
+loader, and the audit trail endpoint. The post-install lifecycle routes of
+#954 (pin/unpin, disable/resume, rollback, remove) are exercised on the same
+harness in ``TestPostInstallLifecycleHttp``.
 """
 
 from __future__ import annotations
@@ -91,6 +93,7 @@ class _Harness:
         *,
         org_id: str = "org-1",
         workspace_id: str = "ws-1",
+        payload: bytes = PAYLOAD,
         **manifest_kwargs: object,
     ) -> dict:
         return self.client.post(
@@ -98,13 +101,13 @@ class _Harness:
             json={
                 "org_id": org_id,
                 "workspace_id": workspace_id,
-                "manifest_text": _manifest_text(**manifest_kwargs),  # type: ignore[arg-type]
-                "payload_b64": _payload_b64(),
+                "manifest_text": _manifest_text(payload=payload, **manifest_kwargs),  # type: ignore[arg-type]
+                "payload_b64": base64.b64encode(payload).decode(),
                 "trust": {
                     "publisher_id": str(manifest_kwargs.get("publisher", "acme")),
                     "signature_present": True,
                     "signer_key_id": "key-1",
-                    "package_sha256": hashlib.sha256(PAYLOAD).hexdigest(),
+                    "package_sha256": hashlib.sha256(payload).hexdigest(),
                 },
             },
         )
@@ -620,6 +623,263 @@ class TestFailClosedDefaultLoader:
         assert active.status_code == 404
 
 
+OTHER_PAYLOAD = b"extension-payload-v2"
+
+
+def _activated(h: _Harness, *, version: str, permissions: tuple[str, ...], payload: bytes) -> dict:
+    """Drive one candidate through inspect → authorize → install over HTTP."""
+    inspected = h.inspect(version=version, permissions=permissions, payload=payload)
+    assert inspected.status_code == 201, inspected.text
+    record = inspected.json()
+    decided = h.authorize(record["install_id"])
+    assert decided.status_code == 200, decided.text
+    installed = h.install(record["install_id"], payload_b64=base64.b64encode(payload).decode())
+    assert installed.status_code == 200, installed.text
+    return installed.json()
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+class TestPostInstallLifecycleHttp:
+    """The #954 operator surface: pin, disable/resume, rollback, remove."""
+
+    def test_pin_blocks_a_new_version_until_explicitly_unpinned(self, harness) -> None:
+        h, workspaces, loader = harness
+        _own_workspace(workspaces, "operator-1", "ws-1")
+        _login(h.client.app, "operator-1")  # type: ignore[attr-defined]
+        active = _activated(h, version="1.4.0", permissions=("network.http",), payload=PAYLOAD)
+        calls_before = len(loader.calls)
+
+        pinned = h.client.post(
+            f"/extensions/installations/{active['install_id']}/pin",
+            json={"org_id": "org-1", "workspace_id": "ws-1", "reason": "freeze for the demo"},
+        )
+        assert pinned.status_code == 200, pinned.text
+        body = pinned.json()
+        assert body["pinned"] is True
+        assert body["pinned_by"] == "operator-1"
+        assert body["pinned_at"]
+
+        # A fully governed candidate for 1.5.0 exists, but the pin holds:
+        # activation is refused with 409 and the loader never ran for it.
+        inspected = h.inspect(version="1.5.0", permissions=("network.http",), payload=OTHER_PAYLOAD)
+        assert inspected.status_code == 201, inspected.text
+        upgraded = inspected.json()
+        decided = h.authorize(upgraded["install_id"])
+        assert decided.status_code == 200, decided.text
+        assert decided.json()["state"] == "authorized"
+        blocked = h.install(upgraded["install_id"], payload_b64=_payload_b64(OTHER_PAYLOAD))
+        assert blocked.status_code == 409, blocked.text
+        assert "pinned" in blocked.json()["detail"]
+        assert len(loader.calls) == calls_before
+        # The refusal happened before any transition: the candidate is
+        # still AUTHORIZED and can be installed once the pin is lifted.
+        assert decided.json()["state"] == "authorized"
+
+        # The pin and its lift are both on the same audited trail.
+        trail = h.client.get(
+            f"/extensions/installations/{active['install_id']}/transitions",
+            params={"org_id": "org-1", "workspace_id": "ws-1"},
+        )
+        assert trail.status_code == 200
+        reasons = [event["reason"] for event in trail.json()]
+        assert any(reason.startswith("pinned") for reason in reasons)
+
+        lifted = h.client.post(
+            f"/extensions/installations/{active['install_id']}/unpin",
+            json={"org_id": "org-1", "workspace_id": "ws-1", "reason": "demo over"},
+        )
+        assert lifted.status_code == 200
+        assert lifted.json()["pinned"] is False
+
+        now_active = h.install(upgraded["install_id"], payload_b64=_payload_b64(OTHER_PAYLOAD))
+        assert now_active.status_code == 200, now_active.text
+        assert now_active.json()["state"] == "active"
+
+    def test_disable_stops_new_use_immediately_and_resume_recrosses_the_loader(
+        self, harness
+    ) -> None:
+        h, workspaces, loader = harness
+        _own_workspace(workspaces, "operator-1", "ws-1")
+        _login(h.client.app, "operator-1")  # type: ignore[attr-defined]
+        active = _activated(h, version="1.4.0", permissions=("network.http",), payload=PAYLOAD)
+
+        disabled = h.client.post(
+            "/extensions/disable",
+            json={
+                "org_id": "org-1",
+                "workspace_id": "ws-1",
+                "extension_id": "acme.chart_tools",
+                "reason": "incident mitigation",
+            },
+        )
+        assert disabled.status_code == 200, disabled.text
+        assert disabled.json()["state"] == "disabled"
+
+        # The resolution seam answers nothing from this point on.
+        gone = h.client.get(
+            "/extensions/active",
+            params={
+                "org_id": "org-1",
+                "workspace_id": "ws-1",
+                "extension_id": "acme.chart_tools",
+            },
+        )
+        assert gone.status_code == 404
+
+        # …while the record itself — evidence, grant, snapshot — stays queryable.
+        still_there = h.client.get(
+            f"/extensions/installations/{active['install_id']}",
+            params={"org_id": "org-1", "workspace_id": "ws-1"},
+        )
+        assert still_there.status_code == 200
+        assert still_there.json()["state"] == "disabled"
+        assert still_there.json()["manifest"]["extension_id"] == "acme.chart_tools"
+
+        # Resume demands the bound artifact: wrong bytes are a 409 that
+        # records nothing, right bytes re-cross the loader seam.
+        calls_before = len(loader.calls)
+        wrong = h.client.post(
+            f"/extensions/installations/{active['install_id']}/resume",
+            json={
+                "org_id": "org-1",
+                "workspace_id": "ws-1",
+                "reason": "incident over",
+                "payload_b64": _payload_b64(OTHER_PAYLOAD),
+            },
+        )
+        assert wrong.status_code == 409
+        assert len(loader.calls) == calls_before
+
+        resumed = h.client.post(
+            f"/extensions/installations/{active['install_id']}/resume",
+            json={
+                "org_id": "org-1",
+                "workspace_id": "ws-1",
+                "reason": "incident over",
+                "payload_b64": _payload_b64(PAYLOAD),
+            },
+        )
+        assert resumed.status_code == 200, resumed.text
+        assert resumed.json()["state"] == "active"
+        assert loader.calls[-1] == (active["install_id"], PAYLOAD)
+
+    def test_rollback_restores_a_superseded_version_through_the_loader(self, harness) -> None:
+        h, workspaces, loader = harness
+        _own_workspace(workspaces, "operator-1", "ws-1")
+        _login(h.client.app, "operator-1")  # type: ignore[attr-defined]
+        first = _activated(h, version="1.4.0", permissions=("network.http",), payload=PAYLOAD)
+        second = _activated(
+            h,
+            version="1.5.0",
+            permissions=("network.http", "storage.workspace"),
+            payload=OTHER_PAYLOAD,
+        )
+
+        rolled = h.client.post(
+            "/extensions/rollback",
+            json={
+                "org_id": "org-1",
+                "workspace_id": "ws-1",
+                "extension_id": "acme.chart_tools",
+                "reason": "regression in 1.5.0",
+                "payload_b64": _payload_b64(PAYLOAD),
+                "to_install_id": first["install_id"],
+            },
+        )
+        assert rolled.status_code == 200, rolled.text
+        assert rolled.json()["state"] == "active"
+        assert rolled.json()["version"] == "1.4.0"
+        # The return crossed the loader seam with the bound bytes.
+        assert loader.calls[-1] == (first["install_id"], PAYLOAD)
+        # The displaced 1.5.0 was retired audited, not deleted.
+        second_trail = h.client.get(
+            f"/extensions/installations/{second['install_id']}/transitions",
+            params={"org_id": "org-1", "workspace_id": "ws-1"},
+        )
+        assert [event["to_state"] for event in second_trail.json()][-1] == "superseded"
+
+    def test_rollback_refuses_a_broader_grant_without_reauthorization(self, harness) -> None:
+        h, workspaces, _loader = harness
+        _own_workspace(workspaces, "operator-1", "ws-1")
+        _login(h.client.app, "operator-1")  # type: ignore[attr-defined]
+        wider = _activated(
+            h,
+            version="1.4.0",
+            permissions=("network.http", "storage.workspace"),
+            payload=PAYLOAD,
+        )
+        _activated(h, version="1.5.0", permissions=("network.http",), payload=OTHER_PAYLOAD)
+
+        refused = h.client.post(
+            "/extensions/rollback",
+            json={
+                "org_id": "org-1",
+                "workspace_id": "ws-1",
+                "extension_id": "acme.chart_tools",
+                "reason": "try to sneak storage back in",
+                "payload_b64": _payload_b64(PAYLOAD),
+                "to_install_id": wider["install_id"],
+            },
+        )
+        assert refused.status_code == 409
+        assert "re-authorization" in refused.json()["detail"]
+        still = h.client.get(
+            "/extensions/active",
+            params={
+                "org_id": "org-1",
+                "workspace_id": "ws-1",
+                "extension_id": "acme.chart_tools",
+            },
+        )
+        assert still.status_code == 200
+        assert still.json()["version"] == "1.5.0"
+
+    def test_remove_is_terminal_for_authority_but_preserves_evidence(self, harness) -> None:
+        h, workspaces, _loader = harness
+        _own_workspace(workspaces, "operator-1", "ws-1")
+        _login(h.client.app, "operator-1")  # type: ignore[attr-defined]
+        active = _activated(h, version="1.4.0", permissions=("network.http",), payload=PAYLOAD)
+
+        removed = h.client.post(
+            f"/extensions/installations/{active['install_id']}/remove",
+            json={"org_id": "org-1", "workspace_id": "ws-1", "reason": "offboarding"},
+        )
+        assert removed.status_code == 200, removed.text
+        assert removed.json()["state"] == "removed"
+
+        gone = h.client.get(
+            "/extensions/active",
+            params={
+                "org_id": "org-1",
+                "workspace_id": "ws-1",
+                "extension_id": "acme.chart_tools",
+            },
+        )
+        assert gone.status_code == 404
+
+        evidence = h.client.get(
+            f"/extensions/installations/{active['install_id']}",
+            params={"org_id": "org-1", "workspace_id": "ws-1"},
+        )
+        assert evidence.status_code == 200
+        assert evidence.json()["state"] == "removed"
+        assert evidence.json()["granted_permissions"] == ["network.http"]
+        trail = h.client.get(
+            f"/extensions/installations/{active['install_id']}/transitions",
+            params={"org_id": "org-1", "workspace_id": "ws-1"},
+        )
+        assert trail.status_code == 200
+        assert [event["to_state"] for event in trail.json()][-1] == "removed"
+
+        # Removal is terminal: presenting the same artifact again cannot
+        # resurrect the record through the install path.
+        resurrect = h.install(active["install_id"])
+        assert resurrect.status_code == 409
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
 class TestPublicSurfaceDeclaration:
     """Every @router handler in extensions.py must be declared in ``__all__``.
 
