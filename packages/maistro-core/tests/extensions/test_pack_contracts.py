@@ -691,6 +691,33 @@ class TestCompatibilityThroughM9Machinery:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    def test_dependency_resolution_is_independent_of_install_order(self) -> None:
+        # Several versions install side by side, but the evaluator resolves a
+        # dependency id against one version: the highest active one — the same
+        # default lookup everywhere else in the registry. Installing v1 after
+        # v2 must not make a ^2.0.0 dependent fail; insertion order is not
+        # resolution order.
+        for install_order in (("2.1.0", "1.0.0"), ("1.0.0", "2.1.0")):
+            registry = InstallablePackRegistry(platform_api_version="1.0.0")
+            for version in install_order:
+                registry.install(
+                    _pack_bytes(
+                        pack_id="vertex.product_lab",
+                        publisher="vertex",
+                        version=version,
+                    )
+                )
+            record = registry.install(
+                _pack_bytes(
+                    pack_id="acme.film_critique",
+                    publisher="acme",
+                    dependencies=[{"id": "vertex.product_lab", "range": "^2.0.0"}],
+                )
+            )
+            assert record.state is PackState.ACTIVE
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
     def test_dependency_on_a_plain_extension_is_satisfied(self) -> None:
         # Capability providers are extensions installed through the M9-B2
         # service; a pack names them exactly like any other dependency.
@@ -884,6 +911,20 @@ class TestManifestInspection:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    def test_manifest_version_must_be_a_literal_integer(self) -> None:
+        # Python's `True == 1` and `1.0 == 1`: an equality-only check accepts
+        # both as the supported version and the snapshot silently normalizes
+        # the malformed value. The envelope must refuse non-integers by type.
+        for forged in (True, 1.0):
+            document = json.loads(ACME_PACK)
+            document["manifest_version"] = forged
+            self._rejected(
+                json.dumps(document).encode(),
+                "manifest_version must be an integer",
+            )
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
     def test_wrong_subtype_is_rejected(self) -> None:
         document = json.loads(ACME_PACK)
         document["kind"] = "ui-pack"
@@ -907,6 +948,20 @@ class TestManifestInspection:
             _pack_bytes(pack_id="acme.film.critique", publisher="acme"),
             "pack_id must be publisher.name",
         )
+        self._rejected(
+            _pack_bytes(pack_id="pub-1.film-critique", publisher="pub-1"),
+            "pack_id name segment must be a slug",
+        )
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_hyphenated_publisher_slug_is_accepted(self) -> None:
+        # Publisher slugs follow the extension-manifest grammar, so a
+        # publisher like ``pub-1`` must be able to namespace its packs.
+        accepted = _pack_bytes(pack_id="pub-1.film_critique", publisher="pub-1")
+        manifest = inspect_pack_manifest(accepted)
+        assert manifest.pack_id == "pub-1.film_critique"
+        assert manifest.publisher == "pub-1"
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
@@ -1004,6 +1059,14 @@ class TestManifestInspection:
         self._rejected(
             with_graph({"nodes": [{"node_id": "a", "node_type": "t"}], "edges": []}),
             "missing graph payload keys",
+        )
+        self._rejected(
+            with_graph({"nodes": [{"node_type": "t"}], "edges": [], "name": "g"}),
+            "missing graph node keys",
+        )
+        self._rejected(
+            with_graph({"nodes": [{}], "edges": [], "name": "g"}),
+            "missing graph node keys: \\['node_id', 'node_type'\\]",
         )
         self._rejected(
             with_graph(
@@ -1108,11 +1171,79 @@ class TestManifestInspection:
         )
         self._rejected(
             with_rubric({"name": "r", "gate_pass_threshold": "high", "dimensions": dimensions}),
-            "gate_pass_threshold must be a number",
+            "gate_pass_threshold must be a finite number",
         )
         self._rejected(
             with_rubric({"name": "r", "gate_pass_threshold": 1.0, "dimensions": []}),
             "rubric dimensions must be a non-empty list",
+        )
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_non_finite_rubric_numbers_are_rejected(self) -> None:
+        # ``json.loads`` turns ``1e400``/``Infinity``/``NaN`` into non-finite
+        # floats that ``gt=0``-style Pydantic bounds do not all catch, so every
+        # pack-supplied scoring number is checked with ``math.isfinite``.
+        def with_dimension(dimension: dict[str, Any]) -> bytes:
+            rubric = _rubric_asset()["rubric"]
+            rubric["dimensions"] = [dimension]
+            return _pack_bytes(
+                pack_id="acme.film_critique",
+                publisher="acme",
+                assets=[
+                    {
+                        "asset_id": "r",
+                        "version": "1.0.0",
+                        "kind": "rubric",
+                        "rubric": rubric,
+                    }
+                ],
+            )
+
+        base = _rubric_asset()["rubric"]["dimensions"][0]
+        cases: list[tuple[dict[str, Any], str]] = [
+            (dict(base, weight=1e400), "rubric dimension weight must be a finite number"),
+            (
+                dict(base, weight=float("nan")),
+                "rubric dimension weight must be a finite number",
+            ),
+            (
+                dict(base, scale={"numeric": {"min_value": 0, "max_value": 1e400}}),
+                "numeric max_value must be a finite number",
+            ),
+            (
+                dict(base, scale={"pass_fail": {"pass_value": float("inf")}}),
+                "pass_fail pass_value must be a finite number",
+            ),
+        ]
+        for dimension, message in cases:
+            self._rejected(with_dimension(dimension), message)
+
+        rubric = _rubric_asset()["rubric"]
+        rubric["gate_pass_threshold"] = 1e400
+        self._rejected(
+            _pack_bytes(
+                pack_id="acme.film_critique",
+                publisher="acme",
+                assets=[{"asset_id": "r", "version": "1.0.0", "kind": "rubric", "rubric": rubric}],
+            ),
+            "rubric gate_pass_threshold must be a finite number",
+        )
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_evidence_required_must_be_a_json_boolean(self) -> None:
+        # bool() coerces any truthy junk — `bool("false")` is True — so a
+        # string must be refused rather than silently inverted or coerced.
+        rubric = _rubric_asset()["rubric"]
+        rubric["dimensions"][0]["evidence_required"] = "false"
+        self._rejected(
+            _pack_bytes(
+                pack_id="acme.film_critique",
+                publisher="acme",
+                assets=[{"asset_id": "r", "version": "1.0.0", "kind": "rubric", "rubric": rubric}],
+            ),
+            "rubric evidence_required must be a boolean",
         )
 
     @pytest.mark.contract("boundary")
@@ -1517,6 +1648,37 @@ class TestInstantiationRefusals:
                 goal_revision=GOAL_REVISION,
                 workspace_id=WORKSPACE_ID,
                 project_id="  ",
+                authored_by=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            )
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_instantiated_rubric_revalidates_caller_supplied_counts(self) -> None:
+        # model_copy(update=...) skips validation, so a caller-supplied
+        # revision/goal_revision of 0 must be refused by re-running the
+        # canonical model's own ge=1 constraints on the final object —
+        # never returned as a RubricSemantic the rest of the system would
+        # trust.
+        manifest = inspect_pack_manifest(ACME_PACK)
+        with pytest.raises(ValueError, match="violates the canonical model"):
+            instantiate_rubric_asset(
+                manifest,
+                "scene",
+                goal_id=GOAL_ID,
+                goal_revision=GOAL_REVISION,
+                workspace_id=WORKSPACE_ID,
+                project_id=PROJECT_ID,
+                authored_by=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+                revision=0,
+            )
+        with pytest.raises(ValueError, match="violates the canonical model"):
+            instantiate_rubric_asset(
+                manifest,
+                "scene",
+                goal_id=GOAL_ID,
+                goal_revision=0,
+                workspace_id=WORKSPACE_ID,
+                project_id=PROJECT_ID,
                 authored_by=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
             )
 

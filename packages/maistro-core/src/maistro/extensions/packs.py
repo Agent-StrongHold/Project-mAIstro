@@ -59,6 +59,7 @@ that will drive it is M9-F3 (#968).
 from __future__ import annotations
 
 import json
+import math
 import re
 import uuid
 from collections.abc import Mapping
@@ -148,7 +149,9 @@ _CAPABILITY_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
 #: extension/platform identities the compatibility machinery understands.
 _EXTENSION_ID_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
 
-#: Pack-id segments: slug pieces of ``publisher.name``.
+#: Pack-id name segment (the ``publisher.name`` tail). The publisher half
+#: reuses ``_PUBLISHER_RE`` so any publisher slug an extension manifest
+#: accepts (including hyphenated ids like ``pub-1``) can own packs.
 _PACK_SEGMENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -195,6 +198,13 @@ def _require_str(document: Mapping[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise _reject(f"{key} must be a non-empty string")
     return value
+
+
+def _require_finite(value: Any, what: str) -> float:
+    """Reject non-finite pack numbers (``1e400``/``Infinity``/``NaN`` in JSON)."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+        raise _reject(f"{what} must be a finite number")
+    return float(value)
 
 
 def _validate_semver(value: object, what: str) -> str:
@@ -317,6 +327,12 @@ def _parse_graph_nodes(raw_nodes: object) -> tuple[PackGraphNode, ...]:
     for item in raw_nodes:
         if not isinstance(item, dict) or set(item) - {"node_id", "node_type", "name"}:
             raise _reject("each graph node must have only node_id, node_type, name")
+        # The shape check above only refuses *unknown* keys; without this, a
+        # node missing node_id/node_type reaches _require_str's direct index
+        # and a raw KeyError escapes the typed PackManifestRejected boundary.
+        missing_node = [key for key in ("node_id", "node_type") if key not in item]
+        if missing_node:
+            raise _reject(f"missing graph node keys: {missing_node}")
         node_id = _require_str(item, "node_id")
         if _ASSET_ID_RE.match(node_id) is None:
             raise _reject(f"malformed graph node_id: {node_id!r}")
@@ -443,12 +459,18 @@ def _parse_scale(raw: object) -> RubricScale:
         block = raw["numeric"]
         if not isinstance(block, dict) or set(block) - {"min_value", "max_value"}:
             raise _reject("numeric scale must have only min_value and max_value")
-        numeric = NumericScale(**block)
+        numeric = NumericScale(
+            min_value=_require_finite(block.get("min_value", 0.0), "numeric min_value"),
+            max_value=_require_finite(block.get("max_value", 100.0), "numeric max_value"),
+        )
     if "pass_fail" in raw:
         block = raw["pass_fail"]
         if not isinstance(block, dict) or set(block) - {"pass_value", "fail_value"}:
             raise _reject("pass_fail scale must have only pass_value and fail_value")
-        pass_fail = PassFailScale(**block)
+        pass_fail = PassFailScale(
+            pass_value=_require_finite(block.get("pass_value", 1.0), "pass_fail pass_value"),
+            fail_value=_require_finite(block.get("fail_value", 0.0), "pass_fail fail_value"),
+        )
     return RubricScale(numeric=numeric, pass_fail=pass_fail)
 
 
@@ -465,13 +487,18 @@ def _parse_rubric_dimension(item: object) -> RubricDimension:
     method = item["method"]
     if not isinstance(method, str) or method not in {m.value for m in ScoringMethod}:
         raise _reject(f"unknown rubric scoring method: {method!r}")
+    # bool() coerces any truthy junk ("false" -> True), so require an actual
+    # JSON boolean instead of coercing a pack-declared scoring requirement.
+    evidence_required = item.get("evidence_required", False)
+    if not isinstance(evidence_required, bool):
+        raise _reject("rubric evidence_required must be a boolean")
     return RubricDimension(
         id=_require_str(item, "id"),
         name=_require_str(item, "name"),
-        weight=item["weight"],
+        weight=_require_finite(item["weight"], "rubric dimension weight"),
         scale=_parse_scale(item["scale"]),
         method=ScoringMethod(method),
-        evidence_required=bool(item.get("evidence_required", False)),
+        evidence_required=evidence_required,
     )
 
 
@@ -499,10 +526,8 @@ def _validate_rubric_head(payload: dict[str, Any]) -> tuple[str, float]:
     if missing:
         raise _reject(f"missing rubric payload keys: {missing}")
     name = _require_str(payload, "name")
-    threshold = payload["gate_pass_threshold"]
-    if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
-        raise _reject("rubric gate_pass_threshold must be a number")
-    return name, float(threshold)
+    threshold = _require_finite(payload["gate_pass_threshold"], "rubric gate_pass_threshold")
+    return name, threshold
 
 
 def _parse_rubric_dimensions(payload: dict[str, Any]) -> tuple[RubricDimension, ...]:
@@ -806,7 +831,7 @@ def _parse_pack_identity(
     """Validate and return (pack_id, name, publisher, version, api_version)."""
     pack_id = _require_str(document, "pack_id")
     segments = pack_id.split(".")
-    if len(segments) != 2 or any(_PACK_SEGMENT_RE.match(s) is None for s in segments):
+    if len(segments) != 2:
         raise _reject(f"pack_id must be publisher.name (two slug segments), got {pack_id!r}")
     name = _require_str(document, "name")
     publisher = _require_str(document, "publisher")
@@ -816,6 +841,8 @@ def _parse_pack_identity(
         raise _reject(
             f"pack_id {pack_id!r} must live under its own publisher namespace {publisher!r}"
         )
+    if _PACK_SEGMENT_RE.match(segments[1]) is None:
+        raise _reject(f"pack_id name segment must be a slug, got {pack_id!r}")
     version = _validate_semver(document["version"], "version")
     api_version = _validate_semver(document["api_version"], "api_version")
     return pack_id, name, publisher, version, api_version
@@ -863,8 +890,14 @@ def _inspect_document(raw: bytes, document: dict[str, Any]) -> PackManifest:
     missing = [key for key in required if key not in document]
     if missing:
         raise _reject(f"missing manifest keys: {missing}")
-    if document["manifest_version"] != SUPPORTED_PACK_MANIFEST_VERSION:
-        raise _reject(f"unsupported manifest_version: {document['manifest_version']!r}")
+    declared_version = document["manifest_version"]
+    # `True == 1` and `1.0 == 1` in Python: an equality check alone lets JSON
+    # `true`/`1.0` masquerade as the supported integer version, after which the
+    # snapshot below silently normalizes the malformed value. Require the type.
+    if not isinstance(declared_version, int) or isinstance(declared_version, bool):
+        raise _reject(f"manifest_version must be an integer, got {declared_version!r}")
+    if declared_version != SUPPORTED_PACK_MANIFEST_VERSION:
+        raise _reject(f"unsupported manifest_version: {declared_version!r}")
     if document["kind"] != PACK_MANIFEST_KIND:
         raise _reject(f"unsupported manifest kind: {document['kind']!r}")
 
@@ -1051,7 +1084,7 @@ def instantiate_rubric_asset(
     definition = asset.rubric
 
     rubric = _probe_rubric(definition, pack_id=manifest.pack_id)
-    return rubric.model_copy(
+    instantiated = rubric.model_copy(
         update={
             "rubric_id": _canonical_id(rubric_id, "rubric_id"),
             "revision": revision,
@@ -1066,6 +1099,13 @@ def instantiate_rubric_asset(
             ),
         }
     )
+    # model_copy(update=...) skips validation: caller-supplied identity and
+    # scope values must face the canonical model's own constraints (revision
+    # and goal_revision are ge=1) before this function returns one.
+    try:
+        return RubricSemantic.model_validate(instantiated.model_dump())
+    except ValidationError as exc:
+        raise ValueError(f"instantiated rubric violates the canonical model: {exc}") from exc
 
 
 # --------------------------------------------------------------------------
@@ -1282,11 +1322,26 @@ class InstallablePackRegistry:
     # -- internals ----------------------------------------------------------
 
     def _active_versions(self) -> dict[str, str]:
-        """Every extension/pack id active here, for dependency resolution."""
+        """Every extension/pack id active here, for dependency resolution.
+
+        Several versions of one pack can be active side by side, but the
+        compatibility evaluator resolves each dependency id against a single
+        version — so it must get the highest active version, the same answer
+        ``_require_record`` and the asset lookup give by default. Insertion
+        order is not resolution order: whichever version happened to be
+        installed last must not make a ``^2.0.0`` dependent fail while an
+        active compatible version sits in the registry.
+        """
         versions = dict(self._active_extensions)
+        highest: dict[str, tuple[tuple[int, int, int], str]] = {}
         for (pack_id, _version), record in self._records.items():
-            if record.state is PackState.ACTIVE:
-                versions[pack_id] = record.manifest.version
+            if record.state is not PackState.ACTIVE:
+                continue
+            key = _semver_key(record.manifest.version)
+            if pack_id not in highest or key > highest[pack_id][0]:
+                highest[pack_id] = (key, record.manifest.version)
+        for pack_id, (_key, version) in highest.items():
+            versions[pack_id] = version
         return versions
 
     def _require_record(
