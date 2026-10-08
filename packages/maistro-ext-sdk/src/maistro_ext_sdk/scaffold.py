@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from maistro_ext_sdk.contract import EXTENSION_CONTRACT_VERSION, parse_contract_version
-from maistro_ext_sdk.manifest import EXTENSION_FAMILIES
+from maistro_ext_sdk.manifest import _SEMVER_RE, EXTENSION_FAMILIES
 from maistro_ext_sdk.validation import validate_extension_dir
 
 __all__ = [
@@ -63,8 +63,6 @@ SDK_PACKAGE_PIN = ">=0.9"
 #: contract enforces (``publisher.name``), applied at generation time so an
 #: author learns about a bad name before any file is written.
 _SLUG_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
-
-_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
 
 # Free-text fields (title, description) are written into single-line
 # contexts — the README's title line and pyproject.toml's one-line
@@ -220,10 +218,14 @@ def _validate_slug(kind: str, value: str) -> str:
 
 
 def _validate_version(version: str) -> str:
+    # Strict SemVer is the manifest contract's own pattern (imported above
+    # rather than restated): a looser scaffold-local copy accepted ``01.0.0``
+    # and let the rejection surface only as a post-write validation error
+    # over a partial tree.
     if not _SEMVER_RE.match(version):
         raise ScaffoldError(
-            f"version {version!r} must be MAJOR.MINOR.PATCH (optionally with a "
-            f"pre-release/build suffix), e.g. 0.1.0"
+            f"version {version!r} must be strict MAJOR.MINOR.PATCH (no leading "
+            "zeros; optionally with a pre-release/build suffix), e.g. 0.1.0"
         )
     return version
 

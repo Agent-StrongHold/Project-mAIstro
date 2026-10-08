@@ -191,6 +191,21 @@ class TestInputValidation:
                 name="widget", publisher="acme", version="1.0", out_dir=tmp_path / "o"
             )
 
+    def test_leading_zero_version_rejected_before_any_write(self, tmp_path: Path) -> None:
+        """Strict SemVer at generation time: a version the manifest validator
+        would reject (leading zero) must not create the target tree and fail
+        only afterwards with an uncaught post-write error."""
+        target = tmp_path / "out"
+        with pytest.raises(ScaffoldError, match="version"):
+            scaffold_extension(name="widget", publisher="acme", out_dir=target, version="01.0.0")
+        assert not target.exists()
+
+    def test_leading_zero_prerelease_rejected_before_any_write(self, tmp_path: Path) -> None:
+        target = tmp_path / "out"
+        with pytest.raises(ScaffoldError, match="version"):
+            scaffold_extension(name="widget", publisher="acme", out_dir=target, version="1.0.0-01")
+        assert not target.exists()
+
     def test_unknown_family_rejected_with_the_closed_vocabulary(self, tmp_path: Path) -> None:
         with pytest.raises(ScaffoldError, match="closed"):
             scaffold_extension(

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-ext-sdk/tests: +26
+  packages/maistro-ext-sdk/tests: +28
   packages/maistro-ext-harness/tests: +56
 ---
 # 945 — extension developer tooling: scaffold, certification (epic M9-H #945)
@@ -13,7 +13,7 @@ and truthful certification reports** (M9-H3, #975) in
 extend their package's existing, registered suite, so this note carries two
 deltas against the pre-change baselines (SDK 118, harness 138).
 
-## packages/maistro-ext-sdk/tests: +26 (`test_scaffold.py`)
+## packages/maistro-ext-sdk/tests: +28 (`test_scaffold.py`)
 
 - **every family scaffolds a validatable project** (parametrized over the
   five closed families): the generated manifest passes
@@ -44,6 +44,15 @@ deltas against the pre-change baselines (SDK 118, harness 138).
   fail against the pre-repair implementation (scaffold succeeded over the
   newline case; the backslash case raised `TOMLDecodeError` only when a
   build tool parsed the project);
+- **strict SemVer at generation time (+2, same repair round, Codex P2 at
+  scaffold.py:66)**: the scaffold's loose `_SEMVER_RE` accepted `01.0.0`
+  and `1.0.0-01`, so the tree was created and the rejection surfaced only
+  as an uncaught post-write `ExtensionManifestError` over a partial tree;
+  the scaffold now imports the manifest contract's own strict pattern (no
+  leading zeros in numeric identifiers) and both versions are rejected
+  pre-write with no target directory. Both tests fail against the
+  pre-repair implementation (the wrong exception, after the files
+  existed);
 - **CLI `new`**: exit 0 with the summary JSON, exit 1 on a duplicate
   target with `SCAFFOLD-REJECTED` naming the conflict, and the generated
   project validates through the existing `validate` command;
