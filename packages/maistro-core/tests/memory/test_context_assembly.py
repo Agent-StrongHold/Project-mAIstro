@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
+import aiosqlite
 import pytest
 
+from maistro.agents.context_builder import ContextBuilder
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
 from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier, Outcome
+from maistro.memory.working.manager import WorkingMemoryManager
+from maistro.persistence.sqlite_episodic import SqliteEpisodicStore
 from maistro.projects.store import InMemoryProjectStore
+from maistro.protocols.memory import EpisodicStore
+from maistro.types.agent import AgentIdentity
 
 
 def _mem(
@@ -73,6 +81,143 @@ class TestLayer1:
         assert "some content" in text
 
 
+@pytest.fixture(params=["memory", "sqlite", "memory-hot", "sqlite-hot"])
+async def two_project_policy(
+    request: pytest.FixtureRequest,
+) -> AsyncIterator[DefaultContextAssemblyPolicy]:
+    """One agent id with an AGENT-scope memory in each of Projects A and B.
+
+    Exercise both stores directly and through the real working projection,
+    hydrated from the same authoritative store, without mocked retrieval.
+    """
+    conn: aiosqlite.Connection | None = None
+    store: EpisodicStore
+    if request.param.startswith("sqlite"):
+        conn = await aiosqlite.connect(":memory:")
+        sqlite_store = SqliteEpisodicStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        await sqlite_store.ensure_schema()
+        store = sqlite_store
+    else:
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    for project, text in (("A", "alpha widget secret"), ("B", "beta widget plan")):
+        memory = _mem(MemoryTier.OPINION, 0.5, memory_id=f"m-{project}", project_id=project)
+        memory.content = text
+        await store.store(memory)
+    try:
+        yield DefaultContextAssemblyPolicy(
+            episodic_store=store,
+            outcome_store=InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+            project_store=InMemoryProjectStore(),
+            working_memory=(
+                WorkingMemoryManager(workspace_id="ws-1", episodic_store=store)
+                if request.param.endswith("-hot")
+                else None
+            ),
+        )
+    finally:
+        if conn is not None:
+            await conn.close()
+
+
+class TestLayer1IsProjectScoped:
+    """An agent id reused across Projects must not recall the other Project's memory (#1047)."""
+
+    @pytest.mark.parametrize("query", ["", "widget"])
+    async def test_assemble_recalls_only_the_current_projects_memory(
+        self, two_project_policy: DefaultContextAssemblyPolicy, query: str
+    ) -> None:
+        text = await two_project_policy.assemble(
+            project_id="B",
+            run_id="r1",
+            agent_id="agent-1",
+            session_id="s1",
+            budget_tokens=10_000,
+            query=query,
+        )
+        assert "beta widget plan" in text
+        assert "alpha widget secret" not in text
+
+    @pytest.mark.parametrize("query", ["", "widget"])
+    async def test_blank_project_keeps_the_agent_wide_recall(
+        self, two_project_policy: DefaultContextAssemblyPolicy, query: str
+    ) -> None:
+        text = await two_project_policy.layer1(
+            run_id="r1", agent_id="agent-1", session_id="s1", query=query
+        )
+        assert "alpha widget secret" in text
+        assert "beta widget plan" in text
+
+    @pytest.mark.parametrize("query", ["", "widget"])
+    async def test_unattributed_memory_is_not_guessed_into_a_project(
+        self, policy: DefaultContextAssemblyPolicy, query: str
+    ) -> None:
+        await policy.episodic_store.store(
+            _mem(MemoryTier.OPINION, 0.5, memory_id="m-none", project_id="")
+        )
+        text = await policy.layer1(
+            run_id="r1", agent_id="agent-1", session_id="s1", query=query, project_id="B"
+        )
+        assert text == ""
+
+    @pytest.mark.parametrize("query", ["", "widget"])
+    async def test_unattributed_global_is_not_promoted_into_a_project(
+        self, two_project_policy: DefaultContextAssemblyPolicy, query: str
+    ) -> None:
+        memory = _mem(MemoryTier.WISDOM, 0.95, memory_id="global", project_id="")
+        memory.scope = MemoryScope.GLOBAL
+        memory.org_id = ""
+        memory.content = "unattributed widget secret"
+        await two_project_policy.episodic_store.store(memory)
+        text = await two_project_policy.layer1("r1", "agent-1", "s1", query, project_id="B")
+        assert "beta widget plan" in text
+        assert "unattributed widget secret" not in text
+        # The established empty-project contract still permits unbound globals.
+        legacy = await two_project_policy.layer1("r1", "agent-1", "s1", query)
+        assert "unattributed widget secret" in legacy
+
+    @pytest.mark.parametrize("project_id", [" ", " B ", "missing"])
+    @pytest.mark.parametrize("query", ["", "widget"])
+    async def test_nonempty_project_is_an_exact_filter(
+        self, two_project_policy: DefaultContextAssemblyPolicy, project_id: str, query: str
+    ) -> None:
+        # In particular, whitespace must never normalize to an unscoped read.
+        text = await two_project_policy.layer1("r1", "agent-1", "s1", query, project_id=project_id)
+        assert text == ""
+
+    @pytest.mark.parametrize("query", ["", "widget"])
+    async def test_project_filter_does_not_replace_agent_filter(
+        self, two_project_policy: DefaultContextAssemblyPolicy, query: str
+    ) -> None:
+        text = await two_project_policy.layer1("r1", "another-agent", "s1", query, project_id="B")
+        assert text == ""
+
+    async def test_context_builder_preserves_layer1_project_scope(
+        self, two_project_policy: DefaultContextAssemblyPolicy
+    ) -> None:
+        # Lowercase fixtures intentionally isolate Layer 1 from graph entities.
+        # This pins prompt plumbing, not the separate Layer 4 visibility policy.
+        class EmptyPrompts:
+            async def get(self, name: str) -> str:
+                return ""
+
+        messages, _ = await ContextBuilder().build(
+            [{"role": "user", "content": "widget"}],
+            AgentIdentity(name="agent-1", model="m", soul_prompt_name="none"),
+            prompt_manager=EmptyPrompts(),
+            context_assembly_policy=two_project_policy,
+            agent_id="agent-1",
+            org_id="org-1",
+            project_id="B",
+        )
+        assert messages[0]["role"] == "system"
+        content = str(messages[0]["content"])
+        assert "<maistro:memory>" in content
+        assert "beta widget plan" in content
+        assert "alpha widget secret" not in content
+        if two_project_policy.working_memory is not None:
+            assert two_project_policy.working_memory.projection().stats.records == 2
+
+
 class TestLayer2:
     async def test_returns_empty_placeholder(self, policy: DefaultContextAssemblyPolicy) -> None:
         text = await policy.layer2(session_id="s1", budget_tokens=1000)
@@ -125,7 +270,7 @@ class TestAssemble:
         project = await policy.project_store.create(
             owner_user_id="u1", name="Proj", profile_markdown="CONSTRAINTS"
         )
-        await policy.episodic_store.store(_mem(MemoryTier.WISDOM, 0.95))
+        await policy.episodic_store.store(_mem(MemoryTier.WISDOM, 0.95, project_id=project.id))
         text = await policy.assemble(
             project_id=project.id,
             run_id="r1",
