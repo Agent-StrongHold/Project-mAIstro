@@ -18,6 +18,7 @@ from maistro.graph.nodes.agent_delegate_remote import (
     AgentDelegateRemoteNode,
     DelegationNotConfiguredError,
 )
+from maistro.graph.nodes.base import replay_effect_key
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
@@ -203,7 +204,11 @@ async def test_cross_instance_first_reach_pauses_with_task_id() -> None:
         "hub",
         "planner",
         [{"role": "user", "content": "x"}],
-        idempotency_key=result.metadata["replay_effect_key"],
+        idempotency_key=replay_effect_key(
+            fixture["ctx"],
+            node.kind,
+            node.input_schema.model_validate(fixture["inputs"]).model_dump(mode="json"),
+        ),
         context=fixture["peers"].delegate.await_args.kwargs["context"],
     )
 

@@ -169,7 +169,9 @@ jobs:
             // that cap cannot be told apart from a complete one, so it is
             // recorded as truncated and the evaluator treats scope as
             // ambiguous: skipped specialized checks then stay pending
-            // instead of being excused on partial evidence.
+            // instead of being excused on partial evidence. The cap is
+            // measured on the API response (files.length), not on the
+            // rename-expanded path list.
             const truncated = files.length >= 3000;
             // A rename's old path reaches this list only through
             // `previous_filename` (#1349); the merge-group measurement diffs
