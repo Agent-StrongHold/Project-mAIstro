@@ -110,7 +110,12 @@ function isFiniteNonNegative(value: unknown): value is number {
  * dropped wholesale rather than escaped.
  */
 export function normalizeApiPath(rawPath: string): string {
-  if (typeof rawPath !== "string") return UNKNOWN_ROUTE;
+  // The shared client accepts only same-origin path references. Reject an
+  // absolute or scheme-relative URL before splitting: otherwise its hostname
+  // would look like an ordinary first path segment and leak as a route.
+  if (typeof rawPath !== "string" || !rawPath.startsWith("/") || rawPath.startsWith("//")) {
+    return UNKNOWN_ROUTE;
+  }
   const path = stripQueryAndFragment(rawPath);
   const segments = path.split("/").filter((s) => s.length > 0);
   if (segments.length === 0) return UNKNOWN_ROUTE;

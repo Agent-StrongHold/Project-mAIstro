@@ -66,9 +66,12 @@ at init rather than the mutable location at flush time.
 
 The frontend side of #1420 (reporter, redaction rules, live collection) is
 tested by `tests/e2e/rum-telemetry.spec.ts`, which is Playwright, not
-pytest-collected — this suite's collected count is unaffected by it. No other
-suite moved: no existing tests were edited, and the only production-code
-edits adjacent to tests are the new route/store/settings fields above.
+pytest-collected — this suite's collected count is unaffected by it. Its
+same-node redaction regression now also rejects absolute and scheme-relative
+URLs, preventing an arbitrary hostname from becoming an emitted route
+segment. No other suite moved: the same-node redaction assertions are the
+only existing test edit, and the only production-code edits adjacent to tests
+are the new route/store/settings fields above.
 
 ## Client-side off-switches (repair round, 2026-10-07)
 

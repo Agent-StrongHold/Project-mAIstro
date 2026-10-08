@@ -82,8 +82,10 @@ share the ring.
 
 ### Route templates
 
-`normalizeApiPath` (client) keeps the first two path segments and collapses
-everything deeper to `*`: `/v1/tasks/<id>/messages` → `/v1/tasks/*`. Query
+`normalizeApiPath` (client) accepts only a same-origin, single-slash path,
+keeps its first two path segments and collapses everything deeper to `*`:
+`/v1/tasks/<id>/messages` → `/v1/tasks/*`. Absolute and scheme-relative URLs
+are `unknown` rather than allowing a hostname to become a route segment. Query
 strings and fragments are stripped before any inspection. `normalizePageRoute`
 does the same for the SPA location after stripping the Vite base path — every
 Hive route is one segment, so `/dashboard` stays `/dashboard` and anything

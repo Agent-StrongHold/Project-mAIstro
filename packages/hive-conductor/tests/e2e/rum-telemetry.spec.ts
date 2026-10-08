@@ -51,6 +51,12 @@ test.describe("RUM schema redaction rules", () => {
     // Query strings and fragments never survive — whatever they carry.
     expect(normalizeApiPath(`/v1/agents/x?api_token=${SECRET_TOKEN}`)).toBe("/v1/agents/*");
     expect(normalizeApiPath("/v1/agents/x#fragment-carries-state")).toBe("/v1/agents/*");
+    // An absolute or scheme-relative URL is not a same-origin path. Its
+    // hostname must never be mistaken for a route segment and emitted.
+    expect(normalizeApiPath(`https://customer-42.example.invalid/private?token=${SECRET_TOKEN}`)).toBe(
+      "unknown",
+    );
+    expect(normalizeApiPath("//customer-42.example.invalid/private")).toBe("unknown");
     // A path made of nothing usable is "unknown", not a leak.
     expect(normalizeApiPath("///??x")).toBe("unknown");
   });
