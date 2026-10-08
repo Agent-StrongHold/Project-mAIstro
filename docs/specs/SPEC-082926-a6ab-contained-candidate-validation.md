@@ -164,8 +164,12 @@ production path" — so the proof is executable, not prose:
   a Scorecard produced (the #496 refusal gone), host tree untouched.
 - The supported image must carry the fitness toolchain — the same list
   `Dockerfile.rsi-runner` installs for the in-container loop (pytest,
-  coverage, ruff, mypy, bandit, radon, interrogate, vulture, pylint). An
-  image lacking a tool leaves that gate unenforced or its weight
-  renormalised by design (a missing tool is never a false pass), and the
-  end-to-end test names that requirement in its skip reason instead of
-  weakening its assertions.
+  coverage, ruff, mypy, bandit, radon, interrogate, vulture, pylint). Since
+  #304 landed, a tool missing from the image is a blocking ``not_run`` gate
+  naming its cause — in BOTH isolation modes, so containment cannot silently
+  narrow the evidence ("a missing analyzer blocks promotion rather than
+  narrowing the evidence"); the non-required quality measures instead drop
+  from the composite by renormalised weights, and an image lacking one of
+  those is never a false pass either. The end-to-end test names the
+  toolchain requirement in its skip reason instead of weakening its
+  assertions.
