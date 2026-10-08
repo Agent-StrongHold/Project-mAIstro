@@ -1,32 +1,49 @@
 """Digest/signing helpers for certification (M9-H3, #975).
 
 The certification signature is an **Ed25519 signature over a canonical,
-version-tagged payload** that names the extension identity and the two
-digests that bind the report to bytes:
+version-tagged payload covering the report's complete evidence** —
+identity, artifact digests, executed checks, conformance results, and the
+decision (`canonical_evidence_payload`). Two payloads are recorded:
 
+- the **evidence payload** (what the signature actually authenticates):
+    maistro-extension-certification-evidence:v1
+    <the report's full content minus the signature block, canonical JSON>
+
+  so a signature authenticates the verdict as much as the bytes: flipping
+  ``certified``, clearing a decline reason, or whitewashing a failed check
+  changes the signed content and the signature stops verifying;
+
+- the **identity payload** (what a registry checks first, because it
+  parallels the canonical install payload the product-side installer
+  verifies — `maistro.extensions.verify`, M9-B1; the same identity triple,
+  the same digest algorithm, a version tag that makes replay of one
+  format as the other impossible):
     maistro-extension-certification:v1
     <extension id>
     <extension version>
     <package sha256>
     <manifest sha256>
 
-The shape deliberately parallels the canonical install payload the
-product-side installer verifies (`maistro.extensions.verify`, M9-B1) — the
-same identity triple, the same digest algorithm, a version tag that makes
-replay of one format as the other impossible — so a registry can later
-ingest a certification as *evidence* without this package becoming a
-dependency of the product, and never as *authorization*: the report itself
-says the consuming lifecycle must still run its own policy.
+A registry can therefore later ingest a certification as *evidence*
+without this package becoming a dependency of the product, and never as
+*authorization*: the report itself says the consuming lifecycle must
+still run its own policy.
 
 `cryptography` is an optional dependency (the ``signing`` extra): the
 harness's default runtime stays standard-library only, and a signing
-request without the extra fails **closed** with an actionable error, never
-with a downgrade to "unsigned but claims signed".
+request without the extra fails **closed** with an actionable error,
+never with a downgrade to "unsigned but claims signed". The same
+exception on the verification path is *not* a verification failure —
+`verify_payload` re-raises `SigningUnavailable` so callers can say
+"install the signing extra to check this signature" instead of the
+misleading "signature does not verify".
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
+from collections.abc import Mapping
 from typing import Any
 
 __all__ = [
@@ -34,6 +51,7 @@ __all__ = [
     "SIGNING_EXTRA",
     "SigningUnavailable",
     "canonical_certification_payload",
+    "canonical_evidence_payload",
     "generate_signing_key_hex",
     "public_key_hex_from_seed",
     "sign_payload",
@@ -46,6 +64,10 @@ DIGEST_ALGORITHM = "sha256"
 SIGNING_EXTRA = "signing"
 
 _CERTIFICATION_PAYLOAD_TAG = "maistro-extension-certification:v1"
+
+#: The tag of the report-content payload a certification signature actually
+#: authenticates: identity, digests, checks, conformance evidence, decision.
+_CERTIFICATION_EVIDENCE_TAG = "maistro-extension-certification-evidence:v1"
 
 
 class SigningUnavailable(RuntimeError):
@@ -73,11 +95,15 @@ def canonical_certification_payload(
     package_sha256: str,
     manifest_sha256: str,
 ) -> bytes:
-    """The exact bytes a certification signature covers.
+    """The installer-parallel identity payload: extension id, version, and
+    the two digests that bind the report to bytes.
 
     Version-tagged and newline-delimited so fields cannot run together and
     a signature over one payload shape can never be presented as a
-    signature over another.
+    signature over another. The Ed25519 signature itself covers the larger
+    `canonical_evidence_payload` (which includes these fields' source
+    records); this payload is recorded alongside it because a registry
+    ingesting a certification checks this exact identity binding first.
     """
     return "\n".join(
         (
@@ -88,6 +114,36 @@ def canonical_certification_payload(
             manifest_sha256,
         )
     ).encode("utf-8")
+
+
+def canonical_evidence_payload(report: Mapping[str, Any]) -> bytes:
+    """The exact bytes a certification signature authenticates: the whole
+    report — identity, artifact digests, executed checks, conformance
+    evidence, environment, and the decision — minus the report's own
+    ``signature`` block.
+
+    Deterministic by construction (sorted keys, fixed separators, UTF-8),
+    so the same report content yields the same bytes at signing time and
+    at every later verification, across processes and hosts: a consumer
+    re-derives these bytes from the report it holds, and the Ed25519
+    signature either verifies over exactly that content or it does not.
+    Any edit after signing — a flipped ``certified`` verdict, a cleared
+    decline reason, a whitewashed check — changes the bytes and breaks
+    the signature.
+
+    Raises ``TypeError``/``ValueError`` when the content is not JSON
+    canonicalizable (callers treat that as “nothing was signed” or “the
+    report cannot be authenticated”, never as a crash).
+    """
+    evidence = {key: value for key, value in report.items() if key != "signature"}
+    document = json.dumps(
+        evidence,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return f"{_CERTIFICATION_EVIDENCE_TAG}\n{document}".encode()
 
 
 def generate_signing_key_hex() -> str:
@@ -138,12 +194,19 @@ def verify_payload(payload: bytes, signature_hex: str, public_key_hex: str) -> b
     """Verify a payload signature against a public key hex.
 
     Returns ``False`` — never raises — for malformed or non-verifying
-    material: a verification failure is an answer, not a crash.
+    material: a verification failure is an answer, not a crash. The one
+    exception is :class:`SigningUnavailable`: an absent verification
+    backend is *not* a verification failure, and folding it into ``False``
+    would tell the user a valid signature “does not verify” when what
+    actually happened is the harness lacks the ``cryptography`` package
+    to check it. Callers surface that as its own actionable outcome.
     """
     try:
         _, Ed25519PublicKey = _require_cryptography()
         public_key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_key_hex))
         public_key.verify(bytes.fromhex(signature_hex), payload)
+    except SigningUnavailable:
+        raise
     except Exception:
         return False
     return True

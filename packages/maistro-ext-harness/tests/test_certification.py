@@ -27,7 +27,9 @@ What these tests pin, as executed behavior:
 
 from __future__ import annotations
 
+import hashlib
 import json
+import struct
 import subprocess
 import sys
 import zipfile
@@ -72,8 +74,21 @@ def _pkg(root: Path) -> Path:
     return root / "src" / TOP
 
 
-def _write_pyproject(root: Path, *, name: str = DIST_NAME, version: str = VERSION) -> None:
+def _write_pyproject(
+    root: Path,
+    *,
+    name: str = DIST_NAME,
+    version: str = VERSION,
+    dependencies: tuple[str, ...] = (),
+) -> None:
     """Give a fabricated extension the packaging metadata certify checks."""
+    dep_line = (
+        "dependencies = []"
+        if not dependencies
+        else "dependencies = ["
+        + ", ".join(f'"{requirement}"' for requirement in dependencies)
+        + "]"
+    )
     (root / "pyproject.toml").write_text(
         "\n".join(
             [
@@ -85,7 +100,7 @@ def _write_pyproject(root: Path, *, name: str = DIST_NAME, version: str = VERSIO
                 f'name = "{name}"',
                 f'version = "{version}"',
                 'description = "fabricated for the certification suite"',
-                "dependencies = []",
+                dep_line,
                 "",
                 "[tool.hatch.build.targets.wheel.force-include]",
                 f'"extension.json" = "{TOP}/extension.json"',
@@ -181,6 +196,31 @@ def _certifiable(
 
 def _request(root: Path, wheel: Path, **kwargs: object) -> CertificationRequest:
     return CertificationRequest(subject=root, artifact=wheel, **kwargs)  # type: ignore[arg-type]
+
+
+def _mark_member_encrypted(whl: Path, member: str) -> None:
+    """Flip one stored member's encryption flag bit (local + central headers).
+
+    zipfile refuses to open a member whose general-purpose bit 0 is set —
+    ``RuntimeError: File ... is encrypted`` — without any real password,
+    which is exactly the unreadable-member shape certification must turn
+    into a declined ``artifact/readable`` check instead of a traceback.
+    """
+    data = bytearray(whl.read_bytes())
+    target = member.encode("utf-8")
+    # (signature, flag offset, name-length offset, name offset)
+    for signature, flag_at, length_at, name_at in (
+        (b"PK\x03\x04", 6, 26, 30),
+        (b"PK\x01\x02", 8, 28, 46),
+    ):
+        index = 0
+        while (index := data.find(signature, index)) >= 0:
+            name_length = struct.unpack_from("<H", data, index + length_at)[0]
+            if bytes(data[index + name_at : index + name_at + name_length]) == target:
+                flags = struct.unpack_from("<H", data, index + flag_at)[0]
+                struct.pack_into("<H", data, index + flag_at, flags | 0x0001)
+            index += 4
+    whl.write_bytes(bytes(data))
 
 
 class TestHappyPath:
@@ -470,6 +510,125 @@ class TestDeclines:
         assert report.conformance_reason is not None
         assert any("did not execute" in reason for reason in report.decline_reasons)
 
+    def test_a_declared_aliased_dependency_passes_without_installation(
+        self,
+        make_extension: Callable[..., Path],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Codex P2: for dependencies whose distribution and import names
+        differ (``PyYAML``/``yaml``, ``Pillow``/``PIL``), acceptance used to
+        depend on the certifier's *installed* metadata — the same source
+        passed or failed depending on the certifying environment's
+        site-packages. With no installed metadata at all, a declared
+        distribution must still accept its well-known import alias."""
+        import importlib.metadata
+
+        monkeypatch.setattr(importlib.metadata, "packages_distributions", lambda: {})
+        root = make_extension()
+        _write_pyproject(root, dependencies=("PyYAML>=6", "Pillow>=10"))
+        (_pkg(root) / "uses_deps.py").write_text(
+            "import yaml\nfrom PIL import Image\n", encoding="utf-8"
+        )
+        manifest = json.loads((root / "extension.json").read_text(encoding="utf-8"))
+        wheel = _make_wheel(tmp_path, manifest, source_root=root)
+        report = certify(_request(root, wheel))
+        assert report.certified, report.decline_reasons
+
+    def test_an_undeclared_aliased_import_still_declines(
+        self,
+        make_extension: Callable[..., Path],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The alias map must not over-accept: ``import yaml`` with nothing
+        declared is still an undeclared dependency, whatever the
+        certifier's environment has installed."""
+        import importlib.metadata
+
+        monkeypatch.setattr(importlib.metadata, "packages_distributions", lambda: {})
+        root = make_extension()
+        _write_pyproject(root)
+        (_pkg(root) / "uses_deps.py").write_text("import yaml\n", encoding="utf-8")
+        manifest = json.loads((root / "extension.json").read_text(encoding="utf-8"))
+        wheel = _make_wheel(tmp_path, manifest, source_root=root)
+        report = certify(_request(root, wheel))
+        assert not report.certified
+        assert any("no-undeclared-dependencies" in reason for reason in report.decline_reasons), (
+            report.decline_reasons
+        )
+
+    def test_a_namespace_package_entrypoint_is_extension_owned(
+        self, make_extension: Callable[..., Path], tmp_path: Path
+    ) -> None:
+        """Codex P2: the SDK's manifest contract and the harness loader both
+        accept PEP 420 namespace-package parents, but ownership discovery
+        only admitted directories carrying ``__init__.py`` — a valid
+        namespace layout certified nowhere. It is the extension's own
+        package now, without an initializer."""
+        root = make_extension()
+        (_pkg(root) / "__init__.py").unlink()  # acme_widget becomes a namespace package
+        _write_pyproject(root)
+        manifest = json.loads((root / "extension.json").read_text(encoding="utf-8"))
+        wheel = _make_wheel(tmp_path, manifest, source_root=root)
+        report = certify(_request(root, wheel))
+        assert report.certified, report.decline_reasons
+
+    def test_a_product_private_namespace_directory_is_not_owned(
+        self,
+        make_extension: Callable[..., Path],
+        tmp_path: Path,
+        valid_manifest: dict,
+    ) -> None:
+        """The namespace allowance must not launder a reserved root: a
+        directory named ``maistro_server`` (no initializer) is a
+        product-private root wearing no ``__init__.py``, not an owned
+        package — an entrypoint under it still declines."""
+        root = make_extension(
+            manifest={
+                **valid_manifest,
+                "entrypoint": {"module": "maistro_server.plugin", "object": "PLUGIN"},
+            }
+        )
+        sneaky = root / "src" / "maistro_server"
+        sneaky.mkdir(parents=True, exist_ok=True)
+        (sneaky / "plugin.py").write_text(
+            'PLUGIN: dict[str, object] = {"kind": "tool", "name": "acme.widget", '
+            '"version": "1.0.0", "capabilities": [], "handler": "spin"}\n\n\n'
+            "def spin() -> str:\n    return 'spin-ok'\n\n\n"
+            'HANDLERS: dict[str, object] = {"spin": spin}\n',
+            encoding="utf-8",
+        )
+        _write_pyproject(root)
+        manifest = json.loads((root / "extension.json").read_text(encoding="utf-8"))
+        wheel = _make_wheel(tmp_path, manifest, source_root=root)
+        report = certify(_request(root, wheel))
+        assert not report.certified
+        assert any(
+            "entrypoint-inside-own-package" in reason for reason in report.decline_reasons
+        ), report.decline_reasons
+
+    def test_local_environment_directories_are_not_scanned(
+        self, make_extension: Callable[..., Path], tmp_path: Path
+    ) -> None:
+        """Codex P2: a project-local ``.venv`` or generated ``build/`` tree
+        is the developer's toolchain, not shipped sources — recursive
+        scanning analyzed every installed dependency's imports and declined
+        an otherwise unchanged wheel."""
+        root, wheel = _certifiable(make_extension, tmp_path)
+        venv_dep = root / ".venv" / "lib" / "site-packages" / "some_dep" / "__init__.py"
+        venv_dep.parent.mkdir(parents=True)
+        venv_dep.write_text("import maistro_server\nimport requests\n", encoding="utf-8")
+        stale_build = root / "build" / "lib" / TOP / "stale.py"
+        stale_build.parent.mkdir(parents=True)
+        stale_build.write_text("import maistro_server\n", encoding="utf-8")
+        report = certify(_request(root, wheel))
+        assert report.certified, report.decline_reasons
+        sources = next(
+            check for check in report.checks if check.check_id == "security/sources-parse"
+        )
+        assert "not scanned" in sources.detail
+
 
 class TestArtifactChecks:
     def test_a_wheel_without_the_manifest_declines(
@@ -632,6 +791,41 @@ class TestArtifactChecks:
         assert info.filename == wheel.name
         assert info.size_bytes == wheel.stat().st_size
         assert any(check.check_id == "artifact/digest-recorded" for check in checks)
+
+    def test_an_encrypted_member_declines_instead_of_crashing(
+        self, make_extension: Callable[..., Path], tmp_path: Path
+    ) -> None:
+        """Codex P2, live at head eb10bb7c: an encrypted ZIP member made
+        ``certify`` abort with a ``RuntimeError`` traceback because
+        ``ZipFile.testzip`` signals encrypted members outside the caught
+        exception set. An unreadable member is an ``artifact/readable``
+        failure — a declined, truthful report, never a crash."""
+        root, wheel = _certifiable(make_extension, tmp_path)
+        _mark_member_encrypted(wheel, f"{TOP}/plugin.py")
+        report = certify(_request(root, wheel))  # must not raise
+        assert not report.certified
+        assert any(
+            "artifact/readable" in reason and "encrypted" in reason
+            for reason in report.decline_reasons
+        ), report.decline_reasons
+
+    def test_wheel_metadata_name_uses_pep503_normalization(
+        self, make_extension: Callable[..., Path], tmp_path: Path
+    ) -> None:
+        """Codex P2: distribution names compare under PEP 503 — a wheel
+        whose METADATA says ``Name: Acme.Widget`` for a source named
+        ``acme-widget`` is the same distribution, not an identity
+        mismatch."""
+        root = make_extension()
+        _write_pyproject(root)
+        manifest = json.loads((root / "extension.json").read_text(encoding="utf-8"))
+        wheel = _make_wheel(tmp_path, manifest, source_root=root, metadata_name="Acme.Widget")
+        report = certify(_request(root, wheel))
+        assert report.certified, report.decline_reasons
+        assert any(
+            check.check_id == "artifact/metadata-identity" and check.status is CheckStatus.PASSED
+            for check in report.checks
+        )
 
 
 class TestBackendWaiverProfiles:
@@ -968,6 +1162,150 @@ class TestSigning:
         assert not result.ok
         assert any("does not verify" in failure for failure in result.failures)
 
+    def test_the_signed_verdict_is_authenticated(
+        self,
+        make_extension: Callable[..., Path],
+        tmp_path: Path,
+        keypair: tuple[str, str],
+    ) -> None:
+        """The Codex P1, live at head eb10bb7c: a signed DECLINED report
+        (a forbidden-import decline) flipped to ``certified=True``, its
+        reasons cleared, its failed checks whitewashed — with the signature
+        block byte-identical — verified ``ok=True`` against the pinned
+        publisher key, because the signature covered only identity and
+        digests. The signature now covers the report's complete evidence,
+        so every one of those edits must fail verification."""
+        private_hex, public_hex = keypair
+        root, wheel = _certifiable(make_extension, tmp_path)
+        (_pkg(root) / "sneaky.py").write_text("import maistro_server.routes\n", encoding="utf-8")
+        report = certify(_request(root, wheel, signing_key_hex=private_hex))
+        assert not report.certified  # a genuinely declined, genuinely signed report
+        out = tmp_path / "declined.json"
+        report.write_json(out)
+        original = json.loads(out.read_text(encoding="utf-8"))
+
+        def flip_verdict(document: dict) -> None:
+            document["decision"]["certified"] = True
+
+        def clear_reasons(document: dict) -> None:
+            flip_verdict(document)
+            document["decision"]["decline_reasons"] = []
+
+        def whitewash_checks(document: dict) -> None:
+            for check in document["checks"]:
+                if check["status"] == "failed":
+                    check["status"] = "passed"
+
+        def inject_claim(document: dict) -> None:
+            document["decision"]["claims"].append("forged: nothing executed this")
+
+        def forge_conformance(document: dict) -> None:
+            document["conformance"]["executed"] = False
+            document["conformance"]["reason"] = "forged"
+
+        for tamper in (
+            flip_verdict,
+            clear_reasons,
+            whitewash_checks,
+            inject_claim,
+            forge_conformance,
+        ):
+            document = json.loads(out.read_text(encoding="utf-8"))
+            tamper(document)
+            assert document["signature"] == original["signature"], tamper.__name__
+            tampered = tmp_path / "tampered.json"
+            tampered.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+            result = verify_certification(tampered, wheel, publisher_key_hex=public_hex)
+            assert not result.ok, tamper.__name__
+            assert any(
+                "report content changed since signing" in failure for failure in result.failures
+            ), (tamper.__name__, result.failures)
+
+    def test_a_forged_evidence_digest_does_not_authenticate_a_tampered_report(
+        self,
+        make_extension: Callable[..., Path],
+        tmp_path: Path,
+        keypair: tuple[str, str],
+    ) -> None:
+        """The recorded evidence digest is not secret: an attacker who edits
+        the verdict can recompute it over the tampered content. The Ed25519
+        signature over the changed bytes is what refuses them."""
+        private_hex, public_hex = keypair
+        root, wheel = _certifiable(make_extension, tmp_path)
+        report = certify(_request(root, wheel, signing_key_hex=private_hex))
+        assert report.certified
+        out = tmp_path / "signed.json"
+        report.write_json(out)
+        document = json.loads(out.read_text(encoding="utf-8"))
+        document["decision"]["certified"] = False
+        document["decision"]["decline_reasons"] = ["forged decline"]
+        # imported lazily so the other new tests can demonstrate their own
+        # failures against a pre-evidence-signing implementation
+        from maistro_ext_harness.signing import canonical_evidence_payload
+
+        document["signature"]["evidence_sha256"] = hashlib.sha256(
+            canonical_evidence_payload(document)
+        ).hexdigest()
+        tampered = tmp_path / "tampered.json"
+        tampered.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        result = verify_certification(tampered, wheel, publisher_key_hex=public_hex)
+        assert not result.ok
+        assert any("does not verify" in failure for failure in result.failures), result.failures
+
+    def test_a_signature_without_an_evidence_digest_is_rejected(
+        self,
+        make_extension: Callable[..., Path],
+        tmp_path: Path,
+        keypair: tuple[str, str],
+    ) -> None:
+        """A signature stripped of its evidence digest (and every
+        pre-evidence signature from an older harness) authenticates nothing
+        about the verdict and is refused by name."""
+        private_hex, public_hex = keypair
+        root, wheel = _certifiable(make_extension, tmp_path)
+        report = certify(_request(root, wheel, signing_key_hex=private_hex))
+        out = tmp_path / "signed.json"
+        report.write_json(out)
+        document = json.loads(out.read_text(encoding="utf-8"))
+        del document["signature"]["evidence_sha256"]
+        stripped = tmp_path / "stripped.json"
+        stripped.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        result = verify_certification(stripped, wheel, publisher_key_hex=public_hex)
+        assert not result.ok
+        assert any("no evidence digest" in failure for failure in result.failures), result.failures
+
+    def test_verification_without_the_signing_backend_names_the_fix(
+        self,
+        make_extension: Callable[..., Path],
+        tmp_path: Path,
+        keypair: tuple[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Codex P2: a default harness install has no ``cryptography``
+        package; that is an unavailable backend — not a "signature does not
+        verify" answer for a signature nobody could check."""
+        private_hex, public_hex = keypair
+        root, wheel = _certifiable(make_extension, tmp_path)
+        report = certify(_request(root, wheel, signing_key_hex=private_hex))
+        out = tmp_path / "signed.json"
+        report.write_json(out)
+
+        from maistro_ext_harness import signing
+
+        def unavailable() -> tuple[type, type]:
+            raise signing.SigningUnavailable(
+                "signing requires the 'cryptography' package; install it with: "
+                "pip install 'maistro-ext-harness[signing]'"
+            )
+
+        monkeypatch.setattr(signing, "_require_cryptography", unavailable)
+        result = verify_certification(out, wheel, publisher_key_hex=public_hex)
+        assert not result.ok
+        assert any(
+            "could not be checked" in failure and "[signing]" in failure
+            for failure in result.failures
+        ), result.failures
+
 
 class TestPolicySync:
     def test_embedded_roots_equal_the_repository_namespace_policy(self) -> None:
@@ -1084,3 +1422,23 @@ class TestCli:
         proc = self._cli("verify-certification", "--report", str(report), "--artifact", str(wheel))
         assert proc.returncode == 1
         assert "unsupported certification schema" in proc.stderr
+
+    def test_certify_missing_signing_key_file_exits_2(
+        self, make_extension: Callable[..., Path], tmp_path: Path
+    ) -> None:
+        """Codex P2: an unreadable --signing-key-file used to escape the CLI
+        as a traceback; it is a bad argument — exit 2 with an actionable
+        message and no report."""
+        root, wheel = _certifiable(make_extension, tmp_path)
+        proc = self._cli(
+            "certify",
+            "--path",
+            str(root),
+            "--artifact",
+            str(wheel),
+            "--signing-key-file",
+            str(tmp_path / "missing.hex"),
+        )
+        assert proc.returncode == 2
+        assert "cannot read --signing-key-file" in proc.stderr
+        assert "Traceback" not in proc.stderr

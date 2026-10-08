@@ -41,8 +41,10 @@ Two views of the same package, both checked before anything is claimed:
 from __future__ import annotations
 
 import hashlib
+import re
 import tomllib
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -439,8 +441,14 @@ def _source_parity_check(
     )
 
 
+def _pep503(name: str) -> str:
+    """PEP 503 normalized distribution name: case-insensitive, runs of
+    ``-``, ``_``, and ``.`` equivalent (``Acme.Widget`` -> ``acme-widget``)."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
 def _read_archive(artifact: Path, top: str) -> _Archive:
-    """Read the artifact once; a bad zip or unreadable file is the error."""
+    """Read the artifact once; a bad zip or unreadable member is the error."""
     try:
         with zipfile.ZipFile(artifact) as archive:
             names = tuple(archive.namelist())
@@ -460,7 +468,18 @@ def _read_archive(artifact: Path, top: str) -> _Archive:
                             key, _, value = line.partition(": ")
                             metadata.setdefault(key, value)
                     break
-    except (zipfile.BadZipFile, OSError, UnicodeDecodeError) as exc:
+    except (
+        zipfile.BadZipFile,
+        OSError,
+        UnicodeDecodeError,
+        # zipfile signals an encrypted member ("File ... is encrypted,
+        # password required") as RuntimeError, and a corrupted compressed
+        # stream surfaces as zlib.error through read(): both are unreadable
+        # archive content — a declined artifact/readable check, never a
+        # traceback out of certify (PR #2089 review, P2).
+        RuntimeError,
+        zlib.error,
+    ) as exc:
         return _Archive(
             names=(), manifest_text=None, manifest_member=None, metadata={}, error=str(exc)
         )
@@ -585,7 +604,11 @@ def _metadata_check(
     ok = (
         project_name is not None
         and name is not None
-        and name.replace("_", "-") == project_name.replace("_", "-")
+        # Distribution names are case-insensitive and treat runs of ``.``,
+        # ``_``, and ``-`` as equivalent (PEP 503): a backend that emits
+        # ``Acme.Widget`` for a source named ``acme-widget`` is not an
+        # identity mismatch (PR #2089 review, P2).
+        and _pep503(name) == _pep503(project_name)
         and source_manifest is not None
         and version == source_manifest.version
     )

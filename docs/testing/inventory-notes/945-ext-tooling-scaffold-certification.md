@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-ext-sdk/tests: +28
-  packages/maistro-ext-harness/tests: +56
+  packages/maistro-ext-harness/tests: +68
 ---
 # 945 — extension developer tooling: scaffold, certification (epic M9-H #945)
 
@@ -114,6 +114,44 @@ deltas against the pre-change baselines (SDK 118, harness 138).
   verification), and `test_an_unsupported_schema_version_fails_verification`
   (the verifier now accepts only its exact certification schema, not any
   `maistro-ext-harness/certification@` prefix).
+- **repair round 6 (+12, all in `test_certification.py`):** the review
+  findings still live at head `eb10bb7c`, each demonstrated both ways
+  (9 fail against the pre-change implementation, the 3 control tests pass
+  on both, all 12 pass against the repair):
+  `test_the_signed_verdict_is_authenticated` (the Codex P1, live-repro'd:
+  a signed DECLINED report flipped to `certified=True`, reasons cleared,
+  checks whitewashed — signature block byte-identical — verified `ok=True`
+  against the pinned publisher key; the signature now covers the report's
+  complete evidence, and five parametrized tamper shapes — flipped
+  verdict, cleared reasons, whitewashed checks, injected claim, forged
+  conformance record — each fail verification),
+  `test_a_forged_evidence_digest_does_not_authenticate_a_tampered_report`
+  (the evidence digest is not secret; the Ed25519 signature over the
+  changed bytes refuses a recomputed digest),
+  `test_a_signature_without_an_evidence_digest_is_rejected` (stripped /
+  pre-evidence signatures authenticate nothing and are refused by name),
+  `test_verification_without_the_signing_backend_names_the_fix` (a
+  missing `cryptography` backend is an actionable
+  `maistro-ext-harness[signing]` outcome, not a bogus "does not
+  verify"), `test_an_encrypted_member_declines_instead_of_crashing` (an
+  encrypted ZIP member aborted `certify` with a `RuntimeError`
+  traceback; it is now an `artifact/readable` decline — the fixture flips
+  the member's encryption flag bit in both zip headers),
+  `test_wheel_metadata_name_uses_pep503_normalization`
+  (`Name: Acme.Widget` vs source `acme-widget` is the same distribution
+  under PEP 503), `test_a_declared_aliased_dependency_passes_without_installation`
+  and its control `test_an_undeclared_aliased_import_still_declines`
+  (PyYAML/`yaml`-style aliasing resolved from a well-known map instead
+  of the certifier's installed metadata, with
+  `packages_distributions` patched empty),
+  `test_a_namespace_package_entrypoint_is_extension_owned` and its
+  control `test_a_product_private_namespace_directory_is_not_owned` (PEP
+  420 namespace layouts the SDK contract admits are owned; reserved
+  roots are not laundered by dropping `__init__.py`),
+  `test_local_environment_directories_are_not_scanned` (`.venv` and
+  `build/` content is the developer's toolchain, not shipped sources),
+  and `test_certify_missing_signing_key_file_exits_2` (an unreadable
+  `--signing-key-file` is a bad argument — exit 2, no traceback).
 
 The physical acceptance — scaffold each family, build its wheel, install
 it with the SDK + harness wheels into a fresh venv, run the sample tests,

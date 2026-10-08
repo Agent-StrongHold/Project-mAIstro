@@ -194,7 +194,14 @@ def _read_signing_key(args: argparse.Namespace) -> str | None:
 def _certify(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     profile = CertificationProfile(args.profile)
-    key = _read_signing_key(args)
+    try:
+        key = _read_signing_key(args)
+    except (OSError, UnicodeDecodeError) as exc:
+        # An unreadable --signing-key-file is a bad argument (exit 2), not
+        # a traceback and not a silent unsigned certification (PR #2089
+        # review, P2).
+        print(f"error: cannot read --signing-key-file: {exc}", file=sys.stderr)
+        return 2
     backends = BackendRegistry(waivers=frozenset(args.allow_missing_backend))
     report = certify(
         CertificationRequest(

@@ -41,6 +41,7 @@ certification is actionable before any install is attempted.
 from __future__ import annotations
 
 import ast
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -49,10 +50,12 @@ from pathlib import Path
 from maistro_ext_harness.checks import CheckRecord, CheckStatus
 
 __all__ = [
+    "NON_SOURCE_DIRECTORIES",
     "PRODUCT_PRIVATE_ROOTS",
     "PUBLIC_SDK_ROOTS",
     "REPO_RELATIVE_ROOTS",
     "TEST_ONLY_ROOTS",
+    "WELL_KNOWN_IMPORT_ALIASES",
     "security_checks",
 ]
 
@@ -87,11 +90,59 @@ REPO_RELATIVE_ROOTS: frozenset[str] = frozenset({"packages", "extensions"})
 #: test tooling is not a shipped dependency.
 TEST_ONLY_ROOTS: frozenset[str] = frozenset({"pytest"})
 
+#: Import roots whose distribution names differ from their import names,
+#: keyed by the root as it appears in an ``import`` statement. Resolved
+#: without consulting the certifier's *installed* metadata: an extension
+#: that declares ``PyYAML`` and imports ``yaml`` must certify identically
+#: whether or not the certifying environment happens to have PyYAML
+#: installed (``importlib.metadata`` only maps what is installed, so the
+#: previous environment-dependent lookup made the same source pass or
+#: fail depending on the certifier's site-packages — PR #2089 review, P2).
+WELL_KNOWN_IMPORT_ALIASES: dict[str, str] = {
+    "PIL": "Pillow",
+    "yaml": "PyYAML",
+    "attr": "attrs",
+    "bs4": "beautifulsoup4",
+    "Crypto": "pycryptodome",
+    "cv2": "opencv-python",
+    "dateutil": "python-dateutil",
+    "dotenv": "python-dotenv",
+    "git": "GitPython",
+    "jwt": "PyJWT",
+    "serial": "pyserial",
+    "sklearn": "scikit-learn",
+}
+
+#: Local environments, caches, and build output — never shipped sources.
+#: Scanning them would test the developer's toolchain instead of the
+#: extension: an installed dependency's own imports (``.venv``), a stale
+#: generated copy (``build``), or caches would decline an otherwise
+#: unchanged wheel, while the emitted records claim to cover *shipped*
+#: imports (PR #2089 review, P2).
+NON_SOURCE_DIRECTORIES: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".mypy_cache",
+        ".nox",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "node_modules",
+        "venv",
+    }
+)
+
 _DIST_NAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?")
 
 
 def _normalize(name: str) -> str:
-    return name.lower().replace("-", "_")
+    """Distribution-name fold for declared-dependency comparison: PEP 503
+    equivalence (case-insensitive; runs of ``-``, ``_``, ``.`` equal)."""
+    return re.sub(r"[-_.]+", "_", name).lower()
 
 
 def declared_distributions(pyproject: Path) -> tuple[str, ...]:
@@ -197,6 +248,9 @@ class _ScanContext:
         if head in TEST_ONLY_ROOTS and self.is_test_file(path):
             return
         if _normalize(head) in self.declared:
+            return
+        alias = WELL_KNOWN_IMPORT_ALIASES.get(head)
+        if alias is not None and _normalize(alias) in self.declared:
             return
         distributions = self.dist_for_root.get(head, ())
         if any(_normalize(dist) in self.declared for dist in distributions):
@@ -351,12 +405,19 @@ class _Scanner(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def _own_package_roots(root: Path) -> frozenset[str]:
+def _own_package_roots(root: Path, entrypoint_module: str | None) -> frozenset[str]:
     """The extension's own import roots: first-segment packages of the tree.
 
     Both shipped layouts count: the SDK's flat layout (the package at the
     root, next to ``extension.json``) and the ``src/`` layout the
-    repository's reference extension uses.
+    repository's reference extension uses. A directory without an
+    ``__init__.py`` still counts when the validated manifest's entrypoint
+    lives under it: the SDK's manifest contract accepts PEP 420
+    namespace-package parents, and certification must not decline a layout
+    the contract admits (PR #2089 review, P2). Deliberately not extended
+    to names the namespace policy reserves — a namespace directory named
+    ``maistro_server`` is a product-private root wearing no initializer,
+    not an owned package.
     """
     own: set[str] = set()
     for candidate in root.iterdir():
@@ -367,7 +428,36 @@ def _own_package_roots(root: Path) -> frozenset[str]:
         for candidate in src.iterdir():
             if candidate.is_dir() and ((candidate / "__init__.py").is_file()):
                 own.add(candidate.name)
+    if entrypoint_module:
+        head = entrypoint_module.split(".")[0]
+        if (
+            head not in own
+            and head not in PRODUCT_PRIVATE_ROOTS
+            and head not in REPO_RELATIVE_ROOTS
+            and head not in PUBLIC_SDK_ROOTS
+            and ((root / head).is_dir() or (root / "src" / head).is_dir())
+        ):
+            own.add(head)
     return frozenset(own)
+
+
+def _python_sources(root: Path) -> list[Path]:
+    """Every shipped-shape Python file under the extension's source roots.
+
+    ``rglob("*.py")`` would also descend into local environments and build
+    output (``.venv``'s installed dependencies, ``build``'s generated
+    copies); those are pruned here so the scan covers what a wheel ships,
+    which is what the emitted records claim.
+    """
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            name
+            for name in dirnames
+            if name not in NON_SOURCE_DIRECTORIES and not name.endswith(".egg-info")
+        )
+        files.extend(Path(dirpath, name) for name in sorted(filenames) if name.endswith(".py"))
+    return sorted(files)
 
 
 def security_checks(
@@ -392,11 +482,11 @@ def security_checks(
     ctx = _ScanContext(
         root=root,
         declared=frozenset(declared),
-        own_packages=_own_package_roots(root),
+        own_packages=_own_package_roots(root, entrypoint_module),
         dist_for_root=dist_for_root,
     )
 
-    python_files = sorted(root.rglob("*.py"))
+    python_files = _python_sources(root)
     unparsed: list[str] = []
     for path in python_files:
         try:
@@ -467,7 +557,11 @@ def security_checks(
                 check_id="security/sources-parse",
                 description="every shipped Python file parses",
                 status=CheckStatus.PASSED,
-                detail=f"{len(python_files)} Python file(s) parsed",
+                detail=(
+                    f"{len(python_files)} Python file(s) parsed; local "
+                    "environment and build directories are not shipped "
+                    "sources and are not scanned"
+                ),
             )
         )
 

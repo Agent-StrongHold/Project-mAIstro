@@ -26,10 +26,14 @@ created by a local certification run — the report says so as data, and the
 install lifecycle consumes the report as *evidence*, never as
 authorization by itself.
 
-The signature covers a canonical payload of (extension id, version,
-package sha256, manifest sha256) — so later package mutation breaks the
-digest, the digest breaks the signature, and `verify_certification`
-detects both.
+The signature is an Ed25519 signature over the report's complete
+evidence — a canonical payload covering identity, artifact digests, the
+executed checks, the conformance results, and the decision itself — so
+later package mutation breaks the digest, the digest breaks the
+signature, and `verify_certification` detects both; and a verdict edited
+after signing (a flipped ``certified``, a cleared decline reason, a
+whitewashed check) breaks the signature just the same, because the
+verdict is inside what was signed.
 """
 
 from __future__ import annotations
@@ -57,7 +61,11 @@ from maistro_ext_harness.manifest import ExtensionManifest
 from maistro_ext_harness.packaging import ArtifactInfo, inspect_artifact, inspect_source_tree
 from maistro_ext_harness.runner import HARNESS_VERSION, RunRequest, run_conformance
 from maistro_ext_harness.security import security_checks
-from maistro_ext_harness.signing import canonical_certification_payload, sign_payload
+from maistro_ext_harness.signing import (
+    canonical_certification_payload,
+    canonical_evidence_payload,
+    sign_payload,
+)
 
 __all__ = [
     "CertificationProfile",
@@ -352,11 +360,24 @@ def _conformance_verdict(pipeline: _Pipeline) -> None:
         )
 
 
-def _signing_stage(pipeline: _Pipeline, key_hex: str | None) -> dict[str, Any]:
-    """Sign the canonical payload, or record truthfully why nothing was."""
-    package_sha = pipeline.artifact_info.sha256 if pipeline.artifact_info else ""
-    manifest_sha = pipeline.artifact_info.manifest_sha256 if pipeline.artifact_info else ""
-    manifest = pipeline.manifest
+def _signing_stage(report: CertificationReport, key_hex: str | None) -> dict[str, Any]:
+    """Sign the report's complete evidence, or record truthfully why not.
+
+    The Ed25519 signature covers `canonical_evidence_payload` — every
+    field of the report except the signature block itself: identity,
+    artifact digests, the executed checks, the conformance evidence, and
+    the decision. A signature therefore authenticates the verdict as much
+    as the bytes: flipping ``certified``, clearing a decline reason, or
+    whitewashing a failed check changes the signed content and the
+    signature stops verifying. The installer-parallel identity payload's
+    digest is recorded beside it (``payload_sha256``) because a registry
+    checks that binding first.
+    """
+    artifact = report.artifact or {}
+    package_sha = str(artifact.get("sha256", ""))
+    manifest_sha = str(artifact.get("manifest_sha256", ""))
+    extension_id = str(report.subject.get("id", ""))
+    version = str(report.subject.get("version", ""))
     if key_hex is None:
         return {"signed": False, "reason": "no signing key supplied; the report is unsigned"}
     if not package_sha or not manifest_sha:
@@ -367,14 +388,21 @@ def _signing_stage(pipeline: _Pipeline, key_hex: str | None) -> dict[str, Any]:
                 "(the artifact did not validate); nothing was signed"
             ),
         }
+    try:
+        evidence = canonical_evidence_payload(report.to_dict())
+    except (TypeError, ValueError) as exc:
+        return {
+            "signed": False,
+            "reason": f"the report's evidence cannot be canonically serialized: {exc}",
+        }
     payload = canonical_certification_payload(
-        extension_id=manifest.id if manifest else "",
-        version=manifest.version if manifest else "",
+        extension_id=extension_id,
+        version=version,
         package_sha256=package_sha,
         manifest_sha256=manifest_sha,
     )
     try:
-        public_key, signature_hex = sign_payload(payload, key_hex)
+        public_key, signature_hex = sign_payload(evidence, key_hex)
     except Exception as exc:
         return {"signed": False, "reason": f"signing failed: {exc}"}
     return {
@@ -384,12 +412,13 @@ def _signing_stage(pipeline: _Pipeline, key_hex: str | None) -> dict[str, Any]:
         "public_key": public_key,
         "signature": signature_hex,
         "payload": {
-            "extension_id": manifest.id if manifest else "",
-            "version": manifest.version if manifest else "",
+            "extension_id": extension_id,
+            "version": version,
             "package_sha256": package_sha,
             "manifest_sha256": manifest_sha,
         },
         "payload_sha256": hashlib.sha256(payload).hexdigest(),
+        "evidence_sha256": hashlib.sha256(evidence).hexdigest(),
     }
 
 
@@ -400,9 +429,10 @@ def certify(request: CertificationRequest) -> CertificationReport:
     _verdicts_from_checks(pipeline)
     _conformance_stage(pipeline)
     _conformance_verdict(pipeline)
-    signature = _signing_stage(pipeline, request.signing_key_hex)
-
-    return CertificationReport(
+    # The signature is computed over the finished report's content (minus
+    # the signature block itself), so it authenticates the decision and
+    # the evidence behind it, not just the identity and digests.
+    report = CertificationReport(
         schema=CERTIFICATION_SCHEMA,
         profile=request.profile.value,
         harness_version=HARNESS_VERSION,
@@ -416,12 +446,14 @@ def certify(request: CertificationRequest) -> CertificationReport:
         conformance_executed=pipeline.conformance_executed,
         conformance_reason=pipeline.conformance_reason,
         conformance_report=pipeline.conformance_report,
-        signature=signature,
+        signature={},
         certified=not pipeline.decline_reasons,
         decline_reasons=pipeline.decline_reasons,
         claims=pipeline.claims,
         not_proven=pipeline.not_proven,
     )
+    report.signature = _signing_stage(report, request.signing_key_hex)
+    return report
 
 
 def _artifact_record(info: ArtifactInfo | None) -> dict[str, Any] | None:
@@ -464,12 +496,20 @@ def verify_certification(
     4. the decision is internally consistent (``certified`` true while
        decline reasons are listed is a corrupt report, and so is a decline
        with no named reason);
-    5. a carried signature is bound to the report's own ``subject`` and
-       ``artifact`` records (the signed payload must equal them) and
-       verifies — against ``publisher_key_hex`` when the consumer pins the
-       publisher's key, otherwise against the public key
-       recorded in the report (self-consistency only; pinning the key is
-       the consumer's policy, evidence is not authorization).
+    5. a carried signature authenticates the report's **complete
+       evidence**: the signed bytes are re-derived from the report itself
+       (everything except the ``signature`` block, canonically
+       serialized), must digest to the recorded ``evidence_sha256``, and
+       must verify as an Ed25519 signature — against
+       ``publisher_key_hex`` when the consumer pins the publisher's key,
+       otherwise against the public key recorded in the report
+       (self-consistency only; pinning the key is the consumer's policy,
+       evidence is not authorization). Before that, the signed identity
+       payload is checked against the report's own ``subject`` and
+       ``artifact`` records, so a relabeled artifact is named as such.
+       Because the verdict, the checks, and the claims are inside the
+       signed bytes, none of them can be edited after signing without
+       failing verification here.
     """
     checked: list[str] = []
     failures: list[str] = []
@@ -544,7 +584,9 @@ def _shipped_manifest_bytes(artifact: dict[str, Any], artifact_path: Path) -> by
             for name in (f"{top}/extension.json", "extension.json"):
                 if name in names:
                     return archive.read(name)
-    except (zipfile.BadZipFile, OSError):
+    except (zipfile.BadZipFile, OSError, RuntimeError):
+        # RuntimeError is zipfile's encrypted-member signal; an unreadable
+        # manifest member means the binding cannot be established.
         return None
     return None
 
@@ -601,14 +643,19 @@ def _check_signature(
     checked: list[str],
     failures: list[str],
 ) -> None:
-    """A carried signature must cover the report's subject/artifact records;
+    """A carried signature must authenticate the report's complete evidence;
     an unsigned report fails when the consumer pinned a publisher key.
 
-    The payload is re-derived from the top-level ``subject`` and ``artifact``
-    records — the same records the digest and manifest checks validate
-    against the bytes in hand — and the signed ``signature.payload`` copy
-    must equal them. A signature therefore certifies exactly the supplied
-    artifact, not whatever an intermediary typed into the payload block.
+    Three bindings, in order:
+
+    - the signed identity payload must equal the report's own ``subject``
+      and ``artifact`` records (a relabeled artifact is named as such);
+    - the report's content minus the signature block must re-serialize to
+      the recorded ``evidence_sha256`` — the verdict, the checks, the
+      claims, the conformance evidence — so no field can be edited after
+      signing without breaking this digest;
+    - the Ed25519 signature must verify over exactly those re-derived
+      evidence bytes.
     """
     signature = report.get("signature", {})
     if not isinstance(signature, dict):
@@ -621,20 +668,9 @@ def _check_signature(
                 "signature to verify"
             )
         return
-    subject = report.get("subject")
-    artifact = report.get("artifact")
-    if not isinstance(subject, dict) or not isinstance(artifact, dict):
-        failures.append(
-            "report's subject/artifact records are not objects; the signature "
-            "cannot be bound to them"
-        )
+    payload_fields = _identity_fields_from_report(report, failures)
+    if payload_fields is None:
         return
-    payload_fields = {
-        "extension_id": str(subject.get("id", "")),
-        "version": str(subject.get("version", "")),
-        "package_sha256": str(artifact.get("sha256", "")),
-        "manifest_sha256": str(artifact.get("manifest_sha256", "")),
-    }
     signed_fields = signature.get("payload", {})
     if not isinstance(signed_fields, dict) or any(
         str(signed_fields.get(name, "")) != value for name, value in payload_fields.items()
@@ -648,16 +684,76 @@ def _check_signature(
     if hashlib.sha256(payload).hexdigest() != signature.get("payload_sha256"):
         failures.append("signature payload does not re-derive from the report's own fields")
         return
-    from maistro_ext_harness.signing import verify_payload
+    _check_evidence_binding(report, signature, publisher_key_hex, checked, failures)
+
+
+def _identity_fields_from_report(
+    report: dict[str, Any], failures: list[str]
+) -> dict[str, str] | None:
+    """The identity fields the report's own records name, or ``None`` (with
+    the failure recorded) when those records are not usable objects."""
+    subject = report.get("subject")
+    artifact = report.get("artifact")
+    if not isinstance(subject, dict) or not isinstance(artifact, dict):
+        failures.append(
+            "report's subject/artifact records are not objects; the signature "
+            "cannot be bound to them"
+        )
+        return None
+    return {
+        "extension_id": str(subject.get("id", "")),
+        "version": str(subject.get("version", "")),
+        "package_sha256": str(artifact.get("sha256", "")),
+        "manifest_sha256": str(artifact.get("manifest_sha256", "")),
+    }
+
+
+def _check_evidence_binding(
+    report: dict[str, Any],
+    signature: dict[str, Any],
+    publisher_key_hex: str | None,
+    checked: list[str],
+    failures: list[str],
+) -> None:
+    """The report's content (minus the signature block) is what was signed:
+    re-derive its canonical bytes, require the recorded digest, and verify
+    the Ed25519 signature over exactly those bytes."""
+    try:
+        evidence = canonical_evidence_payload(report)
+    except (TypeError, ValueError) as exc:
+        failures.append(f"the report cannot be canonically re-serialized: {exc}")
+        return
+    recorded_evidence_sha = str(signature.get("evidence_sha256", ""))
+    if not recorded_evidence_sha:
+        failures.append(
+            "the signature records no evidence digest; it does not "
+            "authenticate the report's decision, checks, or claims, and "
+            "cannot be accepted as a certification signature"
+        )
+        return
+    if hashlib.sha256(evidence).hexdigest() != recorded_evidence_sha:
+        failures.append(
+            "report content changed since signing: the decision, checks, or "
+            "claims differ from what was signed"
+        )
+        return
+    from maistro_ext_harness.signing import SigningUnavailable, verify_payload
 
     key = publisher_key_hex or signature.get("public_key", "")
-    if verify_payload(payload, str(signature.get("signature", "")), str(key)):
+    try:
+        verifies = verify_payload(evidence, str(signature.get("signature", "")), str(key))
+    except SigningUnavailable as exc:
+        failures.append(f"signature could not be checked: {exc}")
+        return
+    if verifies:
         checked.append(
-            "signature verifies against the supplied publisher key"
+            "signature authenticates the report's complete evidence against "
+            "the supplied publisher key"
             if publisher_key_hex
             else (
-                "signature verifies against the report's own public key "
-                "(self-consistency; pin the publisher key to authenticate)"
+                "signature authenticates the report's complete evidence against "
+                "the report's own public key (self-consistency; pin the "
+                "publisher key to authenticate)"
             )
         )
     else:
