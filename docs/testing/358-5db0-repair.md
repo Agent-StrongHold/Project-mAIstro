@@ -84,6 +84,19 @@ parent 061 and checks the landed HITL column/index survive. No test count change
   lane. This interrupted the chained commit command; commit was retried
   explicitly after recording the inherited warnings.
 
+## Post-merge gate check
+
+Repair committed as `74ba7d689a4d80332b718e76857f12e09d476b87`; worktree clean.
+Re-ran CI's path classifier on `git diff --no-renames --name-only
+ d7fb3baa6837a1a6ccb9aa5c2a1288cef6eb7743...HEAD`, then the actual
+`check-integration-scope.py --event-name merge_group --scope-json <output>`.
+The measured scope requires **six** producer results: docker-build, Hive API
+E2E, Hive UI E2E, PostgreSQL pg17/pg18, and wheel-imports. All are missing
+locally; gate exits 1 (worker-final-scope.log). The earlier nine-result check
+was the conservative no-scope diagnostic, not the measured candidate scope.
+Neither diagnostic explains the unsupplied remote failure. Exact Vulture scan
+repeated after merge: 1,326 base identities -> 1,326 findings, pass.
+
 ## Acceptance and residual risks
 
 | Criterion | Executed evidence / explicit limit |
