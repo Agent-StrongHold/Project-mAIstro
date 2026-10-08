@@ -425,7 +425,7 @@ def test_durable_backend_pages_identically_to_memory(durable: DurableAudit) -> N
         entry(i, actor="alice" if i % 3 else "bob", severity="warning" if i % 5 == 0 else "info")
         for i in range(120)
     ]
-    memory_store = JsonStore("audit_parity")
+    memory_store = type(stores.audit_log)("audit_parity")
     seed(memory_store, corpus)
     durable.seed_rows(corpus)
 
@@ -515,6 +515,133 @@ def test_retention_does_not_swallow_entry_detail(admin_client: Any) -> None:
 # --------------------------------------------------------------------------- #
 # Million-row performance envelope (durable backend)
 # --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("count", [100, 10_000])
+def test_production_memory_pages_never_enumerate_the_corpus(
+    count: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = stores.audit_log
+    seed(store, [entry(i, actor="rare" if i == 0 else "alice") for i in range(count)])
+
+    def forbid_scan():
+        raise AssertionError("page enumerated the audit corpus")
+
+    probes = 0
+
+    class SeekOnlyIndex(list):
+        def __iter__(self):
+            forbid_scan()
+
+        def __getitem__(self, key):
+            nonlocal probes
+            probes += 1
+            if isinstance(key, slice):
+                assert len(range(*key.indices(len(self)))) <= 51
+            return super().__getitem__(key)
+
+    # Refuse enumeration only during page reads, not fixture cleanup. Also
+    # reject full index walks/slices: naming an index does not prove a seek.
+    with monkeypatch.context() as query_guard:
+        query_guard.setattr(store, "items", forbid_scan)
+        query_guard.setattr(type(store._data), "__iter__", lambda _: forbid_scan())
+        for shape, index in store._data._indexes.items():
+            query_guard.setitem(store._data._indexes, shape, SeekOnlyIndex(index))
+        first = page_entries(store, limit=1)
+        assert first.entries == [entry(count - 1)]
+        assert page_entries(store, limit=1, cursor=first.next_cursor).entries == [entry(count - 2)]
+        assert page_entries(store, actor_scope=frozenset({"rare", "absent"})).entries == [
+            entry(0, actor="rare")
+        ]
+        for filters in ({"actor": "absent"}, {"severity": "absent"}, {"action": "absent"}):
+            assert page_entries(store, **filters).entries == []
+        assert probes < 64  # logarithmic seeks, not count-sized work at either size
+
+
+def test_production_memory_index_tracks_replacement_removal_and_clear() -> None:
+    store = stores.audit_log
+    seed(store, [entry(i) for i in range(4)])
+    first = page_entries(store, limit=2)
+    store["e-000002"] = entry(2, actor="bob", action="logout", created_at=ts(-1))
+    store.pop("e-000001")
+    assert page_entries(store, cursor=first.next_cursor).entries == [
+        entry(0),
+        entry(2, actor="bob", action="logout", created_at=ts(-1)),
+    ]
+    assert page_entries(store, actor="alice").entries == [entry(3), entry(0)]
+    assert page_entries(store, actor="bob", action="logout").entries == [
+        entry(2, actor="bob", action="logout", created_at=ts(-1))
+    ]
+    assert store.clear() == 3
+    assert page_entries(store).entries == []
+    seed(store, [entry(1, actor="carol")])  # same-size corpus replacement is not a cache hit
+    assert page_entries(store, actor="alice").entries == []
+    assert page_entries(store).entries == [entry(1, actor="carol")]
+
+
+def test_production_memory_rows_cannot_mutate_behind_the_index() -> None:
+    store = stores.audit_log
+    original = entry(1, detail={"nested": {"value": "original"}})
+    store[original["id"]] = original
+    original["actor"] = "hidden"
+    original["detail"]["nested"]["value"] = "changed"
+    expected = entry(1, detail={"nested": {"value": "original"}})
+    for row in (
+        store["e-000001"],
+        store.get("e-000001"),
+        next(iter(store.values())),
+        next(iter(store.items()))[1],
+        page_entries(store).entries[0],
+    ):
+        assert row == expected
+        row["actor"] = "hidden"
+        row["created_at"] = ts(999)
+        row["detail"]["nested"]["value"] = "changed"
+    assert page_entries(store, actor="alice").entries == [expected]
+    assert page_entries(store, actor="hidden").entries == []
+
+
+def test_production_memory_index_tracks_initialize_refresh_and_insert_once(
+    durable: DurableAudit,
+) -> None:
+    store = type(stores.audit_log)("audit_log", persisted=durable.backend)
+    durable.seed_rows([entry(1)])
+    store.initialize()
+    assert page_entries(store).entries == [entry(1)]
+    durable.seed_rows([entry(1, actor="bob")])
+    assert store.refresh("e-000001")
+    assert page_entries(store, actor="alice").entries == []
+    assert page_entries(store, actor="bob").entries == [entry(1, actor="bob")]
+    assert store.put_if_absent("e-000002", entry(2))
+    assert not store.put_if_absent("e-000002", entry(2, actor="loser"))
+    durable.seed_rows([entry(3, actor="winner")])
+    assert not store.put_if_absent("e-000003", entry(3, actor="loser"))
+    assert page_entries(store, actor="winner").entries == [entry(3, actor="winner")]
+    assert page_entries(store, actor="loser").entries == []
+    store.pop("e-000003")
+    assert page_entries(store, actor="winner").entries == []
+
+
+def test_production_memory_cursor_survives_threaded_inserts() -> None:
+    store = stores.audit_log
+    seed(store, [entry(i, created_at=ts(0)) for i in range(200)])
+    first = page_entries(store, limit=17)
+    started = threading.Event()
+
+    def writer() -> None:
+        for i in range(200, 400):
+            store[f"e-{i:06d}"] = entry(i)
+            started.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(writer)
+        assert started.wait(timeout=10)
+        rest = walk(store, limit=17, start_cursor=first.next_cursor)
+        future.result(timeout=30)
+    assert [row["id"] for row in first.entries + rest] == [
+        f"e-{i:06d}" for i in reversed(range(200))
+    ]
+    assert page_entries(store, limit=1).entries == [entry(399)]
 
 
 _PERF_ROWS = 1_000_000

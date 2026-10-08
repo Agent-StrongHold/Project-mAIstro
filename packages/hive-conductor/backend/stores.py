@@ -36,6 +36,7 @@ from models.schemas import (
     Skill,
 )
 from models.workspace import Workspace
+from services.audit_query import IndexedAuditStore
 from services.model_store import JsonStore, ModelStore
 
 logger = logging.getLogger(__name__)
@@ -111,7 +112,7 @@ brief_interviews: JsonStore = JsonStore("brief_interviews")
 work_item_drafts: JsonStore = JsonStore("work_item_drafts")
 dags: JsonStore = JsonStore("dags")
 messages: JsonStore = JsonStore("messages")
-audit_log: JsonStore = JsonStore("audit_log")
+audit_log: JsonStore = IndexedAuditStore("audit_log")
 # Phase 5 Signal #3 — eval-judge verdicts keyed by run_id.
 eval_verdicts: JsonStore = JsonStore("eval_verdicts")
 # Phase 6 — optimizer proposals keyed by proposal_id.

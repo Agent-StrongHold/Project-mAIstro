@@ -26,13 +26,11 @@ Two backends implement the identical contract:
   The database scopes and filters each bounded seek before merging aliases
   and cursor ranges; request work scales with the page, not the corpus.
   Index construction is corpus-sized work performed during store startup.
-- **In-memory** — the same keyset walk over keys sorted per request. No
-  cache: a freshness heuristic over a dict other code mutates directly
-  (seeders, tests, future purge jobs) is exactly how stale-index bugs ship,
-  and one cheap enough to beat a re-sort is not honest about same-length
-  corpus replacement. This path serves dev/demo deployments without
-  persistence, where corpus sizes are small; the durable backend is where
-  bounded page cost is proven (see the million-row envelope test).
+- **In-memory** — the production `IndexedAuditStore` maintains the same eight
+  filter-shape indexes at the JsonStore mutation boundary. Reads seek and copy
+  at most limit+1 rows per scope alias; returned records are detached so callers
+  cannot silently invalidate indexes. Plain mappings remain supported for
+  compatibility, but only those unindexed callers sort their keys per request.
 
 Retention: the corpus itself is append-only today — no purge job exists (the
 retention policy lane is #325). This module's contribution to retention is the
@@ -45,12 +43,16 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from bisect import bisect_left
-from collections.abc import Iterator
+from bisect import bisect_left, insort
+from collections.abc import Iterator, MutableMapping
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
-from itertools import combinations
+from itertools import combinations, product
+from threading import RLock
 from typing import Any
+
+from services.model_store import JsonStore
 
 #: Default page size for `GET /v1/audit`.
 DEFAULT_AUDIT_PAGE_SIZE = 50
@@ -379,8 +381,104 @@ def _page_durable(
 
 
 # --------------------------------------------------------------------------- #
-# In-memory backend — sorted key index over the JsonStore dict
+# In-memory backend — write-maintained indexes for the production JsonStore
 # --------------------------------------------------------------------------- #
+
+
+class _AuditRows(MutableMapping[str, Any]):
+    """JsonStore backing data with atomic indexes, not a request-side cache.
+
+    JsonStore's writes, insert-once conflict adoption, refresh, initialization,
+    pop and clear all go through this mapping. Copy on write/read makes nested
+    aliases harmless. Eight filter indexes trade write cost/storage for bounded
+    reads, including sparse/absent filters. Out-of-order writes/removals can
+    shift lists; reads cost O(log n + limit) per actor alias.
+    """
+
+    def __init__(self) -> None:
+        self._records: dict[str, dict[str, Any]] = {}
+        self._indexes: dict[tuple[str | None, ...], list[tuple[str, str]]] = {}
+        self._lock = RLock()
+
+    @staticmethod
+    def _shapes(row: dict[str, Any]) -> Iterator[tuple[str | None, ...]]:
+        return product(
+            *(
+                (None, row.get(field, "") if isinstance(row.get(field), str) else "")
+                for field in _FILTER_FIELDS
+            )
+        )
+
+    def __getitem__(self, key: str) -> Any:
+        with self._lock:
+            return deepcopy(self._records[key])
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        row = deepcopy(value if isinstance(value, dict) else _dump(value))
+        with self._lock:
+            if key in self._records:
+                del self[key]
+            self._records[key] = row
+            order = (_created_at_of(row), key)
+            for shape in self._shapes(row):
+                insort(self._indexes.setdefault(shape, []), order)
+
+    def __delitem__(self, key: str) -> None:
+        with self._lock:
+            row = self._records.pop(key)
+            order = (_created_at_of(row), key)
+            for shape in self._shapes(row):
+                index = self._indexes[shape]
+                index.pop(bisect_left(index, order))
+                if not index:
+                    del self._indexes[shape]
+
+    def __iter__(self) -> Iterator[str]:
+        with self._lock:
+            return iter(list(self._records))
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._records)
+
+    def select(
+        self,
+        *,
+        actors: list[str | None],
+        action: str | None,
+        severity: str | None,
+        before: tuple[str, str] | None,
+        limit: int,
+    ) -> list[tuple[str, str, dict[str, Any]]]:
+        with self._lock:
+            candidates: list[tuple[str, str]] = []
+            for actor in actors:
+                index = self._indexes.get((actor, action, severity), [])
+                end = len(index) if before is None else bisect_left(index, before)
+                candidates.extend(index[max(0, end - limit) : end])
+            # Scope aliases are disjoint. Sort only bounded candidates, never
+            # a corpus or a full filter index, and detach only the final page.
+            return [
+                (stamp, key, deepcopy(self._records[key]))
+                for stamp, key in sorted(candidates, reverse=True)[:limit]
+            ]
+
+
+class IndexedAuditStore(JsonStore):
+    """The legacy audit JsonStore with mutation-safe, bounded memory reads.
+
+    Persistence and acknowledgement still belong to JsonStore. The indexed
+    mapping is its existing in-memory data, not a second corpus or authority.
+    """
+
+    _data: _AuditRows
+
+    def __init__(self, store_name: str, persisted: Any | None = None) -> None:
+        super().__init__(store_name, persisted)
+        self._data = _AuditRows()
+
+    def page_rows(self, **kwargs: Any) -> list[tuple[str, str, dict[str, Any]]]:
+        return self._data.select(**kwargs)
 
 
 def _sorted_ascending(store: Any) -> list[tuple[str, str]]:
@@ -389,9 +487,9 @@ def _sorted_ascending(store: Any) -> list[tuple[str, str]]:
     Deliberately not cached: the store's dict is mutated by holders other
     than this module (seed data, tests, any future purge), and a freshness
     heuristic cheap enough to beat a re-sort is not honest about same-length
-    corpus replacement. Re-sorting per request is O(n log n) with a small
-    constant — correct, but not corpus-independent. Durable deployments use
-    the indexed SQL path instead.
+    corpus replacement. Re-sorting per request is O(n log n), so this
+    compatibility path is not corpus-independent. The production JsonStore
+    uses the mutation-aware mapping above; durable reads use indexed SQL.
 
     The mapping is snapshotted with a C-level `list(store.items())` copy
     before any per-entry work: the copy is a single GIL-atomic operation,
@@ -470,6 +568,20 @@ def _page_memory(
     allowed_actors, actor_filter = _resolve_scope(actor, actor_scope)
     if allowed_actors is not None and not allowed_actors:
         return AuditPage(entries=[], next_cursor=None)
+
+    if isinstance(store, IndexedAuditStore):
+        actors = (
+            [actor_filter]
+            if actor_filter is not None or allowed_actors is None
+            else sorted(allowed_actors)
+        )
+        rows = store.page_rows(
+            actors=actors, action=action, severity=severity, before=cursor_key, limit=limit + 1
+        )
+        next_cursor = (
+            _encode_cursor(rows[limit - 1][0], rows[limit - 1][1]) if len(rows) > limit else None
+        )
+        return AuditPage(entries=[row[2] for row in rows[:limit]], next_cursor=next_cursor)
 
     snapshot = _sorted_ascending(store)
     start = len(snapshot) if cursor_key is None else bisect_left(snapshot, cursor_key)
