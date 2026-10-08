@@ -509,3 +509,52 @@ branch head `e92955189797e8773e12b8c8ab1929a5fe2b3b15` (base
   touches no spec/ADR and drops no `@pytest.mark.ac` marker, so the fall is
   inherited repo-wide debt, not introduced by this branch; the merge-group
   actual-base guard (candidate vs measured base) passes on equality.
+
+## Independent verification round (head eff4771dea4b, post develop-sync)
+
+Re-derived from issue #404's acceptance criteria and executed locally at
+branch head `eff4771dea4b4c3a825ffd16427b375c164245b0` (base
+`8fbbbfb91d78d30d756cf675b7b1a4c1ccff06e5`, merged in at head;
+`git merge-base HEAD 8fbbbfb91` = `8fbbbfb91`, no conflict markers in any
+changed file, `quality/` diff vs base is the additive
+`ac-state-notes/auto-404.json` +17/−0 only — no ledger rows lost):
+
+- `uv run pytest packages/maistro-core/tests/tools/git/test_server_security.py
+  packages/maistro-rsi/tests/test_cli.py
+  packages/maistro-rsi/tests/test_harvest_entry_point.py
+  packages/maistro-rsi/tests/test_selfbranch.py -q` — 138 passed
+  (re-executed this round, including the live-GPG
+  `TestLiveSignaturePolicy` cases; the prior round's ENOSPC failure of
+  `test_signed_clone_passes_when_signer_is_trusted` was environmental and
+  passes here).
+- `uv run ruff check .` / `uv run ruff format --check .` — clean (RC 0).
+- `uv run python scripts/check-suite-inventory.py` (CI's argv, all 17
+  suites) — `ok: 17 suite(s) match the recorded inventory`, RC 0.
+- CI-argv quality gates, true exit codes all 0: `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'`
+  (1326→1326 vs base 8fbbbfb91), `check-reachability.py`,
+  `check-radon-baseline.py` (137→137), `check-promotion-surface.py`.
+- `uv run --extra bootstrap mypy --strict packages/maistro-core/src` —
+  no issues in 771 source files. Without the optional `bootstrap` extra
+  the run reports 5 `import-not-found` errors in `_install.py`/
+  `_builders_tui.py`, both byte-identical to the base — a worktree-venv
+  artifact, not a branch regression.
+- Independent mechanism probes (not the suite): `validate_clone_source`
+  rejects `git://`, `GIT://`, `Git://`, `git:%2F%2F…`, `%67it://…`,
+  `git+ssh://`, bare paths, scp-like, relative, empty, and `http://` with
+  `blocked_url_scheme`; accepts `https://`/`ssh://` for default-allowlisted
+  hosts; live `git_clone`/`git_remote_tip` refuse `git://` before any
+  subprocess; `file://` refused by default in the production policy.
+- `check-ac-state.py --run-tests --ratchet` (service-less local path)
+  reproduces the inherited fall documented above verbatim —
+  `design_coverage 39.2752` vs the stale 43.8998 floor folded from the
+  base's notes; the branch's diff touches no `@pytest.mark.ac` marker
+  (0 in the diff), so nothing here is branch-introduced. Service-full
+  (Postgres) re-measurement was not reproducible locally this round (no
+  Docker daemon); the mandates-pass evidence above (base measured equal
+  via `_measure_base`) remains the recorded proof.
+- Hosted CI at this head: 9 required check runs were still pending and
+  `Container scan + SBOM + cosign` skipped in the dispatch snapshot —
+  recorded as UNVERIFIED here, not claimed green.
+- Closure-keyword scan of the PR body and every non-merge commit message
+  on the branch: 0 `fixes/closes/resolves #N` references.
