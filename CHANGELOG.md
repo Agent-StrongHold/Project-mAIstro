@@ -129,6 +129,17 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A full Recent Runs page no longer waits on one serialized canonical Run
+  read per row (#1333).** Conductor's Recent Runs list overlays canonical
+  lifecycle truth through one batched, Workspace-scoped reader call, but the
+  reader resolved the page's per-Run lookups with a sequential `await` per id:
+  at the supported page cap of 100 and a durable PostgreSQL/SQLite store, one
+  dashboard request still serialized up to 100 `get_run` round trips on an
+  endpoint built to be polled. `ScopedRunReader.get_runs` now overlaps the
+  page's independent lookups (bounded, 16 in flight) while keeping the scoped
+  decisions exactly once per Workspace/Project, so the visible-Runs answer and
+  its refusal semantics are unchanged; a page resolves in a few overlapping
+  waves instead of one wait per row.
 - **Chat admission compensation is conditional on the unchanged, unstarted Run (#338).**
   A QUEUED or RUNNING write that commits but loses its response is compensated
   before the existing retryable refusal, without dispatching the turn. The
@@ -1121,6 +1132,44 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The live scheduler selects durable canonical due state (#46, #1199).**
+  Configured Hive ticks now enumerate `ScheduleStore.due()` and re-read each
+  definition under the existing route/manual-fire lock before admission.
+  A stale selection cannot undo a concurrent edit or resurrect a deletion;
+  the per-tick Hive insertion path is retired, while startup backfill and
+  canonical route write-through remain. Selection failures still allow
+  already-QUEUED Runs to reach the accounting consumer. Admission audits use
+  the canonical definition and materialized Run template, rather than a
+  drifted Hive projection. Real-tick tests cover no-fire due-cursor
+  persistence, one occurrence/Attempt, queued recovery, cursor-crash restart,
+  manual/tick serialization and SQLite/PostgreSQL parity. Enabled pending
+  manual-fire markers remain selectable even with a future recurrence cursor,
+  so lease-checked recovery retains its next-tick cadence without creating an
+  extra Run; disabled-marker policy is unchanged. Immediate in-window recovery
+  after a recurring cursor-write crash still preserves the same Run without
+  crediting the dead winner's count, an existing core limitation under #46.
+
+- **Mission detail does not name an agent the Run did not record (no linked issue: task detail must not name an agent a Run never had).** Hive mission
+  rows are a queue, not a Run. Seeded missions and steps named `agent-1`, and
+  the stub create path stored `assigned_agents` from the request, which the
+  Missions page rendered as an assignment and offered an Assign Agent control
+  for. List, detail, steps, status, and create now report no agent, the seed
+  names none, and Assign Agent is disabled with that reason. This does not
+  read a canonical Run agent; nothing is shown until a response does.
+- **Schedules and MCP work from the keyboard alone (#370, partial).** The
+  Schedules and MCP view tabs are now ARIA tabs (arrow keys, Home and End); a
+  schedule's enable toggle is a labelled switch, so a keyboard user can enable
+  or disable a schedule; cron presets are toggle buttons; and an MCP server
+  expands through a disclosure button, with its remove button a separate
+  control. For pointer users, an MCP server now expands or collapses only
+  from its header row, not from its details area or the card's padding.
+- **The Agent's dashboard-widget edit no longer overwrites a concurrent UI save (#1048).**
+  `create_dashboard_widget` now saves against the revision it read; on a conflict it
+  re-reads and re-applies the insertion once (via the pure
+  `dashboard_layouts.with_widget`), and on a second conflict reports `created: false`
+  instead of erasing the `PUT /v1/dashboard/layout` that landed in between. Partial: the rest
+  of #1048 (Workspace-scoped Home, pinned regions, projections) remains.
+
 - **Turing's synchronous bridge no longer blocks the event loop (#397).**
   The provider bridge used to answer event-loop callers by blocking on an
   unbounded `Future.result()`, so one stuck LLM call froze every coroutine on
@@ -2089,6 +2138,12 @@ or placeholder-only section.
   application role cannot create tables, and ADR-086 carries a dated
   amendment recording the cursor's ownership, lease, fencing and gap
   semantics.
+
+- **Canvas retry-budget recovery regression coverage (#1550).** Exercise
+  repeated simulated pre-stage worker losses through the real executor,
+  canonical adapter and runner, including claim refusal, fenced reaper
+  terminalization and a fresh-job dispatch control. The existing retry and
+  lease-ownership behavior is unchanged.
 
 ## [1.0.0] - TBD
 
