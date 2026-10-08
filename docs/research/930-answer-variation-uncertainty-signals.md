@@ -60,7 +60,10 @@ one comparison table over k sampled answers per judged decision:
 
 What the deterministic fixtures demonstrate (synthetic arithmetic, **not**
 evidence about real models; harness as committed in c3ea29752,
-`uv run pytest …m8e1…` → 35 passed):
+`uv run pytest …m8e1…` → 35 passed). Recorded numbers are reproducible from the
+committed module at seed 930, k=8, with the corpus size each harness test uses:
+n=200 for the temperature ladder and the 30%-mirage corpus, n=120 for the
+family comparison, the n=240 default for the difficulty correlation:
 
 - **Temperature decides whether the k-fold bill buys anything.** On the same
   difficulty/outcome stream (identical seed, temperature only reshaping the
@@ -95,9 +98,11 @@ evidence about real models; harness as committed in c3ea29752,
   end to end.
 - **The blind spot is confirmed, not hidden**: when repeated sampling converges
   confidently on a *wrong* answer (the mirage tasks), agreement is maximal
-  exactly where the model fails — on a mirage-vs-honest subset (60 confidently-wrong
-  mirage decisions against 60 honest ones) the agreement signal's error AUROC is
-  0.32, and with a 30% mirage share every signal's error AUROC drops below 0.5
+  exactly where the model fails — on a mirage-vs-honest subset (tasks t0–t59 of
+  the mirage-share generator — 60 confidently-wrong mirage decisions — against
+  tasks t0–t59 of the mirage-free stream) the agreement signal's error AUROC is
+  0.329, and with a 30% mirage share (n=200) every signal's error AUROC drops
+  below 0.5
   (0.33–0.40). k samples of one model detect *indecision*, not *confident
   convergence*; that residual risk is the heterogeneous-family/verifier question
   and belongs to M8-E3 (#932), not to more samples from the same model.
