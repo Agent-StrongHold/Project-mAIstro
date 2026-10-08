@@ -121,14 +121,21 @@ def _classify_path(path: str, out: dict[str, bool]) -> None:
         )
     ):
         out["hive_e2e"] = True
+    # Both gate scripts the wheel-imports job executes must fire the leg
+    # when they change — the job's verifier and the floor-install gate
+    # inside it — otherwise a PR touching only a gate skips its own
+    # end-to-end validation at the merge-queue SHA.
     if (
         path == "scripts/verify-wheel-imports.py"
-        or _under(path, "packages")
-        and (
-            path.endswith("pyproject.toml")
-            or "/src/" in path
-            or path.endswith("/__init__.py")
-            or hive
+        or path == "scripts/verify-minimum-dependencies.py"
+        or (
+            _under(path, "packages")
+            and (
+                path.endswith("pyproject.toml")
+                or "/src/" in path
+                or path.endswith("/__init__.py")
+                or hive
+            )
         )
     ):
         out["wheel_imports"] = True

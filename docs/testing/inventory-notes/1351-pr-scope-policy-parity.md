@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +22
+  tests/: +24
 ---
 # 1351-pr-scope-policy-parity
 
-Twenty-two new node IDs pin the converged pull-request scope policy from #1351:
+Twenty-four new node IDs pin the converged pull-request scope policy from #1351:
 one classifier (`scripts/ci_merge_group_scope.py::classify`) now governs PR
 events across every surface — the ci.yml specialized job conditions,
 `check-integration-scope.required_checks`, the classifier's own
@@ -35,3 +35,14 @@ place (`test_pull_request_preserves_all_specialized_checks`,
 `test_specialized_scope_gates_preserve_required_matrix_contexts`,
 `test_pull_request_keeps_every_specialized_leg_enabled`), so the net count is
 purely additive.
+
+Two further node IDs landed with the review follow-ups and complete the
+policy's producer side: `test_verifier_change_runs_wheel_leg`
+(`tests/test_ci_merge_group_scope.py`) pins that the wheel-imports leg fires
+when its own verifier script changes — the same gate-script-must-run-its-own-leg
+rule the floor-install gate test asserts — and
+`test_hive_e2e_scope_covers_the_jobs_actual_inputs`
+(`tests/test_ci_merge_group_outputs.py`) pins the widened `hive_e2e`
+predicate to the jobs' real inputs (prepull script, bootstrap/canvas/design/
+evolve trees), so a PR touching only those can no longer skip live-stack
+validation while the evaluator would have excused the skip.
