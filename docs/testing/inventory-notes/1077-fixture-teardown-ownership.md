@@ -27,3 +27,19 @@ connection is fully closed (handle released, background thread stopped)
 while the test's event loop is still alive. A regression that returns an
 open connection from any of the four fixtures fails deterministically at
 that fixture's boundary instead of intermittently in CI teardown.
+
+## CI-repair addendum (coverage gate)
+
+The merge-queue evaluation of this branch failed the quality workflow's
+coverage gate (run 37838854209) on
+`tests/test_credential_authority.py::test_script_entrypoint_exits_zero`
+hitting the suite's 30s pytest-timeout while `tests/` ran under the
+`--source=scripts` producer: the credential-authority audit walks the whole
+production import graph, 17-20s per audit under tracing locally, past 30s on
+a loaded runner (ci.yml's `test` job, same commit, same suite, no tracer:
+passed). No node IDs moved: three whole-graph audit tests were given
+explicit `@pytest.mark.timeout(120)` markers with the measured margin stated
+in a comment — the pattern already used by
+`tests/test_check_cross_package_imports.py::TestTheRepository`. Under
+deliberate CPU contention the three tests take 39-49s and pass; the 30s
+default still binds every other test in the suite.
