@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-ext-sdk/tests: +20
+  packages/maistro-ext-sdk/tests: +26
   packages/maistro-ext-harness/tests: +56
 ---
 # 945 — extension developer tooling: scaffold, certification (epic M9-H #945)
@@ -13,7 +13,7 @@ and truthful certification reports** (M9-H3, #975) in
 extend their package's existing, registered suite, so this note carries two
 deltas against the pre-change baselines (SDK 118, harness 138).
 
-## packages/maistro-ext-sdk/tests: +20 (`test_scaffold.py`)
+## packages/maistro-ext-sdk/tests: +26 (`test_scaffold.py`)
 
 - **every family scaffolds a validatable project** (parametrized over the
   five closed families): the generated manifest passes
@@ -28,6 +28,22 @@ deltas against the pre-change baselines (SDK 118, harness 138).
   rejected with no target directory created; non-empty target refused
   without `--force`; `--force` overwrite verified; custom title/description
   flow through;
+- **free-text TOML safety (+6, repair round)**: title and description are
+  written into single-line contexts (pyproject.toml's `description = "..."`
+  basic string, the README title line), so `TestFreeTextTomlSafety` pins
+  the contract the first shipping round lacked: a multi-line description
+  (the reported repro interpolated `[project]` section headers into the
+  generated pyproject) and a multi-line title are rejected with
+  `ScaffoldError` and no target directory created; a description carrying
+  double quotes and backslashes round-trips byte-exact through a real
+  `tomllib` parse of the generated pyproject; overlength title/description
+  (the manifest model's ceilings, 200/2000) are rejected pre-write instead
+  of surfacing as an uncaught post-write `ExtensionManifestError` over a
+  partial tree; and the scaffold's restated ceilings are pinned to the
+  manifest model's `MaxLen` metadata so the two cannot drift. All six
+  fail against the pre-repair implementation (scaffold succeeded over the
+  newline case; the backslash case raised `TOMLDecodeError` only when a
+  build tool parsed the project);
 - **CLI `new`**: exit 0 with the summary JSON, exit 1 on a duplicate
   target with `SCAFFOLD-REJECTED` naming the conflict, and the generated
   project validates through the existing `validate` command;

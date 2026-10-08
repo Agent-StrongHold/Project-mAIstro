@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,20 @@ SDK_PACKAGE_PIN = ">=0.9"
 _SLUG_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
+
+# Free-text fields (title, description) are written into single-line
+# contexts — the README's title line and pyproject.toml's one-line
+# ``description = "..."`` basic string, which TOML 1.0 forbids a raw
+# control character in — so any C0 control or DEL rejects the scaffold
+# before a file exists.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+# The manifest model's free-text length ceilings (ExtensionIdentity's
+# ``title``/``description`` fields), restated here so an overlong value is
+# rejected before any file is written instead of surfacing as an uncaught
+# post-write validator error; a test pins the restatement to the model.
+_TITLE_MAX_LENGTH = 200
+_DESCRIPTION_MAX_LENGTH = 2000
 
 
 class ScaffoldError(ValueError):
@@ -213,6 +228,28 @@ def _validate_version(version: str) -> str:
     return version
 
 
+def _validate_free_text(kind: str, value: str, *, max_length: int) -> str:
+    """Reject free text the generated artifacts cannot carry, before a write.
+
+    Title and description land in single-line contexts — the README title
+    line and pyproject.toml's ``description = "..."`` basic string, which
+    TOML 1.0 may not carry a raw control character in — and both must fit
+    the manifest model's length ceiling, or validation would only fail
+    after the tree already exists.
+    """
+    if _CONTROL_CHARS_RE.search(value):
+        raise ScaffoldError(
+            f"{kind} must be single-line text without control characters "
+            "(newlines included): they cannot be embedded in the generated "
+            f"pyproject.toml description or the manifest summary; got {value!r}"
+        )
+    if len(value) > max_length:
+        raise ScaffoldError(
+            f"{kind} is {len(value)} characters; the manifest ceiling is {max_length}"
+        )
+    return value
+
+
 def _package_segment(publisher: str, name: str) -> str:
     """The Python package segment: ``<publisher>_<name>`` with dashes folded.
 
@@ -246,6 +283,16 @@ def _manifest_dict(
         "data": {"scopes": []},
         "entrypoint": {"module": None, "object": None},  # filled below
     }
+
+
+def _toml_basic_string(value: str) -> str:
+    """Encode *value* as the body of a single-line TOML basic string.
+
+    Escapes exactly what a basic string cannot carry raw — backslash and
+    double quote. Control characters never reach here:
+    :func:`_validate_free_text` rejects them before any file is written.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _pyproject_source(
@@ -428,12 +475,16 @@ def scaffold_extension(
     """Write a complete extension project and return its root directory.
 
     Validates every input *before* touching the filesystem, writes the
-    project, then validates the result with the SDK's own
-    :func:`validate_extension_dir` — fail-closed: the function returns only
-    a directory whose manifest passes public schema validation.
+    project, then validates the result — the manifest through the SDK's
+    own :func:`validate_extension_dir`, and the generated ``pyproject.toml``
+    through a full TOML re-parse — fail-closed: the function returns only
+    a directory whose manifest passes public schema validation and whose
+    packaging metadata parses.
 
     Raises :class:`ScaffoldError` for a bad name/publisher/family/version, an
-    unsupported family, or a non-empty target directory (unless ``force``).
+    unsupported family, a title or description that is not single-line text
+    or exceeds the manifest's length ceilings, or a non-empty target
+    directory (unless ``force``).
     """
     _validate_slug("publisher", publisher)
     _validate_slug("name", name)
@@ -454,6 +505,11 @@ def scaffold_extension(
         f"{title} scaffolded by maistro-ext-sdk new against extension "
         f"contract {EXTENSION_CONTRACT_VERSION}."
     )
+    # Last pre-write gates: the free-text fields must survive every context
+    # they are written into (a newline here used to emit a pyproject.toml
+    # no TOML parser could read, with the command still reporting success).
+    _validate_free_text("title", title, max_length=_TITLE_MAX_LENGTH)
+    _validate_free_text("description", description, max_length=_DESCRIPTION_MAX_LENGTH)
 
     root = Path(out_dir) if out_dir is not None else Path(dist_name)
     if root.exists() and any(root.iterdir()) and not force:
@@ -486,7 +542,7 @@ def scaffold_extension(
         _pyproject_source(
             dist_name=dist_name,
             version=version,
-            summary=description.replace('"', "'"),
+            summary=_toml_basic_string(description),
             package=package,
         ),
         encoding="utf-8",
@@ -505,8 +561,17 @@ def scaffold_extension(
         encoding="utf-8",
     )
 
-    # Fail-closed generator: what it wrote must validate, with the same
-    # public validator any host uses. A scaffold that cannot validate is a
-    # generator bug and stops here.
+    # Fail-closed generator: what it wrote must validate. The manifest goes
+    # through the same public validator any host uses; the pyproject goes
+    # through a full re-parse, so a value the template cannot embed can
+    # never end in a success report over a project no build tool can read.
+    # A scaffold that cannot validate is a generator bug and stops here.
+    try:
+        tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:  # pragma: no cover - generator bug
+        raise ScaffoldError(
+            f"the generated pyproject.toml does not parse ({exc}); this is "
+            "a generator bug, not a usable project"
+        ) from exc
     validate_extension_dir(root)
     return root

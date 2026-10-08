@@ -24,6 +24,7 @@ from __future__ import annotations
 import ast
 import json
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -219,6 +220,75 @@ class TestInputValidation:
         manifest = json.loads((root / "extension.json").read_text(encoding="utf-8"))
         assert manifest["title"] == "Custom title"
         assert manifest["description"] == "Custom description"
+
+
+class TestFreeTextTomlSafety:
+    """Title and description reach pyproject.toml's ``description = "..."``
+
+    basic string and the README's title line. Anything those single-line
+    contexts cannot carry (control characters) or that only the post-write
+    manifest validator would reject (overlength) must be refused before a
+    file exists, and what is accepted must round-trip through a real TOML
+    parse — the failure mode where ``new`` reported success over a
+    pyproject no build tool could read is pinned shut here.
+    """
+
+    def test_multiline_description_rejected_before_any_write(self, tmp_path: Path) -> None:
+        target = tmp_path / "out"
+        with pytest.raises(ScaffoldError, match="description"):
+            scaffold_extension(
+                name="inj",
+                publisher="acme",
+                out_dir=target,
+                description='line one\n[project]\nname = "injected"',
+            )
+        assert not target.exists()
+
+    def test_multiline_title_rejected_before_any_write(self, tmp_path: Path) -> None:
+        target = tmp_path / "out"
+        with pytest.raises(ScaffoldError, match="title"):
+            scaffold_extension(name="widget", publisher="acme", out_dir=target, title="two\nlines")
+        assert not target.exists()
+
+    def test_description_with_quotes_and_backslashes_round_trips_through_tomllib(
+        self, tmp_path: Path
+    ) -> None:
+        description = 'Reads C:\\Users "quoted" notes'
+        root = _scaffold(tmp_path, description=description)
+        parsed = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+        assert parsed["project"]["description"] == description
+
+    def test_overlong_description_rejected_before_any_write(self, tmp_path: Path) -> None:
+        target = tmp_path / "out"
+        with pytest.raises(ScaffoldError, match="description"):
+            scaffold_extension(
+                name="widget", publisher="acme", out_dir=target, description="x" * 2001
+            )
+        assert not target.exists()
+
+    def test_overlong_title_rejected_before_any_write(self, tmp_path: Path) -> None:
+        target = tmp_path / "out"
+        with pytest.raises(ScaffoldError, match="title"):
+            scaffold_extension(name="widget", publisher="acme", out_dir=target, title="t" * 201)
+        assert not target.exists()
+
+    def test_restated_length_ceilings_match_the_manifest_model(self) -> None:
+        """The scaffold's restated ceilings are the manifest model's, so the
+        pre-write rejection and the post-write validator cannot disagree."""
+        import annotated_types
+
+        from maistro_ext_sdk.manifest import ExtensionIdentity
+        from maistro_ext_sdk.scaffold import _DESCRIPTION_MAX_LENGTH, _TITLE_MAX_LENGTH
+
+        def max_len(field: object) -> int:
+            for meta in field.metadata:  # type: ignore[attr-defined]
+                if isinstance(meta, annotated_types.MaxLen):
+                    return meta.max_length
+            raise AssertionError("manifest field carries no MaxLen constraint")
+
+        fields = ExtensionIdentity.model_fields
+        assert max_len(fields["title"]) == _TITLE_MAX_LENGTH
+        assert max_len(fields["description"]) == _DESCRIPTION_MAX_LENGTH
 
 
 class TestCliNewCommand:

@@ -73,8 +73,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="target directory (default: ./<publisher>-<name>)",
     )
     new.add_argument("--version", default="0.1.0", help="extension version (default: 0.1.0)")
-    new.add_argument("--title", default=None, help="human-readable title (default: derived)")
-    new.add_argument("--description", default=None, help="manifest description (default: derived)")
+    new.add_argument(
+        "--title", default=None, help="single-line human-readable title (default: derived)"
+    )
+    new.add_argument(
+        "--description",
+        default=None,
+        help="single-line manifest description (default: derived)",
+    )
     new.add_argument(
         "--force",
         action="store_true",
