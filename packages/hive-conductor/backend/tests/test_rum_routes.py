@@ -466,6 +466,136 @@ def test_store_rejects_wholesale_when_envelope_identifiers_fail_the_charset() ->
     assert stored["session_id"] == "sess01aaaaaa"
 
 
+def test_store_projection_drops_every_malformed_event_without_widening_storage() -> None:
+    """The schema's second half: the store, not the route, is what keeps data.
+
+    The route's Pydantic envelope already refuses a malformed batch 422, but
+    the store is the boundary that decides what is *kept*. Every event shape
+    a broken or hostile client could push past a future route change is
+    projected onto the approved `hive.rum.v1` fields or dropped — never an
+    exception, never stored, and never a field the schema does not name
+    (#1420's server-side redaction contract, the same defense in depth the
+    wholesale identifier rejection above is).
+    """
+    from services.rum_store import RumStore
+
+    store = RumStore(max_events=50)
+    valid = _web_vital(ts=1.0)
+    malformed: list[Any] = [
+        # Not even an object.
+        "not-an-event",
+        # A type neither projection accepts.
+        {"type": "impression"},
+        # web_vital: unknown metric name, negative value, empty route
+        # template, and a boolean ts (bool is an int subclass — the store
+        # must refuse it like the route's schema does).
+        {"type": "web_vital", "name": "CLS", "value_ms": 1.0, "route": "/x", "ts": 1.0},
+        {"type": "web_vital", "name": "LCP", "value_ms": -1.0, "route": "/x", "ts": 1.0},
+        {"type": "web_vital", "name": "LCP", "value_ms": 1.0, "route": "", "ts": 1.0},
+        {"type": "web_vital", "name": "LCP", "value_ms": 1.0, "route": "/x", "ts": True},
+        # api_request: lower-case verb, impossible status class, unknown
+        # outcome, non-numeric duration, an over-length route template, a
+        # non-string request id, and a request id outside the X-Request-ID
+        # charset (the server would never have echoed it).
+        {
+            "type": "api_request",
+            "method": "get",
+            "route": "/v1/x",
+            "status_class": 2,
+            "outcome": "ok",
+            "duration_ms": 1.0,
+            "ts": 1.0,
+        },
+        {
+            "type": "api_request",
+            "method": "GET",
+            "route": "/v1/x",
+            "status_class": 1,
+            "outcome": "ok",
+            "duration_ms": 1.0,
+            "ts": 1.0,
+        },
+        {
+            "type": "api_request",
+            "method": "GET",
+            "route": "/v1/x",
+            "status_class": 2,
+            "outcome": "error",
+            "duration_ms": 1.0,
+            "ts": 1.0,
+        },
+        {
+            "type": "api_request",
+            "method": "GET",
+            "route": "/v1/x",
+            "status_class": 2,
+            "outcome": "ok",
+            "duration_ms": "33",
+            "ts": 1.0,
+        },
+        {
+            "type": "api_request",
+            "method": "GET",
+            "route": "r" * 81,
+            "status_class": 2,
+            "outcome": "ok",
+            "duration_ms": 1.0,
+            "ts": 1.0,
+        },
+        {
+            "type": "api_request",
+            "method": "GET",
+            "route": "/v1/x",
+            "status_class": 2,
+            "outcome": "ok",
+            "duration_ms": 1.0,
+            "request_id": 12345,
+            "ts": 1.0,
+        },
+        {
+            "type": "api_request",
+            "method": "GET",
+            "route": "/v1/x",
+            "status_class": 2,
+            "outcome": "ok",
+            "duration_ms": 1.0,
+            "request_id": "bad id",
+            "ts": 1.0,
+        },
+    ]
+    # One malformed event does not fail the batch: the valid event is kept,
+    # each malformed one is counted rejected, and the read-back holds only
+    # the approved projection of the valid event.
+    assert store.ingest([valid, *malformed], build_id="build-1", session_id="sess01aaaaaa") == 1
+    assert store.rejected_events == len(malformed)
+    stored = store.list_events()["events"]
+    assert len(stored) == 1
+    assert stored[0]["type"] == "web_vital"
+    assert stored[0]["ts"] == 1.0
+    assert stored[0]["build_id"] == "build-1"
+
+
+def test_store_and_switch_fail_closed_when_settings_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken settings object must not crash a telemetry request.
+
+    `get_store()` falls back to the documented default bound instead of
+    raising, and `rum_ingest_enabled()` answers False — the fail-closed
+    default, not an exception that would 500 a page's beacon.
+    """
+    from services import rum_store as rum_store_mod
+
+    def broken_settings() -> Any:
+        raise RuntimeError("settings unavailable")
+
+    monkeypatch.setattr(rum_store_mod, "_singleton", None)
+    monkeypatch.setattr(rum_store_mod, "get_settings", broken_settings)
+    store = rum_store_mod.get_store()
+    assert store.max_events == rum_store_mod.DEFAULT_MAX_EVENTS
+    assert rum_store_mod.rum_ingest_enabled() is False
+
+
 def test_concurrent_first_requests_construct_exactly_one_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

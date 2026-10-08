@@ -1,7 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +22
-  packages/hive-conductor/tests/e2e: +0
+  packages/hive-conductor/backend/tests: +24
 ---
 
 # 1420 — RUM collector contract tests
@@ -223,3 +222,29 @@ deliberate residual is unchanged and outside a repair change's authority:
 `check-route-permissions.py` fails on `/v1/rum` until the maintainer lands the
 `exempt::/v1/rum` grant at the merge base (two-merge doctrine), then this PR
 declares `exempt_reason: authenticated-only` and deletes the baseline row.
+
+## Diff-coverage repair (+2, same file, 2026-10-08)
+
+The merge-queue's "Coverage gate (publish-set floor + diff coverage)" was red
+on exactly one file: `services/rum_store.py` measured 85.7% of its 154 changed
+lines against the per-file 90% floor (reproduced locally with CI's own
+producers — `coverage run --source=packages/hive-conductor/backend` over the
+backend suite plus the `--source=scripts` producer, then
+`scripts/check-diff-coverage.py coverage.xml --base <merge base>`). The
+uncovered lines were the store's defense-in-depth half: every malformed-event
+rejection path in `project_web_vital` / `project_api_request` (unknown type,
+unknown metric, negative/non-numeric values, empty and over-length route
+templates, boolean timestamps, lower-case verbs, impossible status classes,
+unknown outcomes, non-string and charset-failing request ids), the per-event
+reject-and-continue inside `ingest`, and the settings-broken fallbacks in
+`get_store()` / `rum_ingest_enabled()`. Two node IDs close exactly those
+gaps through the public store API —
+`test_store_projection_drops_every_malformed_event_without_widening_storage`
+(one valid event among thirteen malformed shapes: kept == 1, every malformed
+shape counted rejected, nothing but the approved projection stored) and
+`test_store_and_switch_fail_closed_when_settings_cannot_be_read` (a raising
+`get_settings()` yields the documented default ring bound and a disabled
+switch, never an exception that would 500 a beacon). Post-change the gate is
+green at the CI thresholds: "every measured file this change touches is at or
+above 90% lines / 80% branch arcs", with the backend suite at 3551 passed +
+19 skipped.
