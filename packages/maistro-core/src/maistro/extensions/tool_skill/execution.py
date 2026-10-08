@@ -277,7 +277,7 @@ async def invoke_extension_tool(
     actor_id: str = "",
     timeout_s: float | None = None,
     effect_claim: EffectClass | None = None,
-    logical_effect: bool = False,
+    effect_scope: str | None = None,
 ) -> ExtensionToolOutcome:
     """Run one third-party tool call through the canonical effect seam.
 
@@ -321,7 +321,7 @@ async def invoke_extension_tool(
             resolver=resolver,
             executor=executor,
             actor_id=actor_id,
-            logical_effect=logical_effect,
+            effect_scope=effect_scope,
         )
     except (InvocationDenied, InvocationApprovalRequired, CapabilityUnavailable) as exc:
         return _refusal_outcome(
@@ -347,7 +347,7 @@ async def invoke_extension_tool(
                 run_id=run_id,
                 node_run_id=node_run_id,
                 attempt_id=attempt_id,
-                logical_effect=logical_effect,
+                effect_scope=effect_scope,
                 error_code=ERROR_CODE_TIMEOUT,
                 error=f"tool invocation exceeded the {timeout_s}s deadline",
             )
@@ -368,7 +368,7 @@ async def invoke_extension_tool(
             run_id=run_id,
             node_run_id=node_run_id,
             attempt_id=attempt_id,
-            logical_effect=logical_effect,
+            effect_scope=effect_scope,
             error_code=ERROR_CODE_CANCELLED,
             error="tool invocation cancelled",
         )
@@ -384,7 +384,7 @@ async def invoke_extension_tool(
             run_id=run_id,
             node_run_id=node_run_id,
             effect_key=effect_key_for(tool.tool_id, arguments),
-            logical_effect=logical_effect,
+            effect_scope=effect_scope,
         )
         return ExtensionToolOutcome(
             status=InvocationStatus.FAILED,
@@ -485,7 +485,7 @@ async def _cancellation_outcome(
     run_id: str,
     node_run_id: str,
     attempt_id: str,
-    logical_effect: bool,
+    effect_scope: str | None,
     error_code: str,
     error: str,
 ) -> ExtensionToolOutcome:
@@ -503,7 +503,7 @@ async def _cancellation_outcome(
         run_id=run_id,
         node_run_id=node_run_id,
         effect_key=effect_key_for(tool.tool_id, arguments),
-        logical_effect=logical_effect,
+        effect_scope=effect_scope,
     )
     return ExtensionToolOutcome(
         status=InvocationStatus.UNKNOWN,
@@ -562,7 +562,7 @@ async def _latest_invocation(
     run_id: str,
     node_run_id: str,
     effect_key: str,
-    logical_effect: bool,
+    effect_scope: str | None,
 ) -> Invocation | None:
     try:
         return await effects.invocations.latest_effect(
@@ -570,7 +570,7 @@ async def _latest_invocation(
             run_id=run_id,
             node_run_id=node_run_id,
             effect_key=effect_key,
-            logical_effect=logical_effect,
+            effect_scope=effect_scope,
         )
     except Exception:
         return None
