@@ -149,8 +149,17 @@ def shipped_rank(memories: list[Memory], query: str, k: int = LAYER1_LIMIT) -> l
     descending on score alone (equal scores keep pool order), and the top-k is
     returned. The pool preceding this rank (``limit * LAYER1_POOL_FACTOR``) is
     inert here: the corpus is smaller than the pool.
+
+    The store pool read filters on ``min_weight=BUDGET_INCLUDE_WEIGHT`` before
+    ranking (ADR-091 pool floor), so below-floor corpus rows are excluded here
+    too: the shipped retrieval path cannot return them, so they must never
+    reach the score, the pack, or the reported token costs.
     """
-    scored = [(shipped_no_client_score(query, m), m) for m in memories]
+    scored = [
+        (shipped_no_client_score(query, m), m)
+        for m in memories
+        if m.weight >= BUDGET_INCLUDE_WEIGHT
+    ]
     kept = [(s, m) for s, m in scored if s > 0.0]
     kept.sort(key=lambda pair: pair[0], reverse=True)
     return [m for _s, m in kept[:k]]
@@ -550,8 +559,15 @@ def corpus_of(extra: tuple[Memory, ...] = ()) -> tuple[Memory, ...]:
 
 
 def forced_seed() -> list[Memory]:
-    """The Layer 3 wisdom band's forced contribution to every context."""
-    return [m for m in CORPUS if m.memory_id in ADVERSARIAL_IDS]
+    """The Layer 3 wisdom band's forced contribution to every context.
+
+    Production layer3 force-feeds every project-scoped memory at or above
+    ``WISDOM_WEIGHT`` into every context, so the seed is derived from the
+    band rather than an ID list — m_in_01 (0.92) rides along with the
+    adversarial pair, and lands in incident queries' ranked Layer 1 too,
+    reproducing the shipped double-serve.
+    """
+    return [m for m in CORPUS if m.weight >= WISDOM_WEIGHT]
 
 
 def seed_tokens() -> int:
@@ -1567,24 +1583,27 @@ class TestSummariesDistortion:
 
 
 class TestStabilityAcrossWindowSizes:
-    def test_fixed_degrades_small_and_hierarchy_rescues_the_gate(self) -> None:
+    def test_fixed_degrades_small_and_hierarchy_ties_every_window(self) -> None:
         # The measured stability answer, both halves honest:
         #
         # 1. The fixed share degrades at the smallest window: the assembled
         #    block exceeds the whole-block check for most queries, and the
         #    gate spares only a strict minority of the asked facts.
-        # 2. The hierarchical policy's lighter pack fits where the fixed
-        #    pack does not: it recovers facts at the tight window instead of
-        #    tying with it. Its summaries never survive delivery (measured
-        #    just below), so the rescue is the smaller item set — and at
-        #    roomy windows the two still tie exactly.
+        # 2. The hierarchical policy ties the fixed policy at every window,
+        #    including the tight one. The band-derived seed is why the earlier
+        #    rescue died: layer 3 force-feeds every wisdom-band row (now
+        #    m_in_01 alongside the adversarial pair, double-served through
+        #    layer 1 on incident queries), and that forced contribution rides
+        #    in BOTH policies' blocks — so the summary reservation no longer
+        #    buys a block small enough to fit where the fixed pack does not,
+        #    and its summaries never survive delivery anyway (measured just
+        #    below).
         sweep = run_window_sweep()
         fixed_small = sweep[("fixed", SMALL_WINDOW)]
         fixed_large = sweep[("fixed", LARGE_WINDOW)]
         assert fixed_small.recall < fixed_large.recall
-        for window in WINDOWS[1:]:
+        for window in WINDOWS:
             assert sweep[("pressure", window)].recall == sweep[("fixed", window)].recall
-        assert sweep[("pressure", SMALL_WINDOW)].recall > fixed_small.recall
 
     def test_pressure_summaries_never_survive_delivery(self) -> None:
         # The measured negative: the tier engages on the pre-gate drop set
