@@ -295,8 +295,9 @@ class TestAssemble:
         )
         assert "CONSTRAINTS" * 50 in text
 
+
 class AdaptiveContextAssemblyPolicy(DefaultContextAssemblyPolicy):
-    '''A policy that adapts the context budget based on query length.'''
+    """A policy that adapts the context budget based on query length."""
 
     async def assemble(
         self,
@@ -308,8 +309,11 @@ class AdaptiveContextAssemblyPolicy(DefaultContextAssemblyPolicy):
         query: str = "",
         org_id: str = "",
     ) -> str:
-        # Adaptive logic: increase budget for longer queries (more complex task)
-        # Decrease budget for very short queries.
+        # Adaptive logic: increase the budget for longer queries (a proxy for a
+        # more complex task) and decrease it for very short ones. This is the
+        # seam epic #901's "adaptive top-k/context budgeting" leaf would tune;
+        # here it exists only to prove the budget actually reaches the
+        # production inclusion decision.
         query_len = len(query)
         if query_len > 100:
             adaptive_budget = int(budget_tokens * 1.5)
@@ -317,7 +321,7 @@ class AdaptiveContextAssemblyPolicy(DefaultContextAssemblyPolicy):
             adaptive_budget = int(budget_tokens * 0.5)
         else:
             adaptive_budget = budget_tokens
-        # Ensure budget is at least 1 to avoid errors.
+        # Ensure the budget is at least 1 to avoid errors.
         adaptive_budget = max(1, adaptive_budget)
         return await super().assemble(
             project_id=project_id,
@@ -330,71 +334,131 @@ class AdaptiveContextAssemblyPolicy(DefaultContextAssemblyPolicy):
         )
 
 
-
 class TestAdaptiveContextBudgeting:
-    """Tests for adaptive context budgeting."""
-    async def test_adaptive_budget_increases_for_long_query(
-        self,
-    ) -> None:
-        policy = AdaptiveContextAssemblyPolicy(
+    """Exploratory spike for epic #901's adaptive top-k/context budgeting.
+
+    The assertions pin real ADR-091 behavior, not the scaffold policy: a
+    memory below `ALWAYS_INCLUDE_WEIGHT` (0.6) is packed only while it fits
+    whole, so a budget change is observable as an inclusion flip.
+    """
+
+    @staticmethod
+    def _adaptive_policy() -> AdaptiveContextAssemblyPolicy:
+        return AdaptiveContextAssemblyPolicy(
             episodic_store=InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
             outcome_store=InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
             project_store=InMemoryProjectStore(),
         )
-        # Create a project with some constraints
+
+    async def test_adaptive_budget_affects_inclusion_of_budget_dependent_memory(
+        self,
+    ) -> None:
+        # "widget widget" estimates to 3 tokens and sits in the budget band
+        # (weight 0.5 < ALWAYS_INCLUDE_WEIGHT), so it is included only while
+        # it fits whole. Base budget 5: the short query's 0.5x factor leaves
+        # 2 tokens (memory dropped); the long query's 1.5x leaves 7 (kept).
+        # The query words overlap the content so the ranker keeps the memory
+        # in the pool either way; only the budget decides.
+        policy = self._adaptive_policy()
         project = await policy.project_store.create(
-            owner_user_id="u1", name="Proj", profile_markdown="CONSTRAINTS"
+            owner_user_id="u1", name="Proj", profile_markdown=""
         )
-        # Add a wisdom memory that will be included if budget allows
-        await policy.episodic_store.store(
-            _mem(MemoryTier.WISDOM, 0.95, project_id=project.id)
-        )
-        # Short query: should get reduced budget
-        short_query = "short"
+        memory = _mem(MemoryTier.OPINION, 0.5, memory_id="m-budget", project_id=project.id)
+        memory.content = "widget widget"
+        await policy.episodic_store.store(memory)
+
         text_short = await policy.assemble(
             project_id=project.id,
             run_id="r1",
             agent_id="agent-1",
             session_id="s1",
-            budget_tokens=100,  # base budget
-            query=short_query,
+            budget_tokens=5,
+            query="widget",
         )
-        # Long query: should get increased budget
-        long_query = "x" * 150  # length > 100
         text_long = await policy.assemble(
             project_id=project.id,
             run_id="r1",
             agent_id="agent-1",
             session_id="s1",
-            budget_tokens=100,
-            query=long_query,
+            budget_tokens=5,
+            query="widget " + "x" * 100,
         )
-        # The long query should allow the wisdom memory to be included (since budget increased)
-        # The short query might still include it if the base budget is enough, but we can check that
-        # the long query text is at least as long as the short query text (or contains the memory).
-        # Since the wisdom memory is included unconditionally due to weight >= 0.6, it will always be
-        # included regardless of budget. So we need to test with a memory that is not always included.
-        # Let's use a LESSON memory (weight 0.8) which is in the BUDGET_INCLUDE_WEIGHT band (0.3-0.59? Actually
-        # from ADR-091: weight >=0.6 always included, 0.3-0.59 included if budget allows, <0.3 excluded.
-        # So weight 0.8 is actually above 0.6, so it would be always included? Wait, the ADR says weight >=0.6
-        # always included. That includes REGRET, AFFIRMATION, WISDOM. But LESSON has max weight 0.9, so
-        # some LESSON memories may be below 0.6? The tier bounds are 0.5-0.9, so a LESSON memory can have
-        # weight 0.5 (which is below 0.6) or 0.8 (above 0.6). The ADR's band is based on the actual weight,
-        # not the tier. So we need to create a LESSON memory with weight 0.5 (which is in the 0.3-0.59 band)
-        # to test budget dependence.
-        # Let's recreate the memories with appropriate weights.
-        # We'll do that in the test.
+        assert "widget widget" not in text_short
+        assert "widget widget" in text_long
 
-        # For simplicity, we'll just test that the adaptive policy changes the budget and that the
-        # assembled text length changes accordingly when we have a memory that is budget-dependent.
-        # We'll create a memory with weight 0.5 (OPINION tier, weight 0.5) which is in the budget band.
-        # We'll then see if the adaptive budget affects whether it is included.
-        pass
-
-    async def test_adaptive_budget_affects_inclusion_of_budget_dependent_memory(
+    async def test_short_query_reduction_is_what_drops_the_memory(
         self,
     ) -> None:
-        # TODO: Implement proper test for inclusion of budget-dependent memory.
-        # For now, we verify that the adaptive policy changes the budget (see other test).
-        pass
+        # Control for the flip above: the default policy at the same base
+        # budget keeps the memory for the very same short query, so the
+        # exclusion is the adaptive 0.5x factor, not the base budget.
+        policy = DefaultContextAssemblyPolicy(
+            episodic_store=InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+            outcome_store=InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+            project_store=InMemoryProjectStore(),
+        )
+        project = await policy.project_store.create(
+            owner_user_id="u1", name="Proj", profile_markdown=""
+        )
+        memory = _mem(MemoryTier.OPINION, 0.5, memory_id="m-budget", project_id=project.id)
+        memory.content = "widget widget"
+        await policy.episodic_store.store(memory)
 
+        text = await policy.assemble(
+            project_id=project.id,
+            run_id="r1",
+            agent_id="agent-1",
+            session_id="s1",
+            budget_tokens=5,
+            query="widget",
+        )
+        assert "widget widget" in text
+
+    async def test_budget_gate_includes_a_memory_only_while_it_fits_whole(
+        self,
+    ) -> None:
+        # The gate any adaptive budgeting policy would tune, on the production
+        # policy: a budget-band memory is dropped the moment it no longer
+        # fits, while an always-include memory (weight >= 0.6) survives a
+        # budget that drops it.
+        policy = DefaultContextAssemblyPolicy(
+            episodic_store=InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+            outcome_store=InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+            project_store=InMemoryProjectStore(),
+        )
+        project = await policy.project_store.create(
+            owner_user_id="u1", name="Proj", profile_markdown=""
+        )
+        budgeted = _mem(MemoryTier.OPINION, 0.5, memory_id="m-budget", project_id=project.id)
+        budgeted.content = "widget widget"
+        await policy.episodic_store.store(budgeted)
+
+        tight = await policy.assemble(
+            project_id=project.id,
+            run_id="r1",
+            agent_id="agent-1",
+            session_id="s1",
+            budget_tokens=2,
+        )
+        assert tight == ""
+        loose = await policy.assemble(
+            project_id=project.id,
+            run_id="r1",
+            agent_id="agent-1",
+            session_id="s1",
+            budget_tokens=3,
+        )
+        assert loose == "widget widget"
+
+        wisdom = _mem(MemoryTier.WISDOM, 0.95, memory_id="m-wisdom", project_id=project.id)
+        wisdom.content = "wisdom lore"
+        await policy.episodic_store.store(wisdom)
+        with_wisdom = await policy.assemble(
+            project_id=project.id,
+            run_id="r1",
+            agent_id="agent-1",
+            session_id="s1",
+            budget_tokens=2,
+        )
+        assert "wisdom lore" in with_wisdom
+        assert "widget widget" not in with_wisdom

@@ -1,17 +1,20 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +2
+  packages/maistro-core/tests: +3
 ---
 # #901 Adaptive context budgeting exploration
 
-This implements a simple adaptive context assembly policy that adjusts the
-context budget based on query length as a prototype for exploring adaptive
-top-k/context budgeting (issue #922). The policy increases the budget for
-long queries (indicating complex tasks) and decreases it for short queries.
+Exploratory spike for epic #901's "adaptive top-k/context budgeting" leaf: an
+`AdaptiveContextAssemblyPolicy` subclass scales the context budget by query
+length (longer query -> larger budget) and the tests prove that scaling
+actually reaches the production inclusion decision — a memory below
+`ALWAYS_INCLUDE_WEIGHT` flips from dropped to kept when the adaptive budget
+grows past its whole-memory cost (ADR-091 `_pack` semantics).
 
-The tests verify that the adaptive policy correctly modifies the budget.
-A second test is a placeholder for future work on verifying that the budget
-change affects inclusion of budget-dependent memories.
-
-This is a spike for the epic #901 to explore advanced memory, retrieval,
-consolidation, and context intelligence.
+One test is a control (the default policy at the same base budget keeps the
+memory the adaptive policy dropped), and one pins the production budget gate
+itself: a budget-band memory is included only while it fits whole, while an
+always-include memory survives a budget that drops it. All assertions are
+token-arithmetic deterministic (4 chars/token), no timing or ordering
+sensitivity. No production code changed: experimental policies stay out of
+the canonical memory authority, per the epic's contract.
