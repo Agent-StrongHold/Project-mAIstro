@@ -13,7 +13,16 @@ tip -- 046, then 047, 048, 050, 051, 052, 053, 054, 055, 056, now 057,
 after the deployed head, never fork beside it, or `alembic upgrade head`
 refuses with multiple heads. On develop the quota door itself claimed
 `055`'s child slot, so the door keeps that parent here and #863's
-revision follows the `056_user_model_facts` tip as `057`.
+revision follows the `056_user_model_facts` tip as `057`. This sync
+(56332162c) delivered develop's originals of the branch's renumbered
+copies verbatim -- `053_learning_lifecycle_columns`,
+`054_learning_applicability_epistemics`, `055_task_admission_generations`,
+`056_user_model_facts` -- dropping the branch-side duplicates and
+re-parenting this branch's genuinely-new backlog work source (#82) past
+the `057` tip as `058` -- since re-parented again, first onto develop's
+`058_learning_validation_provenance` as `059_backlog_work_source`, then
+with its authority-cutover ledger `060_backlog_authority_cutover` on top,
+keeping exactly one linear head.
 
 Every table here is created only when missing, and every column added
 only when absent, because the store bootstraps these same tables itself:
