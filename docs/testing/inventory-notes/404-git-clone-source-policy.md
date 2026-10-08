@@ -474,3 +474,38 @@ Re-verified at branch head 29e8a684f7a8 with CI's exact argv:
 1336 findings`, no banking involved; hosted `exact-debt-ledger` and
 `Quality gate (Pillars 1–4, 7, 8)` check runs concluded success on that same
 commit.
+
+## Independent verification round (head e92955189797)
+
+Re-derived from issue #404's acceptance criteria and executed locally at
+branch head `e92955189797e8773e12b8c8ab1929a5fe2b3b15` (base
+`b90df19a24a1ce65a2fc686cffa6960fc2a7d6ff`):
+
+- `uv run pytest packages/maistro-core/tests/tools/git/test_server_security.py
+  packages/maistro-rsi/tests/test_cli.py
+  packages/maistro-rsi/tests/test_harvest_entry_point.py
+  packages/maistro-rsi/tests/test_selfbranch.py -x -q` — 138 passed,
+  including the live-GPG `TestLiveSignaturePolicy` cases (an earlier round's
+  failure of `test_signed_clone_passes_when_signer_is_trusted` was
+  environmental — "No space left on device" during the GPG commit — at the
+  older head 19a79d3731, and passes here).
+- `uv run ruff check .` / `uv run ruff format --check .` — clean.
+- `uv run python scripts/check-suite-inventory.py` (CI's argv, all 17
+  suites) — matches the recorded inventory.
+- `uv run mypy --strict packages/maistro-core/src` (CI's argv) — no issues
+  in 771 source files.
+- Direct probe: `validate_clone_source` rejects `git://`, `GIT://`,
+  `Git://`, `git:%2F%2F…`, `%67it://…`, bare paths, scp-like, and
+  `http://` with `blocked_url_scheme`; accepts `https://`/`ssh://` for
+  allowlisted hosts.
+- `check-ac-state.py --run-tests --ratchet --mandate b90df19a…`: both
+  mandates pass (0 criteria touched/unproven, 0 chain links introduced).
+  The ratchet-vs-recorded-bound comparison reports `design_coverage
+  39.2752 falls below the floor of 43.8998` (folded from the base's 35
+  notes, dominated by `auto-950.json`). Measuring the base itself in a
+  detached worktree with this repo's own `_measure_base` mechanism and the
+  same environment gives the identical `39.2752` — the recorded floor is
+  stale at develop (protected pushes skip the ratchet), the candidate
+  touches no spec/ADR and drops no `@pytest.mark.ac` marker, so the fall is
+  inherited repo-wide debt, not introduced by this branch; the merge-group
+  actual-base guard (candidate vs measured base) passes on equality.
