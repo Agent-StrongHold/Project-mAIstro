@@ -30,9 +30,22 @@ proves contention structurally:
   before releasing it -- a liveness poll, not a timing bound;
 - the event-ordering race requires the per-actor id sets to interleave,
   which per-session serial execution cannot produce;
-- the effect-claim race inserts a ``threading.Barrier`` between the
-  read-none SELECT and the INSERT, making the read-none/read-none/insert
+- both effect-claim races (the raw-SQL window and the real
+  ``PgRunStore.claim_run_by_effect``) insert a ``threading.Barrier`` between
+  the read-none SELECT and the INSERT, making the read-none/read-none/insert
   window deterministic rather than probabilistic.
+
+Load-independence (the CI repair at this head)
+----------------------------------------------
+The first CI run of this harness (quality.yml run 37789491251) failed in
+exactly one case: ``test_invocation_claims_...`` staged its race with a
+50 ms lease, and ``PgInvocationStore.claim`` legitimately re-claims a
+PENDING invocation once the lease lapses -- so on a loaded runner a late
+actor became a second, *correct* winner and the exactly-once assertion
+failed. A race must not share a time base with thread startup: the race
+phase now uses ``CLAIM_LEASE`` (30 s, longer than any plausible scheduling
+delay), and lease *expiration* is exercised deterministically afterwards,
+sequentially, where no scheduling race can widen it.
 
 Targets (from the issue) and the invariants each race pins
 ----------------------------------------------------------
@@ -179,6 +192,19 @@ class _Race:
         return [self._results[index] for index in self._staged]
 
 
+def _contention_proved(waiting: dict[int, tuple[int, ...]], holder_pid: int) -> bool:
+    """The full wait-graph predicate the claim race's witness waits on.
+
+    Every actor must be lock-waiting, the wait graph must sit entirely
+    inside the race (blocker chains rooted at the held Run lock), and the
+    holder must be the chain root. Shared by the poll loop and the final
+    assertion, so a timeout can never satisfy the witness on a weaker
+    condition than the one the loop was looking for.
+    """
+    blockers = {b for chain in waiting.values() for b in chain}
+    return len(waiting) >= ACTORS and blockers <= {holder_pid, *waiting} and holder_pid in blockers
+
+
 async def _lock_wait_graph(witness: Any) -> dict[int, tuple[int, ...]]:
     """pid -> its direct blockers, for every session in this database.
 
@@ -253,18 +279,10 @@ async def test_claim_race_from_independent_sessions_admits_one_physical_winner(
             while time.monotonic() < deadline:
                 wait_graph = await _lock_wait_graph(pg_pool)
                 waiting = {pid: b for pid, b in wait_graph.items() if b}
-                # Every actor must be lock-waiting, the wait graph must sit
-                # entirely inside the race (blocker chains rooted at the held
-                # Run lock), and the holder must be the chain root.
-                blockers = {b for chain in waiting.values() for b in chain}
-                if (
-                    len(waiting) >= ACTORS
-                    and blockers <= {holder_pid, *waiting}
-                    and holder_pid in blockers
-                ):
+                if _contention_proved(waiting, holder_pid):
                     break
                 await asyncio.sleep(0.02)
-            assert len(waiting) >= ACTORS, (
+            assert _contention_proved(waiting, holder_pid), (
                 "contention witness failed: not every actor backend was "
                 f"lock-waiting on the held Run row lock (saw {len(waiting)} of "
                 f"{ACTORS}, wait graph {waiting!r}); the race never raced, so "
@@ -358,23 +376,50 @@ async def test_effect_claim_read_none_insert_window_yields_one_row(
 
 @pytest.mark.asyncio
 async def test_store_effect_claim_race_yields_one_created_and_shared_identity(
-    pg_pool: Any, pg_dsn: str
+    pg_pool: Any, pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``claim_run_by_effect`` from independent stores: one creator, one run.
 
     The store-level counterpart to the window leg: four actors build real
-    ``PgRunStore`` objects on private pools and race the real method, which
-    must return ``created=True`` exactly once and the same canonical run to
-    everyone.
+    ``PgRunStore`` objects on private pools and race the real method with
+    the vulnerable window held open -- every actor's read-none SELECT
+    completes before any actor inserts, gated at
+    ``_require_locked_parent_scope`` (the one seam strictly between that
+    SELECT and the INSERT inside the method's transaction). The method
+    must return ``created=True`` exactly once and the same canonical run
+    to everyone.
     """
     _projects, workspace, project_id = await _scoped_workspace(pg_pool, "effect-store")
     effect_key = f"m8a7-store-{uuid4().hex}"
-    go = threading.Event()
+    window = threading.Barrier(ACTORS)
+    unpatched_scope_check = PgRunStore._require_locked_parent_scope
+
+    async def at_read_insert_window(
+        self: PgRunStore,
+        conn: Any,
+        graph: Graph,
+        *,
+        parent_run_id: str | None,
+        parent_node_run_id: str | None,
+        allow_cross_project: bool,
+    ) -> None:
+        """Hold every actor's claim transaction open after its read-none SELECT."""
+        await asyncio.get_running_loop().run_in_executor(None, window.wait, 30)
+        if parent_run_id is not None:
+            await unpatched_scope_check(
+                self,
+                conn,
+                graph,
+                parent_run_id=parent_run_id,
+                parent_node_run_id=parent_node_run_id,
+                allow_cross_project=allow_cross_project,
+            )
+
+    monkeypatch.setattr(PgRunStore, "_require_locked_parent_scope", at_read_insert_window)
 
     def contender() -> Callable[[Any], Awaitable[Any]]:
         async def _claim(pool: Any) -> tuple[bool, str]:
             store = PgRunStore(pool, project_store=PgProjectScopeStore(pool))
-            assert go.wait(30), "contender never released to start"
             effect = await store.claim_run_by_effect(
                 _race_graph(workspace, project_id),
                 effect_key=effect_key,
@@ -387,7 +432,6 @@ async def test_store_effect_claim_race_yields_one_created_and_shared_identity(
     race = _Race(pg_dsn)
     for index in range(ACTORS):
         race.stage(index, contender())
-    go.set()
     race.join()
 
     outcomes = race.join()
@@ -532,7 +576,15 @@ async def test_invocation_claims_from_independent_actors_dispatch_exactly_once(
         async def _claim(pool: Any) -> HandlerInvocation | None:
             store = PgInvocationStore(pool)
             assert go.wait(30), "claimer never released to start"
-            return await store.claim(trigger.trigger_id, event.id, lease_seconds=0.05)
+            # A lease comfortably longer than thread startup + pool creation:
+            # ``claim`` *correctly* re-claims a PENDING invocation whose lease
+            # has lapsed, so a short lease here makes a late actor a second,
+            # legitimate winner and turns runner load into a false exactly-once
+            # failure (the CI flake this harness shipped with). Expiration is
+            # exercised deterministically below, sequentially, after the race.
+            return await store.claim(
+                trigger.trigger_id, event.id, lease_seconds=CLAIM_LEASE.total_seconds()
+            )
 
         return _claim
 
@@ -547,26 +599,50 @@ async def test_invocation_claims_from_independent_actors_dispatch_exactly_once(
     winner = won[0]
     assert winner.status is InvocationStatus.PENDING
 
+    # Expiration reclaim, deterministically: lapse the winner's lease and a
+    # single *sequential* claim takes over exactly once. No concurrency here,
+    # so the attempts increment says nothing about scheduling.
+    store = PgInvocationStore(pg_pool)
+    lapsed = HandlerInvocation(
+        trigger_id=winner.trigger_id,
+        event_id=winner.event_id,
+        status=InvocationStatus.PENDING,
+        attempts=winner.attempts,
+        last_error="",
+        created_at=winner.created_at,
+        lease_expires_at=time.time() - 3600,
+    )
+    await store.save(lapsed)
+    reclaimed = await store.claim(
+        trigger.trigger_id, event.id, lease_seconds=CLAIM_LEASE.total_seconds()
+    )
+    assert reclaimed is not None, "a lapsed lease on a PENDING invocation must be reclaimable"
+    assert reclaimed.attempts == winner.attempts + 1
+
     # Terminal is terminal: even with the lease long lapsed, no session may
     # re-dispatch a SUCCESS invocation.
-    store = PgInvocationStore(pg_pool)
     terminal = HandlerInvocation(
         trigger_id=winner.trigger_id,
         event_id=winner.event_id,
         status=InvocationStatus.SUCCESS,
-        attempts=winner.attempts,
+        attempts=reclaimed.attempts,
         last_error="",
         created_at=winner.created_at,
         lease_expires_at=time.time() - 3600,
     )
     await store.save(terminal)
     for _ in range(ACTORS):
-        assert await store.claim(trigger.trigger_id, event.id, lease_seconds=0.05) is None
+        assert (
+            await store.claim(
+                trigger.trigger_id, event.id, lease_seconds=CLAIM_LEASE.total_seconds()
+            )
+            is None
+        )
 
     rows = await store.list_for_event(event.id)
     assert len(rows) == 1
     assert rows[0].status is InvocationStatus.SUCCESS
-    assert rows[0].attempts == 1, "terminal re-claim attempts must not increment"
+    assert rows[0].attempts == 2, "terminal re-claim attempts must not increment"
 
 
 @pytest.mark.asyncio
@@ -608,9 +684,15 @@ async def test_concurrent_event_appends_keep_a_unique_total_order(
 
     lows = [min(ids) for ids in per_actor]
     highs = [max(ids) for ids in per_actor]
-    overall_lo, overall_hi = min(lows), max(highs)
+    # Pairwise, between distinct actors. Comparing each range against the
+    # overall span proves nothing: for disjoint serialized blocks the block
+    # holding the global minimum always satisfies "overlaps the overall
+    # range". Only cross-actor overlap can distinguish interleaving from
+    # per-session serialization.
     overlapped = any(
-        overall_lo < high and low < overall_hi for low, high in zip(lows, highs, strict=True)
+        lows[a] < highs[b] and lows[b] < highs[a]
+        for a in range(ACTORS)
+        for b in range(a + 1, ACTORS)
     )
     assert overlapped, (
         "per-actor id ranges are disjoint contiguous blocks: the appends "
@@ -667,11 +749,17 @@ async def test_cursor_lease_reclaim_fences_the_stale_holder(pg_pool: Any, pg_dsn
 
     # The stale holder's write is refused outright.
     assert not await store.advance(consumer, fencing_token=first.fencing_token, position=100)
-    # The new holder advances; a stale low position cannot move it backwards.
+    # The new holder advances...
     assert await store.advance(consumer, fencing_token=second.fencing_token, position=5)
+    # ...but its own current token cannot move the durable position backwards:
+    # the advance is accepted (the token matches) and the position must hold.
+    # A direct assignment instead of GREATEST would land at 3 and fail this.
+    assert await store.advance(consumer, fencing_token=second.fencing_token, position=3)
     renewed = await store.claim(consumer, holder="holder-B", lease_seconds=30.0)
     assert renewed is not None
-    assert renewed.position >= 5
+    assert renewed.position == 5, (
+        "position must never move backwards, not even for the current holder"
+    )
 
 
 @pytest.mark.asyncio

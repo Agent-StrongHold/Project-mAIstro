@@ -35,13 +35,27 @@ concurrency) had no race test at all.
 
 ## Experiment
 
-`packages/maistro-core/tests/runs/test_m8a7_pg_race_harness.py` — 9 races, each
-staging four **independent sessions**: one OS thread, one asyncio loop, one
+`packages/maistro-core/tests/runs/test_m8a7_pg_race_harness.py` — 9 races
+against **independent sessions**: one OS thread, one asyncio loop, one
 private `asyncpg` pool per actor. Separate backend sessions (not shared-pool
 tasks) are the unit PostgreSQL actually serializes on; none of the guards under
 test depend on process identity, so thread-per-actor is the bounded stand-in for
 process-like workers, and it keeps the harness inside one pytest process.
-Runtime ~2.3s for all nine.
+Runtime ~2.2s for all nine.
+
+Per-case topology (the concurrency evidence is per case, not a blanket four):
+
+| Race | Actors | Contention evidence |
+| --- | --- | --- |
+| duplicate consumer claims | 4 + lock holder | `pg_blocking_pids` wait graph (below) |
+| raw read-none/read-none/insert window | 4 | `threading.Barrier` between SELECT and INSERT |
+| `claim_run_by_effect` from real stores | 4 | barrier at `_require_locked_parent_scope`, the seam between the method's read-none SELECT and its INSERT |
+| stale writers under a terminal Run | sequential (fixture) | lifecycle refusal is order-theoretic, not load-dependent |
+| dueling terminalizations | 2 | row lock elects; loser's re-read refuses |
+| `(trigger, event)` invocation claims | 4 | single conditional upsert; one winner |
+| cursor lease reclaim + fencing | 1 reclaimer + fixture holder | fencing token comparison |
+| concurrent event-log appends | 4 | pairwise cross-actor id-range overlap (below) |
+| new NodeRun under a terminal Run | 1 stale pool + fixture | parent re-read under the Run lock |
 
 The harness is self-validating about *actually racing* — the design decision
 this note is mostly about:
@@ -54,14 +68,32 @@ this note is mostly about:
   waiter names the holder — waiters 2-4 name the waiter ahead of them
   (`wait_event_type=Lock`, `tuple` vs `transactionid`). The witness therefore
   checks "every actor lock-waiting, wait graph internal to the race, holder is
-  the chain root", not "every waiter names the holder". A liveness poll, not a
+  the chain root" — one predicate (`_contention_proved`), shared by the poll
+  loop *and* the final assertion, so a poll timeout cannot satisfy the witness
+  on a weaker condition than the one it waited for. A liveness poll, not a
   timing bound.
-- **Deterministic window.** The effect-claim race puts a `threading.Barrier`
-  between the read-none SELECT and the INSERT inside each actor's transaction —
-  read-none/read-none/insert is *constructed*, not hoped for.
-- **Interleaving witness.** The event race requires the four actors' id ranges
-  to overlap; per-session serialization would produce disjoint contiguous
-  blocks and the test fails itself before it can pass vacuously.
+- **Deterministic window.** Both effect-claim races (the raw-SQL window and the
+  real `PgRunStore.claim_run_by_effect`) put a `threading.Barrier` between the
+  read-none SELECT and the INSERT inside each actor's transaction —
+  read-none/read-none/insert is *constructed*, not hoped for. At the store
+  level the barrier hangs off `_require_locked_parent_scope`, the one
+  production seam that runs strictly between those two statements, so the real
+  method — not a copy of it — executes the widened window.
+- **Interleaving witness.** The event race requires two distinct actors' id
+  ranges to overlap pairwise; per-session serialization would produce disjoint
+  contiguous blocks and the test fails itself before it can pass vacuously.
+  (The first draft compared each actor's range against the overall span, which
+  is satisfied trivially by the block holding the global minimum — caught in
+  review, repaired here.)
+- **Load-independence.** No race shares a time base with thread startup. The
+  invocation-claim race's first draft used a 50 ms lease; `claim` *correctly*
+  re-claims a PENDING invocation once its lease lapses, so a late actor on a
+  loaded runner became a second, legitimate winner — quality.yml run 37789491251
+  failed exactly this way (`coverage (PostgreSQL)`, "exactly one dispatch … got
+  2"). Repaired: the race phase uses a 30 s lease (longer than any plausible
+  scheduling delay, so no in-race re-claim can be legitimate) and expiration is
+  exercised deterministically afterwards, sequentially. Re-validated under full
+  CPU saturation: 3/3 consecutive green runs where the draft failed within two.
 
 ## Results
 
@@ -72,7 +104,7 @@ this note is mostly about:
 | one canonical active claim | `claim_consumer_run` × 4 sessions | held: 1 winner, 3 `ConsumerClaimLost`, one NodeRun/one RUNNING Attempt |
 | uniqueness/idempotency across sessions | read-none/read-none/insert + `claim_run_by_effect` × 4 | held: exactly one canonical run, one `claimed=True`, shared identity |
 | terminal state not overwritten by stale writers | stale Attempt-COMPLETED under FAILED Run; dueling COMPLETED/FAILED | held: refused in-transaction; exactly one terminal lands |
-| exactly-once dispatch | `PgInvocationStore.claim` × 4 | held: one winner; terminal never re-claimed; attempts stay 1 |
+| exactly-once dispatch | `PgInvocationStore.claim` × 4 | held: one winner; lapsed lease reclaimed deterministically; terminal never re-claimed; attempts stop incrementing |
 | recovery-lease fencing | cursor re-claim after expiry | held: stale `advance` refused, position monotone |
 | durable event ordering | 4 × 25 concurrent appends | held: unique ids, one total order, clean pagination |
 
@@ -82,7 +114,8 @@ by a named case within ~1.5s:
 1. `FOR UPDATE` dropped from the claim SELECT → duplicate claims collide on
    `uq_canonical_node_runs_run_ordinal`; exactly-one-winner fails.
 2. Invocation claim's terminal exclusion (`status <> ALL(...)`) removed → a
-   SUCCESS invocation is re-dispatched (`attempts=2` handed to a claimant).
+   SUCCESS invocation is re-dispatched (`attempts` increments handed to a
+   claimant).
 3. `ix_canonical_runs_effect` dropped → the read-none window inserts **four**
    canonical runs for one effect key. This is the issue's hypothesized defect
    class, reproduced on demand, and it settles the constraints-vs-locks
@@ -104,7 +137,16 @@ by a named case within ~1.5s:
 **Runtime/flakiness:** 9 passed in 2.17-2.39s across four consecutive runs,
 zero flakes; skip path (no `MAISTRO_TEST_PG_DSN`) is 9 skips in ~1.1s and the
 module still collects (inventory delta +9 recorded in
-`docs/testing/inventory-notes/887-m8a7-pg-race-harness.md`).
+`docs/testing/inventory-notes/887-m8a7-pg-race-harness.md`). The one real flake
+this harness ever produced is the 50 ms-lease failure above — found by CI, not
+by local runs, which is itself the finding: locally-green races said nothing
+about runner-load behavior, and the repair makes the race's verdict independent
+of that load rather than merely less likely to trip (3/3 green under full
+saturation post-repair; the draft failed within two loaded runs). The module
+runs in CI's `coverage (PostgreSQL)` job (quality.yml's
+"Apply the chain, then the suites that need a schema" step includes
+`packages/maistro-core/tests/runs`), so its races — and their flakes — execute
+on every quality.yml run, and that job is also where the flake surfaced.
 
 **Database-version sensitivity:** evidence is single-version — PostgreSQL 18.6
 (Ubuntu 18.6-0ubuntu0.26.04) locally, matching CI's `pgvector/pgvector:pg18`
