@@ -44,7 +44,13 @@ Findings the harness pins (full analysis in
   replay state space is (status, has-accepted-outcome), not status alone;
   no production writer takes that move at this head (the reconciler's pause
   path short-circuits WAITING records), so this is a seam contract to control
-  during replay — likewise not a live defect.
+  during replay — likewise not a live defect;
+- recovery's durable tally counts ``RECOVERY_ATTEMPTED`` rows without
+  distinguishing a completed recovery from an interrupted one, so repeated
+  recovery of a *completed* task is not idempotent: the fourth — successful —
+  recovery opens the crash-loop breaker and hides the completed result.
+  Latent at this head (``recover`` has no production caller yet), recorded as
+  a recovery-idempotence constraint rather than expected behavior.
 
 Trust boundary (epic contract, enforced by construction and by test):
 
@@ -102,6 +108,7 @@ from maistro.runs.lifecycle import (
     ATTEMPT_TRANSITIONS,
     RUN_TRANSITIONS,
     InvalidLifecycleTransition,
+    UnearnedRunCompletion,
     check_completion_is_earned,
     latest_node_runs,
     lease_is_expired,
@@ -209,6 +216,7 @@ def _checkpoint(
     *,
     task_id: str = "task-1",
     recipe_version: str = "v1",
+    code_registry_version: str | None = None,
 ) -> TaskCheckpoint:
     return TaskCheckpoint(
         task_id=task_id,
@@ -216,7 +224,9 @@ def _checkpoint(
         kind=kind,
         payload=payload,
         recipe_version=recipe_version,
-        code_registry_version=recipe_version,
+        code_registry_version=(
+            recipe_version if code_registry_version is None else code_registry_version
+        ),
         created_at=_t(sequence + 1),
     )
 
@@ -492,7 +502,9 @@ def _task() -> WaveTask:
     return WaveTask(id="task-1", description="research fixture")
 
 
-def _planned_marker(sequence: int, *, recipe_version: str = "v1") -> TaskCheckpoint:
+def _planned_marker(
+    sequence: int, *, recipe_version: str = "v1", code_registry_version: str | None = None
+) -> TaskCheckpoint:
     return _checkpoint(
         sequence,
         CheckpointKind.WAVE_FAN_OUT,
@@ -502,6 +514,7 @@ def _planned_marker(sequence: int, *, recipe_version: str = "v1") -> TaskCheckpo
             "wave_ids": ["wave_0", "wave_1", "wave_2"],
         },
         recipe_version=recipe_version,
+        code_registry_version=code_registry_version,
     )
 
 
@@ -590,6 +603,18 @@ def test_version_drift_refusal_is_stable_and_blocking() -> None:
     refusals = [entry for entry in refusal_logs[0] if entry[0] == EVENT_RECOVERY_REFUSED]
     assert refusals and refusals[0][1]["checkpoint_recipe_version"] == "v0"
 
+    # Code-registry drift alone also blocks: the two version axes are
+    # measured independently, so a recipe-only pass must not mask it.
+    registry_drifted_store: InMemoryCheckpointStore = InMemoryCheckpointStore()
+    _seed_sync(registry_drifted_store, _planned_marker(0, code_registry_version="v0"))
+    runner = _Runner(calls=[])
+    orchestrator, events = _orchestrator(registry_drifted_store, runner)
+    assert asyncio.run(orchestrator.recover("task-1")) is None
+    assert runner.calls == []
+    refusals = [entry for entry in events if entry[0] == EVENT_RECOVERY_REFUSED]
+    assert refusals and refusals[0][1]["checkpoint_code_registry_version"] == "v0"
+    assert refusals[0][1]["checkpoint_recipe_version"] == "v1"
+
     # The identical history under the matching version recovers: the drift
     # check, not the fold, was the blocker.
     compatible_store: InMemoryCheckpointStore = InMemoryCheckpointStore()
@@ -654,6 +679,19 @@ def test_crash_after_fanout_resume_reruns_and_lands_on_fresh_run() -> None:
     assert replay(_load_sync(crashed)) == empty_state
     assert replay(_load_sync(base_store)) == empty_state
 
+    # The suffix run's completion is DURABLE, not just returned: the history
+    # now carries the waves_complete marker, so a fresh orchestrator over the
+    # same store recovers the winner with zero wave re-execution. Without
+    # this, a resume that stopped writing its completion checkpoint entirely
+    # would still pass — the next restart would silently re-run every wave.
+    assert any(c.payload.get("state") == STATE_WAVES_COMPLETE for c in _load_sync(crashed))
+    fresh_runner = _Runner(calls=[])
+    fresh, fresh_events = _orchestrator(crashed, fresh_runner)
+    assert asyncio.run(fresh.recover("task-1")) == winner
+    assert fresh_runner.calls == []
+    fresh_resumed = [entry for entry in fresh_events if entry[0] == EVENT_RECOVERY_RESUMED]
+    assert fresh_resumed and fresh_resumed[0][1]["complete"] is True
+
 
 def test_crash_after_completion_replays_without_rerun() -> None:
     winner, _, _ = _fresh_baseline()
@@ -678,9 +716,20 @@ def test_crash_after_completion_replays_without_rerun() -> None:
 
 
 def test_repeated_recovery_is_deterministic_until_crash_loop() -> None:
-    """Recovery's own tally lives in the checkpoint history, so repeated
-    replays of one completed task reuse the same result until the durable
-    crash-loop breaker opens — then refuse, identically, every replay."""
+    """MEASURED seam constraint: recovery's tally counts `RECOVERY_ATTEMPTED`
+    rows without distinguishing a completed recovery from an interrupted one
+    (the row is appended before the history is searched for completion), so
+    repeated recovery of a task is not idempotent even when every recovery
+    SUCCEEDS — the fourth call opens the durable breaker and the completed
+    result becomes unreachable through `recover`. This is the issue's
+    repeated-replay case failing at the ensemble boundary, not a crash loop:
+    the breaker cannot tell them apart. Latent at this head — nothing in
+    production calls `recover` yet, so no real workload can trip it — but
+    recorded rather than locked in as expected behavior: if a caller ever
+    lands, the tally must distinguish completed from interrupted recovery
+    (routed to the ensemble owner). What IS pinned as sound: the breaker's
+    decision is durable-history-derived and replay-stable — two orchestrators
+    reading the same history reach the same verdict, identically, forever."""
     winner, _, _ = _fresh_baseline()
 
     store: InMemoryCheckpointStore = InMemoryCheckpointStore()
@@ -697,8 +746,15 @@ def test_repeated_recovery_is_deterministic_until_crash_loop() -> None:
     assert seen == [winner, winner, winner]
     assert runner.calls == []  # never re-executed
 
-    # Recovery 4 sees three recorded attempts: quarantined — and a second
-    # orchestrator replaying the same store reaches the same verdict.
+    # The tally grew on every one of those SUCCESSFUL recoveries — that is
+    # the constraint: reads are not free, each one records a "crash".
+    assert sum(1 for c in _load_sync(store) if c.kind is CheckpointKind.RECOVERY_ATTEMPTED) == 3
+    # ...and the task actually completed: the quarantine below fires over a
+    # history that holds the waves_complete marker, which the tally ignores.
+    assert any(c.payload.get("state") == STATE_WAVES_COMPLETE for c in _load_sync(store))
+
+    # Recovery 4 opens the breaker: quarantined — and a second orchestrator
+    # replaying the same store reaches the same verdict.
     second_runner = _Runner(calls=[])
     second, second_events = _orchestrator(store, second_runner)
     with pytest.raises(WaveRecoveryQuarantined):
@@ -732,6 +788,8 @@ class _RecordingCaller:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, int]] = []
+        # Attempts that returned without raising: the committed effect.
+        self.committed: list[tuple[str, int]] = []
         self.fail_times: dict[tuple[str, int], int] = {}
 
     async def __call__(self, trigger: TriggerDefinition, event: LoggedEvent) -> None:
@@ -741,6 +799,7 @@ class _RecordingCaller:
         if remaining > 0:
             self.fail_times[key] = remaining - 1
             raise HandlerCallError("transient failure for research fixture")
+        self.committed.append(key)
 
 
 _EVENT_TYPES = [
@@ -813,8 +872,12 @@ def test_restart_halfway_replay_equals_no_crash_baseline() -> None:
     final_cursor = asyncio.run(
         process_events(stack.log, stack.triggers, stack.invocations, recovery_caller)
     )
-    all_event_ids = sorted(eid for _, eid in crash_caller.calls + recovery_caller.calls)
-    assert sorted(set(all_event_ids)) == baseline_effects
+    # Compare committed deliveries, not attempts: event 3's failed try sits in
+    # `calls` but is not an effect, and committed ids must equal the baseline
+    # without any dedup — the crash tick's successes (1, 2) plus the suffix
+    # (3..6), each delivered exactly once.
+    committed = sorted(eid for _, eid in crash_caller.committed + recovery_caller.committed)
+    assert committed == baseline_effects
     assert final_cursor == baseline_cursor
     assert baseline_effects == sorted(set(baseline_effects))
     trigger_id = stack.trigger.trigger_id
@@ -912,15 +975,17 @@ def test_cursor_respects_settled_prefix_and_suffix_replay_completes() -> None:
         cursor = await process_events(
             stack.log, stack.triggers, stack.invocations, suffix_caller, after_id=batch.cursor
         )
-        return cursor, suffix_caller.calls
+        return cursor, suffix_caller.committed
 
-    final_cursor, suffix_calls = asyncio.run(scenario())
+    final_cursor, suffix_deliveries = asyncio.run(scenario())
     assert final_cursor == baseline_cursor
-    # Union across the crashed tick and the suffix replay covers the baseline
-    # exactly; the invocation rows prove one successful application per event.
-    delivered_ids = sorted(eid for _, eid in caller.calls + suffix_calls)
-    assert sorted(set(delivered_ids)) == sorted(eid for _, eid in baseline_caller.calls)
-    for event_id in sorted(eid for _, eid in baseline_caller.calls):
+    # Committed deliveries across the crashed tick and the suffix replay equal
+    # the baseline exactly, no dedup: event 3's failed first try sits in
+    # `caller.calls` but committed only once, in the suffix. The invocation
+    # rows prove one successful application per event.
+    committed = sorted(eid for _, eid in caller.committed + suffix_deliveries)
+    assert committed == sorted(eid for _, eid in baseline_caller.committed)
+    for event_id in sorted(eid for _, eid in baseline_caller.committed):
         invocation = asyncio.run(stack.invocations.get(stack.trigger.trigger_id, event_id))
         assert invocation is not None and invocation.status is InvocationStatus.SUCCESS
 
@@ -1110,6 +1175,12 @@ def _lease_for(record: Attempt) -> ExecutionLease:
     )
 
 
+def _reclaim_after_lease_expiry(record: Attempt, at: datetime) -> Attempt:
+    """Reclaim through the production gate: expiry first, then the sweep."""
+    assert lease_is_expired(record, now=at), "reclaim must follow an expired lease"
+    return reclaim_attempt(record, at=at)
+
+
 def _walk_attempt_steps(rng: random.Random) -> list[LifecycleStep]:
     steps: list[LifecycleStep] = [
         LifecycleStep(
@@ -1138,11 +1209,15 @@ def _walk_attempt_steps(rng: random.Random) -> list[LifecycleStep]:
             and current is AttemptStatus.RUNNING
             and rng.random() < 0.5
         ):
-            moment = _t(clock)
+            # Production sweeps reclaim only after lease_is_expired, so the
+            # reclaim lands past the lease TTL (renewals extend expiry by at
+            # most one 600s window from a tick <= this one) and the expiry
+            # predicate is asserted before the step applies.
+            moment = _t(600 + clock)
             steps.append(
                 LifecycleStep(
                     "reclaimed",
-                    lambda record, at=moment: reclaim_attempt(record, at=at),
+                    lambda record, at=moment: _reclaim_after_lease_expiry(record, at),
                 )
             )
             current = target
@@ -1334,8 +1409,8 @@ def test_waiting_record_with_accepted_outcome_cannot_pause_recorded() -> None:
         transition_node_run(node_run, RunStatus.PAUSED, at=_t(4))
 
 
-def _node_history(node_id: str, final: RunStatus) -> list[NodeRun]:
-    record = NodeRun(run_id="run-1", node_id=node_id, ordinal=1, created_at=_t(0))
+def _node_history(node_id: str, final: RunStatus, *, ordinal: int = 1) -> list[NodeRun]:
+    record = NodeRun(run_id="run-1", node_id=node_id, ordinal=ordinal, created_at=_t(0))
     records = [record]
     steps = [RunStatus.QUEUED, RunStatus.RUNNING, final]
     for i, target in enumerate(steps, start=1):
@@ -1356,11 +1431,15 @@ def _node_history(node_id: str, final: RunStatus) -> list[NodeRun]:
 def test_node_run_projection_is_order_independent() -> None:
     """One final record per node identity: `latest_node_runs` picks the newest
     ordinal per node, so distinct identities project identically under any
-    delivery order — and a re-execution (ordinal 2) wins over ordinal 1 for
-    the same node under every ordering too."""
-    done = _node_history("a", RunStatus.COMPLETED)[-1]
-    failed = _node_history("b", RunStatus.FAILED)[-1]
-    running = NodeRun(run_id="run-1", node_id="c", ordinal=1, created_at=_t(0))
+    delivery order — and a re-execution (next Run ordinal) wins over the older
+    record for the same node under every ordering too. Ordinals here are store
+    -valid: canonical writers allocate them GLOBALLY within one Run
+    (`MAX(ordinal)+1` under the Run row lock, backstopped by
+    `UNIQUE (run_id, ordinal)`), so coexisting NodeRuns never share one."""
+    # Store-valid global ordinals: a=1, b=2, c=3 under run-1.
+    done = _node_history("a", RunStatus.COMPLETED, ordinal=1)[-1]
+    failed = _node_history("b", RunStatus.FAILED, ordinal=2)[-1]
+    running = NodeRun(run_id="run-1", node_id="c", ordinal=3, created_at=_t(0))
 
     mixed = [done, failed, running]
     reference = latest_node_runs(list(mixed))
@@ -1372,23 +1451,26 @@ def test_node_run_projection_is_order_independent() -> None:
         assert {k: v.model_dump() for k, v in projected.items()} == {
             k: v.model_dump() for k, v in reference.items()
         }
-        # The completion verdict reads the same projection either way.
-        with pytest.raises(Exception, match="node 'b'"):
+        # The completion verdict reads the same projection either way, and
+        # fails for the named reason: b's newest record is terminal-not-
+        # completed, which is exactly what the fence refuses.
+        with pytest.raises(UnearnedRunCompletion, match="node 'b'"):
             check_completion_is_earned(RunStatus.COMPLETED, shuffled)
 
-    # A re-execution records a NEW NodeRun (ordinal 2) for the failed node;
-    # the newest ordinal is the one that counts, so completion is now earned
-    # under every ordering of the longer history. (The version chain collapses
-    # to its final record first — several rows per identity+ordinal would be
-    # the degenerate case the tie test below pins.)
-    retried = [_node_history("b", RunStatus.COMPLETED)[-1].model_copy(update={"ordinal": 2})]
+    # A re-execution records a NEW NodeRun for the failed node with the Run's
+    # next global ordinal (4); the newest ordinal is the one that counts, so
+    # completion is now earned under every ordering of the longer history.
+    # (The version chain collapses to its final record first — several rows
+    # per identity+ordinal would be the degenerate case the tie test below
+    # pins.)
+    retried = [_node_history("b", RunStatus.COMPLETED, ordinal=4)[-1]]
     repaired = [done, failed, running, *retried]
     rng2 = random.Random(SEED + 6)
     for _ in range(3):
         shuffled = list(repaired)
         rng2.shuffle(shuffled)
         latest = latest_node_runs(shuffled)
-        assert latest["b"].ordinal == 2
+        assert latest["b"].ordinal == 4
         check_completion_is_earned(RunStatus.COMPLETED, shuffled)  # must not raise
 
 
@@ -1438,33 +1520,34 @@ def test_equivalent_interleavings_reconstruct_equivalent_state() -> None:
             ),
         ]
 
-    def build(node_id: str, steps: list[LifecycleStep]) -> NodeRun:
+    def build(node_id: str, ordinal: int, steps: list[LifecycleStep]) -> NodeRun:
         # Identity pinned per node so two independent replays of the same
-        # history are comparable field-for-field.
+        # history are comparable field-for-field. Ordinals are store-valid:
+        # global per Run (UNIQUE (run_id, ordinal)), so a=1 and b=2.
         record = NodeRun(
             node_run_id=f"nr-{node_id}",
             run_id="run-1",
             node_id=node_id,
-            ordinal=1,
+            ordinal=ordinal,
             created_at=_t(0),
         )
         for step in steps:
             record = step.apply(record)
         return record
 
-    interleave_1 = [build("a", a_steps()), build("b", b_steps())]
-    interleave_2 = [build("b", b_steps()), build("a", a_steps())]
+    interleave_1 = [build("a", 1, a_steps()), build("b", 2, b_steps())]
+    interleave_2 = [build("b", 2, b_steps()), build("a", 1, a_steps())]
 
     projection_1 = {k: v.model_dump() for k, v in latest_node_runs(interleave_1).items()}
     projection_2 = {k: v.model_dump() for k, v in latest_node_runs(interleave_2).items()}
     assert projection_1 == projection_2
     for records in (interleave_1, interleave_2):
-        with pytest.raises(Exception, match="node 'b'"):
+        with pytest.raises(UnearnedRunCompletion, match="node 'b'"):
             check_completion_is_earned(RunStatus.COMPLETED, records)
 
 
 def _open_node_run_at(target: RunStatus) -> NodeRun:
-    """A non-terminal, non-paused NodeRun walked to ``target``."""
+    """A non-terminal NodeRun walked to ``target`` through legal moves."""
     record = NodeRun(run_id="run-1", node_id="n", ordinal=1, created_at=_t(0))
     if target is RunStatus.CREATED:
         return record
@@ -1476,22 +1559,50 @@ def _open_node_run_at(target: RunStatus) -> NodeRun:
         return record
     if target is RunStatus.WAITING:
         return transition_node_run(record, RunStatus.WAITING, at=_t(3), error="parked")
+    if target is RunStatus.PAUSED:
+        return transition_node_run(record, RunStatus.PAUSED, at=_t(3), error="awaiting human")
     raise AssertionError(f"unexpected open target {target}")
 
 
 def test_open_node_run_cascade_is_deterministic_and_not_idempotent() -> None:
     """The cascade is a one-way durable transition, not a set difference:
     settling an already-settled record raises, so cascade loops must guard on
-    the store's read. PAUSED is excluded — a human wait is policy-owned, not
-    cascade-owned (see check_completion_is_earned)."""
-    for status in RunStatus:
-        if status in TERMINAL_RUN_STATUSES or status is RunStatus.PAUSED:
-            continue
+    the store's read. PAUSED is INCLUDED because the canonical stores cascade
+    *every* non-terminal NodeRun when the Run terminalizes — the Run-locked
+    sweep selects open rows regardless of status. A human wait's protection
+    lives one level up, in `check_completion_is_earned` (COMPLETED is refused
+    over a pause); it is not a cascade exemption."""
+    for status in (
+        RunStatus.CREATED,
+        RunStatus.QUEUED,
+        RunStatus.RUNNING,
+        RunStatus.WAITING,
+        RunStatus.PAUSED,
+    ):
         settled = settle_open_node_run(_open_node_run_at(status), RunStatus.FAILED, at=_t(9))
         assert settled.status is RunStatus.CANCELLED
         assert settled.error == "cancelled because its Run terminalized as failed"
         with pytest.raises(InvalidLifecycleTransition):
             settle_open_node_run(settled, RunStatus.FAILED, at=_t(10))
+
+    # A paused node's *accepted outcome* is superseded by the cascade, not
+    # carried: the record validator refuses a CANCELLED NodeRun whose
+    # acceptance still read paused, so the sweep must clear it — the pause's
+    # evidence survives on the Attempt, where it was written. (The carried
+    # acceptance shapes the record: result and error must both project it.)
+    running = _open_node_run_at(RunStatus.RUNNING)
+    acceptance = _accepted_outcome_for(running, RunStatus.PAUSED, _t(3))
+    paused = transition_node_run(
+        running,
+        RunStatus.PAUSED,
+        at=_t(3),
+        result=acceptance.result,
+        accepted_outcome=acceptance,
+    )
+    assert paused.accepted_outcome is not None
+    settled = settle_open_node_run(paused, RunStatus.FAILED, at=_t(9))
+    assert settled.status is RunStatus.CANCELLED
+    assert settled.accepted_outcome is None
 
 
 # ---------------------------------------------------------------------------

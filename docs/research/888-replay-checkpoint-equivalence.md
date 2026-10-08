@@ -65,7 +65,15 @@ duplicate delivery, restart halfway, repeated replay, and checkpoint-at-differen
   value-identical; delivery order is irrelevant because the fold sorts by `sequence`
   (checked over seeded histories × shuffled permutations). Hand-checked arithmetic pinned
   (open calls, wave statuses, gate sets, spend 1.5 + 0.25 = 1.75), including the #624 rule
-  that task-level `state` markers contribute no per-wave record.
+  that task-level `state` markers contribute no per-wave record. One boundary is measured
+  **NOT idempotent**, and that is a finding, not a property: at the ensemble's `recover()`
+  the durable tally appends a `RECOVERY_ATTEMPTED` row on every call *before* it looks for
+  completion, so a task whose every recovery succeeded still opens the crash-loop breaker
+  on the fourth recovery and its completed result becomes unreachable through `recover`.
+  The tally counts rows, not failures — it cannot distinguish a completed recovery from an
+  interrupted one. Latent at this head because nothing in production calls `recover()` yet
+  (measured: the only callers are this harness), so no real workload can trip it; recorded
+  as the third seam constraint below.
 - **checkpoint + suffix replay equals full replay** — HOLDS at both boundaries where the
   property is consumable. Ensemble boundary: a history segmented as [planned marker] +
   (restart, re-execute) lands on the same canonical winner as the unsegmented run (and a
@@ -170,23 +178,25 @@ and asserts nothing into them.
 
 ## Disposition
 
-- #888 (replay / checkpoint / deterministic-state equivalence testing): **WATCH** — the
-  prototype works and the properties hold on the pure seams (two latent seam constraints
+- #888 (replay / checkpoint / deterministic-state equivalence testing): **INCUBATE** — the
+  prototype works and the properties hold on the pure seams (three latent seam constraints
   found and recorded; zero live defects at this head), but no experiment against live
   stores or real histories exists, so the hypothesis's *detection power over line
-  coverage* is undemonstrated on MAIstro workloads.
-- Move to **INCUBATE** when the live-store crash-injection harness (procedure steps 1–4)
-  runs on real histories and either finds a real recovery defect the existing suites miss
-  (then also PR-gate the property suite as regression coverage) or completes a sweep with
-  measured runtime and defect counts.
+  coverage* is undemonstrated on MAIstro workloads. Next required evidence: the
+  live-store crash-injection harness (procedure steps 1–4) runs on real histories and
+  either finds a real recovery defect the existing suites miss (then also PR-gate the
+  property suite as regression coverage) or completes a sweep with measured runtime and
+  defect counts.
 - Move to **REJECT** if live-store replays agree with store state everywhere the in-memory
-  harness already agrees and the only findings remain the two recorded latent constraints —
+  harness already agrees and the only findings remain the three recorded latent constraints —
   i.e. the properties add no detection beyond the existing per-seam suites at material
   runtime cost.
-- The two recorded seam constraints get fixed through normal implementation work owned by
-  the execution-spine owners if they ever become reachable: duplicate-`SPEND_UPDATE`
-  dedupe (or a store-contract note) when a spend-writing checkpoint producer lands, and a
+- The three recorded seam constraints get fixed through normal implementation work owned
+  by their owners if they ever become reachable: duplicate-`SPEND_UPDATE`
+  dedupe (or a store-contract note) when a spend-writing checkpoint producer lands; a
   decision (allow-and-migrate, or refuse-at-transition) for WAITING→PAUSED with a carried
-  accepted outcome if a writer ever needs it.
+  accepted outcome if a writer ever needs it; and a recovery tally that distinguishes
+  completed from interrupted recovery (or keys the breaker on incomplete recoveries) when
+  `recover()` gains its first production caller — the ensemble owner's call.
 
 No adoption is authorized by this note.

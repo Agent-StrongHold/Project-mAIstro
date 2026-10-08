@@ -11,7 +11,9 @@ Issue #888 (epic #880, M8 exploratory research) asked for an evaluation of repla
 checkpoint, and deterministic-state equivalence testing over the durable subsystems, with a
 GRADUATE/INCUBATE/REJECT/WATCH disposition. No live-store experiment exists in deterministic
 CI (no pg backends, no real histories), so the research record
-(`docs/research/888-replay-checkpoint-equivalence.md`) registers WATCH and this change adds
+(`docs/research/888-replay-checkpoint-equivalence.md`) registers INCUBATE — promising
+machinery whose detection power over line coverage is undemonstrated until the live-store
+harness runs — and this change adds
 the reproducible experiment machinery as one self-contained test module in
 `packages/maistro-core/tests/tasks/`
 (`test_m8a8_replay_equivalence_research.py`, +38 node IDs).
@@ -33,7 +35,9 @@ writes); ensemble recovery as a pure function of checkpoint history (repeat dete
 version-drift refusal both stable and blocking); checkpoint-at-different-prefix equivalence
 (crash before fan-out / after fan-out / after completion each converge to the unsegmented
 run's canonical outcome, the completed case reusing results with zero wave re-execution);
-the durable crash-loop tally opening deterministically on the fourth recovery; event-loop
+the durable crash-loop tally opening deterministically on the fourth recovery (recorded as
+a measured seam constraint — the tally cannot distinguish a completed recovery from an
+interrupted one, and `recover` has no production caller at this head); event-loop
 restart-halfway, repeated-replay-from-zero, concurrent-worker, and
 resume-from-durable-cursor scenarios each converging to the no-crash baseline with exactly
 one successful application per event and one `handler.failed` append; recovery-event
