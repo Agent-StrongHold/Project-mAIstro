@@ -36,8 +36,9 @@ epic contract), and the canonical authorization seam
   the original guard model passes every oracle, each of the five representative
   mutators (deny-all flip, fail-safe default flip, action-guard `>=` bypass,
   scope-conjunction OR, deleted `not`) is distinguishable under the full battery
-  and killed by exactly its named oracle, and each recorded flagship mechanism is
-  demonstrated to survive without its oracle.
+  and killed by its recorded violation set (four by their named oracle alone;
+  the deny-all flip by two — `action_guards_are_exact` also kills it), and each
+  recorded flagship mechanism is demonstrated to survive without its oracle.
 - `TestPolicyAndCiFeasibility` (4): one zone fits a PR slot (~4 min), a
   seven-zone curated set fits nightly but not PR CI, the near-zero-survivor
   policy requires generation-time exclusion of equivalents, and the stricter
@@ -51,3 +52,18 @@ reproduction procedure and the full survivor table live in
 `docs/research/894-critical-zone-mutation-strategy.md`.
 
 Net collected node-ID delta: **+34** (new file, no parametrization).
+
+## 2026-10-08 repair (develop-sync round)
+
+Resolved the preserved origin/develop sync conflict in `docs/research/README.md`
+(union of the #894 and #896 index rows; INCUBATE count corrected to four) and
+corrected the miniature-engine kill-mapping claims to the measured violation
+sets: executing the battery showed the deny-all fallback flip is killed by two
+oracles (`deny_all_fallback` and `action_guards_are_exact`), not one, so
+`test_each_oracle_kills_exactly_its_named_mutator` (membership-only) became
+`test_battery_kills_match_the_recorded_violation_sets`, asserting the exact
+per-mutator sets (`EXACT_VIOLATIONS`). Companion prose corrections in
+`docs/research/894-critical-zone-mutation-strategy.md` (C5 scope, PEP 563
+equivalence phrasing, TTL operator directions, broad-gate comparison vs the
+existing annotation filter). Node count unchanged: 34 — the +34 delta above is
+still exact.

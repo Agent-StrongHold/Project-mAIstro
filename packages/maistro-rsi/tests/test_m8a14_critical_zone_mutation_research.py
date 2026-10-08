@@ -759,8 +759,9 @@ _MUTATORS: dict[MutatorName, object] = {
 }
 
 #: The invariants a near-zero-survivor policy requires oracles for. Each entry
-#: names the mutator(s) it kills — the survivor mechanism made explicit: a
-#: mutant survives exactly when no oracle distinguishes it.
+#: names the mutator(s) it exists to kill; the measured violation sets below
+#: record what the battery actually flags (a mutant survives exactly when no
+#: oracle distinguishes it, and one mutator is killed by two oracles).
 KILLER_ORACLES: tuple[tuple[str, frozenset[MutatorName]], ...] = (
     (
         "deny_all_fallback",
@@ -813,6 +814,21 @@ def oracle_violations(decision_fn: object) -> list[str]:
     if decision_fn(GuardGrant(can_execute=False), Action.EXECUTE, None, "ls"):  # type: ignore[attr-defined]
         violations.append("capability_gate")
     return violations
+
+
+#: Measured violation sets: what ``oracle_violations`` reports for each
+#: mutator under the full battery. Four mutators are killed by their named
+#: oracle alone; the deny-all flip is killed by two — flipping the final
+#: fallback also grants the action-guard probe, so ``action_guards_are_exact``
+#: kills it as well (the fallback is the second line of defense behind the
+#: guards). Asserted exactly so the mapping cannot drift silently.
+EXACT_VIOLATIONS: dict[MutatorName, frozenset[str]] = {
+    "fallback_flip": frozenset({"deny_all_fallback", "action_guards_are_exact"}),
+    "capability_default_flip": frozenset({"fail_safe_default"}),
+    "action_guard_ge": frozenset({"action_guards_are_exact"}),
+    "scope_conjunction_or": frozenset({"scope_conjunction"}),
+    "delete_not": frozenset({"capability_gate"}),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -1057,14 +1073,18 @@ class TestMiniatureMutationEngine:
             violations = oracle_violations(_MUTATORS[mutator])
             assert violations, f"{mutator} is indistinguishable from the original — taxonomy gap"
 
-    def test_each_oracle_kills_exactly_its_named_mutator(self) -> None:
-        """The mapping is not bulk: each oracle names the mutator it kills, and
-        the killed mutator violates that oracle's invariant specifically — the
-        recorded survivors are oracle gaps, not test-count accidents."""
+    def test_battery_kills_match_the_recorded_violation_sets(self) -> None:
+        """The mapping is measured, not assumed: every oracle named in
+        ``KILLER_ORACLES`` kills its mutator, and every mutator's full
+        violation set matches the recorded sets exactly — four mutators are
+        killed by their named oracle alone, and the deny-all flip by two (the
+        recorded survivors are oracle gaps, not test-count accidents)."""
         for oracle_name, kills in KILLER_ORACLES:
             for mutator in kills:
                 violations = oracle_violations(_MUTATORS[mutator])
                 assert oracle_name in violations, (oracle_name, mutator)
+        for mutator, expected in EXACT_VIOLATIONS.items():
+            assert set(oracle_violations(_MUTATORS[mutator])) == set(expected), mutator
 
     def test_fallback_flip_is_invisible_without_deny_all_oracle(self) -> None:
         """L106 mechanism: without a test asserting non-matching requests are

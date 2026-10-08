@@ -48,9 +48,12 @@ Codified as an executable classifier in
   this criterion and must be *split*, not silently admitted.
 - **C4 affordable per-mutant cost** — measured unit cost below
   `max_per_mutant_seconds` (this zone: ~2.3 s/mutant serial).
-- **C5 fail-safe shape** — the refusal path defaults to deny. Mutation bias
-  then surfaces in the dangerous direction (granting), so every survivor is
-  security-relevant by construction and earns its triage cost.
+- **C5 fail-safe shape** — the refusal path defaults to deny, so value-flipping
+  mutations bias toward granting and the killing side of the suite is what
+  must exist. C5 does *not* make every survivor security-relevant — this run
+  still produced 31 of 50 non-actionable survivors (equivalents,
+  coincidences, boundaries, metadata); it fixes the *direction* dangerous
+  mutants point.
 
 ## Deliverable 2 — operator semantic-risk taxonomy
 
@@ -72,8 +75,11 @@ runtime TTL, and a no-op on a type annotation. The harness classifies
   TTL arithmetic, `+` → `*` means *grants that never expire*.
 - **equivalent_by_construction** at PEP 563 annotation or message contexts:
   any value-operator. With `from __future__ import annotations`, parameter
-  annotations are strings and are never evaluated — `str | None` →
-  `str * None` cannot change behavior.
+  annotations are strings, so `str | None` → `str * None` changes no runtime
+  behavior this module or its suite can observe (only an explicit
+  `typing.get_type_hints` evaluation could see a difference, and nothing on
+  the zone's runtime surface performs one). The recorded run confirms the
+  class: all 22 annotation mutants survived.
 - **structural**: `RemoveDecorator`.
 
 ## Deliverable 3 — prototype run (real, reproducible)
@@ -139,19 +145,26 @@ bypass_shape`).
 - **Execute command-gate semantics unpinned (L100 `and`→`or`)** — both the
   allow-all meaning of an empty allowlist and the deny-then-fail path for a
   restricted grant with `command=None`.
-- **Grant liveness/expiry unpinned (L34 ×11, L122)** — every replacement of
-  `time.time() + TTL` survives: `−` means every default grant is instantly
-  expired (deny everything), `*`/`/`/`**` means grants never expire
-  (over-extension). Neither direction is observed.
+- **Grant liveness/expiry unpinned (L34 ×11, L122)** — all 11 binary-operator
+  replacements of `time.time() + TTL` survive: `−`, `/`, `//`, `%`, `>>` make
+  every default grant instantly expired (deny everything), `*` and `<<`
+  over-extend far past any TTL, and `**` plus the remaining bitwise swaps
+  raise on floats. Every direction is unobserved — no test in the mirror
+  suite constructs a grant and checks expiry.
 
 ### Mechanism, not correlation
 
 The harness includes a miniature deterministic mutation engine over a
-hand-checked deny-by-default guard with the zone's control shape. It
-demonstrates for each representative survivor family: the mutant violates
-exactly one oracle when the full battery runs (killed), and survives when that
-oracle is absent — reproducing each recorded survivor mechanism in CI without
-running cosmic-ray. A mutant survives exactly when no oracle distinguishes it;
+hand-checked deny-by-default guard with the zone's control shape (a miniature
+of the shape, not a line-for-line replica of `trust_boundary.py`). It
+demonstrates for each representative survivor family: the mutant is killed
+under the full oracle battery and survives when its named oracle is absent —
+the survive-without-its-oracle mechanism of each recorded flagship, testable
+in CI without running cosmic-ray. The kill mapping is asserted exactly: four
+mutators violate their named oracle alone, and the deny-all flip violates two
+(`action_guards_are_exact` also kills it — a mutant that grants everything
+grants the unscoped-READ probe too, which is the fallback's real relationship
+to the guards). A mutant survives exactly when no oracle distinguishes it;
 that is the whole diagnosis, and it is testable.
 
 ## Answers to the leaf's questions
@@ -175,9 +188,14 @@ that is the whole diagnosis, and it is testable.
    runs in neither; a critical-zone job is the cheapest possible restart.
 4. **Does a stricter local policy outperform broad score chasing?** Yes on
    this evidence: 31 of 50 survivors in one small module are non-actionable
-   classes a broad score gate would force triage on, while the curated zone
-   yields 19 concrete untested invariants for 4 minutes of compute. The
-   policy that works is: exclude equivalents at generation time, count only
+   classes, while the curated zone yields 19 concrete untested invariants for
+   4 minutes of compute. The repository's baseline pipeline already drops the
+   largest equivalent block at generation time (`scripts/mutation_packet.py`
+   runs `scripts/mutation_filter_annotations.py` between `init` and `exec`,
+   ~11k annotation equivalents repo-wide); the residual non-actionable
+   classes a stricter policy must still seal are the lexicographic,
+   boundary, metadata, and enum-identity equivalents. The policy that works
+   is: exclude equivalents at generation time, count only
    `untested_invariant` survivors, require zero trend.
 5. **What ownership/process for survivor triage?** Zone-owner rotation. On
    each run: `untested_invariant` → issue against the zone owner with the
