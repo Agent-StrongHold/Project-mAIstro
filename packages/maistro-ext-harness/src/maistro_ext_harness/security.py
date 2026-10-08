@@ -286,9 +286,10 @@ class _ImportBindings:
 
 
 def _bound_imports(tree: ast.AST) -> _ImportBindings:
-    """Collect the dynamic-import callables and ``importlib`` aliases."""
+    """Collect dynamic-import bindings, including assignment aliases."""
     callables: set[str] = {"__import__"}
     modules: set[str] = set()
+    assignments: list[ast.Assign] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "importlib":
             callables.update(
@@ -299,21 +300,49 @@ def _bound_imports(tree: ast.AST) -> _ImportBindings:
                 alias.asname or alias.name for alias in node.names if alias.name == "importlib"
             )
         elif isinstance(node, ast.Assign):
-            callables.update(_import_module_assignment_targets(node))
+            assignments.append(node)
+
+    # Assignment aliases can be chained (``il = importlib; load =
+    # il.import_module; again = load``). Resolve them to a fixed point so a
+    # source-order-independent AST walk cannot miss the callable alias.
+    changed = True
+    while changed:
+        changed = False
+        for node in assignments:
+            before = len(modules) + len(callables)
+            modules.update(_importlib_module_assignment_targets(node, modules))
+            callables.update(_import_module_assignment_targets(node, modules, callables))
+            changed = changed or len(modules) + len(callables) != before
     return _ImportBindings(frozenset(callables), frozenset(modules))
 
 
-def _import_module_assignment_targets(node: ast.Assign) -> list[str]:
-    """Names a plain assignment binds to ``importlib.import_module`` itself:
-    ``load = importlib.import_module`` aliases the callable."""
+def _assignment_targets(node: ast.Assign) -> list[str]:
+    """Return plain names a simple assignment binds."""
+    return [target.id for target in node.targets if isinstance(target, ast.Name)]
+
+
+def _importlib_module_assignment_targets(node: ast.Assign, modules: set[str]) -> list[str]:
+    """Names assigned from a known ``importlib`` module alias."""
     value = node.value
+    if isinstance(value, ast.Name) and value.id in modules:
+        return _assignment_targets(node)
+    return []
+
+
+def _import_module_assignment_targets(
+    node: ast.Assign, modules: set[str], callables: set[str]
+) -> list[str]:
+    """Names assigned from a known dynamic-import callable."""
+    value = node.value
+    if isinstance(value, ast.Name) and value.id in callables:
+        return _assignment_targets(node)
     if (
         isinstance(value, ast.Attribute)
         and isinstance(value.value, ast.Name)
-        and value.value.id == "importlib"
+        and value.value.id in modules
         and value.attr == "import_module"
     ):
-        return [target.id for target in node.targets if isinstance(target, ast.Name)]
+        return _assignment_targets(node)
     return []
 
 

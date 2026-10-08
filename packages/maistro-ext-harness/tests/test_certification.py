@@ -408,6 +408,22 @@ class TestDeclines:
         )
         assert any("aliased.py" in reason for reason in report.decline_reasons)
 
+    def test_chained_importlib_callable_alias_declines(
+        self, make_extension: Callable[..., Path], tmp_path: Path
+    ) -> None:
+        """Assignment aliases of an importlib alias remain dynamic imports."""
+        root, wheel = _certifiable(make_extension, tmp_path)
+        (_pkg(root) / "chained_alias.py").write_text(
+            "import importlib as il\nload = il.import_module\nload('maistro_ext_harness')\n",
+            encoding="utf-8",
+        )
+        report = certify(_request(root, wheel))
+        assert not report.certified
+        assert any("security/imports-public-only" in reason for reason in report.decline_reasons), (
+            report.decline_reasons
+        )
+        assert any("chained_alias.py" in reason for reason in report.decline_reasons)
+
     def test_a_plain_importlib_module_call_still_passes(
         self, make_extension: Callable[..., Path], tmp_path: Path
     ) -> None:

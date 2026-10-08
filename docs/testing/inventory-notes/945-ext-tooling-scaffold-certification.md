@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-ext-sdk/tests: +28
-  packages/maistro-ext-harness/tests: +68
+  packages/maistro-ext-harness/tests: +69
 ---
 # 945 — extension developer tooling: scaffold, certification (epic M9-H #945)
 
@@ -152,6 +152,13 @@ deltas against the pre-change baselines (SDK 118, harness 138).
   `build/` content is the developer's toolchain, not shipped sources),
   and `test_certify_missing_signing_key_file_exits_2` (an unreadable
   `--signing-key-file` is a bad argument — exit 2, no traceback).
+- **repair round 7 (+1, `test_certification.py`):**
+  `test_chained_importlib_callable_alias_declines` closes the remaining
+  public-imports false claim: `import importlib as il; load =
+  il.import_module; load("maistro_ext_harness")` must decline rather than
+  claiming `security/imports-public-only`. The assignment-binding scan now
+  follows importlib module and callable aliases to a fixed point; the test
+  fails against the prior literal-receiver-only implementation.
 
 The physical acceptance — scaffold each family, build its wheel, install
 it with the SDK + harness wheels into a fresh venv, run the sample tests,
