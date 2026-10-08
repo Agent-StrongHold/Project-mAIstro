@@ -1903,3 +1903,82 @@ Conclusion unchanged at the round-final head: implementation and test
 readiness proven; the four red merge-queue jobs remain the issue-predicted
 explicit merge blocker of a deliberately unwired staging leaf; the stack stays
 unmerged pending the separately authorized parent #1845 integration.
+
+## Round 26 — independent re-execution at the round-final head 1873bcf1c39d
+
+The tip moved once more after round 25: `1873bcf1c39d` merges develop state
+`d7fb3baa6837` (the M8-A12 protocol-conformance research commit, a descendant
+of round 25's `2b23303f72f0`) into this stack; the manifest base is
+`e46ad6708fda`. The merge touches no in-scope content: `git diff --name-only
+d7fb3baa..HEAD` is exactly the three leaf files, and `quality/` plus
+`docs/testing/inventory/baseline.json` are unchanged versus both `d7fb3baa`
+and `origin/develop` (`git diff --numstat` empty on both). Develop's two
+newer commits (`7e548fc78`, `e46ad6708`, M8-E2/E4 research) touch disjoint
+docs/research and design-test files only — no sync conflict exists, so no
+merge action was required this round.
+
+Driver job `09d9b978e79e` ran its five deterministic checks at this exact
+head — all green: `uv sync --locked --extra dev`, tree-wide `ruff check` /
+`ruff format --check`, focused `pytest ...test_root_admission_identity.py -q
+-x` (79 passed), and `check-suite-inventory.py --suite
+packages/maistro-core/tests` (17 suites, 15,807 node IDs, ok).
+
+Independent re-execution by this round's worker (`RATCHET_BASE_REV` as CI
+resolves it for a PR, trusted base `d7fb3baa6837`):
+
+- Focused suite 79 passed (1.05s); `mypy` clean on the module; `ruff check`
+  and `ruff format --check` clean on both leaf files; module export contract
+  re-confirmed (21-name `__all__`); zero production importers of
+  `maistro.runs.admission_identity` and no `maistro.runs.__init__` export.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → rc=1, 1326 reviewed identities → 1331 findings: exactly
+  the five issue-required `AdmissionAssessment` members (`MISMATCH`:515,
+  `REPLAYED`:516, `TAKEOVER`:518, `REPLACE_EXPIRED`:519,
+  `LEGACY_UNRESOLVED`:520 — `PENDING`:517 escapes only as a name collision),
+  unbanked and not authorized from the trusted base.
+- `check-reachability.py` → rc=1 with exactly one NEWLY UNREACHABLE module,
+  `maistro.runs.admission_identity` (170/1365);
+  `check-ratchet-provenance.py` → rc=1 solely via that sub-gate;
+  `check-reachability-dispositions.py`, `check-promotion-surface.py`,
+  `check-shipped-surface-truth.py` → rc=0.
+- The `test` job's red re-derived from the full CI-shaped root suite at this
+  head (`pytest tests/ --ignore=tests/tools/registry -q`): **3 failed /
+  4818 passed / 128 skipped**, the only failures being the three reachability
+  meta-tests (`test_baseline_matches_the_tree`,
+  `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set`) — each asserting the
+  committed baseline equals the unreachable set, which now contains the
+  deliberately unwired module. No ac-state artifact appeared (clean tree).
+- The Coverage gate's actual criterion holds under re-measurement at this
+  head: `coverage run --branch --source=maistro.runs` over the focused suite
+  covers `admission_identity.py` at 100% of statements (245/245);
+  `check-diff-coverage.py coverage.xml --base d7fb3baa6837` → rc=0, "every
+  measured file this change touches is at or above 90% lines / 80% branch
+  arcs" (the test file exempt by declaration). The job's red is therefore the
+  combine step's `pytest tests/` scripts producer failing on the same three
+  meta-tests, not a coverage shortfall.
+- The #1841 security signature re-confirmed at this head:
+  `runs/store_boundary.py:56` `require_admitted_actor(actor_principal_id:
+  str | None) -> str`; `runs/store.py:537`/`:1249` `get_run(...,
+  principal_id: str | None = None)`; `create_run`/`claim_run_by_effect`
+  retain `actor_principal_id: str | None = None` with the admitted-actor
+  guard (`store.py:921`); `runs/model.py:300` `Run.actor_principal_id`.
+
+No lawful in-leaf repair exists, unchanged since rounds 20–22: the only two
+mechanical "fixes" — wiring a runtime consumer, or adding the module to
+`quality/reachability-baseline.json` / banking the five vulture rows — are
+both explicitly prohibited by the issue ("No fake callers, baseline additions,
+grants, disabled gates or quality waivers are permitted"; "A candidate
+baseline update cannot grant itself permission"), and banking is proven inert
+anyway because ratchet authorization loads from the merge base, which carries
+no grant (round-21/22 re-proof, rows removed as verifier-prohibited in
+`e0833f35a`/`25e04e1c7`). Under the two-merge rule a reviewed grant would
+have to land in develop first, inside the separately authorized parent #1845
+integration.
+
+Conclusion re-proven at `1873bcf1c39d`: leaf acceptance is green (code, 79
+case focused suite, inventory delta `+79` unchanged); the four red
+merge-queue jobs all reduce to the two issue-predicted structural facts of a
+deliberately unwired staging leaf; implementation/test readiness stands, the
+explicit merge blocker stands with it, and the stack stays unmerged pending
+the separately authorized parent #1845 integration head.
