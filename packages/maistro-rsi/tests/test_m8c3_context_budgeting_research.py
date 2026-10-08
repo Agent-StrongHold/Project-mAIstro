@@ -39,9 +39,11 @@ What is replicated, for measurement only, from the shipped seam:
   banded facts are never budget-lost, at any budget.
 * The always-include wisdom the shipped policy serves through Layer 3
   (``list_by_scope`` at the wisdom floor, packed by the same ``_pack`` whose
-  band takes them whatever the budget says): the two zero-overlap adversarial
-  WISDOM memories are force-seeded into every assembled context, overspending
-  every tight budget, exactly as the shipped layer does.
+  band takes them whatever the budget says): every memory at or above the
+  0.9 band is force-seeded into every assembled context — the two
+  zero-overlap adversarial WISDOM memories and ``m_in_01``, which incident
+  queries also rank into Layer 1, reproducing the shipped double-serve —
+  overspending every tight budget, exactly as the shipped layer does.
 * Layer 2 (rolling compression, SPEC-189) ships as an explicit ``""``
   placeholder, so every summarizer below is a hypothetical — clearly labeled,
   never a third authority.
@@ -1246,6 +1248,9 @@ class TestCorpusSanity:
         # and sub-band (what budgets lose).
         assert len(BAND_CUTTABLE_FACTS) == 5
         assert len(BAND_CUTTABLE_FACTS) < len(FACTS)
+        # The Layer 3 seed is the production band, not an ID list: every
+        # memory at or above the wisdom floor rides in it, m_in_01 included.
+        assert {m.memory_id for m in forced_seed()} == {"m_in_01", *ADVERSARIAL_IDS}
 
     def test_weights_sit_inside_the_production_tier_bounds(self) -> None:
         for memory in CORPUS:
@@ -1338,6 +1343,15 @@ class TestPolicyMechanics:
             outcome = run_omission(query, 10_000)  # budget-free: omission alone shows
             kept = set(outcome.item_ids)
             rankeds = shipped_rank(list(CORPUS), query.text)
+            pos = {m.memory_id: i for i, m in enumerate(rankeds)}
+            # Positive direction: a flagged duplicate ranking behind its kept
+            # original must actually be dropped — the one-directional check
+            # below passes vacuously when nothing is dropped at all.
+            for original, dup in DUPLICATE_PAIRS:
+                if original in pos and dup in pos and pos[original] < pos[dup] and original in kept:
+                    assert dup not in kept, (
+                        f"{query.query_id}: trailing duplicate {dup} survived omission"
+                    )
             for memory in rankeds:
                 if memory.memory_id in kept or memory.weight >= ALWAYS_INCLUDE_WEIGHT:
                     continue
@@ -1484,6 +1498,11 @@ class TestBenchmarkFindings:
         fixed_served = frozenset().union(*(o.served for o in fixed_120.per_query))
         assert fixed_served < density_served
         assert density.mean_tokens > fixed_120.mean_tokens
+        # Pinned spend: the stop is what holds the block at 27.83 mean tokens;
+        # disabling it packs past the delivered set (29.4) without serving a
+        # single additional fact, which is exactly the mechanism this finding
+        # names. Equality, not a bound: the corpus is pinned deterministic.
+        assert density.mean_tokens == 27.833333333333332
 
     def test_omission_is_indistinguishable_below_the_gate(self) -> None:
         # The honest finding at the swept base: omission frees tokens, but
@@ -1513,6 +1532,12 @@ class TestBenchmarkFindings:
         fixed_served = frozenset().union(*(o.served for o in fixed_120.per_query))
         margin_served = frozenset().union(*(o.served for o in margin.per_query))
         assert fixed_served <= margin_served
+        # Pinned at the measured frontier: removing the cliff (taking every
+        # sub-band candidate the budget allows) drops recall to 0.200 at 33.5
+        # mean tokens — the cliff IS the finding, so the finding is pinned to
+        # its numbers, not just to the ordering above.
+        assert margin.recall == 0.4
+        assert margin.mean_tokens == 64.08333333333333
 
     def test_full_adaptive_reserve_trips_the_gate(self) -> None:
         # The measured composition finding under the shipped gate: the
@@ -1604,6 +1629,10 @@ class TestStabilityAcrossWindowSizes:
         assert fixed_small.recall < fixed_large.recall
         for window in WINDOWS:
             assert sweep[("pressure", window)].recall == sweep[("fixed", window)].recall
+        # The seed double-serves like production: m_in_01 sits in both the
+        # ranked items and the forced band on the incident queries.
+        outcome = run_pressure(QUERY_BY_ID["q_in_simple"], SMALL_WINDOW)
+        assert outcome.item_ids.count("m_in_01") == 2
 
     def test_pressure_summaries_never_survive_delivery(self) -> None:
         # The measured negative: the tier engages on the pre-gate drop set
