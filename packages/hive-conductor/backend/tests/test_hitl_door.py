@@ -18,6 +18,7 @@ from fastapi import HTTPException
 from services.workspace_authority import create_workspace
 
 from maistro.graph.definitions import Graph, Node
+from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.lifecycle import transition_node_run, transition_run
 from maistro.runs.model import GraphSnapshot, NodeRun, Run, RunStatus
@@ -258,17 +259,22 @@ async def test_pending_pages_by_instant_when_created_at_offsets_differ(seeded) -
 
 
 async def test_pending_stops_at_the_inspection_ceiling(seeded, monkeypatch) -> None:
-    """The walk is bounded, not unbounded: a long prefix costs one tick, not a scan.
+    """The walk is bounded, not unbounded: a request costs a bounded read even
+    when human work remains behind it.
 
-    `_MAX_PENDING_SCAN_RECORDS` is the stop condition that keeps a pathological
-    machine-only prefix from turning one request into a full table read. The
-    constant is patched rather than seeding thousands of rows -- the bound is
-    the behaviour under test, not its particular value.
+    `MAX_PENDING_SCAN_RECORDS` is the stop condition that keeps one request
+    from walking the projection forever. The constant is patched rather than
+    seeding thousands of rows -- the bound is the behaviour under test, not
+    its particular value. With the pause-kind projection (#1109) the bound
+    can no longer hide human work behind ineligible rows -- the projection
+    only contains candidate human pauses -- so this pins the remaining half:
+    the request actually stops, returning what fit inside the bound and no
+    more.
     """
-    import routes.hitl as hitl_routes
+    from maistro.graph.durable_runs import hitl as hitl_scan
 
     client, store, _seed = seeded
-    monkeypatch.setattr(hitl_routes, "_MAX_PENDING_SCAN_RECORDS", 3)
+    monkeypatch.setattr(hitl_scan, "MAX_PENDING_SCAN_RECORDS", 1)
     workspace = await create_workspace(
         creator_user_id="admin",
         name="Test Workspace-ceiling",
@@ -282,7 +288,7 @@ async def test_pending_stops_at_the_inspection_ceiling(seeded, monkeypatch) -> N
     from services.workspace_authority import canonical_store_for_tests
 
     root = await canonical_store_for_tests().project_store.root_for_workspace(workspace.id)
-    run_ids = [f"hitl-ceiling-{index}" for index in range(5)]
+    run_ids = [f"hitl-ceiling-{index}" for index in range(2)]
     try:
         for index, run_id in enumerate(run_ids):
             await store.create(
@@ -290,17 +296,167 @@ async def test_pending_stops_at_the_inspection_ceiling(seeded, monkeypatch) -> N
                     run_id,
                     workspace_id=workspace.id,
                     project_id=root.project_id,
-                    kind="timer",
+                    kind="hitl",
                     created_at=datetime(2026, 8, 30, 12, tzinfo=UTC) + timedelta(seconds=index),
                 )
             )
 
         body = client.get("/v1/hitl/pending", params={"limit": 5}).json()
 
-        assert [item for item in body if item["run_id"].startswith("hitl-ceiling-")] == []
+        # Two human pauses are in scope, but a one-record inspection bound
+        # returns exactly one of them this request.
+        assert len([item for item in body if item["run_id"].startswith("hitl-ceiling-")]) == 1
     finally:
         for run_id in run_ids:
             store._rows.pop(run_id, None)
+
+
+async def test_pending_reaches_a_hitl_pause_beyond_the_inspection_ceiling(
+    seeded, monkeypatch
+) -> None:
+    """#1109: the discovery bound is not the starvation one size up.
+
+    Before the pause-kind projection, the request walked the generic PAUSED
+    listing and stopped after `_MAX_PENDING_SCAN_RECORDS` rows — so a prefix of
+    machine-only pauses longer than the ceiling hid the human pause behind it
+    from *every* request, each one rereading the same prefix from the top and
+    returning the same empty answer. The store now pages only rows whose
+    durable frontier declares a human pause, so the machine prefix costs the
+    walk nothing and the ceiling never stands between a person and their work.
+    The ceiling is patched small rather than seeding thousands of rows: the
+    bound is the behaviour under test, not its particular value.
+    """
+    import maistro.graph.durable_runs.hitl as hitl_scan
+
+    client, store, _seed = seeded
+    monkeypatch.setattr(hitl_scan, "MAX_PENDING_SCAN_RECORDS", 3)
+    workspace = await create_workspace(
+        creator_user_id="admin",
+        name="Test Workspace-beyond-ceiling",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    # Discovery walks authorized Projects (#1110), so the seeded records must
+    # live in this Workspace's canonical root Project to be in scope at all.
+    from services.workspace_authority import canonical_store_for_tests
+
+    root = await canonical_store_for_tests().project_store.root_for_workspace(workspace.id)
+    base = datetime(2026, 8, 30, 12, tzinfo=UTC)
+    run_ids = [f"hitl-beyond-{index}" for index in range(5)]
+    run_ids.append("hitl-beyond-the-ceiling")
+    try:
+        for index, run_id in enumerate(run_ids[:-1]):
+            await store.create(
+                _paused_record(
+                    run_id,
+                    workspace_id=workspace.id,
+                    project_id=root.project_id,
+                    kind="timer",
+                    created_at=base + timedelta(seconds=index),
+                )
+            )
+        await store.create(
+            _paused_record(
+                "hitl-beyond-the-ceiling",
+                workspace_id=workspace.id,
+                project_id=root.project_id,
+                created_at=base + timedelta(seconds=1000),
+            )
+        )
+
+        body = client.get("/v1/hitl/pending", params={"limit": 5}).json()
+
+        mine = [item for item in body if item["run_id"] == "hitl-beyond-the-ceiling"]
+        assert len(mine) == 1
+        assert mine[0]["payload"]["question"] == "Ship it?"
+    finally:
+        for run_id in run_ids:
+            store._rows.pop(run_id, None)
+
+
+async def test_repeated_requests_keep_returning_the_same_pending_work(seeded) -> None:
+    """Discovery holds no scan position: nothing a request consumes, so no
+    sequence of requests — including one that starts after a restart — can
+    make a pending item vanish by rereading a consumed prefix."""
+    client, _store, seed = seeded
+    await seed("hitl-rediscoverable")
+
+    first = client.get("/v1/hitl/pending", params={"limit": 5}).json()
+    second = client.get("/v1/hitl/pending", params={"limit": 5}).json()
+
+    for body in (first, second):
+        assert [item for item in body if item["run_id"] == "hitl-rediscoverable"]
+
+
+async def test_multiple_human_pauses_count_against_the_item_limit(seeded) -> None:
+    """`limit` bounds pending *items*, and one Run can carry several: they are
+    returned individually and count individually against the same limit."""
+    client, store, _seed = seeded
+    workspace = await create_workspace(
+        creator_user_id="admin",
+        name="Test Workspace-two-pauses",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    from services.workspace_authority import canonical_store_for_tests
+
+    root = await canonical_store_for_tests().project_store.root_for_workspace(workspace.id)
+    graph = Graph(
+        workspace_id=workspace.id,
+        project_id=root.project_id,
+        name="two approvals",
+        nodes=[
+            Node(node_id="ask-a", node_type="human.ask_question"),
+            Node(node_id="ask-b", node_type="human.ask_question"),
+        ],
+    )
+    run = Run(
+        run_id="hitl-two-pauses",
+        workspace_id=workspace.id,
+        project_id=root.project_id,
+        graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    run = transition_run(run, RunStatus.QUEUED)
+    run = transition_run(run, RunStatus.RUNNING)
+    run = transition_run(run, RunStatus.PAUSED)
+    state = GraphExecutionState(
+        run_id="hitl-two-pauses",
+        active_node_ids=("ask-a", "ask-b"),
+        blackboard_snapshot={},
+        metadata={
+            "initial_inputs": {},
+            "hitl_answers": {},
+            "pauses": {
+                "ask-a": {"kind": "hitl", "metadata": {"question": "First?"}},
+                "ask-b": {"kind": "hitl", "metadata": {"question": "Second?"}},
+            },
+        },
+    )
+    record = DurableRunRecord(
+        run=run,
+        graph_state=state,
+        node_runs=(
+            _paused_node_run("hitl-two-pauses", "ask-a", 1),
+            _paused_node_run("hitl-two-pauses", "ask-b", 2),
+        ),
+        version=1,
+    )
+    try:
+        await store.create(record)
+
+        one = client.get("/v1/hitl/pending", params={"limit": 1}).json()
+        assert len([i for i in one if i["run_id"] == "hitl-two-pauses"]) == 1
+
+        both = client.get("/v1/hitl/pending", params={"limit": 5}).json()
+        nodes = sorted(i["node_id"] for i in both if i["run_id"] == "hitl-two-pauses")
+        assert nodes == ["ask-a", "ask-b"]
+    finally:
+        store._rows.pop("hitl-two-pauses", None)
 
 
 async def test_pending_stops_once_the_item_limit_is_met(seeded) -> None:
