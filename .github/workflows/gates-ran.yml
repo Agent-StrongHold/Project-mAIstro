@@ -164,19 +164,26 @@ jobs:
                 per_page: 100,
               },
             );
+            // Keep both endpoints of a rename so classification sees the
+            // source path too, matching the --no-renames diff consumers.
+            const paths = files.flatMap(file =>
+              file.previous_filename ? [file.previous_filename, file.filename] : [file.filename],
+            );
             // GitHub's list-files endpoint exposes at most 3,000 files per
             // pull request even when fully paginated (#1350). A response at
             // that cap cannot be told apart from a complete one, so it is
             // recorded as truncated and the evaluator treats scope as
             // ambiguous: skipped specialized checks then stay pending
-            // instead of being excused on partial evidence.
+            // instead of being excused on partial evidence. The cap is
+            // measured on the API response (files.length), not on the
+            // rename-expanded path list.
             const truncated = files.length >= 3000;
             fs.writeFileSync(
               'changed-files.json',
               JSON.stringify({
                 measured: true,
                 truncated,
-                files: files.map(file => file.filename),
+                files: paths,
               }),
             );
             if (truncated) {
