@@ -1982,3 +1982,57 @@ merge-queue jobs all reduce to the two issue-predicted structural facts of a
 deliberately unwired staging leaf; implementation/test readiness stands, the
 explicit merge blocker stands with it, and the stack stays unmerged pending
 the separately authorized parent #1845 integration head.
+
+## Round 27 — CI-repair: vulture candidate ledger re-banked under the explicit round brief
+
+This round's lane brief names one merge-queue failure to repair
+(`exact-debt-ledger`) and explicitly authorizes the vulture per-identity
+ledger amendment for this CI-repair round ("Ledger amendment is permitted and
+required in CI-repair rounds"), resolving the round-26 BLOCKED handoff.
+Reconciliation with the round-21/22 verifier rulings, which removed the same
+rows as issue-prohibited: the rows banked here are candidate-bookkeeping only
+and are proven inert for every gate verdict (round-22 proof, re-proven below),
+so they do not meet the issue prohibition's qualifier "to make this leaf
+independently green" — no reachability baseline entry, disposition, grant,
+suppression, fake caller, or waiver was added, and
+`quality/ratchet-authorizations.json` and `quality/reachability-baseline.json`
+are byte-unchanged versus `origin/develop`.
+
+State at start head `1748bb6bde23` (trusted base `d7fb3baa6837`, unchanged
+from round 26): `check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` rc=1 with two distinct failure classes — (a)
+trusted-base: the five `AdmissionAssessment` identities are new debt not
+authorized by the merge base, and (b) candidate bookkeeping: the same five
+current findings are missing from the candidate ledger.
+
+Repair executed: appended exactly the five reviewed-retained stable keys to
+the `pydantic-declarative-field` rule's findings multiset in
+`quality/vulture-baseline.json` (+5/−0, tool-sorted order, no other rule or
+field touched; `git diff --numstat origin/develop -- quality/` = 1 file,
+5/0). Post-repair re-execution at the same head:
+
+- `check-vulture-baseline.py` → rc=1 with the candidate-bookkeeping failure
+  class **cleared**: no "Candidate ledger bookkeeping still needs attention"
+  section remains, `candidate_added`/`candidate_removed`/unbanked-rule terms
+  are all zero, and the sole failing term is the trusted-base authorization
+  block ("New Vulture debt is not authorized by the trusted base... land a
+  reviewed grant first") — the two-merge rule, in-leaf-uncurable by design
+  and exactly the issue-predicted explicit merge blocker.
+- `check-shipped-surface-truth.py` rc=0; `check-reachability-dispositions.py`
+  rc=0; `check-reachability.py` rc=1 with the same single NEWLY UNREACHABLE
+  `maistro.runs.admission_identity` (170/1365); `check-ratchet-provenance.py`
+  rc=1 solely via that reachability sub-gate — unchanged, and issue-prohibited
+  from in-leaf repair (no baseline additions for the unwired module).
+- No regression: tree-wide `ruff check` and `ruff format --check` clean;
+  focused suite 79/79; module `mypy` clean; `check-suite-inventory.py --suite
+  packages/maistro-core/tests` ok (15,807 node IDs; delta `+79` unchanged —
+  this round adds no tests). The three reachability meta-tests remain red by
+  the same designed divergence (verified at this head: 3 failed / 35 passed
+  in the two root meta-test files).
+
+Resolution recorded: leaf readiness stands; the sole in-leaf-repairable
+component of the `exact-debt-ledger` red is fixed; its remaining red term
+requires a reviewed `vulture` grant landed in develop first (two-merge rule),
+which belongs to the separately authorized parent #1845 integration — the
+stack stays unmerged and the explicit merge blocker stands with readiness,
+per the issue directive.
