@@ -21,6 +21,7 @@ The load-bearing properties:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from dataclasses import replace
@@ -47,6 +48,7 @@ from maistro.extensions.types import (
 
 PAYLOAD_V1 = b"lifecycle-payload-1.0.0"
 PAYLOAD_V2 = b"lifecycle-payload-1.1.0"
+PAYLOAD_V3 = b"lifecycle-payload-1.2.0"
 
 TRUST = TrustClaim(publisher_id="acme", signature_present=True, signer_key_id="key-1")
 POLICY = TrustPolicy(
@@ -764,3 +766,93 @@ class TestStorePointerHygiene:
         # Clearing the live record drops the pointer.
         await store.clear_active(v2)  # type: ignore[arg-type]
         assert await store.active_record(SCOPE, "acme.chart_tools") is None
+
+
+class TestConcurrentActivation:
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_concurrent_installs_of_one_extension_leave_exactly_one_active(self) -> None:
+        """Two separately authorized installs of the same scoped extension race:
+        their distinct install-id record locks never contend, so the pointer
+        swap and supersede must be serialized per (scope, extension). The
+        loser must end SUPERSEDED — never ACTIVE under a pointer naming the
+        winner."""
+        service, store, _loader = make_service()
+
+        # The in-memory store has no suspension points, so the read-prior →
+        # set-active → supersede tail is accidentally atomic in a single event
+        # loop. Yield inside ``active_record`` and ``set_active`` to open
+        # exactly the window the review describes: both racers capture the
+        # same prior active record before either finishes its pointer swap,
+        # and each supersedes only that shared prior.
+        original_active_record = store.active_record
+        original_set_active = store.set_active
+
+        async def yielding_active_record(scope: object, extension_id: str) -> object:
+            await asyncio.sleep(0)
+            return await original_active_record(scope, extension_id)  # type: ignore[arg-type]
+
+        async def yielding_set_active(record: object) -> None:
+            await asyncio.sleep(0)
+            await original_set_active(record)  # type: ignore[arg-type]
+
+        store.active_record = yielding_active_record  # type: ignore[method-assign]
+        store.set_active = yielding_set_active  # type: ignore[method-assign]
+
+        async def authorize_then_install(version: str, payload: bytes) -> object:
+            record = await service.inspect(
+                actor="operator-1",
+                scope=SCOPE,
+                package=ExtensionPackage(
+                    manifest_bytes=manifest_bytes(
+                        version=version,
+                        payload=payload,
+                        permissions=("network.http",),
+                    ),
+                    payload=payload,
+                ),
+                trust_evidence=TRUST,
+            )
+            await service.authorize(
+                record.install_id,
+                actor="operator-1",
+                scope=SCOPE,
+                approve=True,
+                reason="ok",
+            )
+            return await service.install(
+                record.install_id, actor="operator-1", scope=SCOPE, payload=payload
+            )
+
+        first = await authorize_then_install("1.0.0", PAYLOAD_V1)
+        candidate_a, candidate_b = await asyncio.gather(
+            authorize_then_install("1.1.0", PAYLOAD_V2),
+            authorize_then_install("1.2.0", PAYLOAD_V3),
+        )
+
+        # Either candidate may win the race; exactly one may hold the pointer.
+        pointer = await store.active_record(SCOPE, "acme.chart_tools")
+        assert pointer is not None
+        assert pointer.install_id in (candidate_a.install_id, candidate_b.install_id)  # type: ignore[attr-defined]
+        loser_id = (
+            candidate_b.install_id  # type: ignore[attr-defined]
+            if pointer.install_id == candidate_a.install_id  # type: ignore[attr-defined]
+            else candidate_a.install_id  # type: ignore[attr-defined]
+        )
+        # Re-read from the store: the records returned by ``install`` are
+        # snapshots taken before any later supersede.
+        loser_now = await store.get_record(loser_id)
+        assert loser_now is not None and loser_now.state is ExtensionState.SUPERSEDED
+        assert pointer.state is ExtensionState.ACTIVE
+        first_now = await store.get_record(first.install_id)  # type: ignore[attr-defined]
+        assert first_now is not None and first_now.state is ExtensionState.SUPERSEDED
+        # Exactly one ACTIVE record for the (scope, extension), and it is the
+        # one the pointer names.
+        served = [
+            record
+            for record in await store.records_in_state(ExtensionState.ACTIVE)
+            if record.org_id == SCOPE.org_id
+            and record.workspace_id == SCOPE.workspace_id
+            and record.extension_id == "acme.chart_tools"
+        ]
+        assert [record.install_id for record in served] == [pointer.install_id]

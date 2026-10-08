@@ -158,6 +158,7 @@ class ExtensionInstallService:
         self._clock = clock
         self._install_id_factory = install_id_factory or (lambda: uuid.uuid4().hex)
         self._locks: dict[str, asyncio.Lock] = {}
+        self._activation_locks: dict[str, asyncio.Lock] = {}
 
     # -- reads ------------------------------------------------------------
 
@@ -561,87 +562,94 @@ class ExtensionInstallService:
                 f"inspection ({record.artifact_sha256}); authorization does not transfer"
             )
 
-        # #954: a pin on the currently active version fences moving the active
-        # version to this candidate. The fence sits here — after the state and
-        # digest checks, before any code runs — so a pinned scope is only
-        # ever movable by an explicit unpin decision, never by presenting an
-        # authorized payload out of band.
-        pinned = await self._store.active_record(scope, record.extension_id)
-        if pinned is not None and pinned.install_id != install_id and pinned.pinned:
-            raise VersionPinned(
-                f"{record.extension_id} {pinned.version} is pinned in "
-                f"{scope.describe}; activating {record.version} is fenced "
-                "until the pin is lifted with an explicit unpin decision"
-            )
+        # Serialize the pin fence, the pointer swap and the supersede against
+        # any other activation of the same (scope, extension): distinct
+        # install-id record locks do not contend, so without this lock two
+        # concurrent installs could each observe the same prior record, both
+        # take the pointer, and each supersede only that shared prior —
+        # leaving the loser ACTIVE under a pointer naming the winner.
+        async with self._activation_lock(scope, record.extension_id):
+            # #954: a pin on the currently active version fences moving the active
+            # version to this candidate. The fence sits here — after the state and
+            # digest checks, before any code runs — so a pinned scope is only
+            # ever movable by an explicit unpin decision, never by presenting an
+            # authorized payload out of band.
+            pinned = await self._store.active_record(scope, record.extension_id)
+            if pinned is not None and pinned.install_id != install_id and pinned.pinned:
+                raise VersionPinned(
+                    f"{record.extension_id} {pinned.version} is pinned in "
+                    f"{scope.describe}; activating {record.version} is fenced "
+                    "until the pin is lifted with an explicit unpin decision"
+                )
 
-        record = await self._transition(
-            record,
-            ExtensionState.INSTALLING,
-            actor=actor,
-            reason=f"installing authorized artifact {payload_digest}",
-            now=now,
-            mutate=lambda r: replace(
-                r, install_attempts=r.install_attempts + 1, installed_by=actor
-            ),
-        )
-
-        try:
-            loaded = await self._loader.load(record, payload)
-        except Exception as exc:
-            await self._transition(
+            record = await self._transition(
                 record,
-                ExtensionState.FAILED,
+                ExtensionState.INSTALLING,
                 actor=actor,
-                reason=f"activation failed: {exc}",
-                now=self._clock(),
+                reason=f"installing authorized artifact {payload_digest}",
+                now=now,
+                mutate=lambda r: replace(
+                    r, install_attempts=r.install_attempts + 1, installed_by=actor
+                ),
             )
-            raise ExtensionLifecycleError(
-                f"install {install_id} failed during activation and is recorded FAILED"
-            ) from exc
 
-        if loaded.extension_id != record.extension_id or loaded.version != record.version:
-            await self._transition(
+            try:
+                loaded = await self._loader.load(record, payload)
+            except Exception as exc:
+                await self._transition(
+                    record,
+                    ExtensionState.FAILED,
+                    actor=actor,
+                    reason=f"activation failed: {exc}",
+                    now=self._clock(),
+                )
+                raise ExtensionLifecycleError(
+                    f"install {install_id} failed during activation and is recorded FAILED"
+                ) from exc
+
+            if loaded.extension_id != record.extension_id or loaded.version != record.version:
+                await self._transition(
+                    record,
+                    ExtensionState.FAILED,
+                    actor=actor,
+                    reason=(
+                        f"activation failed: loader returned {loaded.extension_id} "
+                        f"{loaded.version} instead of {record.extension_id} {record.version}"
+                    ),
+                    now=self._clock(),
+                )
+                raise ExtensionLifecycleError(
+                    f"install {install_id} failed: loader identity mismatch; recorded FAILED"
+                )
+
+            record = await self._transition(
                 record,
-                ExtensionState.FAILED,
+                ExtensionState.ACTIVE,
                 actor=actor,
-                reason=(
-                    f"activation failed: loader returned {loaded.extension_id} "
-                    f"{loaded.version} instead of {record.extension_id} {record.version}"
-                ),
+                reason=f"activated {record.extension_id} {record.version}",
                 now=self._clock(),
             )
-            raise ExtensionLifecycleError(
-                f"install {install_id} failed: loader identity mismatch; recorded FAILED"
-            )
-
-        record = await self._transition(
-            record,
-            ExtensionState.ACTIVE,
-            actor=actor,
-            reason=f"activated {record.extension_id} {record.version}",
-            now=self._clock(),
-        )
-        prior = await self._store.active_record(scope, record.extension_id)
-        await self._store.set_active(record)
-        if (
-            prior is not None
-            and prior.install_id != record.install_id
-            and prior.state is ExtensionState.ACTIVE
-        ):
-            # Pointer first (the atomic "what runs" swap), supersede second:
-            # a crash between the two leaves the pointer naming the new
-            # version with the old record still ACTIVE — the pre-#954
-            # behavior — never a pointer naming a non-ACTIVE record.
-            await self._transition(
-                prior,
-                ExtensionState.SUPERSEDED,
-                actor=actor,
-                reason=(
-                    f"superseded by activation of {record.extension_id} "
-                    f"{record.version} (install {record.install_id})"
-                ),
-                now=self._clock(),
-            )
+            prior = await self._store.active_record(scope, record.extension_id)
+            await self._store.set_active(record)
+            if (
+                prior is not None
+                and prior.install_id != record.install_id
+                and prior.state is ExtensionState.ACTIVE
+            ):
+                # Pointer first (the atomic "what runs" swap), supersede second:
+                # a crash between the two leaves the pointer naming the new
+                # version with the old record still ACTIVE — the pre-#954
+                # behavior — never a pointer naming a non-ACTIVE record.
+                await self._transition(
+                    prior,
+                    ExtensionState.SUPERSEDED,
+                    actor=actor,
+                    reason=(
+                        f"superseded by activation of {record.extension_id} "
+                        f"{record.version} (install {record.install_id})"
+                    ),
+                    now=self._clock(),
+                )
         return record
 
     # -- phase 4: post-install lifecycle (#954) ------------------------------
@@ -715,26 +723,29 @@ class ExtensionInstallService:
                     f"install {install_id} is {record.state}; only a "
                     f"{ExtensionState.DISABLED} record can be re-enabled"
                 )
-            current = await self._store.active_record(scope, record.extension_id)
-            if (
-                current is not None
-                and current.install_id != install_id
-                and current.state is ExtensionState.ACTIVE
-            ):
-                raise InvalidTransition(
-                    f"{record.extension_id} {current.version} is the active version in "
-                    f"{scope.describe}; re-enabling {record.version} over it is a "
-                    "version move — use rollback for an explicit, audited decision"
+            # A version move decision: serialize it against concurrent
+            # activations of the same (scope, extension).
+            async with self._activation_lock(scope, record.extension_id):
+                current = await self._store.active_record(scope, record.extension_id)
+                if (
+                    current is not None
+                    and current.install_id != install_id
+                    and current.state is ExtensionState.ACTIVE
+                ):
+                    raise InvalidTransition(
+                        f"{record.extension_id} {current.version} is the active version in "
+                        f"{scope.describe}; re-enabling {record.version} over it is a "
+                        "version move — use rollback for an explicit, audited decision"
+                    )
+                updated = await self._transition(
+                    record,
+                    ExtensionState.ACTIVE,
+                    actor=actor,
+                    reason=f"re-enabled: {reason}",
+                    now=self._clock(),
                 )
-            updated = await self._transition(
-                record,
-                ExtensionState.ACTIVE,
-                actor=actor,
-                reason=f"re-enabled: {reason}",
-                now=self._clock(),
-            )
-            await self._store.set_active(updated)
-            return updated
+                await self._store.set_active(updated)
+                return updated
 
     async def remove(
         self,
@@ -833,9 +844,15 @@ class ExtensionInstallService:
                 "only a superseded or disabled prior version can be restored"
             )
         # Acquire both record locks in sorted order, so a concurrent rollback
-        # in the opposite direction cannot deadlock this one.
+        # in the opposite direction cannot deadlock this one. The activation
+        # lock is taken innermost (after the record locks, like every other
+        # version move) to keep the lock order acyclic.
         first, second = sorted((current.install_id, target.install_id))
-        async with self._lock(first), self._lock(second):
+        async with (
+            self._lock(first),
+            self._lock(second),
+            self._activation_lock(scope, extension_id),
+        ):
             # Both records may have moved while these locks were waited on.
             current = await self._require(current.install_id, scope)
             target = await self._require(target.install_id, scope)
@@ -952,6 +969,26 @@ class ExtensionInstallService:
         if lock is None:
             lock = asyncio.Lock()
             self._locks[install_id] = lock
+        return lock
+
+    def _activation_lock(self, scope: ExtensionScope, extension_id: str) -> asyncio.Lock:
+        """Serialize version moves for one (scope, extension).
+
+        The per-record ``_lock`` cannot do this: two separately authorized
+        installs of the same extension carry different install ids, so their
+        record locks never contend. Every read-modify-write of the scope's
+        active pointer (activation, supersede, re-enable, rollback) happens
+        under this lock, keeping exactly one record ``ACTIVE`` per
+        (scope, extension) even when installs race. Always acquired after
+        the record lock(s), never before, so lock ordering stays acyclic.
+        """
+        # No await between the check and the set, so lazy creation is safe
+        # under a single event loop.
+        key = f"{scope.org_id}|{scope.workspace_id}|{extension_id}"
+        lock = self._activation_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._activation_locks[key] = lock
         return lock
 
     async def _require(self, install_id: str, scope: ExtensionScope) -> ExtensionInstallRecord:
