@@ -140,3 +140,80 @@ explicitly unverified criteria above. No GitHub mutations performed.
 
 Progress: checked 1 assigned issue; done 0 acceptance-complete issues; skipped 0;
 errors 1 reproduced policy blocker. Partial merge repair is committed.
+
+## Independent repair revalidation at c0b935fda (job 2ddc1e7a)
+
+Frozen assignment: issue #1572 only, branch `auto-1572`, starting HEAD
+`c0b935fda29a2de70d6d0afa6d12246ac46412e7`, trusted/supplied base
+`34795962548a33f6b6f7e1234dcea201a9df96ef`. The worktree started clean;
+there was no unresolved merge or uncommitted work to salvage. This section is
+newly executed evidence, not adoption of the earlier checkpoint's results.
+Read repository instructions, the captured issue's complete acceptance criteria,
+this job's five driver logs, the supplied prior result, and accepted
+ADR-081226-9944, ADR-081226-a66b, ADR-087, ADR-082426-2192 and
+ADR-092326-97c4. No architecture exception is proposed.
+
+### Commands and results
+
+All validation used long timeouts in the assigned worktree. Detailed logs are
+in `/home/dev/maistro/jobs/2ddc1e7abbd947b4acc9a7cf391b14fc/repair-*.log`.
+
+| Executed command | Result |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1326 findings / 1326 reviewed identities, zero unclassified or forbidden. No ledger repair is justified. |
+| `uv run python scripts/check-execution-lifecycles.py` | FAIL: trusted base 34795962548a has 19 classifications versus 20 discoveries; GoalStatus lacks already-landed authorization. |
+| `uv run pytest packages/maistro-core/tests/goals packages/maistro-core/tests/workspaces/test_sqlite_alembic_schema_parity.py -x -q` | 55 passed, 16 skipped. |
+| `uv run pytest packages/maistro-core/tests/runs packages/maistro-core/tests/graph/durable_runs packages/maistro-core/tests/test_container_chat_runs.py -x -q` | 1876 passed, 318 skipped, 5 aiosqlite closed-event-loop thread warnings. |
+| `uv run pytest tests/migrations -x -q` | 38 passed, 125 skipped. |
+| `uv run pytest tests/test_check_execution_lifecycles.py tests/test_check_integration_scope.py -q` | 52 passed, 1 failed: `tests/test_check_execution_lifecycles.py:374` reproduces the unauthorized GoalStatus. |
+| `uv run ruff check .` | PASS. |
+| `uv run ruff format --check .` | PASS: 3180 files. |
+| `uv run python scripts/check-m1-convergence-freeze.py --base 34795962548a33f6b6f7e1234dcea201a9df96ef` | PASS: no unapproved architecture island. |
+| `uv run alembic heads` | PASS: single head 061. |
+| `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests` | PASS: 15545 unique identities, zero duplicate evidence. |
+| `DOCKER_HOST=unix:///var/run/docker.sock docker info --format '{{.ServerVersion}}'` | FAIL: cannot connect to the Docker daemon. |
+
+### Acceptance checked against current source and tests
+
+Goal test references below are relative to `packages/maistro-core/tests/goals/`.
+
+| Criterion | Current evidence and limits |
+| --- | --- |
+| Three-backend Goal/GoalRevision round-trip | Shared conformance `test_goal_store_conformance.py:171` passes memory/SQLite; PostgreSQL UNVERIFIED (skipped). |
+| Append-only revisions, stale refusal, concurrent single winner, terminal finality | Conformance at lines 197, 229, 278 passes memory/SQLite; races use one store object. PostgreSQL and independent durable-writer races UNVERIFIED. |
+| Subgoal parent/Project lineage and recorded Agent ownership changes | Conformance at lines 294, 333 passes memory/SQLite. PostgreSQL UNVERIFIED. |
+| Immutable Run admission binding and no implicit Goal outcome | `test_run_goal_binding.py:102,115` exercises real `admit_direct_work` and terminal Run transitions; outcome test passes. Goal advancement after admission and PostgreSQL UNVERIFIED: existing binding tests do not advance the bound Goal revision. |
+| Two-principal/two-Workspace isolation; foreign equals missing | Conformance authorization tests pass through `ScopedGoalStore`, which uses `WorkspaceAuthorizer` in production (`goals/authorization.py:52,154`). PostgreSQL UNVERIFIED. |
+| Production store composition and shipped Container exposure | `test_goal_wiring.py:43,158` passes real factory/seam tests. Inspected callers: server `main.py:344`, Hive `backend/adapters/maistro_core.py:195`; factory selects store at `container.py:2362`. Both deployed process compositions/restarts UNVERIFIED. Missing/partial PG schemas correctly refuse startup (`goals/wiring.py:61-65`); no old fallback defect is assumed. |
+| Restart same Goal/revisions and bound Run | `test_goal_restart_readback.py:36` passes SQLite connection close/reopen, not deployed process restart or Goal advancement after admission. PostgreSQL/deployed-process legs UNVERIFIED. |
+| No competing GoalRun/OrchestratorRun/executor/lifecycle authority | Convergence-freeze passes against the resolved supplied base. Separate execution-lifecycle policy gate fails as recorded above. |
+| Preserve merged 056/057 identities/ancestry; append unused coordinated Goal revision | Static graph and historical byte-identity tests in `tests/migrations/test_goal_installed_base_upgrade.py:389,416` pass; head 061 follows 060. Central allocation/reservation UNVERIFIED. |
+| Actual populated c560d4c/4675101 installed-base forward upgrades without reset/restamp | Existing live tests skipped; PG17 and PG18 UNVERIFIED. |
+| Each upgraded base retains facts/statement keys/Run data/planner artifacts and serves reopened Goal/bound Run data | Live tests skipped; PG17 and PG18 UNVERIFIED. Existing durable-composition fixture starts from the planner snapshot only, not both historical bases. |
+| Fresh install, single head/unique IDs, downgrade/refusal/reapplication, earlier quota-door history audit | Offline migration checks and single-head command pass. Live PG17/PG18 and complete earlier-history compatibility audit UNVERIFIED. |
+
+### Handoff: BLOCKED, not an implementation repair
+
+The requested vulture scan is already green. No speculative retained identities
+were banked and no implementation, tests, grants or gates were changed. This
+report is the only changed file; inventory delta remains zero.
+
+`load_authorizations` at `scripts/ratchet_provenance.py:478` reads the trusted
+base. A local candidate grant cannot authorize GoalStatus and is outside this
+lane's permissions. The owner must establish that authorization independently;
+do not disguise the legitimate Goal domain lifecycle to evade the scanner.
+
+The reported **integration-scope failure remains UNRESOLVED**.
+`scripts/check-integration-scope.py:20-27` aggregates specialized service checks,
+not lifecycle/vulture. Inspection of the supplied dispatch snapshot found no
+check-run record with this exact starting HEAD (`repair-captured-check-evidence.json`).
+Its unit tests pass, but neither that nor a local scope calculation proves the
+actual specialized producers succeeded. No remote lists were refreshed and no
+fabricated `--result` values were supplied.
+
+Next: provide the exact-candidate failed integration producer log, independently
+land the lifecycle authorization through the owning process, and provide working
+PG17/PG18 infrastructure. Re-dispatching only vulture repair cannot resolve these
+external prerequisites. No GitHub mutations or issue closure actions occurred.
+Progress: checked 1 assigned issue; done 0 acceptance-complete issues; skipped 0;
+errors 1 reproduced policy blocker, plus unavailable PostgreSQL infrastructure.
