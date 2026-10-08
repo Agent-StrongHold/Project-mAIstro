@@ -1,15 +1,27 @@
+---
+inventory-delta:
+  packages/maistro-core/tests: +0
+---
 # verify-1078-2a11c1cc0
 
-> This note carries **no `inventory-delta:` block**: it adds and removes no
-> tests, and the gate (ADR-082526-547c) reads an absent key as zero movement.
-> It moves no test counts.
+> The `inventory-delta:` block above records **explicit zero movement** (gate
+> ADR-082526-547c): the salvage round strengthened an assertion inside an
+> existing test and added none; suite counts are unchanged.
 
 Verification record for lane L1078 (#1078 — [adversarial][#1041] Reconcile
-credential-routing consumer proof and #58 closure evidence) at exact head
-`2a11c1cc006a977ee76281307767319773d4fb62` (branch `auto-1078`, develop base
-identical). The job's driver produced **no** `check-*.log` files and
-`manifest.checks` was empty; every claim below was executed first-party at the
-exact head. The tree needed no change; this note is the durable record.
+credential-routing consumer proof and #58 closure evidence), first written at
+exact head `2a11c1cc006a977ee76281307767319773d4fb62` and **re-verified
+first-party at the salvage head `98ce0c397953f8587cb4f18b733f7392399ca2ca`**
+(branch `auto-1078`; that head merges develop's `2b23303f72f0` in, and
+`git diff 2a11c1cc0..98ce0c397` touches none of this note's subject matter —
+no credential, model-chat, bootstrap, reachability, or ADR-063 file). The
+original job's driver produced **no** `check-*.log` files and
+`manifest.checks` was empty; every claim below was executed first-party. The
+salvage round made one evidence repair: the decisive pool-wins datum (item 4)
+was previously proven only by a discarded scratch script — it is now pinned
+by an assertion in the in-tree composition test
+(`test_model_egress_container_composition.py`, mutation-checked: simulating an
+env-bypass makes the test fail).
 
 ## Issue context (from dispatch evidence, frozen)
 
@@ -21,8 +33,10 @@ governs; configured endpoints seed it; env var is documented fallback, not
 bypass") points at the #1079 wire-up, which landed on develop as `f695d491f`
 ("Wire governed model egress into production composition (#1079) (#1522)",
 visible in `model_chat.py` history; linked PR #1091 itself closed unmerged).
-`git log f49aefe6..HEAD -- capabilities/credential_routing.py` is empty — the
-seam module is unchanged since #1041; the consumers arrived around it.
+`git log f49aefe6..HEAD --
+packages/maistro-core/src/maistro/capabilities/credential_routing.py` is empty
+(tracked path, run from the repo root) — the seam module is unchanged since
+#1041; the consumers arrived around it.
 
 ## Item 1 — Runtime (not import) reproduction of the shipped path: PROVEN
 
@@ -43,8 +57,12 @@ via a scratch script (kept out of the tree, `/tmp`):
   for the same scope/key id.
 - Supporting suite: `uv run pytest
   packages/maistro-core/tests/test_model_egress_container_composition.py -q`
-  → 20 passed (configured bootstrap, empty-config authorizes nothing,
-  disabled-binding refusal, governed invocation through real authorities).
+  → **6 passed** (configured bootstrap, empty-config authorizes nothing,
+  disabled-binding refusal, governed invocation through real authorities; the
+  20 quoted earlier belongs to the combined run with
+  `test_credential_routing.py`, reported correctly in item 2), and the
+  executor now asserts the endpoint authenticated with the pool-issued key
+  (`endpoint.api_key == "test-litellm-key"`) while the env decoy is set.
 
 Residual against #58/ADR-063: none concrete found at this head. Pool selection
 remains default-strategy (`round_robin`) with one bootstrap-registered key —
@@ -141,15 +159,54 @@ arriving.
    2026-09-02 note **above**" but the 2026-09-02 note appears below it in the
    file (line 279). Semantics are unambiguous; a pointer-direction nit only.
 2. The refutation comment's "documented fallback" phrasing is loose: the env
-   fallback's behavioral precedence (pool wins) is proven and the bootstrap
-   docstring documents the seeding, but no doc sentence says "env var is the
-   fallback" verbatim. Behavioral acceptance is unaffected.
+   fallback's behavioral precedence (pool wins) is proven — and now pinned
+   in-tree — and the bootstrap docstring documents the seeding, but no doc
+   sentence says "env var is the fallback" verbatim. Behavioral acceptance is
+   unaffected.
+3. The in-issue grant is referred to as "#1053 (7d3d390c)" in the issue body
+   and item 5 below, but `quality/ratchet-authorizations.json` records the
+   `effect_context.py::credential_routing` grant with `"issue": "#58"`. Same
+   grant text ("in-repo readers are the #58 tests"); label provenance only,
+   and the substantive state (grant present, baseline carries 0
+   `credential_routing` rows) is verified either way.
+
+## Salvage re-verification at `98ce0c397` (this head) — all green, first-party
+
+- Suites re-run: composition **6 passed** (with the new pool-wins assertion);
+  `test_credential_routing.py` **14 passed**; combined **20 passed**;
+  `tests/credentials` **136 passed**; `tests/capabilities` **716 passed,
+  7 skipped**. Spy reproduction re-run at this head: `acquire` entered with
+  `('ws-prod', 'project-prod', 'litellm', ('litellm-gateway',))`, executor saw
+  `test-litellm-key` while `MAISTRO_LLM_API_KEY=test-secret` was set,
+  `record_outcome(error=None)` folded back — identical to the `2a11c1cc0`
+  record.
+- Gates re-run with CI argv: `check-reachability.py` exit 0 (1364 modules,
+  169 unreachable); `check-reachability-dispositions.py` exit 0 (49 groups,
+  147 CONNECT / 20 LIBRARY / 2 RETIRE); `check-ac-state.py` (plain) exit 0.
+- SAST gate (queue status was `in_progress`, never failed) proven locally with
+  CI's argv (`security.yml` sast job): bandit Medium+ **0** on the three
+  source trees; semgrep 364 rules × 2130 files **0 findings**; gitleaks over
+  `d7fb3baa..98ce0c397` **no leaks**.
+- `check-ac-state.py --run-tests --ratchet` (ratchet mode, not the plain
+  invocation the original record claimed and not in the queue's failing list)
+  reports design_coverage 39.2752 below a floor of 43.8998 folded from 35
+  banked notes at the merge base `2b23303f72f0`. Attribution: this branch's
+  diff vs that base adds no ADR/spec/test-file the metric reads (only this
+  note plus develop's own research artifacts), and the corpora-reading loader
+  sees the working tree — so the measured value is identical at base and head;
+  the shortfall is a property of develop's corpus at `2b23303f72f0`, not of
+  this branch. UNVERIFIED locally at develop tip `d7fb3baa` (the fold's
+  base==HEAD guard makes the ratchet unrunnable there); the queue evaluates
+  the branch merged with that tip.
+- `uv run ruff check .` and `uv run ruff format --check .` → both exit 0.
 
 ## Verdict
 
 All five checklist items of #1078 verified against reachable production
-behavior at exact head `2a11c1cc0`. The original allegation is refuted at
-this head: the shipped Container → model Invocation path enters
-`CredentialRouter.acquire` at runtime, selects within Binding-authorized
-refs, rotates on real outcomes, refuses fail-closed, and contains secrets.
-No tree change was required; the writer artifact is this note.
+behavior, first re-confirmed at salvage head `98ce0c397`. The original
+allegation is refuted at this head: the shipped Container → model Invocation
+path enters `CredentialRouter.acquire` at runtime, selects within
+Binding-authorized refs, rotates on real outcomes, refuses fail-closed, and
+contains secrets — with the decisive pool-wins-over-env datum now pinned by an
+in-tree assertion instead of a scratch script. The writer artifacts are this
+note and that one assertion.
