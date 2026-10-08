@@ -35,11 +35,19 @@ would wait for a context that can never report where merge enforcement looks.
 Publishing the aggregate verdict onto the triggering candidate SHA keeps the
 judge protected while putting the result exactly where GitHub evaluates it.
 
-`gates-ran` is stricter than GitHub's raw required-check semantics. On ordinary
-PRs it still requires real execution evidence from every specialized CI leg. On
-a `develop` merge group, those specialized contexts are replaced in the
-execution-evidence set by the unconditional `integration-scope` aggregate,
-which verifies every classifier-selected specialized leg succeeded. Main
+`gates-ran` is stricter than GitHub's raw required-check semantics. Pull-request
+and develop-merge-group candidates are path-scoped by one policy (#1351):
+`scripts/ci_merge_group_scope.py` classifies the measured changed files, ci.yml
+runs each specialized job only when its leg is selected (the postgres matrix is
+the documented exception — GitHub evaluates job-level `if` before expanding the
+matrix, so a skipped matrix cannot report its concrete names), and
+`integration-scope` waits only for the selected legs. `gates-ran` judges the
+candidate with the same classifier and the same measured file set, so a
+specialized check reported `skipped` is acceptable exactly when the producers
+scoped it off, and a skip in scope still blocks. On a `develop` merge group,
+the specialized contexts are additionally replaced in the execution-evidence
+set by the unconditional `integration-scope` aggregate, which verifies every
+classifier-selected specialized leg succeeded. Protected pushes and main
 promotions retain their existing full specialized and release-tier check set.
 
 For merge groups, the initial trusted resolver is intentionally **develop-only**.
