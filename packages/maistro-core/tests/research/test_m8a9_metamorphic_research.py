@@ -524,6 +524,9 @@ def base_catalog(
     return intent, models, providers, {"alpha": 0.0, "beta": 0.0}
 
 
+_MAX_BASELINE_SCORED_QUALITY = 0.95 * 1.15  # max baseline quality x chat strength multiplier
+
+
 def ineligible_additions(
     *,
     inactive_quality: float,
@@ -535,8 +538,20 @@ def ineligible_additions(
     """One catalogue addition per documented ineligibility axis.
 
     Every added model would win on quality if the filter let it — that is what
-    makes the relation non-vacuous.
+    makes the relation non-vacuous. This is enforced: baseline models score up
+    to ``_MAX_BASELINE_SCORED_QUALITY`` (0.95 quality x the 1.15 chat strength
+    multiplier), and each addition must strictly outscore that, so a modality-,
+    tier-, status-, or quota-filter regression necessarily moves the winner
+    instead of passing the oracle vacuously.
     """
+    for label, q in (
+        ("inactive_quality", inactive_quality),
+        ("wrong_modality_quality", wrong_modality_quality),
+        ("burned_quality", burned_quality),
+    ):
+        assert q > _MAX_BASELINE_SCORED_QUALITY, (
+            f"{label}={q} would not outscore the strongest possible baseline"
+        )
     models: dict[str, ModelConfig] = {
         "inactive-model": ModelConfig(
             provider="inactive", tier="small", quality=inactive_quality, modality="text"
@@ -545,7 +560,7 @@ def ineligible_additions(
             provider="alpha", tier="small", quality=wrong_modality_quality, modality="image_gen"
         ),
         "out-of-band-model": ModelConfig(
-            provider="alpha", tier=out_of_band_tier, quality=0.99, modality="text"
+            provider="alpha", tier=out_of_band_tier, quality=1.2, modality="text"
         ),
         "burned-model": ModelConfig(
             provider="burned", tier="small", quality=burned_quality, modality="text"
@@ -809,10 +824,10 @@ def run_evidence_battery() -> dict[str, Any]:
     intent, models, providers, usage = base_catalog(0.9, 0.7)
     base_selection = selection_of(engine, intent, models, providers, usage)
     extra_models, extra_providers, extra_usage = ineligible_additions(
-        inactive_quality=0.99,
-        wrong_modality_quality=0.99,
+        inactive_quality=1.2,
+        wrong_modality_quality=1.2,
         out_of_band_tier="frontier",
-        burned_quality=0.99,
+        burned_quality=1.2,
         tier_band_top="large",
     )
     grown_selection = selection_of(
@@ -1168,7 +1183,10 @@ def test_mr_a2_oracle_detects_seeded_scope_leak() -> None:
 @given(
     quality_a=st.floats(min_value=0.5, max_value=0.95),
     quality_b=st.floats(min_value=0.5, max_value=0.95),
-    ineligible_quality=st.floats(min_value=0.96, max_value=1.0),
+    # Strictly above _MAX_BASELINE_SCORED_QUALITY (0.95 * 1.15): each addition
+    # must outscore the strongest possible strength-adjusted baseline so the
+    # oracle cannot pass vacuously if a filter regresses.
+    ineligible_quality=st.floats(min_value=1.1, max_value=1.3),
     band_top=st.sampled_from(["large", "medium"]),
 )
 def test_mr_b1_ineligible_additions_preserve_selection_generated(
@@ -1201,10 +1219,10 @@ def test_mr_b1_every_ineligibility_axis_exercised() -> None:
     from maistro.router.filter import filter_candidates
 
     extra_models, extra_providers, extra_usage = ineligible_additions(
-        inactive_quality=0.99,
-        wrong_modality_quality=0.99,
+        inactive_quality=1.2,
+        wrong_modality_quality=1.2,
         out_of_band_tier="frontier",
-        burned_quality=0.99,
+        burned_quality=1.2,
         tier_band_top="large",
     )
     intent = Intent(task_type="chat", tier="P2", min_tier="small", max_tier="large")
@@ -1268,10 +1286,10 @@ def test_mr_b1_detects_filter_regression_on_real_seam(monkeypatch: Any) -> None:
     intent, models, providers, usage = base_catalog(0.9, 0.7)
     base = selection_of(engine, intent, models, providers, usage)
     extra_models, extra_providers, extra_usage = ineligible_additions(
-        inactive_quality=1.5,  # above the 0.9*1.15 strength-adjusted baseline
-        wrong_modality_quality=0.99,
+        inactive_quality=1.5,  # must also beat the other additions (1.2)
+        wrong_modality_quality=1.2,
         out_of_band_tier="frontier",
-        burned_quality=0.99,
+        burned_quality=1.2,
         tier_band_top="large",
     )
 

@@ -26,8 +26,15 @@ probes separating false-positive rate (violations on unmutated seams: 0) from
 detection power (7/7 fixture mutants, plus two production-path mutants applied
 by monkeypatching the real `score_entry` and `filter_candidates` — an
 irrelevant-content scoring regression and a dropped provider-status check —
-both caught). The research record with the GRADUATE/INCUBATE/REJECT/WATCH
-disposition is `docs/research/889-metamorphic-testing.md` (registers
+both caught). A review round on PR #2063 tightened MR-B1's non-vacuity
+structurally: every ineligible addition must strictly outscore the strongest
+possible strength-adjusted baseline (0.95 quality x the 1.15 chat strength
+multiplier), enforced by an assertion inside `ineligible_additions` and by the
+generated B1 domain drawing additions from [1.1, 1.3] — so a status-, modality-,
+tier-, or quota-filter regression necessarily moves the winner instead of
+letting the oracle pass vacuously. The research record with the
+GRADUATE/INCUBATE/REJECT/WATCH disposition is
+`docs/research/889-metamorphic-testing.md` (registers
 **INCUBATE**).
 
 Three tolerance boundaries were found while stating the relations and are
