@@ -351,6 +351,25 @@ def test_unknown_schema_version_is_refused(
     assert rum_store.list_events()["total"] == 0
 
 
+def test_raw_resource_identifiers_are_refused_by_both_allowlist_boundaries(
+    authed_client: Any, rum_store: Any, ingest_enabled: None
+) -> None:
+    """Neither a forged browser batch nor a future route bypass may retain an id.
+
+    Route characters alone are insufficient: UUID-shaped values are valid path
+    text, so the collector must require a reviewed API/page root too.
+    """
+    raw_id = "a1e40b7c-9931-4f0e-8d5c-77b2aa01fed9"
+    for event in (_api_event(route=f"/v1/{raw_id}"), _web_vital(route=f"/{raw_id}")):
+        response = authed_client.post(RUM_URL, json=_envelope([event]))
+        assert response.status_code == 422
+    # The store is independently an allowlist boundary, not just a projection
+    # of whatever a future HTTP schema happens to admit.
+    assert rum_store.ingest([_api_event(route=f"/v1/{raw_id}")]) == 0
+    assert rum_store.ingest([_web_vital(route=f"/{raw_id}")]) == 0
+    assert rum_store.list_events()["total"] == 0
+
+
 def test_extra_fields_are_not_stored_and_secrets_do_not_leak(
     authed_client: Any, admin_client: Any, rum_store: Any, ingest_enabled: None
 ) -> None:

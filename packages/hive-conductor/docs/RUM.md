@@ -89,10 +89,12 @@ arbitrary second segment such as `/v1/<workspace-id>` is `unknown`, not a route
 label; new API roots must be explicitly reviewed in the client allowlist.
 Absolute and scheme-relative URLs are likewise `unknown` rather than allowing
 a hostname to become a route segment. Query strings and fragments are stripped
-before any inspection. `normalizePageRoute` does the same for the SPA location
-after stripping the Vite base path — every Hive route is one segment, so
-`/dashboard` stays `/dashboard` and anything deeper becomes `/dashboard/*`.
-A segment that is not plain path text yields `unknown`.
+before any inspection. `normalizePageRoute` applies the same reviewed-root
+rule after stripping the Vite base path: `/dashboard` stays `/dashboard` and
+anything deeper becomes `/dashboard/*`, but a direct `/<workspace-id>` is
+`unknown`. The collector repeats both API and page-root allowlists before it
+stores an event, so a crafted batch cannot turn a valid-looking path segment
+into a raw resource identifier.
 
 ### What must never leave the browser (and cannot)
 

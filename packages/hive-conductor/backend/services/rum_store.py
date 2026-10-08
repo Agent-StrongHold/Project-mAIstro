@@ -60,6 +60,112 @@ DEFAULT_MAX_EVENTS = 500
 WebVitalName = Literal["LCP", "load"]
 ApiOutcome = Literal["ok", "http_error", "timeout", "network_error"]
 
+# The collector is a second allowlist boundary, not merely a path-character
+# filter. A crafted batch must not turn `/v1/<resource-id>` or
+# `/<workspace-name>` into a retained telemetry dimension. Keep these literal
+# roots aligned with the browser normalizers in `frontend/src/lib/rumSchema.ts`.
+API_COLLECTION_ROOTS = frozenset(
+    {
+        "agents",
+        "audit",
+        "auth",
+        "backlog",
+        "canvas",
+        "capabilities",
+        "chat",
+        "cli",
+        "containers",
+        "credentials",
+        "dag-metrics",
+        "dag-runs",
+        "dags",
+        "dashboard",
+        "design",
+        "eval-judge",
+        "evolution",
+        "harness",
+        "hitl",
+        "install",
+        "mcp",
+        "memory",
+        "messages",
+        "optimizer",
+        "profile",
+        "program",
+        "projects",
+        "providers",
+        "quotas",
+        "rsi",
+        "rum",
+        "schedules",
+        "settings",
+        "setup",
+        "setup-checklist",
+        "skills",
+        "tasks",
+        "topology",
+        "voice",
+        "widgets",
+        "work-items",
+        "workspaces",
+        "ws",
+    }
+)
+PAGE_ROUTE_ROOTS = frozenset(
+    {
+        "agents",
+        "audit",
+        "backlog",
+        "chat",
+        "cli",
+        "containers",
+        "credentials",
+        "dags",
+        "dag-runs",
+        "dashboard",
+        "decks",
+        "design-studio",
+        "docs",
+        "evolution",
+        "knowledge",
+        "login",
+        "mcp",
+        "memory",
+        "messages",
+        "missions",
+        "optimization-inbox",
+        "optimizer",
+        "profile",
+        "quotas",
+        "rsi",
+        "schedules",
+        "settings",
+        "setup",
+        "skills",
+        "topology",
+        "work-items",
+    }
+)
+
+
+def is_allowed_route(value: Any, *, event_type: str) -> bool:
+    """Return whether ``value`` is a normalized route from the wire allowlist."""
+    if value == "unknown":
+        return True
+    if not isinstance(value, str):
+        return False
+    if event_type == "api_request":
+        if value in {"/health", "/health/*"}:
+            return True
+        match = re.fullmatch(r"/v1/([A-Za-z0-9._-]{1,64})(?:/\*)?", value)
+        return match is not None and match.group(1) in API_COLLECTION_ROOTS
+    if event_type == "web_vital":
+        if value == "/":
+            return True
+        match = re.fullmatch(r"/([a-z0-9-]{1,40})(?:/\*)?", value)
+        return match is not None and match.group(1) in PAGE_ROUTE_ROOTS
+    return False
+
 
 def _finite_non_negative(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
@@ -86,11 +192,11 @@ def _bounded_str(
     return value
 
 
-def _valid_route_and_ts(event: dict[str, Any]) -> tuple[str, float] | None:
-    """The two fields every event type shares: a bounded route template and a
-    numeric timestamp. None when either is missing or malformed."""
+def _valid_route_and_ts(event: dict[str, Any], *, event_type: str) -> tuple[str, float] | None:
+    """The two fields every event type shares: an allowlisted route template
+    and numeric timestamp. None when either is missing or malformed."""
     route = _bounded_str(event.get("route"), max_length=80)
-    if route is None:
+    if route is None or not is_allowed_route(route, event_type=event_type):
         return None
     ts = event.get("ts")
     if not isinstance(ts, (int, float)) or isinstance(ts, bool):
@@ -114,7 +220,7 @@ def project_web_vital(event: Any) -> dict[str, Any] | None:
     value_ms = event.get("value_ms")
     if not _finite_non_negative(value_ms):
         return None
-    common = _valid_route_and_ts(event)
+    common = _valid_route_and_ts(event, event_type="web_vital")
     if common is None:
         return None
     route, ts = common
@@ -152,7 +258,7 @@ def project_api_request(event: Any) -> dict[str, Any] | None:
     duration_ms = event.get("duration_ms")
     if not _finite_non_negative(duration_ms):
         return None
-    common = _valid_route_and_ts(event)
+    common = _valid_route_and_ts(event, event_type="api_request")
     if common is None:
         return None
     route, ts = common

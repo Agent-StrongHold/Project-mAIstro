@@ -44,6 +44,7 @@ from services.rum_store import (
     ApiOutcome,
     WebVitalName,
     get_store,
+    is_allowed_route,
     rum_ingest_enabled,
 )
 
@@ -83,13 +84,8 @@ class WebVitalEventIn(BaseModel):
     @field_validator("route")
     @classmethod
     def _route_charset(cls, value: str) -> str:
-        # A route template is built from path characters only; anything else
-        # (a URL with a query string, a fragment, whitespace) is a client
-        # that skipped redaction, and the event is refused rather than
-        # sanitized silently.
-        allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/_.*-")
-        if not set(value) <= allowed:
-            raise ValueError("route template outside the hive.rum.v1 charset")
+        if not is_allowed_route(value, event_type="web_vital"):
+            raise ValueError("route template outside the hive.rum.v1 allowlist")
         return value
 
 
@@ -118,9 +114,8 @@ class ApiRequestEventIn(BaseModel):
     @field_validator("route")
     @classmethod
     def _route_charset(cls, value: str) -> str:
-        allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/_.*-")
-        if not set(value) <= allowed:
-            raise ValueError("route template outside the hive.rum.v1 charset")
+        if not is_allowed_route(value, event_type="api_request"):
+            raise ValueError("route template outside the hive.rum.v1 allowlist")
         return value
 
     @field_validator("request_id")

@@ -25,6 +25,42 @@ export const MAX_ROUTE_LENGTH = 80;
 const ROUTE_SEGMENT_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const PAGE_SEGMENT_RE = /^[a-z0-9-]{1,40}$/;
 
+/** Stable, literal SPA roots. Like API paths, the page location is input: a
+ * direct `/customer-id` navigation must not become a telemetry dimension. */
+const PAGE_ROUTE_ROOTS = new Set([
+  "agents",
+  "audit",
+  "backlog",
+  "chat",
+  "cli",
+  "containers",
+  "credentials",
+  "dags",
+  "dag-runs",
+  "dashboard",
+  "decks",
+  "design-studio",
+  "docs",
+  "evolution",
+  "knowledge",
+  "login",
+  "mcp",
+  "memory",
+  "messages",
+  "missions",
+  "optimization-inbox",
+  "optimizer",
+  "profile",
+  "quotas",
+  "rsi",
+  "schedules",
+  "settings",
+  "setup",
+  "skills",
+  "topology",
+  "work-items",
+]);
+
 /**
  * Stable, literal API collection roots mounted by the Conductor.  The shared
  * client accepts caller-supplied paths, so accepting arbitrary second path
@@ -199,7 +235,7 @@ export function normalizePageRoute(rawPathname: string, basename = "/"): string 
   const segments = path.split("/").filter((s) => s.length > 0);
   if (segments.length === 0) return "/";
   const first = segments[0];
-  if (!PAGE_SEGMENT_RE.test(first)) return UNKNOWN_ROUTE;
+  if (!PAGE_SEGMENT_RE.test(first) || !PAGE_ROUTE_ROOTS.has(first)) return UNKNOWN_ROUTE;
   const route = `/${first}${segments.length > 1 ? "/*" : ""}`;
   return route.length <= MAX_ROUTE_LENGTH ? route : UNKNOWN_ROUTE;
 }

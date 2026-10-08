@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +30
+  packages/hive-conductor/backend/tests: +31
 ---
 
 # 1420 — RUM collector contract tests
@@ -68,13 +68,15 @@ The frontend side of #1420 (reporter, redaction rules, live collection) is
 tested by `tests/e2e/rum-telemetry.spec.ts`, which is Playwright, not
 pytest-collected — this suite's collected count is unaffected by it. Its
 same-node redaction regression rejects absolute and scheme-relative URLs,
-and now also rejects an arbitrary direct `/v1/<id>` path: the shared client
-accepts caller paths, so the second segment is retained only when it is a
-reviewed literal Conductor API collection root. This prevents an arbitrary
-hostname or raw resource identifier from becoming an emitted route segment.
-No other suite moved: the same-node redaction assertions are the only existing
-test edit, and the only production-code edits adjacent to tests are the new
-route/store/settings fields above.
+an arbitrary direct `/v1/<id>` path, and a direct `/<id>` page location: the
+shared client and SPA location retain a segment only when it is a reviewed
+literal Conductor root. `test_raw_resource_identifiers_are_refused_by_both_allowlist_boundaries`
+adds one backend node that sends UUID-shaped API and page paths through the
+collector and directly into its store; both boundaries refuse them rather than
+retaining a raw resource identifier. No other suite moved: the same-node
+redaction assertions are the only existing test edit, and the only
+production-code edits adjacent to tests are the new route/store/settings
+fields above.
 
 ## Client-side off-switches (repair round, 2026-10-07)
 

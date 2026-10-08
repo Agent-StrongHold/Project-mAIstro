@@ -68,6 +68,9 @@ test.describe("RUM schema redaction rules", () => {
   test("page route templates are the single SPA segment", () => {
     expect(normalizePageRoute("/dashboard")).toBe("/dashboard");
     expect(normalizePageRoute(`/dashboard/${RAW_AGENT_ID}`)).toBe("/dashboard/*");
+    // A direct navigation can be arbitrary too; only literal SPA roots may
+    // become route dimensions.
+    expect(normalizePageRoute(`/${RAW_AGENT_ID}`)).toBe("unknown");
     expect(normalizePageRoute(`/login?next=/admin&token=${SECRET_TOKEN}`)).toBe("/login");
     // The Vite base path is stripped, so a sub-path deployment reports the
     // same template as a root one.
