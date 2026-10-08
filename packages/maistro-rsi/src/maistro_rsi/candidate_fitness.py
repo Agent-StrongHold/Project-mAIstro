@@ -17,6 +17,8 @@ show the explicit alternative evidence instead.
 from __future__ import annotations
 
 import ast
+import hashlib
+import importlib.metadata
 import json
 import os
 import shlex
@@ -51,6 +53,7 @@ from maistro_evolve.scenario_objective import (
 from maistro_evolve.scorecard import (
     FitnessWeights,
     GateResult,
+    GateState,
     MeasureKind,
     Scorecard,
     SignalScore,
@@ -1003,55 +1006,59 @@ def _run_lint_tool(
     argv: list[str],
     cwd: Path,
     execute: Callable[[list[str]], tuple[int, str, str]] | None = None,
-) -> subprocess.CompletedProcess[str] | None:
-    """Run a static tool, bounded by a timeout. Returns None if the tool is
-    missing or wedges — so the gate is treated as unavailable (not a false
-    rejection, and never an indefinite hang of LocalRsiLoop.run()).
+) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+    """Run a static tool, bounded by a timeout.
+
+    Returns ``(proc, cause)``. ``proc`` is None when the tool did not produce
+    a result; ``cause`` names why — ``"missing"`` (not installed / not
+    importable in this runner), ``"timeout"`` (wedged past the bound) or
+    ``"error"`` (could not even be spawned). Callers decide what a non-result
+    means (#304): for a REQUIRED gate it is a blocking ``not_run``, never a
+    silent omission.
 
     ``execute`` routes the same tool through the evaluation sandbox (#614):
     argv[0] is swapped for the interpreter the image provides (the host's
     `sys.executable` is a host path a container may not have), and the streams
     come back separated so report parsing cannot be corrupted by interleaved
-    stderr."""
-    try:
-        if execute is not None:
-            rc, out, err = execute([CONTAINED_PYTHON, *argv[1:]])
-            proc = subprocess.CompletedProcess(argv, rc, stdout=out, stderr=err)
-        else:
+    stderr. A sandbox that cannot establish or execute raises
+    `ContainmentUnavailable` instead of returning a non-result — under
+    containment a missing image is a refusal (#614 AC-3), not a ``not_run``
+    verdict about the candidate; only the classifications above describe the
+    tool's own failure to produce evidence, and they mean the same thing in
+    both isolation modes (a missing analyzer blocks promotion rather than
+    narrowing the evidence, #304)."""
+    if execute is not None:
+        rc, out, err = execute([CONTAINED_PYTHON, *argv[1:]])
+        proc = subprocess.CompletedProcess(argv, rc, stdout=out, stderr=err)
+    else:
+        try:
             proc = subprocess.run(
                 argv, cwd=str(cwd), capture_output=True, text=True, timeout=_LINT_TIMEOUT
             )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+        except subprocess.TimeoutExpired:
+            return None, "timeout"
+        except OSError:
+            return None, "error"
     if "No module named" in proc.stderr:
-        return None
-    return proc
+        return None, "missing"
+    return proc, None
 
 
-def _lint_gates(
-    cwd: Path,
-    src_files: list[str],
-    execute: Callable[[list[str]], tuple[int, str, str]] | None = None,
-) -> list[GateResult]:
-    """ruff / mypy / bandit-HIGH on the changed source files. A missing, errored,
-    or timed-out tool yields no gate (unenforced) rather than a false rejection.
-    ``execute`` (the contained evaluation, #614) runs each tool inside the
-    sandbox and reads its report back as data."""
-    if not src_files:
-        return []
-    gates: list[GateResult] = []
-
-    ruff = _run_lint_tool(
-        [sys.executable, "-m", "ruff", "check", "--output-format", "json", *src_files], cwd, execute
-    )
-    if ruff is not None:
-        try:
-            n = len(json.loads(ruff.stdout or "[]"))
-        except json.JSONDecodeError:
-            n = 0
-        gates.append(GateResult("ruff_clean", n == 0, f"{n} lint violation(s)"))
-
-    mypy = _run_lint_tool(
+# The required analyzer gates (#304): (gate name, distribution name, argv
+# prefix). Every one of these gates is named in the scorecard and in generated
+# RSI PR bodies, so each must have an EXECUTED result tied to provenance — a
+# runner missing any of them fails closed with a blocking ``not_run`` gate
+# instead of silently narrowing the evidence. The runner image declares the
+# same set (Dockerfile.rsi-runner); their parity is pinned by test.
+REQUIRED_LINT_TOOL_SPEC: tuple[tuple[str, str, list[str]], ...] = (
+    (
+        "ruff_clean",
+        "ruff",
+        [sys.executable, "-m", "ruff", "check", "--output-format", "json"],
+    ),
+    (
+        "mypy_clean",
+        "mypy",
         [
             sys.executable,
             "-m",
@@ -1061,27 +1068,231 @@ def _lint_gates(
             "--no-color-output",
             "--config-file",
             os.devnull,
-            *src_files,
         ],
-        cwd,
-        execute,
-    )
-    if mypy is not None:
-        errs = sum(1 for ln in mypy.stdout.splitlines() if ": error:" in ln)
-        gates.append(GateResult("mypy_clean", errs == 0, f"{errs} type error(s)"))
+    ),
+    ("no_bandit_high", "bandit", [sys.executable, "-m", "bandit", "-f", "json", "-q"]),
+)
 
-    bandit = _run_lint_tool(
-        [sys.executable, "-m", "bandit", "-f", "json", "-q", *src_files], cwd, execute
-    )
-    if bandit is not None:
-        try:
-            results = json.loads(bandit.stdout or "{}").get("results", [])
-        except json.JSONDecodeError:
-            results = []
-        high = [r for r in results if r.get("issue_severity") == "HIGH"]
-        gates.append(
-            GateResult("no_bandit_high", len(high) == 0, f"{len(high)} HIGH-severity finding(s)")
+def _tool_version(dist: str) -> str | None:
+    """The installed distribution version of a gate's tool, or None when the
+    dist is absent (which for a required tool surfaces as a not_run gate
+    anyway). Read in-process: the gate argv runs under ``sys.executable``, so
+    this interpreter's metadata IS the version that produced the result."""
+    try:
+        return importlib.metadata.version(dist)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _candidate_sha(cwd: Path) -> str | None:
+    """The candidate commit the gates are scoring — None outside a git
+    worktree (compose-only contexts), where provenance honestly cannot pin a
+    SHA rather than inventing one."""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    sha = proc.stdout.strip()
+    return sha or None
+
+
+def _gate_provenance(
+    cwd: Path,
+    argv: list[str],
+    dist: str,
+    proc: subprocess.CompletedProcess[str] | None,
+    *,
+    contained: bool = False,
+) -> dict[str, object]:
+    """What actually executed behind a gate result (#304 AC-1): command,
+    tool version, candidate SHA, exit status, and an output digest over both
+    output streams — the minimum a reviewer needs to distinguish a measured
+    pass from a guess.
+
+    ``contained`` (#614): the tool ran inside the evaluation sandbox, so two
+    host-side facts would describe executions that did NOT produce this
+    result and are recorded as honest Nones — the interpreter's installed
+    dist version is the host's, not the image's, and a host ``git
+    rev-parse`` would pin the seed worktree, not the tree inside the sandbox
+    the gates actually scored (no host process may run during a contained
+    evaluation, #614 AC-5). The command, exit status and output digest still
+    tie the result to the execution that produced it."""
+    return {
+        "command": list(argv),
+        "tool_version": None if contained else _tool_version(dist),
+        "candidate_sha": None if contained else _candidate_sha(cwd),
+        "exit_status": proc.returncode if proc is not None else None,
+        "output_digest": _output_digest(proc) if proc is not None else None,
+    }
+
+
+def _output_digest(proc: subprocess.CompletedProcess[str]) -> str:
+    """SHA-256 over the analyzer's complete output — stdout and stderr — with
+    each stream length-framed so no concatenation ambiguity can collide two
+    different splits. Hashing stdout alone would leave stderr diagnostics and
+    fatal errors unauthenticated: a run that crashed while printing nothing to
+    stdout would carry the same digest as a genuinely silent clean one."""
+    out = (proc.stdout or "").encode()
+    err = (proc.stderr or "").encode()
+    framed = b"stdout:%d:" % len(out) + out + b"stderr:%d:" % len(err) + err
+    return "sha256:" + hashlib.sha256(framed).hexdigest()
+
+
+def _not_run_gate(name: str, dist: str, cause: str, provenance: dict[str, object]) -> GateResult:
+    return GateResult(
+        name,
+        False,
+        f"{dist} did not run ({cause}) — required gate not_run; "
+        "a missing analyzer blocks promotion rather than narrowing the evidence",
+        detail={"cause": cause, **provenance},
+        state=GateState.NOT_RUN,
+    )
+
+
+def _unreadable_output_gate(name: str, tool: str, provenance: dict[str, object]) -> GateResult:
+    """An executed tool whose stdout cannot be parsed, recorded FAILED —
+    unreadable evidence is not a green result."""
+    return GateResult(
+        name,
+        False,
+        f"unreadable {tool} output — recorded as failed, not clean",
+        detail=provenance,
+        state=GateState.FAILED,
+    )
+
+
+def _ruff_clean_gate(
+    proc: subprocess.CompletedProcess[str], provenance: dict[str, object]
+) -> GateResult:
+    """Gate on the count of ruff findings in the JSON report."""
+    try:
+        n = len(json.loads(proc.stdout or "[]"))
+    except json.JSONDecodeError:
+        return _unreadable_output_gate("ruff_clean", "ruff", provenance)
+    return GateResult(
+        "ruff_clean",
+        n == 0,
+        f"{n} lint violation(s)",
+        detail=provenance,
+        state=GateState.PASSED if n == 0 else GateState.FAILED,
+    )
+
+
+def _mypy_clean_gate(
+    proc: subprocess.CompletedProcess[str], provenance: dict[str, object]
+) -> GateResult:
+    """Gate on the count of ``: error:`` lines in mypy's output."""
+    errs = sum(1 for ln in proc.stdout.splitlines() if ": error:" in ln)
+    return GateResult(
+        "mypy_clean",
+        errs == 0,
+        f"{errs} type error(s)",
+        detail=provenance,
+        state=GateState.PASSED if errs == 0 else GateState.FAILED,
+    )
+
+
+def _bandit_high_gate(
+    proc: subprocess.CompletedProcess[str], provenance: dict[str, object]
+) -> GateResult:
+    """Gate on the count of HIGH-severity bandit findings."""
+    try:
+        results = json.loads(proc.stdout or "{}").get("results", [])
+    except json.JSONDecodeError:
+        return _unreadable_output_gate("no_bandit_high", "bandit", provenance)
+    high = [r for r in results if r.get("issue_severity") == "HIGH"]
+    return GateResult(
+        "no_bandit_high",
+        len(high) == 0,
+        f"{len(high)} HIGH-severity finding(s)",
+        detail=provenance,
+        state=GateState.PASSED if len(high) == 0 else GateState.FAILED,
+    )
+
+
+# Per-tool result builders for the executed-and-well-formed path, keyed by
+# gate name (the same names REQUIRED_LINT_TOOL_SPEC carries).
+_LINT_GATE_PARSERS: dict[
+    str, Callable[[subprocess.CompletedProcess[str], dict[str, object]], GateResult]
+] = {
+    "ruff_clean": _ruff_clean_gate,
+    "mypy_clean": _mypy_clean_gate,
+    "no_bandit_high": _bandit_high_gate,
+}
+
+
+def _lint_gate_result(
+    name: str,
+    dist: str,
+    proc: subprocess.CompletedProcess[str] | None,
+    cause: str | None,
+    provenance: dict[str, object],
+) -> GateResult:
+    """Classify one analyzer run into its gate result: ``not_run`` when the
+    tool never produced a result or died mid-execution, else the tool's
+    parser decides ``passed`` vs ``failed``.
+
+    All three are REQUIRED gates: a tool that is missing, wedged, or times
+    out yields a blocking ``not_run`` gate (``passed=False`` vetoes the
+    candidate) that names the cause — never a silent omission a downstream
+    PR body could render as a pass. Output that cannot be parsed is a FAILED
+    gate, not a clean one. Nor is an execution failure: exits 0 (clean) and
+    1 (findings) are the only analyzer-evidence codes — a tool that starts
+    and then dies with a usage/configuration/internal exit (2) yields a
+    blocking ``not_run`` gate, because empty stdout from a broken analyzer
+    is not evidence of clean code."""
+    if proc is None:
+        return _not_run_gate(name, dist, cause or "error", provenance)
+    if proc.returncode not in (0, 1):
+        # A findings exit is 0 or 1; anything else means the analyzer
+        # never evaluated the files. Reject before parsing so empty
+        # stdout (ruff "[]", mypy zero errors, bandit "{}") from a
+        # broken run cannot masquerade as a clean result.
+        return _not_run_gate(name, dist, f"execution error (exit {proc.returncode})", provenance)
+    return _LINT_GATE_PARSERS[name](proc, provenance)
+
+
+def _lint_gates(
+    cwd: Path,
+    src_files: list[str],
+    execute: Callable[[list[str]], tuple[int, str, str]] | None = None,
+) -> list[GateResult]:
+    """ruff / mypy / bandit-HIGH on the changed source files (#304).
+
+    An executed gate carries its provenance (command, tool version,
+    candidate SHA, exit status, output digest) and one of exactly two
+    states: ``passed`` or ``failed``; see ``_lint_gate_result`` for how a
+    non-execution is classified.
+
+    ``execute`` (the contained evaluation, #614) runs each tool inside the
+    sandbox instead of on the host — the same REQUIRED gate set in both
+    isolation modes, so containment cannot silently narrow the evidence.
+    The recorded provenance still names the execution that produced the
+    result: the sandbox receives its own interpreter name rather than a host
+    path, and the tool version is an honest None — this interpreter's
+    metadata is the host's, not the image's that actually ran (#614 AC-5)."""
+    if not src_files:
+        return []
+    gates: list[GateResult] = []
+    for name, dist, argv in REQUIRED_LINT_TOOL_SPEC:
+        full_argv = [*argv, *src_files]
+        if execute is not None:
+            proc, cause = _run_lint_tool(full_argv, cwd, execute)
+            provenance = _gate_provenance(
+                cwd, [CONTAINED_PYTHON, *full_argv[1:]], dist, proc, contained=True
+            )
+        else:
+            proc, cause = _run_lint_tool(full_argv, cwd)
+            provenance = _gate_provenance(cwd, full_argv, dist, proc)
+        gates.append(_lint_gate_result(name, dist, proc, cause, provenance))
     return gates
 
 

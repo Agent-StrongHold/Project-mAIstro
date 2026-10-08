@@ -22,6 +22,7 @@ from typing import Any, ClassVar
 
 import pytest
 
+from maistro_evolve.scorecard import GateState
 from maistro_rsi import candidate_fitness
 from maistro_rsi.contained_validation import (
     CONTAINED_PYTHON,
@@ -352,12 +353,13 @@ class TestEvaluateCandidateRoutesThroughTheSandbox:
         assert ruff_calls, "the static tool never ran in the sandbox"
         assert any("--output-format" in a for a in ruff_calls[0])
 
-    def test_a_missing_tool_in_the_image_leaves_the_gate_unenforced_not_failed(
+    def test_a_missing_tool_in_the_image_is_a_blocking_not_run_gate(
         self, sandbox_factory: list[_FakeSandbox], tmp_path: Path, forbid_host_subprocess: None
     ) -> None:
-        """Parity with the host branch: "No module named ruff" means the gate
-        is unavailable in that image — never a false rejection, and never a
-        silent pass recorded as evidence."""
+        """The same required-gate contract in both isolation modes (#304 ×
+        #614): a tool the image lacks is a blocking ``not_run`` gate naming
+        the cause — never a false rejection of the candidate's code, and
+        never a silent narrowing of the evidence an operator asked for."""
         fake = _FakeSandbox(tmp_path)
         fake.responses["ruff"] = (1, "", "No module named ruff")
 
@@ -370,7 +372,48 @@ class TestEvaluateCandidateRoutesThroughTheSandbox:
                 contained=contained,
             )
 
-        assert next((g for g in scorecard.gates if g.name == "ruff_clean"), None) is None
+        ruff = next(g for g in scorecard.gates if g.name == "ruff_clean")
+        assert ruff.passed is False
+        assert ruff.resolved_state() is GateState.NOT_RUN
+        assert "missing" in ruff.reason
+        assert scorecard.accepted is False
+
+    def test_a_contained_lint_gate_records_its_own_execution_not_host_facts(
+        self, sandbox_factory: list[_FakeSandbox], tmp_path: Path, forbid_host_subprocess: None
+    ) -> None:
+        """Provenance (#304) under containment (#614): the recorded command is
+        the argv the SANDBOX received (its own interpreter, not a host path),
+        and the host-only facts — installed dist version, host-tree HEAD — are
+        honest Nones: the host tree is the seed, not the tree the gates
+        scored, and no host process may run to ask either question."""
+        fake = _FakeSandbox(tmp_path)
+        fake.responses["ruff"] = (0, "[]", "")
+
+        with _contained(tmp_path, fake) as contained:
+            scorecard = candidate_fitness.evaluate_candidate(
+                tmp_path,
+                ["mod.py"],
+                test_command="python -m pytest -q",
+                test_argv=("python", "-m", "pytest", "-q"),
+                contained=contained,
+            )
+
+        ruff = next(g for g in scorecard.gates if g.name == "ruff_clean")
+        assert ruff.resolved_state() is GateState.PASSED
+        detail = ruff.detail
+        assert detail["command"] == [
+            CONTAINED_PYTHON,
+            "-m",
+            "ruff",
+            "check",
+            "--output-format",
+            "json",
+            "mod.py",
+        ]
+        assert detail["tool_version"] is None
+        assert detail["candidate_sha"] is None
+        assert detail["exit_status"] == 0
+        assert str(detail["output_digest"]).startswith("sha256:")
 
     def test_the_quality_tools_run_in_the_sandbox_not_on_the_host(
         self, sandbox_factory: list[_FakeSandbox], tmp_path: Path, forbid_host_subprocess: None

@@ -191,6 +191,64 @@ def _git(
     return proc
 
 
+def _changed_file_names(cwd: Path, sha: str) -> list[str]:
+    """The non-empty file names one commit touches, in commit order."""
+    return [
+        ln.strip()
+        for ln in _git(cwd, "show", "--name-only", "--pretty=format:", sha).stdout.splitlines()
+        if ln.strip()
+    ]
+
+
+def _primary_changed_file(names: list[str]) -> str:
+    """The changed file a promotion manifest row names: the first changed
+    Python file when the commit touches one, else the first changed file,
+    else ``''`` (a commit with no file rows at all)."""
+    return next((n for n in names if n.endswith(".py")), names[0] if names else "")
+
+
+def _promotion_gate_evidence(note: Any) -> dict[str, Any] | None:
+    """A promotion's recorded gate evidence, or None when the trace note (or
+    the evidence itself) is absent — a legacy promotion must render as
+    unverified, never as gate-clean (#820)."""
+    if note is None or note.gate_evidence is None:
+        return None
+    return dict(note.gate_evidence)
+
+
+def _gate_evidence_entry(gate: Any) -> dict[str, Any]:
+    """#304: per-gate state + provenance (command/tool version/candidate
+    SHA/exit status/output digest where the gate recorded them)."""
+    return {
+        "state": gate.resolved_state().value,
+        "passed": gate.passed,
+        "reason": gate.reason,
+        **(
+            {"provenance": dict(gate.detail)}
+            if "command" in gate.detail or "cause" in gate.detail
+            else {}
+        ),
+    }
+
+
+def _named_gate_evidence(scorecard: Any) -> dict[str, Any]:
+    """Full detail rides along (never silent) for the gates whose detail is
+    an evidence payload: the protected inventory (#306), the fail-first
+    proof (#392), and the evaluator-oracle verdict (#109), keyed by their
+    trace-name rather than their gate name."""
+    evidence_keys = (
+        ("protected_test_inventory", "inventory"),
+        ("fail_first_evidence", "fail_first"),
+        ("evaluator_integrity", "evaluator"),
+    )
+    out: dict[str, Any] = {}
+    for gate_name, trace_key in evidence_keys:
+        detail = next((g.detail for g in scorecard.gates if g.name == gate_name), None)
+        if detail:
+            out[trace_key] = dict(detail)
+    return out
+
+
 def _git_apply(cwd: Path, patch: str) -> bool:
     """Apply ``patch`` onto the worktree at ``cwd``; return whether it landed.
 
@@ -2705,8 +2763,10 @@ class LocalRsiLoop:
         """The compact per-gate/reward bundle behind a fitness decision — the
         promotion record's evidence payload. Gate details ride along in full
         (never silent): the protected inventory (#306), the fail-first proof
-        (#392), and the evaluator-oracle verdict with its trusted digest
-        (#109)."""
+        (#392), the evaluator-oracle verdict with its trusted digest
+        (#109), and — #304 — every gate's state plus execution provenance,
+        so the promotion record (and every PR body rendered from it) can
+        state exactly which gates ran and which never did."""
         mut_raw = next(
             (g.detail.get("score") for g in scorecard.gates if g.name == "tests_pin_behavior"),
             None,
@@ -2715,16 +2775,11 @@ class LocalRsiLoop:
             "gates": {g.name: g.passed for g in scorecard.gates},
             "composite": scorecard.composite,
             "mutation_score": float(mut_raw) if isinstance(mut_raw, int | float) else None,
+            # #304: per-gate state + provenance (command/tool version/candidate
+            # SHA/exit status/output digest where the gate recorded them).
+            "gate_evidence": {g.name: _gate_evidence_entry(g) for g in scorecard.gates},
+            **_named_gate_evidence(scorecard),
         }
-        evidence_keys = (
-            ("protected_test_inventory", "inventory"),
-            ("fail_first_evidence", "fail_first"),
-            ("evaluator_integrity", "evaluator"),
-        )
-        for gate_name, trace_key in evidence_keys:
-            detail = next((g.detail for g in scorecard.gates if g.name == gate_name), None)
-            if detail:
-                trace[trace_key] = dict(detail)
         return trace
 
     def _annotate_promotion(
@@ -2772,6 +2827,11 @@ class LocalRsiLoop:
                 regression_judge=top.regression_judge_score,
             ),
             gates={str(k): bool(v) for k, v in gates.items()},
+            gate_evidence=(
+                {str(k): dict(v) for k, v in source["gate_evidence"].items()}
+                if isinstance(source.get("gate_evidence"), dict)
+                else None
+            ),
             note=summary,
             inventory=source.get("inventory"),
             fail_first=source.get("fail_first"),
@@ -3302,19 +3362,13 @@ class LocalRsiLoop:
 
     def _export_entry(self, dest: Path, position: int, sha: str) -> dict[str, object]:
         """One promotion's manifest row: the git-am-able patch file, the file
-        it edits, the subject — and (#109) the evaluator provenance. The
-        harvest path opens PRs from these manifests, so each one names the
-        oracle version that accepted the promotion: a reviewer sees an
-        authorized oracle override before it merges, and a promotion accepted
-        under a mutated oracle can never masquerade as one judged by the
-        trusted base definition."""
-        names = [
-            ln.strip()
-            for ln in _git(
-                self._baseline, "show", "--name-only", "--pretty=format:", sha
-            ).stdout.splitlines()
-            if ln.strip()
-        ]
+        it edits, the subject — (#109) the evaluator provenance, and (#304/
+        #820) the promotion's recorded gate evidence. The harvest path opens
+        PRs from these manifests, so each row carries exactly which gates ran
+        against this candidate and which never did: a PR body rendered from
+        the manifest can name its real evidence and cannot claim a gate that
+        has no recorded result."""
+        names = _changed_file_names(self._baseline, sha)
         subject = _git(self._baseline, "show", "-s", "--pretty=format:%s", sha).stdout.strip()
         patch_name = f"{position:04d}-{sha[:8]}.patch"
         patch = _git(self._baseline, "format-patch", "-1", "--stdout", sha).stdout
@@ -3323,11 +3377,13 @@ class LocalRsiLoop:
 
         note = read_trace_note(self._baseline, sha)
         evaluator = (note.evaluator if note is not None else None) or {}
-        src = next((n for n in names if n.endswith(".py")), names[0] if names else "")
-        return {
+        entry: dict[str, object] = {
             "patch_file": patch_name,
-            "file": src,
+            "file": _primary_changed_file(names),
             "subject": subject,
             "evaluator_digest": evaluator.get("evaluator_digest"),
             "evaluator_authorized": bool(evaluator.get("authorized")),
+            "gates": dict(note.gates) if note is not None else {},
+            "gate_evidence": _promotion_gate_evidence(note),
         }
+        return entry
