@@ -84,6 +84,7 @@ Every child research epic/leaf defines:
 
 | Note | Family | Epic / leaf | Disposition at this head |
 |---|---|---|---|
+| [900 — adaptive model routing, escalation, and inference economics](900-adaptive-model-routing-escalation-economics.md) | M8-B | epic [#900](https://github.com/Agent-StrongHold/Project-mAIstro/issues/900) (leaves #914–#919) | INCUBATE (family) |
 | [904 — uncertainty, calibration, abstention](904-uncertainty-calibration-abstention.md) | M8-E | [#904](https://github.com/Agent-StrongHold/Project-mAIstro/issues/904) (leaves #930–#933) | WATCH (per leaf) |
 | [905 — inference systems, open-model fleets, caching, batching, specialization](905-inference-systems-open-model-fleets-caching-batching-specialization.md) | M8-F | [#905](https://github.com/Agent-StrongHold/Project-mAIstro/issues/905) | WATCH (epic) |
 | [906 — information-flow, provenance, agent security](906-information-flow-provenance-agent-security.md) | M8-G | [#906](https://github.com/Agent-StrongHold/Project-mAIstro/issues/906) | WATCH (per candidate) |
