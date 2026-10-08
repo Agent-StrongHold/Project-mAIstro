@@ -37,6 +37,29 @@ def test_push_keeps_every_specialized_leg_enabled() -> None:
     assert all(helper.scope_from_environment("push").values())
 
 
+def test_hive_e2e_scope_covers_the_jobs_actual_inputs() -> None:
+    """PRs touching only the Hive jobs' inputs still run both Hive E2E jobs.
+
+    Both jobs execute scripts/prepull-base-images.sh directly, and the Hive
+    Dockerfile installs maistro-bootstrap/-canvas/-design/-evolve (#1351
+    review): generic scripts/ or packages/ changes must not leave hive_e2e
+    false while docker_build alone selects.
+    """
+    for path in (
+        "scripts/prepull-base-images.sh",
+        "packages/maistro-bootstrap/pyproject.toml",
+        "packages/maistro-canvas/src/maistro_canvas/board.py",
+        "packages/maistro-design/pyproject.toml",
+        "packages/maistro-evolve/src/maistro_evolve/cycle.py",
+    ):
+        scope = helper.classify([path])
+        assert scope["hive_e2e"] is True, path
+    # An unrelated script keeps the old behavior: docker_build only.
+    scope = helper.classify(["scripts/verify-wheel-imports.py"])
+    assert scope["hive_e2e"] is False
+    assert scope["docker_build"] is True
+
+
 def test_merge_group_uses_changed_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     scope = helper.scope_for_event("merge_group", ["docs/ci/BRANCH-PROTECTION.md"])
     assert scope["docker_build"] is True

@@ -99,7 +99,27 @@ def _classify_path(path: str, out: dict[str, bool]) -> None:
         core and any(token in path for token in ("strike", "attempt", "execution", "run"))
     ):
         out["strike_ladder"] = True
-    if hive or server or core or _under(path, "docker-compose.yml", "docker-compose", "tests/e2e"):
+    # Inputs the Hive E2E jobs exercise beyond the conductor tree itself
+    # (#1351 review): both jobs execute scripts/prepull-base-images.sh
+    # directly, and the Hive Dockerfile installs maistro-bootstrap/-canvas/
+    # -design/-evolve (routes/design.py imports maistro_design unguarded, so
+    # the live stack cannot boot without them).
+    if (
+        hive
+        or server
+        or core
+        or path == "scripts/prepull-base-images.sh"
+        or _under(
+            path,
+            "docker-compose.yml",
+            "docker-compose",
+            "tests/e2e",
+            "packages/maistro-bootstrap",
+            "packages/maistro-canvas",
+            "packages/maistro-design",
+            "packages/maistro-evolve",
+        )
+    ):
         out["hive_e2e"] = True
     if (
         path == "scripts/verify-wheel-imports.py"
