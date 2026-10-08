@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-ext-sdk/tests: +20
-  packages/maistro-ext-harness/tests: +45
+  packages/maistro-ext-harness/tests: +56
 ---
 # 945 — extension developer tooling: scaffold, certification (epic M9-H #945)
 
@@ -38,7 +38,7 @@ deltas against the pre-change baselines (SDK 118, harness 138).
 
 ## packages/maistro-ext-harness/tests: +45 (`test_certification.py`, `test_import_hygiene.py`)
 
-- `test_certification.py` (+43): the certification pipeline end to end —
+- `test_certification.py` (+43, then **+54** after the repair round): the certification pipeline end to end —
   happy path with provenance (subject identity, contract/harness/SDK
   versions, environment, artifact digest), claims built **only** from
   executed-passed checks/cases, the platform note always under
@@ -70,6 +70,25 @@ deltas against the pre-change baselines (SDK 118, harness 138).
   `signing` extra, fail-closed without it) — and the fence asserts the
   exception stays one file wide and corresponds to a declared
   `[project.optional-dependencies].signing` entry.
+- **repair round (+11, all in `test_certification.py`):** the
+  certification-honesty gaps from the PR #2089 Codex review that were still
+  live at head `199bb9f91`, each shown to fail against the pre-change
+  implementation and pass against the repair:
+  `test_dynamic_import_through_an_importlib_module_alias_declines` and
+  `test_sys_path_extend_declines` (security-scanner bypasses: an aliased
+  `importlib` receiver and `sys.path.extend` both certified a false
+  property), `test_a_plain_importlib_module_call_still_passes` (the alias
+  fix does not overreach), three `artifact/source-parity` tests — a wheel
+  that swaps a tested module's bytes, adds an untested module, or drops a
+  tested module must decline, because conformance ran against the source
+  tree and shipped bytes were never compared to tested bytes — plus the
+  matching-bytes positive control, three parametrized
+  `test_a_malformed_report_container_fails_without_raising` cases (wrong
+  container types in `decision`/`signature`/`subject` used to raise
+  `AttributeError` out of `verify_certification` instead of failing the
+  verification), and `test_an_unsupported_schema_version_fails_verification`
+  (the verifier now accepts only its exact certification schema, not any
+  `maistro-ext-harness/certification@` prefix).
 
 The physical acceptance — scaffold each family, build its wheel, install
 it with the SDK + harness wheels into a fresh venv, run the sample tests,

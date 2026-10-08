@@ -273,6 +273,7 @@ def _structural_stage(pipeline: _Pipeline) -> None:
         pipeline.request.artifact,
         source.manifest,
         project_name=source.project_name,
+        source_root=pipeline.request.subject,
     )
     pipeline.checks.extend(artifact_checks)
     pipeline.artifact_info = artifact_info
@@ -453,7 +454,8 @@ def verify_certification(
 
     Checks, in order:
 
-    1. the report parses and carries a known certification schema;
+    1. the report parses and carries this verifier's exact certification
+       schema (an unknown or future schema is a failure, not a guess);
     2. the artifact's exact bytes digest to the report's recorded
        ``artifact.sha256`` — later package mutation invalidates the
        certification association here;
@@ -480,11 +482,18 @@ def verify_certification(
         return VerificationResult(ok=False, failures=("report is not a JSON object",))
 
     schema = report.get("certification_schema", "")
-    if not str(schema).startswith("maistro-ext-harness/certification@"):
+    if schema != CERTIFICATION_SCHEMA:
+        # An exact match, not a prefix: this verifier implements exactly one
+        # report shape. Accepting ``@2``/``@garbage`` would let a crafted or
+        # future-dialect report be interpreted with the wrong semantics and
+        # still report success.
         return VerificationResult(
             ok=False,
             checked=tuple(checked),
-            failures=(f"unknown certification schema {schema!r}",),
+            failures=(
+                f"unsupported certification schema {schema!r}; this verifier "
+                f"implements {CERTIFICATION_SCHEMA!r}",
+            ),
         )
     checked.append(f"schema {schema}")
 
@@ -571,6 +580,11 @@ def _check_decision_consistency(
 ) -> None:
     """`certified` and the decline reasons must tell the same story."""
     decision = report.get("decision", {})
+    if not isinstance(decision, dict):
+        # Reports are untrusted verifier input: a wrong container type is a
+        # verification failure, never an AttributeError escaping the API.
+        failures.append(f"report's decision is not an object ({type(decision).__name__})")
+        return
     certified = decision.get("certified")
     decline_reasons = decision.get("decline_reasons", [])
     if certified is True and decline_reasons:
@@ -597,6 +611,9 @@ def _check_signature(
     artifact, not whatever an intermediary typed into the payload block.
     """
     signature = report.get("signature", {})
+    if not isinstance(signature, dict):
+        failures.append(f"report's signature block is not an object ({type(signature).__name__})")
+        return
     if not signature.get("signed"):
         if publisher_key_hex is not None:
             failures.append(
@@ -604,8 +621,14 @@ def _check_signature(
                 "signature to verify"
             )
         return
-    subject = report.get("subject") or {}
-    artifact = report.get("artifact") or {}
+    subject = report.get("subject")
+    artifact = report.get("artifact")
+    if not isinstance(subject, dict) or not isinstance(artifact, dict):
+        failures.append(
+            "report's subject/artifact records are not objects; the signature "
+            "cannot be bound to them"
+        )
+        return
     payload_fields = {
         "extension_id": str(subject.get("id", "")),
         "version": str(subject.get("version", "")),

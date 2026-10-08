@@ -19,10 +19,14 @@ harness so a third-party certification runs it anywhere:
 - an underscore-prefixed module under a public root is a private seam
   wearing a public name: violation;
 - the repository-relative sentinels (``packages``, ``extensions``) and any
-  ``sys.path`` mutation are checkout repairs: violations;
+  ``sys.path`` mutation (insert/append/extend — the same set the
+  repository's ``check-extension-imports.py`` gate rejects) are checkout
+  repairs: violations;
 - a dynamic import (``importlib.import_module`` / ``__import__``) on a
   literal naming a forbidden root is still an import: violation, including
-  through an alias of the callable;
+  through an alias of the callable (``from importlib import import_module
+  as load``) or an alias of the module itself (``import importlib as il``
+  then ``il.import_module``);
 - the manifest's entrypoint must name a module inside the extension's own
   package — a host imports that module as extension code, so an entrypoint
   is an import the manifest makes on the extension's behalf;
@@ -210,47 +214,71 @@ class _ScanContext:
         )
 
 
-def _bound_import_callables(tree: ast.AST) -> set[str]:
-    """Local names bound to a dynamic-import callable.
+@dataclass(frozen=True)
+class _ImportBindings:
+    """The names one module binds to dynamic-import machinery."""
 
-    ``from importlib import import_module as load`` and ``load =
-    importlib.import_module`` both alias the callable; a literal dynamic
-    import through the alias is still an import.
-    """
-    bound: set[str] = {"__import__"}
+    #: Local names that ARE a dynamic-import callable: the ``__import__``
+    #: builtin, ``from importlib import import_module as load``, and
+    #: ``load = importlib.import_module``.
+    callables: frozenset[str]
+    #: Local names bound to the ``importlib`` module object itself:
+    #: ``import importlib`` and ``import importlib as il``. An attribute
+    #: call through such a binding (``il.import_module(...)``) is exactly as
+    #: dynamic as the dotted spelling; only the literal receiver name is
+    #: recognized otherwise, so an alias would smuggle the import past the
+    #: scan.
+    modules: frozenset[str]
+
+
+def _bound_imports(tree: ast.AST) -> _ImportBindings:
+    """Collect the dynamic-import callables and ``importlib`` aliases."""
+    callables: set[str] = {"__import__"}
+    modules: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "importlib":
-            for alias in node.names:
-                if alias.name == "import_module":
-                    bound.add(alias.asname or alias.name)
+            callables.update(
+                alias.asname or alias.name for alias in node.names if alias.name == "import_module"
+            )
+        elif isinstance(node, ast.Import):
+            modules.update(
+                alias.asname or alias.name for alias in node.names if alias.name == "importlib"
+            )
         elif isinstance(node, ast.Assign):
-            value = node.value
-            if (
-                isinstance(value, ast.Attribute)
-                and isinstance(value.value, ast.Name)
-                and value.value.id == "importlib"
-                and value.attr == "import_module"
-            ):
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        bound.add(target.id)
-    return bound
+            callables.update(_import_module_assignment_targets(node))
+    return _ImportBindings(frozenset(callables), frozenset(modules))
 
 
-def _literal_import(node: ast.Call, bound: set[str]) -> str | None:
+def _import_module_assignment_targets(node: ast.Assign) -> list[str]:
+    """Names a plain assignment binds to ``importlib.import_module`` itself:
+    ``load = importlib.import_module`` aliases the callable."""
+    value = node.value
+    if (
+        isinstance(value, ast.Attribute)
+        and isinstance(value.value, ast.Name)
+        and value.value.id == "importlib"
+        and value.attr == "import_module"
+    ):
+        return [target.id for target in node.targets if isinstance(target, ast.Name)]
+    return []
+
+
+def _literal_import(node: ast.Call, bindings: _ImportBindings) -> str | None:
     """The literal module name of a dynamic-import call, when it is one."""
     func = node.func
-    name: str | None = None
-    if isinstance(func, ast.Name) and func.id in bound:
-        name = func.id
+    if isinstance(func, ast.Name):
+        if func.id not in bindings.callables:
+            return None
     elif (
         isinstance(func, ast.Attribute)
-        and isinstance(func.value, ast.Name)
-        and func.value.id == "importlib"
         and func.attr == "import_module"
+        and isinstance(func.value, ast.Name)
+        and func.value.id in bindings.modules
     ):
-        name = "importlib.import_module"
-    if name is None or not node.args:
+        pass  # importlib.import_module through an aliased module binding
+    else:
+        return None
+    if not node.args:
         return None
     argument = node.args[0]
     if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
@@ -264,7 +292,7 @@ class _Scanner(ast.NodeVisitor):
     def __init__(self, ctx: _ScanContext, path: Path, tree: ast.AST) -> None:
         self.ctx = ctx
         self.path = path
-        self.bound = _bound_import_callables(tree)
+        self.bound = _bound_imports(tree)
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -294,12 +322,14 @@ class _Scanner(ast.NodeVisitor):
                         )
 
     def visit_Call(self, node: ast.Call) -> None:
-        # sys.path.insert/append(...): the checkout repair that makes a
-        # repo-relative import work at runtime.
+        # sys.path.insert/append/extend(...): the checkout repair that makes
+        # a repo-relative import work at runtime. The method set matches the
+        # repository's own gate (check-extension-imports.py), which already
+        # treats ``extend`` as a mutation.
         func = node.func
         if (
             isinstance(func, ast.Attribute)
-            and func.attr in ("insert", "append")
+            and func.attr in ("insert", "append", "extend")
             and isinstance(func.value, ast.Attribute)
             and func.value.attr == "path"
             and isinstance(func.value.value, ast.Name)

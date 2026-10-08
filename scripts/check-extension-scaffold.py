@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -115,6 +116,33 @@ def _run(step: Step) -> str:
     )
 
 
+def _normalize_dist_name(name: str) -> str:
+    """PEP 503 normalization: wheel filenames differ from dist names by case
+    and by ``-``/``_``/``.`` runs, so discovery must compare normalized."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _find_built_wheel(dist: Path, dist_name: str) -> Path:
+    """The uniquely built wheel for ``dist_name``, discovered by normalized
+    name.
+
+    The version comes from whatever ``uv build`` just produced — hardcoding
+    the current release here would break the gate at the next lockstep
+    version bump even though the build succeeded.
+    """
+    matches = sorted(
+        wheel
+        for wheel in dist.glob("*.whl")
+        if _normalize_dist_name(wheel.name.split("-")[0]) == dist_name
+    )
+    if len(matches) != 1:
+        built = sorted(p.name for p in dist.glob("*.whl"))
+        raise FixtureError(
+            f"expected exactly one {dist_name}-<version> wheel after building; dist holds {built}"
+        )
+    return matches[0]
+
+
 def build_first_party_wheels(dist: Path) -> tuple[Path, Path]:
     """Build the SDK and harness wheels the fresh venvs install."""
     print("· building first-party wheels (maistro-ext-sdk, maistro-ext-harness)")
@@ -132,12 +160,9 @@ def build_first_party_wheels(dist: Path) -> tuple[Path, Path]:
             cwd=HARNESS_PACKAGE_DIR,
         )
     )
-    sdk_wheel = dist / "maistro_ext_sdk-0.9.0-py3-none-any.whl"
-    harness_wheel = dist / "maistro_ext_harness-0.9.0-py3-none-any.whl"
-    for wheel in (sdk_wheel, harness_wheel):
-        if not wheel.is_file():
-            built = sorted(p.name for p in dist.glob("*.whl"))
-            raise FixtureError(f"expected {wheel.name} after building; dist holds {built}")
+    sdk_wheel = _find_built_wheel(dist, "maistro-ext-sdk")
+    harness_wheel = _find_built_wheel(dist, "maistro-ext-harness")
+    print(f"  sdk wheel: {sdk_wheel.name}; harness wheel: {harness_wheel.name}")
     return sdk_wheel, harness_wheel
 
 

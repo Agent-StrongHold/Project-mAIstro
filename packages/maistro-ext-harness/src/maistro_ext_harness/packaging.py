@@ -26,6 +26,11 @@ Two views of the same package, both checked before anything is claimed:
   conformance suite tested: certify binds "what was tested" to "what is
   signed" by equality, not by convention;
 - the entrypoint modules ship inside the artifact;
+- every Python file the artifact ships is byte-for-byte a file of the
+  tested source tree, and every Python file of the tested package ships —
+  conformance runs against the tree, so a wheel that swaps, adds, or drops
+  module bytes ships code nobody tested, and that is a decline, not a
+  claim;
 - for a ``.whl``, the ``dist-info/METADATA`` identity (Name, Version) says
   what the manifest says;
 - the SHA-256 digest and size of the exact bytes are recorded — the number
@@ -39,7 +44,7 @@ import hashlib
 import tomllib
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from maistro_ext_harness.checks import CheckRecord, CheckStatus
 from maistro_ext_harness.manifest import (
@@ -315,6 +320,125 @@ class _Archive:
     error: str | None = None
 
 
+def _layout_roots(source_root: Path) -> tuple[Path, Path]:
+    """Where a shipped package can sit in the tested tree: flat, then src/."""
+    return (source_root, source_root / "src")
+
+
+def _python_members(names: tuple[str, ...]) -> list[str]:
+    """The archive's shipped Python modules (metadata wheels carry none)."""
+    return [name for name in names if name.endswith(".py") and ".dist-info/" not in name]
+
+
+def _shipped_source_violations(artifact: Path, source_root: Path, members: list[str]) -> list[str]:
+    """Shipped modules absent from the tested tree, or shipped with bytes
+    that differ from the tested file."""
+    violations: list[str] = []
+    with zipfile.ZipFile(artifact) as disk:
+        for member in members:
+            if ".." in PurePosixPath(member).parts:
+                # A traversal member already fails artifact/members-contained;
+                # parity must never dereference one outside the tree.
+                continue
+            source: Path | None = None
+            for layout in _layout_roots(source_root):
+                candidate = layout.joinpath(*PurePosixPath(member).parts)
+                if candidate.is_file():
+                    source = candidate
+                    break
+            if source is None:
+                violations.append(f"{member}: shipped but absent from the tested tree")
+            elif disk.read(member) != source.read_bytes():
+                violations.append(
+                    f"{member}: shipped bytes differ from the tested tree — the code "
+                    "conformance ran against is not the code the wheel ships"
+                )
+    return violations
+
+
+def _unshipped_tested_modules(source_root: Path, top: str, names: tuple[str, ...]) -> list[str]:
+    """Tested package modules that did not ship: the inverse gap, meaning
+    the installed extension imports differently from what was conformed."""
+    violations: list[str] = []
+    for layout in _layout_roots(source_root):
+        package = layout / top
+        if not package.is_dir():
+            continue
+        for path in sorted(package.rglob("*.py")):
+            member = "/".join(path.relative_to(layout).parts)
+            if member not in names:
+                violations.append(f"{member}: tested tree module did not ship")
+    return violations
+
+
+def _source_parity_check(
+    artifact: Path,
+    archive: _Archive,
+    source_root: Path | None,
+    top: str,
+) -> CheckRecord:
+    """The shipped Python sources are byte-for-byte the tested tree's.
+
+    Conformance and the security scan execute against the *source tree*;
+    the other artifact checks pin only the manifest and the entrypoint's
+    presence. This check closes the remaining gap: a wheel may not replace
+    a tested module's bytes (a build backend or a modified artifact sneaks
+    in the backdoor after testing), may not add a Python module the tested
+    tree does not have, and may not silently drop a tested module. The
+    certified bytes are the tested bytes, or certification declines.
+    """
+    description = "the shipped Python sources equal the tested source tree's"
+    if source_root is None:
+        return CheckRecord(
+            check_id="artifact/source-parity",
+            description=description,
+            status=CheckStatus.NOT_APPLICABLE,
+            detail="no tested source tree was supplied; shipped sources cannot "
+            "be compared to what conformance ran against",
+        )
+    if artifact.suffix != ".whl":
+        return CheckRecord(
+            check_id="artifact/source-parity",
+            description=description,
+            status=CheckStatus.NOT_APPLICABLE,
+            detail=f"artifact is {artifact.name!r}, not a .whl; no shipped sources to compare",
+        )
+    if not top:
+        return CheckRecord(
+            check_id="artifact/source-parity",
+            description=description,
+            status=CheckStatus.NOT_APPLICABLE,
+            detail="the manifest did not parse; there is no tested package to "
+            "compare shipped sources against",
+        )
+    if archive.error is not None:
+        return CheckRecord(
+            check_id="artifact/source-parity",
+            description=description,
+            status=CheckStatus.FAILED,
+            detail=f"the archive could not be read: {archive.error}",
+        )
+
+    shipped = _python_members(archive.names)
+    violations = [
+        *_shipped_source_violations(artifact, source_root, shipped),
+        *_unshipped_tested_modules(source_root, top, archive.names),
+    ]
+    if violations:
+        return CheckRecord(
+            check_id="artifact/source-parity",
+            description=description,
+            status=CheckStatus.FAILED,
+            detail="; ".join(violations),
+        )
+    return CheckRecord(
+        check_id="artifact/source-parity",
+        description=description,
+        status=CheckStatus.PASSED,
+        detail=f"{len(shipped)} shipped Python file(s) equal the tested tree's",
+    )
+
+
 def _read_archive(artifact: Path, top: str) -> _Archive:
     """Read the artifact once; a bad zip or unreadable file is the error."""
     try:
@@ -482,12 +606,20 @@ def inspect_artifact(
     source_manifest: ExtensionManifest | None,
     *,
     project_name: str | None,
+    source_root: Path | None = None,
 ) -> tuple[list[CheckRecord], ArtifactInfo | None]:
     """Validate the artifact's structure and bind its exact bytes.
 
     ``source_manifest`` is the manifest conformance ran against; the
     artifact must ship the same one, or the certification would sign bytes
     that were never tested.
+
+    ``source_root`` is the tree conformance ran against; when supplied, the
+    shipped Python sources are compared to it byte-for-byte (the
+    ``artifact/source-parity`` check) so a wheel cannot replace a tested
+    module's bytes, add an untested module, or drop a tested one. Without
+    it the check records itself as not applicable — the certification then
+    cannot claim source parity it never compared.
     """
     checks: list[CheckRecord] = []
 
@@ -556,6 +688,8 @@ def inspect_artifact(
                 ),
             )
         )
+
+    checks.append(_source_parity_check(artifact, archive, source_root, top))
 
     checks.append(_metadata_check(artifact, archive, project_name, source_manifest))
 
