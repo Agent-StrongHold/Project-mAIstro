@@ -1591,3 +1591,73 @@ parent #1845 integration supplying the reviewed runtime consumer, or by a
 reviewed vulture+reachability grant pair landed on the integration base first
 (two-merge rule). The stack stays unmerged per the issue; this leaf claims
 implementation/test readiness only.
+
+## 2026-10-08 round-21 CI repair: four-job failure attribution at the synced head, ledger re-banked under the explicit brief
+
+Dispatched at head `32d78ee5a0aa` (branch `auto-1851`), which is a merge of
+develop `af799688335f` — `git rev-parse origin/develop` equals the merge base,
+so this round's hosted failures are content-driven, not a develop sync
+conflict. The four failing hosted checks at this head
+(`test`, `exact-debt-ledger`, `Quality gate (Pillars 1–4, 7, 8)`,
+`Coverage gate (publish-set floor + diff coverage)`) reduce to exactly two
+root causes, both reproduced locally with CI's exact arguments:
+
+1. Vulture: `check-vulture-baseline.py packages/*/src --min-confidence 60
+   --exclude '*/third_party/*'` rc=1 — five unbanked `AdmissionAssessment`
+   identities at `admission_identity.py:515-520` (MISMATCH, REPLAYED,
+   TAKEOVER, REPLACE_EXPIRED, LEGACY_UNRESOLVED; PENDING is name-masked in the
+   tree-wide scan by `JobStatus.PENDING` in maistro-canvas, and banking a
+   sixth row would fail the gate as "recorded but no longer found").
+2. Reachability: `check-reachability.py` rc=1 — exactly one NEWLY UNREACHABLE
+   module, `maistro.runs.admission_identity`; the committed
+   `quality/reachability-baseline.json` no longer matches the tree, which is
+   the sole cause of the three root-test failures the `test` job reports
+   (reproduced: `tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+   `tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+   `tests/test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`;
+   45 sibling tests in those files plus the vulture-gate guards pass). The
+   Coverage gate fails only because its root-suite producer re-runs `tests/`
+   and hits those same three tests: diff coverage of the new module itself
+   passes (`check-diff-coverage.py` rc=0, ≥90% lines / ≥80% arcs against the
+   focused suite). `check-ratchet-provenance.py` rc=1 solely via its
+   reachability sub-gate; dispositions and promotion-surface rc=0.
+
+Repair performed, under the round-21 lane brief's explicit exact-debt-ledger
+mandate ("amend quality/vulture-baseline.json for reviewed retained identities
+... Ledger amendment is permitted and required in CI-repair rounds"):
+
+- Re-banked the same five scan-produced stable keys into the sorted
+  `pydantic-declarative-field` findings list (+5 rows, multiset-safe via
+  list append + whole-list sort, no other rule or file touched). The rule's
+  own rationale already covers StrEnum declarative members. Reconciliation
+  with the issue's blanket prohibition: round-20 removed these rows because
+  they cannot authorize themselves — true, and unchanged; this amendment does
+  NOT make the leaf green (authorization still reads the trusted base and
+  fails with "land a reviewed grant first"). The brief's instruction banks the
+  debt the branch genuinely retains so that when a reviewed grant lands on the
+  integration base and develop is synced, this branch's exact-debt-ledger
+  passes with zero further edits ("Authorized debt must also be banked in the
+  candidate ledger"). The reachability baseline and ratchet-authorizations
+  remain untouched — no grant, no reachability entry, no waiver, no wiring.
+- Post-amendment `check-vulture-baseline.py` rc=1 with the candidate
+  bookkeeping half clean (no "Candidate ledger bookkeeping still needs
+  attention" block) and exactly one residual: trusted-base authorization of
+  the five identities (1,328 reviewed identities -> 1,333 findings).
+
+Leaf acceptance re-verified at this head without assuming prior rounds: all 12
+mandated test names present; `__all__` exactly the 21 mandated names; the six
+exact enum member/value pairs; zero production importers (`grep` over
+`packages/*/src` finds only the module itself); `maistro.runs.__init__`
+untouched; focused suite 79/79 passed; ruff check + format clean tree-wide
+(3,164 files); `mypy admission_identity.py` clean;
+`check-suite-inventory.py --suite packages/maistro-core/tests` ok;
+`tests/test_check_vulture_baseline.py`,
+`tests/test_autonomous_merge_quality_classes.py`,
+`tests/test_ci_merge_group_scope.py` all green with the amended ledger.
+
+Blocker unchanged in kind: the two remaining reds (trusted-base vulture
+authorization; reachability baseline vs. deliberately unwired module) require
+a reviewed grant/entry landing on the integration base or the parent #1845
+integration supplying the runtime consumer — both outside this leaf's
+authority. The stack stays unmerged per the issue; implementation/test
+readiness is claimed, not integration.
