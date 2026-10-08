@@ -479,9 +479,11 @@ async def claim_replays_a_completed_prior(store: Any, leg: Any) -> None:
 
     Checked for an ordinary same-NodeRun prior and for the #1194 logical
     effect whose completed canonical row lives under an *earlier* NodeRun:
-    the persisted discriminator makes the effect Run-scoped, so a retry that
+    the stable ``effect_scope`` makes the effect Run-scoped, so a retry that
     minted a new NodeRun must be answered with the completed row, never with
-    a fresh admission.
+    a fresh admission. (The M1-B2 rework retired the boolean
+    ``logical_effect`` discriminator for exactly this explicit scope; the
+    check follows the seam, per the pinned claim tests' convention.)
     """
     ns = uuid.uuid4().hex
     await store.create(
@@ -505,7 +507,7 @@ async def claim_replays_a_completed_prior(store: Any, leg: Any) -> None:
             status=InvocationStatus.COMPLETED,
             result={"applied": True},
             finished_at=_finished(InvocationStatus.COMPLETED),
-            logical_effect=True,
+            effect_scope=f"scope-{logical_ns}",
         )
     )
     logical_replay = await store.claim(
@@ -514,7 +516,7 @@ async def claim_replays_a_completed_prior(store: Any, leg: Any) -> None:
             f"inv-{logical_ns}-retry",
             node_run_id="node-run-2",
             attempt_id="attempt-2",
-            logical_effect=True,
+            effect_scope=f"scope-{logical_ns}",
         )
     )
     if logical_replay.invocation_id != f"inv-{logical_ns}-done":

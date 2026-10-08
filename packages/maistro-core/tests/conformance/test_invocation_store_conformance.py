@@ -22,21 +22,20 @@ from ._invocation_contract import INVOCATION_CHECKS, check_applies
 #: Leg x check -> xfail kwargs for a recorded cross-implementation divergence.
 #: Every entry cites its finding in docs/testing/conformance-suite-evidence.md.
 KNOWN_DIVERGENCES: dict[tuple[str, str], dict[str, Any]] = {
-    # F1: PgInvocationStore.create admits a fresh Invocation beside a
-    # COMPLETED prior (its partial unique indexes only cover active
-    # statuses). The reference and the SQLite twin both refuse.
-    ("postgres", "create_refuses_second_admission_of_a_completed_effect"): {
-        "strict": True,
-        "reason": "#892 F1: PostgreSQL terminal dedup missing at the ledger",
-    },
-    # F4: SqliteInvocationStore.claim scopes its history read to the
-    # candidate's node_run_id, so a #1194 logical effect whose completed
-    # canonical row sits under an earlier NodeRun is re-admitted instead of
-    # replayed. The in-memory reference replays it.
-    ("sqlite", "claim_replays_a_completed_prior"): {
-        "strict": True,
-        "reason": "#892 F4: SQLite claim misses Run-scoped completed priors",
-    },
+    # F1 was found and recorded by this suite's first run (PgInvocationStore.create
+    # admitted a fresh Invocation beside a COMPLETED prior: its partial unique
+    # indexes only covered active statuses, while the reference and the SQLite
+    # twin both refused). The upstream repair added the effect-wide conflict
+    # lookup (`_find_effect` → `UnsafeEffectRetry`) beside the indexes;
+    # retiring the marker here is the suite retiring its own finding, as
+    # designed. Verified against a real PostgreSQL 18 server.
+    # F4 was found and recorded by this suite's first run (SQLite claim read
+    # its history under the candidate's node_run_id, re-admitting a #1194
+    # logical effect whose completed canonical row sat under an earlier
+    # NodeRun). The upstream M1-B2 rework (#1326) repaired the claim to key
+    # the logical identity on ``effect_scope or node_run_id`` with the
+    # documented tiebreak; retiring the marker here is the suite retiring
+    # its own finding, as designed.
     # F3: InMemoryInvocationStore.claim returns a non-terminal prior where
     # the durable contract (pinned by the SQLite twin's own tests) refuses
     # it with UnsafeEffectRetry. Possibly deliberate single-process

@@ -81,21 +81,31 @@ lines against fake pools). Nothing was deleted: consolidation of the
 existing per-implementation bodies is the owner's rollout decision under
 GRADUATE, and this prototype deliberately leaves them in place.
 
-**Drift defects found.** Six, all reproducible from the matrix, none fixed
-here (routing below):
+**Drift defects found.** Six, all reproducible from the matrix at first
+run, none fixed by this prototype (routing below). Two have since been
+repaired upstream and their markers retired (see F1 and F4): the merged
+M1-B2 rework (#1326) rebuilt the Invocation seam (boolean `logical_effect`
+→ explicit `effect_scope`, `bind_logical_effect_scope` for Graph nodes)
+and, with it, repaired the SQLite claim's Run-scoped history read (F4) and
+PostgreSQL's terminal dedup (F1). Both retirements were re-verified on this
+tree: the SQLite leg in-process, the PostgreSQL leg against a real
+PostgreSQL 18 server.
 
-- **F1 — PostgreSQL terminal dedup missing at the ledger.**
-  `PgInvocationStore.create` admits a fresh Invocation beside a `COMPLETED`
-  prior (its partial unique indexes cover only active statuses); the
-  reference and the SQLite twin both refuse with `UnsafeEffectRetry`.
-  Confirmed against a real PostgreSQL 18 server, not a fake pool. Today this
-  is masked by `InvocationExecutionService`'s history pre-read
-  (`invoke()` re-lists the effect before admission), which is exactly the
-  masking the issue's "abstraction leakage" metric warns about: the ledger
-  guarantee the PG store's docstring advertises ("Effect admission uses a
-  partial unique index") does not extend to terminal priors, and every
-  future caller inherits the burden silently. Owner: capability/invocation
-  maintenance.
+- **F1 — PostgreSQL terminal dedup missing at the ledger. [RETIRED at the
+  M1-B2 merge]** `PgInvocationStore.create` admitted a fresh Invocation
+  beside a `COMPLETED` prior (its partial unique indexes covered only active
+  statuses); the reference and the SQLite twin both refused with
+  `UnsafeEffectRetry`. Confirmed against a real PostgreSQL 18 server, not a
+  fake pool. At the time this was masked by `InvocationExecutionService`'s
+  history pre-read (`invoke()` re-lists the effect before admission), which
+  is exactly the masking the issue's "abstraction leakage" metric warns
+  about: the ledger guarantee the PG store's docstring advertises ("Effect
+  admission uses a partial unique index") did not extend to terminal
+  priors, and every future caller inherited the burden silently. Was marked
+  strict xfail. The upstream repair routes the conflicting insert through an
+  effect-wide lookup (`_find_effect`) that raises `UnsafeEffectRetry` for
+  any prior, terminal included. Owner: capability/invocation maintenance
+  (repair landed upstream).
 - **F3 — the in-memory claim never refuses.** `InMemoryInvocationStore.claim`
   returns a live prior (and a just-claimed duplicate id) where the durable
   contract — pinned by the SQLite twin's own tests
@@ -104,14 +114,21 @@ here (routing below):
   `_settled_by_another_admission` re-checking whatever claim returns. Marked
   non-strict xfail: single-process leniency may be deliberate. Owner:
   capability/invocation maintenance.
-- **F4 — SQLite claim misses Run-scoped completed priors (#1194).**
-  `SqliteInvocationStore.claim` scopes its history read to the candidate's
-  `node_run_id`, so a `logical_effect` Invocation whose completed canonical
-  row sits under an earlier NodeRun is re-admitted (`claim` returned the
-  fresh candidate) instead of replayed — the exact retry-across-NodeRuns
-  shape the logical-effect discriminator exists to serialize. Service-masked
-  by the history pre-read; reachable in the race window admission exists
-  for. Marked strict xfail. Owner: capability/invocation maintenance.
+- **F4 — SQLite claim misses Run-scoped completed priors (#1194). [RETIRED
+  at the M1-B2 merge]** `SqliteInvocationStore.claim` scoped its history
+  read to the candidate's `node_run_id`, so an Invocation whose completed
+  canonical row sat under an earlier NodeRun was re-admitted (`claim`
+  returned the fresh candidate) instead of replayed — the exact
+  retry-across-NodeRuns shape the logical-effect discriminator exists to
+  serialize. Service-masked by the history pre-read; reachable in the race
+  window admission exists for. Was marked strict xfail. The upstream M1-B2
+  rework (#1326) rebuilt the seam (boolean `logical_effect` → explicit
+  `effect_scope`, `bind_logical_effect_scope` for Graph nodes) and repaired
+  the claim to key the logical identity on `effect_scope or node_run_id`
+  with the documented `created_at, invocation_id` tiebreak; this suite's
+  check migrated onto the new seam and the strict marker retired — the
+  suite retiring its own finding, as designed. Owner: capability/invocation
+  maintenance (repair landed upstream).
 - **F6 — the in-memory history does not honor the tiebreak.**
   `InMemoryInvocationStore.list_effect` sorts by `created_at` alone
   (stable → insertion order) where both durable twins document and
@@ -164,7 +181,9 @@ Reasons:
    divergences — including two terminal-dedup/ledger gaps (F1, F4) on the
    exactly-once effect boundary and one "latest row" selection divergence
    (F6) — were invisible to the existing per-implementation suites and were
-   found by one shared matrix in its first run.
+   found by one shared matrix in its first run. Two of the six (F1, F4)
+   were subsequently repaired upstream and the suite retired their markers
+   unprompted, which is the disposition loop working end to end.
 2. The pattern is already half-adopted (archive, events, working-log,
    episodic suites all parametrize over backends); this prototype's
    contract/leg split adds what those suites lack: reusable check bodies,
@@ -176,8 +195,9 @@ Reasons:
 Conditions to GRADUATE (filed for the testing/implementation owners; not
 part of this research change):
 
-- Route F1/F3/F4/F6 to the capability/invocation owner and F2/F5 to the
-  durable-approval owner; retire the strict xfails as repairs land.
+- Route F3/F6 to the capability/invocation owner and F2/F5 to the
+  durable-approval owner; retire the strict xfails as repairs land (F1 and
+  F4 are already retired, repaired upstream by #1326).
 - Fold the per-implementation bodies the suite now subsumes into the shared
   matrix (deleting ~30 near-duplicate test bodies), keeping backend-specific
   tests only for what a contract genuinely cannot express (e.g. SQLite
