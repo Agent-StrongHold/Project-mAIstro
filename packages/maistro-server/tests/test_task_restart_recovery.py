@@ -293,6 +293,11 @@ import asyncio, json
 
 MARKER = {marker!r}
 
+# **_kwargs absorbs the canonical runner-executor wiring (#718): the
+# `/tasks` worker calls `conductor.run_task` with `governed_egress`,
+# `workspace_id` and `project_id`, so a stub pinned to the pre-#718
+# signature failed every recovered task with a TypeError before its
+# marker could be written.
 async def _execute(request, on_response=None, **_kwargs):
     from maistro.agents.types import ConductorOutput
 
