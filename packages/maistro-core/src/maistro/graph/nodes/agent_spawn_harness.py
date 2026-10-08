@@ -318,7 +318,12 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
         return replay_effect_key(
             ctx,
             "agent.spawn_harness.dispatch",
-            inputs.model_dump(mode="json"),
+            {
+                "harness_type": inputs.harness_type,
+                "task": inputs.task,
+                "context": inputs.context,
+                "timeout_seconds": inputs.timeout_seconds,
+            },
         )
 
     @staticmethod
@@ -366,12 +371,13 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
             # rollout question either. That is not a reason to refuse the
             # dispatch -- it is the pre-#1319 behaviour, unchanged.
             return None
+        legacy_key = f"agent.spawn_harness.dispatch:{inputs.harness_type}"
         legacy = await read_history(
             binding=binding,
             run_id=ctx.run_id,
             node_run_id=ctx.node_run_id,
-            effect_key=f"agent.spawn_harness.dispatch:{inputs.harness_type}",
-            logical_effect=True,
+            effect_key=legacy_key,
+            effect_scope=legacy_key,
         )
         if not isinstance(legacy, Invocation):
             return None
@@ -412,6 +418,9 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
             return replayed
         # Include the logical request in the key: a changed task is explicit
         # new work, while a retry with a new NodeRun keeps the same identity.
+        # The scope carries that identity into admission: the graph may retry
+        # this logical node with a new NodeRun, and the stable Run/node/input
+        # scope -- not the physical visit -- is what deduplicates the dispatch.
         effect_key = self.replay_effect_key(inputs, ctx)
         invocation = await invoke_capability_effect(
             lambda: self._effects.invocations.invoke(
@@ -420,10 +429,10 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
                 node_run_id=ctx.node_run_id,
                 attempt_id=ctx.attempt_id,
                 effect_key=effect_key,
+                effect_scope=effect_key,
                 request=request_payload,
                 resolver=resolver,
                 executor=executor,
-                logical_effect=True,
             ),
             effect_key=effect_key,
             continuation_metadata={
@@ -530,7 +539,11 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
             run_id=ctx.run_id,
             node_run_id=ctx.node_run_id,
             effect_key=wait.effect_key,
-            logical_effect=True,
+            # The poll is a logical effect: its stable scope (the wait's own
+            # poll key, derived from the dispatch Invocation id) spans NodeRuns,
+            # so a graph retry resumes the same observation instead of
+            # re-polling the provider (#1194).
+            effect_scope=wait.effect_key,
         )
         if latest is not None:
             self._validate_poll_receipt(latest, wait, ctx)
@@ -586,10 +599,10 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
                     node_run_id=ctx.node_run_id,
                     attempt_id=ctx.attempt_id,
                     effect_key=wait.effect_key,
+                    effect_scope=wait.effect_key,
                     request=request,
                     resolver=resolve_provider,
                     executor=execute_provider,
-                    logical_effect=True,
                 ),
                 effect_key=wait.effect_key,
                 continuation_metadata={**wait.model_dump(), "harness_effect_phase": "poll"},
@@ -610,7 +623,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
             run_id=ctx.run_id,
             node_run_id=ctx.node_run_id,
             effect_key=wait.effect_key,
-            logical_effect=True,
+            effect_scope=wait.effect_key,
         )
         if latest is None or latest.status not in {
             InvocationStatus.CREATED,
@@ -635,7 +648,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
             or invocation.binding.provider_name != wait.provider_name
             or invocation.effect_key != wait.effect_key
             or invocation.request != wait.request()
-            or not invocation.logical_effect
+            or invocation.effect_scope != wait.effect_key
         ):
             raise ValueError(
                 "harness observation Invocation has mismatched receipt/request evidence"

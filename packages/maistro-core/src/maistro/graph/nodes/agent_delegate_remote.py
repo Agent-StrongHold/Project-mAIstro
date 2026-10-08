@@ -867,7 +867,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             run_id=ctx.run_id,
             node_run_id=ctx.node_run_id,
             effect_key=key,
-            logical_effect=True,
+            effect_scope=key,
         )
         if latest is None or latest.status in {
             InvocationStatus.COMPLETED,
@@ -1244,7 +1244,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             run_id=ctx.run_id,
             node_run_id=ctx.node_run_id,
             effect_key=key,
-            logical_effect=True,
+            effect_scope=key,
         )
         if latest is None or latest.status is not InvocationStatus.COMPLETED:
             return None
@@ -1332,7 +1332,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                     resolver=resolve_provider,
                     executor=execute_provider,
                     actor_id=context.caller_principal_id,
-                    logical_effect=True,
+                    effect_scope=key,
                 ),
                 effect_key=key,
             )
@@ -1514,6 +1514,9 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             return await self._recover_in_process(inputs, key, child_id)
 
         try:
+            # This local admission is synchronous and deduplicates by effect
+            # key itself, so validating it before claiming the canonical child
+            # cannot create an ambiguous external effect.
             task_id = self._a2a_delegator.delegate_task(
                 inputs.from_agent,
                 inputs.task,
