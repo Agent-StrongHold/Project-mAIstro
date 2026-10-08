@@ -377,7 +377,11 @@ test.describe("RUM live collection", () => {
     expect(grouped.groups.length).toBeGreaterThan(0);
     for (const group of grouped.groups) {
       expect(group.count).toBeGreaterThan(0);
-      expect(group.route).toMatch(/^\//);
+      // `unknown` is the intentional allowlisted fallback for a shared-client
+      // path or direct SPA location outside the reviewed roots. The summary
+      // includes all retained observations, including setup/auth traffic from
+      // earlier specs, so it must accept that privacy-preserving bucket too.
+      expect(group.route === "unknown" || group.route.startsWith("/")).toBe(true);
       expect(group.route).not.toContain("?");
     }
     // Load metrics and API timings land in separate groups — the shape a
