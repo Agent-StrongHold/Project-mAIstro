@@ -17502,3 +17502,96 @@ deterministic gates and targeted suites are green at this exact head; no
 lawful repair for #777 exists while #804/#805/#806 (+#774/#776/#53/#93/#95)
 are unlanded and the issue's stop condition forbids the private substitute.
 (Refs #777)
+
+## Round 254 (2026-10-08, repair round at 307147b968e)
+
+#### Scope of this round
+
+Job `1d000794eac94705bf891c47b3e38cb0` (repair phase, verifier+writer roles).
+Starting head matches the lane brief exactly: `307147b968e024aba59e0284273b140dd9245089`
+(= round 253's end head), working tree clean, nothing to salvage. This job's
+driver ran **zero** deterministic checks (`ls` of the job directory shows no
+`check-*.log` files; only dispatch-context/events/manifest/prompt/state), so
+the brief's `check-2.log` pointer resolves to nothing here — consistent with
+round 253's finding that it names the 2026-10-04 job `53d5e08bf027` at
+long-gone head `a99c6bd78`. Every item below was executed by this round at
+this exact head.
+
+#### Dependency audit — frozen capture + live re-verification
+
+Frozen capture (`dispatch-context.json`, 61 sources, `complete_for_scope:
+true`, captured 2026-10-08T22:49:15Z) cross-checked against **live** read-only
+GitHub API calls this round:
+
+- **Open (blocking):** #804, #805, #806, #774, #776, #53, #93, #95 — live
+  `state=open` for each, identical to the frozen capture.
+- **Closed (landed):** #39, #458, #775 — live `state=closed`.
+- Issue #777: **open**; body gate verbatim "Depends on: #804/#805/#806
+  persistent Workspace Agent + Goal reconciliation"; stop condition "Do not
+  create a Design-Studio-private Agent runtime, Goal owner, reconciliation
+  loop ... Consume #804 and the canonical owners."
+- PR #1660: **open draft, not merged**, head still `6280009610e8` (live);
+  GitHub-native `blocked_by: []` (body-text gate governs).
+- Live `origin/develop` = `e46ad6708fda` = declared base; `HEAD..origin/develop`
+  empty — **no develop merge needed this round**.
+
+#### AC prerequisites re-proven absent at HEAD 307147b968e (this round's own greps)
+
+- `GoalReconciler|delegate_goal|WorkspaceAgentReconciler` in `packages/*/src`:
+  **0 hits**.
+- `goals` modules under `packages/*/src`: **0**.
+- `packages/maistro-core/src/maistro/runs/reconciliation.py:3` remains
+  lifecycle-only ("owns universal lifecycle bookkeeping only");
+  `quota/reconciliation.py` is quota drift, not Goal reconciliation.
+
+#### Gate battery at 307147b968e (all executed this round)
+
+- `uv run ruff check .` — exit 0, All checks passed.
+- `uv run ruff format --check .` — exit 0, 3200 files already formatted.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (CI-exact arguments) —
+  exit 0, 1326 reviewed identities -> 1325 findings, unclassified 0,
+  never-allowlist 0, base `e46ad6708fda`, candidate `307147b968e0`, **no
+  amendment needed** (zero unbanked identities; the lane's CI-repair ledger
+  exception does not apply).
+- `uv run python scripts/check-suite-inventory.py` — exit 0, 17 suites match,
+  29863 unique identities, 0 duplicates (re-run green after this append —
+  see below).
+- `uv run python scripts/check-test-duplicates.py` — exit 0, 0 byte-identical
+  groups.
+- `uv run python scripts/check-backlog-consistency.py` — exit 0, 167 items.
+- `uv run python scripts/check-closure-targets.py` — exit 0 (skip: no PR body
+  outside a pull_request event).
+- `uv run python scripts/check-doc-links.py` — exit 0, every relative markdown
+  link resolves.
+- Targeted pytest over the changed surfaces (both green, prior-round parity):
+  `packages/maistro-design/tests packages/maistro-bootstrap/tests` —
+  **805 passed, 8 skipped**;
+  `packages/hive-conductor/backend/tests -k 'design or workspace'` —
+  **375 passed, 5 skipped, 3170 deselected** (matches rounds 250-253 anchors
+  exactly).
+
+#### Branch shape re-check
+
+`git diff --name-only <base>...HEAD` = exactly the 16 manifest surfaces;
+HEAD is 404 commits ahead of the declared base with the earlier rounds'
+records. The salvage draft stays quarantined under
+`docs/research/777-design-studio-salvage/` (0 references from
+`packages/*/src`); `agent_loop.py` retains the documented dead-seam removal
+(`tool_definitions` gone, `system_prompt` kept with a live reader at
+`packages/maistro-rsi/src/maistro_rsi/local_loop.py:817`); `design_service.py`
+remains a comment-only touch; `quality/vulture-baseline.json` unchanged this
+round.
+
+#### Inventory delta
+
+Documentation-only append; delta remains +0 across all recorded suites.
+
+#### Verdict
+
+BLOCKED — dependency-blocking (71st consecutive round). Fresh live capture
+confirms zero dependency movement: every #777 prerequisite (#804/#805/#806,
+#774, #776, #53, #93, #95) is open, PR #1660 remains an unmerged draft, all
+deterministic gates and targeted suites are green at this exact head, and no
+lawful repair exists while the canonical owners are unlanded — the issue's
+own stop condition forbids a Design-Studio-private substitute. (Refs #777)
