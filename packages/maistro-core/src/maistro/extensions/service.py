@@ -768,9 +768,7 @@ class ExtensionInstallService:
             reason=f"activated {record.extension_id} {record.version} ({detail})",
             now=self._clock(),
         )
-        await self._retire_displaced_active(
-            record, actor=actor, scope=scope, detail=detail
-        )
+        await self._retire_displaced_active(record, actor=actor, scope=scope, detail=detail)
         await self._store.set_active(record)
         return record
 

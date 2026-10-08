@@ -877,6 +877,85 @@ class TestPostInstallLifecycleHttp:
         resurrect = h.install(active["install_id"])
         assert resurrect.status_code == 409
 
+    def test_pin_refuses_a_record_that_is_not_active(self, harness) -> None:
+        """A pin holds the version in service: a pre-decision candidate is 409."""
+        h, workspaces, _loader = harness
+        _own_workspace(workspaces, "operator-1", "ws-1")
+        _login(h.client.app, "operator-1")  # type: ignore[attr-defined]
+        candidate = h.inspect(version="1.4.0")
+        assert candidate.status_code == 201, candidate.text
+        install_id = candidate.json()["install_id"]
+
+        refused = h.client.post(
+            f"/extensions/installations/{install_id}/pin",
+            json={"org_id": "org-1", "workspace_id": "ws-1", "reason": "not in service"},
+        )
+        assert refused.status_code == 409
+        assert "a pin holds the active version" in refused.json()["detail"]
+
+    def test_unpin_of_a_foreign_scopes_install_is_404(self, harness) -> None:
+        """A record of another workspace is indistinguishable from a missing id."""
+        h, workspaces, _loader = harness
+        _own_workspace(workspaces, "operator-1", "ws-1")
+        _own_workspace(workspaces, "operator-1", "ws-2")
+        _login(h.client.app, "operator-1")  # type: ignore[attr-defined]
+        active = _activated(h, version="1.4.0", permissions=("network.http",), payload=PAYLOAD)
+
+        missing = h.client.post(
+            f"/extensions/installations/{active['install_id']}/unpin",
+            json={"org_id": "org-1", "workspace_id": "ws-2", "reason": "wrong scope"},
+        )
+        assert missing.status_code == 404
+        assert "no install record" in missing.json()["detail"]
+        # The record itself is untouched and still answers in its own scope.
+        own = h.client.get(
+            f"/extensions/installations/{active['install_id']}",
+            params={"org_id": "org-1", "workspace_id": "ws-1"},
+        )
+        assert own.status_code == 200
+        assert own.json()["state"] == "active"
+
+    def test_disable_of_an_unknown_extension_is_404(self, harness) -> None:
+        h, workspaces, _loader = harness
+        _own_workspace(workspaces, "operator-1", "ws-1")
+        _login(h.client.app, "operator-1")  # type: ignore[attr-defined]
+
+        missing = h.client.post(
+            "/extensions/disable",
+            json={
+                "org_id": "org-1",
+                "workspace_id": "ws-1",
+                "extension_id": "acme.no_such_extension",
+                "reason": "mistyped id",
+            },
+        )
+        assert missing.status_code == 404
+        assert "no active or suspended install" in missing.json()["detail"]
+
+    def test_remove_refuses_a_record_that_never_reached_a_decision(self, harness) -> None:
+        """Pre-decision records exit through their own paths, not removal."""
+        h, workspaces, _loader = harness
+        _own_workspace(workspaces, "operator-1", "ws-1")
+        _login(h.client.app, "operator-1")  # type: ignore[attr-defined]
+        candidate = h.inspect(version="1.4.0")
+        assert candidate.status_code == 201, candidate.text
+        install_id = candidate.json()["install_id"]
+
+        refused = h.client.post(
+            f"/extensions/installations/{install_id}/remove",
+            json={"org_id": "org-1", "workspace_id": "ws-1", "reason": "change of heart"},
+        )
+        assert refused.status_code == 409
+        assert "pre-decision" in refused.json()["detail"]
+        # The refusal changed nothing: the candidate is still parked for a
+        # decision, not half-removed.
+        still = h.client.get(
+            f"/extensions/installations/{install_id}",
+            params={"org_id": "org-1", "workspace_id": "ws-1"},
+        )
+        assert still.status_code == 200
+        assert still.json()["state"] == "awaiting_authorization"
+
 
 @pytest.mark.contract("behavioral")
 @pytest.mark.scope("integration")
