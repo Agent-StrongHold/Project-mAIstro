@@ -1670,3 +1670,84 @@ base `e1b13dcd15dedd`, merge base `b78637f52be3`); no source file changed.
   whole-integration-diff diff coverage) was not re-executed locally this round
   (requires the postgres producer set); the leaf's own files remain covered by
   the suites above, and prior rounds measured leaf diff coverage at 100%/97%.
+
+
+## Round 21 — four-gate CI-repair round re-derived at merged head c1789f8b8a25
+
+Scope: the round was dispatched as CI gate repair for the merge-queue reds at
+HEAD `c1789f8b8a25254dd5e36bfc6234d93a98c76fa6` (the branch merged develop
+`af799688335f9` — the failpoint-matrix WIP — as `c1789f8b8a25`), and to resolve
+the prior round's NEEDS-DEEP-REVIEW block. No source or test file changed; the
+front-matter delta above is unchanged. All evidence re-executed fresh:
+
+- **exact-debt-ledger, step by step.** `check-shipped-surface-truth.py` exit 0.
+  The prescribed vulture amendment is EMPTY for the 21st consecutive round:
+  with CI's exact arguments (`uv run python scripts/check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) the gate
+  exits 0 at 1328 reviewed identities -> 1328 findings, `unclassified: 0`,
+  `never_allowlist: 0` — no unbanked identity exists to fix or bank, so
+  `quality/vulture-baseline.json` is deliberately not edited. The job's red is
+  its first step, `check-ratchet-provenance.py`: 8 of 9 sub-ratchets OK, sole
+  FAIL is reachability — `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_generation` are NEW unreachable (171 vs trusted
+  169), "absent from trusted base and not previously authorized".
+  `load_authorizations` reads grants from the merge base
+  (`af799688335f9:quality/ratchet-authorizations.json` — 0 rows for either
+  module), so no edit on this branch can authorize them (the two-merge rule);
+  issue #1852 forbids baseline rows, grants, and fake wiring in this leaf, and
+  round 14 already removed the prohibited candidate rows (34e0559b7).
+- **Quality gate.** Fails at the reachability-ratchet step for the same two
+  modules (2 annotations = 2 module names): `check-reachability.py` exits 1
+  with both listed as NEWLY UNREACHABLE and not in
+  `quality/reachability-baseline.json`. Everything locally runnable around it
+  passes: `check-reachability-dispositions.py` OK (49 groups / 169 modules),
+  `check-convergence-matrix.py` OK (52 subsystems / 1363 modules),
+  `check-promotion-surface.py` OK, full `check-suite-inventory.py` OK (17
+  suites, 29482 collected identities, 0 duplicates), vulture OK as above.
+- **test job.** Root suite `tests/` (with `RATCHET_BASE_REV` at the develop
+  base): 4761 passed / 4 failed / 128 skipped. Three failures are the
+  sanctioned two-module delta (`test_check_reachability.py::
+  test_baseline_matches_the_tree`, `test_reachability_baseline_identity.py`
+  x2). The fourth
+  (`test_branch_independence_repository.py::
+  test_every_quality_json_state_surface_is_classified_once`) fails only on
+  `unclassified quality state: quality/ac-state.json` — an untracked,
+  gitignored local cache in this worktree — and re-running the same four tests
+  in a throwaway clean worktree at HEAD (no such file, CI-like) gives exactly
+  **3 failed / 1 passed**, confirming round 20. Every other `test`-job package
+  suite re-run green at this head: maistro-core 14627 passed / 983 skipped /
+  1 xfailed; bootstrap 232; server 535; canvas 465; turing 210 +
+  turing/backend 90; design 572; ext-harness 138; ext-sdk 118. rsi+evolve
+  shows 3 failures, reproduced identically on the develop base `af79968` in a
+  throwaway worktree (Docker-dependent evolve benchmark tests) — inherited
+  from the base, not caused by this leaf.
+- **Coverage gate.** The diff-coverage half re-executed at this head for the
+  first time since the merge: coverage produced with the coverage-unit
+  producer's exact invocation (`coverage run --branch
+  --source=packages/maistro-core/src/maistro -m pytest
+  packages/maistro-core/tests --timeout=30 -q`; 14627 passed), then
+  `check-diff-coverage.py coverage.xml --base af799688335f9` exits 0 —
+  "every measured file this change touches is at or above 90% lines / 80%
+  branch arcs" (the two admission modules measured; both test files exempt;
+  `_vulture_whitelist.py` sits under no measured root and is named, not
+  scored). The job's red is therefore the combine step itself: under
+  `set -euo pipefail` its scripts producer runs `pytest tests/ ...`, which
+  aborts on the same three sanctioned reachability failures before
+  `coverage xml` is written. All four merge-queue reds remain one root cause.
+- **Mutation battery re-derived** in a throwaway `git worktree` at HEAD
+  (assigned tree never modified; source restored from `git show HEAD:`
+  between runs): swap TAKEOVER/REPLACE_EXPIRED -> 50 failed; lease row above
+  binding -> 14 failed; LEGACY_UNRESOLVED row deleted (legacy treated as v2)
+  -> 10 failed; mismatch above expiry -> 22 failed; unmutated control ->
+  132 passed. Same 50/14/10/22 profile as rounds 14–20.
+- **Focused and issue-required commands**: classifier suite 132 passed;
+  classifier + `test_root_admission_identity.py` + `test_idempotency.py`
+  272 passed; `mypy` clean on the classifier; ruff check + format clean on
+  the leaf pair; full driver battery (uv sync, ruff check ., ruff format
+  --check ., focused pytest, suite inventory) green.
+- **Verdict-relevant statement**: unchanged and re-proven — implementation and
+  test readiness hold at this head; each of the four merge-queue reds is the
+  single sanctioned two-module reachability delta, which no in-leaf edit may
+  bank, grant, or wire away; the unblock lives in the separately reviewed
+  #1845/C3 integration consumer (or a base-landed authorization landing
+  before it). The stack stays unmerged by design.
