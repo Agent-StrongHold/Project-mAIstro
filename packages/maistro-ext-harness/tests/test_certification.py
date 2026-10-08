@@ -683,6 +683,42 @@ class TestSigning:
             for failure in result.failures
         ), result.failures
 
+    def test_relabeled_artifact_with_stale_signature_fails_verification(
+        self,
+        make_extension: Callable[..., Path],
+        tmp_path: Path,
+        valid_manifest: dict,
+        keypair: tuple[str, str],
+    ) -> None:
+        private_hex, public_hex = keypair
+        root, wheel = _certifiable(make_extension, tmp_path)
+        report = certify(_request(root, wheel, signing_key_hex=private_hex))
+        out = tmp_path / "signed.json"
+        report.write_json(out)
+        # An intermediary ships a different wheel, re-records the artifact
+        # digests and subject to match it, and keeps the original signed
+        # payload: the signature must not verify for the replacement.
+        replacement = _make_wheel(
+            tmp_path,
+            valid_manifest,
+            manifest_override={**valid_manifest, "title": "An impostor"},
+            name="impostor",
+        )
+        document = json.loads(out.read_text(encoding="utf-8"))
+        import hashlib
+
+        document["artifact"]["sha256"] = hashlib.sha256(replacement.read_bytes()).hexdigest()
+        document["artifact"]["manifest_sha256"] = hashlib.sha256(
+            json.dumps({**valid_manifest, "title": "An impostor"}, indent=2).encode()
+        ).hexdigest()
+        document["subject"]["title"] = "An impostor"
+        out.write_text(json.dumps(document), encoding="utf-8")
+        result = verify_certification(out, replacement, publisher_key_hex=public_hex)
+        assert not result.ok
+        assert any(
+            "does not cover the supplied artifact" in failure for failure in result.failures
+        ), result.failures
+
     def test_a_corrupt_report_is_unreadable_not_verified(
         self, tmp_path: Path, keypair: tuple[str, str]
     ) -> None:

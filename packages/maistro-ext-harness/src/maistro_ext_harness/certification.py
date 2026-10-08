@@ -462,9 +462,10 @@ def verify_certification(
     4. the decision is internally consistent (``certified`` true while
        decline reasons are listed is a corrupt report, and so is a decline
        with no named reason);
-    5. a carried signature re-derives its payload from the report's own
-       fields and verifies — against ``publisher_key_hex`` when the
-       consumer pins the publisher's key, otherwise against the public key
+    5. a carried signature is bound to the report's own ``subject`` and
+       ``artifact`` records (the signed payload must equal them) and
+       verifies — against ``publisher_key_hex`` when the consumer pins the
+       publisher's key, otherwise against the public key
        recorded in the report (self-consistency only; pinning the key is
        the consumer's policy, evidence is not authorization).
     """
@@ -586,8 +587,15 @@ def _check_signature(
     checked: list[str],
     failures: list[str],
 ) -> None:
-    """A carried signature must re-derive and verify; an unsigned report
-    fails when the consumer pinned a publisher key."""
+    """A carried signature must cover the report's subject/artifact records;
+    an unsigned report fails when the consumer pinned a publisher key.
+
+    The payload is re-derived from the top-level ``subject`` and ``artifact``
+    records — the same records the digest and manifest checks validate
+    against the bytes in hand — and the signed ``signature.payload`` copy
+    must equal them. A signature therefore certifies exactly the supplied
+    artifact, not whatever an intermediary typed into the payload block.
+    """
     signature = report.get("signature", {})
     if not signature.get("signed"):
         if publisher_key_hex is not None:
@@ -596,13 +604,24 @@ def _check_signature(
                 "signature to verify"
             )
         return
-    payload_fields = signature.get("payload", {})
-    payload = canonical_certification_payload(
-        extension_id=str(payload_fields.get("extension_id", "")),
-        version=str(payload_fields.get("version", "")),
-        package_sha256=str(payload_fields.get("package_sha256", "")),
-        manifest_sha256=str(payload_fields.get("manifest_sha256", "")),
-    )
+    subject = report.get("subject") or {}
+    artifact = report.get("artifact") or {}
+    payload_fields = {
+        "extension_id": str(subject.get("id", "")),
+        "version": str(subject.get("version", "")),
+        "package_sha256": str(artifact.get("sha256", "")),
+        "manifest_sha256": str(artifact.get("manifest_sha256", "")),
+    }
+    signed_fields = signature.get("payload", {})
+    if not isinstance(signed_fields, dict) or any(
+        str(signed_fields.get(name, "")) != value for name, value in payload_fields.items()
+    ):
+        failures.append(
+            "signature payload does not match the report's subject/artifact "
+            "records; the signature does not cover the supplied artifact"
+        )
+        return
+    payload = canonical_certification_payload(**payload_fields)
     if hashlib.sha256(payload).hexdigest() != signature.get("payload_sha256"):
         failures.append("signature payload does not re-derive from the report's own fields")
         return

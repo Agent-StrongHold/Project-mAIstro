@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-ext-sdk/tests: +20
-  packages/maistro-ext-harness/tests: +44
+  packages/maistro-ext-harness/tests: +45
 ---
 # 945 — extension developer tooling: scaffold, certification (epic M9-H #945)
 
@@ -36,9 +36,9 @@ deltas against the pre-change baselines (SDK 118, harness 138).
   in this environment; the inverse import direction is impossible — the
   harness suite cannot import the SDK, by design and by boundary).
 
-## packages/maistro-ext-harness/tests: +44 (`test_certification.py`, `test_import_hygiene.py`)
+## packages/maistro-ext-harness/tests: +45 (`test_certification.py`, `test_import_hygiene.py`)
 
-- `test_certification.py` (+42): the certification pipeline end to end —
+- `test_certification.py` (+43): the certification pipeline end to end —
   happy path with provenance (subject identity, contract/harness/SDK
   versions, environment, artifact digest), claims built **only** from
   executed-passed checks/cases, the platform note always under
@@ -55,8 +55,16 @@ deltas against the pre-change baselines (SDK 118, harness 138).
   self-consistency without a pinned key, unsigned+key fails, malformed key
   fails closed truthfully, mutated artifact refused, manifest-swap refused
   via the manifest binding, corrupt report, certified-true-with-reasons
-  corruption, foreign key refusal); CLI exit codes (0/1 for certify, 0/1
-  for verify-certification, signing-key-file round trip);
+  corruption, foreign key refusal); a relabeled-artifact attack: an
+  intermediary ships a different wheel, re-records the report's artifact
+  digests and subject to match it, and keeps the original signed payload —
+  `verify_certification` must refuse, because a carried signature is bound
+  to the report's own `subject`/`artifact` records (the same records the
+  digest and manifest checks validate against the bytes in hand) and the
+  signed `payload` copy must equal them, so a signature certifies exactly
+  the supplied artifact and never an intermediary-typed payload block; CLI
+  exit codes (0/1 for certify, 0/1 for verify-certification,
+  signing-key-file round trip);
 - `test_import_hygiene.py` (+2): the stdlib-only runtime rule keeps one
   fenced exception — `signing.py` may import `cryptography` (the opt-in
   `signing` extra, fail-closed without it) — and the fence asserts the
