@@ -195,6 +195,13 @@
       "disposition": "MANUAL_DIAGNOSTIC",
       "triggers": ["workflow_dispatch"],
       "rationale": "On-demand #917 / epic #900 M8-B4 speculative-parallel model-call benchmark (serial-fallback vs single-strong vs parallel-early-stop vs parallel-verifier over the governed model seam); deterministic and offline, run when the candidate-policy assumptions change — a measurement, not a gate."
+    },
+    {
+      "id": "fleet-routing-bench",
+      "file": ".github/workflows/fleet-routing-bench.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "On-demand #934 (RESEARCH M8-F1) heterogeneous fleet benchmark (scripts/bench_fleet_routing.py: hosted-only / local-only / shipped-router / difficulty-aware local-first fleet policies over one shared corpus and one shared, policy-independent outcome table, across benign, local-outage, hosted-outage, and capacity-pressure scenarios); deterministic and offline, re-measured when the router, the fleet catalog, or the outcome model changes - a measurement, not a gate. Wires no fleet policy into production; the research disposition lives in docs/research/934-heterogeneous-fleet-benchmark.md."
     }
   ],
   "retained_branches": [
