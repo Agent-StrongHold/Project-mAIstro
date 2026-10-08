@@ -1849,3 +1849,57 @@ implementation and test readiness are proven; the four red merge-queue jobs are
 the issue-predicted explicit merge blocker of a deliberately unwired staging
 leaf, uncurable inside the leaf without violating the issue's prohibitions; the
 stack stays unmerged pending the separately authorized parent #1845 integration.
+
+## Round 25 — independent verifier re-execution at the round-final head d88c0819716a
+
+The branch tip moved once more after round 24 was recorded: `d88c0819716a`
+merges the advanced develop tip `2b23303f72f0` (the M8-A10 CrossHair research
+commit) into this stack. That merge touches no `packages/maistro-core`
+content (`git diff --stat 843b41c3e..HEAD -- packages/maistro-core` is empty),
+leaves `quality/` and `docs/testing/inventory/baseline.json` unchanged versus
+the declared base (`git diff --numstat 2b23303f72f0..HEAD` on both: empty), so
+the branch delta remains exactly the three in-scope leaf files.
+
+Independent re-execution at `d88c0819716a` by a separate verifier process
+(driver deterministic checks plus its own commands, `RATCHET_BASE_REV` as CI
+resolves it for a PR, trusted base `2b23303f72f0`):
+
+- Focused suite `pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q`
+  → 79 passed; tree-wide `ruff check` / `ruff format --check` clean;
+  `mypy` clean on the module; `check-suite-inventory.py` ok (17 suites match,
+  maistro-core at 15,735 node IDs).
+- `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → rc=1 with exactly the five known
+  `AdmissionAssessment` identities (`admission_identity.py:515-520`), 1326
+  reviewed identities → 1331 findings, unbanked and unauthorized from the
+  trusted base — unchanged, and uncurable in-leaf by the issue's own
+  prohibitions.
+- `check-reachability.py` → rc=1 with exactly one NEWLY UNREACHABLE module,
+  `maistro.runs.admission_identity`; `check-ratchet-provenance.py` → rc=1
+  solely via that sub-gate ("trusted-base gate returned 1");
+  `check-reachability-dispositions.py`, `check-promotion-surface.py`,
+  `check-shipped-surface-truth.py` → rc=0.
+- The `test` job's red reproduces as exactly the three reachability meta-tests
+  (`tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `...::test_the_baseline_is_exactly_the_unreachable_set`): 3 failed /
+  35 passed in those two files.
+- The Coverage gate's actual criterion holds under verifier re-measurement:
+  `coverage run --branch --source=packages/maistro-core/src/maistro` over the
+  focused suite, `coverage xml`, then `check-diff-coverage.py coverage.xml
+  --base 2b23303f72f0` → rc=0, `admission_identity.py` scored at or above the
+  90% line / 80% branch floors, the test file exempt by declaration.
+- The #1841 security signature re-confirmed at this head:
+  `runs/store_boundary.py:56` `require_admitted_actor(actor_principal_id:
+  str | None) -> str`; `runs/store.py:537`/`:1249`
+  `get_run(..., principal_id: str | None = None)`; `create_run` /
+  `claim_run_by_effect` retain `actor_principal_id: str | None = None`;
+  `runs/model.py:300` `Run.actor_principal_id`.
+- Scope hygiene re-confirmed: zero production importers of
+  `maistro.runs.admission_identity` outside its focused test, no
+  `maistro.runs.__init__` export, no closure keywords in any branch commit.
+
+Conclusion unchanged at the round-final head: implementation and test
+readiness proven; the four red merge-queue jobs remain the issue-predicted
+explicit merge blocker of a deliberately unwired staging leaf; the stack stays
+unmerged pending the separately authorized parent #1845 integration.
