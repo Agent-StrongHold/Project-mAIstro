@@ -62,6 +62,16 @@ def test_core_test_conftest_runs_database_backed_legs() -> None:
     assert result["strike_ladder"] is True
 
 
+def test_verifier_change_runs_wheel_leg() -> None:
+    # The wheel-imports job invokes this verifier, so a change to it must
+    # select the wheel leg even though scripts/ otherwise only selects
+    # docker_build.
+    result = classify(["scripts/verify-wheel-imports.py"])
+    assert result["wheel_imports"] is True
+    assert result["docker_build"] is True
+    assert result["postgres"] is False
+
+
 def test_docs_only_change_skips_service_legs_but_not_docker() -> None:
     result = classify(["docs/ci/MERGE-QUEUE.md"])
     assert result == {

@@ -56,6 +56,11 @@ from maistro.extensions.context import ExtensionCancellation, ExtensionConfigVie
 from maistro.extensions.effective_authority import EffectiveAuthority
 from maistro.extensions.host import ExtensionHost
 from maistro.extensions.isolation import SandboxViolationLog
+from maistro.extensions.metering import (
+    ExtensionMeter,
+    ExtensionQuotaLedger,
+    ExtensionUsageEvent,
+)
 from maistro.extensions.resolution import LockState
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
@@ -212,6 +217,26 @@ _VULTURE_WHITELIST = (
     # scripts/check-durable-table-inventory.py from
     # quality/durable-table-retention.json; no scanned call site names it.
     SqliteCampaignStore.delete_campaign,
+    # Extension metering/quota public surface (#977, M9-I2). The ledger is
+    # consumed at the extension seam by hosts and the test suite; no in-tree
+    # src caller exists until extension identity propagation (#976) wires
+    # invocation attribution, so the settlement surface
+    # (register_policy/release/correct), the read/aggregation surface
+    # (totals/breakdown/lineage/policy_balance) and the deployment-step
+    # ensure_schema
+    # are referenced as the reviewed public API they are. extension_version is
+    # attribution payload validated and persisted with every usage row
+    # (class-object reference mirrors the WorkingMemoryStats entries below).
+    ExtensionMeter.ensure_schema,
+    ExtensionMeter.totals,
+    ExtensionMeter.breakdown,
+    ExtensionMeter.lineage,
+    ExtensionQuotaLedger.ensure_schema,
+    ExtensionQuotaLedger.register_policy,
+    ExtensionQuotaLedger.policy_balance,
+    ExtensionQuotaLedger.release,
+    ExtensionQuotaLedger.correct,
+    ExtensionUsageEvent.extension_version,  # type: ignore[misc]
     # The selection entrypoint is the contract's public face (#804 persistent
     # Workspace Agent now, #50 RSI later). Consumers live outside this scan
     # until those issues land; the contract ships first by design.

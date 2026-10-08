@@ -52,6 +52,12 @@ This package carries the extension surface of epic #938, in four layers:
   that executed and passed (:mod:`maistro.extensions.certification`).
   Certification is install-time *evidence* (a trust-claim input), never an
   authorization by itself.
+- **M9-I2 metering (issue #977)**: usage attribution and Workspace/org quota
+  enforcement at the extension seam (``metering``) — physical usage recorded
+  once against canonical Invocation ids, nested delegation lineage, atomic
+  reservation/refund/correction semantics, and aggregation by Workspace,
+  extension, publisher, capability and time window. Attribution only: the
+  canonical provider totals stay with ``maistro.quota``.
 - **M9-C3 preflight (issue #957)**: host-upgrade compatibility preflight —
   :func:`run_preflight` evaluates the installed lock state against a target
   host contract (:class:`TargetHostContract`) built from public manifest
@@ -65,8 +71,8 @@ This package carries the extension surface of epic #938, in four layers:
   server-side, and carry sandbox policy and provenance on every render.
 
 No layer executes extension code: verification, evaluation, authorization,
-resolution, contract negotiation, and certification all operate on bytes
-and declarations alone.
+resolution, contract negotiation, certification and metering all operate on
+bytes, declarations, identity and amounts alone.
 
 Naming note: ``ExtensionLifecycleError`` is the governed-install failure base
 (#952/#953). The #950 hook-failure wrapper — the error raised when an
@@ -244,6 +250,21 @@ from maistro.extensions.manifest import (
     sha256_hex,
     verify_package_payload,
 )
+from maistro.extensions.metering import (
+    AttributionDimension,
+    ExtensionMeter,
+    ExtensionMeteringError,
+    ExtensionQuotaBalance,
+    ExtensionQuotaConflict,
+    ExtensionQuotaDenied,
+    ExtensionQuotaLedger,
+    ExtensionQuotaPolicy,
+    ExtensionQuotaRequest,
+    ExtensionUsageAmounts,
+    ExtensionUsageConflict,
+    ExtensionUsageEvent,
+    UsageTotals,
+)
 from maistro.extensions.preflight import (
     ExtensionStatus,
     PreflightPolicy,
@@ -391,7 +412,6 @@ __all__ = [
     "PUBLIC_IMPORTS_CHECK_ID",
     "REAL_ISOLATION_TIERS",
     "ROOT_REQUEST_ORIGIN",
-    "ROOT_REQUEST_ORIGIN",
     "SEAL_FORMAT",
     "SECURITY_SCAN_CHECK_ID",
     "SELECTION_POLICY",
@@ -405,6 +425,7 @@ __all__ = [
     "ActionUnavailable",
     "ActivationCallback",
     "ArtifactMismatch",
+    "AttributionDimension",
     "AuthorityBaseline",
     "AuthorityDelta",
     "CallerAuthority",
@@ -475,8 +496,16 @@ __all__ = [
     "ExtensionLifecycle",
     "ExtensionLifecycleError",
     "ExtensionManifest",
+    "ExtensionMeter",
+    "ExtensionMeteringError",
     "ExtensionPackage",
     "ExtensionProgress",
+    "ExtensionQuotaBalance",
+    "ExtensionQuotaConflict",
+    "ExtensionQuotaDenied",
+    "ExtensionQuotaLedger",
+    "ExtensionQuotaPolicy",
+    "ExtensionQuotaRequest",
     "ExtensionRegistryError",
     "ExtensionRiskTier",
     "ExtensionSandboxExecutionFailure",
@@ -490,6 +519,9 @@ __all__ = [
     "ExtensionStatus",
     "ExtensionStore",
     "ExtensionTransition",
+    "ExtensionUsageAmounts",
+    "ExtensionUsageConflict",
+    "ExtensionUsageEvent",
     "FeatureStatus",
     "FeatureSupport",
     "GovernedActionCall",
@@ -568,6 +600,7 @@ __all__ = [
     "UnknownPublisher",
     "UnresolvableDependency",
     "UnwiredExtensionLoader",
+    "UsageTotals",
     "Verdict",
     "VersionRange",
     "ViolationKind",
