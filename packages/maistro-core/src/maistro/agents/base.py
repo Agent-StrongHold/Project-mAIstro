@@ -855,6 +855,12 @@ class Agent:
         delegation_depth: int = 0,
         tool_round: int = 0,
     ) -> Any:
+        # Declarations only narrow authority: a host Sentinel grant cannot
+        # expose an undeclared tool. Check the Agent-owned identity here,
+        # not the mutable tool schemas handed to strategy implementations.
+        # Model-selected and strategy-authored calls share this boundary.
+        if tool_name not in self.identity.tools:
+            return f"Error: Permission denied for undeclared tool '{tool_name}'"
         if self._sentinel is None or auth is None:
             _logging.getLogger("maistro.agent").warning(
                 "Denied tool '%s' for agent '%s': no %s to authorize it",

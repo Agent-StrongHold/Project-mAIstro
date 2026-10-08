@@ -68,7 +68,8 @@ def _mission(
         progress=progress,
         steps_total=4,
         steps_completed=2,
-        assigned_agents=["agent-1"],
+        # Not a Run, so no agent. Naming "agent-1" made mission detail look assigned.
+        assigned_agents=[],
         tags=["demo"],
         metadata={},
     )
@@ -282,7 +283,7 @@ def _seed_mission_steps() -> None:
                 description="Check env",
                 status="completed",
                 order=0,
-                agent_id="agent-1",
+                agent_id=None,
                 started_at=t,
                 completed_at=t,
                 output="ok",
@@ -295,7 +296,7 @@ def _seed_mission_steps() -> None:
                 description="Apply change",
                 status="running",
                 order=1,
-                agent_id="agent-1",
+                agent_id=None,
                 started_at=t,
                 completed_at=None,
                 output=None,
