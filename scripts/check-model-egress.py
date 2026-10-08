@@ -65,7 +65,18 @@ METRIC_DEFINITION_VERSION = "1"
 #: compatibility helpers moved into the legacy_dag_node adapter; #56:
 #: llm_summarize's model HTTP moved into the approved llm_gateway Provider).
 CANDIDATE_MIGRATIONS: dict[str, str] = {
+    # Reviewed move #1 (#835): graph_runner's compatibility helpers moved into
+    # the legacy_dag_node adapter. Runtime proof that the moved call still
+    # executes through shipped composition (real Container, production
+    # execute_dag resolver): packages/hive-conductor/backend/tests/
+    # test_legacy_dag_node_container_composition.py (#1083).
     "services.legacy_dag_node": "services.graph_runner",
+    # Reviewed move #2 (m1/56): llm_summarize retired onto the governed
+    # gateway — operator-approved migration, predecessor pruned (#56).
+    # Runtime proof that the moved call still executes through shipped
+    # composition (real Container, production build_node_resolver):
+    # packages/maistro-core/tests/test_model_egress_container_composition.py
+    # (#1083).
     "maistro.capabilities.providers.llm_gateway": "maistro.graph.nodes.llm_summarize",
 }
 
