@@ -91,6 +91,12 @@ ADVISORY_ONLY = True
 # ---------------------------------------------------------------------------
 
 CHARS_PER_TOKEN = 4  # context_assembly.py / context_builder.py
+
+#: The shipped seam's final gate (``context_builder._apply_memory``): the
+#: assembled text is wrapped in a ``<maistro:memory>`` block and delivered
+#: whole or not at all — wrapper chars included in the check.
+BLOCK_OPEN = "<maistro:memory>\n"
+BLOCK_CLOSE = "\n</maistro:memory>"
 ALWAYS_INCLUDE_WEIGHT = 0.6  # ADR-091 band, enforced in _pack
 BUDGET_INCLUDE_WEIGHT = 0.3  # ADR-091 floor, applied at the store pool read
 WISDOM_WEIGHT = 0.9  # ADR-091 wisdom band
@@ -651,16 +657,33 @@ class Outcome:
 
 
 def _finish(
-    query: Query, items: list[Memory], summary_texts: dict[str, str], spent: int, work: int
+    query: Query,
+    items: list[Memory],
+    summary_texts: dict[str, str],
+    spent: int,
+    work: int,
+    budget: int,
 ) -> Outcome:
-    """Charge the forced wisdom seed (production Layer 3's band), then serve.
+    """Charge the forced wisdom seed (production Layer 3's band), apply the
+    shipped whole-block gate, then serve.
 
     The seed is taken after the ranked packing exactly as ``assemble`` spends
     layer 3 after layer 1 — and because the pack's band takes weight >= 0.9
-    whatever the budget says, it lands in every context and overspends the
-    tight ones. That overspend is a measured shipped cost, not an artifact.
+    whatever the budget says, it lands in every assembly and overspends the
+    tight ones. The shipped seam then answers that overspend all-or-nothing:
+    ``_apply_memory`` wraps the assembled text in ``<maistro:memory>`` tags and
+    drops the entire block when the wrapper pushes it past the remaining
+    budget. That final check is modeled here — assembled chars plus wrapper
+    vs ``budget * CHARS_PER_TOKEN`` — so recall, band survival, and spend
+    report what ships: a tripped gate delivers no memory at all, not the
+    overspend.
     """
     seed = forced_seed()
+    parts = [m.content for m in items] + list(summary_texts.values()) + [m.content for m in seed]
+    block_chars = len(BLOCK_OPEN) + len("\n\n".join(parts)) + len(BLOCK_CLOSE)
+    if block_chars > budget * CHARS_PER_TOKEN:
+        # The shipped path appends nothing: no block, no spend.
+        return Outcome(query.query_id, frozenset(), frozenset(), 0, work, (), ())
     texts = {m.memory_id: m.content for m in items}
     for memory_id, text in summary_texts.items():
         texts.setdefault(memory_id, text)
@@ -724,7 +747,7 @@ def run_fixed(query: Query, budget: int, extra: tuple[Memory, ...] = ()) -> Outc
     """The shipped shape: rank, then pack at a fixed budget. No adaptivity."""
     rankeds = shipped_rank(list(corpus_of(extra)), query.text)
     items, spent = pack(rankeds, budget)
-    return _finish(query, items, {}, spent, _rank_work(extra))
+    return _finish(query, items, {}, spent, _rank_work(extra), budget)
 
 
 def run_complexity(
@@ -757,7 +780,7 @@ def run_density(
 
     rankeds = shipped_rank(list(corpus_of(extra)), query.text)
     items, spent, work = _subband_select(rankeds, budget_cap, skip_redundant=saturated)
-    return _finish(query, items, {}, spent, _rank_work(extra) + work)
+    return _finish(query, items, {}, spent, _rank_work(extra) + work, budget_cap)
 
 
 def run_margin(
@@ -772,7 +795,7 @@ def run_margin(
     rankeds = shipped_rank(list(corpus_of(extra)), query.text)
     work = _rank_work(extra) + len(rankeds)
     if not rankeds:
-        return _finish(query, [], {}, 0, work)
+        return _finish(query, [], {}, 0, work, budget_cap)
     threshold = shipped_no_client_score(query.text, rankeds[0]) * ratio
     kept: list[Memory] = []
     spent = 0
@@ -787,7 +810,7 @@ def run_margin(
         if spent + cost <= budget_cap:
             kept.append(memory)
             spent += cost
-    return _finish(query, kept, {}, spent, work)
+    return _finish(query, kept, {}, spent, work, budget_cap)
 
 
 def run_omission(
@@ -811,7 +834,7 @@ def run_omission(
 
     rankeds = shipped_rank(list(corpus_of(extra)), query.text)
     items, spent, work = _subband_select(rankeds, budget, skip_redundant=duplicate)
-    return _finish(query, items, {}, spent, _rank_work(extra) + work)
+    return _finish(query, items, {}, spent, _rank_work(extra) + work, budget)
 
 
 def safe_summary_sentences(memories: list[Memory]) -> list[str]:
@@ -905,7 +928,7 @@ def _pressure_outcome(query: Query, budget: int, summarizer, extra: tuple[Memory
             dropped, summary_budget, work_list, summarizer
         )
         spent += summary_spent
-    return _finish(query, items, summary_texts, spent, work_list[0])
+    return _finish(query, items, summary_texts, spent, work_list[0], budget)
 
 
 def run_pressure(
@@ -949,7 +972,7 @@ def run_full(
             dropped, int(budget * SUMMARY_ALLOWANCE), work_list, safe_summary_sentences
         )
         spent += summary_spent
-    return _finish(query, items, summary_texts, spent, work_list[0])
+    return _finish(query, items, summary_texts, spent, work_list[0], budget)
 
 
 def run_naive_summary(query: Query, budget: int) -> Outcome:
@@ -963,7 +986,7 @@ def run_naive_summary(query: Query, budget: int) -> Outcome:
     summary_texts, spent = _summaries_for_dropped(
         rankeds, budget, work_list, naive_summary_sentences
     )
-    return _finish(query, [], summary_texts, spent, work_list[0])
+    return _finish(query, [], summary_texts, spent, work_list[0], budget)
 
 
 # ---------------------------------------------------------------------------
@@ -1339,12 +1362,17 @@ class TestPolicyMechanics:
             ]
             assert subband_kept == expected, f"{query.query_id}: margin plateau mis-cut"
 
-    def test_pressure_engages_summaries_only_under_pressure(self) -> None:
+    def test_pressure_delivers_nothing_when_the_gate_trips(self) -> None:
+        # The tier engages on the pre-gate drop set, but delivery is the
+        # shipped seam's: ``_apply_memory`` takes the whole block or nothing,
+        # and the summary spend rides on top of the items' budget. At the
+        # tight window the engaged block trips the gate: no memory ships.
         complex_query = QUERY_BY_ID["q_dep_complex"]
         small = run_pressure(complex_query, SMALL_WINDOW)
-        assert small.summary_ids, "tight window must engage the summary tier"
+        assert not small.item_ids and not small.summary_ids
+        assert not small.served and small.spent_tokens == 0
         big = run_pressure(complex_query, LARGE_WINDOW)
-        assert not big.summary_ids, "roomy window must serve items, not summaries"
+        assert big.item_ids and not big.summary_ids, "roomy window must serve items, not summaries"
 
     def test_window_pressure_never_truncates_a_memory(self) -> None:
         # The #622 rule holds under every policy: a memory ships whole or not
@@ -1367,97 +1395,124 @@ class TestBenchmarkFindings:
             assert hi.sufficiency >= lo.sufficiency
             assert hi.mean_tokens >= lo.mean_tokens
 
-    def test_always_include_band_overspends_the_named_budget(self) -> None:
-        # The shipped pack lets weight >= 0.6 overspend; with the Layer 3
-        # wisdom seed forced in, tight budgets are exceeded by construction —
-        # measured, not assumed.
+    def test_always_include_band_trips_the_whole_block_gate(self) -> None:
+        # The shipped pack lets weight >= 0.6 overspend and the Layer 3
+        # wisdom seed is forced into every assembly — but the shipped seam
+        # answers that overspend all-or-nothing: ``_apply_memory`` drops the
+        # entire wrapped block when it exceeds the budget. Measured at the
+        # swept fixed points: below the gate-fit threshold nothing is
+        # delivered at all, overspend included. The pack-level overspend is
+        # a pre-gate fact (pinned in TestReplicaIdentities).
         benchmark = run_benchmark()
-        assert benchmark["fixed_40"].overspend_queries == len(QUERIES)
-        assert benchmark["fixed_90"].overspend_queries > 0
+        for name in ("fixed_40", "fixed_60", "fixed_90"):
+            row = benchmark[name]
+            assert row.overspend_queries == 0
+            assert row.mean_tokens == 0.0
+            assert all(not o.item_ids for o in row.per_query)
+        assert benchmark["fixed_120"].overspend_queries == 0
 
-    def test_band_confined_losses_banded_facts_are_never_budget_lost(self) -> None:
-        # ADR-091's band has a consequence the budget debate should not gloss
-        # over: at EVERY swept budget, every weight >= 0.6 fact is served.
-        # Losses are confined to the OPINION/LESSON facts.
+    def test_band_survival_is_gate_confined(self) -> None:
+        # ADR-091's band keeps weight >= 0.6 facts out of the pack's cuts,
+        # but the shipped gate sits upstream of delivery: when the
+        # always-include crowd trips the whole-block check, the banded facts
+        # drop with it. Measured invariant at every swept budget: a banded
+        # asked fact is served exactly when that query's block survives the
+        # gate — band survival is conditional on delivery, not guaranteed.
         banded_facts = [f for f in FACTS.values() if f.fact_id not in BAND_CUTTABLE_FACTS]
         for budget in FIXED_SWEEP:
             for query in QUERIES:
                 outcome = run_fixed(query, budget)
+                delivered = bool(outcome.item_ids)
                 for fact in banded_facts:
                     if fact.fact_id in query.facts:
-                        assert fact.fact_id in outcome.served, (
-                            f"budget {budget} lost banded fact {fact.fact_id}"
+                        assert (fact.fact_id in outcome.served) == delivered, (
+                            f"budget {budget} gate/delivery mismatch on {fact.fact_id}"
                         )
 
-    def test_fixed_budget_loses_cuttable_facts_that_complexity_scaling_recovers(self) -> None:
+    def test_complexity_scaling_cannot_recover_a_tripped_gate(self) -> None:
+        # Same ranker, same corpus, same pack: the only difference is the
+        # budget knob the shipped caller never turns. At the swept base the
+        # knob is inert below gate fit — every complexity bucket's block
+        # trips the whole-block check, so scaling recovers nothing.
         fixed = run_benchmark()["fixed_90"]
         base = run_benchmark()["adaptive_complexity"]
-        # Same ranker, same corpus, same pack: the only difference is the
-        # budget knob the shipped caller never turns.
-        assert base.recall > fixed.recall
-        assert base.lost_fact_rate < fixed.lost_fact_rate
-        assert base.sufficiency >= fixed.sufficiency
+        assert fixed.recall == base.recall == 0.0
+        assert base.mean_tokens == 0.0
+        assert base.lost_fact_rate == fixed.lost_fact_rate == 1.0
 
-    def test_complexity_adaptivity_pays_for_itself(self) -> None:
-        # The adaptive policy must not win by simply spending more: it matches
-        # the generous fixed point's recall at less mean spend, and beats its
-        # own base point outright.
+    def test_subgate_complexity_adaptivity_buys_nothing(self) -> None:
+        # The measured answer at the swept base: adaptivity cannot pay below
+        # gate fit. The scaled budgets deliver nothing (a dropped block costs
+        # zero tokens and serves zero facts), while the one gate-fitting
+        # fixed point keeps the only served facts. Spend ordering survives —
+        # empty is cheap — but the recall ordering inverts the pre-gate
+        # story: the knob only pays once blocks can fit at all.
         benchmark = run_benchmark()
         adaptive = benchmark["adaptive_complexity"]
         fixed_120 = benchmark["fixed_120"]
-        fixed_90 = benchmark["fixed_90"]
+        assert adaptive.mean_tokens == 0.0
         assert adaptive.mean_tokens <= fixed_120.mean_tokens
-        assert adaptive.recall >= fixed_120.recall
-        assert adaptive.recall > fixed_90.recall
+        assert adaptive.recall < fixed_120.recall
 
-    def test_density_matches_sweep_max_recall_at_its_mean_spend(self) -> None:
-        # The saturation stop's claim, measured: hold the generous fixed
-        # point's recall without exceeding its mean spend.
+    def test_density_recovers_the_fixed_sweeps_gate_losses(self) -> None:
+        # The saturation stop's claim, measured under the shipped gate: the
+        # cap keeps the block small enough to fit where the fixed sweep's
+        # fuller packs do not, so its served set is a strict superset of the
+        # best fixed row's. It spends more delivering them; the fixed rows'
+        # low spend is emptiness, not efficiency.
         benchmark = run_benchmark()
         density = benchmark["adaptive_density"]
         fixed_120 = benchmark["fixed_120"]
-        assert density.recall >= fixed_120.recall
-        assert density.mean_tokens <= fixed_120.mean_tokens
+        assert density.recall > fixed_120.recall
+        density_served = frozenset().union(*(o.served for o in density.per_query))
+        fixed_served = frozenset().union(*(o.served for o in fixed_120.per_query))
+        assert fixed_served < density_served
+        assert density.mean_tokens > fixed_120.mean_tokens
 
-    def test_omission_saves_budget_but_the_band_absorbs_the_savings(self) -> None:
-        # The honest crowd-out finding: dropping near-duplicates frees budget,
-        # but the shipped pack is skip-not-break, so the next banded memory
-        # (weight >= 0.6, taken whatever the budget says) consumes the freed
-        # room. Measured: a strictly lower mean spend, and IDENTICAL recall —
-        # omission bought tokens, not facts, on this corpus.
+    def test_omission_is_indistinguishable_below_the_gate(self) -> None:
+        # The honest finding at the swept base: omission frees tokens, but
+        # freed tokens cannot be observed through a dropped block — every
+        # omission_90 row trips the whole-block check exactly as fixed_90's
+        # does. Identical zeros, measured: at this scale the crowd-out
+        # debate is masked entirely by gate fit.
         benchmark = run_benchmark()
         fixed_90 = benchmark["fixed_90"]
         omission = benchmark["omission_90"]
-        assert omission.mean_tokens < fixed_90.mean_tokens
-        assert omission.recall == fixed_90.recall
+        assert omission.mean_tokens == fixed_90.mean_tokens == 0.0
+        assert omission.recall == fixed_90.recall == 0.0
+        assert omission.lost_fact_rate == fixed_90.lost_fact_rate == 1.0
 
-    def test_margin_stop_is_a_measured_negative(self) -> None:
-        # The score plateau ends at the first sub-band candidate below
-        # ratio * top score — and mid-score facts behind that cliff are lost
-        # that the plain fixed pack keeps. Recorded as a negative result.
+    def test_margin_stop_nets_more_recall_under_the_gate(self) -> None:
+        # The measured flip the gate forces: the cliff sacrifices sub-band
+        # candidates the pack would keep, but the pack's fuller blocks are
+        # exactly the ones the whole-block check drops. The lighter frontier
+        # fits where the pack does not and nets the sweep's best recall —
+        # every fixed row's served fact is among its served facts.
         benchmark = run_benchmark()
-        fixed_90 = benchmark["fixed_90"]
-        margin = benchmark["adaptive_margin"]
-        assert margin.recall < fixed_90.recall
-
-    def test_full_adaptive_pays_a_composition_tax(self) -> None:
-        # The measured composition finding: stacking the policies is not free.
-        # The summary allowance carves its reserve out of the item budget, and
-        # at the medium complexity bucket that reserve is exactly the slot the
-        # chargeback fact needed — so full_adaptive gives back the rescue that
-        # adaptive_complexity alone made, landing at the base fixed point's
-        # recall while spending near the generous point's budget. Composition
-        # ordering (reserve from the crowd, not from the facts) is the open
-        # engineering question this measurement hands forward.
-        benchmark = run_benchmark()
-        full = benchmark["full_adaptive"]
         fixed_90 = benchmark["fixed_90"]
         fixed_120 = benchmark["fixed_120"]
-        adaptive = benchmark["adaptive_complexity"]
-        assert full.recall == fixed_90.recall
-        assert full.recall < adaptive.recall
-        assert full.mean_tokens <= fixed_120.mean_tokens
-        assert full.lost_fact_rate == fixed_90.lost_fact_rate
+        margin = benchmark["adaptive_margin"]
+        assert margin.recall > fixed_90.recall
+        assert margin.recall > fixed_120.recall
+        fixed_served = frozenset().union(*(o.served for o in fixed_120.per_query))
+        margin_served = frozenset().union(*(o.served for o in margin.per_query))
+        assert fixed_served <= margin_served
+
+    def test_full_adaptive_reserve_trips_the_gate(self) -> None:
+        # The measured composition finding under the shipped gate: the
+        # summary allowance is carved out of a gate-fitting cap, and the
+        # reserved spend rides inside the same block on top of the items —
+        # so the stack trips the whole-block check everywhere the same cap
+        # without the reserve delivers. Composition ordering (reserve from
+        # the crowd, not from the facts) is still the open engineering
+        # question this measurement hands forward; the gate is why it now
+        # measures as a total loss, not a tax.
+        benchmark = run_benchmark()
+        full = benchmark["full_adaptive"]
+        density = benchmark["adaptive_density"]
+        assert full.recall == 0.0
+        assert full.mean_tokens == 0.0
+        assert full.recall < density.recall
 
     def test_work_units_order_structurally(self) -> None:
         # Latency stand-in, structural only: the selective policies pay for
@@ -1512,34 +1567,38 @@ class TestSummariesDistortion:
 
 
 class TestStabilityAcrossWindowSizes:
-    def test_fixed_degrades_small_and_hierarchy_is_recall_neutral_here(self) -> None:
+    def test_fixed_degrades_small_and_hierarchy_rescues_the_gate(self) -> None:
         # The measured stability answer, both halves honest:
         #
-        # 1. The fixed share degrades at the smallest window: the always-
-        #    include band's banded crowd alone exceeds 30% of a 512-token
-        #    window, and the pack cuts the sub-band facts behind it.
-        # 2. The hierarchical policy recovers that degradation to exactly the
-        #    fixed policy's recall — no better. Its summaries engage (8 of 12
-        #    queries) but the one buried fact sits at the ranker's noise
-        #    floor, and a summary tier ordered by the same ranker inherits
-        #    the same blindness: packing cannot rescue a fact the ranker
-        #    buried, the C2 boundary re-found one layer up.
+        # 1. The fixed share degrades at the smallest window: the assembled
+        #    block exceeds the whole-block check for most queries, and the
+        #    gate spares only a strict minority of the asked facts.
+        # 2. The hierarchical policy's lighter pack fits where the fixed
+        #    pack does not: it recovers facts at the tight window instead of
+        #    tying with it. Its summaries never survive delivery (measured
+        #    just below), so the rescue is the smaller item set — and at
+        #    roomy windows the two still tie exactly.
         sweep = run_window_sweep()
         fixed_small = sweep[("fixed", SMALL_WINDOW)]
         fixed_large = sweep[("fixed", LARGE_WINDOW)]
         assert fixed_small.recall < fixed_large.recall
-        for window in WINDOWS:
+        for window in WINDOWS[1:]:
             assert sweep[("pressure", window)].recall == sweep[("fixed", window)].recall
+        assert sweep[("pressure", SMALL_WINDOW)].recall > fixed_small.recall
 
-    def test_pressure_summaries_engage_only_under_pressure(self) -> None:
+    def test_pressure_summaries_never_survive_delivery(self) -> None:
+        # The measured negative: the tier engages on the pre-gate drop set
+        # and spends its allowance inside the same block, so the wrapped
+        # block lands at or past the budget and the shipped all-or-nothing
+        # check takes it. At every swept window no summary text reaches a
+        # prompt; at the roomy windows nothing is dropped, so nothing is
+        # summarized either.
         sweep = run_window_sweep()
-        small = sweep[("pressure", SMALL_WINDOW)]
-        engaged = sum(1 for o in small.per_query if o.summary_ids)
-        assert engaged > 0, "the tight window must engage the summary tier"
-        big = sweep[("pressure", LARGE_WINDOW)]
-        assert all(not o.summary_ids for o in big.per_query), (
-            "a roomy window drops nothing, so it must serve items only"
-        )
+        for window in WINDOWS:
+            for outcome in sweep[("pressure", window)].per_query:
+                assert not outcome.summary_ids, (
+                    f"window {window}: a summary survived the whole-block gate"
+                )
 
     def test_pressure_costs_at_most_its_allowance_over_fixed(self) -> None:
         # The summary tier is paid for by its reservation: pressure packs the
@@ -1571,11 +1630,16 @@ class TestNoiseSweep:
             noisy = run_with_corpus(make_fillers(k), "fixed", 120)
             assert noisy.recall <= clean.recall, "fillers must never add recall"
 
-    def test_high_weight_noise_displaces_relevant_memory_under_fixed(self) -> None:
+    def test_high_weight_noise_is_masked_by_the_gate(self) -> None:
+        # The measured negative under the shipped gate: high-weight fillers
+        # rank ahead of anchors exactly as before, but displacement changes
+        # which memories fit a block the whole-block check then refuses —
+        # the binding constraint at this budget is gate fit, not rank order.
+        # Identical delivery, measured.
         clean = run_with_corpus((), "fixed", 120)
         noisy = run_with_corpus(make_fillers(10), "fixed", 120)
-        assert noisy.recall < clean.recall
-        assert noisy.lost_fact_rate > clean.lost_fact_rate
+        assert noisy.recall == clean.recall
+        assert noisy.lost_fact_rate == clean.lost_fact_rate
 
     def test_density_stop_absorbs_noise_better_than_fixed(self) -> None:
         fillers = make_fillers(10)
