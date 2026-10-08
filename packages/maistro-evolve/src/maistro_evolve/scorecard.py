@@ -31,6 +31,29 @@ class MeasureKind(StrEnum):
     JUDGE = "judge"
 
 
+class GateState(StrEnum):
+    """Distinct gate outcomes (#304): required, executed, and not-executed
+    results must never collapse into one boolean.
+
+    - ``PASSED``/``FAILED`` — the gate RAN and produced a verdict.
+    - ``NOT_RUN`` — a required gate whose tool never executed (missing,
+      wedged, timed out). Blocking: ``passed`` is False, so the candidate is
+      vetoed and downstream reporting must render it as not run — never as a
+      pass or as an omission.
+    - ``UNAVAILABLE`` — an optional signal that never executed. Non-blocking
+      and reportable; it must not be invented into a pass either.
+
+    A ``GateResult`` constructed without a state (every pre-existing call
+    site) resolves to PASSED/FAILED from its ``passed`` boolean, so the
+    historical executed-gate semantics are unchanged.
+    """
+
+    PASSED = "passed"
+    FAILED = "failed"
+    NOT_RUN = "not_run"
+    UNAVAILABLE = "unavailable"
+
+
 @dataclass
 class SignalScore:
     name: str
@@ -54,6 +77,18 @@ class GateResult:
     # so a downstream reviewer can read the underlying confidence, not just the
     # boolean veto. Mirrors SignalScore.detail's existing convention.
     detail: dict[str, object] = field(default_factory=dict)
+    # How the verdict came about (#304). None means the gate executed and its
+    # outcome is exactly ``passed``/``failed``; NOT_RUN marks a required gate
+    # whose tool never executed (blocking), UNAVAILABLE an optional one
+    # (non-blocking). See GateState.
+    state: GateState | None = None
+
+    def resolved_state(self) -> GateState:
+        """The gate's effective state: the explicit one, or PASSED/FAILED
+        derived from the boolean for gates constructed without one."""
+        if self.state is not None:
+            return self.state
+        return GateState.PASSED if self.passed else GateState.FAILED
 
 
 @dataclass
@@ -117,7 +152,14 @@ class Scorecard:
 
     @property
     def gates_passed(self) -> bool:
-        return all(g.passed for g in self.gates)
+        # Acceptance resolves the gate's state (#304), never the legacy boolean
+        # alone: UNAVAILABLE marks an optional signal that never executed and is
+        # non-blocking by contract, so only FAILED/NOT_RUN veto. Gates built
+        # without a state resolve PASSED/FAILED from ``passed`` (see
+        # GateResult.resolved_state), so historical behaviour is unchanged.
+        return all(
+            g.resolved_state() in (GateState.PASSED, GateState.UNAVAILABLE) for g in self.gates
+        )
 
     @property
     def composite(self) -> float:
@@ -139,7 +181,13 @@ class Scorecard:
         lines.append(f"Fitness: {verdict}   composite={self.composite}")
         lines.append("  Gates (pass/fail vetoes):")
         for g in self.gates:
-            mark = "PASS" if g.passed else "FAIL"
+            state = g.resolved_state()
+            if state is GateState.NOT_RUN:
+                mark = "NOT RUN (blocking)"
+            elif state is GateState.UNAVAILABLE:
+                mark = "UNAVAILABLE"
+            else:
+                mark = "PASS" if g.passed else "FAIL"
             lines.append(f"    [{mark}] {g.name}: {g.reason}")
         lines.append("  Scores (weighted, only counted if all gates pass):")
         for s in sorted(self.scores, key=lambda x: x.contribution, reverse=True):
