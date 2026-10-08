@@ -20,9 +20,11 @@ it does not add any:
   (`RuleDagSynthesizer`) and an LLM implementation (`LLMDagSynthesizer`) with an
   injectable `llm_call`, wired through the `agent.synth_dag` node.
 - **Candidate shape — the DAGFile dict** (`{nodes: [{id, kind, inputs|config}],
-  edges: [{from_node, to_node}], entry_node, max_cycles}`), the shape the
-  canonical validator consumes at save time (`PUT /v1/dags/{id}`) and again at
-  run time (defense in depth).
+  edges: [{from_node, to_node}], entry_node, max_cycles}`): the save endpoint
+  (`PUT /v1/dags/{id}`) enforces this shape with pydantic plus the #1184
+  budget envelope on `max_cycles`; the canonical `validate_dag` legality gate
+  consumes it at registry admission (`DagRegistry.register`,
+  validate-then-register — the legality gate below).
 - **The legality gate — `validate_dag`**
   (`packages/maistro-core/src/maistro/graph/dag_validator.py`): structure
   (endpoints, entry, cycles), kind registration, and per-edge schema
@@ -56,7 +58,7 @@ change adds no product code, no flag, and touches no authority path.
 What it adds is the reproducible measurement machinery the experiment demands,
 as a separated research artifact:
 `packages/maistro-core/tests/graph/test_m8d2_graph_synthesis_research.py`
-(test suite only; 40 node IDs, delta in
+(test suite only; 41 node IDs, delta in
 `docs/testing/inventory-notes/926-m8d2-graph-synthesis-harness.md`). Unlike
 the earlier M8 harnesses it imports four maistro surfaces deliberately — the
 validator, the catalog, the budget policy, and the seed — because the leaf's
@@ -88,7 +90,10 @@ planner arms:
   kind present AND nothing extra vs the reference decomposition), missing/extra
   nodes, illegal dependencies (validator error findings on the raw candidate),
   repair iterations (validator-feedback loop, billed one planner call each),
-  planned execution cost (nodes, waves, LLM-backed kinds, HITL kinds),
+  planned execution cost (nodes, waves, LLM-backed kinds — model-backed means
+  the catalog's own `sync.llm` category or `agent.*` delegation; the
+  `sync.tool` kinds (`jira.poll`, `airtable.poll`, `rsi.quota_pace_trigger`)
+  are governed httpx egress with zero model calls — and HITL kinds),
   reuse (byte-identical canonical-form hits against the arm's accepted
   library), and human review burden (admission-time placeholder fills +
   residual findings + budget redeclarations).
@@ -137,13 +142,27 @@ arithmetic, **not** evidence about real planners):
   depth (one resolves to the one-wave floor). A synthesis evaluation that
   only runs the validator misses this.
 
-Executed probe record (head af7996883, 2026-10-08):
+Executed probe record (base 0c1d2b8d + the repair commit on this branch,
+2026-10-08):
 `uv run pytest packages/maistro-core/tests/graph/test_m8d2_graph_synthesis_research.py -q`
-→ 40 passed; the full graph suite (1920 passed, 120 skipped) is unaffected;
+→ 41 passed; the full graph suite (1920 passed, 120 skipped) is unaffected;
 `uv run ruff check` and `uv run ruff format` clean on the module;
 `scripts/check-suite-inventory.py --suite packages/maistro-core/tests` → ok
-(15446 = 15406 baseline + 40 delta); the frozen report is byte-identical
+(15517 collected = baseline + recorded deltas, this note's +41 included); the
+frozen report is byte-identical
 across invocations (asserted by a test).
+
+Repair-round correction (same branch, found by acceptance review): the
+harness's planned-cost classifier originally bucketed the `sync.tool` egress
+kinds (`jira.poll`, `airtable.poll`, `rsi.quota_pace_trigger`) as LLM-backed
+by prefix, mis-measuring the issue's execution-cost dimension on exactly the
+polling compositions synthesis most likely produces. The classifier now reads
+the production catalog's own `kind_category` (`sync.llm` or `agent.*`
+delegation only), a new case holds it to the catalog's categories, and the
+exact-accounting case pins `planned_llm_nodes == 0` for the all-egress
+daily-status composition. The save-time legality claim was corrected the same
+round: `PUT /v1/dags/{id}` enforces pydantic shape plus the budget envelope;
+the canonical gate runs at registry admission.
 
 ## Benchmark procedure (what a real experiment must do)
 

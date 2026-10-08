@@ -23,8 +23,10 @@ re-implemented validator would grade candidates against a drift-prone copy
 surfaces, all pure/read-only, pinned by an AST allowlist test:
 
 - ``maistro.graph.dag_validator.validate_dag`` — the canonical legality gate
-  (structure, kinds, cycles, per-edge schema compatibility), the same gate a
-  saved DAG must pass at ``PUT /v1/dags/{id}`` and again at run time;
+  (structure, kinds, cycles, per-edge schema compatibility), the same gate
+  registry admission runs (``DagRegistry.register``, validate-then-register);
+  the save endpoint (``PUT /v1/dags/{id}``) itself enforces only the pydantic
+  DAGFile shape plus the #1184 budget envelope on ``max_cycles``;
 - ``maistro.graph.nodes`` — the real capability catalog (``list_kinds`` /
   ``get_node``) with the real input/output schemas planners must respect;
 - ``maistro.graph.policies.resolve_max_cycles`` — the real execution-budget
@@ -887,9 +889,22 @@ class GoalOutcome:
 
 
 def _llm_backed_kind(kind: str) -> bool:
-    """A kind whose Attempt needs a model call. The transform.* family is
-    deterministic in-process work; human.* is HITL (a person, not a model)."""
-    return kind.startswith(("llm.", "agent.", "jira.", "airtable.", "rsi."))
+    """A kind whose Attempt needs a model call, judged from the production
+    catalog's own ``kind_category``: ``sync.llm`` is direct inference, and
+    the ``agent.*`` family delegates to a model-backed agent (the delegatee
+    runs the model). Everything else is zero-model-call work — notably the
+    ``sync.tool`` kinds (``jira.poll``, ``airtable.poll``,
+    ``rsi.quota_pace_trigger``), whose Attempt is governed httpx egress, and
+    ``jira.wait_for_subtasks``, a wait on an external system. The transform.*
+    family is deterministic in-process work; human.* is HITL (a person, not
+    a model). Unregistered kinds are never model-backed (the gate rejects
+    them before cost accounting ever sees a served candidate)."""
+    if kind.startswith("agent."):
+        return True
+    try:
+        return get_node(kind).kind_category == "sync.llm"
+    except KeyError:
+        return False
 
 
 def _hitl_kind(kind: str) -> bool:
@@ -1137,6 +1152,36 @@ class TestCanonicalSeamReuse:
                 if goal.goal_id == "slack-blast" and kind not in ("jira.poll",):
                     continue
                 assert kind in known, f"catalog drift: {kind!r} no longer registered"
+
+    def test_llm_backed_classifier_tracks_the_real_catalog(self) -> None:
+        """Planned model-call cost must be judged from production truth, not
+        a prefix guess: a kind counts as LLM-backed only if the catalog's own
+        ``kind_category`` says ``sync.llm`` or it delegates to a model-backed
+        agent. The ``sync.tool`` kinds execute governed httpx egress with
+        zero model calls — miscounting them as LLM work would inflate the
+        issue's execution-cost measure on exactly the compositions (jira /
+        airtable polling) synthesis is most likely to produce."""
+        # Anything classified model-backed really needs a model:
+        for kind in list_kinds():
+            if _llm_backed_kind(kind):
+                assert get_node(kind).kind_category == "sync.llm" or kind.startswith("agent."), (
+                    f"{kind} counted as model-backed but is {get_node(kind).kind_category!r}"
+                )
+        # The direct-inference and delegation kinds really do count:
+        assert _llm_backed_kind("llm.summarize")
+        assert _llm_backed_kind("agent.delegate_remote")
+        assert _llm_backed_kind("agent.spawn_harness")
+        assert _llm_backed_kind("agent.synth_dag")
+        # The egress/wait kinds a prefix heuristic would miscount:
+        assert not _llm_backed_kind("jira.poll")
+        assert not _llm_backed_kind("airtable.poll")
+        assert not _llm_backed_kind("rsi.quota_pace_trigger")
+        assert not _llm_backed_kind("jira.wait_for_subtasks")
+        # Deterministic and HITL work never counts:
+        assert not _llm_backed_kind("transform.format_markdown")
+        assert not _llm_backed_kind("human.review_and_edit")
+        # Unregistered kinds never count (the gate rejects them first).
+        assert not _llm_backed_kind("slack.post")
 
     def test_daily_status_seed_passes_the_real_legality_gate(self) -> None:
         seed = daily_status_seed()
@@ -1442,7 +1487,9 @@ class TestGridMeasures:
         by_goal = {o.goal_id: o for o in synthesis.outcomes}
         daily = by_goal["daily-status"]
         assert (daily.planned_nodes, daily.planned_waves) == (5, 5)
-        assert daily.planned_llm_nodes == 1  # jira.poll
+        # jira.poll is sync.tool governed httpx egress — a zero-model-call
+        # node — and nothing else in this composition needs a model.
+        assert daily.planned_llm_nodes == 0
         assert daily.planned_hitl_nodes == 0
         signoff = by_goal["human-signoff"]
         assert (signoff.planned_nodes, signoff.planned_waves) == (4, 3)  # fan-out

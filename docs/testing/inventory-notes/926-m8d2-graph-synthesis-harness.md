@@ -1,8 +1,8 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +40
+  packages/maistro-core/tests: +41
 ---
-# 926 M8-D2: canonical Graph synthesis benchmark harness (+40)
+# 926 M8-D2: canonical Graph synthesis benchmark harness (+41)
 
 <!-- Say what moved and why, not just how much. The count alone hides
      compensating changes; that is the case these notes exist for. -->
@@ -16,7 +16,7 @@ no representative Goal corpus with recorded Runs), so the research record
 (`docs/research/926-graph-synthesis-from-goals.md`) registers WATCH and this
 change adds the reproducible measurement machinery the issue's measure list
 demands, as one self-contained test module in `packages/maistro-core/tests/graph/`
-(`test_m8d2_graph_synthesis_research.py`, +40 node IDs).
+(`test_m8d2_graph_synthesis_research.py`, +41 node IDs).
 
 Unlike the earlier M8 harnesses (which import no maistro module), this one
 deliberately reuses the shipped read-only test seam (M8 guardrail 2): the
@@ -28,7 +28,7 @@ input/output schemas), the real budget policy
 (`maistro.graph.seeds.daily_status_seed`). The import surface is pinned by an
 AST allowlist test to exactly those four pure/read-only surfaces — no executor,
 no run store, no durable-run machinery — so the harness can emit candidates and
-grade them but can never become a second execution model. The 40 cases validate
+grade them but can never become a second execution model. The 41 cases validate
 the machinery on deterministic, hand-checked fixtures: the evidence-only
 contract itself (advisory marker, AST import allowlist, frozen report records,
 empty-statement and empty-needs Goal rejection); seam realism (the real catalog
@@ -54,7 +54,9 @@ ceiling 2/5, synthesis arm 4/4 fidelity with zero illegal dependencies, raw
 stub arm 1/5 valid with 7 raw findings, repair restoring legality but not
 always fidelity — the legal-but-extra review node keeps goal_success false —
 repair iterations billed one planner call each (11 total vs 5 unrepaired),
-exact planned-cost accounting (nodes/waves/LLM-backed/HITL), byte-identical
+exact planned-cost accounting (nodes/waves/LLM-backed/HITL, with LLM-backed
+read from the catalog's own `kind_category` — see the repair-round correction
+below), byte-identical
 canonical-form reuse (baseline 2 hits, synthesis 1 content-addressed hit, stub
 arms 0), and review burden (10 admission-time human touches raw, 3 after
 repair, 0 for clean arms)); plus reference-decomposition sanity (the
@@ -71,3 +73,21 @@ lean on Goal-supplied static parameters — which is exactly where synthesis
 is one DAG, so the manual-template baseline's coverage ceiling is structurally
 low (2 of 5 fixture Goals). Both feed the WATCH disposition's next-evidence
 list in the research note.
+
+Repair-round correction (acceptance review, same branch): the planned-cost
+classifier originally bucketed the `sync.tool` egress kinds (`jira.poll`,
+`airtable.poll`, `rsi.quota_pace_trigger`) as LLM-backed by prefix, but those
+kinds execute governed httpx egress with zero model calls
+(`packages/maistro-core/src/maistro/capabilities/providers/pm_polling.py`,
+`kind_category = "sync.tool"`), so the exact-accounting case was pinning
+`planned_llm_nodes == 1` on a zero-model-call chain — a mis-measure of the
+issue's execution-cost dimension. The classifier now consults the production
+catalog (`sync.llm` category or `agent.*` delegation only; unregistered kinds
+never count), the exact-accounting case pins `planned_llm_nodes == 0` for the
+all-egress daily-status composition, and the new
+`test_llm_backed_classifier_tracks_the_real_catalog` (+1, the delta above)
+holds the classifier to the catalog's own categories. The same round
+corrected the harness docstring's and the research note's claim that the
+canonical gate runs at save time (`PUT /v1/dags/{id}` enforces pydantic shape
+plus the #1184 budget envelope only; `validate_dag` runs at registry
+admission, `DagRegistry.register`).
