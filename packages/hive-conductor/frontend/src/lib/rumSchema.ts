@@ -24,6 +24,59 @@ export const MAX_ROUTE_LENGTH = 80;
 
 const ROUTE_SEGMENT_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const PAGE_SEGMENT_RE = /^[a-z0-9-]{1,40}$/;
+
+/**
+ * Stable, literal API collection roots mounted by the Conductor.  The shared
+ * client accepts caller-supplied paths, so accepting arbitrary second path
+ * segments would make `/v1/<customer-or-workspace-id>` a telemetry route.
+ * Unknown/future roots intentionally collapse to `unknown` until they are
+ * reviewed here; reporting a coarser route is preferable to exporting an id.
+ */
+const API_COLLECTION_ROOTS = new Set([
+  "agents",
+  "audit",
+  "auth",
+  "backlog",
+  "canvas",
+  "capabilities",
+  "chat",
+  "cli",
+  "containers",
+  "credentials",
+  "dag-metrics",
+  "dag-runs",
+  "dags",
+  "dashboard",
+  "design",
+  "eval-judge",
+  "evolution",
+  "harness",
+  "hitl",
+  "install",
+  "mcp",
+  "memory",
+  "messages",
+  "optimizer",
+  "profile",
+  "program",
+  "projects",
+  "providers",
+  "quotas",
+  "rsi",
+  "rum",
+  "schedules",
+  "settings",
+  "setup",
+  "setup-checklist",
+  "skills",
+  "tasks",
+  "topology",
+  "voice",
+  "widgets",
+  "work-items",
+  "workspaces",
+  "ws",
+]);
 const HTTP_METHOD_RE = /^[A-Z]{3,10}$/;
 
 /**
@@ -100,14 +153,12 @@ function isFiniteNonNegative(value: unknown): value is number {
 /**
  * Collapse a shared-client API path to a route template safe to emit.
  *
- * Only the first two path segments survive (an agents collection path);
- * everything
- * deeper — raw resource identifiers, names, anything — collapses to a star
- * (a task's messages path collapses to the tasks collection plus a star).
- * Query strings and fragments
- * are stripped before any inspection, so a token smuggled into the query
- * never reaches the template. A segment that is not plain path text is
- * dropped wholesale rather than escaped.
+ * For `/v1` requests, only a reviewed, literal collection root survives;
+ * everything deeper — raw resource identifiers, names, anything — collapses
+ * to a star. An arbitrary second segment is also rejected: the shared client
+ * accepts caller-supplied paths, so `/v1/<workspace-id>` must not turn that id
+ * into a route template. Query strings and fragments are stripped before any
+ * inspection, so a token smuggled into the query never reaches the template.
  */
 export function normalizeApiPath(rawPath: string): string {
   // The shared client accepts only same-origin path references. Reject an
@@ -118,15 +169,16 @@ export function normalizeApiPath(rawPath: string): string {
   }
   const path = stripQueryAndFragment(rawPath);
   const segments = path.split("/").filter((s) => s.length > 0);
-  if (segments.length === 0) return UNKNOWN_ROUTE;
-  const kept: string[] = [];
-  for (const segment of segments.slice(0, 2)) {
-    if (ROUTE_SEGMENT_RE.test(segment)) kept.push(segment);
+  if (segments[0] === "v1" && segments.length >= 2) {
+    const root = segments[1];
+    if (!ROUTE_SEGMENT_RE.test(root) || !API_COLLECTION_ROOTS.has(root)) return UNKNOWN_ROUTE;
+    const route = `/v1/${root}${segments.length > 2 ? "/*" : ""}`;
+    return route.length <= MAX_ROUTE_LENGTH ? route : UNKNOWN_ROUTE;
   }
-  if (kept.length === 0) return UNKNOWN_ROUTE;
-  let route = `/${kept.join("/")}`;
-  if (segments.length > 2) route += "/*";
-  return route.length <= MAX_ROUTE_LENGTH ? route : UNKNOWN_ROUTE;
+  // The health probe is the only non-/v1 shared-client path. Its literals
+  // are fixed by the backend, and it has no user-controlled segment.
+  if (segments[0] === "health") return segments.length === 1 ? "/health" : "/health/*";
+  return UNKNOWN_ROUTE;
 }
 
 /**

@@ -82,15 +82,17 @@ share the ring.
 
 ### Route templates
 
-`normalizeApiPath` (client) accepts only a same-origin, single-slash path,
-keeps its first two path segments and collapses everything deeper to `*`:
-`/v1/tasks/<id>/messages` → `/v1/tasks/*`. Absolute and scheme-relative URLs
-are `unknown` rather than allowing a hostname to become a route segment. Query
-strings and fragments are stripped before any inspection. `normalizePageRoute`
-does the same for the SPA location after stripping the Vite base path — every
-Hive route is one segment, so `/dashboard` stays `/dashboard` and anything
-deeper becomes `/dashboard/*`. A segment that is not plain path text yields
-`unknown`.
+`normalizeApiPath` (client) accepts only a same-origin, single-slash path.
+For `/v1` it retains only a reviewed literal API collection root and collapses
+everything deeper to `*`: `/v1/tasks/<id>/messages` → `/v1/tasks/*`. An
+arbitrary second segment such as `/v1/<workspace-id>` is `unknown`, not a route
+label; new API roots must be explicitly reviewed in the client allowlist.
+Absolute and scheme-relative URLs are likewise `unknown` rather than allowing
+a hostname to become a route segment. Query strings and fragments are stripped
+before any inspection. `normalizePageRoute` does the same for the SPA location
+after stripping the Vite base path — every Hive route is one segment, so
+`/dashboard` stays `/dashboard` and anything deeper becomes `/dashboard/*`.
+A segment that is not plain path text yields `unknown`.
 
 ### What must never leave the browser (and cannot)
 

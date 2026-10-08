@@ -57,6 +57,10 @@ test.describe("RUM schema redaction rules", () => {
       "unknown",
     );
     expect(normalizeApiPath("//customer-42.example.invalid/private")).toBe("unknown");
+    // The second segment is only retained when it is a reviewed API
+    // collection root. `apiFetch` accepts arbitrary caller paths, so an id
+    // directly below /v1 must not become an emitted route template.
+    expect(normalizeApiPath(`/v1/${RAW_AGENT_ID}`)).toBe("unknown");
     // A path made of nothing usable is "unknown", not a leak.
     expect(normalizeApiPath("///??x")).toBe("unknown");
   });
