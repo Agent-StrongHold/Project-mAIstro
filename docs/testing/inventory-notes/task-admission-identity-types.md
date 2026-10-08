@@ -13,8 +13,11 @@ wiring.
 
 `uv run pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q -x`
 collects and passes 79 cases at this leaf head. `uv run python
-scripts/check-suite-inventory.py --suite packages/maistro-core/tests` collects
-15,377 node IDs. The front-matter +79 delta is the focused file, including the
+scripts/check-suite-inventory.py --suite packages/maistro-core/tests` matches
+the recorded suite inventory; the integration branch's absolute node count
+moves with every merged stack/develop commit (15,552 at the round-23 head) and
+only the `+79` delta below belongs to this leaf. The front-matter +79 delta is
+the focused file, including the
 module-local export and enum-shape contract check plus canonical JSON
 preservation of valid escaped lone surrogates and normalization of excessive
 nesting failures to ValueError; it is unchanged by unrelated test additions in
@@ -1726,3 +1729,62 @@ reviewed runtime consumer, or a reviewed vulture grant and reachability entry
 land on the integration base first (two-merge rule). The stack stays unmerged
 per the issue; this leaf claims implementation/test readiness only, and the
 inventory delta (+79) is unchanged by this round.
+
+## Round 23 — merge-queue four-job attribution at 9dccd5096963
+
+The merge-queue evaluation of this staging branch at
+`9dccd509696301aa2ecbb556f8e117e13af7917e` (develop base now `34795962548a3`,
+whose only new commit touches a memory test and doc, disjoint from this leaf —
+no sync conflict) reported four failed jobs. Re-execution attributes all four
+to the single documented root cause above, with no second, fixable deficit:
+
+- `test` — exactly the three reachability-baseline meta-tests listed above;
+  `tests/test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`
+  fails on `Extra items in the left set: 'maistro.runs.admission_identity'`.
+- `exact-debt-ledger` — `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` rc=1 with the same five
+  `AdmissionAssessment` identities; `check-shipped-surface-truth.py` rc=0.
+- `Quality gate (Pillars 1–4, 7, 8)` — its own vulture and reachability steps
+  fail identically; `check-ratchet-provenance.py` rc=1 solely via the
+  reachability sub-gate (`check-reachability-provenance.py: trusted-base gate
+  returned 1`); `check-reachability-dispositions.py` and
+  `check-promotion-surface.py` rc=0.
+- `Coverage gate (publish-set floor + diff coverage)` — a casualty, not an
+  independent deficit. Its root producer runs `pytest tests/` under
+  `set -euo pipefail`, so the three meta-tests abort it before reporting. The
+  gate's actual coverage criterion holds: measured the way CI measures it
+  (`coverage run --branch --source=packages/maistro-core/src/maistro` over the
+  runs suite — 1266 passed, 271 skipped — then `coverage xml`),
+  `check-diff-coverage.py coverage.xml --base 34795962548a3` reports the
+  production module measured and `ok` at the 90% line / 80% branch floors (the
+  test file is exempt by declaration).
+
+The round's lane brief again offered the generic vulture CI-repair (bank the
+five identities in `quality/vulture-baseline.json`). Evaluated and declined,
+finally: the issue's staging constraint forbids baseline additions outright,
+two earlier verifier rounds enforced that prohibition, and the banking is
+provably inert against this gate — the trusted merge base has moved from
+`af799688335f` to `b58650089e1b` and `quality/ratchet-authorizations.json`
+there carries zero `admission_identity` grants, so the re-run exits 1
+identically (`1326 reviewed identities -> 1331 findings`, all five unbanked
+*and* unauthorized). Nothing in the finding set is genuinely dead to eliminate:
+the five identities are the issue-mandated enum contract of an intentionally
+unwired module. They clear only at the parent integration head, or via a grant
+landed on the integration base first (two-merge rule).
+
+Round-23 re-execution at this head: focused suite 79/79 (driver check), runs
+suite 1266 passed / 271 skipped, `mypy` clean on the module, tree-wide ruff
+check/format clean, suite-inventory gate ok (15,552 node IDs), gate guards
+`tests/test_check_vulture_baseline.py` + `tests/test_ratchet_provenance.py`
+57 passed three consecutive times. Environment caveat for the next reader:
+under transient host tmpfs pressure (`/tmp` full) those guard files error
+nondeterministically at setup; with pytest `--basetemp` relocated to persistent
+disk they are deterministically green — that flake is environmental, not a
+regression. The #1841 security signature is intact at this head:
+`runs/store_boundary.py:56` still declares
+`require_admitted_actor(actor_principal_id: str | None) -> str`, and the
+`create_run` / `claim_run_by_effect` signatures in `runs/store.py` retain
+`actor_principal_id: str | None = None`. Conclusion unchanged: implementation
+and test readiness proven, the four red jobs are the issue-predicted explicit
+merge blocker, and the stack stays unmerged pending the separately authorized
+parent #1845 integration.
