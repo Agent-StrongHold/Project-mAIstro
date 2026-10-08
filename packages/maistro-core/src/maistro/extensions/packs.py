@@ -65,7 +65,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from pydantic import ValidationError
 
@@ -89,7 +89,9 @@ from maistro.ontology.rubric import (
     RubricSemantic,
     ScoringMethod,
 )
-from maistro.personas.model import Persona
+
+if TYPE_CHECKING:
+    from maistro.personas.model import Persona
 
 __all__ = [
     "SUPPORTED_PACK_MANIFEST_VERSION",
@@ -206,6 +208,28 @@ def _semver_key(version: str) -> tuple[int, int, int]:
     match = SEMVER_RE.match(version)
     assert match is not None, "only parsed semvers reach this helper"
     return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+
+def _raise_pack_unavailable(
+    pack_id: str,
+    version: str | None,
+    installed: list[tuple[tuple[str, str], PackInstallRecord]],
+) -> NoReturn:
+    """The no-candidate half of ``InstallablePackRegistry._require_record``.
+
+    Installed but not active: the disabled record itself answers, with the
+    operator's note surfaced verbatim. Never installed: the request was
+    refused, nothing is recorded.
+    """
+    if installed:
+        disabled = max(installed, key=lambda entry: _semver_key(entry[0][1]))[1]
+        detail = f"; note: {disabled.note}" if disabled.note else ""
+        raise PackDisabledError(f"pack {pack_id!r} is disabled in this registry{detail}")
+    raise PackDisabledError(
+        f"pack {pack_id!r}"
+        + (f" at version {version!r}" if version else "")
+        + " has no active install in this registry"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -329,6 +353,23 @@ def _parse_graph_edges(raw_edges: object, node_ids: set[str]) -> tuple[tuple[str
 def _parse_graph_payload(payload: object) -> PackGraphDefinition:
     if not isinstance(payload, dict):
         raise _reject("graph payload must be an object")
+    name, description, entry_node = _validate_graph_head(payload)
+    nodes = _parse_graph_nodes(payload["nodes"])
+    node_ids = {node.node_id for node in nodes}
+    edges = _parse_graph_edges(payload["edges"], node_ids)
+    _validate_entry_node_member(entry_node, node_ids)
+    return PackGraphDefinition(
+        name=name,
+        nodes=nodes,
+        edges=edges,
+        description=description,
+        entry_node=entry_node,
+    )
+
+
+def _validate_graph_head(payload: dict[str, Any]) -> tuple[str, str, str | None]:
+    """Keys, name, description, and entry_node type — everything before the
+    node/edge structural pass."""
     allowed = {"name", "description", "entry_node", "nodes", "edges"}
     unknown = sorted(set(payload) - allowed)
     if unknown:
@@ -343,19 +384,12 @@ def _parse_graph_payload(payload: object) -> PackGraphDefinition:
     entry_node = payload.get("entry_node")
     if entry_node is not None and (not isinstance(entry_node, str) or not entry_node.strip()):
         raise _reject("graph entry_node must be a non-empty string when present")
+    return name, description, entry_node
 
-    nodes = _parse_graph_nodes(payload["nodes"])
-    node_ids = {node.node_id for node in nodes}
-    edges = _parse_graph_edges(payload["edges"], node_ids)
+
+def _validate_entry_node_member(entry_node: str | None, node_ids: set[str]) -> None:
     if entry_node is not None and entry_node not in node_ids:
         raise _reject(f"graph entry_node {entry_node!r} is not a node of this graph")
-    return PackGraphDefinition(
-        name=name,
-        nodes=nodes,
-        edges=edges,
-        description=description,
-        entry_node=entry_node,
-    )
 
 
 def _parse_persona_payload(payload: object) -> PackPersonaDefinition:
@@ -376,15 +410,25 @@ def _parse_persona_payload(payload: object) -> PackPersonaDefinition:
     if "name" not in payload:
         raise _reject("missing persona payload keys: ['name']")
     name = _require_str(payload, "name")
+    _validate_persona_surfaces(payload)
+    _validate_persona_objects(payload)
+    return PackPersonaDefinition(name=name, payload=dict(payload))
+
+
+def _validate_persona_surfaces(payload: dict[str, Any]) -> None:
+    """``surfaces`` is an optional list of non-empty strings."""
     surfaces_raw = payload.get("surfaces", [])
     if not isinstance(surfaces_raw, list) or not all(isinstance(s, str) for s in surfaces_raw):
         raise _reject("persona surfaces must be a list of strings")
     if any(not surface.strip() for surface in surfaces_raw):
         raise _reject("persona surfaces must be non-empty strings")
+
+
+def _validate_persona_objects(payload: dict[str, Any]) -> None:
+    """``defaults``/``behavior`` are optional objects when present."""
     for key in ("defaults", "behavior"):
         if not isinstance(payload.get(key, {}), dict):
             raise _reject(f"persona {key} must be an object")
-    return PackPersonaDefinition(name=name, payload=dict(payload))
 
 
 def _parse_scale(raw: object) -> RubricScale:
@@ -434,6 +478,19 @@ def _parse_rubric_dimension(item: object) -> RubricDimension:
 def _parse_rubric_payload(payload: object) -> PackRubricDefinition:
     if not isinstance(payload, dict):
         raise _reject("rubric payload must be an object")
+    name, threshold = _validate_rubric_head(payload)
+    dimensions = _parse_rubric_dimensions(payload)
+    veto_dimension_ids = _validate_veto_ids(payload)
+    return PackRubricDefinition(
+        name=name,
+        dimensions=dimensions,
+        gate_pass_threshold=threshold,
+        veto_dimension_ids=veto_dimension_ids,
+    )
+
+
+def _validate_rubric_head(payload: dict[str, Any]) -> tuple[str, float]:
+    """Keys, name, and the gate threshold — everything before dimensions."""
     allowed = {"name", "dimensions", "gate_pass_threshold", "veto_dimension_ids"}
     unknown = sorted(set(payload) - allowed)
     if unknown:
@@ -445,21 +502,21 @@ def _parse_rubric_payload(payload: object) -> PackRubricDefinition:
     threshold = payload["gate_pass_threshold"]
     if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
         raise _reject("rubric gate_pass_threshold must be a number")
+    return name, float(threshold)
 
+
+def _parse_rubric_dimensions(payload: dict[str, Any]) -> tuple[RubricDimension, ...]:
     raw_dimensions = payload["dimensions"]
     if not isinstance(raw_dimensions, list) or not raw_dimensions:
         raise _reject("rubric dimensions must be a non-empty list")
-    dimensions = tuple(_parse_rubric_dimension(item) for item in raw_dimensions)
+    return tuple(_parse_rubric_dimension(item) for item in raw_dimensions)
 
+
+def _validate_veto_ids(payload: dict[str, Any]) -> tuple[str, ...]:
     veto_raw = payload.get("veto_dimension_ids", [])
     if not isinstance(veto_raw, list) or not all(isinstance(v, str) for v in veto_raw):
         raise _reject("veto_dimension_ids must be a list of strings")
-    return PackRubricDefinition(
-        name=name,
-        dimensions=dimensions,
-        gate_pass_threshold=float(threshold),
-        veto_dimension_ids=tuple(veto_raw),
-    )
+    return tuple(veto_raw)
 
 
 _PAYLOAD_KEYS: dict[PackAssetKind, str] = {
@@ -704,6 +761,16 @@ def _persona_constructor_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def _probe_persona(definition: PackPersonaDefinition) -> Persona:
     """A scratch Persona: canonical identity/surface validation."""
+    # Imported here, not at module level: ``maistro.personas.__init__``
+    # eagerly imports the persona expander, which imports
+    # ``maistro.agents.recipes`` — a module-level import would make this
+    # module unimportable from any context that is still mid-initialization
+    # of ``maistro.agents.recipes`` (the runtime anchor chain,
+    # ``maistro.runtime`` -> ``maistro.extensions``, is reachable from
+    # recipes' own graph import). Canonical validation is unchanged: the
+    # real ``Persona`` model gates every probe and instantiation.
+    from maistro.personas.model import Persona
+
     return Persona(
         **{
             **_persona_constructor_fields(definition.payload),
@@ -1234,17 +1301,7 @@ class InstallablePackRegistry:
             entry for entry in installed if not active_only or entry[1].state is PackState.ACTIVE
         ]
         if not candidates:
-            if installed:
-                # Installed but not active: the disabled record itself answers,
-                # with the operator's note surfaced verbatim.
-                disabled = max(installed, key=lambda entry: _semver_key(entry[0][1]))[1]
-                detail = f"; note: {disabled.note}" if disabled.note else ""
-                raise PackDisabledError(f"pack {pack_id!r} is disabled in this registry{detail}")
-            raise PackDisabledError(
-                f"pack {pack_id!r}"
-                + (f" at version {version!r}" if version else "")
-                + " has no active install in this registry"
-            )
+            _raise_pack_unavailable(pack_id, version, installed)
         # Highest active version wins when the caller does not pin one —
         # deterministic, and version-pinned callers are never surprised.
         _key, record = max(candidates, key=lambda entry: _semver_key(entry[0][1]))
