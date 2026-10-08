@@ -201,6 +201,21 @@ fleet-bench-v1 --scenario all --output docs/benchmarks/fleet-routing-baseline.js
 tests/test_bench_fleet_routing.py -q` → 46 passed; `uv run ruff check` and
 `uv run ruff format --check` clean.
 
+Post-merge re-validation (merge head d6f36de02, 2026-10-08): after syncing
+origin/develop (conformance suites, calibration research, workflow updates;
+`docs/research/README.md` table conflict resolved keeping both rows), the
+same probe command was re-run to a temp output and reproduced
+`docs/benchmarks/fleet-routing-baseline.json` exactly (semantic diff empty);
+`uv run pytest tests/test_bench_fleet_routing.py -q` → 48 passed (the two
+tests added after the original probe are what the +48 inventory delta
+records); `uv run ruff check .`, `uv run ruff format --check .`,
+`scripts/check-suite-inventory.py`, `scripts/check-workflow-inventory.py`,
+`scripts/check-ratchet-provenance.py`, `scripts/check-model-egress.py`, and
+`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` all clean; CI's single-process battery
+(`pytest tests/ packages/hive-conductor/backend/tests
+packages/maistro-design/tests -q --timeout=60`) → 9,064 passed, 149 skipped.
+
 ## Threats to validity
 
 - The outcome model is authored, not observed: tier comfort zones, the
