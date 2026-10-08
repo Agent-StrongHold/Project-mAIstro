@@ -89,4 +89,54 @@ No vulture ledger change is needed: the exact requested scan is already green.
 No lifecycle authorization is present in the candidate authorization file either;
 editing it here would not authorize this PR and is prohibited. The inherited
 merge is finished against the frozen assigned base, not a moving develop tip.
-Final merged-head gates are recorded below.
+## Merged-head checkpoint
+
+Merge completed locally as `5762c6cb6f48` (no push). Inherited develop changes
+were preserved; this repair's own edits are the migration conformance test and
+this inventory/evidence note. `git diff --cached --check` before committing
+reported an inherited blank line at EOF in `docs/issue-42-ci-repair.md:144`;
+that unrelated file was not cosmetically rewritten. Working-tree status after
+the merge commit was clean.
+
+Executed on that commit with the **resolved assigned base** explicitly supplied
+as `RATCHET_BASE_REV=34795962548a33f6b6f7e1234dcea201a9df96ef`:
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`:
+  passed, **1326 reviewed identities = 1326 findings**, zero unclassified.
+- `uv run python scripts/check-execution-lifecycles.py`: **FAILED**, 19 trusted
+  classifications versus 20 discoveries; `maistro.goals.model::GoalStatus`
+  still lacks an already-landed authorization. The initial default local base
+  was `bbc35234556c`; the explicit current-base run confirms the same blocker.
+- `uv run python scripts/check-m1-convergence-freeze.py --base 34795962548a33f6b6f7e1234dcea201a9df96ef`:
+  passed, no unapproved new architecture island.
+- `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests`:
+  passed, **15545** unique test identities, no copied-file duplicate evidence.
+- `uv run pytest packages/maistro-core/tests/goals packages/maistro-core/tests/runs packages/maistro-core/tests/graph/durable_runs packages/maistro-core/tests/workspaces/test_sqlite_alembic_schema_parity.py -x -q`:
+  **1883 passed, 334 skipped, 6 warnings** in 93.81 seconds. The warnings are
+  aiosqlite callbacks against closed loops in adjacent Run tests, not hidden or
+  represented as clean teardown.
+- Quality diff against the assigned base: only the pre-existing 39-line Goal
+  retention additions and 4-line GoalStatus classification; the vulture ledger
+  equals the assigned base. This repair adds no grants or classifications.
+
+The actual `integration-scope` producer failure is **UNRESOLVED**. Its local
+unit tests pass. Running `ci_merge_group_scope.py --json` over the exact
+base-to-candidate changed paths and `check-integration-scope.py --event-name
+pull_request --scope-json ... --required-json` succeeds in computing the required
+set: docker-build, durable-events, hive-conductor-e2e, hive-conductor-e2e-ui,
+object storage (MinIO), postgres (pg17), postgres (pg18), strike-ladder,
+wheel-imports. None of those exact-candidate remote successes is established
+by local scope calculation. In particular, this version of integration-scope
+does **not** aggregate execution-lifecycles, so its reported failure is not
+explained merely by the independently reproduced lifecycle gate failure.
+No CI policy was changed and no remote check results were fabricated.
+
+Outcome: **BLOCKED**. The merge conflict is repaired and locally committed,
+but the trusted-base lifecycle authorization and live PostgreSQL/deployed
+composition acceptance cannot be established in this lane. Next: land the
+separate GoalStatus policy authorization through the owning process, provide
+PG17/PG18 and exact-candidate specialized CI evidence, then revalidate the
+explicitly unverified criteria above. No GitHub mutations performed.
+
+Progress: checked 1 assigned issue; done 0 acceptance-complete issues; skipped 0;
+errors 1 reproduced policy blocker. Partial merge repair is committed.
