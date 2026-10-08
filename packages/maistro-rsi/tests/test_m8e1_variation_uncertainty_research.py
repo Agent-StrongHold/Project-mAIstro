@@ -46,7 +46,7 @@ import math
 import random
 from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -69,12 +69,29 @@ FAMILY_CLAIMED_BIAS = {"alpha": 0.0, "beta": 0.1}
 
 #: The comparison register: every confidence-oriented signal name the driver
 #: scores. Each maps one SampledDecision to a confidence in [0, 1] where
-#: higher means predicted success.
+#: higher means predicted success. The variation family is complete per the
+#: research note: ``distinct_ratio`` is registered as ``1 - ratio`` (more
+#: distinct answers = less confident), mirroring the pairwise orientation.
 SIGNALS: tuple[str, ...] = (
     "self_report",
     "self_consistency",
     "semantic_confidence",
     "pairwise_agreement",
+    "distinct_ratio",
+)
+
+#: Independently written-down expectation for the completeness test: the
+#: signal families the issue and the research note name, not merely
+#: ``set(SIGNALS)`` — a register omission must fail the test, not pass by
+#: comparing the output against the same register it came from.
+EXPECTED_SIGNALS = frozenset(
+    {
+        "self_report",
+        "self_consistency",
+        "semantic_confidence",
+        "pairwise_agreement",
+        "distinct_ratio",
+    }
 )
 
 
@@ -120,7 +137,16 @@ class SampledDecision:
 
 @dataclass(frozen=True)
 class ComparisonRow:
-    """Measured comparison row for one uncertainty signal. Evidence only."""
+    """Measured comparison row for one uncertainty signal. Evidence only.
+
+    The cost columns carry the corpus's *recorded* token and latency values,
+    not just the sample multiple: the k-fold token bill (samples x recorded
+    tokens per sample), the same bill over the mean single-shot token
+    baseline, the mean recorded per-call latency, and the sequential-rounds
+    latency bound of :func:`m8e1_latency_ms`. Corpora whose samples cost 48
+    vs 480 tokens, or 100 ms vs 10 s per call, therefore produce different
+    rows even at identical k.
+    """
 
     signal: str
     error_auroc: float  # AUROC of (1 - confidence) at predicting failure
@@ -128,6 +154,10 @@ class ComparisonRow:
     ece: float  # calibration error of the confidence treated as P(success)
     mean_confidence: float
     cost_multiple: float  # mean samples per decision vs the single-shot baseline
+    mean_sampled_tokens: float  # mean k-fold token bill per decision (recorded)
+    token_cost_multiple: float  # that bill over the mean single-shot token baseline
+    mean_call_latency_ms: float  # mean recorded per-call latency
+    latency_bound_ms: float  # mean ceil(k) x per-call bound (sequential rounds)
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +274,10 @@ def m8e1_confidence(decision: SampledDecision, signal: str) -> float:
         return m8e1_semantic_confidence(decision.answers)
     if signal == "pairwise_agreement":
         return 1.0 - m8e1_pairwise_disagreement(decision.answers)
+    if signal == "distinct_ratio":
+        # Confidence orientation: higher distinct-answer ratio means more
+        # variation, i.e. less confidence — hence the 1 - complement.
+        return 1.0 - m8e1_distinct_ratio(decision.answers)
     raise ValueError(f"unknown signal {signal!r}; expected one of {SIGNALS}")
 
 
@@ -479,11 +513,31 @@ def m8e1_compare(decisions: Sequence[SampledDecision]) -> tuple[ComparisonRow, .
     if not decisions:
         raise ValueError("comparison needs at least one decision")
     successes = [d.success for d in decisions]
+    n = len(decisions)
+    # Single-shot baseline: the served one-sample decision's recorded token
+    # bill, averaged over the corpus. Sampled signals' token bills divide by it.
+    baseline_tokens = sum(d.tokens_per_sample for d in decisions) / n
     rows: list[ComparisonRow] = []
     for signal in SIGNALS:
         confidences = [m8e1_confidence(d, signal) for d in decisions]
         error_scores = [1.0 - c for c in confidences]
         failures = [not s for s in successes]
+        # Self-report consumes only the served single sample; sampled signals
+        # pay the k-fold bill. Token and latency columns aggregate the corpus's
+        # recorded per-sample values, so sample count alone never stands in for
+        # cost.
+        sample_counts = (
+            [1] * n if signal == "self_report" else [len(d.answers) for d in decisions]
+        )
+        token_bills = [
+            m8e1_sampling_cost(k, d.tokens_per_sample).total_tokens
+            for k, d in zip(sample_counts, decisions, strict=True)
+        ]
+        latency_bounds = [
+            m8e1_latency_ms(k, d.per_call_latency_ms)
+            for k, d in zip(sample_counts, decisions, strict=True)
+        ]
+        mean_sampled_tokens = sum(token_bills) / n
         rows.append(
             ComparisonRow(
                 signal=signal,
@@ -491,13 +545,11 @@ def m8e1_compare(decisions: Sequence[SampledDecision]) -> tuple[ComparisonRow, .
                 error_auprc=m8e1_average_precision(error_scores, failures),
                 ece=m8e1_signal_ece(confidences, successes),
                 mean_confidence=sum(confidences) / len(confidences),
-                # Self-report consumes only the served single sample; sampled
-                # signals pay the mean k-fold bill.
-                cost_multiple=(
-                    1.0
-                    if signal == "self_report"
-                    else sum(len(d.answers) for d in decisions) / len(decisions)
-                ),
+                cost_multiple=sum(sample_counts) / n,
+                mean_sampled_tokens=mean_sampled_tokens,
+                token_cost_multiple=mean_sampled_tokens / baseline_tokens,
+                mean_call_latency_ms=sum(d.per_call_latency_ms for d in decisions) / n,
+                latency_bound_ms=sum(latency_bounds) / n,
             )
         )
     # Stable sort: equal-AUROC signals keep the register order, so the table
@@ -522,9 +574,12 @@ def m8e1_variation_corpus(
 
     Per task: a difficulty draw sets skill (harder = lower); the observed
     outcome is drawn from skill; the k sample answers are drawn i.i.d. from a
-    distribution whose gold mass is ``skill ** temperature`` — so temperature
-    above 1 flattens the sample distribution (more variation, same skill) and
-    below 1 sharpens it. ``mirage_share`` of the tasks are *mirage* tasks: the
+    distribution whose gold mass is the temperature transform of the skill
+    distribution: every category weight (gold = ``skill``, distractors =
+    ``(1 - skill) / 3`` each) is exponentiated by ``1 / temperature`` and the
+    result is renormalized — so temperature above 1 flattens the sample
+    distribution toward uniform (more variation, same skill) and below 1
+    sharpens it toward the modal category. ``mirage_share`` of the tasks are *mirage* tasks: the
     model converges confidently on a single wrong answer (success always
     false), the documented failure mode that agreement-family signals cannot
     see. Everything is deterministic under ``seed``.
@@ -568,13 +623,16 @@ def m8e1_variation_corpus(
         skill = clamp01(base * (1.0 - 0.6 * difficulty))
         success = rng.random() < skill
         claimed = clamp01(rng.gauss(min(1.0, skill + bias), 0.08))
-        p_gold = clamp01(skill**temperature)
-        distractor_mass = (1.0 - p_gold) / 3
-        cumulative = [
-            p_gold,
-            p_gold + distractor_mass,
-            p_gold + 2 * distractor_mass,
-        ]
+        # Temperature as a proper distribution transform: exponentiate every
+        # category weight by 1/T and renormalize (log-space for stability),
+        # so T -> inf approaches uniform and T -> 0 approaches the mode.
+        weights = [skill] + [(1.0 - skill) / 3] * 3
+        log_w = [math.log(w) if w > 0.0 else -math.inf for w in weights]
+        peak = max(log_w)
+        scaled = [math.exp((lw - peak) / temperature) for lw in log_w]
+        total = sum(scaled)
+        p_gold, p_second, p_third = (s / total for s in scaled[:3])
+        cumulative = [p_gold, p_gold + p_second, p_gold + p_second + p_third]
         answers = []
         for _ in range(k):
             draw = rng.random()
@@ -775,7 +833,8 @@ class TestCorpusComparison:
             [r.signal for r in rows],
             key=lambda s: -next(r.error_auroc for r in rows if r.signal == s),
         )
-        assert {r.signal for r in rows} == set(SIGNALS)
+        assert {r.signal for r in rows} == EXPECTED_SIGNALS
+        assert EXPECTED_SIGNALS.issubset(set(SIGNALS))
         for row in rows:
             assert 0.0 <= row.error_auroc <= 1.0
             assert 0.0 <= row.error_auprc <= 1.0
@@ -850,6 +909,25 @@ class TestCorpusComparison:
             assert auroc_low > auroc_high, signal
         # The control: claimed confidence is temperature-independent here.
         assert [d.claimed for d in low] == [d.claimed for d in high]
+
+    def test_temperature_limits_reach_uniform_and_modal_distributions(self) -> None:
+        # Temperature transforms the whole category distribution and is
+        # renormalized, so the limits are the distributional ones: as
+        # T -> inf every category (including gold) approaches 0.25, and as
+        # T -> 0 samples concentrate on the modal category (gold for alpha,
+        # whose skill stays above the distractor mass 0.25).
+        hot = m8e1_variation_corpus(seed=7, n=200, k=8, temperature=1e3)
+        cold = m8e1_variation_corpus(seed=7, n=200, k=8, temperature=1e-3)
+
+        def gold_share(corpus: list[SampledDecision]) -> float:
+            gold = sum(1 for d in corpus for a in d.answers if a.startswith("gold-"))
+            return gold / sum(len(d.answers) for d in corpus)
+
+        assert gold_share(hot) == pytest.approx(0.25, abs=0.02)
+        # Cold limit: alpha's skill stays above the distractor mass, so gold
+        # is always the modal category and every sample lands on it.
+        for d in cold:
+            assert all(a.startswith("gold-") for a in d.answers), d.task_id
 
     def test_model_family_changes_the_signal_landscape(self) -> None:
         alpha = m8e1_variation_corpus(seed=930, n=120, k=8, family="alpha")
@@ -937,7 +1015,37 @@ class TestSamplingCost:
         assert rows["self_consistency"].cost_multiple == pytest.approx(6.0)
         assert rows["semantic_confidence"].cost_multiple == pytest.approx(6.0)
         assert rows["pairwise_agreement"].cost_multiple == pytest.approx(6.0)
+        assert rows["distinct_ratio"].cost_multiple == pytest.approx(6.0)
         assert rows["self_report"].cost_multiple == pytest.approx(1.0)
+
+    def test_comparison_rows_carry_recorded_tokens_and_latency(self) -> None:
+        # Identical k is not identical cost: the rows must expose the corpus's
+        # recorded per-sample token counts and latencies against the
+        # single-shot baseline, or a 48-token/100 ms corpus and a
+        # 480-token/10 s corpus would be indistinguishable.
+        base = m8e1_variation_corpus(seed=930, n=20, k=6)
+        cheap = [replace(d, tokens_per_sample=48, per_call_latency_ms=100.0) for d in base]
+        pricey = [
+            replace(d, tokens_per_sample=480, per_call_latency_ms=10_000.0) for d in base
+        ]
+        cheap_rows = {r.signal: r for r in m8e1_compare(cheap)}
+        pricey_rows = {r.signal: r for r in m8e1_compare(pricey)}
+        assert cheap_rows["self_consistency"].mean_sampled_tokens == pytest.approx(6 * 48)
+        assert pricey_rows["self_consistency"].mean_sampled_tokens == pytest.approx(6 * 480)
+        # Token multiple vs the single-shot baseline is k for both corpora;
+        # the absolute recorded bill is what separates them.
+        assert cheap_rows["self_consistency"].token_cost_multiple == pytest.approx(6.0)
+        assert pricey_rows["self_consistency"].token_cost_multiple == pytest.approx(6.0)
+        assert cheap_rows["self_report"].token_cost_multiple == pytest.approx(1.0)
+        assert pricey_rows["self_report"].token_cost_multiple == pytest.approx(1.0)
+        # Sequential-rounds latency bound scales with the recorded per-call
+        # latency, and the self-report pays exactly one call.
+        assert cheap_rows["self_consistency"].latency_bound_ms == pytest.approx(600.0)
+        assert pricey_rows["self_consistency"].latency_bound_ms == pytest.approx(60_000.0)
+        assert cheap_rows["self_report"].latency_bound_ms == pytest.approx(100.0)
+        assert pricey_rows["self_report"].latency_bound_ms == pytest.approx(10_000.0)
+        assert cheap_rows["self_report"].mean_call_latency_ms == pytest.approx(100.0)
+        assert pricey_rows["self_report"].mean_call_latency_ms == pytest.approx(10_000.0)
 
 
 # ---------------------------------------------------------------------------
@@ -964,7 +1072,7 @@ class TestEvidenceOnlyContract:
         decision = SampledDecision("t", "alpha", 0.5, 1.0, 0.5, True, ("a", "a"))
         with pytest.raises(AttributeError):
             decision.success = False  # type: ignore[misc]
-        row = ComparisonRow("s", 0.5, 0.5, 0.0, 0.5, 1.0)
+        row = ComparisonRow("s", 0.5, 0.5, 0.0, 0.5, 1.0, 288.0, 6.0, 700.0, 4200.0)
         with pytest.raises(AttributeError):
             row.error_auroc = 1.0  # type: ignore[misc]
 
@@ -994,6 +1102,10 @@ class TestEvidenceOnlyContract:
                 "ece",
                 "mean_confidence",
                 "cost_multiple",
+                "mean_sampled_tokens",
+                "token_cost_multiple",
+                "mean_call_latency_ms",
+                "latency_bound_ms",
             }
 
     def test_unknown_signal_raises_instead_of_falling_back(self) -> None:
