@@ -657,6 +657,23 @@ def substituted_selection(selection: ModelSelection) -> ModelSelection:
     )
 
 
+def _normalized_hits(hits: list[RankedHit]) -> list[RankedHit]:
+    """Relabel uuid-backed entry ids to first-seen position surrogates.
+
+    The seam's entry ids come from ``make_entry_id`` (uuid4), so two runs of
+    the *same* deterministic computation never share literal ids. Normalizing
+    each id to the rank of its first appearance lets record equality mean
+    "same ranking structure, scores, and matched terms" — any real
+    nondeterminism in ordering, scoring, or matching still breaks equality.
+    """
+    surrogates: dict[str, str] = {}
+    normalized: list[RankedHit] = []
+    for hit in hits:
+        surrogate = surrogates.setdefault(hit.entry_id, f"hit-{len(surrogates)}")
+        normalized.append(replace(hit, entry_id=surrogate))
+    return normalized
+
+
 # --------------------------------------------------------------------------
 # Evidence battery: fixed representative cases over the real seams, timed.
 # --------------------------------------------------------------------------
@@ -676,21 +693,33 @@ def run_evidence_battery() -> dict[str, Any]:
 
     # MR-A1 — fixed representative injection case, run twice for a
     # determinism check (the seams here claim to be deterministic; the
-    # relation must produce identical records across runs).
-    case = RetrievalCase(
+    # relation must produce identical records across runs). Determinism is
+    # judged on the *observation records* (normalized, since entry ids are
+    # uuid-backed), not on the verdicts: two empty RelationVerdicts are equal
+    # even when the runs ranked different hits.
+    case_first = RetrievalCase(
         query="deploy pipeline status",
         relevant=["deploy pipeline status report", "deploy outage", "rollback report"],
         injections=["zebra quartz xylophone", "plugh thistle walrus", "zebra plugh"],
     )
+    case_second = replace(
+        case_first, relevant=list(case_first.relevant), injections=list(case_first.injections)
+    )
     t0 = time.perf_counter()
-    first = run_mr_a1_case_sync(case, limit=3)
-    second = run_mr_a1_case_sync(case, limit=3)
+    first = run_mr_a1_case_sync(case_first, limit=3)
+    second = run_mr_a1_case_sync(case_second, limit=3)
     relations["MR-A1"] = {
         "cases": 2,
         "violations": len(first.violations) + len(second.violations),
         "seconds": time.perf_counter() - t0,
     }
-    determinism = first == second
+    determinism = first == second and (
+        _normalized_hits(case_first.baseline_hits),
+        _normalized_hits(case_first.after_hits),
+    ) == (
+        _normalized_hits(case_second.baseline_hits),
+        _normalized_hits(case_second.after_hits),
+    )
 
     # MR-A2 — fixed foreign-write case over two queries. The projection is
     # dropped before the post-write recall so the store is genuinely re-read.
@@ -700,8 +729,8 @@ def run_evidence_battery() -> dict[str, Any]:
     store = InMemoryWorkspaceLogStore()
     manager = WorkingMemoryManager(store)
     recall = WorkingMemoryRecall(manager, store)
-    asyncio.run(seed_retrieval(store, _WS_A, case.relevant))
-    moved = asyncio.run(seed_retrieval(store, _WS_B, [case.relevant[0]]))
+    asyncio.run(seed_retrieval(store, _WS_A, case_first.relevant))
+    moved = asyncio.run(seed_retrieval(store, _WS_B, [case_first.relevant[0]]))
     for query in ("deploy status", "rollback report"):
         before = asyncio.run(recall_ranked(manager, recall, _WS_A, query))
         asyncio.run(manager.dispose(_WS_A))
@@ -771,12 +800,14 @@ def run_evidence_battery() -> dict[str, Any]:
     # Mutant probes — every oracle must detect its seeded violation.
     probes: dict[str, bool] = {}
     probes["ranking-score-drift"] = check_ranking_stability(
-        case.baseline_hits,
-        shifted_scores(case.baseline_hits, _RANK_TOLERANCE * 10),
+        case_first.baseline_hits,
+        shifted_scores(case_first.baseline_hits, _RANK_TOLERANCE * 10),
         tolerance=_RANK_TOLERANCE,
     ).detected
     probes["ranking-member-loss"] = check_ranking_stability(
-        case.baseline_hits, lost_member(case.baseline_hits), tolerance=_RANK_TOLERANCE
+        case_first.baseline_hits,
+        lost_member(case_first.baseline_hits),
+        tolerance=_RANK_TOLERANCE,
     ).detected
 
     clean_hits = asyncio.run(recall_ranked(manager, recall, _WS_A, "deploy status"))
