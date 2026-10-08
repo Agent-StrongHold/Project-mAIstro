@@ -1,11 +1,11 @@
 """Ordered exact-scope audit cursor indexes (#358).
 
-Revision ID: 061
-Revises: 060
+Revision ID: 062
+Revises: 061
 
-Re-parented onto develop's backlog-authority tip to keep one linear chain:
-develop owns `059` and `060`, so only this branch's unlanded audit indexes
-move past them as `061`. Existing deployed revisions are unchanged.
+Re-parented onto develop's HITL pause-kind tip to keep one linear chain:
+develop owns `061`, so only this branch's unlanded audit indexes move past
+it as `062`. Existing deployed revisions are unchanged.
 
 Each equality-filter shape needs an ordered seek, including timestamp ties.
 Build at migration time, not on the first audit request. Eight indexes trade
@@ -16,8 +16,8 @@ from itertools import combinations
 
 from alembic import op
 
-revision = "061"
-down_revision = "060"
+revision = "062"
+down_revision = "061"
 branch_labels = None
 depends_on = None
 

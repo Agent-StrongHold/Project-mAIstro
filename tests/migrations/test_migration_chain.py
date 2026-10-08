@@ -293,7 +293,7 @@ def empty_database():
 class TestAuditCursorIndexes:
     def test_indexes_upgrade_and_reverse_without_losing_audit_rows(self, empty_database) -> None:
         """The shipping chain installs every seek and rolls back only its indexes."""
-        assert _alembic("upgrade", "060").returncode == 0
+        assert _alembic("upgrade", "061").returncode == 0
         _execute("INSERT INTO audit_log (boundary, user_id) VALUES ('login', 'alice')")
 
         result = _alembic("upgrade", "head")
@@ -310,7 +310,7 @@ class TestAuditCursorIndexes:
         assert all("org_id" in definition for definition in indexes.values())
         assert all('"timestamp" DESC, id DESC' in definition for definition in indexes.values())
 
-        result = _alembic("downgrade", "060")
+        result = _alembic("downgrade", "061")
         assert result.returncode == 0, result.stderr
         assert not _query(
             "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' "
@@ -319,7 +319,17 @@ class TestAuditCursorIndexes:
         )
         assert _query("SELECT boundary, user_id FROM audit_log") == [("login", "alice")]
         # Rolling back audit indexes must not undo develop's preceding revision.
-        assert _query("SELECT version_num FROM alembic_version") == [("060",)]
+        assert _query("SELECT version_num FROM alembic_version") == [("061",)]
+        assert _query(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'graph_continuations' "
+            "AND column_name = 'has_hitl_pause'"
+        ) == [("has_hitl_pause",)]
+        assert _query(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' "
+            "AND tablename = 'graph_continuations' "
+            "AND indexname = 'ix_graph_continuations_hitl_paused'"
+        ) == [("ix_graph_continuations_hitl_paused",)]
         assert _query(
             "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' "
             "AND tablename = 'canonical_runs' "
@@ -424,32 +434,35 @@ class TestTheChainApplies:
             """
             insert into capability_invocations
                 (invocation_id, run_id, node_run_id, attempt_id, binding_id,
-                 effect_key, status, created_at, payload, logical_effect)
+                 effect_key, effect_scope, status, created_at, payload)
             values ('inv-adopted', 'run-adopted', 'node-1', 'att-1', 'bind-1',
-                    'effect-1', 'completed', 0.0, '{}', true)
+                    'effect-1', 'run-adopted:charge:order-42', 'completed', 0.0, '{}')
             """
         )
-        # 044's parent: the re-application walks 044, 043, 045 and 046 over
-        # the existing schema — the exact walk the Canvas conformance suite
-        # drives.
+        # 044's parent: the re-application walks 044 and 046 over the existing
+        # schema — the exact walk the Canvas conformance suite drives.
         assert _alembic("stamp", "039_quota_usage_event_identity").returncode == 0
         result = _alembic("upgrade", "head")
         assert result.returncode == 0, result.stderr
-        # The adopted column and its Run-scoped admission index exist exactly
-        # once, and the pre-existing row kept its flagged value rather than
-        # being rewritten by the re-run default.
+        # The effect-claim shape the durable stores and migration 035 agree on
+        # still exists exactly once, the guarded elevation-grants table (046)
+        # was adopted rather than duplicated, and the pre-existing row kept
+        # its claimed scope rather than being rewritten by a re-run default.
         assert _query(
             "select count(*) from information_schema.columns "
             "where table_name = 'capability_invocations' "
-            "and column_name = 'logical_effect'"
+            "and column_name = 'effect_scope'"
         ) == [(1,)]
         assert _query(
             "select count(*) from pg_indexes where tablename = 'capability_invocations' "
-            "and indexname = 'uq_capability_invocation_active_logical_effect'"
+            "and indexname = 'uq_capability_invocation_active_effect'"
         ) == [(1,)]
         assert _query(
-            "select logical_effect from capability_invocations where invocation_id = 'inv-adopted'"
-        ) == [(True,)]
+            "select count(*) from information_schema.tables where table_name = 'elevation_grants'"
+        ) == [(1,)]
+        assert _query(
+            "select effect_scope from capability_invocations where invocation_id = 'inv-adopted'"
+        ) == [("run-adopted:charge:order-42",)]
 
 
 class TestTaskIdentityMigration:

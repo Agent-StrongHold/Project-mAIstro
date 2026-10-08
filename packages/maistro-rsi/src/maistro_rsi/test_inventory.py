@@ -43,6 +43,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -100,16 +101,45 @@ def _parse_node_ids(stdout: str) -> set[str]:
 
 
 def _tail(proc: subprocess.CompletedProcess[str]) -> str:
-    out = (proc.stdout or "") + (proc.stderr or "")
+    return _tail_text(proc.stdout or "", proc.stderr or "")
+
+
+def _tail_text(stdout: str, stderr: str) -> str:
+    out = stdout + stderr
     tail = [ln.strip() for ln in out.strip().splitlines()[-8:] if ln.strip()]
     return " | ".join(tail)[:400]
 
 
 def _collect(
-    root: Path, pytest_args: list[str], extra: tuple[str, ...], timeout: int
+    root: Path,
+    pytest_args: list[str],
+    extra: tuple[str, ...],
+    timeout: int,
+    execute: Callable[[list[str]], tuple[int, str, str]] | None = None,
+    interpreter: str | None = None,
 ) -> tuple[set[str], int, str]:
-    """Run one ``--collect-only -q`` pass; return (ids, returncode, error tail)."""
-    argv = [sys.executable, "-m", "pytest", "--collect-only", "-q", *extra, *pytest_args]
+    """Run one ``--collect-only -q`` pass; return (ids, returncode, error tail).
+
+    ``execute`` is the containment seam (#614): collection IMPORTS the
+    candidate's test modules, so a contained evaluation runs the same argv
+    through the sandbox and parses the same output here. The default host
+    subprocess keeps the CLI paths unchanged.
+    """
+    argv = [
+        interpreter if interpreter is not None else sys.executable,
+        "-m",
+        "pytest",
+        "--collect-only",
+        "-q",
+        *extra,
+        *pytest_args,
+    ]
+    if execute is not None:
+        try:
+            rc, out, err = execute(argv)
+        except (OSError, RuntimeError) as exc:
+            return set(), 1, f"collection errored: {exc}"
+        return _parse_node_ids(out), rc, _tail_text(out, err)
     try:
         proc = subprocess.run(
             argv,
@@ -181,7 +211,12 @@ class InventoryDiff:
 
 
 def collect_inventory(
-    root: Path, pytest_args: list[str], *, timeout: int = _COLLECT_TIMEOUT
+    root: Path,
+    pytest_args: list[str],
+    *,
+    timeout: int = _COLLECT_TIMEOUT,
+    execute: Callable[[list[str]], tuple[int, str, str]] | None = None,
+    interpreter: str | None = None,
 ) -> InventoryResult:
     """Collect ``root``'s test inventory: two cheap passes, no test execution.
 
@@ -190,10 +225,17 @@ def collect_inventory(
     the filter are skip-gated. A nonzero exit from either pass, or zero
     collected IDs while the tree contains test files, is a collection failure
     (``collection_ok=False``) — the inventory is unverifiable, never assumed.
+
+    ``execute``/``interpreter`` are the containment seam (#614): when given,
+    both passes run inside the sandbox the evaluation opened — collection
+    imports the candidate's conftest and plugins, so "no test execution" does
+    not mean "no candidate code".
     """
     root = Path(root)
-    all_ids, rc_all, err_all = _collect(root, pytest_args, (), timeout)
-    servable, rc_serv, err_serv = _collect(root, pytest_args, _SKIP_FILTER, timeout)
+    all_ids, rc_all, err_all = _collect(root, pytest_args, (), timeout, execute, interpreter)
+    servable, rc_serv, err_serv = _collect(
+        root, pytest_args, _SKIP_FILTER, timeout, execute, interpreter
+    )
     errors: list[str] = []
     for label, rc, err in (("full pass", rc_all, err_all), ("skip-filter pass", rc_serv, err_serv)):
         if rc == 5:

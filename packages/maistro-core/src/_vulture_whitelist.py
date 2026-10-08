@@ -28,6 +28,7 @@ from maistro.cli._backlog import import_cmd as backlog_import_command
 from maistro.cli._backlog import revert as backlog_revert_command
 from maistro.cli._connectors import connectors_describe, connectors_verify
 from maistro.cli._extensions import (
+    extensions_certify,
     extensions_compat,
     extensions_contract,
     extensions_explain,
@@ -35,6 +36,7 @@ from maistro.cli._extensions import (
     extensions_lock,
     extensions_preflight,
     extensions_show,
+    extensions_verify_certification,
 )
 from maistro.container import Container
 from maistro.extensions.compat import (
@@ -54,6 +56,11 @@ from maistro.extensions.context import ExtensionCancellation, ExtensionConfigVie
 from maistro.extensions.effective_authority import EffectiveAuthority
 from maistro.extensions.host import ExtensionHost
 from maistro.extensions.isolation import SandboxViolationLog
+from maistro.extensions.metering import (
+    ExtensionMeter,
+    ExtensionQuotaLedger,
+    ExtensionUsageEvent,
+)
 from maistro.extensions.resolution import LockState
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
@@ -222,6 +229,26 @@ _VULTURE_WHITELIST = (
     # scripts/check-durable-table-inventory.py from
     # quality/durable-table-retention.json; no scanned call site names it.
     SqliteCampaignStore.delete_campaign,
+    # Extension metering/quota public surface (#977, M9-I2). The ledger is
+    # consumed at the extension seam by hosts and the test suite; no in-tree
+    # src caller exists until extension identity propagation (#976) wires
+    # invocation attribution, so the settlement surface
+    # (register_policy/release/correct), the read/aggregation surface
+    # (totals/breakdown/lineage/policy_balance) and the deployment-step
+    # ensure_schema
+    # are referenced as the reviewed public API they are. extension_version is
+    # attribution payload validated and persisted with every usage row
+    # (class-object reference mirrors the WorkingMemoryStats entries below).
+    ExtensionMeter.ensure_schema,
+    ExtensionMeter.totals,
+    ExtensionMeter.breakdown,
+    ExtensionMeter.lineage,
+    ExtensionQuotaLedger.ensure_schema,
+    ExtensionQuotaLedger.register_policy,
+    ExtensionQuotaLedger.policy_balance,
+    ExtensionQuotaLedger.release,
+    ExtensionQuotaLedger.correct,
+    ExtensionUsageEvent.extension_version,  # type: ignore[misc]
     # The selection entrypoint is the contract's public face (#804 persistent
     # Workspace Agent now, #50 RSI later). Consumers live outside this scan
     # until those issues land; the contract ships first by design.
@@ -482,6 +509,13 @@ _VULTURE_WHITELIST = (
     ExternalAgentRegistry.refresh_descriptor,
     ExternalAgentRegistry.report_availability,
     ExternalAgentRegistry.eligible_specialists,
+    # Pre-publication extension certification (M9-H3, #975). The
+    # `maistro extensions certify` / `verify-certification` commands are
+    # typer-dispatched like the lock commands above: their production caller
+    # is the command wiring, their consumers the CLI conformance suite
+    # (packages/maistro-core/tests/extensions/test_cli_certification.py).
+    extensions_certify,
+    extensions_verify_certification,
     # Governed UI/A2UI extension components (M9-F2, #967). The projection
     # contract ships first by design, the same contract-first posture as the
     # M9-B1 store seams and the M9-D1 registry above. `render_component` is
