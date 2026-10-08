@@ -165,7 +165,7 @@ class EscalationPolicyPoint:
     threshold: float
     expected_utility: float
     answer_rate: float
-    unsafe_action_rate: float  # wrong answers / all decisions
+    unsafe_action_rate: float  # wrong answers + expected escalation failures / all decisions
     escalation_rate: float  # escalated decisions / all
     human_intervention_rate: float  # HITL-class escalations / all
     unnecessary_escalation_rate: float  # escalated but would have succeeded / all
@@ -567,6 +567,7 @@ def _m8e_measure_escalation_threshold(
     utility = 0.0
     answered = 0
     wrong_answers = 0
+    escalation_expected_failures = 0.0
     escalated = 0
     human_escalations = 0
     escalated_would_succeed = 0
@@ -590,6 +591,11 @@ def _m8e_measure_escalation_threshold(
         )
         escalation_cost += destination.marginal_cost
         escalation_latency += destination.latency
+        # An escalation's expected incorrect outcome counts as unsafe here
+        # too: utility already prices (1 - eventual_success_rate), so the
+        # unsafe-action rate must expose the same expectation, or a
+        # destination that always fails would look perfectly safe.
+        escalation_expected_failures += 1.0 - destination.eventual_success_rate
         if destination.human_intervention:
             human_escalations += 1
         if o.success:
@@ -597,7 +603,7 @@ def _m8e_measure_escalation_threshold(
     return {
         "expected_utility": utility / total,
         "answer_rate": answered / total,
-        "unsafe_action_rate": wrong_answers / total,
+        "unsafe_action_rate": (wrong_answers + escalation_expected_failures) / total,
         "escalation_rate": escalated / total,
         "human_intervention_rate": human_escalations / total,
         "unnecessary_escalation_rate": escalated_would_succeed / total,
@@ -621,7 +627,10 @@ def m8e_escalation_frontier(
     ``dest.eventual_success_rate * correct_reward + (1 -
     dest.eventual_success_rate) * wrong_penalty + dest.marginal_cost`` of
     utility — expected utility under the operator's stated destination
-    parameters, not a simulated authority acting. Every returned field is a
+    parameters, not a simulated authority acting. The unsafe-action rate is
+    the same expectation from the safety side: direct wrong answers plus
+    each escalation's ``1 - eventual_success_rate`` expected failure, so a
+    destination that never succeeds cannot masquerade as safe. Every returned field is a
     measurement (rates, means, shares); the frontier proposes, it never
     acts, and any real escalation remains with the canonical
     Warden/HITL/delegation controls (ADR-068).
@@ -1050,6 +1059,8 @@ class TestEscalationPolicyDestinations:
         # Deferred utility per destination: hitl 1*1 + 0*(-1) - 0.5 = 0.5;
         # specialist 0.9 - 0.1 - 0.4 = 0.4; stronger 0.85 - 0.15 - 0.3 = 0.4;
         # verifier 1 - 0.1 = 0.9. Sum 2.2 over 4 decisions.
+        # Expected escalation failures hitl 0 + specialist 0.1 + stronger
+        # 0.15 + verifier 0 = 0.25 — the unsafe-action rate includes them.
         observations = [
             UncertaintyObservation("c", 0.99, True, {"s": 0.10}),
             UncertaintyObservation("c", 0.99, False, {"s": 0.30}),
@@ -1060,7 +1071,7 @@ class TestEscalationPolicyDestinations:
         point = m8e_escalation_frontier(observations, scores, [1.1], m8e_destination_fixture())[0]
         assert point.expected_utility == pytest.approx(0.55)
         assert point.answer_rate == pytest.approx(0.0)
-        assert point.unsafe_action_rate == pytest.approx(0.0)
+        assert point.unsafe_action_rate == pytest.approx(0.0625)
         assert point.escalation_rate == pytest.approx(1.0)
         assert point.human_intervention_rate == pytest.approx(0.25)
         # Three escalations were avoidable: the decision would have succeeded.
@@ -1076,7 +1087,9 @@ class TestEscalationPolicyDestinations:
 
     def test_escalation_frontier_hand_checked_mixed_threshold(self) -> None:
         # At threshold 0.5 the two high scores answer (both succeed, +1 each)
-        # and the two low scores escalate: hitl 0.5, specialist 0.4.
+        # and the two low scores escalate: hitl 0.5, specialist 0.4. The
+        # specialist's 0.1 expected failure joins direct wrong answers in
+        # the unsafe-action rate: 0.1 / 4 = 0.025.
         observations = [
             UncertaintyObservation("c", 0.99, True, {"s": 0.10}),
             UncertaintyObservation("c", 0.99, False, {"s": 0.30}),
@@ -1087,7 +1100,7 @@ class TestEscalationPolicyDestinations:
         point = m8e_escalation_frontier(observations, scores, [0.5], m8e_destination_fixture())[0]
         assert point.expected_utility == pytest.approx((1 + 1 + 0.5 + 0.4) / 4)
         assert point.answer_rate == pytest.approx(0.5)
-        assert point.unsafe_action_rate == pytest.approx(0.0)
+        assert point.unsafe_action_rate == pytest.approx(0.025)
         assert point.escalation_rate == pytest.approx(0.5)
         assert point.human_intervention_rate == pytest.approx(0.25)
         assert point.unnecessary_escalation_rate == pytest.approx(0.25)
@@ -1123,6 +1136,19 @@ class TestEscalationPolicyDestinations:
         assert m8e_escalation_frontier(observations, [0.4], [0.5], [(1.0, costly)])[
             0
         ].expected_utility == pytest.approx(0.5)
+
+    def test_all_escalated_never_succeeding_destination_is_fully_unsafe(self) -> None:
+        # The degenerate destination the unsafe rate must not flatter: with
+        # eventual_success_rate 0 every escalated outcome is wrong in
+        # expectation, so an all-escalated policy reports unsafe_action_rate
+        # 1.0 — the same expectation the utility math already prices — and
+        # not a misleading 0.0.
+        observations = [UncertaintyObservation("c", 0.4, True)]
+        dead_end = EscalationDestination("dead-end", 0.0, 0.0, 0.0)
+        point = m8e_escalation_frontier(observations, [0.4], [0.5], [(1.0, dead_end)])[0]
+        assert point.escalation_rate == pytest.approx(1.0)
+        assert point.expected_utility == pytest.approx(-1.0)
+        assert point.unsafe_action_rate == pytest.approx(1.0)
 
     def test_variation_signal_beats_self_report_at_routing_escalations(self) -> None:
         # The #933 experiment in miniature: policy scores from a #930-style
