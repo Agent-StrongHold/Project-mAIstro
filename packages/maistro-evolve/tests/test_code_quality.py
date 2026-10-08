@@ -28,18 +28,20 @@ def _stub(
     cognitive=(1.0, 1.0),
     semgrep=(None, 0),
 ):
-    monkeypatch.setattr(cq, "_ruff", lambda p: ruff)
-    monkeypatch.setattr(cq, "_bandit", lambda p: bandit)
-    monkeypatch.setattr(cq, "_mypy", lambda p: mypy)
-    monkeypatch.setattr(cq, "_pylint", lambda p: pylint)
-    monkeypatch.setattr(cq, "_docstring_coverage", lambda p: docstrings)
-    monkeypatch.setattr(cq, "_halstead", lambda p: halstead)
-    monkeypatch.setattr(cq, "_type_coverage", lambda p: type_coverage)
-    monkeypatch.setattr(cq, "_duplication", lambda p: duplication)
-    monkeypatch.setattr(cq, "_dead_code", lambda p: dead_code)
-    monkeypatch.setattr(cq, "_cognitive", lambda p: cognitive)
-    monkeypatch.setattr(cq, "_semgrep", lambda p: semgrep)
-    monkeypatch.setattr(cq, "_radon", lambda p: radon)
+    # (*_a, **_k): helpers now take the injected tool runner (#614); the stubs
+    # ignore it and answer with the canned scores.
+    monkeypatch.setattr(cq, "_ruff", lambda p, *a, **k: ruff)
+    monkeypatch.setattr(cq, "_bandit", lambda p, *a, **k: bandit)
+    monkeypatch.setattr(cq, "_mypy", lambda p, *a, **k: mypy)
+    monkeypatch.setattr(cq, "_pylint", lambda p, *a, **k: pylint)
+    monkeypatch.setattr(cq, "_docstring_coverage", lambda p, *a, **k: docstrings)
+    monkeypatch.setattr(cq, "_halstead", lambda p, *a, **k: halstead)
+    monkeypatch.setattr(cq, "_type_coverage", lambda p, *a, **k: type_coverage)
+    monkeypatch.setattr(cq, "_duplication", lambda p, *a, **k: duplication)
+    monkeypatch.setattr(cq, "_dead_code", lambda p, *a, **k: dead_code)
+    monkeypatch.setattr(cq, "_cognitive", lambda p, *a, **k: cognitive)
+    monkeypatch.setattr(cq, "_semgrep", lambda p, *a, **k: semgrep)
+    monkeypatch.setattr(cq, "_radon", lambda p, *a, **k: radon)
 
 
 def test_perfect_code_scores_one(monkeypatch, tmp_path: Path) -> None:
@@ -47,6 +49,34 @@ def test_perfect_code_scores_one(monkeypatch, tmp_path: Path) -> None:
     f.write_text("x = 1\n")
     _stub(monkeypatch, ruff=(1.0, 0), bandit=(1.0, 0), mypy=(1.0, 0), radon=(1.0, 1.0, 1.0, 100.0))
     assert cq.score_path(f).composite == 1.0
+
+
+def test_run_tool_binds_every_launch_to_the_injected_channel(monkeypatch, tmp_path: Path) -> None:
+    """score_path(run_tool=...) launches every shelling helper through the
+    injected channel and none on the host (#614): the RSI fitness path binds
+    this runner to its sandbox, so with one injected, no quality subprocess
+    may touch the host — and the composite is computed from the channel's
+    reports."""
+    f = tmp_path / "x.py"
+    f.write_text("x = 1\n")
+    launched: list[list[str]] = []
+
+    def fake_run(args, *, timeout: int = 120) -> tuple[str, bool]:
+        launched.append(list(args))
+        if args[0] == "ruff":
+            return '[{"filename": "x.py"}]', True
+        return "{}", True
+
+    def _refuse(*_a, **_kw):
+        raise AssertionError("a quality tool ran on the host despite run_tool")
+
+    monkeypatch.setattr(cq.subprocess, "run", _refuse)
+    s = cq.score_path(f, run_tool=fake_run)
+
+    names = {argv[0] for argv in launched}
+    assert {"ruff", "bandit", "mypy", "pylint", "radon"} <= names
+    assert s.ruff_violations == 1
+    assert s.ruff == 1.0 / 2.0
 
 
 def test_bad_code_scores_low(monkeypatch, tmp_path: Path) -> None:
