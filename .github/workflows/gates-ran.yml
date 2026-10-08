@@ -164,6 +164,18 @@ jobs:
                 per_page: 100,
               },
             );
+            // GitHub's list-files endpoint exposes at most 3,000 files per
+            // pull request even when fully paginated (#1350). A response at
+            // that cap cannot be told apart from a complete one, so it is
+            // recorded as truncated and the evaluator treats scope as
+            // ambiguous: skipped specialized checks then stay pending
+            // instead of being excused on partial evidence.
+            const truncated = files.length >= 3000;
+            // A rename's old path reaches this list only through
+            // `previous_filename` (#1349); the merge-group measurement diffs
+            // with --no-renames for the same reason, so a rename into or out
+            // of a scoped tree must classify by both edges, not just the
+            // destination path.
             const filePaths = files.flatMap(file => {
               const paths = [file.filename];
               if (file.status === 'renamed' && file.previous_filename) {
@@ -173,9 +185,15 @@ jobs:
             });
             fs.writeFileSync(
               'changed-files.json',
-              JSON.stringify({ measured: true, files: filePaths }),
+              JSON.stringify({ measured: true, truncated, files: filePaths }),
             );
-            core.info(`${filePaths.length} changed file path(s) on PR #${number}`);
+            if (truncated) {
+              core.warning(
+                `changed-file list hit the 3,000-file cap on PR #${number}; specialized scope is ambiguous`,
+              );
+            } else {
+              core.info(`${filePaths.length} changed file path(s) on PR #${number}`);
+            }
 
       - name: Evaluate required execution evidence
         id: evaluate

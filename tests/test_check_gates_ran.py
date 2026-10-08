@@ -184,6 +184,33 @@ class TestItRefusesToGuess:
         bad.write_text(json.dumps(["notes/todo.txt"]), encoding="utf-8")
         assert check._pull_request_scope(bad) == (None, False)
 
+    def test_a_truncated_changed_files_envelope_is_refused(
+        self, check: ModuleType, tmp_path: Path
+    ) -> None:
+        """#1350: a `truncated: true` envelope is a partial measurement -- the
+        listed prefix is real, but the paths beyond the cap are unmeasured and
+        may carry every specialized leg. It must surface as ambiguity (the
+        CLI's pending path), never as a scope that could excuse a skip."""
+        path = _envelope(
+            tmp_path,
+            {"measured": True, "truncated": True, "files": ["notes/todo.txt"]},
+        )
+        with pytest.raises(ValueError, match="truncated"):
+            check._pull_request_scope(path)
+
+    def test_an_explicitly_untruncated_envelope_is_still_measured(
+        self, check: ModuleType, tmp_path: Path
+    ) -> None:
+        """The collector records the flag on every envelope; `false` must not
+        poison a complete measurement."""
+        path = _envelope(
+            tmp_path,
+            {"measured": True, "truncated": False, "files": ["notes/todo.txt"]},
+        )
+        scope, measured = check._pull_request_scope(path)
+        assert measured is True
+        assert scope is not None
+
     def test_an_empty_check_list_is_pending_not_a_pass(
         self, check: ModuleType, tmp_path: Path
     ) -> None:
@@ -439,6 +466,34 @@ class TestTheCliScopeEnvelope:
         assert code == check.PENDING_EXIT
         assert "changed-file payload is invalid" in out
 
+    def test_a_truncated_envelope_keeps_skipped_specialized_checks_pending(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """#1350 acceptance: an envelope the listFiles cap truncated must
+        never yield measured scope. Otherwise a PR whose only affected paths
+        fell beyond the cap would classify its skipped specialized checks out
+        of scope -- a false green on partial evidence."""
+        every_leg = set(check.PATH_SCOPED_CHECKS.values())
+        code = check.main(
+            [
+                "--check-runs",
+                str(_payload(tmp_path, self._runs_for_scope(check, every_leg))),
+                "--require-complete",
+                "--event-name",
+                "pull_request",
+                "--changed-files",
+                str(
+                    _envelope(
+                        tmp_path,
+                        {"measured": True, "truncated": True, "files": ["notes/todo.txt"]},
+                    )
+                ),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == check.PENDING_EXIT
+        assert "truncated" in out
+
     def test_an_envelope_with_non_string_files_is_pending(
         self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -634,9 +689,12 @@ class TestTheCliScopeEnvelope:
         envelope = json.loads((tmp_path / "changed-files.json").read_text(encoding="utf-8"))
         # A rename contributes both paths in listFiles order; an unrenamed
         # file contributes only itself; a rename lacking previous_filename
-        # must not leak an undefined entry into the envelope.
+        # must not leak an undefined entry into the envelope. The cap flag
+        # from #1350 is present even when false, so the evaluator can tell
+        # an explicit complete measurement from a pre-#1350 envelope.
         assert envelope == {
             "measured": True,
+            "truncated": False,
             "files": [
                 "docs/a.md",
                 "packages/maistro-core/a.py",
