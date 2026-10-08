@@ -1751,3 +1751,92 @@ front-matter delta above is unchanged. All evidence re-executed fresh:
   bank, grant, or wire away; the unblock lives in the separately reviewed
   #1845/C3 integration consumer (or a base-landed authorization landing
   before it). The stack stays unmerged by design.
+
+
+## Round 22 — verification round at dispatched head afc11663491e: all leaf
+## acceptance criteria independently re-proven; all four merge-queue reds
+## re-derived as the same sanctioned two-module delta; no repairable defect
+## exists in-lane
+
+Scope: verify/repair round dispatched at HEAD `afc11663491e35090ddc353c74f75a6c982a7d72`
+(develop base `8fbbbfb91d78d`, merge base `e46ad6708fda` — both develop WIP
+merges already absorbed by the branch). Every claim below was re-executed
+fresh this round; no source, test, or ledger file changed, so the
+`inventory-delta` front-matter above is unchanged.
+
+- **Leaf acceptance battery, all green, re-executed**: classifier suite 132
+  passed; `test_root_admission_identity.py` + unchanged `test_idempotency.py`
+  140 passed; ruff check + format clean on the leaf pair and repo-wide
+  (driver logs); mypy clean on `admission_generation.py`; full
+  `check-suite-inventory.py` exit 0 (17 suites, 30068 collected identities,
+  0 duplicates — the `+132` front-matter delta still matches). All ten
+  issue-named tests present by grep; the module carries the sole production
+  function `_assess` with the exact-class input gate (`type(record) is ...`),
+  `[0-9a-f]{64}` fullmatch fingerprint validation, bool-rejecting signed-int64
+  `now_us`, and the fixed six-row decision table in issue order.
+- **Four-mutation battery re-derived at this exact head** in a throwaway
+  `git worktree` (assigned tree never modified; module restored from backup
+  after each mutation, md5 `257a6e45c382349dd12f559099663fbc` byte-identical
+  before and after): swap TAKEOVER/REPLACE_EXPIRED -> 50 failed; lease row
+  before binding -> 14 failed; LEGACY_UNRESOLVED row deleted (legacy treated
+  as v2) -> 10 failed; mismatch row before expiry -> 22 failed; unmutated
+  control -> 132 passed. Same 50/14/10/22 profile as rounds 13–21.
+- **No-wiring purity re-verified**: grep over `packages/*/src` finds no
+  production importer of `maistro.tasks.admission_generation` (only the C2
+  module itself); `maistro.runs.admission_identity` is imported only by the
+  C2 module and the scanner-input `_vulture_whitelist.py` addition (named
+  enum members and snapshot-field names; "never executes, ships in no wheel;
+  wires nothing"); `tasks/__init__.py`, `runs/__init__.py`, and
+  `tasks/idempotency.py` are byte-identical to the merge base.
+- **exact-debt-ledger re-derived step by step with CI's exact argv**: step 3
+  vulture (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`)
+  exit 0 at 1326 reviewed identities -> 1326 findings, `unclassified: 0` —
+  **the prescribed vulture-ledger amendment is empty for the 22nd consecutive
+  round**; step 2 `check-shipped-surface-truth.py` exit 0; step 1
+  `check-ratchet-provenance.py` exit 1 with 8 of 9 sub-ratchets OK
+  (adr-status-language, citation-status, promotion-surface 74->74,
+  reachability-dispositions 169->169, shell-execution 3->3,
+  contract-markers 358->358, enumerations 1->1, lifecycle 0->0) and the sole
+  FAIL in the reachability trusted-base gate: both
+  `maistro.runs.admission_identity` and `maistro.tasks.admission_generation`
+  are NEW unreachable (171 of 1366 vs trusted 169), "absent from trusted base
+  and not previously authorized" and "missing from candidate baseline".
+  Mechanism re-read from source this round:
+  `check-reachability-provenance.py` calls
+  `prov.load_authorizations(RATCHET, base=trusted_ref.base_sha)` — grants are
+  read from the merge base `e46ad6708fda`, whose
+  `quality/ratchet-authorizations.json` contains zero rows for either module
+  identity (the 5 `admission` substring hits in the candidate's copy are
+  unrelated: stranded-chat-admissions recovery, a2a transport admission,
+  ScheduleRunAdmitter, canvas reconcile). No candidate-side edit — baseline
+  rows, dispositions, or grants — can turn step 1 green (the two-merge rule),
+  and issue #1852 forbids exactly those edits for this leaf anyway ("No fake
+  callers, baseline additions, grants, disabled gates or quality waivers are
+  permitted"; the round-13 removal of the earlier prohibited rows stands —
+  the candidate still carries zero admission rows in
+  `reachability-baseline.json`).
+- **Other three reds re-bound to the same delta**: `check-reachability.py`
+  lists exactly the two leaf modules as NEWLY UNREACHABLE (the Quality gate's
+  failing step); the 3 root meta-test failures
+  (`test_check_reachability.py::test_baseline_matches_the_tree`, both
+  `test_reachability_baseline_identity.py` gate-identity assertions) diff on
+  exactly those two module names and nothing else; `check-reachability-
+  dispositions.py` and `check-promotion-surface.py` exit 0. The Coverage
+  gate's remaining red stays its root-suite producer re-running the same 3
+  tests (leaf diff coverage measured 100%/97% in rounds 15+; not re-executed
+  this round).
+- **quality/ merge hygiene checked per AGENTS.md**:
+  `git diff --numstat origin/develop -- quality/` shows exactly one differing
+  file, `workflow-inventory.json` (0 added / 7 deleted): the branch predates
+  develop's `graph-pattern-reuse-bench.yml` workflow, which is absent from
+  the merge base too — the branch is behind, not row-dropped;
+  `check-workflow-inventory.py` exit 0.
+- **Verdict-relevant statement**: implementation, focused-test, and mutation
+  readiness are proven at this head; no in-lane lawful repair exists for the
+  four red merge-queue checks — wiring is outside the leaf's scope, and the
+  two-merge rule makes every candidate-side ledger path mechanically
+  ineffective even before the issue's prohibitions bite. Retirement paths
+  remain the two named since round 13: a base-landed authorization followed
+  by the banking rebase, or the separately reviewed #1845 integration
+  consumer that wires both modules. The stack stays unmerged by design;
+  this round's only artifact is this evidence appendix.
