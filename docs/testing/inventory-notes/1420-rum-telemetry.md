@@ -353,8 +353,10 @@ so the evidence no longer depends on one being up:
   inventory match re-confirmed; frontend `eslint .` 0 errors / 94 warnings
   (budget 96).
 
-Every locally-runnable gate the merge queue named was re-verified green at
-`476ca0b67d61` against the merge base `34795962548a`:
+The following locally-runnable gates were recorded green at
+`476ca0b67d61` against the merge base `34795962548a` (this list did not include
+`check-frontend-api-routes.py`; it was not an exhaustive integration-scope
+verification):
 `check-route-permissions.py` ("ok: 41 declared, 0 tolerated undeclared
 prefix(es), none new" — the resolution above holds, no grant needed), the
 #1048 drift sequence (`dump-hive-openapi.py` -> `gen:api` ->
@@ -438,3 +440,72 @@ then the full 158-test e2e suite, same command ci.yml's `hive-conductor-e2e-ui`
 runs, **158 passed in 2.9 m**. No test count moved: assertions within
 existing nodes plus `beforeAll` statements only; the delta above is
 unchanged.
+
+## Frontend-route gate repair (2026-10-08, starting head `08850988c11b`)
+
+Scope frozen to issue #1420 and the supplied head/base. Independently reproduced
+`uv run python3 scripts/check-frontend-api-routes.py` failing on two example
+paths in `frontend/src/lib/rumSchema.ts` documentation (original lines 67/195).
+These were not requests: the comments described identifiers the allowlist
+rejects. Expressed those examples as prose, preserving the privacy contract
+without adding scanner waivers, weakening the gate, or registering fake routes.
+The existing repository-level `test_every_frontend_call_resolves` exercises
+this regression against the real backend route table; no test count changes.
+
+The exact requested vulture scan (`packages/*/src --min-confidence 60
+--exclude '*/third_party/*'`) passed with 1326 reviewed identities, 1326
+findings, and zero unclassified. No debt was found, so no ledger was amended.
+The earlier blanket validation claim above is narrowed to the checks actually
+listed. Driver logs `check-0.log` through `check-4.log` were inspected; those
+checks did not include the frontend-route gate.
+
+Architecture review: ADR-083026-1cb1 retains the existing request correlation
+boundary, and ADR-068 retains the existing authorization boundary. This repair
+changes neither behavior nor authority, and does not affect the canonical
+Goal → Graph → Run → NodeRun → Attempt execution model.
+
+Fresh validation (historical browser evidence above is not treated as a new
+run):
+
+- `uv run python3 scripts/check-frontend-api-routes.py`: passes, 181 call
+  sites across 70 files resolve to 233 routes (failed before the comment fix).
+- `uv run pytest tests/test_check_frontend_api_routes.py -x -q`: 55 passed,
+  including the repository-level regression check against the real routes.
+- `uv run ruff check .` / `uv run ruff format --check .`: both pass.
+- `uv run pytest packages/hive-conductor/backend/tests/test_rum_routes.py
+  packages/hive-conductor/backend/tests/test_auth_middleware.py
+  packages/hive-conductor/backend/tests/test_request_id_middleware.py -x -q`:
+  92 passed (collector projection, receipt/grouping, bounds, authorization and
+  middleware correlation).
+- `uv run python scripts/check-suite-inventory.py --suite
+  packages/hive-conductor/backend/tests`: passes, 3581 collected, matching the
+  recorded inventory; the delta remains unchanged.
+- `CI=true E2E_SRC_ROOT=$PWD/packages/hive-conductor
+  E2E_NODE_PATHS=$PWD/packages/hive-conductor/tests/e2e/node_modules
+  packages/hive-conductor/tests/e2e/node_modules/.bin/playwright test
+  --config=packages/hive-conductor/tests/e2e/playwright.config.ts
+  rum-telemetry.spec.ts rum-client-off-switches.spec.ts
+  --grep-invert 'RUM live collection'`: 10 passed, retries disabled. Exercises
+  schema redaction plus disabled/sampled-out, collector rejection, batch bounds,
+  pagehide and missing-PerformanceObserver behavior in Chromium.
+
+- Production frontend `npm run build` passes with `VITE_DEBUG_API=false`,
+  `VITE_RUM_ENABLED=true`, `VITE_RUM_SAMPLE_RATE=1`, and
+  `VITE_RUM_BUILD_ID=repair-1420`; `npm run lint` also passes. Build/lint logs
+  are in the assigned job directory as `repair-frontend-{build,lint}.log`.
+- `uv run python scripts/check-route-permissions.py`,
+  `check-frontend-typed-client.py`, `check-shipped-surface-truth.py`,
+  `check_enumerations.py`, and `check-enumerations-provenance.py` all pass
+  without changing any gate or ledger. The exact vulture command was rerun
+  after the repair and still passes. These ratchets report their automatically
+  selected trusted base `e46ad6708fda`, not the supplied dispatch base.
+- `git diff --check`: passes.
+
+Acceptance limitations: `DOCKER_HOST=unix:///var/run/docker.sock docker info`
+fails because no daemon is reachable. The two live production-collector tests
+were deliberately excluded from this round's browser command, not silently
+counted as passing. AC1's production load/receipt evidence and AC5's fresh live
+smoke receipts therefore remain UNVERIFIED. AC2's browser success/error/timeout
+and network-failure matrix, AC3's outgoing request/error secret-payload matrix,
+and AC4's offline path are also not proven by the subset executed here. No
+claim of exhaustive acceptance or remote `integration-scope` success is made.

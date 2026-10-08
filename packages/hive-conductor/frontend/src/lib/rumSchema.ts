@@ -64,7 +64,8 @@ const PAGE_ROUTE_ROOTS = new Set([
 /**
  * Stable, literal API collection roots mounted by the Conductor.  The shared
  * client accepts caller-supplied paths, so accepting arbitrary second path
- * segments would make `/v1/<customer-or-workspace-id>` a telemetry route.
+ * segments would make a customer or workspace id directly below the API
+ * version prefix a telemetry route.
  * Unknown/future roots intentionally collapse to `unknown` until they are
  * reviewed here; reporting a coarser route is preferable to exporting an id.
  */
@@ -192,9 +193,10 @@ function isFiniteNonNegative(value: unknown): value is number {
  * For `/v1` requests, only a reviewed, literal collection root survives;
  * everything deeper — raw resource identifiers, names, anything — collapses
  * to a star. An arbitrary second segment is also rejected: the shared client
- * accepts caller-supplied paths, so `/v1/<workspace-id>` must not turn that id
- * into a route template. Query strings and fragments are stripped before any
- * inspection, so a token smuggled into the query never reaches the template.
+ * accepts caller-supplied paths, so a workspace id directly below the API
+ * version prefix must not become a route template. Query strings and fragments
+ * are stripped before any inspection, so a token smuggled into the query never
+ * reaches the template.
  */
 export function normalizeApiPath(rawPath: string): string {
   // The shared client accepts only same-origin path references. Reject an
