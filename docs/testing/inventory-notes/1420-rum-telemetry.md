@@ -311,3 +311,46 @@ measured file this change touches is at or above 90% lines / 80% branch
 arcs"; compose e2e-ui leg 158 passed in 3.0 m (both rum specs included,
 the operator/403 assertions live), compose api-tests leg 10 passed +
 13 skipped.
+
+## Repair round at the merge head (2026-10-08, `476ca0b67d61`)
+
+The independent-verify round after the route-permissions fix was BLOCKED
+only on its environment: `docker compose -f docker-compose.test.yml up` could
+not reach a Docker daemon, so the browser half of the acceptance checks was
+left UNVERIFIED (backend/auth pytest evidence was green). This round re-ran
+the same two rum specs against the same code without a container runtime,
+so the evidence no longer depends on one being up:
+
+- production SPA built with the compose harness's own build args
+  (`VITE_RUM_ENABLED=true VITE_RUM_BUILD_ID=e2e-local`, `npm run build` —
+  `tsc --noEmit` x2 + vite), served by the real backend started locally
+  with the compose service's env (`RUM_INGEST_ENABLED=true`,
+  `SESSION_COOKIE_SECURE=false`, `ALLOW_INSECURE_TRANSPORT=true`, fresh
+  `CONDUCTOR_DATA_DIR`), `python -m uvicorn main:app` on a scratch port;
+- `rum-telemetry.spec.ts`: **7/7 passed** — the five Node-side redaction
+  rules plus the live path (finite non-negative `load`/`LCP` measurements,
+  `api_request` durations, every emitted `request_id` one the server
+  actually issued, the planted URL token and raw agent id absent from all
+  outgoing bytes, and the operator read-back + summary grouping with the
+  PM session's own read-back refused 403);
+- `rum-client-off-switches.spec.ts`: **5/5 passed** (off-flag and absent-env
+  builds send nothing, sampled-out sends nothing, the breaker trips and
+  stays silent, the buffer ships exactly `MAX_BATCH_EVENTS`, and the
+  no-`PerformanceObserver` page ships the `load` fallback). Outside the
+  playwright image the spec's container defaults need the overrides it
+  already provides: `E2E_SRC_ROOT=<packages/hive-conductor>` and
+  `E2E_NODE_PATHS=<tests/e2e>/node_modules`;
+- full backend suite re-run at this head: **3557 passed + 19 skipped**
+  (3576 collected), `--suite packages/hive-conductor/backend/tests`
+  inventory match re-confirmed; frontend `eslint .` 0 errors / 94 warnings
+  (budget 96).
+
+Every locally-runnable gate the merge queue named was re-verified green at
+`476ca0b67d61` against the merge base `34795962548a`:
+`check-route-permissions.py` ("ok: 41 declared, 0 tolerated undeclared
+prefix(es), none new" — the resolution above holds, no grant needed), the
+#1048 drift sequence (`dump-hive-openapi.py` -> `gen:api` ->
+`git diff --exit-code -- .../types.gen.ts`, byte-identical), the CI-exact
+vulture invocation (1326/1326 banked, 0 unclassified),
+`check-shipped-surface-truth.py`, `check-frontend-typed-client.py`,
+`check_enumerations.py`, and `ruff check` / `ruff format --check`.
