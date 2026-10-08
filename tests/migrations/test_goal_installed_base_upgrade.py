@@ -13,8 +13,9 @@ clarification on #1572 forbids exactly that: merged identities keep their
 meaning and ancestry, and the new revision appends after the integrated
 develop head under an unused id. The integrated tree claims ``058`` for
 learning-validation provenance and ``059``/``060`` for backlog work-source
-and authority cutover. Goals append as ``061_canonical_goals`` rather than
-reusing those installed identities.
+and authority cutover; HITL pause-kind projection landed as ``061``.
+Goals append as ``062_canonical_goals`` rather than reusing those installed
+identities.
 
 So this suite proves the three things the clarification asks for:
 
@@ -56,11 +57,13 @@ DATABASE_URL = os.environ.get("MAISTRO_TEST_DATABASE_URL", "")
 #: their exact state at merge time (verified against origin/develop's tip).
 USER_MODEL_MERGE = "c560d4ccad82f2bb43b73cbf80e3d1eb5dba5250"
 PLANNER_MERGE = "4675101647e629d290e0fece29694e43883e1395"
+HITL_MERGE = "66f3cea9e98980f146a12cf3142d66e30986d276"
+HITL_FILE = "alembic/versions/061_hitl_pause_kind_index.py"
 USER_MODEL_FILE = "alembic/versions/056_user_model_facts.py"
 PLANNER_FILE = "alembic/versions/057_run_store_planner_stability.py"
 
-#: The single linear head after backlog ``059``/``060`` and the Goal store.
-GOAL_REVISION = "061"
+#: The single linear head after HITL ``061`` and the Goal store.
+GOAL_REVISION = "062"
 
 GOAL_TABLES = ("canonical_goals", "canonical_goal_revisions", "canonical_goal_transitions")
 USER_MODEL_TABLES = ("user_model_facts", "user_model_statement_keys")
@@ -402,7 +405,8 @@ class TestTheMergedIdentities:
         assert revisions["058"].down_revision == "057"
         assert revisions["059"].down_revision == "058"
         assert revisions["060"].down_revision == "059"
-        assert revisions[GOAL_REVISION].down_revision == "060"
+        assert revisions["061"].down_revision == "060"
+        assert revisions[GOAL_REVISION].down_revision == "061"
         assert script_directory.get_heads() == [GOAL_REVISION]
         # The filenames carry the merged identities too — a renamed file
         # and a moved id are the same silent reassignment in two clothes.
@@ -411,18 +415,20 @@ class TestTheMergedIdentities:
         assert (VERSIONS / "058_learning_validation_provenance.py").is_file()
         assert (VERSIONS / "059_backlog_work_source.py").is_file()
         assert (VERSIONS / "060_backlog_authority_cutover.py").is_file()
-        assert (VERSIONS / "061_canonical_goals.py").is_file()
+        assert (VERSIONS / HITL_FILE.rsplit("/", 1)[-1]).is_file()
+        assert (VERSIONS / "062_canonical_goals.py").is_file()
 
     def test_restored_files_are_byte_identical_to_the_merged_snapshots(self) -> None:
         """The merged revisions' content is what develop shipped, byte for byte.
 
         Skips when a shallow checkout lacks the merge commits; the graph-shape
         test above still holds everywhere."""
-        if not (_have_commit(USER_MODEL_MERGE) and _have_commit(PLANNER_MERGE)):
+        if not all(_have_commit(sha) for sha in (USER_MODEL_MERGE, PLANNER_MERGE, HITL_MERGE)):
             pytest.skip("develop merge commits are not present in this checkout")
         for sha, relative in (
             (USER_MODEL_MERGE, USER_MODEL_FILE),
             (PLANNER_MERGE, PLANNER_FILE),
+            (HITL_MERGE, HITL_FILE),
         ):
             expected = subprocess.run(
                 ["git", "show", f"{sha}:{relative}"],
@@ -506,15 +512,48 @@ class TestInstalledBaseUpgrades:
         _assert_installed_base_rows_survive("pl4675101")
 
     @PG_MARK
-    async def test_the_upgraded_base_serves_the_durable_goal_composition(
+    async def test_an_installed_base_at_hitl_061_forward_upgrades(
         self, empty_database, tmp_path
+    ) -> None:
+        """Landed 061 means HITL, not Goals: never skip the new Goal DDL."""
+        if not _have_commit(HITL_MERGE):
+            pytest.skip("develop HITL merge commit is not present in this checkout")
+        snapshot = _snapshot_tree(HITL_MERGE, tmp_path / "hitl061")
+        built = _alembic("upgrade", "head", cwd=snapshot)
+        assert built.returncode == 0, built.stderr
+        assert _stamp() == "061"
+        assert set(GOAL_TABLES) & _tables() == set()
+        hitl_index = _query(
+            "select indexdef from pg_indexes where schemaname = 'public' "
+            "and indexname = 'ix_graph_continuations_hitl_paused'"
+        )
+        assert len(hitl_index) == 1
+        _insert_installed_base_rows("hitl061")
+
+        result = _alembic("upgrade", "head")
+        assert result.returncode == 0, result.stderr
+        _assert_goal_upgrade_completed()
+        _assert_installed_base_rows_survive("hitl061")
+        assert (
+            _query(
+                "select indexdef from pg_indexes where schemaname = 'public' "
+                "and indexname = 'ix_graph_continuations_hitl_paused'"
+            )
+            == hitl_index
+        )
+        await _drive_and_reopen_the_durable_composition("hitl061")
+
+    @PG_MARK
+    @pytest.mark.parametrize("snapshot_commit", [USER_MODEL_MERGE, PLANNER_MERGE])
+    async def test_the_upgraded_base_serves_the_durable_goal_composition(
+        self, empty_database, tmp_path, snapshot_commit
     ) -> None:
         """After the upgrade the product can use what it built: Goals,
         revisions and immutable bound Run provenance, written and then read
         back through fresh stores on the upgraded schema."""
-        if not _have_commit(PLANNER_MERGE):
+        if not _have_commit(snapshot_commit):
             pytest.skip("develop merge commits are not present in this checkout")
-        snapshot = _snapshot_tree(PLANNER_MERGE, tmp_path / "4675101-comp")
+        snapshot = _snapshot_tree(snapshot_commit, tmp_path / "installed-comp")
         built = _alembic("upgrade", "head", cwd=snapshot)
         assert built.returncode == 0, built.stderr
         result = _alembic("upgrade", "head")

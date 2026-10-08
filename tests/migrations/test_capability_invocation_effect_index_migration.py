@@ -35,11 +35,13 @@ sync then lands its ``043_invocation_quota_door`` (#1196/#718) on that
 develop's ``054`` and ``055`` as ``056`` in their own two collisions — revise
 the quota door; #863's planner-stability revision — numbered ``052`` when
 written, re-parented onto each tip in the earlier collisions — follows the
-``056_user_model_facts`` tip as ``057``, so the planner-stability revision follows it. The incoming Gauntlet provenance
-revision continues that chain as ``058_learning_validation_provenance``,
-and backlog work-source/cutover revisions continue it as ``059``/``060``.
-The canonical Goal store appends as ``061`` without reassigning the merged
-user-model ``056`` or planner-stability ``057`` identities.
+``056_user_model_facts`` tip as ``057``, so the planner-stability revision follows it. The Gauntlet provenance
+revision continues that chain as ``058_learning_validation_provenance``;
+the backlog pair (#98/#102) claims the next two slots as ``059``/``060``;
+and #1109's pause-kind projection — ``059`` when written on that same
+``058`` tip — landed on develop as ``061_hitl_pause_kind_index``.
+The unmerged canonical Goal store appends as ``062`` without reassigning
+any of those merged identities.
 """
 
 from __future__ import annotations
@@ -178,8 +180,6 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     directory = ScriptDirectory.from_config(config)
 
-    assert directory.get_heads() == ["061"]
-    walked = {item.revision for item in directory.walk_revisions("base", "061")}
     # The claim chain this branch folded the #1194 corrections into, and every
     # develop collision the chronicle above records, must stay on the one
     # linear path to the head. Develop's #1756 learning-applicability
@@ -188,17 +188,26 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     # `054_task_admission_generations` — itself re-parented onto this
     # chain's `053` tip at the previous develop sync — to `055`; the
     # develop #55 effect-path sync added `043_invocation_quota_door`
-    # (#1196/#718) on that tip; this sync's #1047 user-model tables —
-    # re-parented past develop's `054` and `055` as `056` in their own
-    # two collisions — revise the quota door; and #863's planner-stability
-    # revision — numbered `052` when written, re-parented onto each tip in
-    # the earlier collisions — follows develop's `056_user_model_facts` tip
-    # as `057`. Develop's Gauntlet provenance ledger (#118, M4-B2) follows
-    # that as `058_learning_validation_provenance`; the backlog work-source
-    # migration (#98) and the authority-cutover ledger (#102) — which took
-    # `058`/`059` in the previous sync — re-parent past it as `059`/`060`,
-    # then the canonical Goal store appends as 061 without changing any
-    # merged identity. Installed-base upgrade tests cover 056/057 preservation.
+    # (#1196/#718) on that tip; the #1047 user-model tables — re-parented
+    # past develop's `054` and `055` as `056` in their own two collisions —
+    # revise the quota door; #863's planner-stability revision — numbered
+    # `052` when written, re-parented onto each tip in the earlier
+    # collisions — follows develop's `056_user_model_facts` tip as `057`;
+    # the Gauntlet provenance ledger (#118, M4-B2) follows that as
+    # `058_learning_validation_provenance`; and the backlog work-source
+    # migration (#98) and the authority-cutover ledger (#102) re-parent
+    # past it as `059`/`060`. Develop's M1-B2 work (#1326) then deleted the
+    # superseded standalone `043`/`045` revisions — the effect-index reshape
+    # and logical-effect discriminator lost to the 035 fold and the
+    # `effect_scope` design at the 55be1459 sync — so the chain runs 044 ->
+    # 046 directly. #1109's pause-kind projection (M1-B8) — `059` when
+    # written on that same `058` tip — renumbers past the backlog pair (a
+    # landed trunk migration never moves; 046 records the convention),
+    # re-parenting onto develop's `060` as `061_hitl_pause_kind_index`.
+    # The unmerged Goal migration follows as `062`; installed-base upgrade
+    # tests cover the preserved 056/057/061 identities and forward upgrade.
+    assert directory.get_heads() == ["062"]
+    walked = {item.revision for item in directory.walk_revisions("base", "062")}
     assert {
         "034_canonical_run_effect_claim",
         "034",
@@ -222,6 +231,7 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
         "059",
         "060",
         "061",
+        "062",
     } <= walked
     # The superseded standalone revisions must stay gone: resurrecting either
     # re-forks the chain (a second head) or re-applies DDL no store declares —

@@ -19,7 +19,7 @@ No execution state lives here: the canonical `Goal -> Graph -> Run ->
 NodeRun -> Attempt` spine keeps its own primitives, and a Run carries its
 Goal binding as payload provenance written once at admission (#1572).
 
-Numbered 061, continuing the integrated 060 backlog authority cutover.
+Numbered 062, continuing the integrated 061 HITL pause-kind projection.
 The installed base
 already carries two merged migration identities this store must not reuse:
 develop received the user-model tables as ``056_user_model_facts`` (#1951's
@@ -33,14 +33,15 @@ forbids it: merged identities keep their meaning and ancestry, and a new
 revision appends after the integrated develop head under a centrally
 coordinated, unused id. So this store restores develop's ``056``/``057``
 byte-for-byte, leaves develop's ``058`` learning-validation provenance in
-place along with backlog ``059``/``060``, and appends here as ``061`` —
+place along with backlog ``059``/``060`` and HITL ``061``, and appends
+here as ``062`` —
 one linear head, no duplicate revision
 ids, and an installed base that upgrades forward without a stamp
 edit (`tests/migrations/test_goal_installed_base_upgrade.py` drives exactly
 that walk against real ``c560d4c``/``4675101`` databases).
 
-Revision ID: 061
-Revises: 060 (060_backlog_authority_cutover)
+Revision ID: 062
+Revises: 061 (061_hitl_pause_kind_index)
 Create Date: 2026-10-03
 """
 
@@ -48,8 +49,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "061"
-down_revision = "060"
+revision = "062"
+down_revision = "061"
 branch_labels = None
 depends_on = None
 

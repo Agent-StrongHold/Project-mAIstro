@@ -3,7 +3,7 @@
 Follows the campaigns rule: the store rides the database the deployment
 already selected, and a deployment that cannot honour durability is told so
 loudly instead of silently losing canonical Goals on restart. A PostgreSQL
-pool selects the durable ``PgGoalStore`` **only** when the migration-061
+pool selects the durable ``PgGoalStore`` **only** when the migration-062
 tables are present — a pool that has not run `alembic upgrade head` must not
 be answered with an in-process store that only looks the same, which is the
 split-backend defect `workspaces/wiring.py` documents. SQLite selects its twin
@@ -22,7 +22,7 @@ from maistro.types.errors import ConfigError
 logger = logging.getLogger(__name__)
 
 #: Tables the PostgreSQL Goal store needs before it may be selected.
-#: Migration `061_canonical_goals` owns them.
+#: Migration `062_canonical_goals` owns them.
 GOAL_PG_TABLES: Final = (
     "canonical_goals",
     "canonical_goal_revisions",

@@ -7,7 +7,7 @@ a library, not composition. So this file proves three claims:
 
 * **Backend selection** — `wire_goal_store` picks the durable twin over the
   SQLite pool the deployment already has, the PostgreSQL store over a pool
-  whose migration-061 tables exist, and refuses to answer an *unmigrated*
+  whose migration-062 tables exist, and refuses to answer an *unmigrated*
   PostgreSQL pool with an in-process store that merely looks the same (the
   split-backend defect the Workspace wiring documents). No database at all
   means the in-memory reference — loudly, since canonical Goals that die with
