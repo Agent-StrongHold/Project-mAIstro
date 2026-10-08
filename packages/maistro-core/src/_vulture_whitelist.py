@@ -59,6 +59,19 @@ from maistro.extensions.metering import (
     ExtensionQuotaLedger,
     ExtensionUsageEvent,
 )
+from maistro.extensions.policy import (
+    ExtensionPolicyLedger,
+    ResolvedExtensionPolicy,
+    TenantScopedExtensionState,
+    TenantStateView,
+)
+from maistro.extensions.quarantine import (
+    ActorKind,
+    AdmissionDecision,
+    ExtensionGovernanceService,
+    GovernanceDecision,
+    InFlightDisposition,
+)
 from maistro.extensions.resolution import LockState
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
@@ -528,4 +541,44 @@ _VULTURE_WHITELIST = (
     # (packages/maistro-core/tests/extensions/test_effective_authority.py) — the
     # same contract-ships-first posture as the seams above.
     EffectiveAuthority.with_execution_context,
+    # Organization/Workspace extension policy governance (M9-G3, #971). The
+    # ledger's mutation surface is the admin/operator API: org allow/deny,
+    # Workspace overrides, and server-side version pinning, resolved into the
+    # #969 Workspace layer through `ResolvedExtensionPolicy.workspace_layer`.
+    # Hosts wire these to policy administration and the #976 identity
+    # propagation; until then the callers are the governance suite
+    # (packages/maistro-core/tests/extensions/test_extension_policy_governance.py)
+    # — the same contract-ships-first posture as the seams above.
+    ExtensionPolicyLedger.set_org_policy,
+    ExtensionPolicyLedger.set_workspace_override,
+    ExtensionPolicyLedger.pin_version,
+    ExtensionPolicyLedger.table_digest,
+    ResolvedExtensionPolicy.workspace_layer,
+    # Tenant-scoped extension state (#971): caches/checkpoints/config keyed by
+    # (org, workspace); the view factory is the only way in, and the view is
+    # the tenant-facing seam until host wiring lands.
+    TenantScopedExtensionState.view,
+    TenantStateView.put,
+    TenantStateView.pop,
+    TenantStateView.keys,
+    # Extension quarantine/suspension (M9-G4, #972). The governance service is
+    # the single admission gate and the only writer of suspension state; hosts
+    # call it from their invocation seams and consume decisions
+    # (`AdmissionDecision.governing_state`), leases, and the TERMINATE
+    # disposition policy; the EXTENSION actor kind exists to be refused. Its
+    # in-tree callers are the quarantine suite
+    # (packages/maistro-core/tests/extensions/test_extension_quarantine.py)
+    # until host wiring lands — the same contract-ships-first posture.
+    ExtensionGovernanceService.begin_invocation,
+    ExtensionGovernanceService.finish_invocation,
+    ExtensionGovernanceService.disable_version,
+    ExtensionGovernanceService.quarantine_package,
+    ExtensionGovernanceService.quarantine_publisher,
+    ExtensionGovernanceService.re_enable_version,
+    ExtensionGovernanceService.re_enable_package,
+    ExtensionGovernanceService.re_enable_publisher,
+    AdmissionDecision.governing_state,
+    GovernanceDecision.suspended,
+    ActorKind.EXTENSION,
+    InFlightDisposition.TERMINATE,
 )
