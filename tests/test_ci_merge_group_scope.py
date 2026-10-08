@@ -139,3 +139,13 @@ def test_minimum_dependencies_gate_change_runs_wheel_imports_leg() -> None:
     assert result["wheel_imports"] is True
     assert result["docker_build"] is True
     assert result["postgres"] is False
+
+
+def test_wheel_imports_verifier_change_runs_wheel_imports_leg() -> None:
+    # The wheel-imports job invokes scripts/verify-wheel-imports.py directly,
+    # so a merge-group candidate changing only that verifier must still run
+    # the leg instead of quietly dropping the wheel contract from the queue.
+    result = classify(["scripts/verify-wheel-imports.py"])
+    assert result["wheel_imports"] is True
+    assert result["docker_build"] is True
+    assert result["postgres"] is False
