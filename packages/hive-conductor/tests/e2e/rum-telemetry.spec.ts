@@ -207,7 +207,12 @@ test.describe("RUM live collection", () => {
   let page: Page;
   /** Every /v1/rum/events payload the page sent, in order. */
   let captured: CapturedBatch[];
-  /** X-Request-ID -> URL of the first /v1 API response seen on the page. */
+  /** X-Request-ID -> URL of the first /v1 API response seen on the page.
+   * Context-scoped and never reset between tests: every id in it was issued
+   * by the server to THIS browser context, which is exactly the property the
+   * correlation assertion below states. (It used to be cleared at each test's
+   * start; see the first test for why that made the assertion fail on fast
+   * hosts.) */
   let observedRequestIds: Map<string, string>;
 
   test.beforeAll(async ({ browser }) => {
@@ -237,11 +242,37 @@ test.describe("RUM live collection", () => {
       const id = response.headers()["x-request-id"];
       if (id && !observedRequestIds.has(id)) observedRequestIds.set(id, url);
     });
+
+    // Drain the reporter's buffer before any test runs. setupIfNeeded and
+    // loginAsPM generate real API traffic on the login document, and every
+    // one of those requests buffered an api_request event whose flush is
+    // asynchronous (the 10s interval, or the pagehide/visibilitychange
+    // boundary of the NEXT navigation). On a fast host that flush lands
+    // inside the first test, after it has reset its capture state, and a
+    // pre-test request id then failed the correlation assertion below (4/4
+    // attempts at HEAD e0f4f6b22, each id traced to a genuine pre-test
+    // backend log line). pagehide is the reporter's lifecycle flush;
+    // `flush()` splices the buffer synchronously within dispatchEvent, so
+    // the second dispatch — a no-op when the first already emptied the
+    // buffer — covers the MAX_BATCH_EVENTS overflow case. The drained
+    // batches are discarded: they describe setup traffic, not the page load
+    // under test, and the tests below reset `captured` anyway.
+    await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+    await page.waitForTimeout(200);
+    await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+    captured.length = 0;
   });
 
   test("a production page load ships finite measurements and survives the page URL's secrets", async () => {
     captured.length = 0;
-    observedRequestIds.clear();
+    // observedRequestIds is deliberately NOT cleared here. Buffered pre-test
+    // events can only leave the reporter at an asynchronous boundary (its
+    // 10s interval, or the next navigation's pagehide), and on a fast host a
+    // residue flush lands mid-test; clearing the map made such an event fail
+    // correlation even though its id was genuinely server-issued to this
+    // context. The beforeAll drain removes the buffer wholesale, and the
+    // context-scoped map keeps the assertion's meaning unchanged: an emitted
+    // id must be one the server issued for a response this page received.
     // The query string carries a secret-looking token; a page route template
     // that leaked any part of the URL would carry it to the collector.
     await page.goto(`/dashboard?next=${encodeURIComponent("/agents")}&token=${SECRET_TOKEN}`);

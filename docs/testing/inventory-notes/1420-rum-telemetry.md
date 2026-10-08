@@ -402,3 +402,39 @@ resource identifier/query. It proves the final `buildEnvelope` gate repeats
 the route allowlist before serialization instead of trusting a caller's
 claimed event shape. These are assertions within an existing Playwright test
 node, so the inventory delta is unchanged.
+
+## Fast-host correlation-drain repair (2026-10-08, head `e0f4f6b22` + this fix)
+
+`rum-telemetry.spec.ts`'s live correlation assertion
+(`expect(observedRequestIds.has(requestId)).toBe(true)`) failed 4/4 on a fast
+host (and reproduced here 1/1, same line): `beforeAll`'s setup/login traffic
+buffers `api_request` events in the reporter, whose flush is asynchronous —
+the 10s interval, or the pagehide/visibilitychange boundary of the *next*
+navigation. On a fast host that flush lands inside the first test, after it
+had cleared `observedRequestIds`, so a pre-test event's genuinely
+server-issued id failed correlation against an empty map. CI runs the suite
+with `retries: 0` (`hive-conductor-e2e-ui`), so this was a latent red job
+feeding `integration-scope`.
+
+Test-only repair, two independent halves (the spec's production assertions
+are untouched):
+
+1. **Drain at `beforeAll` end.** Two synthetic `pagehide` dispatches (the
+   second is a free no-op when the first emptied the buffer, and covers the
+   `MAX_BATCH_EVENTS` overflow case; `flush()` splices synchronously within
+   `dispatchEvent`), discarding what arrives — drained batches describe
+   setup traffic, not the page load under test.
+2. **`observedRequestIds` is no longer cleared per test.** The map is
+   context-scoped: every id in it was issued by the server to this browser
+   context, which is exactly the property the assertion states. Keeping
+   pre-test ids means any asynchronous residue that still flushes mid-test
+   correlates truthfully instead of failing against cleared state.
+
+Executed evidence (this worktree, isolated compose project on :18102, images
+rebuilt from the fixed tree): pre-fix repro — 1 failed at spec.ts:324
+correlation plus its retry; post-fix — `rum-telemetry.spec.ts` **7/7 passed
+three consecutive times** with `CI=true` (the config's retries=0 CI mode),
+then the full 158-test e2e suite, same command ci.yml's `hive-conductor-e2e-ui`
+runs, **158 passed in 2.9 m**. No test count moved: assertions within
+existing nodes plus `beforeAll` statements only; the delta above is
+unchanged.
