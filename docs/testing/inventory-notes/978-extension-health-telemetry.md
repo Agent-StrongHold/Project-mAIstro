@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +53
+  packages/maistro-core/tests: +55
   packages/maistro-server/tests: +12
 ---
 
@@ -31,7 +31,7 @@ the install store, and the operator HTTP views
   restart), the in-memory twin only for the deliberate `memory://`
   configuration.
 
-- `test_health.py` (38) — each refusal path names its acceptance
+- `test_health.py` (39) — each refusal path names its acceptance
   criterion: installed-but-incompatible (platform API re-derived now, not
   the install-day verdict), unauthorized (terminal refusal), and unhealthy
   (non-dependency failure) extensions cannot report ready; an unmeasured
@@ -44,7 +44,9 @@ the install store, and the operator HTTP views
   (with the requested identity kept verbatim; only an identity with no
   recorded evidence at all answers None); a failed observation rejects an
   embedded error whose org/workspace/extension/version provenance does not
-  match the observation's own identity; a recoverable FAILED activation
+  match the observation's own identity, and telemetry metrics must be
+  finite and non-negative at construction (negative/NaN latency or cost
+  would fabricate rankings and break the JSON response); a recoverable FAILED activation
   reports INSTALL_FAILING;
   liveness vs readiness are separate axes (dependency upgrade past the
   declared range leaves the extension live, not ready); the projection has
@@ -66,7 +68,7 @@ the install store, and the operator HTTP views
   provider marks an otherwise-clean dependent not ready, while a failure
   recorded against a superseded dependency version does not condemn the
   upgraded one.
-- `test_health_store_conformance.py` (11) — the in-memory and SQLite twins
+- `test_health_store_conformance.py` (12) — the in-memory and SQLite twins
   agree on observation/error/decision reads under every filter (scope
   containment included), with `limit` selecting the newest rows; a failed
   observation files its error in both twins; restart survival is proven by
@@ -79,7 +81,10 @@ the install store, and the operator HTTP views
   produce identical health verdicts through either twin; and two store
   instances writing one database concurrently allocate distinct sequences
   (each append opens with BEGIN IMMEDIATE, so the write lock is held across
-  the MAX(seq) read — no lost or duplicated append).
+  the MAX(seq) read — no lost or duplicated append); and both twins agree
+  on the read-limit contract (limit counts down from the newest row, 0
+  selects nothing, negative is refused — Python's rows[-0:] would return
+  every row while SQLite's LIMIT 0 returns none).
 
 **+11 `packages/maistro-server/tests/api/test_extensions_health_api.py`** —
 drives the real router over the real services: reads are authenticated like

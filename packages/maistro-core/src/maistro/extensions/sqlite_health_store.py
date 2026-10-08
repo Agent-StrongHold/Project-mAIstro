@@ -46,6 +46,7 @@ from maistro.extensions.health import (
     ExtensionOperatorState,
     ObservationOutcome,
     OperatorDecision,
+    normalize_read_limit,
 )
 from maistro.extensions.types import ExtensionScope
 from maistro.sqlite_schema import serialized_schema_upgrade
@@ -379,6 +380,7 @@ class SqliteExtensionHealthStore:
             + " AND ".join(clauses)
             + " ORDER BY event_seq DESC"
         )
+        normalize_read_limit(limit)
         if limit is not None:
             query += " LIMIT ?"
             parameters.append(int(limit))

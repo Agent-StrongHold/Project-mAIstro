@@ -189,6 +189,28 @@ async def test_twins_agree_on_decision_order_and_newest_wins(pair: TwinPair) -> 
         assert await store.decisions(OTHER_SCOPE) == ()
 
 
+async def test_twins_agree_on_zero_and_refuse_negative_limits(pair: TwinPair) -> None:
+    """The shared read-limit contract: a limit counts down from the newest
+    row, so 0 selects nothing, and a negative limit is refused — Python's
+    ``rows[-0:]`` would return every row while SQLite's ``LIMIT 0`` returns
+    none, and the twins claim conformance."""
+    for index in range(3):
+        observation = _observation(f"obs-limit-{index}")
+        await pair.memory.append_observation(observation)
+        await pair.sqlite.append_observation(observation)
+
+    for store in (pair.memory, pair.sqlite):
+        assert await store.observations(SCOPE, limit=0) == ()
+        assert await store.observations(SCOPE, limit=2) == (
+            _observation("obs-limit-1"),
+            _observation("obs-limit-2"),
+        )
+        with pytest.raises(ValueError, match="non-negative"):
+            await store.observations(SCOPE, limit=-1)
+        with pytest.raises(ValueError, match="non-negative"):
+            await store.errors(SCOPE, limit=-1)
+
+
 async def test_health_survives_restart_on_the_sqlite_twin(tmp_path: Path) -> None:
     """Acceptance: health status survives restart. The same operations are
     driven through one SQLite database across a close/reopen; every read the

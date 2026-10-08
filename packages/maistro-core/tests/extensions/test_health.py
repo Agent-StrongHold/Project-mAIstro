@@ -474,6 +474,22 @@ async def test_failed_observation_rejects_mismatched_error_provenance() -> None:
     ExtensionObservation(error=_error("err-match"), **kwargs)
 
 
+def test_observation_metrics_must_be_finite_and_non_negative() -> None:
+    """Rankings and aggregates read latency and cost as *measured*: a
+    negative or non-finite value would fabricate rankings (NaN and infinity
+    would also break the JSON telemetry response), so construction refuses
+    them. Unmeasured cost stays None — absent, not zero."""
+    for latency_ms in (-1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="latency_ms"):
+            _observation("obs-bad", latency_ms=latency_ms)
+    for cost_units in (-0.5, float("nan"), float("-inf")):
+        with pytest.raises(ValueError, match="cost_units"):
+            _observation("obs-bad", cost_units=cost_units)
+    assert _observation("obs-unmeasured").cost_units is None
+    zero = _observation("obs-zero", latency_ms=0.0, cost_units=0.0)
+    assert zero.latency_ms == 0.0 and zero.cost_units == 0.0
+
+
 # --------------------------------------------------------------------------
 # Acceptance: errors preserve extension/version/dependency provenance
 # --------------------------------------------------------------------------

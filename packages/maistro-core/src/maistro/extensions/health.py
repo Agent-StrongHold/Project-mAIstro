@@ -48,6 +48,7 @@ activation — never from a copy that could drift.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -228,6 +229,20 @@ class ExtensionObservation:
 
     def __post_init__(self) -> None:
         _require_aware_at("ExtensionObservation", self.at)
+        if not math.isfinite(self.latency_ms) or self.latency_ms < 0:
+            raise ValueError(
+                "latency_ms must be a finite, non-negative measurement; "
+                "a negative or non-finite latency would fabricate rankings "
+                "and aggregates"
+            )
+        if self.cost_units is not None and (
+            not math.isfinite(self.cost_units) or self.cost_units < 0
+        ):
+            raise ValueError(
+                "cost_units must be a finite, non-negative measurement or None "
+                "(unmeasured); a negative or non-finite cost would fabricate "
+                "cost aggregation"
+            )
         if self.outcome is ObservationOutcome.FAILURE and self.error is None:
             raise ValueError("a failed observation must carry its classified ExtensionErrorRecord")
         if self.outcome is ObservationOutcome.SUCCESS and self.error is not None:
@@ -1042,6 +1057,19 @@ def operator_state_for(
     return decision.state if decision is not None else ExtensionOperatorState.ENABLED
 
 
+def normalize_read_limit(limit: int | None) -> int | None:
+    """The read-limit contract both store twins enforce.
+
+    ``None`` means unlimited; a limit counts down from the newest row, so
+    ``0`` selects nothing and a negative limit is refused rather than being
+    silently reinterpreted: Python's ``rows[-0:]`` returns every row while
+    SQLite's ``LIMIT 0`` returns none, and the twins claim conformance.
+    """
+    if limit is not None and limit < 0:
+        raise ValueError(f"limit must be non-negative, got {limit}")
+    return limit
+
+
 class InMemoryExtensionHealthStore:
     """Process-lifetime reference implementation of
     :class:`ExtensionHealthStore`.
@@ -1087,7 +1115,10 @@ class InMemoryExtensionHealthStore:
             and (extension_id is None or observation.extension_id == extension_id)
             and (version is None or observation.version == version)
         ]
-        return tuple(rows[-limit:] if limit is not None else rows)
+        limit = normalize_read_limit(limit)
+        if limit is not None:
+            rows = rows[-limit:] if limit > 0 else []
+        return tuple(rows)
 
     async def errors(
         self,
@@ -1107,7 +1138,10 @@ class InMemoryExtensionHealthStore:
             and (version is None or error.version == version)
             and (kind is None or error.kind is kind)
         ]
-        return tuple(rows[-limit:] if limit is not None else rows)
+        limit = normalize_read_limit(limit)
+        if limit is not None:
+            rows = rows[-limit:] if limit > 0 else []
+        return tuple(rows)
 
     async def append_decision(self, decision: OperatorDecision) -> None:
         self._decisions.append(decision)
