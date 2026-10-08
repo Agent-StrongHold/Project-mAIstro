@@ -1148,6 +1148,66 @@
       "notes": "Pinned publisher identities (M9-B1): one row per publisher, written once at first registration; re-registration under a different signing key is refused (PublisherKeyConflict), so the trust root a historical install record was verified against cannot drift. Kept forever on purpose: install records name their publisher by snapshot, and removing the publisher row would orphan the evidence the epic requires to stay queryable after disable/remove (#939)."
     },
     {
+      "table": "extension_usage_events",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/extensions/metering.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Extension-attributed usage rows (#977): one physical record per canonical invocation (UNIQUE invocation_id) plus host-measured extension resources; nested delegation rides the same rows as lineage, never additive copies. No DELETE; aggregation is the read path. #325."
+    },
+    {
+      "table": "extension_quota_policies",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/extensions/metering.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Registered Workspace/org budget and rate-limit policies (#977); immutable by policy_id, a new policy version needs a new id. No DELETE; #325."
+    },
+    {
+      "table": "extension_quota_reservations",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/extensions/metering.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "One row per extension reservation attempt (#977): admission state machine (held/settled/released/denied) with committed refusal evidence; denial rows never charge. No DELETE; #325."
+    },
+    {
+      "table": "extension_quota_allocations",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/extensions/metering.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Per-policy hold/spend rows for one extension reservation (#977). Holds release to zero on refund; settled spend may truthfully exceed the limit (overage). No DELETE; #325."
+    },
+    {
+      "table": "extension_quota_evidence",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/extensions/metering.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Versioned absolute settlements/corrections per reservation (#977): revision 0 is the canonical commit, positive revisions are provider-reported corrections; stale revisions are kept as evidence but never roll accounting backwards. No DELETE; #325."
+    },
+    {
       "table": "session_turns",
       "backends": [
         "postgres",

@@ -392,12 +392,25 @@ jobs:
           MAISTRO_REQUIRE_PG_LEGS: "1"
         run: uv run pytest packages/maistro-server/tests/api/test_canvas_supported_path.py -v --tb=short
 
+      - name: Hive scheduler tick uses canonical due state on both SQL backends
+        env:
+          MAISTRO_REQUIRE_PG_LEGS: "1"
+        run: |
+          uv run pytest packages/maistro-core/tests/scheduling -v --tb=short
+          uv run pytest packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py -v --tb=short
+
   object-storage:
     needs: workflow-lint
+    # One scope policy for both candidate events (#1351): on pull_request and
+    # develop merge groups the job runs exactly when the measured classifier
+    # output selects its leg. Non-candidate events (protected-branch pushes)
+    # and merge groups onto any other base run unconditionally. gates-ran and
+    # integration-scope apply the same classifier to the same events, so a
+    # skip a producer chose is always a skip the evaluators can judge.
     if: >-
-      github.event_name != 'merge_group' ||
-      github.event.merge_group.base_ref != 'refs/heads/develop' ||
-      needs.workflow-lint.outputs.object_storage == 'true'
+      needs.workflow-lint.outputs.object_storage == 'true' ||
+      (github.event_name != 'merge_group' && github.event_name != 'pull_request') ||
+      (github.event_name == 'merge_group' && github.event.merge_group.base_ref != 'refs/heads/develop')
     # MinIO, not moto. The default `test` job already runs the archive suite
     # against an in-process moto server, which is a real HTTP S3 implementation
     # and enough to catch our own mistakes. MinIO is what people actually run,
@@ -649,9 +662,9 @@ jobs:
   durable-events:
     needs: workflow-lint
     if: >-
-      github.event_name != 'merge_group' ||
-      github.event.merge_group.base_ref != 'refs/heads/develop' ||
-      needs.workflow-lint.outputs.durable_events == 'true'
+      needs.workflow-lint.outputs.durable_events == 'true' ||
+      (github.event_name != 'merge_group' && github.event_name != 'pull_request') ||
+      (github.event_name == 'merge_group' && github.event.merge_group.base_ref != 'refs/heads/develop')
     # The PostgreSQL legs of the durable-event suites (#135) skip without a
     # server, and a skipped leg is untested rather than passing — which is how
     # "durable events" stayed in-memory on PostgreSQL unnoticed in the first
@@ -707,9 +720,9 @@ jobs:
   strike-ladder:
     needs: workflow-lint
     if: >-
-      github.event_name != 'merge_group' ||
-      github.event.merge_group.base_ref != 'refs/heads/develop' ||
-      needs.workflow-lint.outputs.strike_ladder == 'true'
+      needs.workflow-lint.outputs.strike_ladder == 'true' ||
+      (github.event_name != 'merge_group' && github.event_name != 'pull_request') ||
+      (github.event_name == 'merge_group' && github.event.merge_group.base_ref != 'refs/heads/develop')
     # The PostgreSQL leg of the strike conformance suite (#134) skips without a
     # server, and the plain `test` job has none — so the suite that exists to
     # prove `PgStrikeTracker` matches the protocol was only ever exercising
@@ -757,9 +770,9 @@ jobs:
   hive-conductor-e2e-ui:
     needs: workflow-lint
     if: >-
-      github.event_name != 'merge_group' ||
-      github.event.merge_group.base_ref != 'refs/heads/develop' ||
-      needs.workflow-lint.outputs.hive_e2e == 'true'
+      needs.workflow-lint.outputs.hive_e2e == 'true' ||
+      (github.event_name != 'merge_group' && github.event_name != 'pull_request') ||
+      (github.event_name == 'merge_group' && github.event.merge_group.base_ref != 'refs/heads/develop')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -821,9 +834,9 @@ jobs:
   hive-conductor-e2e:
     needs: workflow-lint
     if: >-
-      github.event_name != 'merge_group' ||
-      github.event.merge_group.base_ref != 'refs/heads/develop' ||
-      needs.workflow-lint.outputs.hive_e2e == 'true'
+      needs.workflow-lint.outputs.hive_e2e == 'true' ||
+      (github.event_name != 'merge_group' && github.event_name != 'pull_request') ||
+      (github.event_name == 'merge_group' && github.event.merge_group.base_ref != 'refs/heads/develop')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -861,9 +874,9 @@ jobs:
   wheel-imports:
     needs: workflow-lint
     if: >-
-      github.event_name != 'merge_group' ||
-      github.event.merge_group.base_ref != 'refs/heads/develop' ||
-      needs.workflow-lint.outputs.wheel_imports == 'true'
+      needs.workflow-lint.outputs.wheel_imports == 'true' ||
+      (github.event_name != 'merge_group' && github.event_name != 'pull_request') ||
+      (github.event_name == 'merge_group' && github.event.merge_group.base_ref != 'refs/heads/develop')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -940,9 +953,9 @@ jobs:
   docker-build:
     needs: workflow-lint
     if: >-
-      github.event_name != 'merge_group' ||
-      github.event.merge_group.base_ref != 'refs/heads/develop' ||
-      needs.workflow-lint.outputs.docker_build == 'true'
+      needs.workflow-lint.outputs.docker_build == 'true' ||
+      (github.event_name != 'merge_group' && github.event_name != 'pull_request') ||
+      (github.event_name == 'merge_group' && github.event.merge_group.base_ref != 'refs/heads/develop')
     runs-on: ubuntu-latest
     # Sized for the COLD path, not the warm one. Every image below COPYs
     # maistro-core (or all of packages/) BEFORE its dependency-install layer,
@@ -1314,8 +1327,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Resolve specialized merge-group scope
+      - name: Resolve specialized candidate scope
         id: scope
+        # Path-scopes pull_request and merge_group candidates with the same
+        # classifier (#1351); unmeasured evidence fails closed to every leg.
         run: python3 scripts/ci_merge_group_scope.py --github-outputs >> "$GITHUB_OUTPUT"
       # `--retry` on both: these fetch from github.com/releases, which returns a
       # 502 often enough to matter. One did on this job, and the whole check
