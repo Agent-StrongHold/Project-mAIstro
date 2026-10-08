@@ -328,14 +328,26 @@ export function buildApiRequestEvent(fields: Record<string, unknown>): ApiReques
  * raw-input builders above are for constructing events; re-running them on
  * built events would wrongly demand pre-normalization inputs like `rawPath`.)
  */
+function isAllowedBuiltRoute(value: unknown, type: RumEvent["type"]): value is string {
+  if (value === UNKNOWN_ROUTE) return true;
+  if (typeof value !== "string" || value.length > MAX_ROUTE_LENGTH) return false;
+  if (type === "api_request") {
+    if (value === "/health" || value === "/health/*") return true;
+    const match = /^\/v1\/([A-Za-z0-9._-]{1,64})(?:\/\*)?$/.exec(value);
+    return match !== null && API_COLLECTION_ROOTS.has(match[1]);
+  }
+  if (value === "/") return true;
+  const match = /^\/([a-z0-9-]{1,40})(?:\/\*)?$/.exec(value);
+  return match !== null && PAGE_ROUTE_ROOTS.has(match[1]);
+}
+
 function isBuiltRumEvent(event: Record<string, unknown>): event is RumEvent {
   if (event["type"] === "web_vital") {
     return (
       typeof event["name"] === "string" &&
       isWebVitalName(event["name"]) &&
       isFiniteNonNegative(event["value_ms"]) &&
-      typeof event["route"] === "string" &&
-      event["route"].length <= MAX_ROUTE_LENGTH &&
+      isAllowedBuiltRoute(event["route"], "web_vital") &&
       typeof event["ts"] === "number" &&
       Number.isFinite(event["ts"])
     );
@@ -345,8 +357,7 @@ function isBuiltRumEvent(event: Record<string, unknown>): event is RumEvent {
     return (
       typeof event["method"] === "string" &&
       HTTP_METHOD_RE.test(event["method"]) &&
-      typeof event["route"] === "string" &&
-      event["route"].length <= MAX_ROUTE_LENGTH &&
+      isAllowedBuiltRoute(event["route"], "api_request") &&
       typeof event["status_class"] === "number" &&
       [0, 2, 3, 4, 5].includes(event["status_class"]) &&
       (outcome === "ok" ||

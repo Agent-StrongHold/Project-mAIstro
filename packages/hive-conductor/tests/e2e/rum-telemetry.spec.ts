@@ -171,6 +171,23 @@ test.describe("RUM schema redaction rules", () => {
         events: [{ ...built, request_id: "has spaces" }],
       }),
     ).toBeNull();
+    // `buildEnvelope` is the final gate before the network. It must repeat
+    // the route allowlist rather than trusting an object claimed to be built:
+    // a direct caller cannot use it to send a raw resource id or query.
+    expect(
+      buildEnvelope({
+        buildId: "spec-build",
+        sessionId: "sess01aaaaaa",
+        events: [{ ...built, route: "/v1/agents/customer-secret?token=secret" }],
+      }),
+    ).toBeNull();
+    expect(
+      buildEnvelope({
+        buildId: "spec-build",
+        sessionId: "sess01aaaaaa",
+        events: [{ type: "web_vital", name: "LCP", value_ms: 1, route: "/customer-secret", ts: 0 }],
+      }),
+    ).toBeNull();
     expect(buildEnvelope({ buildId: "spec-build", sessionId: "sess01aaaaaa", events: [] })).toBeNull();
   });
 });

@@ -393,3 +393,12 @@ override now uses the `!override` tag, the merged config publishes only
 
 No test count moved this round (delta above unchanged); the additions are
 the committed port override and the RUM.md pointer to it.
+
+## Final wire-gate regression (2026-10-08)
+
+The existing Node-side `the flush envelope accepts built api_request events`
+case now also passes forged already-built API and page events carrying a raw
+resource identifier/query. It proves the final `buildEnvelope` gate repeats
+the route allowlist before serialization instead of trusting a caller's
+claimed event shape. These are assertions within an existing Playwright test
+node, so the inventory delta is unchanged.
