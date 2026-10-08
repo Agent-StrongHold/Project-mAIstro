@@ -20,35 +20,48 @@ unblocked), and every result is advisory evidence for the research record.
 Headline experimental results this module pins (full record and the INCUBATE
 disposition live in ``docs/research/890-crosshair-symbolic-execution-pure-invariants.md``):
 
-- Two boundary mutants that the entire existing suite misses (the hand-written
-  policy suite AND the Hypothesis formal models) are caught by CrossHair with
-  exact minimal counterexamples: ``BudgetRule`` ``>`` → ``>=`` (denies at the
-  boundary) and ``normalized_daily_budget`` ``/30.0`` → ``/31.0`` (rewrites the
-  documented 30-day flattening).
-- One documented deterministic false positive (untyped-int input at the
-  float-range boundary): CrossHair reports a counterexample whose printed input
-  satisfies the contract when replayed concretely. The replay-triage step below
-  pins that class so it cannot silently become trust.
-- One honest miss (``ForbiddenPairRule`` self-pair mutant): the discriminating
-  input region needs a single-entry ``counts_by_kind`` dict, which CrossHair
-  cannot construct within budget — the applicability boundary, recorded.
+- On every mutant the existing suites catch (``BudgetRule`` ``>`` → ``>=``,
+  ``/30.0`` → ``/31.0``, the ``expand_scopes`` category drop), CrossHair catches
+  the same defect and returns a minimal concrete counterexample where the
+  sampling suites shrink to a strategy-level example. An earlier submission
+  claimed detection gaps the suites do not have; that was a mutant-isolation
+  artifact (pytest's ``pythonpath`` ini overrides a bare ``PYTHONPATH``
+  prepend inside pytest) and is withdrawn — the research note records the
+  corrected battery.
+- One documented false positive (untyped-int input at the float-range
+  boundary): CrossHair reports a counterexample whose printed input satisfies
+  the contract when replayed concretely. Surfacing it needs a per-path budget
+  AND a solver that reaches the boundary region within that budget — both
+  machine-dependent — so its pin is opt-in (see
+  ``test_documented_false_positive_replays_clean``), never a merge gate.
+- One honest miss (``ForbiddenPairRule`` self-pair mutant, observed in the
+  session whose full contract set was not preserved): the discriminating input
+  region needs a single-entry ``counts_by_kind`` dict, which CrossHair could
+  not construct within budget — the applicability boundary, recorded.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 NOTE_PATH = REPO_ROOT / "docs" / "research" / "890-crosshair-symbolic-execution-pure-invariants.md"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
-#: CI-profile contract set (6 of the 17 documented contracts). Chosen to keep
-#: the subprocess under ~25s wall while pinning one contract per real seam.
-#: Float-heavy scarcity contracts stay in the research note's out-of-CI set.
+#: CI-profile contract set (6 of the 17 session contracts). Bounded so the
+#: whole subprocess stays far under CI's 30 s per-test kill (measured ~7 s wall
+#: at per-path budget 5) while pinning one contract per real seam. A budget
+#: this tight makes the profile a satisfiability/analyzability pin, not a
+#: completeness claim — heavy analysis stays in the research note's
+#: out-of-CI set. (The other 11 session contracts were not preserved; see the
+#: research note's reproducibility note.)
 CONTRACT_PROTOTYPE_SOURCE = '''\
 """M8-A10 (#890) CrossHair prototype: contracts over real maistro pure seams."""
 from maistro.auth._types import CATEGORY_SCOPES, Scope, ScopeCategory, expand_scopes
@@ -92,11 +105,24 @@ def monthly_budget_is_thirtieth(free_tokens: int) -> float:
     return normalized_daily_budget(free_tokens, "monthly")
 
 
-def unknown_cycle_raises(cycle: str) -> float:
+# PEP 316 ``raises:`` only PERMITS an exception; it never requires one, so a
+# bare ``raises: UnknownBillingCycleError`` clause would keep passing if the
+# seam were mutated to return normally on unsupported cycles. The wrapper
+# converts the documented exception into a postcondition-checked sentinel:
+# the ``post:`` fails on any normal return, so the unknown-cycle invariant is
+# actually enforced (pinned by test_unknown_cycle_contract_catches_mutant).
+_UNKNOWN_CYCLE_ACK = "UnknownBillingCycleError observed"
+
+
+def unknown_cycle_raises(cycle: str) -> str:
     """pre: cycle not in SUPPORTED_BILLING_CYCLES
-    raises: UnknownBillingCycleError
+    post: __return__ == _UNKNOWN_CYCLE_ACK
     """
-    return normalized_daily_budget(1, cycle)
+    try:
+        normalized_daily_budget(1, cycle)
+    except UnknownBillingCycleError:
+        return _UNKNOWN_CYCLE_ACK
+    return "returned without raising"
 
 
 def budget_rule_iff(rule: BudgetRule, action: Action, prospective: SequenceState):
@@ -132,6 +158,34 @@ def known_cycle_never_raises(cycle: str, free_tokens: int) -> float:
 
 #: The counterexample input CrossHair prints (int at the float-range boundary).
 FALSE_POSITIVE_INPUT = 179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858369
+
+#: Mutant of the SEAM (not the contract): the unknown-cycle error is swallowed
+#: and the call returns normally. If the sentinel postcondition is doing the
+#: work — not a permissive ``raises:`` clause — CrossHair must report
+#: ``unknown_cycle_raises``. This shows the contract fails against the
+#: regression it names (AGENTS.md: "Show a new test fails against the
+#: regression it names").
+UNKNOWN_CYCLE_MUTANT_SOURCE = '''\
+from maistro.types.model import SUPPORTED_BILLING_CYCLES, UnknownBillingCycleError
+
+
+def normalized_daily_budget(free_tokens: int, cycle: str) -> float:
+    return float(free_tokens)  # mutant: swallows unknown cycles
+
+
+_UNKNOWN_CYCLE_ACK = "UnknownBillingCycleError observed"
+
+
+def unknown_cycle_raises(cycle: str) -> str:
+    """pre: cycle not in SUPPORTED_BILLING_CYCLES
+    post: __return__ == _UNKNOWN_CYCLE_ACK
+    """
+    try:
+        normalized_daily_budget(1, cycle)
+    except UnknownBillingCycleError:
+        return _UNKNOWN_CYCLE_ACK
+    return "returned without raising"
+'''
 
 #: Modules scanned for the applicability map (E1). Each imports cleanly under
 #: CrossHair but contains no checkable functions: imports are not the barrier,
@@ -195,17 +249,33 @@ def test_contract_prototype_passes_against_production(tmp_path: Path) -> None:
 
     Exit 0 with empty output = no counterexample found on the documented
     domains. This is NOT proof of correctness (the issue's own warning); it
-    pins that the contracts are satisfiable and the seams stay analyzable.
+    pins that the contracts are satisfiable and the seams stay analyzable,
+    at a per-path budget that keeps the whole run far under CI's 30 s
+    per-test kill even on a runner several times slower than a workstation.
     """
     result = _run_crosshair(
         CONTRACT_PROTOTYPE_SOURCE,
         tmp_path,
         "m8a_ci_contracts.py",
         "--per_path_timeout",
-        "60",
+        "5",
     )
     assert result.returncode == 0, f"stdout={result.stdout} stderr={result.stderr}"
     assert result.stdout.strip() == ""
+
+
+def test_unknown_cycle_contract_catches_mutant(tmp_path: Path) -> None:
+    """The sentinel postcondition, not ``raises:``, requires the exception.
+
+    PEP 316 ``raises:`` declares which exceptions MAY escape, so a mutant of
+    ``normalized_daily_budget`` that returns normally for unsupported cycles
+    would satisfy a bare ``raises: UnknownBillingCycleError`` contract. The
+    wrapper's ``post:`` must instead produce a counterexample here.
+    """
+    result = _run_crosshair(UNKNOWN_CYCLE_MUTANT_SOURCE, tmp_path, "mutant.py")
+    assert result.returncode == 1, f"stdout={result.stdout} stderr={result.stderr}"
+    assert "unknown_cycle_raises" in result.stdout
+    assert "returned without raising" in result.stdout
 
 
 def test_crosshair_reports_exact_counterexample(tmp_path: Path) -> None:
@@ -218,6 +288,25 @@ def test_crosshair_reports_exact_counterexample(tmp_path: Path) -> None:
     )
 
 
+#: Opt-in switch for the machine-dependent datum below. Surfacing the false
+#: positive needs a generous per-path budget AND a solver that reaches the
+#: int→float boundary region within it; whether it appears at all is a
+#: property of the machine, not the code (AGENTS.md: never pin a bound that
+#: encodes this machine's speed). CI therefore never runs it — the disposition
+#: is INCUBATE and the review of this leaf asked for exactly this opt-out —
+#: and a researcher runs it explicitly:
+#:   MAISTRO_CROSSHAIR_BUDGET_REPRO=1 pytest packages/maistro-rsi/tests/test_m8a_crosshair_research.py
+_BUDGET_REPRO_ENV = "MAISTRO_CROSSHAIR_BUDGET_REPRO"
+_requires_budget_repro = pytest.mark.skipif(
+    os.environ.get(_BUDGET_REPRO_ENV) != "1",
+    reason=(
+        "machine-dependent solver datum; run with "
+        f"{_BUDGET_REPRO_ENV}=1 to exercise the budget-dependent false positive"
+    ),
+)
+
+
+@_requires_budget_repro
 def test_documented_false_positive_replays_clean(tmp_path: Path) -> None:
     """The known false positive: reported, and disproven by concrete replay.
 

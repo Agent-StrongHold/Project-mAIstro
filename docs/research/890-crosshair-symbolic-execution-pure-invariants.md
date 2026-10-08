@@ -42,15 +42,25 @@ Three experiments, all against the real worktree (CrossHair 0.0.111,
    `orchestrator/master.py` as heavy/stateful probes).
 2. **E2 — contract prototype.** 17 docstring contracts (`pre:`/`post:`/
    `raises:`) restating each module's documented behavior, checked against the
-   unmodified production code. Prototype source embedded in
-   `packages/maistro-rsi/tests/test_m8a_crosshair_research.py` (CI-profile
-   subset) with the full set reproducible from this note's procedure.
+   unmodified production code. Six of them — one per real seam — are committed
+   as the `CONTRACT_PROTOTYPE_SOURCE` CI profile in
+   `packages/maistro-rsi/tests/test_m8a_crosshair_research.py`; the other 11
+   (scarcity-dominance, `ForbiddenPairRule`, and `cycle_key` probes) were
+   session artifacts **not preserved**, so results attributed to the full set
+   below are observed-once evidence, not tree-reproducible (see the
+   reproducibility note on the mutant table).
 3. **E3 — mutant comparison.** Four mutants applied to an out-of-tree copy of
-   `maistro-core/src` (`tar` copy, `PYTHONPATH` prepend; precedence verified by
-   loading the mutant module before each run — the worktree itself is never
-   mutated). Each mutant is run against the relevant existing suites AND the
-   contract prototype; the comparison answers the issue's "cases Hypothesis
-   misses" question with caught/survived evidence instead of intuition.
+   `maistro-core/src` (`tar` copy; the worktree itself is never mutated). Each
+   mutant is run against the relevant existing suites AND the contract
+   prototype. **Isolation correction (review):** the first submission ran the
+   suites with a bare `PYTHONPATH=<muttree>` prepend and reported 12/224
+   survivor passes. That precedence check was done in a plain interpreter, not
+   inside pytest: pytest's `pythonpath` ini (`pyproject.toml`,
+   `[tool.pytest.ini_options]`) prepends the workspace `src` dirs at
+   `sys.path[0]` in every pytest process, so the suites actually executed the
+   unmutated worktree. All suite numbers below are from reruns with
+   `-o pythonpath=<muttree>`, with in-process precedence proven by an
+   ImportError canary appended to the mutated module.
 
 ## Results
 
@@ -66,13 +76,19 @@ tool compatibility.
 
 ### E2 — contracts: green against production, and instructive when red
 
-The full 17-contract set passes (exit 0, no counterexamples) against
-unmodified production code — ~53–57 s wall for the full set, **19.4 s for the
-6-contract CI profile** kept in the prototype module (per-path budget 20 s;
-timings from the development machine, structural not contractual). The
-`cycle_key` wall-clock probe also passes under CrossHair's default side-effect
-audit: `datetime.now` consumption does not trip the blocker for shape-level
-postconditions.
+The full 17-contract set passed (exit 0, no counterexamples) against
+unmodified production code in the original session — ~53–57 s wall for the
+full set, 19.4 s for the six-contract CI profile (per-path budget 20 s;
+timings from the development machine, structural not contractual). After the
+review, the committed CI profile is **re-bounded** to keep the whole
+subprocess far under CI's 30 s per-test kill: per-path budget 5 s, measured
+~7 s wall, still exit 0 with no counterexamples. A budget this tight makes the
+committed profile a satisfiability/analyzability pin, not a completeness
+claim — heavy analysis stays out of CI.
+
+The `cycle_key` wall-clock probe (session set) also passed under CrossHair's
+default side-effect audit: `datetime.now` consumption does not trip the
+blocker for shape-level postconditions.
 
 Four first-run counterexamples, classified by replay:
 
@@ -82,9 +98,12 @@ Four first-run counterexamples, classified by replay:
    float-range boundary. Replaying that exact input concretely returns
    `5.99e306 >= 0.0` = True: the contract holds; the reported counterexample
    is wrong. The false positive is **budget-dependent**: with the default
-   per-path budget the probe exits 0; with `--per_path_timeout 20` it fires
-   deterministically. Any CI adoption needs a mandatory concrete-replay triage
-   step; this module pins both halves (reported AND replayed-clean).
+   per-path budget the probe exits 0; with `--per_path_timeout 20` it fired on
+   the development machine — but whether the solver reaches the boundary
+   region within a budget is a property of the machine, so the pin is
+   **opt-in** (`MAISTRO_CROSSHAIR_BUDGET_REPRO=1`), never a merge gate. Any
+   CI adoption needs a mandatory concrete-replay triage step; the module pins
+   both halves (reported AND replayed-clean) behind that switch.
 2. **Spec gap (mine):** the in-budget scarcity contract omitted
    `billing_cycle in SUPPORTED_BILLING_CYCLES` from its precondition;
    CrossHair found the exact `ProviderConfig(billing_cycle='')` that escapes
@@ -99,29 +118,43 @@ Four first-run counterexamples, classified by replay:
    `invalid syntax (<string>, line 1)` — legible, but easy to misread as a
    tool failure (an earlier attempt at this leaf did exactly that).
 
-### E3 — mutant battery: two defects the entire existing suite misses
+### E3 — mutant battery: suites and CrossHair agree (corrected after review)
 
-| Mutant | Defect | Existing suites | CrossHair (17-contract set) |
+| Mutant | Defect | Existing suites (corrected isolation) | CrossHair (committed 6-contract profile; M1–M3 re-verified post-review) |
 |---|---|---|---|
-| M1 | `BudgetRule`: `value > limit` → `>=` | `tests/policy` **12 passed — missed** | **caught**: `BudgetRule('tokens', limit=0.0)`, `SequenceState(tokens=0)` — denies exactly at the boundary |
+| M1 | `BudgetRule`: `value > limit` → `>=` | **caught**: `tests/policy` 2 failed / 10 passed — `test_keys_are_isolated` (`BudgetRule("count", limit=1)`, first charge must be ALLOW) and `test_decision_sink_fires_on_non_allow_only` | **caught**: `BudgetRule('tokens', limit=0.0)`, `SequenceState(tokens=0)` — denies exactly at the boundary |
 | M2 | `expand_scopes`: category wildcard drops one scope | formal I7 **3 failed — caught** (matches its recorded M13a history) | **caught**: exact input `expand_category_wildcard_is_complete('builders')` |
-| M3 | `normalized_daily_budget`: `/30.0` → `/31.0` | `formal I21 + tests/quota` **224 passed — missed** | **caught**: minimal input `monthly_budget_is_thirtieth(1)` returning `1/31` |
+| M3 | `normalized_daily_budget`: `/30.0` → `/31.0` | **caught**: `formal I21 + tests/quota` 4 failed / 220 passed / 29 skipped — `test_daily_budget_monthly` and `test_daily_budget_equals_free_tokens_div_30_monthly` assert `30000/30`, plus `TestDailyBudget::test_monthly_divides_by_thirty` and the quota race-boundary test (passes on the clean tree) | **caught**: minimal input `monthly_budget_is_thirtieth(1)` returning `1/31` |
 | M4 | `ForbiddenPairRule`: self-pair decrement dropped | `tests/policy` **missed** | **missed** (see below) |
 
-M1 and M3 are the issue's headline question answered with evidence: at seams
-that DO have Hypothesis or hand-written coverage, the sampling-based suites
-miss exact-boundary and exact-rate defects that symbolic execution returns as
-minimal concrete inputs in seconds. On M2 both techniques catch it; CrossHair's
-counterexample names the failing category directly, where Hypothesis shrinks to
-a strategy-level example.
+Reproducibility note (added in review): the CrossHair column's M1–M3 catches
+rest on contracts that ARE committed (`budget_rule_iff`,
+`expand_category_wildcard_is_complete`, `monthly_budget_is_thirtieth`) and
+were re-verified after the isolation correction by running the committed
+profile against out-of-tree mutant copies (`PYTHONPATH=<muttree>` in a plain
+`crosshair check` subprocess, precedence canary-proven; the exact
+counterexamples above are re-derived, not remembered). The M4 row's contract
+was part of the uncommitted session set, so its "missed" is observed-once
+evidence — re-derivable only by re-authoring the contract per the procedure
+below.
+
+Corrected reading: on M1–M3 the existing suites and CrossHair catch the same
+defects; CrossHair's advantage is counterexample quality — minimal concrete
+inputs (`SequenceState(tokens=0)`, `monthly_budget_is_thirtieth(1)`) in
+seconds, where Hypothesis shrinks to a strategy-level example. On M2
+CrossHair's counterexample names the failing category directly. The original
+claim that symbolic execution found exact-boundary and exact-rate defects
+"the entire existing suite misses" was an isolation artifact and is withdrawn.
 
 ### The honest miss (M4) — the applicability boundary
 
 M4's discriminating region needs `counts_by_kind == {kind: 1}` — a single-entry
-dict. Two `post: False` canary probes (with and without a `len(kind) == 1`
-hint) both exit 0: CrossHair cannot construct that dict region within budget,
-so the contract passes **vacuously** even though its precondition is reachable
-(the canaries fire on the empty-dict region). Simple frozen dataclasses
+dict, for a ForbiddenPair contract that belonged to the uncommitted session
+set (so the row above is observed-once evidence, not a tree-reproducible
+result). Two `post: False` canary probes (with and without a `len(kind) == 1`
+hint) both exited 0: CrossHair could not construct that dict region within
+budget, so the contract passed **vacuously** even though its precondition is
+reachable (the canaries fire on the empty-dict region). Simple frozen dataclasses
 (`BudgetRule`, `ProviderConfig`) symbolize fine; dataclasses holding
 dict/deque fields do not, in practice. This is the same harness-vacuity lesson
 recorded on leaf #882: a green contract proves nothing until reachability of
@@ -136,7 +169,9 @@ its discriminating region is demonstrated.
 - Annotation: 17 contracts ≈ 90 lines for five seams; each contract restates
   an existing documented behavior (docstrings, #1205), so drift risk tracks
   the docs it mirrors.
-- Runtime: 19.4 s CI-profile prototype; full set ~1 min; per-module scans ~1 s.
+- Runtime: ~7 s CI-profile prototype (per-path budget 5 s, re-bounded in
+  review to sit far under CI's 30 s per-test kill); full session set ~1 min;
+  per-module scans ~1 s.
 - Reliability: 1 deterministic false positive in 4 reported counterexamples —
   100% replay-triage required before any counterexample is believed.
 - Coverage shape: exact boundaries/rates (strong) vs state-shaped inputs with
@@ -145,13 +180,13 @@ its discriminating region is demonstrated.
 
 ## Evidence questions (from the issue), answered
 
-- **Does CrossHair find cases Hypothesis misses or find them faster?** Yes on
-  misses: M1 and M3 (boundary and exact-rate defects) are missed by every
-  existing suite including the Hypothesis formal models, and caught by
-  CrossHair with minimal concrete inputs. Complement, not replacement: on the
-  one seam with a strong Hypothesis oracle (I7), both catch M2; and M4 shows
-  CrossHair missing what a Hypothesis strategy over dict fields would hit
-  trivially.
+- **Does CrossHair find cases Hypothesis misses or find them faster?** No on
+  misses at these seams (corrected after the isolation fix): every mutant the
+  suites catch (M1–M3), CrossHair catches too, and vice versa except M4.
+  Yes on speed/precision: counterexamples arrive as minimal concrete inputs.
+  Complement, not replacement: on the one seam with a strong Hypothesis oracle
+  (I7), both catch M2; and M4 shows CrossHair missing what a Hypothesis
+  strategy over dict fields would hit trivially.
 - **What percentage of candidate code is analyzable without refactoring?**
   7/7 scanned modules (100%) import cleanly under CrossHair; 0% carry
   checkable contracts today. Effect-identity logic in
@@ -165,8 +200,8 @@ its discriminating region is demonstrated.
   features make analysis unhelpful?** In this target set: imports never
   (7/7); wall-clock reads do not block shape-level checks; the practical wall
   is symbolic construction of populated dict/deque state (M4) and float-range
-  reasoning (the false positive) — one miss and one false alarm out of four
-  mutants, i.e. half the battery hits a tool limit.
+  reasoning (the false positive); the other three mutants are caught by both
+  the existing suites and CrossHair.
 - **Is the result reliable enough for CI, advisory use, or only targeted
   audits?** Advisory/targeted now. Counterexamples require mandatory concrete
   replay (deterministic false positive demonstrated); vacuity requires
@@ -176,21 +211,33 @@ its discriminating region is demonstrated.
 
 1. Contracts: extract `CONTRACT_PROTOTYPE_SOURCE` from
    `packages/maistro-rsi/tests/test_m8a_crosshair_research.py` to a file;
-   `uv run crosshair check <file> --per_path_timeout 60` → exit 0.
+   `uv run crosshair check <file> --per_path_timeout 5` → exit 0 (the bound
+   the committed CI profile runs under). The budget-dependent false positive
+   is exercised by the opt-in test:
+   `MAISTRO_CROSSHAIR_BUDGET_REPRO=1 uv run pytest packages/maistro-rsi/tests/test_m8a_crosshair_research.py`.
 2. Mutants: `tar --exclude='__pycache__' -cf - maistro | tar -C <muttree> -xf -`
    from `packages/maistro-core/src`; apply the one-line mutation from the
    table above; run the existing suites and CrossHair with
-   `PYTHONPATH=<muttree>` (precedence over the editable install verified by
-   loading the mutated module first).
+   `-o pythonpath=<muttree>` on every pytest invocation. A bare
+   `PYTHONPATH=<muttree>` is NOT sufficient: pytest's `pythonpath` ini
+   prepends the workspace `src` dirs at `sys.path[0]` inside the pytest
+   process (this is the isolation defect behind the originally reported
+   12/224 survivor passes). Verify precedence in-process — appending
+   `raise ImportError('mutant loaded')` to the mutated module must fail the
+   run. The worktree itself is never mutated.
 3. False positive: `uv run crosshair check <fp.py> --per_path_timeout 20`;
    replay the printed input with `normalized_daily_budget(<input>, 'monthly')`.
+   Whether the counterexample appears within a given budget is
+   machine-dependent; on the development machine 20 s/path was sufficient.
 
 ## Disposition
 
-**INCUBATE.** The tool works on real MAIstro seams today and demonstrably
-catches two defect classes (exact boundaries, exact rates) that the entire
-existing suite — Hypothesis models included — misses, at ~20 s CI cost and one
-dev dependency. It is not ready to gate anything: one deterministic false
+**INCUBATE.** The tool works on real MAIstro seams today: at ~7 s CI cost and
+one dev dependency it catches the same three of four battery mutants the
+existing suites catch, returning minimal concrete counterexamples instead of
+shrunken strategy examples. The differentiator is counterexample quality, not
+unique defect discovery (the originally claimed detection gap was an
+isolation artifact). It is not ready to gate anything: one deterministic false
 positive per four reported counterexamples, and one of four mutants missed
 vacuously, means both findings and passes require triage machinery that does
 not exist yet. M8 does not adopt it into CI (guardrail 6: no replacement of
