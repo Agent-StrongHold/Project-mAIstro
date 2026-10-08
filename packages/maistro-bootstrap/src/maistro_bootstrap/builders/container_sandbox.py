@@ -382,6 +382,28 @@ class ContainerBuilderSandbox:
     def run_argv(self, argv: list[str], *, timeout: int = _DEFAULT_TIMEOUT) -> str:
         return self.run_argv_status(argv, timeout=timeout)[1]
 
+    def run_argv_streams(
+        self, argv: list[str], *, timeout: int = _DEFAULT_TIMEOUT
+    ) -> tuple[int, str, str]:
+        """Run ``argv`` in the container, returning (exit status, stdout, stderr).
+
+        `run_argv_status` merges the streams, which is right when the output is
+        for a human or a log. A caller that PARSES the output — JSON from a
+        tool report, node IDs from pytest's collector — needs the streams
+        separated: a stray line on stderr interleaved into stdout would break
+        ``json.loads`` and silently turn a real finding into "no finding".
+        The fitness signals parse tool reports, so they cross the boundary
+        through here (#614). Same execution path and hardening as every other
+        exec — this only declines to merge.
+        """
+        proc = subprocess.run(
+            ["docker", *self._exec_prefix(), self._require_cid(), *argv],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return proc.returncode, proc.stdout or "", proc.stderr or ""
+
     def run_argv_status(
         self, argv: list[str], *, timeout: int = _DEFAULT_TIMEOUT
     ) -> tuple[int, str]:

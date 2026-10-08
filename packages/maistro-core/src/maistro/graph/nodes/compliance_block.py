@@ -60,15 +60,14 @@ class ComplianceBlockNode(BaseNode[ComplianceBlockIn, ComplianceBlockOut]):
         "the run when triggered. Used by policy gates."
     )
 
+    def logical_effect_key(self, inputs: ComplianceBlockIn, ctx: NodeContext) -> str:
+        return replay_effect_key(ctx, self.kind, inputs.model_dump(mode="json"))
+
     async def _execute(self, inputs: ComplianceBlockIn, ctx: NodeContext) -> ComplianceBlockOut:
         bb = ctx.blackboard
         metadata = bb.metadata if (bb is not None and hasattr(bb, "metadata")) else ctx.metadata
         penalties: list[dict[str, Any]] = list(metadata.get("penalties") or [])
-        penalty_id = replay_effect_key(
-            ctx,
-            self.kind,
-            inputs.model_dump(mode="json"),
-        )
+        penalty_id = self.logical_effect_key(inputs, ctx)
         penalty = {
             "id": penalty_id,
             "node_id": ctx.node_id,

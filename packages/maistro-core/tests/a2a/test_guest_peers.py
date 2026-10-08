@@ -428,6 +428,29 @@ async def test_delegate_missing_task_id_in_response_defaults_to_empty_string(
     assert result.task_id == ""
 
 
+async def test_empty_dispatch_receipt_does_not_mask_peer_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        payload = {} if request.method == "POST" else {"task_id": "recovered-task"}
+        return httpx.Response(200, json=payload)
+
+    _patch_transport(monkeypatch, handler)
+    manager = GuestPeerManager()
+    manager.register_peer(
+        PeerTrust(peer_url="http://hub", peer_name="hub", supports_idempotency=True)
+    )
+    submitted = await manager.delegate("hub", "planner", [], context=_context())
+    assert submitted.task_id == ""
+    recovered = await manager.reconcile("hub", "effect-1")
+    assert recovered.task_id == "recovered-task"
+    assert await manager.reconcile("hub", "effect-1") == recovered
+    assert methods == ["POST", "GET"], "an empty receipt must not suppress recovery"
+
+
 async def test_audit_log_default_is_in_memory_audit_logger() -> None:
     manager = GuestPeerManager()
     assert isinstance(manager._audit, InMemoryAuditLogger)

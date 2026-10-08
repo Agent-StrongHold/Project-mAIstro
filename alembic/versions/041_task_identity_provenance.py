@@ -1,13 +1,8 @@
 """Persist task actor and service delegation evidence (#1057).
 
 Revision ID: 041_task_identity_provenance
-Revises: 041
+Revises: 040
 Create Date: 2026-09-08
-
-Re-parented once: #1194's canonical Run effect claim took 040's child slot
-before this revision merged through develop, so this revision follows it to
-keep the chain single-headed (see 036_audit_log_org_scope for the same
-reconciliation).
 """
 
 from __future__ import annotations
@@ -16,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "041_task_identity_provenance"
-down_revision = "041"
+down_revision = "040"
 branch_labels = None
 depends_on = None
 
