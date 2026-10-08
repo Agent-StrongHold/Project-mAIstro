@@ -16982,13 +16982,56 @@ issue's stop condition forbids the Design-Studio-private substitute.
   newly merged develop suite
   packages/maistro-core/tests/memory/test_context_assembly.py 77 passed.
 
+### Round 247 (repair round at 5ccd9391dcb8 — manifest checks=[], verifier ran none)
+
+- Job 71ed1fb53c3f4fb985b00a173739b566 has no check-*.log (manifest
+  checks=[]); prior result 6f3664a032d24f5899402bb71abca48e at this exact
+  head = provider_error death (llama-cpp-gemma request timeout, checks=[],
+  agent died before work), clean tree, nothing to salvage. The lane brief's
+  stale prior-findings pointer (job 53d5e08bf027 check-2.log ruff format
+  failure on agent_loop.py at old head a99c6bd) re-disproved a seventh
+  time: whole-tree format check green at HEAD (3175 files), and
+  agent_loop.py itself reports "1 file already formatted" (fixed by
+  b154ad0f9).
+- Previous block (worker requested attention: BLOCKED) re-confirmed as a
+  determinate dependency block, NOT a develop-sync conflict: fetch EXIT 0,
+  origin/develop unchanged at declared base 34795962548a,
+  `HEAD..origin/develop` = 0, merge-base == declared base — conditional
+  merge does not fire.
+- Dependency set re-confirmed from the freshest frozen capture
+  2026-10-08T17:56Z (complete_for_scope, 61 sources): #804/#805/#806/
+  #774/#776/#53/#93/#95 OPEN, #775/#39/#458 CLOSED, PR1660 open draft
+  head 6280009610e8 not merged; issue #777 open (updated
+  2026-10-08T17:53:48Z) with automated campaign markers only.
+- AC prerequisites re-proven absent at HEAD 5ccd9391dcb8 (this round's own
+  greps): GoalReconciler|delegate_goal 0 hits in packages/*/src,
+  WorkspaceAgentReconciler|goal.reconcil 0 hits, 0 goals modules (only
+  canonical quota/run reconciliation machinery present),
+  ControlMode.COLLABORATIVE versions.py:81 declared-only with the
+  documented no-op discard at :1064; salvage tree
+  docs/research/777-design-studio-salvage/ still unwired (0 pyproject
+  references).
+- Battery at HEAD 5ccd9391dcb8 all EXIT 0: ruff check; ruff format (3175
+  files); check-vulture-baseline.py CI-exact (base 34795962548a, candidate
+  5ccd9391dcb8, 1326 -> 1325, unclassified 0, never_allowlist 0, no
+  amendment); check-suite-inventory.py (17 suites);
+  check-backlog-consistency.py (167 items); check-closure-targets.py;
+  check-doc-links.py.
+- Targeted pytest at HEAD: tests/test_check_closure_targets.py 63 passed;
+  maistro-design + maistro-bootstrap 805 passed 8 skipped; hive-conductor
+  backend -k 'design or workspace' 374 passed 5 skipped 3167 deselected
+  (exact round-246 parity; note: invoke from repo root — running from
+  packages/hive-conductor hits an editables prefix-rewrite build error).
+- Inventory-delta unchanged +0 (docs-only append).
+
 ### Verdict
 
-BLOCKED — dependency-blocking (63rd consecutive round). This round's new
-actionable item — develop sync to the moved declared base 34795962548a —
-is discharged by merge commit 395e610f2. No lawful repair for #777 exists
-until #804/#805/#806 (+#774/#776) land: AC#1 requires consuming #804's
-reconciliation APIs, which provably do not exist in this tree
-(GoalReconciler|delegate_goal, WorkspaceAgentReconciler, any maistro/goals
-module: zero hits at merged HEAD), and the issue's stop condition forbids
-the Design-Studio-private substitute. (Refs #777)
+BLOCKED — dependency-blocking (64th consecutive round). This round's
+actionable items — re-disproving the stale format finding at the new head
+and re-running the battery after the round-246 develop sync — are
+discharged; develop is unchanged at the declared base so no sync fires. No
+lawful repair for #777 exists until #804/#805/#806 (+#774/#776) land: AC#1
+requires consuming #804's reconciliation APIs, which provably do not exist
+in this tree (GoalReconciler|delegate_goal, WorkspaceAgentReconciler, any
+maistro/goals module: zero hits at HEAD 5ccd9391dcb8), and the issue's
+stop condition forbids the Design-Studio-private substitute. (Refs #777)
