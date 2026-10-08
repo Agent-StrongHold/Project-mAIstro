@@ -354,3 +354,34 @@ prefix(es), none new" — the resolution above holds, no grant needed), the
 vulture invocation (1326/1326 banked, 0 unclassified),
 `check-shipped-surface-truth.py`, `check-frontend-typed-client.py`,
 `check_enumerations.py`, and `ruff check` / `ruff format --check`.
+
+## Live-Docker acceptance round (2026-10-08, head `11ebe5be7f7b`)
+
+The independent-verify round's BLOCKED verdict was environmental: no Docker
+daemon reachable, so the compose legs were UNVERIFIED. With the rootless
+daemon up (`DOCKER_HOST=unix:///run/user/1000/docker.sock`), this round ran
+the CI harness for real — but the host's 8101 was already bound by another
+stack, and the first attempt at a port override
+(`docker-compose.e2e-port.yml`, `18101:8101`) silently appended a second
+port instead of replacing the first (compose merges `ports` lists), so any
+`up`/`run` still asked for 8101 and failed on the bind. The committed
+override now uses the `!override` tag, the merged config publishes only
+18101, and the full sequence was re-executed:
+
+- `docker compose -f docker-compose.test.yml -f docker-compose.e2e-port.yml
+  up -d hive` → healthy; `run --rm e2e-tests npx playwright test ... rum-telemetry.spec.ts
+  rum-client-off-switches.spec.ts` → **12/12 passed** (schema redaction 5,
+  live collection 2 — finite measurements, planted URL token absent, stored
+  observations read back and grouped — off-switches 5) against the
+  compose-built SPA (`VITE_RUM_ENABLED=true`) and collector
+  (`RUM_INGEST_ENABLED=true`); the earlier full-suite leg at this head
+  (158 passed in 3.0 m) was produced from the same image.
+- The operator half of the smoke procedure, from the host: admin login 200,
+  `GET /v1/rum/events/summary` grouped by `(build_id, type, metric, route,
+  outcome, status_class)` with nearest-rank percentiles, `GET
+  /v1/rum/events` returning stored observations whose `request_id`s match
+  the server's own log lines (`[request_id=73ca2a34193f]` ← `GET /v1/agents`),
+  and unauthenticated summary/ingest probes refused 401.
+
+No test count moved this round (delta above unchanged); the additions are
+the committed port override and the RUM.md pointer to it.

@@ -149,6 +149,10 @@ docker compose -f docker-compose.test.yml run --rm e2e-tests \
 #    assigned the rum.read scope and elevated; from the host):
 curl -s localhost:8101/v1/rum/events/summary   # grouped by metric/route/outcome
 #    (login first: POST /v1/auth/login, keep the session cookie)
+#    On a machine whose 8101 is already bound by another stack, run the same
+#    harness with the optional port override —
+#    `docker compose -f docker-compose.test.yml -f docker-compose.e2e-port.yml ...`
+#    — which republishes the service on 18101, and read localhost:18101.
 ```
 
 The spec's own assertions are the receipt evidence: finite non-negative
