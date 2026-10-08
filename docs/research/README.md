@@ -84,6 +84,7 @@ Every child research epic/leaf defines:
 
 | Note | Family | Epic / leaf | Disposition at this head |
 |---|---|---|---|
+| [896 — coverage-guided fuzzing of parser surfaces](896-coverage-guided-fuzzing-parser-surfaces.md) | M8-A15 | leaf [#896](https://github.com/Agent-StrongHold/Project-mAIstro/issues/896), epic #880 | INCUBATE |
 | [904 — uncertainty, calibration, abstention](904-uncertainty-calibration-abstention.md) | M8-E | [#904](https://github.com/Agent-StrongHold/Project-mAIstro/issues/904) (leaves #930–#933) | WATCH (per leaf) |
 | [905 — inference systems, open-model fleets, caching, batching, specialization](905-inference-systems-open-model-fleets-caching-batching-specialization.md) | M8-F | [#905](https://github.com/Agent-StrongHold/Project-mAIstro/issues/905) | WATCH (epic) |
 | [906 — information-flow, provenance, agent security](906-information-flow-provenance-agent-security.md) | M8-G | [#906](https://github.com/Agent-StrongHold/Project-mAIstro/issues/906) | WATCH (per candidate) |
@@ -101,19 +102,20 @@ Every child research epic/leaf defines:
 | [919 — prompt-model co-routing](919-prompt-model-co-routing.md) | M8-B5 | leaf [#919](https://github.com/Agent-StrongHold/Project-mAIstro/issues/919), epic #900 | WATCH |
 | [920 — hybrid vector + graph retrieval](920-hybrid-vector-graph-retrieval.md) | M8-C1 | leaf [#920](https://github.com/Agent-StrongHold/Project-mAIstro/issues/920), epic #901 | WATCH |
 | [921 — learned reranking and query rewriting](921-reranking-query-rewriting.md) | M8-C2 | leaf [#921](https://github.com/Agent-StrongHold/Project-mAIstro/issues/921), epic #901 | WATCH |
+| [922 — adaptive context budgeting, hierarchical compression, selective omission](922-adaptive-context-budgeting.md) | M8-C3 | leaf [#922](https://github.com/Agent-StrongHold/Project-mAIstro/issues/922), epic #901 | WATCH |
 | [929 — Graph pattern induction and reuse across Goals](929-graph-pattern-induction-reuse.md) | M8-D5 | leaf [#929](https://github.com/Agent-StrongHold/Project-mAIstro/issues/929), epic #903 | INCUBATE |
 | [935 — cross-Agent batching, prefix/KV reuse, semantic caching](935-cross-agent-batching-kv-reuse.md) | M8-F2 | leaf [#935](https://github.com/Agent-StrongHold/Project-mAIstro/issues/935), epic #905 | WATCH |
 
-No leaf currently holds a GRADUATE or REJECT disposition; three are INCUBATE
-(model-routing leaves #914, #916; graph-pattern reuse leaf #929) and the rest
-are WATCH. Dispositions are owned by the individual notes —
-update the note first, then this table.
+No leaf currently holds a GRADUATE or REJECT disposition; four are INCUBATE (fuzzing leaf
+#896, model-routing leaves #914 and #916, and graph-pattern reuse leaf #929) and the rest
+are WATCH. Dispositions are owned by the individual notes — update the note first, then
+this table.
 
 The initial research family, M8-A advanced software verification and assurance
 ([#880](https://github.com/Agent-StrongHold/Project-mAIstro/issues/880), leaves #881–#897), is
 tracked on GitHub with its in-repo evidence infrastructure in [`formal/`](../../formal/)
-([INVARIANTS](../../formal/INVARIANTS.md), [README](../../formal/README.md)); it has no note
-in this folder yet.
+([INVARIANTS](../../formal/INVARIANTS.md), [README](../../formal/README.md)); the M8-A15
+fuzzing prototype above is its first note in this folder.
 
 ## Milestone object note
 
