@@ -203,6 +203,60 @@ class ObservationOutcome(StrEnum):
     FAILURE = "failure"
 
 
+def _require_finite_non_negative(field: str, value: float) -> None:
+    """Refuse a fabricated measurement at the evidence seam.
+
+    A negative or non-finite latency/cost would fabricate rankings and
+    aggregates (and break the JSON telemetry response), so construction
+    refuses the value instead of laundering it into history.
+    """
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(
+            f"{field} must be a finite, non-negative measurement; "
+            "a negative or non-finite value would fabricate rankings and aggregates"
+        )
+
+
+def _require_outcome_error_pairing(
+    outcome: ObservationOutcome, error: ExtensionErrorRecord | None
+) -> None:
+    """A failed observation must carry its classified error; success none."""
+    if outcome is ObservationOutcome.FAILURE and error is None:
+        raise ValueError("a failed observation must carry its classified ExtensionErrorRecord")
+    if outcome is ObservationOutcome.SUCCESS and error is not None:
+        raise ValueError("a successful observation cannot carry an error record")
+
+
+def _require_embedded_error_provenance(
+    error: ExtensionErrorRecord, own: tuple[str, str, str, str]
+) -> None:
+    """The embedded error must belong to the exact observed identity.
+
+    Otherwise the failure is counted against one identity while the cause is
+    filed under another, leaving the affected extension's detail without its
+    cause and another scope with a phantom error.
+    """
+    embedded = (error.org_id, error.workspace_id, error.extension_id, error.version)
+    if embedded == own:
+        return
+    mismatched = [
+        field
+        for field, got, want in zip(
+            ("org_id", "workspace_id", "extension_id", "version"),
+            embedded,
+            own,
+            strict=True,
+        )
+        if got != want
+    ]
+    raise ValueError(
+        "embedded error provenance does not match the observation's identity "
+        f"(mismatched: {', '.join(mismatched)}); a failure may only embed "
+        "the error recorded for the exact org/workspace/extension/version "
+        "that was observed"
+    )
+
+
 @dataclass(frozen=True)
 class ExtensionObservation:
     """One host-recorded extension invocation outcome.
@@ -229,49 +283,15 @@ class ExtensionObservation:
 
     def __post_init__(self) -> None:
         _require_aware_at("ExtensionObservation", self.at)
-        if not math.isfinite(self.latency_ms) or self.latency_ms < 0:
-            raise ValueError(
-                "latency_ms must be a finite, non-negative measurement; "
-                "a negative or non-finite latency would fabricate rankings "
-                "and aggregates"
-            )
-        if self.cost_units is not None and (
-            not math.isfinite(self.cost_units) or self.cost_units < 0
-        ):
-            raise ValueError(
-                "cost_units must be a finite, non-negative measurement or None "
-                "(unmeasured); a negative or non-finite cost would fabricate "
-                "cost aggregation"
-            )
-        if self.outcome is ObservationOutcome.FAILURE and self.error is None:
-            raise ValueError("a failed observation must carry its classified ExtensionErrorRecord")
-        if self.outcome is ObservationOutcome.SUCCESS and self.error is not None:
-            raise ValueError("a successful observation cannot carry an error record")
+        _require_finite_non_negative("latency_ms", self.latency_ms)
+        if self.cost_units is not None:
+            _require_finite_non_negative("cost_units", self.cost_units)
+        _require_outcome_error_pairing(self.outcome, self.error)
         if self.error is not None:
-            embedded = (
-                self.error.org_id,
-                self.error.workspace_id,
-                self.error.extension_id,
-                self.error.version,
+            _require_embedded_error_provenance(
+                self.error,
+                (self.org_id, self.workspace_id, self.extension_id, self.version),
             )
-            own = (self.org_id, self.workspace_id, self.extension_id, self.version)
-            if embedded != own:
-                mismatched = [
-                    field
-                    for field, got, want in zip(
-                        ("org_id", "workspace_id", "extension_id", "version"),
-                        embedded,
-                        own,
-                        strict=True,
-                    )
-                    if got != want
-                ]
-                raise ValueError(
-                    "embedded error provenance does not match the observation's identity "
-                    f"(mismatched: {', '.join(mismatched)}); a failure may only embed "
-                    "the error recorded for the exact org/workspace/extension/version "
-                    "that was observed"
-                )
 
 
 # --------------------------------------------------------------------------
@@ -1070,6 +1090,59 @@ def normalize_read_limit(limit: int | None) -> int | None:
     return limit
 
 
+def _read_window[RowT](rows: list[RowT], limit: int | None) -> tuple[RowT, ...]:
+    """Apply the read-limit contract to an oldest-first in-memory row list.
+
+    Shared by the store's read paths so the limit can only be applied one
+    way — the newest ``limit`` rows, ``0`` selecting nothing — matching the
+    SQL the SQLite twin runs for the same request.
+    """
+    limit = normalize_read_limit(limit)
+    if limit is None:
+        return tuple(rows)
+    return tuple(rows[-limit:]) if limit > 0 else ()
+
+
+def _error_in_scope(
+    error: ExtensionErrorRecord,
+    scope: ExtensionScope,
+    *,
+    extension_id: str | None,
+    version: str | None,
+    kind: ExtensionErrorKind | None,
+) -> bool:
+    """The scope/identity/kind filter of the in-memory error read path."""
+    return (
+        error.org_id == scope.org_id
+        and error.workspace_id == scope.workspace_id
+        and (extension_id is None or error.extension_id == extension_id)
+        and (version is None or error.version == version)
+        and (kind is None or error.kind is kind)
+    )
+
+
+def _newest_record(
+    records: Iterable[ExtensionInstallRecord],
+) -> ExtensionInstallRecord | None:
+    """The newest record by creation time, or ``None`` when there is none.
+
+    The epoch floor keeps records whose ``created_at`` is None ordered
+    deterministically instead of raising on the comparison.
+    """
+    if not records:
+        return None
+    return max(records, key=lambda record: record.created_at or _EPOCH_FLOOR)
+
+
+def _recorded_identity(
+    records: Sequence[ExtensionInstallRecord], extension_id: str, version: str
+) -> bool:
+    """Whether any install record names this exact (extension, version)."""
+    return any(
+        record.extension_id == extension_id and record.version == version for record in records
+    )
+
+
 class InMemoryExtensionHealthStore:
     """Process-lifetime reference implementation of
     :class:`ExtensionHealthStore`.
@@ -1115,10 +1188,7 @@ class InMemoryExtensionHealthStore:
             and (extension_id is None or observation.extension_id == extension_id)
             and (version is None or observation.version == version)
         ]
-        limit = normalize_read_limit(limit)
-        if limit is not None:
-            rows = rows[-limit:] if limit > 0 else []
-        return tuple(rows)
+        return _read_window(rows, limit)
 
     async def errors(
         self,
@@ -1132,16 +1202,15 @@ class InMemoryExtensionHealthStore:
         rows = [
             error
             for error in self._errors
-            if error.org_id == scope.org_id
-            and error.workspace_id == scope.workspace_id
-            and (extension_id is None or error.extension_id == extension_id)
-            and (version is None or error.version == version)
-            and (kind is None or error.kind is kind)
+            if _error_in_scope(
+                error,
+                scope,
+                extension_id=extension_id,
+                version=version,
+                kind=kind,
+            )
         ]
-        limit = normalize_read_limit(limit)
-        if limit is not None:
-            rows = rows[-limit:] if limit > 0 else []
-        return tuple(rows)
+        return _read_window(rows, limit)
 
     async def append_decision(self, decision: OperatorDecision) -> None:
         self._decisions.append(decision)
@@ -1242,11 +1311,7 @@ class ExtensionHealthService:
             target = active
         else:
             records = await self._install_store.records_for(scope, extension_id)
-            target = (
-                max(records, key=lambda record: record.created_at or _EPOCH_FLOOR)
-                if records
-                else None
-            )
+            target = _newest_record(records)
         if target is None:
             # No install record — but if host telemetry names this identity,
             # project it record-less as NOT_INSTALLED (staying attributable)
@@ -1275,6 +1340,8 @@ class ExtensionHealthService:
             active = await self._install_store.active_record(scope, extension_id)
             target = active
             if target is None:
+                # The extension's grouped records are non-empty by
+                # construction, so the newest one always exists.
                 target = max(
                     by_extension[extension_id],
                     key=lambda record: record.created_at or _EPOCH_FLOOR,
@@ -1283,21 +1350,31 @@ class ExtensionHealthService:
             if status is not None:
                 projected.append(status)
                 covered.add((status.extension_id, status.version))
-        # Telemetry-only identities: versions the host observed but the
-        # registry never installed must surface NOT_INSTALLED in the
-        # overview (and therefore the export) instead of vanishing.
-        ghosts: dict[tuple[str, str], None] = {}
-        for observation in await self._health_store.observations(scope):
-            identity = (observation.extension_id, observation.version)
-            if identity in covered or any(
-                record.extension_id == identity[0] and record.version == identity[1]
-                for record in records
-            ):
-                continue
-            ghosts.setdefault(identity)
+        ghosts = await self._telemetry_ghost_identities(scope, records, covered)
         for extension_id, version in sorted(ghosts):
             projected.append(await self._project_uninstalled(scope, extension_id, version))
         return tuple(projected)
+
+    async def _telemetry_ghost_identities(
+        self,
+        scope: ExtensionScope,
+        records: Sequence[ExtensionInstallRecord],
+        covered: set[tuple[str, str]],
+    ) -> dict[tuple[str, str], None]:
+        """Identity pairs the host observed but the registry never installed.
+
+        Telemetry-only versions surface NOT_INSTALLED in the overview (and
+        therefore the export) instead of vanishing, while anything the
+        registry actually recorded — covered by a projection or present as
+        an install record — is skipped so no identity appears twice.
+        """
+        ghosts: dict[tuple[str, str], None] = {}
+        for observation in await self._health_store.observations(scope):
+            identity = (observation.extension_id, observation.version)
+            if identity in covered or _recorded_identity(records, *identity):
+                continue
+            ghosts.setdefault(identity)
+        return ghosts
 
     async def version_status(
         self, scope: ExtensionScope, extension_id: str, version: str
