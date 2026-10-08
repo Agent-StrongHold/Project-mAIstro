@@ -141,6 +141,46 @@ async def test_completed_effect_is_deduplicated_across_attempt_recovery() -> Non
 
 
 @pytest.mark.asyncio
+async def test_logical_effect_scope_deduplicates_across_node_run_visits() -> None:
+    store = InMemoryInvocationStore()
+    service = InvocationExecutionService(store=store)
+    calls = 0
+
+    async def execute(_provider: _Provider, request: Any) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return {"committed": request}
+
+    first = await service.invoke(
+        binding=_binding(),
+        run_id="run-1",
+        node_run_id="node-run-1",
+        attempt_id="attempt-1",
+        effect_key="harness:dispatch:stable",
+        effect_scope="run-1:node:harness:stable",
+        request={"task": "once"},
+        resolver=_resolver,
+        executor=execute,
+    )
+    replay = await service.invoke(
+        binding=_binding(),
+        run_id="run-1",
+        node_run_id="node-run-2",
+        attempt_id="attempt-2",
+        effect_key="harness:dispatch:stable",
+        effect_scope="run-1:node:harness:stable",
+        request={"task": "once"},
+        resolver=_resolver,
+        executor=execute,
+    )
+
+    assert calls == 1
+    assert replay.invocation_id == first.invocation_id
+    assert replay.node_run_id == "node-run-1"
+    assert replay.attempt_id == "attempt-1"
+
+
+@pytest.mark.asyncio
 async def test_deduplicated_handout_repairs_quota_evidence_after_ledger_failure(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
