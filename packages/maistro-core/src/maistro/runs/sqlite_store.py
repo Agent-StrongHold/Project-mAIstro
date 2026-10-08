@@ -20,6 +20,7 @@ from maistro.runs.lifecycle import (
     check_completion_is_earned,
     lease_is_expired,
     reclaim_attempt,
+    refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
     settle_open_node_run,
@@ -576,6 +577,22 @@ class SqliteRunStore:
             return None
         if principal_id is not None:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
+        return model_of_json(Run, row[0])
+
+    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
+        # Same expression-index pattern as the schedule-occurrence claim above:
+        # the task admitter's provenance lives inside the payload JSON, and
+        # json_extract reads it without every admitter owning columns.
+        row = await self._fetchone(
+            """
+            SELECT payload FROM canonical_runs
+            WHERE json_extract(payload, '$.provenance.task_id') = ?
+            LIMIT 1
+            """,
+            (task_id,),
+        )
+        if row is None:
+            return None
         return model_of_json(Run, row[0])
 
     async def _require_locked_parent_scope(
@@ -1445,6 +1462,14 @@ class SqliteRunStore:
                 error=error,
                 metrics=metrics,
             )
+            if target is AttemptStatus.COMPLETED:
+                # Same lock `transition_run` holds, so a cancellation either
+                # committed before the parent read below (refused) or waits
+                # until this write commits (#1335). The fence the executor
+                # reads cannot close that window; this one does.
+                node_run = await self._require_node_run(attempt.node_run_id)
+                run = await self._require_run(node_run.run_id)
+                refuse_completion_under_terminal_run(run.status, attempt_id)
             await self._update_payload(
                 "canonical_attempts",
                 "attempt_id",

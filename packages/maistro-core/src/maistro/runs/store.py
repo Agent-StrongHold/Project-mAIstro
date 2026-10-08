@@ -24,6 +24,7 @@ from maistro.runs.lifecycle import (
     check_completion_is_earned,
     lease_is_expired,
     reclaim_attempt,
+    refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
     settle_open_node_run,
@@ -493,6 +494,19 @@ class RunStore(Protocol):
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
 
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None: ...
+
+    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
+        """The Run whose provenance names one task receipt, or None.
+
+        The task admitter stamps the receipt id into ``provenance`` at admit;
+        this is the lookup that makes a minted Run discoverable from the
+        receipt its admission announced (#1176). None means no Run names the
+        receipt. A Run whose payload has been archived cold is outside this
+        search — hours past any retry window — and there is at most one: task
+        ids are minted unique, and a second Run naming the same receipt is
+        exactly the duplicate admission this lookup exists to prevent.
+        """
+        ...
 
     async def find_run_by_effect(self, effect_key: str) -> Run | None: ...
 
@@ -1194,6 +1208,16 @@ class InMemoryRunStore:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
         return run.model_copy(deep=True)
 
+    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
+        # Insertion-order scan; a match is unique by construction (see the
+        # protocol docstring). The provenance key is spelled by the task
+        # admitter's TASK_ID_KEY; a literal here avoids the runs->tasks import
+        # edge the constant would drag in.
+        for run in self._runs.values():
+            if run.provenance.get("task_id") == task_id:
+                return run.model_copy(deep=True)
+        return None
+
     async def find_run_by_effect(self, effect_key: str) -> Run | None:
         for run in self._runs.values():
             if run.provenance.get("effect_key") == effect_key:
@@ -1632,6 +1656,15 @@ class InMemoryRunStore:
             error=error,
             metrics=metrics,
         )
+        if target is AttemptStatus.COMPLETED:
+            # The executor's Run fence is check-then-act across two awaits
+            # (#1335); this guard runs with nothing between it and the durable
+            # write, so a cancellation cannot land a COMPLETED Attempt under a
+            # terminal Run here.
+            node_run = self._require_node_run(attempt.node_run_id)
+            refuse_completion_under_terminal_run(
+                self._require_run(node_run.run_id).status, attempt_id
+            )
         self._attempts[attempt_id] = updated
         return updated.model_copy(deep=True)
 

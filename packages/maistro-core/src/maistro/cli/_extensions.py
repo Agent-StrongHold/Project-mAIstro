@@ -1,10 +1,14 @@
-"""`maistro extensions` subcommand — inspect durable extension install records.
+"""`maistro extensions` subcommand — inspect records, contracts, compat.
 
-Read-only throughout, like `maistro archive`: these commands open the SQLite
+Read-only throughout, like `maistro archive`: `history`/`show` open the SQLite
 install-record store in read-only mode and report what was installed, by whom,
 from which catalog, with which digest, and with what trust evidence. They never
 verify, never import, and never write — the install flow that produces records
 lands with #953, and these records outlive it either way.
+
+`contract` (M9-E3, #964) validates a package's tool/Skill manifest against the
+published closed vocabularies and reports the host classification — without
+importing the manifest's entrypoint module.
 
 `preflight` evaluates those same records against a *target* host release
 (#957): which installed extensions are compatible, deprecated,
@@ -16,11 +20,17 @@ the reproducible output of dependency resolution: which extension versions are
 pinned, from which source, and why each one and its version were selected.
 They are likewise read-only: a lock file is evidence about a decision already
 made, and these commands never rewrite it.
+
+`compat` (#955) is the contract-compatibility preflight: it negotiates an
+extension's declared contract metadata against this host's — metadata only,
+so it runs before any extension code import by construction.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
@@ -30,6 +40,15 @@ from rich.console import Console
 from rich.table import Table
 from typer import Argument, Exit, Option, Typer
 
+from maistro.extensions.compat import (
+    CompatibilityReport,
+    CompatMetadataError,
+    ExtensionCompatMetadata,
+    HostContractMetadata,
+    Verdict,
+    negotiate,
+    parse_compat_metadata,
+)
 from maistro.extensions.preflight import (
     ManifestContractError,
     PreflightPolicy,
@@ -43,10 +62,11 @@ from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Awaitable, Callable
 
+    from maistro.extensions.tool_skill import ExtensionContract
     from maistro.extensions.types import InstallRecord
 
 console = Console()
-app = Typer(help="Inspect durable extension install records (publisher, digest, trust).")
+app = Typer(help="Inspect install records (publisher, digest, trust); preflight contract compat.")
 
 
 def _short_digest(digest: str) -> str:
@@ -237,6 +257,148 @@ def extensions_show(
             f"by key {_short_digest(record.evidence.verifier_key_fingerprint)} "
             f"at {_short_timestamp(record.evidence.verified_at.isoformat())}"
         )
+
+
+@app.command("contract")
+def extensions_contract(
+    manifest_path: Annotated[Path, Argument(help="Path to an extension.json manifest.")],
+) -> None:
+    """Validate a tool/Skill manifest and show the host classification (M9-E3).
+
+    Reads the manifest file, validates it against the published closed
+    vocabularies, and reports the canonical capability/effect classification
+    the host will hold the package to — the ADR-050 reversibility tier and
+    the effect floor derived from the manifest's declared effects AND
+    requested capabilities. Data-only: the manifest's entrypoint module is
+    never imported here.
+    """
+    loaded = _load_manifest_contract(manifest_path)
+    if loaded is None:
+        raise Exit(code=1)
+    _print_manifest_contract(*loaded)
+
+
+def _load_manifest_contract(
+    manifest_path: Path,
+) -> tuple[ExtensionContract, str] | None:
+    """Read and validate one manifest; report and return ``None`` on failure."""
+    from maistro.extensions.tool_skill import ExtensionContract
+
+    try:
+        body = manifest_path.read_bytes()
+        manifest = json.loads(body)
+    except OSError as exc:
+        console.print(f"[red]Cannot read {manifest_path}: {exc}[/red]")
+        return None
+    except json.JSONDecodeError as exc:
+        console.print(f"[red]{manifest_path} is not valid JSON: {exc}[/red]")
+        return None
+    if not isinstance(manifest, dict):
+        console.print(f"[red]{manifest_path} does not contain a JSON object.[/red]")
+        return None
+    digest = hashlib.sha256(body).hexdigest()
+    try:
+        return ExtensionContract.from_manifest(manifest, digest=digest), digest
+    except Exception as exc:
+        console.print(f"[red]{manifest_path}: {exc}[/red]")
+        return None
+
+
+def _print_manifest_contract(contract: ExtensionContract, digest: str) -> None:
+    """Render one validated contract and its host classification."""
+    console.print(f"[bold]{contract.extension_id}@{contract.version}[/bold]")
+    console.print(f"  family:        {contract.family}")
+    console.print(f"  contract:      {contract.contract_range}")
+    console.print(f"  manifest:      sha256:{digest}")
+    console.print(f"  entrypoint:    {contract.entrypoint.module}:{contract.entrypoint.object}")
+    console.print(f"  capabilities:  {', '.join(contract.capabilities) or '—'}")
+    console.print(f"  effects:       {', '.join(e.value for e in contract.effects) or '—'}")
+    console.print(f"  data scopes:   {', '.join(contract.data_scopes) or '—'}")
+    console.print(
+        f"  network:       {', '.join(contract.network_allow) or '—'}"
+        f" ports {contract.network_ports or '—'}"
+    )
+    console.print(f"  secret refs:   {', '.join(contract.secret_refs) or '—'}")
+    console.print(
+        f"  [bold]host classification[/bold]: effect floor "
+        f"[bold]{contract.effect_floor.value}[/bold] -> reversibility "
+        f"[bold]{contract.reversibility.value}[/bold] (ADR-050)"
+    )
+
+
+def _load_compat_metadata(metadata_path: Path) -> ExtensionCompatMetadata:
+    """Read and parse one extension's compatibility-metadata JSON file."""
+    try:
+        raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        console.print(f"[red]Cannot read {metadata_path}: {exc}[/red]")
+        raise Exit(code=1) from exc
+    except json.JSONDecodeError as exc:
+        console.print(f"[red]{metadata_path} is not valid JSON: {exc}[/red]")
+        raise Exit(code=1) from exc
+    try:
+        return parse_compat_metadata(raw)
+    except CompatMetadataError as exc:
+        console.print(f"[red]{metadata_path}: {exc}[/red]")
+        raise Exit(code=1) from exc
+
+
+def _print_compat_report(report: CompatibilityReport, host: HostContractMetadata) -> None:
+    """Render the negotiation report; the machine-readable form is --json."""
+    style = {
+        Verdict.COMPATIBLE: "green",
+        Verdict.DEGRADED: "yellow",
+        Verdict.INCOMPATIBLE: "red",
+    }[report.verdict]
+    console.print(f"[bold {style}]Verdict: {report.verdict.value}[/bold {style}]")
+    for reason in report.reasons:
+        console.print(f"[red]incompatible: {reason}[/red]")
+    if report.degradations:
+        table = Table("degraded feature", "why it is withheld")
+        for degradation in report.degradations:
+            table.add_row(degradation.feature, degradation.reason)
+        console.print(table)
+    if report.deprecations:
+        table = Table("deprecated feature", "status", "removal target", "migration")
+        for notice in report.deprecations:
+            table.add_row(
+                notice.feature,
+                notice.status.value,
+                "—" if notice.removal_target is None else str(notice.removal_target),
+                notice.migration,
+            )
+        console.print(table)
+    console.print(f"host contract: {host.contract_version} (majors {list(host.supported_majors)})")
+    granted = ", ".join(report.supported_features) if report.supported_features else "none"
+    console.print(f"features granted: {granted}")
+
+
+@app.command("compat")
+def extensions_compat(
+    metadata_path: Annotated[
+        Path, Argument(help="JSON file with the extension's compatibility metadata.")
+    ],
+    json_output: Annotated[
+        bool,
+        Option("--json", help="Emit the machine-readable report instead of the table."),
+    ] = False,
+) -> None:
+    """Negotiate an extension's contract metadata against this host.
+
+    Decides compatibility from metadata alone — the extension's code is never
+    imported, so a manifest can be rejected before anything executes. Exits
+    non-zero when the verdict is incompatible (the preflight signal), with the
+    actionable reasons on stderr-free stdout either way.
+    """
+    metadata = _load_compat_metadata(metadata_path)
+    host = HostContractMetadata.current()
+    report = negotiate(host, metadata)
+    if json_output:
+        console.print_json(json.dumps(report.to_dict()))
+    else:
+        _print_compat_report(report, host)
+    if report.verdict is Verdict.INCOMPATIBLE:
+        raise Exit(code=1)
 
 
 def _split_meta(entry: str, option: str) -> tuple[str, str]:
