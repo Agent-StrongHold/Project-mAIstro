@@ -89,9 +89,19 @@ def _walk_code(code: Any, acc: list[Any]) -> None:
 
 
 def _module_code_objects(module: ModuleType) -> list[Any]:
-    """Every code object defined by ``module``: functions and class methods."""
+    """Every code object defined by ``module``: functions and class methods.
+
+    Objects are filtered on ``__module__`` so imports (e.g. the dataclass
+    types a parser module imports for its result models) and the
+    ``dataclasses.py``-generated methods attached to them are never
+    instrumented — measured edges must stay attributable to the target
+    module itself, or the campaign-vs-Hypothesis comparison is inflated by
+    code nobody claims to be probing.
+    """
     codes: list[Any] = []
     for obj in vars(module).values():
+        if getattr(obj, "__module__", None) != module.__name__:
+            continue
         if hasattr(obj, "__code__"):
             _walk_code(obj.__code__, codes)
         elif isinstance(obj, type):
@@ -168,6 +178,33 @@ class HypothesisArmResult:
         for finding in self.escapes:
             counts[finding.exception_type] = counts.get(finding.exception_type, 0) + 1
         return counts
+
+
+@dataclass(frozen=True)
+class UnguidedArmResult:
+    """Frozen outcome of the seed-matched unguided baseline: the campaign's
+    seeds, mutator, RNG stream, and exec budget with the coverage feedback
+    loop removed. ``edges - seed_edges`` is what blind mutation adds over the
+    same corpus — the number coverage guidance must beat to earn its keep."""
+
+    execs: int
+    seconds: float
+    seed_edges: int
+    edges: int
+    accepted: int
+    rejected: int
+    findings: tuple[FuzzFinding, ...] = field(default_factory=tuple)
+
+    @property
+    def finding_type_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for finding in self.findings:
+            counts[finding.exception_type] = counts.get(finding.exception_type, 0) + 1
+        return counts
+
+    @property
+    def discovered_edges(self) -> int:
+        return self.edges - self.seed_edges
 
 
 class ModuleMonitor:
@@ -340,6 +377,60 @@ def run_campaign(
         seed_edges=seed_edges,
         edges=len(edges),
         corpus_size=len(corpus),
+        accepted=accepted,
+        rejected=rejected,
+        findings=tuple(findings),
+    )
+
+
+def run_unguided_arm(
+    target: Target,
+    *,
+    module: ModuleType,
+    seeds: Sequence[bytes],
+    allowed_rejections: AllowedRejections,
+    execs: int,
+    rng_seed: int,
+) -> UnguidedArmResult:
+    """The campaign minus its guidance, everything else held fixed: same
+    seeds, same mutator, same RNG stream and exec budget, but mutation draws
+    only from the seed corpus and no input is ever retained. Comparing
+    ``discovered_edges`` against this arm (not the seedless Hypothesis arms)
+    is what licenses the claim that coverage-guided retention — not the
+    seeds, and not blind mutation volume — drives the campaign's discovery."""
+    rng = random.Random(rng_seed)
+    findings: list[FuzzFinding] = []
+    accepted = rejected = 0
+    start = time.perf_counter()
+    with ModuleMonitor(module) as monitor:
+        seed_edges, seed_accepted, seed_rejected = _replay_seeds(
+            monitor, target, seeds, allowed_rejections
+        )
+        accepted += seed_accepted
+        rejected += seed_rejected
+        for index in range(execs):
+            base = seeds[rng.randrange(len(seeds))]
+            candidate = mutate(base, rng) if rng.random() < 0.95 else base
+            outcome, exc = classify(target, candidate, allowed_rejections)
+            if outcome == "accepted":
+                accepted += 1
+            elif outcome == "rejected":
+                rejected += 1
+            else:
+                findings.append(
+                    FuzzFinding(
+                        input_bytes=candidate,
+                        exception_type=type(exc).__name__ if exc else "Unknown",
+                        exception_message=str(exc)[:300] if exc else "",
+                        exec_index=index,
+                    )
+                )
+        edges = len(monitor.edges())
+    return UnguidedArmResult(
+        execs=execs,
+        seconds=time.perf_counter() - start,
+        seed_edges=seed_edges,
+        edges=edges,
         accepted=accepted,
         rejected=rejected,
         findings=tuple(findings),

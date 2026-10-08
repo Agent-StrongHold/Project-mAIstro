@@ -60,9 +60,11 @@ from ._fuzzlab import (
     RESEARCH_DISPOSITION,
     CampaignResult,
     HypothesisArmResult,
+    UnguidedArmResult,
     run_campaign,
     run_hypothesis_arm,
     run_probes,
+    run_unguided_arm,
 )
 
 # ---------------------------------------------------------------------------
@@ -207,6 +209,19 @@ def _manifest_campaign() -> CampaignResult:
     )
 
 
+def _manifest_unguided_arm() -> UnguidedArmResult:
+    """Seed-matched control for the manifest campaign: same seeds, mutator,
+    RNG stream, and exec budget, coverage feedback removed."""
+    return run_unguided_arm(
+        _manifest_target,
+        module=MANIFEST_MOD,
+        seeds=MANIFEST_SEEDS,
+        allowed_rejections=MANIFEST_REJECTIONS,
+        execs=MANIFEST_EXECS,
+        rng_seed=RNG_SEED,
+    )
+
+
 def _gitagent_campaign() -> CampaignResult:
     return run_campaign(
         _gitagent_target,
@@ -338,12 +353,16 @@ class TestCampaignMechanics:
 class TestMeasuredEvidence:
     def test_manifest_campaign_discovers_paths_beyond_seeds_and_hypothesis(self) -> None:
         """Code-path discovery, measured: the coverage-guided campaign must
-        reach strictly more manifest-parser edges than its own seed corpus and
-        than either Hypothesis arm on the same monitor."""
+        discover strictly more manifest-parser edges than its own seed corpus
+        AND than the seed-matched unguided arm (same seeds, mutator, RNG
+        stream, and budget, coverage feedback removed), and reach more total
+        edges than either seedless Hypothesis arm on the same monitor."""
         campaign = _manifest_campaign()
+        unguided = _manifest_unguided_arm()
         hyp_binary, hyp_json, _ = _hypothesis_arms()
         assert campaign.discovered_edges > 0
         assert campaign.corpus_size > len(MANIFEST_SEEDS)
+        assert campaign.discovered_edges > unguided.discovered_edges
         assert campaign.edges > hyp_binary.edges
         assert campaign.edges > hyp_json.edges
 

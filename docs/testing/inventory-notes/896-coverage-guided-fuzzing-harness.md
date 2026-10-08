@@ -14,11 +14,13 @@ New files, all under ``packages/maistro-core/tests/research/``:
 
 - ``_fuzzlab.py`` — the reusable machinery: module-local line+branch coverage
   via ``set_local_events`` (one target module per campaign, never a global
-  tool), libFuzzer-basics mutators, contract-based oracle (a finding is only
-  an exception outside the target's documented rejection types), frozen
-  ``CampaignResult``/``FuzzFinding`` records with replay-based
-  reproducibility, and a Hypothesis comparison arm running the same target
-  under the same monitor.
+  tool, ``__module__``-filtered so measured edges stay attributable to the
+  target module), libFuzzer-basics mutators, contract-based oracle (a finding
+  is only an exception outside the target's documented rejection types),
+  frozen ``CampaignResult``/``FuzzFinding`` records with replay-based
+  reproducibility, a seed-matched unguided control arm (coverage feedback
+  removed, everything else fixed), and a Hypothesis comparison arm running
+  the same target under the same monitor.
 - ``test_m8a15_fuzz_research.py`` — seed-validity guards, bit-for-bit
   determinism, replay checks, the measured campaign/Hypothesis comparison,
   the two routed contract escapes (manifest ``RecursionError`` from deep

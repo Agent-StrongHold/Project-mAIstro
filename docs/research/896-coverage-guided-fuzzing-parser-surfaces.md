@@ -54,7 +54,10 @@ libFuzzer loop in miniature, in-process, on stdlib only:
 - **Coverage feedback via PEP 669 `sys.monitoring`**: line + branch events
   registered as *local* events on exactly one target module's code objects (a
   global tool fires on ~8,800 code objects and is ~3 orders of magnitude
-  slower; local registration is what makes ~10⁵ execs/s possible).
+  slower; local registration is what makes ~10⁵ execs/s possible). Objects
+  are filtered on `__module__`, so imports (and `dataclasses`-generated
+  methods attached to them) are never instrumented — every measured edge is
+  attributable to the target module itself.
 - **Corpus**: seeded with representative *valid* inputs (3 valid manifests;
   1 real GitAgent pack), grown by retaining any mutant that revealed coverage
   unseen so far.
@@ -62,6 +65,12 @@ libFuzzer loop in miniature, in-process, on stdlib only:
   (growth), truncation, interesting-byte extension, byte replacement.
   Deliberately structure-blind; directed structural probes exist precisely to
   measure what this misses.
+- **Unguided control**: a seed-matched arm with the coverage feedback loop
+  removed — same seeds, mutator, RNG stream, and exec budget, mutation drawn
+  only from the seed corpus, nothing retained. Comparing discovered edges
+  against it (not against the seedless Hypothesis arms) is what separates
+  what guidance adds from what blind mutation volume over the same corpus
+  reaches.
 - **Oracle**: the documented rejection contract. `accepted` (returns),
   `rejected` (raised a documented rejection type), or **`escaped`** — an
   exception outside the contract is the experiment's only defect definition.
@@ -80,16 +89,24 @@ replacement.
 
 | Arm | Execs | Edges (seed → total) | Corpus | Accepted | Rejected | Escapes |
 |---|---|---|---|---|---|---|
-| Coverage-guided campaign | 4000 | 158 → **184** (+26) | 3 → 15 | 149 | 3854 | **0** |
+| Coverage-guided campaign | 4000 | 140 → **166** (+26) | 3 → 15 | 149 | 3854 | **0** |
+| Unguided control (seeds/mutator/RNG/budget matched) | 4000 | 140 → **164** (+24) | 3 (fixed) | 578 | 3425 | **0** |
 | Hypothesis `st.binary` | 250 | 7 | — | 0 | 250 | 0 |
 | Hypothesis JSON documents | 250 | 20 | — | 0 | 250 | 0 |
 | Directed deep-nesting probes | 2 | — | — | — | 1 | **1** |
 
 - Byte-level mutation over valid-manifest seeds found **zero** contract
   escapes: the parser's fail-closed story held under 4000 structured-ish
-  mutants. It also reached 184 parser edges vs 7–20 for the generic
+  mutants. It also reached 166 parser edges vs 7–20 for the generic
   Hypothesis arms — coverage-guided mutation dominates generic generation on
-  path discovery here (~10–26×) at comparable cost.
+  path discovery here (~8–24×) at comparable cost. Against the seed-matched
+  unguided control the margin is honest but narrow: guidance retained a
+  corpus that discovered +26 edges beyond the seeds where blind mutation
+  over the same corpus discovered +24 — on this shallow, table-driven
+  parser most reachable structure already sits in the seeds, which the
+  disposition below weighs.
+  The suite pins the ordering (`campaign.discovered_edges >
+  unguided.discovered_edges`) so the claim cannot silently invert.
 - **Defect found (routed, not fixed in this lane):** deeply nested JSON
   (`[[[...`, 20 000 deep) makes `json.loads` raise `RecursionError`, which
   `_parse_document` (`manifest.py:147`) does not catch — a third outcome the
@@ -156,9 +173,10 @@ if no concrete attack surface demonstrates incremental value"), the value side
 is demonstrated narrowly, not broadly:
 
 - **For incubating**: two real, host-triggerable contract escapes found on a
-  live import boundary within 0.25 s of campaign time; 10–26× path discovery
-  over the Hypothesis baseline on the manifest parser; zero false positives by
-  oracle construction; deterministic and CI-cheap.
+  live import boundary within 0.25 s of campaign time; ~8–24× path discovery
+  over the Hypothesis baseline on the manifest parser (and strictly more
+  discovered edges than the seed-matched unguided control); zero false
+  positives by oracle construction; deterministic and CI-cheap.
 - **Against graduating today**: both routed defects are unfixed (research
   lanes do not fix product code); byte-level mutation provably misses the
   depth-structural class (the manifest escape came from a directed probe, not
