@@ -100,6 +100,7 @@ Every child research epic/leaf defines:
 | [919 — prompt-model co-routing](919-prompt-model-co-routing.md) | M8-B5 | leaf [#919](https://github.com/Agent-StrongHold/Project-mAIstro/issues/919), epic #900 | WATCH |
 | [920 — hybrid vector + graph retrieval](920-hybrid-vector-graph-retrieval.md) | M8-C1 | leaf [#920](https://github.com/Agent-StrongHold/Project-mAIstro/issues/920), epic #901 | WATCH |
 | [921 — learned reranking and query rewriting](921-reranking-query-rewriting.md) | M8-C2 | leaf [#921](https://github.com/Agent-StrongHold/Project-mAIstro/issues/921), epic #901 | WATCH |
+| [930 — self-consistency, semantic entropy, answer-variation signals](930-answer-variation-uncertainty-signals.md) | M8-E1 | leaf [#930](https://github.com/Agent-StrongHold/Project-mAIstro/issues/930), epic #904 | WATCH |
 | [935 — cross-Agent batching, prefix/KV reuse, semantic caching](935-cross-agent-batching-kv-reuse.md) | M8-F2 | leaf [#935](https://github.com/Agent-StrongHold/Project-mAIstro/issues/935), epic #905 | WATCH |
 
 No leaf currently holds a GRADUATE or REJECT disposition; two are INCUBATE (model-routing

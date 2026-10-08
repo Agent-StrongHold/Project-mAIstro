@@ -93,7 +93,12 @@ research: its escalation criteria stay separated from routing authority by desig
 
 - #930 (self-consistency / semantic entropy): **WATCH** — machinery ready; no real-model
   evidence yet. Move to INCUBATE on measured AUROC/AUPRC gain over self-report on
-  representative MAIstro workloads with acceptable token cost/latency.
+  representative MAIstro workloads with acceptable token cost/latency. The leaf now has
+  its own comparison note and harness:
+  [930 — self-consistency, semantic entropy, answer-variation signals](930-answer-variation-uncertainty-signals.md)
+  (the three signal families side by side, with sampling temperature, the equivalence
+  clusterer, and the confident-convergence blind spot identified as the variables a real
+  experiment must control).
 - #931 (historical outcome calibration): **WATCH** — Beta-smoothed estimator and leakage-safe
   split exist; needs the outcome corpus volume and drift-sensitivity study the leaf defines.
 - #932 (heterogeneous disagreement / verifiers): **WATCH** — disagreement metric and ranking
