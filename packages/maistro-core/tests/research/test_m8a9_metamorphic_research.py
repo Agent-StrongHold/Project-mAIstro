@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import sys
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
@@ -67,6 +68,62 @@ from maistro.router.selector import RouterEngine
 from maistro.types.config import RoutingConfig
 from maistro.types.intent import TIER_ORDER, Intent
 from maistro.types.model import ModelConfig, ModelSelection, ProviderConfig
+
+# --------------------------------------------------------------------------
+# Generated-workload budget — structural CI-cost bounds (AGENTS.md: "assert
+# structure over wall-clock timing where the code allows it"). Every
+# @given test in this module must take its Hypothesis settings from
+# _generated_settings(), which enforces the declared per-test example cap,
+# derandomization, and database=None *at import time* (a violation fails
+# collection, not CI wall-clock) and registers the settings so the suite can
+# assert its own complete generated-case budget. A slow seam adapter can
+# therefore not grow the module's case budget — only the fixed battery's
+# wall-clock, which test_evidence_ci_cost_measured_and_bounded polices
+# separately.
+# --------------------------------------------------------------------------
+
+#: Declared generated suite: relation key -> Hypothesis example cap.
+_EXPECTED_GENERATED_SUITE: dict[str, int] = {
+    "MR-A1-generated": 15,
+    "MR-A2-generated": 10,
+    "MR-B1-generated": 15,
+    "MR-B2-generated": 25,
+    "MR-C1-generated": 15,
+}
+_MAX_EXAMPLES_PER_GENERATED_TEST = max(_EXPECTED_GENERATED_SUITE.values())
+_MAX_TOTAL_GENERATED_CASES = sum(_EXPECTED_GENERATED_SUITE.values())
+
+#: The five @given tests the declared budget covers — the completeness check
+#: in test_evidence_ci_cost_measured_and_bounded fails collection-time drift
+#: (a generated test added without going through _generated_settings()).
+_EXPECTED_GENERATED_TEST_NAMES: frozenset[str] = frozenset(
+    {
+        "test_mr_a1_irrelevant_injection_holds_generated",
+        "test_mr_a2_cross_workspace_write_invariance_generated",
+        "test_mr_b1_ineligible_additions_preserve_selection_generated",
+        "test_mr_b2_permutation_preserves_selection_generated",
+        "test_mr_c1_consistent_rename_preserves_validation_generated",
+    }
+)
+
+_GENERATED_SETTINGS_REGISTRY: dict[str, settings] = {}
+
+
+def _generated_settings(relation: str, max_examples: int) -> settings:
+    """Hypothesis settings for a generated test, structurally bounded.
+
+    Raises at import time when ``max_examples`` exceeds the declared cap, so
+    the module's generated-case budget is enforced by construction.
+    """
+    if not 1 <= max_examples <= _MAX_EXAMPLES_PER_GENERATED_TEST:
+        raise AssertionError(
+            f"{relation}: max_examples={max_examples} exceeds declared cap "
+            f"{_MAX_EXAMPLES_PER_GENERATED_TEST}"
+        )
+    cfg = settings(max_examples=max_examples, deadline=None, derandomize=True, database=None)
+    _GENERATED_SETTINGS_REGISTRY[relation] = cfg
+    return cfg
+
 
 # --------------------------------------------------------------------------
 # Disjoint token pools: whole-token disjointness guarantees injected texts can
@@ -881,7 +938,7 @@ def test_harness_targets_real_implementations() -> None:
 # --------------------------------------------------------------------------
 
 
-@settings(max_examples=15, deadline=None, derandomize=True, database=None)
+@_generated_settings("MR-A1-generated", max_examples=15)
 @given(
     query_words=st.lists(st.sampled_from(_RELEVANT_WORDS), min_size=2, max_size=4, unique=True),
     relevant=st.lists(
@@ -1029,7 +1086,7 @@ def test_mr_a1_detects_ranking_regression_on_real_seam(monkeypatch: Any) -> None
 # --------------------------------------------------------------------------
 
 
-@settings(max_examples=10, deadline=None, derandomize=True, database=None)
+@_generated_settings("MR-A2-generated", max_examples=10)
 @given(
     query=st.sampled_from(["deploy status", "rollback report", "deploy pipeline outage"]),
     extra=st.lists(st.sampled_from(_RELEVANT_WORDS), min_size=0, max_size=3),
@@ -1107,7 +1164,7 @@ def test_mr_a2_oracle_detects_seeded_scope_leak() -> None:
 # --------------------------------------------------------------------------
 
 
-@settings(max_examples=15, deadline=None, derandomize=True, database=None)
+@_generated_settings("MR-B1-generated", max_examples=15)
 @given(
     quality_a=st.floats(min_value=0.5, max_value=0.95),
     quality_b=st.floats(min_value=0.5, max_value=0.95),
@@ -1234,7 +1291,7 @@ def test_mr_b1_detects_filter_regression_on_real_seam(monkeypatch: Any) -> None:
 # --------------------------------------------------------------------------
 
 
-@settings(max_examples=25, deadline=None, derandomize=True, database=None)
+@_generated_settings("MR-B2-generated", max_examples=25)
 @given(
     quality=st.lists(st.sampled_from([0.5, 0.6, 0.75, 0.9]), min_size=2, max_size=4),
     order=st.permutations([0, 1, 2, 3]),
@@ -1347,7 +1404,7 @@ def test_mr_b2_candidates_multiset_invariant_under_permutation() -> None:
 # --------------------------------------------------------------------------
 
 
-@settings(max_examples=15, deadline=None, derandomize=True, database=None)
+@_generated_settings("MR-C1-generated", max_examples=15)
 @given(fresh=st.permutations(_FRESH_IDS))
 def test_mr_c1_consistent_rename_preserves_validation_generated(fresh: list[str]) -> None:
     """Generated case: any bijection preserves the validator's verdict."""
@@ -1433,9 +1490,42 @@ def test_evidence_battery_detects_every_seeded_mutant() -> None:
 
 
 def test_evidence_ci_cost_measured_and_bounded() -> None:
-    """CI cost is recorded; the battery stays a smoke-cost, not a soak."""
+    """CI cost is bounded structurally; wall-clock stays scoped to the battery.
+
+    The wall-clock asserts below cover only the cached fixed-case battery,
+    which is this module's shared evidence record. The rest of the module's
+    workload is bounded *structurally* (AGENTS.md: assert structure over
+    wall-clock): every generated test draws its Hypothesis settings from
+    _generated_settings(), so per-test example caps, derandomization, and
+    database=None are enforced at import time and registered — the suite's
+    generated-case budget is the declared 80 cases, whatever a seam adapter
+    costs per case. The two production-path mutant tests (MR-A1/MR-B1
+    ``*_regression_on_real_seam``) are single fixed invocations with no
+    generation, so they add no unbounded workload either.
+    """
     battery = run_evidence_battery()
     assert battery["total_seconds"] < 120.0, "battery exceeded its smoke-cost bound"
     for name, record in battery["relations"].items():
         per_case = record["seconds"] / record["cases"]
         assert per_case < 5.0, f"{name} per-case cost {per_case:.3f}s is not smoke-cost"
+    # Structural completeness: every @given test in this module is registered
+    # through _generated_settings() — none may bypass the declared budget.
+    generated = {
+        name
+        for name, obj in vars(sys.modules[__name__]).items()
+        if name.startswith("test_") and getattr(obj, "is_hypothesis_test", False)
+    }
+    assert generated == _EXPECTED_GENERATED_TEST_NAMES, (
+        "generated suite drifted from the declared budget; add new tests via "
+        f"_generated_settings() and update _EXPECTED_GENERATED_SUITE/test names: "
+        f"{sorted(generated ^ _EXPECTED_GENERATED_TEST_NAMES)}"
+    )
+    # Structural budget: registered settings match the declared suite exactly.
+    total_cases = 0
+    for relation, expected_cap in _EXPECTED_GENERATED_SUITE.items():
+        cfg = _GENERATED_SETTINGS_REGISTRY[relation]
+        assert cfg.max_examples == expected_cap, f"{relation}: cap drifted from declaration"
+        assert cfg.derandomize, f"{relation}: generated cases must stay deterministic"
+        assert cfg.database is None, f"{relation}: generated cases must not grow a database"
+        total_cases += cfg.max_examples
+    assert total_cases == _MAX_TOTAL_GENERATED_CASES
