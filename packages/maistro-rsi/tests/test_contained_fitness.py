@@ -356,7 +356,7 @@ class TestEvaluateCandidateRoutesThroughTheSandbox:
     def test_a_missing_tool_in_the_image_is_a_blocking_not_run_gate(
         self, sandbox_factory: list[_FakeSandbox], tmp_path: Path, forbid_host_subprocess: None
     ) -> None:
-        """The same required-gate contract in both isolation modes (#304 ×
+        """The same required-gate contract in both isolation modes (#304 x
         #614): a tool the image lacks is a blocking ``not_run`` gate naming
         the cause — never a false rejection of the candidate's code, and
         never a silent narrowing of the evidence an operator asked for."""

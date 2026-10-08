@@ -1073,6 +1073,7 @@ REQUIRED_LINT_TOOL_SPEC: tuple[tuple[str, str, list[str]], ...] = (
     ("no_bandit_high", "bandit", [sys.executable, "-m", "bandit", "-f", "json", "-q"]),
 )
 
+
 def _tool_version(dist: str) -> str | None:
     """The installed distribution version of a gate's tool, or None when the
     dist is absent (which for a required tool surfaces as a not_run gate
