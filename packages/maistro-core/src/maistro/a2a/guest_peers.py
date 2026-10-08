@@ -281,7 +281,11 @@ class GuestPeerManager:
         idempotency_key: str | None = None,
         context: DelegationContext | None = None,
     ) -> DelegationResult:
-        """Delegate a task to an external A2A peer."""
+        """Delegate a task to an external A2A peer.
+
+        The key is sent at the transport boundary so a remote admission service
+        can deduplicate a request whose caller lost its lease after dispatch.
+        """
         refused = await self._refused_dispatch(peer_name, agent_id, context)
         if refused is not None:
             return refused
@@ -399,6 +403,6 @@ class GuestPeerManager:
             agent_version=str(data.get("agent_version") or ""),
             protocol_version=str(data.get("protocol_version") or ""),
         )
-        if idempotency_key:
+        if idempotency_key and submitted.task_id:
             self._idempotent_receipts[(peer.peer_name, idempotency_key)] = submitted
         return submitted
