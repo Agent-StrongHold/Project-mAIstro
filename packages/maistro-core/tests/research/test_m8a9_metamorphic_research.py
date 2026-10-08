@@ -1208,7 +1208,19 @@ def test_mr_b1_every_ineligibility_axis_exercised() -> None:
         tier_band_top="large",
     )
     intent = Intent(task_type="chat", tier="P2", min_tier="small", max_tier="large")
-    survived = filter_candidates(intent, extra_models, extra_providers, usage_pcts=extra_usage)
+    # The provider map from ineligible_additions() only carries the inactive
+    # and burned providers; passing it directly would let the missing-provider
+    # check reject image-model and out-of-band-model before modality or tier
+    # is examined, so this control would stay green even if either filter
+    # regressed. Merge the active baseline catalogue so each addition is
+    # rejected by its own intended ineligibility axis.
+    _, _, base_providers, _ = base_catalog(0.9, 0.7)
+    survived = filter_candidates(
+        intent,
+        extra_models,
+        {**base_providers, **extra_providers},
+        usage_pcts=extra_usage,
+    )
     assert survived == [], f"ineligible additions survived the filter: {survived}"
 
 
