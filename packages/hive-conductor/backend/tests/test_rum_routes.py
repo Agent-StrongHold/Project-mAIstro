@@ -534,3 +534,64 @@ def test_batch_size_caps_match_the_frontend_contract() -> None:
     py_schema = re_mod.search(r'RUM_SCHEMA = "([^"]+)"', py)
     assert ts_schema and py_schema
     assert ts_schema.group(1) == py_schema.group(1)
+
+
+# --- the documented OpenAPI contract ----------------------------------------
+
+
+def test_openapi_document_keeps_the_ingest_contract() -> None:
+    """The ingest route's request body stays in the OpenAPI document.
+
+    The handler reads the raw stream so the 64 KiB byte cap applies before
+    FastAPI buffers or parses anything, which is why FastAPI cannot infer
+    the body the way it does for every other route: the contract survives
+    only through `openapi_extra` + `ensure_openapi_contract`. When the
+    byte-cap redesign silently dropped it, `src/api/types.gen.ts` lost
+    `RumBatchIn`/`WebVitalEventIn`/`ApiRequestEventIn` and the #1048 drift
+    gate (`dump-hive-openapi.py` -> `gen:api` -> `git diff --exit-code`)
+    went red only in CI. This pins the document here, at the source: the
+    three schemas exist, the ingest operation declares the body and the 422
+    envelope, and every reference the operation makes resolves.
+    """
+    from main import app
+
+    document = app.openapi()
+    schemas = document["components"]["schemas"]
+    for name in ("RumBatchIn", "WebVitalEventIn", "ApiRequestEventIn"):
+        assert name in schemas, f"{name} missing from the OpenAPI components"
+
+    ingest = document["paths"]["/v1/rum/events"]["post"]
+    request_body = ingest.get("requestBody")
+    assert request_body is not None, "ingest lost its documented request body"
+    assert request_body["required"] is True
+    body_ref = request_body["content"]["application/json"]["schema"]["$ref"]
+    assert body_ref == "#/components/schemas/RumBatchIn"
+
+    validation = ingest["responses"].get("422")
+    assert validation is not None, "ingest lost its documented 422 response"
+    error_ref = validation["content"]["application/json"]["schema"]["$ref"]
+    assert error_ref == "#/components/schemas/HTTPValidationError"
+    assert "HTTPValidationError" in schemas
+
+    def resolves(ref: str) -> bool:
+        assert ref.startswith("#/components/schemas/")
+        return ref.rsplit("/", 1)[-1] in schemas
+
+    # Every schema reference anywhere in the three components resolves —
+    # `ensure_openapi_contract` renders them through FastAPI itself, so a
+    # dangling ref here means the rendering path broke, not just a typo.
+    import re as re_mod
+
+    for name in ("RumBatchIn", "WebVitalEventIn", "ApiRequestEventIn"):
+        refs = re_mod.findall(r'"\$ref":\s*"([^"]+)"', jsonlib.dumps(schemas[name]))
+        for ref in refs:
+            assert resolves(ref), f"{ref} (inside {name}) does not resolve"
+
+    # The envelope really carries the two event schemas, the way the
+    # parameter-driven rendering the committed types were generated from did.
+    events = schemas["RumBatchIn"]["properties"]["events"]
+    event_refs = {item["$ref"] for item in events["items"]["anyOf"] if "$ref" in item}
+    assert event_refs == {
+        "#/components/schemas/WebVitalEventIn",
+        "#/components/schemas/ApiRequestEventIn",
+    }

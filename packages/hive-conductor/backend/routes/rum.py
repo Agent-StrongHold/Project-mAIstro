@@ -36,7 +36,7 @@ import json
 import re
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from services.rum_store import (
     MAX_MAX_EVENTS,
@@ -163,7 +163,80 @@ class RumBatchIn(BaseModel):
         return value
 
 
-@router.post("/events")
+#: The ingest operation's OpenAPI face. The handler reads the body manually
+#: (the 64 KiB cap must apply before FastAPI buffers or parses anything), so
+#: FastAPI cannot infer the request body or the validation-error response from
+#: the signature the way it does for every other route. Declaring them here
+#: keeps `POST /v1/rum/events` documented with the same `RumBatchIn` schema and
+#: 422 envelope the parameter-driven routes emit, which is what
+#: `scripts/dump-hive-openapi.py` -> `npm run gen:api` regenerates
+#: `src/api/types.gen.ts` from (the drift gate, #1048). `ensure_openapi_contract`
+#: registers the referenced component schemas.
+_INGEST_OPENAPI_EXTRA: dict[str, Any] = {
+    "requestBody": {
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RumBatchIn"}}},
+        "required": True,
+    },
+    "responses": {
+        "422": {
+            "description": "Validation Error",
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/HTTPValidationError"}}
+            },
+        },
+    },
+}
+
+
+def ensure_openapi_contract(app: FastAPI) -> None:
+    """Keep the `hive.rum.v1` ingest models in the app's OpenAPI document.
+
+    The models are referenced only by ``openapi_extra`` above and by manual
+    ``RumBatchIn.model_validate`` inside the handler, so FastAPI's automatic
+    component collection never sees them and the references would dangle.
+    The schemas are rendered by FastAPI itself, on a scratch app where the
+    batch IS a declared body parameter — the exact rendering (field defaults,
+    titles, required lists) a parameter-driven route gets, on this FastAPI
+    version, rather than a hand-maintained copy that drifts from it.
+    ``setdefault`` keeps the document's own rendering if a future change ever
+    lets the real route emit the schemas natively again.
+    """
+
+    base_openapi = app.openapi
+
+    def openapi_with_rum_contract() -> Any:
+        if app.openapi_schema is not None:
+            return app.openapi_schema
+        document = base_openapi()
+        schemas = document.setdefault("components", {}).setdefault("schemas", {})
+        for name, schema in _ingest_component_schemas().items():
+            schemas.setdefault(name, schema)
+        app.openapi_schema = document
+        return document
+
+    app.openapi = openapi_with_rum_contract  # type: ignore[method-assign]
+
+
+def _ingest_component_schemas() -> dict[str, Any]:
+    """The three ingest schemas as FastAPI renders them for a body parameter."""
+
+    scratch = FastAPI(version="rum-contract")
+
+    @scratch.post("/rum-contract")
+    def _contract(batch: RumBatchIn) -> dict[str, Any]:
+        # Never called: the scratch app exists only for its OpenAPI rendering.
+        return {"accepted": len(batch.events), "enabled": True}
+
+    document = scratch.openapi()
+    wanted = {WebVitalEventIn.__name__, ApiRequestEventIn.__name__, RumBatchIn.__name__}
+    return {
+        name: schema
+        for name, schema in document.get("components", {}).get("schemas", {}).items()
+        if name in wanted
+    }
+
+
+@router.post("/events", openapi_extra=_INGEST_OPENAPI_EXTRA)
 async def ingest_events(request: Request, response: Response) -> dict[str, Any]:
     # Session context comes from AuthMiddleware upstream; the body is read
     # manually (not as a Pydantic parameter) so the byte cap below applies

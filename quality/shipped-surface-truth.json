@@ -1254,6 +1254,16 @@
       "effect_owner": "services/rum_store.py RumStore.ingest (bounded in-memory ring)"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/rum.py",
+      "method": "POST",
+      "route": "/rum-contract",
+      "handler": "_contract",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "OpenAPI rendering aid for the ingest contract (#1048 drift gate): ingest_events reads its body manually so the 64 KiB cap applies before parsing, which hides the schema from FastAPI's component collection, so this scratch-app route renders the RumBatchIn component schemas through FastAPI itself",
+      "truth_contract": "never mounted on any served app and never routable at runtime; exists only inside ensure_openapi_contract's throwaway FastAPI app so the OpenAPI document renders the hive.rum.v1 schemas byte-identically to a declared body parameter; no store access, no durable effect"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/schedules.py",
       "method": "DELETE",
       "route": "/{schedule_id}",

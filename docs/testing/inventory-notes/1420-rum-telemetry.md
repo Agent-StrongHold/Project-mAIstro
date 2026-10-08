@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +21
+  packages/hive-conductor/backend/tests: +22
   packages/hive-conductor/tests/e2e: +0
 ---
 
@@ -188,3 +188,38 @@ the DEV gate folds it away entirely):
   `/v1/rum`). Landing order for the maintainer: (1) the grant, (2) this
   PR's registry declaration (`exempt_reason: authenticated-only`) + deletion
   of the baseline row. Every other locally-runnable gate is green.
+
+## OpenAPI drift repair (+1, same file, 2026-10-08)
+
+The byte-cap redesign of `ingest_events` (manual `request.stream()` read) made
+FastAPI stop emitting the ingest contract from the route signature: the
+regenerated `src/api/types.gen.ts` silently lost `RumBatchIn`,
+`WebVitalEventIn`, `ApiRequestEventIn` and the operation's `requestBody`/422 —
+the #1048 drift step (`dump-hive-openapi.py` -> `gen:api` ->
+`git diff --exit-code`) went red only in CI. The repair documents the manual
+read instead of surrendering it: the route declares `openapi_extra`
+(requestBody `$ref` `RumBatchIn`, 422 `HTTPValidationError`), and
+`routes/rum.py::ensure_openapi_contract` (installed by `main.py`) registers the
+three component schemas by rendering them through FastAPI itself on a scratch
+app where the batch IS a declared body parameter — the exact rendering a
+parameter-driven route gets on this FastAPI version, so the regenerated
+`types.gen.ts` is byte-identical to the committed one (zero frontend churn).
+`test_openapi_document_keeps_the_ingest_contract` (+1 node) pins the document
+at the source: the three schemas exist, the ingest operation declares the body
+and the 422 envelope, and every `$ref` the components make resolves. Against
+the pre-repair tree the test fails on the first assertion (the components were
+absent — the regeneration diff that went red in CI).
+
+Round note (2026-10-08, CI-repair): the OpenAPI repair above also completes
+the shipped-surface matrix for the never-mounted rendering route
+(`POST /rum-contract` on the throwaway app, classified `local-only` with its
+never-routable truth contract) and re-validates the full local battery post
+develop-sync: ruff check/format clean, `dump-hive-openapi` -> `gen:api` ->
+`git diff --exit-code` green with the committed `types.gen.ts` byte-identical,
+`tsc --noEmit` clean, backend suite 3549 passed + 19 skipped, vulture
+(CI invocation) 1328/1328 banked, enumerations + provenance, shipped-surface,
+suite inventory, doc links, frontend typed-client all green. The one
+deliberate residual is unchanged and outside a repair change's authority:
+`check-route-permissions.py` fails on `/v1/rum` until the maintainer lands the
+`exempt::/v1/rum` grant at the merge base (two-merge doctrine), then this PR
+declares `exempt_reason: authenticated-only` and deletes the baseline row.
