@@ -19,7 +19,17 @@ One service owns every transition. The contract, in order:
    only after authorization — and swaps the scope's active pointer once, after
    every check has passed. Failure is recorded truthfully (``FAILED`` with the
    reason) and the same bound artifact can be presented again to recover.
-   Retries never duplicate install records and never widen the grant.
+   Retries never duplicate install records and never widen the grant. A
+   previously active version is marked ``SUPERSEDED`` after the pointer has
+   moved, so exactly one record per (scope, extension) is ``ACTIVE``.
+4. Post-install lifecycle (#954): ``disable`` stops new use while preserving
+   the record, its frozen grant and its audit trail; ``enable`` re-serves a
+   disabled version (no code execution — the artifact was already activated
+   under its authorization); ``rollback`` moves the active version back to a
+   previously authorized version; ``remove`` is terminal and preserves
+   history; ``set_pinned`` holds the active version so upgrades and rollbacks
+   cannot move it without an explicit unpin decision. None of these ever
+   re-run the loader or widen a grant.
 
 Every transition is appended to the store's audit trail with actor, org /
 workspace scope, extension id and version, and a reason.
@@ -64,6 +74,7 @@ from maistro.extensions.types import (
     InvalidTransition,
     TrustClaim,
     UnknownInstall,
+    VersionPinned,
 )
 
 
@@ -550,6 +561,19 @@ class ExtensionInstallService:
                 f"inspection ({record.artifact_sha256}); authorization does not transfer"
             )
 
+        # #954: a pin on the currently active version fences moving the active
+        # version to this candidate. The fence sits here — after the state and
+        # digest checks, before any code runs — so a pinned scope is only
+        # ever movable by an explicit unpin decision, never by presenting an
+        # authorized payload out of band.
+        pinned = await self._store.active_record(scope, record.extension_id)
+        if pinned is not None and pinned.install_id != install_id and pinned.pinned:
+            raise VersionPinned(
+                f"{record.extension_id} {pinned.version} is pinned in "
+                f"{scope.describe}; activating {record.version} is fenced "
+                "until the pin is lifted with an explicit unpin decision"
+            )
+
         record = await self._transition(
             record,
             ExtensionState.INSTALLING,
@@ -597,8 +621,304 @@ class ExtensionInstallService:
             reason=f"activated {record.extension_id} {record.version}",
             now=self._clock(),
         )
+        prior = await self._store.active_record(scope, record.extension_id)
         await self._store.set_active(record)
+        if (
+            prior is not None
+            and prior.install_id != record.install_id
+            and prior.state is ExtensionState.ACTIVE
+        ):
+            # Pointer first (the atomic "what runs" swap), supersede second:
+            # a crash between the two leaves the pointer naming the new
+            # version with the old record still ACTIVE — the pre-#954
+            # behavior — never a pointer naming a non-ACTIVE record.
+            await self._transition(
+                prior,
+                ExtensionState.SUPERSEDED,
+                actor=actor,
+                reason=(
+                    f"superseded by activation of {record.extension_id} "
+                    f"{record.version} (install {record.install_id})"
+                ),
+                now=self._clock(),
+            )
         return record
+
+    # -- phase 4: post-install lifecycle (#954) ------------------------------
+
+    async def disable(
+        self,
+        install_id: str,
+        *,
+        actor: str,
+        scope: ExtensionScope,
+        reason: str,
+    ) -> ExtensionInstallRecord:
+        """Stop an active extension's new use while preserving everything.
+
+        The record keeps its frozen grant, its immutable manifest snapshot
+        and its full audit trail; the scope's active pointer is dropped (iff
+        it still names this record), so the extension stops being served
+        immediately. Deactivation is not deletion: history stays queryable.
+        """
+        if not actor.strip():
+            raise ValueError("actor is required: every transition needs an accountable actor")
+        if not reason.strip():
+            raise ValueError(
+                "reason is required: a disable decision without a "
+                "recorded reason is not auditable evidence"
+            )
+        async with self._lock(install_id):
+            record = await self._require(install_id, scope)
+            if record.state is not ExtensionState.ACTIVE:
+                raise InvalidTransition(
+                    f"install {install_id} is {record.state}; only an "
+                    f"{ExtensionState.ACTIVE} record can be disabled"
+                )
+            updated = await self._transition(
+                record,
+                ExtensionState.DISABLED,
+                actor=actor,
+                reason=f"disabled: {reason}",
+                now=self._clock(),
+            )
+            await self._store.clear_active(updated)
+            return updated
+
+    async def enable(
+        self,
+        install_id: str,
+        *,
+        actor: str,
+        scope: ExtensionScope,
+        reason: str,
+    ) -> ExtensionInstallRecord:
+        """Re-serve a disabled version under its existing frozen grant.
+
+        No code executes: the artifact was already activated under this
+        record's authorization, and re-enabling changes nothing about what is
+        authorized. Refuses when a *different* version currently holds the
+        active pointer — re-enabling over a live version is a version move,
+        and version moves are rollback decisions, not silent pointer swaps.
+        """
+        if not actor.strip():
+            raise ValueError("actor is required: every transition needs an accountable actor")
+        if not reason.strip():
+            raise ValueError(
+                "reason is required: an enable decision without a "
+                "recorded reason is not auditable evidence"
+            )
+        async with self._lock(install_id):
+            record = await self._require(install_id, scope)
+            if record.state is not ExtensionState.DISABLED:
+                raise InvalidTransition(
+                    f"install {install_id} is {record.state}; only a "
+                    f"{ExtensionState.DISABLED} record can be re-enabled"
+                )
+            current = await self._store.active_record(scope, record.extension_id)
+            if (
+                current is not None
+                and current.install_id != install_id
+                and current.state is ExtensionState.ACTIVE
+            ):
+                raise InvalidTransition(
+                    f"{record.extension_id} {current.version} is the active version in "
+                    f"{scope.describe}; re-enabling {record.version} over it is a "
+                    "version move — use rollback for an explicit, audited decision"
+                )
+            updated = await self._transition(
+                record,
+                ExtensionState.ACTIVE,
+                actor=actor,
+                reason=f"re-enabled: {reason}",
+                now=self._clock(),
+            )
+            await self._store.set_active(updated)
+            return updated
+
+    async def remove(
+        self,
+        install_id: str,
+        *,
+        actor: str,
+        scope: ExtensionScope,
+        reason: str,
+    ) -> ExtensionInstallRecord:
+        """Remove a served version; the record becomes terminal.
+
+        ``REMOVED`` never reactivates: a fresh install of the same version is
+        a new inspection, a new authorization decision, a new record. The
+        removed record's identity, snapshot, grant and transition trail stay
+        exactly where they were — the stores are append-only, so historical
+        evidence outlives removal by construction.
+        """
+        if not actor.strip():
+            raise ValueError("actor is required: every transition needs an accountable actor")
+        if not reason.strip():
+            raise ValueError(
+                "reason is required: a removal without a recorded reason is not auditable evidence"
+            )
+        async with self._lock(install_id):
+            record = await self._require(install_id, scope)
+            served = (
+                ExtensionState.ACTIVE,
+                ExtensionState.DISABLED,
+                ExtensionState.SUPERSEDED,
+            )
+            if record.state not in served:
+                raise InvalidTransition(
+                    f"install {install_id} is {record.state}; only a served record "
+                    f"({', '.join(state.value for state in served)}) can be removed"
+                )
+            updated = await self._transition(
+                record,
+                ExtensionState.REMOVED,
+                actor=actor,
+                reason=f"removed: {reason}",
+                now=self._clock(),
+            )
+            await self._store.clear_active(updated)
+            return updated
+
+    async def rollback(
+        self,
+        *,
+        actor: str,
+        scope: ExtensionScope,
+        extension_id: str,
+        to_version: str,
+        reason: str,
+    ) -> ExtensionInstallRecord:
+        """Move the active version back to a previously authorized version.
+
+        The target must be a prior version of the same extension in the same
+        scope whose record is ``SUPERSEDED`` or ``DISABLED`` — its grant was
+        frozen by an earlier explicit authorization, so a rollback restores
+        authority that already exists; it never grants anything new and never
+        executes code. A pinned active version fences the move (lift the pin
+        first); between retiring the current version and restoring the target
+        the scope truthfully has no active version, and every step lands on
+        the audit trail.
+        """
+        if not actor.strip():
+            raise ValueError("actor is required: every transition needs an accountable actor")
+        if not reason.strip():
+            raise ValueError(
+                "reason is required: a rollback without a recorded reason is not auditable evidence"
+            )
+        current = await self._store.active_record(scope, extension_id)
+        if current is None or current.state is not ExtensionState.ACTIVE:
+            raise InvalidTransition(
+                f"no active install of {extension_id} in {scope.describe} to roll back"
+            )
+        if current.pinned:
+            raise VersionPinned(
+                f"{extension_id} {current.version} is pinned in {scope.describe}; "
+                "rolling back to another version is fenced until the pin is "
+                "lifted with an explicit unpin decision"
+            )
+        target = await self._store.latest_record(scope, extension_id, to_version)
+        if target is None:
+            raise UnknownInstall(
+                f"no install record for {extension_id} {to_version} in {scope.describe}"
+            )
+        if target.install_id == current.install_id:
+            raise InvalidTransition(
+                f"rollback target {to_version} is the active version; nothing to roll back to"
+            )
+        restorable = (ExtensionState.SUPERSEDED, ExtensionState.DISABLED)
+        if target.state not in restorable:
+            raise InvalidTransition(
+                f"rollback target {extension_id} {to_version} is {target.state}; "
+                "only a superseded or disabled prior version can be restored"
+            )
+        # Acquire both record locks in sorted order, so a concurrent rollback
+        # in the opposite direction cannot deadlock this one.
+        first, second = sorted((current.install_id, target.install_id))
+        async with self._lock(first), self._lock(second):
+            # Both records may have moved while these locks were waited on.
+            current = await self._require(current.install_id, scope)
+            target = await self._require(target.install_id, scope)
+            if current.state is not ExtensionState.ACTIVE or target.state not in restorable:
+                raise InvalidTransition(
+                    f"rollback precondition lost: {extension_id} is "
+                    f"{current.state}, target {target.version} is {target.state}"
+                )
+            if current.pinned:
+                raise VersionPinned(
+                    f"{extension_id} {current.version} was pinned while the "
+                    "rollback locks were awaited; lift the pin first"
+                )
+            await self._transition(
+                current,
+                ExtensionState.DISABLED,
+                actor=actor,
+                reason=(f"rolled back to {extension_id} {to_version}: {reason}"),
+                now=self._clock(),
+            )
+            await self._store.clear_active(current)
+            restored = await self._transition(
+                target,
+                ExtensionState.ACTIVE,
+                actor=actor,
+                reason=(f"restored by rollback from {current.version}: {reason}"),
+                now=self._clock(),
+            )
+            await self._store.set_active(restored)
+            return restored
+
+    async def set_pinned(
+        self,
+        install_id: str,
+        *,
+        actor: str,
+        scope: ExtensionScope,
+        pinned: bool,
+        reason: str,
+    ) -> ExtensionInstallRecord:
+        """Hold (or release) a served version with an explicit decision.
+
+        A pin is a flag on the record, not a state: the record keeps its
+        state and grant. The decision is still audited — as a same-state
+        transition row, so the trail carries who, when and why without
+        reading as a state change. While the active version is pinned,
+        activating another version of the same extension and rolling back
+        away from it are both fenced (:class:`VersionPinned`); disabling and
+        removal are deliberately never fenced, so incident response is never
+        blocked by a pin. Pinning an already-(un)pinned record is an
+        idempotent no-op that re-records nothing.
+        """
+        if not actor.strip():
+            raise ValueError("actor is required: every transition needs an accountable actor")
+        if not reason.strip():
+            raise ValueError(
+                "reason is required: a pin decision without a recorded "
+                "reason is not auditable evidence"
+            )
+        async with self._lock(install_id):
+            record = await self._require(install_id, scope)
+            served = (
+                ExtensionState.ACTIVE,
+                ExtensionState.DISABLED,
+                ExtensionState.SUPERSEDED,
+            )
+            if record.state not in served:
+                raise InvalidTransition(
+                    f"install {install_id} is {record.state}; only a served record "
+                    f"({', '.join(state.value for state in served)}) can be "
+                    "pinned or unpinned"
+                )
+            if record.pinned == pinned:
+                return record
+            updated = await self._transition(
+                replace(record, pinned=pinned),
+                record.state,
+                actor=actor,
+                reason=f"{'pin' if pinned else 'unpin'}: {reason}",
+                now=self._clock(),
+                same_state_evidence=True,
+            )
+            return updated
 
     # -- maintenance ---------------------------------------------------------
 
@@ -653,8 +973,9 @@ class ExtensionInstallService:
         reason: str,
         now: datetime,
         mutate: Callable[[ExtensionInstallRecord], ExtensionInstallRecord] | None = None,
+        same_state_evidence: bool = False,
     ) -> ExtensionInstallRecord:
-        if to_state not in TRANSITIONS[record.state]:
+        if not same_state_evidence and to_state not in TRANSITIONS[record.state]:
             raise InvalidTransition(
                 f"illegal transition {record.state} -> {to_state} for "
                 f"{record.extension_id} {record.version}"
