@@ -12,8 +12,12 @@ where a green tick would go.
 For merge-group candidates, specialized service checks may now be legitimately
 out of scope. Their execution evidence is represented by one unconditional
 ``integration-scope`` aggregate, which itself verifies that every classifier-
-selected specialized job completed successfully. Pull requests and protected
-pushes retain the existing per-check execution-evidence contract.
+selected specialized job completed successfully. Pull-request candidates are
+path-scoped by the same classifier (#1351): the producers (ci.yml job
+conditions, integration-scope) skip exactly the legs a measured changed-file
+envelope proves unreachable, so this evaluator may excuse a skipped specialized
+check only on that same measured evidence. Protected pushes retain the
+per-check execution-evidence contract without path scoping.
 """
 
 from __future__ import annotations
