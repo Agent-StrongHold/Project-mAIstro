@@ -108,3 +108,8 @@ b5c22a358a8b0a0fb064e89eb6b4eba6855b58c2:.gitleaksignore:generic-api-key:54
 # #2045: Python caller-context/delegation arguments, not a credential.
 # The fixture spelling is corrected; retain only this historical finding.
 7907644e80b7abf22e8371d5529d6d0a49d3d906:packages/maistro-core/tests/agents/test_tool_call_identity.py:generic-api-key:127
+
+# Historical M4-A8 merge commit (#1750): producer-attribution test arguments.
+# Both findings are Python names and an enum qualifier, not credential values.
+77c17b9b89d92a209e5f5081cf31112b93ac7e45:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:462
+77c17b9b89d92a209e5f5081cf31112b93ac7e45:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:476
