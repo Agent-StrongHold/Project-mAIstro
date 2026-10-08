@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +54
+  packages/maistro-core/tests: +99
 ---
 
 # 966 — Installable domain-pack contracts over canonical objects (M9-F1)
@@ -65,6 +65,41 @@ canonical model, store, or gate changes; `quality/*.json` is untouched.
   payload strictness, and canonical-model refusals (inverted numeric scale,
   veto naming a non-dimension) surfaced as typed
   `PackManifestRejected`.
+
+## Develop-base repair round (+45)
+
+The contracts landed here as a cherry-pick of the #966 branch head onto the
+develop line, whose diff-coverage gate (per file: 90% lines / 80% branch
+arcs) measured the module's *refusal* branches at 75.8% — the source
+branch's suite pinned the happy paths and the headline rejections but not
+the rest of the fail-closed surface. The repair round adds exactly those
+degenerate paths, each asserted against its own detail fragment:
+
+- `TestInspectionRefusalMatrix` (36 parametrized cases): every remaining
+  parse refusal — envelope/identity (empty name, empty assets, malformed
+  publisher, malformed dependency shape/id/range, non-list capabilities),
+  asset envelope (non-object asset, unknown/missing keys, malformed
+  asset_id, kind-payload exclusivity), graph payload (non-object payload,
+  unknown keys, non-string description, bad entry_node type, malformed
+  node_id, non-string node name, non-list edges, malformed edge pair),
+  persona payload (non-object, unknown keys, non-list surfaces, non-object
+  defaults), rubric payload (non-object, unknown keys, non-list veto ids,
+  non-object dimension, unknown/missing dimension keys, unknown scoring
+  method, empty scale, unknown scale keys, extra numeric/pass_fail keys).
+  Unknown-key refusals are asserted per section, so a parser that started
+  ignoring one section's unknown keys fails that section's case by name.
+- `TestInstantiationRefusals` (9 cases): the registry's unknown-pack
+  error names the pinned version; blank explicit canonical id, blank
+  workspace, and blank rubric scope fields are ValueErrors; wrong-kind
+  assets refuse each instantiation path; `PackInstallRecord.provenance`
+  is the manifest snapshot's provenance; activating an already-active
+  pack is the same record (no spurious transition).
+
+Two mutation spot-checks pin the matrix to reachable behavior (run and
+reverted): neutralizing the graph unknown-keys raise fails
+`test_each_refusal_names_its_own_reason[<lambda>-unknown graph payload
+keys]`, and neutralizing the graph kind-gate fails
+`test_wrong_kind_asset_is_refused_for_graph_instantiation`.
 
 ## Naming notes future lanes should not undo
 

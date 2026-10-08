@@ -1174,3 +1174,368 @@ class TestManifestInspection:
         tampered["name"] = "A Different Pack Wearing The Same Version"
         with pytest.raises(PackIdentityConflict, match="different manifest bytes"):
             registry.install(json.dumps(tampered).encode())
+
+
+# --- Fail-closed refusal matrix: every degenerate parse/lookup path ----------
+
+
+class TestInspectionRefusalMatrix:
+    """Each refusal branch in ``packs.py`` answers with ITS OWN detail.
+
+    The happy path and a handful of headline rejections are pinned by
+    ``TestManifestInspection``; this matrix walks the rest of the fail-closed
+    surface one branch at a time. Each case asserts the specific detail
+    fragment — a test that only asserted "some rejection happened" would pass
+    for the wrong reason the day the parser started refusing the wrong thing.
+    """
+
+    @staticmethod
+    def _poisoned(pack_changes: dict[str, Any] | None = None) -> bytes:
+        document = json.loads(ACME_PACK)
+        document.update(pack_changes or {})
+        return json.dumps(document).encode()
+
+    @staticmethod
+    def _poisoned_asset(asset_id: str, changes: dict[str, Any]) -> bytes:
+        document = json.loads(ACME_PACK)
+        for asset in document["assets"]:
+            if asset["asset_id"] == asset_id:
+                asset.update(changes)
+                return json.dumps(document).encode()
+        raise AssertionError(f"fixture bug: no asset {asset_id!r}")
+
+    @staticmethod
+    def _poisoned_payload(asset_id: str, changes: dict[str, Any]) -> bytes:
+        document = json.loads(ACME_PACK)
+        kind_keys = {"graph": "graph", "persona": "persona", "rubric": "rubric"}
+        for asset in document["assets"]:
+            if asset["asset_id"] == asset_id:
+                payload_key = kind_keys[asset["kind"]]
+                asset[payload_key].update(changes)
+                return json.dumps(document).encode()
+        raise AssertionError(f"fixture bug: no asset {asset_id!r}")
+
+    @pytest.mark.parametrize(
+        ("poison", "match"),
+        [
+            # -- envelope / identity -------------------------------------------------
+            (lambda d: d.update({"name": ""}), r"name must be a non-empty string"),
+            (lambda d: d.update({"assets": []}), r"assets must be a non-empty list"),
+            (lambda d: d.update({"publisher": "Acme"}), r"malformed publisher id"),
+            (lambda d: d.update({"dependencies": "a.b"}), r"dependencies must be a list"),
+            (
+                lambda d: d.update({"dependencies": [{"id": "a.b", "range": "*", "note": "x"}]}),
+                r"exactly id and range",
+            ),
+            (
+                lambda d: d.update({"dependencies": [{"id": "9bad", "range": "*"}]}),
+                r"malformed dependency id",
+            ),
+            (
+                lambda d: d.update({"dependencies": [{"id": "a.b", "range": "   "}]}),
+                r"malformed dependency range for 'a\.b'",
+            ),
+            (lambda d: d.update({"capabilities": "run.read"}), r"capabilities must be a list"),
+            # -- asset envelope ------------------------------------------------------
+            (lambda d: d.update({"assets": ["graph"]}), r"each asset must be an object"),
+            (
+                lambda d: d.update(
+                    {"assets": [_graph_asset(), {**_persona_asset(), "executor": "x"}]}
+                ),
+                r"unknown asset keys",
+            ),
+            (
+                lambda d: d.update(
+                    {"assets": [{k: v for k, v in _graph_asset().items() if k != "version"}]}
+                ),
+                r"missing asset keys",
+            ),
+            (
+                lambda d: d.update(
+                    {"assets": [_graph_asset(asset_id="Bad_ID"), _persona_asset(), _rubric_asset()]}
+                ),
+                r"malformed asset_id",
+            ),
+            (
+                lambda d: d.update({"assets": [{**_persona_asset(), "kind": "graph"}]}),
+                r"must declare exactly the 'graph' payload",
+            ),
+            # -- graph payload -------------------------------------------------------
+            (
+                lambda d: TestInspectionRefusalMatrix._swap_payload(d, "graph", "nope"),
+                r"graph payload must be an object",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_payload(d, "graph", {"stores": {}}),
+                r"unknown graph payload keys",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_payload(
+                    d, "graph", {"description": 42}
+                ),
+                r"graph description must be a string",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_payload(
+                    d, "graph", {"entry_node": 42}
+                ),
+                r"graph entry_node must be a non-empty string when present",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_payload(
+                    d, "graph", {"nodes": [{"node_id": "Explore", "node_type": "pack.explore"}]}
+                ),
+                r"malformed graph node_id",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_payload(
+                    d,
+                    "graph",
+                    {
+                        "nodes": [
+                            {"node_id": "explore", "node_type": "pack.explore", "name": 42},
+                            {"node_id": "execute", "node_type": "pack.execute"},
+                        ]
+                    },
+                ),
+                r"graph node name must be a string",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_payload(d, "graph", {"edges": "x"}),
+                r"graph edges must be a list",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_payload(
+                    d, "graph", {"edges": [["explore"], ["execute"]]}
+                ),
+                r"each graph edge must be a \[from_node, to_node\] pair",
+            ),
+            # -- persona payload -----------------------------------------------------
+            (
+                lambda d: TestInspectionRefusalMatrix._swap_payload(d, "persona", "nope"),
+                r"persona payload must be an object",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_payload(
+                    d, "persona", {"persona_store": {}}
+                ),
+                r"unknown persona payload keys",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_payload(
+                    d, "persona", {"surfaces": "ui"}
+                ),
+                r"persona surfaces must be a list of strings",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_payload(
+                    d, "persona", {"defaults": ["x"]}
+                ),
+                r"persona defaults must be an object",
+            ),
+            # -- rubric payload ------------------------------------------------------
+            (
+                lambda d: TestInspectionRefusalMatrix._swap_payload(d, "rubric", "nope"),
+                r"rubric payload must be an object",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_payload(
+                    d, "rubric", {"rubric_authority": {}}
+                ),
+                r"unknown rubric payload keys",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_payload(
+                    d, "rubric", {"veto_dimension_ids": "voice"}
+                ),
+                r"veto_dimension_ids must be a list of strings",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_payload(
+                    d,
+                    "rubric",
+                    {"dimensions": [_rubric_asset()["rubric"]["dimensions"][0], "pace"]},
+                ),
+                r"each rubric dimension must be an object",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_dimension(d, {"veto": 1}),
+                r"unknown rubric dimension keys",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_dimension(d, {}, drop=("scale",)),
+                r"missing rubric dimension keys",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_dimension(d, {"method": "vibes"}),
+                r"unknown rubric scoring method",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_dimension(d, {"scale": {}}),
+                r"scale must be a non-empty object",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_dimension(
+                    d, {"scale": {"numeric": {"min_value": 0, "max_value": 100}, "stars": 5}}
+                ),
+                r"unknown rubric scale keys",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_dimension(
+                    d,
+                    {
+                        "scale": {
+                            "numeric": {
+                                "min_value": 0,
+                                "max_value": 100,
+                                "step": 1,
+                            }
+                        }
+                    },
+                ),
+                r"numeric scale must have only min_value and max_value",
+            ),
+            (
+                lambda d: TestInspectionRefusalMatrix._poison_dimension(
+                    d,
+                    {
+                        "scale": {
+                            "pass_fail": {
+                                "pass_value": 1,
+                                "fail_value": 0,
+                                "bonus": 2,
+                            }
+                        }
+                    },
+                ),
+                r"pass_fail scale must have only pass_value and fail_value",
+            ),
+        ],
+    )
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_each_refusal_names_its_own_reason(self, poison: Any, match: str) -> None:
+        document = json.loads(ACME_PACK)
+        poison(document)
+        with pytest.raises(PackManifestRejected, match=match):
+            inspect_pack_manifest(json.dumps(document).encode())
+
+    # -- document surgery helpers (staticmethods so parametrize can reach them) --
+
+    @staticmethod
+    def _swap_payload(document: dict[str, Any], payload_key: str, value: Any) -> None:
+        for asset in document["assets"]:
+            if payload_key in asset:
+                asset[payload_key] = value
+                return
+        raise AssertionError(f"fixture bug: no {payload_key!r} payload")
+
+    @staticmethod
+    def _poison_payload(
+        document: dict[str, Any], payload_key: str, changes: dict[str, Any]
+    ) -> None:
+        for asset in document["assets"]:
+            if payload_key in asset:
+                asset[payload_key].update(changes)
+                return
+        raise AssertionError(f"fixture bug: no {payload_key!r} payload")
+
+    @staticmethod
+    def _poison_dimension(
+        document: dict[str, Any], changes: dict[str, Any], drop: tuple[str, ...] = ()
+    ) -> None:
+        for asset in document["assets"]:
+            if "rubric" in asset:
+                dimension = asset["rubric"]["dimensions"][0]
+                dimension.update(changes)
+                for key in drop:
+                    dimension.pop(key, None)
+                return
+        raise AssertionError("fixture bug: no rubric payload")
+
+
+class TestInstantiationRefusals:
+    """The degenerate lookup/validation paths of instantiation and the registry."""
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_unknown_pack_with_pinned_version_names_the_version(self) -> None:
+        registry = _active_registry()
+        with pytest.raises(PackDisabledError, match=r"at version '9\.9\.9'"):
+            registry.instantiate_graph(
+                "ghost.pack", "any-asset", workspace_id=WORKSPACE_ID, version="9.9.9"
+            )
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_blank_explicit_canonical_id_is_refused(self) -> None:
+        manifest = inspect_pack_manifest(ACME_PACK)
+        with pytest.raises(
+            ValueError, match="template_id must be a non-empty string when supplied"
+        ):
+            instantiate_graph_asset(
+                manifest, "critique-graph", workspace_id=WORKSPACE_ID, template_id="   "
+            )
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_blank_workspace_id_is_refused_for_graphs(self) -> None:
+        manifest = inspect_pack_manifest(ACME_PACK)
+        with pytest.raises(ValueError, match="workspace_id must be a non-empty string"):
+            instantiate_graph_asset(manifest, "critique-graph", workspace_id="   ")
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_wrong_kind_asset_is_refused_for_graph_instantiation(self) -> None:
+        manifest = inspect_pack_manifest(ACME_PACK)
+        with pytest.raises(PackAssetUnknown, match="is not a graph asset"):
+            instantiate_graph_asset(manifest, "critic", workspace_id=WORKSPACE_ID)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_blank_workspace_id_is_refused_for_personas(self) -> None:
+        manifest = inspect_pack_manifest(ACME_PACK)
+        with pytest.raises(ValueError, match="workspace_id must be a non-empty string"):
+            instantiate_persona_asset(manifest, "critic", workspace_id="")
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_wrong_kind_asset_is_refused_for_persona_instantiation(self) -> None:
+        manifest = inspect_pack_manifest(ACME_PACK)
+        with pytest.raises(PackAssetUnknown, match="is not a persona asset"):
+            instantiate_persona_asset(manifest, "critique-graph", workspace_id=WORKSPACE_ID)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_blank_scope_field_is_refused_for_rubric_instantiation(self) -> None:
+        manifest = inspect_pack_manifest(ACME_PACK)
+        with pytest.raises(ValueError, match="project_id must be a non-empty string"):
+            instantiate_rubric_asset(
+                manifest,
+                "scene",
+                goal_id=GOAL_ID,
+                goal_revision=GOAL_REVISION,
+                workspace_id=WORKSPACE_ID,
+                project_id="  ",
+                authored_by=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            )
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    def test_record_provenance_is_the_manifests_provenance(self) -> None:
+        registry = _active_registry()
+        record = registry.record("acme.film_critique")
+        provenance = record.provenance
+        assert provenance.pack_id == "acme.film_critique"
+        assert provenance.publisher == "acme"
+        assert provenance.version == "1.0.0"
+        assert provenance.manifest_sha256 == hashlib.sha256(ACME_PACK).hexdigest()
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    def test_activating_an_active_pack_is_the_same_record(self) -> None:
+        registry = _active_registry()
+        before = registry.record("acme.film_critique")
+        after = registry.activate("acme.film_critique")
+        assert after is before
+        assert after.state is PackState.ACTIVE
