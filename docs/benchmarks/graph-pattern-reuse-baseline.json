@@ -1,0 +1,452 @@
+{
+  "benchmark": "graph-pattern-induction-reuse",
+  "corpus_runs": 600,
+  "cost_model": {
+    "adapt_tokens_per_edit": 90,
+    "retrieve_tokens": 120,
+    "scratch_prompt_tokens": 850,
+    "scratch_tokens_per_candidate": 60,
+    "scratch_tokens_per_node": 45
+  },
+  "drift_at": 200,
+  "epic": "903",
+  "episodes": 400,
+  "issue": "929",
+  "min_instances": 2,
+  "min_support": 3,
+  "per_seed": [
+    {
+      "arms": {
+        "reuse-guarded": {
+          "cross_family_hits": 0,
+          "cross_family_success_rate": null,
+          "guard_quarantines": 1,
+          "mean_adaptation_edits": 0.0,
+          "mean_roundtrips": 1.0,
+          "mean_tokens": 120.0,
+          "scratch_fallbacks": 0,
+          "stale_attributable_failures": 3,
+          "success_rate": 0.74
+        },
+        "reuse-naive": {
+          "cross_family_hits": 0,
+          "cross_family_success_rate": null,
+          "guard_quarantines": 0,
+          "mean_adaptation_edits": 0.0,
+          "mean_roundtrips": 1.0,
+          "mean_tokens": 120.0,
+          "scratch_fallbacks": 0,
+          "stale_attributable_failures": 25,
+          "success_rate": 0.685
+        },
+        "reuse-transfer": {
+          "cross_family_hits": 296,
+          "cross_family_success_rate": 0.7432,
+          "guard_quarantines": 0,
+          "mean_adaptation_edits": 0.505,
+          "mean_roundtrips": 5.41,
+          "mean_tokens": 628.2,
+          "scratch_fallbacks": 104,
+          "stale_attributable_failures": 3,
+          "success_rate": 0.7325
+        },
+        "scratch": {
+          "cross_family_hits": 0,
+          "cross_family_success_rate": null,
+          "guard_quarantines": 0,
+          "mean_adaptation_edits": 0.0,
+          "mean_roundtrips": 10.28,
+          "mean_tokens": 1579.5,
+          "scratch_fallbacks": 0,
+          "stale_attributable_failures": 0,
+          "success_rate": 0.745
+        }
+      },
+      "inspectability": {
+        "all_candidates_not_active": true,
+        "documented_fraction": 1.0,
+        "execution_door_closed": true,
+        "max_motif_nodes": 4,
+        "mean_motif_nodes": 2.42,
+        "motifs": 12,
+        "provenance_on_instantiate": true
+      },
+      "motifs_inducted_initial": 12,
+      "seed": 0
+    },
+    {
+      "arms": {
+        "reuse-guarded": {
+          "cross_family_hits": 0,
+          "cross_family_success_rate": null,
+          "guard_quarantines": 1,
+          "mean_adaptation_edits": 0.0,
+          "mean_roundtrips": 1.0,
+          "mean_tokens": 120.0,
+          "scratch_fallbacks": 0,
+          "stale_attributable_failures": 3,
+          "success_rate": 0.7325
+        },
+        "reuse-naive": {
+          "cross_family_hits": 0,
+          "cross_family_success_rate": null,
+          "guard_quarantines": 0,
+          "mean_adaptation_edits": 0.0,
+          "mean_roundtrips": 1.0,
+          "mean_tokens": 120.0,
+          "scratch_fallbacks": 0,
+          "stale_attributable_failures": 19,
+          "success_rate": 0.6925
+        },
+        "reuse-transfer": {
+          "cross_family_hits": 295,
+          "cross_family_success_rate": 0.7051,
+          "guard_quarantines": 0,
+          "mean_adaptation_edits": 0.482,
+          "mean_roundtrips": 5.42,
+          "mean_tokens": 630.7,
+          "scratch_fallbacks": 105,
+          "stale_attributable_failures": 3,
+          "success_rate": 0.72
+        },
+        "scratch": {
+          "cross_family_hits": 0,
+          "cross_family_success_rate": null,
+          "guard_quarantines": 0,
+          "mean_adaptation_edits": 0.0,
+          "mean_roundtrips": 10.38,
+          "mean_tokens": 1584.7,
+          "scratch_fallbacks": 0,
+          "stale_attributable_failures": 0,
+          "success_rate": 0.7375
+        }
+      },
+      "inspectability": {
+        "all_candidates_not_active": true,
+        "documented_fraction": 1.0,
+        "execution_door_closed": true,
+        "max_motif_nodes": 4,
+        "mean_motif_nodes": 2.42,
+        "motifs": 12,
+        "provenance_on_instantiate": true
+      },
+      "motifs_inducted_initial": 12,
+      "seed": 1
+    },
+    {
+      "arms": {
+        "reuse-guarded": {
+          "cross_family_hits": 0,
+          "cross_family_success_rate": null,
+          "guard_quarantines": 4,
+          "mean_adaptation_edits": 0.0,
+          "mean_roundtrips": 2.5,
+          "mean_tokens": 298.0,
+          "scratch_fallbacks": 40,
+          "stale_attributable_failures": 6,
+          "success_rate": 0.72
+        },
+        "reuse-naive": {
+          "cross_family_hits": 0,
+          "cross_family_success_rate": null,
+          "guard_quarantines": 0,
+          "mean_adaptation_edits": 0.0,
+          "mean_roundtrips": 1.0,
+          "mean_tokens": 120.0,
+          "scratch_fallbacks": 0,
+          "stale_attributable_failures": 14,
+          "success_rate": 0.7025
+        },
+        "reuse-transfer": {
+          "cross_family_hits": 300,
+          "cross_family_success_rate": 0.7367,
+          "guard_quarantines": 0,
+          "mean_adaptation_edits": 0.487,
+          "mean_roundtrips": 5.24,
+          "mean_tokens": 608.9,
+          "scratch_fallbacks": 100,
+          "stale_attributable_failures": 5,
+          "success_rate": 0.72
+        },
+        "scratch": {
+          "cross_family_hits": 0,
+          "cross_family_success_rate": null,
+          "guard_quarantines": 0,
+          "mean_adaptation_edits": 0.0,
+          "mean_roundtrips": 10.3,
+          "mean_tokens": 1579.9,
+          "scratch_fallbacks": 0,
+          "stale_attributable_failures": 0,
+          "success_rate": 0.7375
+        }
+      },
+      "inspectability": {
+        "all_candidates_not_active": true,
+        "documented_fraction": 1.0,
+        "execution_door_closed": true,
+        "max_motif_nodes": 4,
+        "mean_motif_nodes": 2.42,
+        "motifs": 12,
+        "provenance_on_instantiate": true
+      },
+      "motifs_inducted_initial": 12,
+      "seed": 2
+    },
+    {
+      "arms": {
+        "reuse-guarded": {
+          "cross_family_hits": 68,
+          "cross_family_success_rate": 0.6765,
+          "guard_quarantines": 6,
+          "mean_adaptation_edits": 0.01,
+          "mean_roundtrips": 2.1,
+          "mean_tokens": 249.9,
+          "scratch_fallbacks": 29,
+          "stale_attributable_failures": 18,
+          "success_rate": 0.66
+        },
+        "reuse-naive": {
+          "cross_family_hits": 0,
+          "cross_family_success_rate": null,
+          "guard_quarantines": 0,
+          "mean_adaptation_edits": 0.0,
+          "mean_roundtrips": 1.0,
+          "mean_tokens": 120.0,
+          "scratch_fallbacks": 0,
+          "stale_attributable_failures": 16,
+          "success_rate": 0.67
+        },
+        "reuse-transfer": {
+          "cross_family_hits": 303,
+          "cross_family_success_rate": 0.6898,
+          "guard_quarantines": 0,
+          "mean_adaptation_edits": 0.505,
+          "mean_roundtrips": 5.14,
+          "mean_tokens": 597.1,
+          "scratch_fallbacks": 97,
+          "stale_attributable_failures": 8,
+          "success_rate": 0.6825
+        },
+        "scratch": {
+          "cross_family_hits": 0,
+          "cross_family_success_rate": null,
+          "guard_quarantines": 0,
+          "mean_adaptation_edits": 0.0,
+          "mean_roundtrips": 10.19,
+          "mean_tokens": 1574.3,
+          "scratch_fallbacks": 0,
+          "stale_attributable_failures": 0,
+          "success_rate": 0.71
+        }
+      },
+      "inspectability": {
+        "all_candidates_not_active": true,
+        "documented_fraction": 1.0,
+        "execution_door_closed": true,
+        "max_motif_nodes": 4,
+        "mean_motif_nodes": 2.42,
+        "motifs": 12,
+        "provenance_on_instantiate": true
+      },
+      "motifs_inducted_initial": 12,
+      "seed": 3
+    },
+    {
+      "arms": {
+        "reuse-guarded": {
+          "cross_family_hits": 0,
+          "cross_family_success_rate": null,
+          "guard_quarantines": 2,
+          "mean_adaptation_edits": 0.0,
+          "mean_roundtrips": 1.0,
+          "mean_tokens": 120.0,
+          "scratch_fallbacks": 0,
+          "stale_attributable_failures": 7,
+          "success_rate": 0.7325
+        },
+        "reuse-naive": {
+          "cross_family_hits": 0,
+          "cross_family_success_rate": null,
+          "guard_quarantines": 0,
+          "mean_adaptation_edits": 0.0,
+          "mean_roundtrips": 1.0,
+          "mean_tokens": 120.0,
+          "scratch_fallbacks": 0,
+          "stale_attributable_failures": 19,
+          "success_rate": 0.71
+        },
+        "reuse-transfer": {
+          "cross_family_hits": 292,
+          "cross_family_success_rate": 0.7466,
+          "guard_quarantines": 0,
+          "mean_adaptation_edits": 0.495,
+          "mean_roundtrips": 5.54,
+          "mean_tokens": 645.1,
+          "scratch_fallbacks": 108,
+          "stale_attributable_failures": 2,
+          "success_rate": 0.74
+        },
+        "scratch": {
+          "cross_family_hits": 0,
+          "cross_family_success_rate": null,
+          "guard_quarantines": 0,
+          "mean_adaptation_edits": 0.0,
+          "mean_roundtrips": 10.37,
+          "mean_tokens": 1584.5,
+          "scratch_fallbacks": 0,
+          "stale_attributable_failures": 0,
+          "success_rate": 0.755
+        }
+      },
+      "inspectability": {
+        "all_candidates_not_active": true,
+        "documented_fraction": 1.0,
+        "execution_door_closed": true,
+        "max_motif_nodes": 4,
+        "mean_motif_nodes": 2.42,
+        "motifs": 12,
+        "provenance_on_instantiate": true
+      },
+      "motifs_inducted_initial": 12,
+      "seed": 4
+    }
+  ],
+  "planner_budget": 60,
+  "reindex_every": 50,
+  "research_note": "docs/research/929-graph-pattern-induction-reuse.md",
+  "seeds": 5,
+  "summary": {
+    "reuse-guarded": {
+      "cross_family_hits": {
+        "mean": 13.6,
+        "std": 30.4105
+      },
+      "guard_quarantines": {
+        "mean": 2.8,
+        "std": 2.1679
+      },
+      "mean_adaptation_edits": {
+        "mean": 0.002,
+        "std": 0.0045
+      },
+      "mean_roundtrips": {
+        "mean": 1.52,
+        "std": 0.7259
+      },
+      "mean_tokens": {
+        "mean": 181.58,
+        "std": 86.0197
+      },
+      "stale_attributable_failures": {
+        "mean": 7.4,
+        "std": 6.1887
+      },
+      "success_rate": {
+        "mean": 0.717,
+        "std": 0.0327
+      }
+    },
+    "reuse-naive": {
+      "cross_family_hits": {
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "guard_quarantines": {
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "mean_adaptation_edits": {
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "mean_roundtrips": {
+        "mean": 1.0,
+        "std": 0.0
+      },
+      "mean_tokens": {
+        "mean": 120.0,
+        "std": 0.0
+      },
+      "stale_attributable_failures": {
+        "mean": 18.6,
+        "std": 4.1593
+      },
+      "success_rate": {
+        "mean": 0.692,
+        "std": 0.0156
+      }
+    },
+    "reuse-transfer": {
+      "cross_family_hits": {
+        "mean": 297.2,
+        "std": 4.3243
+      },
+      "guard_quarantines": {
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "mean_adaptation_edits": {
+        "mean": 0.4948,
+        "std": 0.0104
+      },
+      "mean_roundtrips": {
+        "mean": 5.35,
+        "std": 0.1587
+      },
+      "mean_tokens": {
+        "mean": 622.0,
+        "std": 18.9694
+      },
+      "stale_attributable_failures": {
+        "mean": 4.2,
+        "std": 2.3875
+      },
+      "success_rate": {
+        "mean": 0.719,
+        "std": 0.0221
+      }
+    },
+    "scratch": {
+      "cross_family_hits": {
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "guard_quarantines": {
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "mean_adaptation_edits": {
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "mean_roundtrips": {
+        "mean": 10.304,
+        "std": 0.077
+      },
+      "mean_tokens": {
+        "mean": 1580.58,
+        "std": 4.2839
+      },
+      "stale_attributable_failures": {
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "success_rate": {
+        "mean": 0.737,
+        "std": 0.0167
+      }
+    }
+  },
+  "verdict": "INCUBATE",
+  "world": {
+    "drift_family": "data-extract",
+    "drift_validation_penalty": -0.38,
+    "families": [
+      "research-report",
+      "code-change",
+      "data-extract",
+      "triage"
+    ],
+    "validated_bonus": 0.05
+  }
+}
