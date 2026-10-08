@@ -17684,3 +17684,115 @@ capture re-proves every #777 prerequisite (#804/#805/#806, #774, #776, #53,
 #93, #95) open with PR #1660 an unmerged draft — no lawful repair exists until
 the canonical owners land; the issue's own stop condition forbids the only
 substitute implementation. (Refs #777)
+
+## Round 256 — develop sync to declared base 8fbbbfb91d78d3; driver checks absent (9th stale-pointer disproval); upstream CLI wrap-flake diagnosed, inherited not introduced (HEAD 6f027435fff3)
+
+### Snapshot processed this round
+
+Exactly one item: issue #777 repair at branch `auto-777`, starting head
+`5aecff280f1c` (== round-255 commit), develop base declared
+`8fbbbfb91d78d30d756cf675b7b1a4c1ccff06e5`. Job
+`2347ccc13db1490f9b04612caa75d9ec`.
+
+### Driver checks
+
+The job directory contains no `check-*.log` files (only dispatch-context,
+events, manifest, prompt, state): **driver checks = []**. The brief's
+`check-2.log` pointer (stale Oct-4 job `53d5e08bf027`, old head `a99c6bd`)
+is disproven a 9th time by the directory listing itself; no verifier finding
+exists to repair.
+
+### Develop sync discharged
+
+`origin/develop` advanced 5 commits to the declared base `8fbbbfb91d78d3`
+(M8-A5 differential reference-model harness #2060, M8-D5 graph-pattern-reuse
+bench #2080, M9-E third-party providers #2086, coverage-only unit-suite
+producer #2087, event-loop teardown #2093). Merged cleanly as `f00d117b75`→
+merge commit `6f027435fff3`: zero conflicts, zero file overlap with the 16
+manifest surfaces, `quality/` untouched by the merge (numstat vs
+`origin/develop` shows only the branch's own 1-row vulture delta;
+top-level key counts match at 4). `HEAD..origin/develop = 0`.
+
+### AC prerequisites re-proven absent at the merged head
+
+Freshest sha-pinned capture (2026-10-08T23:36:52Z, 72 API calls) in
+`dispatch-context.json`: #804/#805/#806 **OPEN** (persistent Workspace Agent +
+Goal reconciliation), #53/#774/#776/#93/#95 **OPEN**; #39/#458/#775 closed;
+PR #1660 still an unmerged draft at `6280009610e8`. Newest 6 issue comments
+are campaign progress markers (started/blocked) — no maintainer change.
+At HEAD: `grep -rEn "GoalReconciler|delegate_goal|WorkspaceAgentReconciler"
+packages/*/src` → **0 hits**; no `goals*` modules; both `reconciliation.py`
+files are Attempt-lifecycle (`runs/`) and quota reconciliation — not Goal
+reconciliation. AC1 ("consumes ... APIs from #804") and the E2E ACs remain
+unimplementable; the issue's stop condition forbids a private substitute.
+
+### New evidence this round: upstream CLI test failures diagnosed (inherited, not introduced)
+
+`packages/maistro-core/tests/extensions` (run to cover merge-touched
+`tool_skill/registration.py` + new `test_m9e_family_install.py` +
+`test_durable_store_conformance.py`): **945 passed, 43 skipped, 2 failed** —
+
+- `test_cli_certification.py::test_certify_refuses_a_malformed_signing_key`
+- `test_cli_compat.py::test_compat_preflight_rejects_unreadable_input`
+
+Root cause (proven, not guessed): `packages/maistro-core/tests/conftest.py:28`
+hard-pins `os.environ["COLUMNS"] = "80"` at import (deliberate: "inherited
+COLUMNS would otherwise silently re-flow tables and wrap paths"), so rich
+`console.print` (`cli/_extensions.py:331`, `:586`) word-wraps the error line
+at 80 columns; the tests assert multi-word substrings
+("not a hex Ed25519 private key", "not valid JSON") that span the wrap point
+whenever the pytest tmp-path prefix is long enough (certify test needs
+`len(path) ≤ 48`; the default `/tmp/pytest-of-dev/pytest-N/...` root is ~74;
+`--basetemp=/tmp/bt777` flips the compat test to passing, proving
+path-length dependence). NOT introduced by this round: all four relevant
+files (`tests/conftest.py`, both test files, `cli/_extensions.py`) are
+byte-identical across `5aecff280..HEAD..origin/develop`, and introducing
+commit `2a11c1cc0` (WIP #2019) is already an ancestor of the pre-merge head.
+Out of lane scope to fix (neither file is a #777 surface; repairing another
+lane's test here would violate the one-issue scope rule).
+
+### Battery (all exit 0 unless noted)
+
+- `uv run ruff check .` — All checks passed.
+- `uv run ruff format --check .` — **3206** files already formatted
+  (+5 vs round 255 = merged-in files).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (CI-exact) — base
+  auto-detects `8fbbbfb91d78d3`, candidate `6f027435fff3`, 1326 → 1325,
+  unclassified 0, never-allowlist 0, **no amendment** (zero unbanked
+  identities; the CI-repair ledger exception does not apply).
+- `check-suite-inventory.py` — 17 suites match the recorded inventory
+  (re-run green post-append).
+- `check-test-duplicates.py` — 0 byte-identical groups.
+- `check-backlog-consistency.py` — 167 items.
+- `check-closure-targets.py` — skip (no PR body outside pull_request event).
+- `check-doc-links.py` — 0 broken relative links.
+- Targeted pytest (rounds 250-255 parity anchors reproduced exactly):
+  `packages/maistro-design/tests packages/maistro-bootstrap/tests` —
+  **805 passed, 8 skipped**;
+  `packages/hive-conductor/backend/tests -k 'design or workspace'` —
+  **375 passed, 5 skipped, 3170 deselected**;
+  `packages/maistro-bootstrap/tests packages/maistro-core/tests/ontology
+  packages/maistro-core/tests/fitness` — 318 passed, 7 skipped.
+- Merge-brought tests verified green:
+  `tests/test_unit_suite_execution_partition.py
+  tests/test_credential_authority.py` — **63 passed**;
+  `tests/test_bench_graph_pattern_reuse.py` — **44 passed**;
+  `packages/maistro-core/tests/extensions/test_m9e_family_install.py
+  packages/maistro-core/tests/events/test_durable_store_conformance.py` —
+  green within the 945-pass extensions run.
+
+### Inventory delta
+
+Documentation-only append; delta remains +0 across all recorded suites
+(`inventory-delta:` block above unchanged). The 2 failed upstream tests are
+pre-existing suites whose counts are unchanged by this branch.
+
+### Verdict
+
+BLOCKED — dependency-blocking (73rd consecutive round). The develop-sync
+obligation is discharged again (declared base `8fbbbfb91d78d3` now merged,
+`HEAD..origin/develop = 0`), the full battery is green at the merged head,
+and the freshest capture re-proves every #777 prerequisite open. No lawful
+repair exists until #804/#805/#806 (and #774/#776/#53/#93/#95) land; the
+issue's stop condition forbids the substitute implementation. (Refs #777)
