@@ -1661,3 +1661,68 @@ a reviewed grant/entry landing on the integration base or the parent #1845
 integration supplying the runtime consumer — both outside this leaf's
 authority. The stack stays unmerged per the issue; implementation/test
 readiness is claimed, not integration.
+
+## 2026-10-08 round-22 repair: verifier-prohibited vulture rows removed again; banking proven inert
+
+Dispatched at exact head `4ad5aee29f91` (branch `auto-1851`, develop base
+`af799688335f`) with the round-21 verifier findings that
+`quality/vulture-baseline.json:284-288` adds five forbidden
+`admission_identity` entries, that the exact Vulture command reports five
+unauthorized enum identities at `admission_identity.py:515-520`, and that
+reachability/provenance fail on the newly unreachable
+`maistro.runs.admission_identity`.
+
+Decision, resolving the round-20/21 oscillation: the five candidate-ledger
+rows are removed again and this time the removal is final, because the round-21
+premise ("bank now so a later grant needs zero further edits") does not
+outweigh the issue's standing staging constraint — "No fake callers, baseline
+additions, grants, disabled gates or quality waivers are permitted" — which the
+verifier has now enforced twice. The banking was also proven inert at this
+head: with the rows present, the exact Vulture command exited 1 with
+"1328 reviewed identities -> 1333 findings" and "New Vulture debt is not
+authorized by the trusted base. Running --update in this branch cannot
+authorize it; land a reviewed grant first" (`ratchet_provenance` reads
+authorizations from the merge base `af799688335f`, which carries none for
+`admission_identity`). Gate outcomes are byte-identical with and without the
+rows; the only observable effect of banking was the prohibited ledger delta
+itself. After removal, `git diff af799688335f -- quality/` is empty: the
+branch's delta against the develop base is exactly the three in-scope leaf
+files (`admission_identity.py` +520, `test_root_admission_identity.py` +634,
+this note).
+
+Re-validation at repair head (post-removal, pre-commit):
+
+- Focused suite `pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q`:
+  79/79 passed. `mypy packages/maistro-core/src/maistro/runs/admission_identity.py`:
+  clean. `ruff check .`: clean. `ruff format --check .`: 3,164 files already
+  formatted. `check-suite-inventory.py --suite packages/maistro-core/tests`: ok
+  (15,485 node IDs match the recorded baseline; the `+79` front-matter delta is
+  unchanged). Gate guards `tests/test_check_vulture_baseline.py` +
+  `tests/test_ratchet_provenance.py`: 57 passed.
+- Required integration-head gates, CI's exact arguments:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=1 — the five issue-mandated `AdmissionAssessment`
+  identities (`admission_identity.py:515-520`) reported both unbanked in the
+  candidate ledger and unauthorized against trusted base `af799688335f`;
+  `check-reachability.py` rc=1 — exactly one NEWLY UNREACHABLE module,
+  `maistro.runs.admission_identity`;
+  `check-ratchet-provenance.py` rc=1 solely via the reachability sub-gate
+  ("reachability ratchet moved away from trusted state"; all other sub-gates
+  report no candidate-approved expansion); `check-reachability-dispositions.py`
+  rc=0; `check-promotion-surface.py` rc=0; `check-radon-baseline.py` rc=0.
+- The three root reachability-baseline tests still fail, unchanged and by
+  design (`tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `tests/test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`):
+  the committed `quality/reachability-baseline.json` cannot name the
+  deliberately unwired module without a prohibited reachability entry.
+
+Both remaining reds are the issue-predicted explicit merge blocker, uncurable
+inside this leaf: the issue forbids the runtime consumer, re-export,
+suppression, baseline entry, and grant that could clear them, and trusted-base
+provenance rejects every candidate-side ledger cure by construction. They clear
+only when the separately authorized parent #1845 integration supplies the
+reviewed runtime consumer, or a reviewed vulture grant and reachability entry
+land on the integration base first (two-merge rule). The stack stays unmerged
+per the issue; this leaf claims implementation/test readiness only, and the
+inventory delta (+79) is unchanged by this round.
