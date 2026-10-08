@@ -55,12 +55,28 @@ synthetic fixtures, the merged harness implements:
   temporal split (leakage guard), and an explicit self-report/history blend;
 - policy evaluation (#933): the answer-vs-defer utility frontier (expected utility, unsafe
   action rate, defer rate, unnecessary-deferral rate) under stated costs, plus an
-  overconfidence-drift perturbation for threshold-robustness measurement.
+  overconfidence-drift perturbation for threshold-robustness measurement;
+- escalation destinations (#933): a destination-aware frontier (`EscalationDestination`,
+  `m8e_route_to_destination`, `m8e_escalation_frontier`) that routes deferred decisions by
+  confidence band to the leaf's four destination classes — stronger model, specialist Agent,
+  verifier, HITL — and reports expected utility, unsafe-action rate, escalation rate,
+  human-intervention rate, unnecessary-escalation rate, mean escalation cost, and mean
+  escalation latency per threshold. Destination success rates, costs, and latencies are
+  operator-supplied measurements (cascade/outcome data, #915), never invented by the harness;
+  the frontier computes expected utility under stated parameters and never acts.
 
 The harness also demonstrates — on synthetic data only — the comparison the leaves must run on
 real data: a disagreement-family signal outranking self-report as an error predictor
-(AUROC 1.0 vs 0.0 on the trap corpus), and a calibrated defer threshold strictly dominating
-always-answer under asymmetric costs while a fixed self-report threshold degrades under drift.
+(AUROC 1.0 vs 0.0 on the trap corpus); a calibrated defer threshold strictly dominating
+always-answer under asymmetric costs while a fixed self-report threshold degrades under drift;
+and a destination-aware escalation policy dominating always-answer on the held-out half of the
+temporal split (expected utility 0.47 vs 0.20, unsafe-action rate 0.13 vs 0.27, escalation rate
+0.33). Under injected overconfidence drift — measured like-for-like on the held-out half, raw
+self-report against raw self-report — a stale self-report threshold suppresses escalation
+exactly when it is most needed: human-intervention share 21% → 0% while the unsafe-action rate
+rises 18.5% → 29%, whereas recalibrated historical scores hold the frontier exactly fixed
+(outcomes are drift-invariant, so refitting on the drifted earlier half reproduces the same
+calibration). These are fixture numbers validating the machinery, not evidence about real models.
 
 A second research artifact implements the #932 leaf's own measurements:
 `packages/maistro-rsi/tests/test_m8e3_heterogeneous_disagreement_research.py` (test suite only;
@@ -116,7 +132,9 @@ machinery and the comparison are reproducible; they are NOT evidence about real 
    an upgrade un-re-examined is reported as unsafe, not kept.
 5. Sweep the defer threshold with the operator's stated costs (`EscalationCosts`); report the
    frontier against the always-answer baseline (#933), including unnecessary-deferral and
-   unsafe-action rates.
+   unsafe-action rates, and the destination-aware frontier (human-intervention rate,
+   escalation cost/latency, per-destination shares) over the operator's measured destination
+   parameters.
 6. Re-measure under injected overconfidence drift; a threshold that is not re-calibrated is
    reported as unsafe, not silently kept.
 7. Emit per-leaf dispositions here. Cost accounting must include the extra samples, the
@@ -126,19 +144,27 @@ machinery and the comparison are reproducible; they are NOT evidence about real 
 
 Experimental confidence scores are evidence, not authorization and not Goal truth. Nothing in
 this change reads or writes a Goal, a Run authority, a routing decision, or a Warden/HITL/
-delegation control; the policy frontier returns measurements only (frozen dataclasses of
-rates, no actions). Any future adoption must route through the earliest owning milestone and
-the canonical authorization paths (ADR-068); a calibrated score may *inform* the router or a
-HITL prompt, never substitute for one. #915's cascade thresholds are likewise keep-confident
-research: its escalation criteria stay separated from routing authority by design.
+delegation control; the policy frontiers return measurements only (frozen dataclasses of rates,
+no actions). The destination-aware frontier's escalation destinations are *descriptions* of
+where help could come from, with parameters measured elsewhere — the harness cannot invoke a
+stronger model, a specialist Agent, a verifier, or a human, and simulates expected utility
+under stated parameters without acting. Any future adoption must route through the earliest
+owning milestone and the canonical authorization paths (ADR-068); a calibrated score may
+*inform* the router or a HITL prompt, never substitute for one. #915's cascade thresholds are
+likewise keep-confident research: its escalation criteria stay separated from routing authority
+by design.
 
 ## Dispositions
 
 - #930 (self-consistency / semantic entropy): **WATCH** — machinery ready; no real-model
   evidence yet. Move to INCUBATE on measured AUROC/AUPRC gain over self-report on
   representative MAIstro workloads with acceptable token cost/latency.
-- #931 (historical outcome calibration): **WATCH** — Beta-smoothed estimator and leakage-safe
-  split exist; needs the outcome corpus volume and drift-sensitivity study the leaf defines.
+- #931 (historical outcome calibration): **WATCH** — the leaf's comparative study now exists
+  and is fixture-validated (frequency / Beta-posterior / Platt / histogram / logistic
+  estimators vs self-report and no-confidence baselines, leakage-safe temporal split,
+  learning curves, drift and subgroup studies, maintenance-cost ledger;
+  [`931-historical-outcome-calibration.md`](931-historical-outcome-calibration.md)). Still
+  needs the real outcome-corpus run the leaf note records as its INCUBATE trigger.
 - #932 (heterogeneous disagreement / verifiers): **WATCH** — the comparative machinery is now
   complete: correlated-error overlap, verifier confusion (false approval/rejection), convex
   signal combination, panel-vs-self-consistency cost/latency accounting, and an
@@ -151,9 +177,13 @@ research: its escalation criteria stay separated from routing authority by desig
   enough that the second family contributes independent evidence, and the verifier's
   false-approval rate is tolerable for the slice it would gate. Adoption routes to
   model-routing owners.
-- #933 (abstention / ask-for-help / escalation policies): **WATCH** — frontier measured on
-  synthetic costs only; expected-utility improvement must be shown on real held-out tasks, and
-  any escalation destination remains inside canonical Warden/HITL/delegation authority.
+- #933 (abstention / ask-for-help / escalation policies): **WATCH** — the destination-aware
+  frontier (thresholds × stronger-model / specialist / verifier / HITL bands, reporting
+  human-intervention rate, escalation cost/latency, unnecessary escalation, and drift
+  robustness) is implemented and hand-checked on synthetic destination parameters only.
+  Expected-utility improvement must be shown on real held-out tasks with measured destination
+  outcomes (#915 cascade data), and any escalation destination remains inside canonical
+  Warden/HITL/delegation authority.
 
 The epic stays open until each leaf records a terminal disposition; WATCH is the honest
 terminal state today. No adoption is authorized by this note.
