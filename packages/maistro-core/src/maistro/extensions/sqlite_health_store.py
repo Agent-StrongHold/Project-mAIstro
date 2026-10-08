@@ -4,7 +4,11 @@ Same convention as ``extensions/sqlite_store.py``: an injected ``aiosqlite``
 connection, plain typed columns for everything that filters or orders, a
 JSON payload column each record round-trips through, and an ``ensure_schema``
 that runs through the shared ``serialized_schema_upgrade`` discipline. One
-connection, one operation lock.
+connection, one operation lock. Sequence allocation is not left to that
+process-local lock alone: each append opens its write with
+``BEGIN IMMEDIATE``, taking SQLite's write lock before the ``MAX(seq)``
+read, so two store instances on the same database cannot both allocate
+the same sequence and race to insert (Codex review, PR #2021).
 
 Two tables, both append-only — no ``UPDATE``, no ``DELETE``:
 
@@ -29,6 +33,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
@@ -226,6 +232,25 @@ class SqliteExtensionHealthStore:
         self._conn = conn
         self._lock = asyncio.Lock()
 
+    @asynccontextmanager
+    async def _serialized_write(self) -> AsyncIterator[None]:
+        """One write-critical section: BEGIN IMMEDIATE, caller's DML, commit.
+
+        The process-local ``self._lock`` serializes writers sharing *this*
+        connection, but not writers in another store instance on the same
+        database. ``BEGIN IMMEDIATE`` takes SQLite's write lock before the
+        ``MAX(seq)`` read instead of at the first INSERT, making the
+        read-then-insert one unit no other connection can slip between.
+        """
+        async with self._lock:
+            try:
+                await self._conn.execute("BEGIN IMMEDIATE")
+                yield
+            except BaseException:
+                await self._conn.rollback()
+                raise
+            await self._conn.commit()
+
     async def ensure_schema(self) -> None:
         """Create the tables; safe to call concurrently and repeatedly."""
         async with self._lock, serialized_schema_upgrade(self._conn):
@@ -234,7 +259,7 @@ class SqliteExtensionHealthStore:
             await self._conn.commit()
 
     async def append_observation(self, observation: ExtensionObservation) -> None:
-        async with self._lock:
+        async with self._serialized_write():
             event_seq = await self._next_event_seq()
             await self._conn.execute(
                 "INSERT INTO extension_health_events "
@@ -255,13 +280,11 @@ class SqliteExtensionHealthStore:
             )
             if observation.error is not None:
                 await self._insert_error(observation.error, event_seq + 1)
-            await self._conn.commit()
 
     async def append_error(self, error: ExtensionErrorRecord) -> None:
-        async with self._lock:
+        async with self._serialized_write():
             event_seq = await self._next_event_seq()
             await self._insert_error(error, event_seq)
-            await self._conn.commit()
 
     async def _insert_error(self, error: ExtensionErrorRecord, event_seq: int) -> None:
         """Insert one error row; caller holds the lock and commits."""
@@ -284,7 +307,7 @@ class SqliteExtensionHealthStore:
         )
 
     async def _next_event_seq(self) -> int:
-        """One past the current maximum event_seq (caller holds the lock)."""
+        """One past the current maximum event_seq (inside ``BEGIN IMMEDIATE``)."""
         cursor = await self._conn.execute("SELECT MAX(event_seq) FROM extension_health_events")
         row = await cursor.fetchone()
         return int(row[0]) + 1 if row is not None and row[0] is not None else 1
@@ -368,7 +391,7 @@ class SqliteExtensionHealthStore:
         return [str(row[0]) for row in rows]
 
     async def append_decision(self, decision: OperatorDecision) -> None:
-        async with self._lock:
+        async with self._serialized_write():
             cursor = await self._conn.execute(
                 "SELECT MAX(decision_seq) FROM extension_operator_states "
                 "WHERE org_id = ? AND workspace_id = ? AND extension_id = ?",
@@ -390,7 +413,6 @@ class SqliteExtensionHealthStore:
                     decision_payload(decision),
                 ),
             )
-            await self._conn.commit()
 
     async def decisions(
         self, scope: ExtensionScope, extension_id: str | None = None

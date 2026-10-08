@@ -306,13 +306,23 @@ class TestAuthenticationAndScope:
 
     def test_operator_decision_requires_a_reason(self, harness: _Harness) -> None:
         """A decision without a recorded reason is not auditable evidence and
-        is refused by validation."""
+        is refused by validation. A whitespace-only string passes a bare
+        min_length but carries no evidence either, so the non-blank rule
+        rejects it the same way."""
         harness.login()
-        response = harness.client.post(
-            "/extensions/health/acme.chart/operator",
-            json={"org_id": "org-1", "workspace_id": "ws-1", "action": "quarantine", "reason": ""},
-        )
-        assert response.status_code == 422
+        for reason in ("", "   "):
+            response = harness.client.post(
+                "/extensions/health/acme.chart/operator",
+                json={
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "action": "quarantine",
+                    "reason": reason,
+                },
+            )
+            assert response.status_code == 422
+        recorded = asyncio.run(harness.health_store.decisions(SCOPE))
+        assert recorded == ()
 
 
 class TestHealthViews:

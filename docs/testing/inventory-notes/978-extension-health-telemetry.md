@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +50
+  packages/maistro-core/tests: +53
   packages/maistro-server/tests: +12
 ---
 
@@ -31,7 +31,7 @@ the install store, and the operator HTTP views
   restart), the in-memory twin only for the deliberate `memory://`
   configuration.
 
-- `test_health.py` (37) — each refusal path names its acceptance
+- `test_health.py` (38) — each refusal path names its acceptance
   criterion: installed-but-incompatible (platform API re-derived now, not
   the install-day verdict), unauthorized (terminal refusal), and unhealthy
   (non-dependency failure) extensions cannot report ready; an unmeasured
@@ -54,7 +54,9 @@ the install store, and the operator HTTP views
   construction); health windowing (dependency-only failures degrade,
   non-dependency fail unhealthy, window bounded, no evidence = unmeasured);
   ranking by each metric with unmeasured sorting last (never read as zero)
-  and deterministic tie-breaks; SLO error-budget math including the exact
+  and deterministic tie-breaks; every status-projection read requests only
+  the newest HEALTH_WINDOW rows, so projection latency does not stream the
+  store's whole retained history; SLO error-budget math including the exact
   boundary and the absent-data contract (no position, no alarm); digest
   absent-metrics are `None`, not zero; service views (unknown extension →
   no fabricated status; refused candidates surface UNAUTHORIZED; export
@@ -64,15 +66,20 @@ the install store, and the operator HTTP views
   provider marks an otherwise-clean dependent not ready, while a failure
   recorded against a superseded dependency version does not condemn the
   upgraded one.
-- `test_health_store_conformance.py` (9) — the in-memory and SQLite twins
+- `test_health_store_conformance.py` (11) — the in-memory and SQLite twins
   agree on observation/error/decision reads under every filter (scope
   containment included), with `limit` selecting the newest rows; a failed
   observation files its error in both twins; restart survival is proven by
   close/reopen of one SQLite database with identical reads and an identical
   projection; corrupted durable evidence (forged outcome value) fails
-  closed on read; timezone-naive evidence timestamps are refused at the
-  write; full-field round-trip equality; identical evidence sequences
-  produce identical health verdicts through either twin.
+  closed on read; timezone-naive evidence timestamps are refused in the
+  shared evidence model (both twins inherit the rule) with the SQLite
+  write-time check kept as the constructor-bypass backstop; full-field
+  round-trip equality; identical evidence sequences
+  produce identical health verdicts through either twin; and two store
+  instances writing one database concurrently allocate distinct sequences
+  (each append opens with BEGIN IMMEDIATE, so the write lock is held across
+  the MAX(seq) read — no lost or duplicated append).
 
 **+11 `packages/maistro-server/tests/api/test_extensions_health_api.py`** —
 drives the real router over the real services: reads are authenticated like

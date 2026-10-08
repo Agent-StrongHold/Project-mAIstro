@@ -10,6 +10,7 @@ raises instead of projecting as plausible-but-wrong state.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -223,6 +224,68 @@ async def test_health_survives_restart_on_the_sqlite_twin(tmp_path: Path) -> Non
         assert len(digests) == 1
         assert digests[0].active is False
         assert digests[0].invocations == 2
+
+
+async def test_concurrent_writers_on_one_database_allocate_distinct_sequences(
+    tmp_path: Path,
+) -> None:
+    """Two store instances over one database must not collide on allocation.
+
+    The process-local lock serializes writers sharing one connection, not
+    writers in another store on the same database: both could read the same
+    ``MAX(seq)`` and race to insert, killing one worker's observation or
+    operator hold on a lock error or a duplicate primary key. Every append
+    therefore opens with ``BEGIN IMMEDIATE`` — SQLite's write lock is held
+    across the MAX read, so concurrent workers serialize instead of
+    colliding (Codex P1, PR #2021)."""
+    path = str(tmp_path / "health-concurrent.db")
+    stores: list[SqliteExtensionHealthStore] = []
+    connections: list[aiosqlite.Connection] = []
+    for _ in range(2):
+        conn = await aiosqlite.connect(path)
+        connections.append(conn)
+        store = SqliteExtensionHealthStore(conn)
+        await store.ensure_schema()
+        stores.append(store)
+    try:
+        observations = [_observation(f"obs-race-{index}") for index in range(20)]
+        decisions = [
+            _decision(f"decision-race-{index}", ExtensionOperatorAction.QUARANTINE)
+            for index in range(8)
+        ]
+        # Round-robin the evidence across the two connections so both
+        # writers allocate from the same tables at the same time.
+        await asyncio.gather(
+            *(
+                stores[index % 2].append_observation(observation)
+                for index, observation in enumerate(observations)
+            ),
+            *(
+                stores[index % 2].append_decision(decision)
+                for index, decision in enumerate(decisions)
+            ),
+        )
+
+        reader = stores[0]
+        # All evidence survived, from both writers (allocation order across
+        # two connections is nondeterministic, so compare by identity).
+        recorded_observations = await reader.observations(SCOPE)
+        assert sorted(
+            observation.observation_id for observation in recorded_observations
+        ) == sorted(observation.observation_id for observation in observations)
+        recorded_decisions = await reader.decisions(SCOPE)
+        assert sorted(decision.decision_id for decision in recorded_decisions) == sorted(
+            decision.decision_id for decision in decisions
+        )
+        # Every allocation is distinct: no append was lost or duplicated.
+        cursor = await reader._conn.execute(
+            "SELECT event_seq FROM extension_health_events ORDER BY event_seq"
+        )
+        rows = await cursor.fetchall()
+        assert [row[0] for row in rows] == list(range(1, len(observations) + 1))
+    finally:
+        for conn in connections:
+            await conn.close()
 
 
 async def test_corrupted_durable_evidence_fails_closed(tmp_path: Path) -> None:

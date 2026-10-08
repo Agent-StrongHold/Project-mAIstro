@@ -582,6 +582,44 @@ def test_health_evaluation_window_is_bounded() -> None:
     assert evaluate_health(()) is ExtensionHealth.UNMEASURED
 
 
+async def test_projection_reads_only_the_health_window() -> None:
+    """Status projections never stream the store's whole retained history:
+    every health-evaluating read requests the newest HEALTH_WINDOW rows, so
+    latency stays flat as recorded evidence grows without bound."""
+
+    class _RecordingHealthStore(InMemoryExtensionHealthStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.observation_limits: list[int | None] = []
+
+        async def observations(
+            self,
+            scope: ExtensionScope,
+            *,
+            extension_id: str | None = None,
+            version: str | None = None,
+            limit: int | None = None,
+        ) -> tuple[ExtensionObservation, ...]:
+            self.observation_limits.append(limit)
+            return await super().observations(
+                scope, extension_id=extension_id, version=version, limit=limit
+            )
+
+    store = InMemoryExtensionStore()
+    await _install_active(store)
+    health = _RecordingHealthStore()
+    for index in range(HEALTH_WINDOW * 3):
+        await health.append_observation(_observation(f"obs-{index}"))
+    service = ExtensionHealthService(store, health)
+
+    status = await service.status(SCOPE, "acme.chart")
+
+    assert status is not None
+    assert status.healthy is ExtensionHealth.HEALTHY
+    assert health.observation_limits
+    assert all(limit == HEALTH_WINDOW for limit in health.observation_limits)
+
+
 # --------------------------------------------------------------------------
 # Acceptance: removed versions identifiable in telemetry, never active
 # --------------------------------------------------------------------------

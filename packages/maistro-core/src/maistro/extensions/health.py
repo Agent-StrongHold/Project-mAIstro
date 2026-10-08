@@ -140,8 +140,7 @@ def _require_aware_at(record: str, value: datetime) -> None:
     """
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(
-            f"{record} 'at' must be timezone-aware; a naive timestamp "
-            "cannot round-trip its instant"
+            f"{record} 'at' must be timezone-aware; a naive timestamp cannot round-trip its instant"
         )
 
 
@@ -1452,9 +1451,7 @@ class ExtensionHealthService:
         """
         active = await self._install_store.active_record(scope, extension_id)
         telemetry_version = (
-            version
-            if version is not None
-            else (active.version if active is not None else None)
+            version if version is not None else (active.version if active is not None else None)
         )
         observations = await self._health_store.observations(
             scope, extension_id=extension_id, version=telemetry_version

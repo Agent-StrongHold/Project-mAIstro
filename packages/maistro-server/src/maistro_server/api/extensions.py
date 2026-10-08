@@ -589,7 +589,11 @@ class OperatorActionBody(ScopeBody):
     model_config = ConfigDict(extra="forbid")
 
     action: ExtensionOperatorAction
-    reason: str = Field(min_length=1)
+    # The audit trail documents a required reason; a whitespace-only string
+    # passes min_length but carries no evidence, so the same non-blank rule
+    # the install authorization service applies is enforced here (pydantic
+    # matches ``pattern`` with search semantics, mirroring ``reason.strip()``).
+    reason: str = Field(min_length=1, pattern=r"\S")
 
 
 def _status_view(projection: ExtensionOperationalStatus) -> OperationalStatusView:
