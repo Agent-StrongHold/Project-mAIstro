@@ -14,8 +14,9 @@
  *  10. Verify audit trail
  */
 
+import { readFile } from "node:fs/promises";
 import { test, expect, Page } from "@playwright/test";
-import { ADMIN_PASS, ADMIN_USER, PM_PASS, loginAsPM, setupIfNeeded } from "./session";
+import { ADMIN_PASS, ADMIN_USER, PM_PASS, loginAsAdmin, loginAsPM, setupIfNeeded } from "./session";
 
 async function elevateDagWrites(page: Page, taskId: string) {
   // DAG creation/runs and optimizer mutations are protected operations. The
@@ -349,6 +350,67 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     await expect(rows.last()).toContainText("entry-799");
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(rows.first()).toContainText("entry-0");
+  });
+
+  test("10d — audit export completes as a filtered native download", async ({ page }) => {
+    // Do not intercept audit responses: prove the production download route,
+    // session cookie, filters and browser download manager work together.
+    await loginAsAdmin(page);
+    await page.addInitScript(() => localStorage.setItem("hive_onboarded", "1"));
+    const policyResponse = await page.request.get("/v1/audit/retention");
+    expect(policyResponse.status()).toBe(200);
+    const policy = await policyResponse.json();
+    expect(policy.scope).toBe("deployment");
+    expect(policy.export_max_entries).toBe(10_000);
+    expect(policy.corpus_purge).toBe("none"); // #325 owns corpus purging.
+
+    await page.goto("/audit");
+    await page.getByRole("combobox").first().selectOption("login");
+    await page.getByRole("combobox").nth(1).selectOption("info");
+    const filteredResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === "/v1/audit" &&
+        url.searchParams.get("action") === "login" &&
+        url.searchParams.get("severity") === "info" &&
+        url.searchParams.get("actor") === ADMIN_USER;
+    });
+    await page.getByPlaceholder("Filter actor...").fill(ADMIN_USER);
+    expect((await filteredResponse).status()).toBe(200);
+    await expect(page.getByRole("row").first()).toContainText(ADMIN_USER);
+
+    const link = page.getByRole("link", { name: "Export", exact: true });
+    await expect(link).toHaveAttribute(
+      "href", "/v1/audit/export?action=login&severity=info&actor=admin",
+    );
+    const exportRequests: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/v1/audit/export" &&
+          ["fetch", "xhr"].includes(request.resourceType())) {
+        exportRequests.push(request.resourceType());
+      }
+    });
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      link.click(),
+    ]);
+    expect(await download.failure()).toBeNull();
+    expect(download.suggestedFilename()).toBe("audit-log.ndjson");
+    // Chromium need not emit a page request event for an attachment download.
+    // Its URL still identifies the server stream, rather than an in-page Blob.
+    expect(download.url()).toBe(new URL(await link.getAttribute("href") as string, page.url()).href);
+    expect(exportRequests).toEqual([]);
+    // Read the saved file in the test runner, never into the browser's heap.
+    const path = await download.path();
+    expect(path).not.toBeNull();
+    const rows = (await readFile(path!, "utf8")).trim().split("\n")
+      .map((line) => JSON.parse(line));
+    expect(rows.length).toBeGreaterThan(0); // This session's login is audited.
+    expect(rows.length).toBeLessThanOrEqual(policy.export_max_entries);
+    for (const row of rows) {
+      expect(row.actor).toBe(ADMIN_USER);
+      expect(row.action).toBe("login");
+      expect(row.severity).toBe("info");
+    }
   });
 
   test("11 — PM can view DAG metrics", async ({ page }) => {
