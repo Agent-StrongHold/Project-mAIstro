@@ -52,42 +52,55 @@ one comparison table over k sampled answers per judged decision:
   (binwise ECE against observed outcomes — the epic's "judged against observed
   outcomes" sentence in code), Spearman correlation of predicted error with task
   difficulty, and token/latency accounting (k-fold sampling bills k ×
-  tokens-per-sample; latency is ceil(k / parallelism) × per-call latency).
+  tokens-per-sample; latency is ceil(k / parallelism) × per-call latency). Every
+  comparison row carries the corpus's *recorded* per-sample token counts and
+  latencies — absolute bill and latency bound, not just the sample multiple —
+  so two corpora with identical k but different measured per-call costs are
+  never indistinguishable.
 
 What the deterministic fixtures demonstrate (synthetic arithmetic, **not**
-evidence about real models; head b58650089, `uv run pytest …m8e1…` → 33 passed):
+evidence about real models; harness as committed in c3ea29752,
+`uv run pytest …m8e1…` → 35 passed):
 
 - **Temperature decides whether the k-fold bill buys anything.** On the same
   difficulty/outcome stream (identical seed, temperature only reshaping the
   sample distribution), the sampled signals' error AUROC degrades monotonically
-  with sampling temperature — pairwise agreement 0.676 → 0.659 → 0.631 at
+  with sampling temperature — pairwise agreement 0.723 → 0.659 → 0.619 at
   temperature 0.6/1.0/1.6, while the unsampled self-report control stays fixed
   at 0.662. At temperature 0.6 every sampled signal outranks self-report; at
   1.6 every one falls below it. A real experiment must therefore report the
   sampling temperature next to any AUROC gain, or the comparison is not
-  interpretable.
-- **Semantic clustering is the best-calibrated of the three on both fixture
-  families** (ECE 0.082 vs 0.082–0.194 on the stronger family; 0.068 vs
-  0.079–0.130 on the weaker one) and surface-form synonyms are exactly where it
-  beats vanilla self-consistency: on the hand-built synonym-noise fixture,
-  surface self-consistency ties every decision at confidence 0.5 (error AUROC
-  0.5, chance) while equivalence-merged semantic clustering separates the
-  classes fully (AUROC 1.0).
-- **All signals degrade on the harder family** (error AUROC ≈ 0.65 → ≈ 0.60
-  moving from the 0.8-skill to the 0.55-skill family): more scatter compresses
-  the confidence range. Family sensitivity is measurable, which is the
-  preconditions for the issue's model-family robustness measure.
-- **Predicted error tracks task difficulty** (Spearman 0.55–0.62 across the
-  three families of signals on the default corpus) — the difficulty correlation
-  the issue asks for is measurable end to end.
+  interpretable. The corpus applies temperature as a proper distribution
+  transform — every category weight is exponentiated by 1/T and renormalized —
+  and the limits are pinned by test: as T → ∞ every category (gold included)
+  approaches a 0.25 share, and as T → 0 sampling collapses onto the modal
+  category.
+- **Semantic clustering is the best-calibrated of the issue's three families
+  on both fixture families** (ECE 0.082 vs 0.082–0.194 on the stronger family;
+  0.068 vs 0.079–0.129 on the weaker one) and surface-form synonyms are exactly
+  where it beats vanilla self-consistency: on the hand-built synonym-noise
+  fixture, surface self-consistency ties every decision at confidence 0.5 (error
+  AUROC 0.5, chance) while equivalence-merged semantic clustering separates the
+  classes fully (AUROC 1.0). The distinct-answer ratio that completes the
+  variation family splits the calibration question: it is the best-calibrated
+  signal on the stronger family (ECE 0.049) and the worst on the weaker one
+  (0.159), a reminder that coarser variation metrics are not free simplifications.
+- **All signals degrade on the harder family** (error AUROC ≈ 0.63–0.66 →
+  ≈ 0.56–0.61 moving from the 0.8-skill to the 0.55-skill family): more scatter
+  compresses the confidence range. Family sensitivity is measurable, which is
+  the preconditions for the issue's model-family robustness measure.
+- **Predicted error tracks task difficulty** (Spearman 0.42–0.62 across the
+  sampled signals on the default corpus, weakest for the coarsest metric,
+  distinct ratio) — the difficulty correlation the issue asks for is measurable
+  end to end.
 - **The blind spot is confirmed, not hidden**: when repeated sampling converges
   confidently on a *wrong* answer (the mirage tasks), agreement is maximal
-  exactly where the model fails — on the mirage-vs-honest subset the agreement
-  signal's error AUROC is 0.108, and with a 30% mirage share every signal's
-  error AUROC drops below 0.5 (0.33–0.40). k samples of one model detect
-  *indecision*, not *confident convergence*; that residual risk is the
-  heterogeneous-family/verifier question and belongs to M8-E3 (#932), not to
-  more samples from the same model.
+  exactly where the model fails — on a mirage-vs-honest subset (60 confidently-wrong
+  mirage decisions against 60 honest ones) the agreement signal's error AUROC is
+  0.32, and with a 30% mirage share every signal's error AUROC drops below 0.5
+  (0.33–0.40). k samples of one model detect *indecision*, not *confident
+  convergence*; that residual risk is the heterogeneous-family/verifier question
+  and belongs to M8-E3 (#932), not to more samples from the same model.
 - **The equivalence function is load-bearing.** Semantic confidence on the same
   samples moves from 1.0 to 0.0 depending on whether the equivalence merges or
   splits two surface forms, and identical strings can never be split by any
@@ -97,8 +110,10 @@ evidence about real models; head b58650089, `uv run pytest …m8e1…` → 33 pa
   records that as the open dependency, not as a solved detail.
 - **Cost is part of the result**: k = 8 samples bill 8 × 48 = 384 tokens against
   a 48-token one-shot decision (8× multiple), 5600 ms sequential vs 700 ms fully
-  parallel — every comparison row carries its sampling multiple so an AUROC gain
-  is never quoted without its bill.
+  parallel — every comparison row carries its sampling multiple *and* the
+  corpus's recorded absolute token bill and latency bound, so an AUROC gain is
+  never quoted without its bill and a cheap-samples corpus can never be confused
+  with an expensive one at the same k.
 
 ## Benchmark procedure (what a real experiment must do)
 

@@ -526,9 +526,7 @@ def m8e1_compare(decisions: Sequence[SampledDecision]) -> tuple[ComparisonRow, .
         # pay the k-fold bill. Token and latency columns aggregate the corpus's
         # recorded per-sample values, so sample count alone never stands in for
         # cost.
-        sample_counts = (
-            [1] * n if signal == "self_report" else [len(d.answers) for d in decisions]
-        )
+        sample_counts = [1] * n if signal == "self_report" else [len(d.answers) for d in decisions]
         token_bills = [
             m8e1_sampling_cost(k, d.tokens_per_sample).total_tokens
             for k, d in zip(sample_counts, decisions, strict=True)
@@ -1025,9 +1023,7 @@ class TestSamplingCost:
         # 480-token/10 s corpus would be indistinguishable.
         base = m8e1_variation_corpus(seed=930, n=20, k=6)
         cheap = [replace(d, tokens_per_sample=48, per_call_latency_ms=100.0) for d in base]
-        pricey = [
-            replace(d, tokens_per_sample=480, per_call_latency_ms=10_000.0) for d in base
-        ]
+        pricey = [replace(d, tokens_per_sample=480, per_call_latency_ms=10_000.0) for d in base]
         cheap_rows = {r.signal: r for r in m8e1_compare(cheap)}
         pricey_rows = {r.signal: r for r in m8e1_compare(pricey)}
         assert cheap_rows["self_consistency"].mean_sampled_tokens == pytest.approx(6 * 48)
