@@ -202,6 +202,18 @@ def test_the_sandbox_is_unshared_capability_dropped_and_detached(tmp_path: Path)
     assert "--new-session" in argv
 
 
+def test_read_paths_are_mounted_read_only(tmp_path: Path) -> None:
+    """A `filesystem.read` profile's paths arrive as `--ro-bind` mounts: the
+    workload reads the host files in place and cannot write them."""
+    argv = _backend(tmp_path).build_argv(
+        SandboxConfig(read_paths=["/srv/exports"]), tmp_path, ["true"]
+    )
+
+    assert "--ro-bind" in argv
+    ro_binds = [(argv[i + 1], argv[i + 2]) for i, a in enumerate(argv) if a == "--ro-bind"]
+    assert ("/srv/exports", "/srv/exports") in ro_binds
+
+
 def test_a_bare_network_boolean_does_not_grant_egress(tmp_path: Path) -> None:
     """`network=True` used to be the whole story. It is not any more (#77):
     egress comes from an explicit `EgressGrant` carrying a reason, so a config

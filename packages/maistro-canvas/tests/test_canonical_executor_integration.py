@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from itertools import count
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from canvas_testing.job_store_contract import InMemoryJobStore
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -148,12 +150,35 @@ class _CanvasStore:
         return list(self.reaped)
 
 
+class _RecoveryCanvasStore(InMemoryJobStore):
+    """Production-like detached/CAS job rows plus the executor's scoped reads."""
+
+    async def get_canvas(self, canvas_id: str, *, org_id: str) -> CanvasRecord | None:
+        canvas = self._canvases.get(canvas_id)
+        return replace(canvas) if canvas is not None and canvas.org_id == org_id else None
+
+    async def get_layer(self, layer_id: str, *, org_id: str) -> LayerRecord | None:
+        layer = self._layers.get(layer_id)
+        if layer is None or await self.get_canvas(layer.canvas_id, org_id=org_id) is None:
+            return None
+        return replace(layer)
+
+
 class _ImageClient:
     async def generate(self, **_kwargs: object) -> list[ImageData]:
         return [ImageData(width=64, height=64, url="image://generated")]
 
     async def refine(self, **_kwargs: object) -> ImageData:
         return ImageData(width=64, height=64, url="image://refined")
+
+
+class _CountingImageClient(_ImageClient):
+    def __init__(self) -> None:
+        self.generate_calls = 0
+
+    async def generate(self, **kwargs: object) -> list[ImageData]:
+        self.generate_calls += 1
+        return await super().generate(**kwargs)
 
 
 class _FailThenSucceedImageClient(_ImageClient):
@@ -579,6 +604,124 @@ async def test_runner_requeues_then_terminalizes_at_retry_budget() -> None:
     assert job.leased_by is None
     assert job.lease_expires_at is None
     assert executor.failures == ["provider 503"]
+
+
+async def test_simulated_pre_stage_worker_losses_respect_the_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated lost claims cannot dispatch past the budget or strand the Run.
+
+    This is hermetic coroutine interruption and lease-expiry simulation, not
+    OS process-kill or PostgreSQL durability proof. The production composition
+    supplies the real executor, canonical adapter and runner. The shared
+    job-store contract fake preserves detached reads, claim limits and CAS.
+    """
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace-1")
+    runs = InMemoryRunStore(project_store=projects)
+    store = _RecoveryCanvasStore()
+    canvas = await store.create_canvas(name="Recovery", width=64, height=64, org_id="org-1")
+    layer = await store.add_layer(canvas.id, org_id="org-1")
+    image_client = _CountingImageClient()
+    runtime = build_canvas_runtime(
+        store=store,  # type: ignore[arg-type]
+        image_client=image_client,  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+        run_store=runs,
+        workspace_id="workspace-1",
+        project_id=root.project_id,
+    )
+    job = await runtime.executor.start_job(
+        org_id="org-1",
+        canvas_id=canvas.id,
+        layer_id=layer.id,
+        action=JobAction.GENERATE,
+        prompt="safe",
+        actor_principal_id=_TEST_ACTOR,
+    )
+    run_id = canonical_run_id(job.params)
+    assert run_id is not None
+    claim = store.claim_next_pending
+
+    async def lose_worker_after_claim(
+        worker_id: str, lease_seconds: int
+    ) -> GenerationJobRecord | None:
+        claimed = await claim(worker_id, lease_seconds)
+        assert claimed is not None
+        # The claim has persisted, but execution has not begun. Interrupt the
+        # runner here without fabricating a canonical cancellation or failure.
+        raise asyncio.CancelledError
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(store, "claim_next_pending", lose_worker_after_claim)
+        for attempt in range(1, job.max_attempts + 1):
+            # Each tick must reconcile the previous lost claim before claiming
+            # again. No explicit recovery call bypasses the runner's ordering.
+            with pytest.raises(asyncio.CancelledError):
+                await runtime.runner.tick_once()
+            receipt = await store.get_job(job.id, org_id="org-1")
+            assert receipt is not None
+            assert receipt.status == JobStatus.RUNNING
+            assert receipt.attempts == attempt
+            assert receipt.leased_by is not None
+            assert canonical_run_id(receipt.params) == run_id
+            queued = await runs.get_run(run_id)
+            assert queued is not None and queued.status is RunStatus.QUEUED
+            assert await runs.list_node_runs(run_id) == []
+            assert image_client.generate_calls == 0
+            # Persist the expired lease on a detached row, as a test clock
+            # advancing past the lost worker's lease would make it appear.
+            receipt.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            await store.update_job(
+                receipt,
+                org_id="org-1",
+                expected_status=JobStatus.RUNNING,
+                expected_attempts=attempt,
+            )
+
+    assert await runtime.runner.tick_once() is False
+    exhausted = await store.get_job(job.id, org_id="org-1")
+    assert exhausted is not None
+    assert exhausted.attempts == job.max_attempts
+    assert exhausted.status == JobStatus.RUNNING
+    assert exhausted.leased_by is None
+    assert exhausted.lease_expires_at is not None
+    assert image_client.generate_calls == 0
+
+    # Exercise the real reaper path, including canonical failure and the
+    # fenced receipt write, rather than calling its terminal hook directly.
+    reaped = await runtime.runner.reap_once()
+    assert [candidate.id for candidate in reaped] == [job.id]
+    failed = await runs.get_run(run_id)
+    assert failed is not None and failed.status is RunStatus.FAILED
+    assert failed.error == LEASE_EXPIRED_MESSAGE
+    terminal = await store.get_job(job.id, org_id="org-1")
+    assert terminal is not None and terminal.status == JobStatus.FAILED
+    assert terminal.attempts == job.max_attempts
+    assert terminal.error_message == LEASE_EXPIRED_MESSAGE
+    assert terminal.completed_at is not None
+    assert terminal.leased_by is None and terminal.lease_expires_at is None
+    assert await runs.list_node_runs(run_id) == []
+    assert await runtime.runner.reap_once() == []
+    assert await runtime.runner.tick_once() is False
+    assert image_client.generate_calls == 0
+
+    # Positive control: the same unpatched composition can still dispatch a
+    # fresh job. Zero calls above cannot be explained by a disconnected fake.
+    fresh = await runtime.executor.start_job(
+        org_id="org-1",
+        canvas_id=canvas.id,
+        layer_id=layer.id,
+        action=JobAction.GENERATE,
+        prompt="safe",
+        actor_principal_id=_TEST_ACTOR,
+    )
+    assert await runtime.runner.tick_once() is True
+    completed = await store.get_job(fresh.id, org_id="org-1")
+    assert completed is not None and completed.status == JobStatus.DONE
+    assert canonical_run_id(fresh.params) != run_id
+    assert image_client.generate_calls == 1
 
 
 async def test_runner_idle_and_reap_terminal_failure_paths() -> None:

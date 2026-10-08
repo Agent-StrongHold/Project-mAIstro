@@ -1663,6 +1663,18 @@ class TaskQueue:
         The receipt is a projection. For admitted work, cancellation must
         first reach the Run/Attempt service so an in-flight provider receives
         the same signal as a queued task that has not started yet.
+
+        Compatibility (#1338): an admitter wired before `cancel_run` joined
+        the :class:`~maistro.tasks.admission.TaskAdmitter` protocol exposes
+        no canonical cancellation, and ``getattr`` is the capability check —
+        the Protocol is structural, so absence is invisible to isinstance.
+        For such an adapter's admitted work this method refuses (False) and
+        leaves the receipt exactly as it was: the Run keeps its owner, and
+        terminalizing the receipt CANCELLED while nobody signals the
+        execution would make "stopped" mean "locally forgotten" (#1242).
+        Work with no canonical identity behind it (no admitter, or no
+        ``run_id``) never had physical execution to stop, so the
+        receipt-only path stays available there and reads as exactly that.
         """
         task = self._tasks.get(task_id)
         if task is None:
@@ -1671,12 +1683,25 @@ class TaskQueue:
         # old cancellation, not a new one — it stays False so the route keeps
         # mapping it to 400 (the pinned API contract).
         arrived_terminal = task.status in _TERMINAL
-        if (
-            self._admitter is not None
-            and task.run_id
-            and not await self._admitter.cancel_run(task.run_id)
-        ):
-            return False
+        if self._admitter is not None and task.run_id:
+            cancel_run = getattr(self._admitter, "cancel_run", None)
+            if cancel_run is None:
+                # A legacy two-method admitter (#1338): physical cancellation
+                # is unavailable, and pretending otherwise would either crash
+                # (AttributeError) or lie (a CANCELLED receipt over a Run that
+                # is still executing). Report the limitation explicitly and
+                # refuse; the operator upgrades or replaces the adapter.
+                await logger.awarning(
+                    "task_cancel_unsupported_by_admitter",
+                    task_id=task.task_id,
+                    run_id=task.run_id,
+                    admitter_type=type(self._admitter).__name__,
+                    reason="admitter predates the TaskAdmitter.cancel_run capability; "
+                    "canonical physical cancellation unavailable",
+                )
+                return False
+            if not await cancel_run(task.run_id):
+                return False
         # The canonical cancellation may already have reached the receipt: the
         # worker's cancellation handler reconciles it from the Run (#849), and
         # that reconcile can win the race against this method's own write. A

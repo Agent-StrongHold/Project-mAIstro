@@ -15,10 +15,15 @@ import json
 import logging
 import os
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
+from maistro.agents.tool_dispatch import ToolCallExecutor
 from maistro.capabilities.providers.llm_gateway import ModelChatRequest
 from maistro.http import shared_client
+from maistro.types.tool import ToolCall
+
+if TYPE_CHECKING:
+    from maistro.capabilities.admitted_model import AdmittedModelCalls
 
 ModelCall = Callable[[ModelChatRequest], Awaitable[str]]
 
@@ -340,36 +345,81 @@ TOOLS = {
 }
 
 
-async def dispatch_tool(tool_name: str, tool_args: dict[str, Any]) -> Any:
-    """The ``(tool_name, tool_args)`` dispatcher maistro's strategies call.
-
-    This is the executor half of the factory's tool seam (#840 Slice 5,
-    ADR-082526-3ca6: the runtime that owns the agents owns their tools): the
-    bridge passes this function to ``create_agents``, so an agent whose
-    manifest (or materialized definition) declares tools executes against the
-    REAL tool functions above instead of a silently-absent executor.
-
-    Only the tools that actually exist here are routed. An unknown name
-    returns the same refusal string react.py's un-guarded branch produces, so
-    a model sees one contract whether the executor is missing or the tool is:
-    ``Tool '<name>' not available`` — never a fabricated execution.
-    """
+async def dispatch_tool(
+    tool_name: str, tool_args: dict[str, Any], *, model_call: ModelCall | None = None
+) -> Any:
+    """Dispatch supported tools, with model admission supplied by the caller."""
     try:
         if tool_name == "web_search":
-            return await web_search(
+            function: Callable[..., Awaitable[Any]] = web_search
+            arguments: tuple[Any, ...] = (
                 str(tool_args.get("query", "")),
                 int(tool_args.get("max_results", 5) or 5),
             )
-        if tool_name == "browse_url":
-            return await browse_url(
+        elif tool_name == "browse_url":
+            function = browse_url
+            arguments = (
                 str(tool_args.get("url", "")),
                 str(tool_args.get("task", "Extract key facts and quotes")),
             )
-        if tool_name == "clarify":
-            return await clarify(
+        elif tool_name == "clarify":
+            function = clarify
+            arguments = (
                 list(tool_args.get("questions", []) or []),
                 dict(tool_args.get("context", {}) or {}),
             )
+        else:
+            return f"Tool '{tool_name}' not available"
     except (TypeError, ValueError) as exc:
         return f"Error: bad arguments for tool '{tool_name}': {exc}"
-    return f"Tool '{tool_name}' not available"
+    # Only argument coercion is recoverable here. A ValueError from malformed
+    # provider JSON after dispatch may have left the Invocation UNKNOWN; it
+    # must stop the strategy, not invite another model effect under a new key.
+    if tool_name in {"clarify", "web_search"}:
+        return await cast(Callable[..., Awaitable[Any]], function)(
+            *arguments, model_call=model_call
+        )
+    return await function(*arguments)
+
+
+def admitted_tool_executor(calls: AdmittedModelCalls) -> ToolCallExecutor:
+    """Bind boot Agent tools to the existing execution and effect authorities.
+
+    Agent/delegation/response-round/ToolCall identity names the logical effect.
+    It supplies no actor, scope, Binding or credential. The admission adapter
+    rereads persisted records and re-resolves the operator Binding every time.
+    """
+
+    async def execute(
+        call: ToolCall, agent_name: str, delegation_depth: int, tool_round: int
+    ) -> Any:
+        async def model_call(request: ModelChatRequest) -> str:
+            from maistro.runs.store import RunIntegrityError
+
+            if not isinstance(call.id, str) or not call.id.strip():
+                raise RunIntegrityError("model-backed Agent tools require the existing ToolCall id")
+            if not agent_name.strip():
+                raise RunIntegrityError(
+                    "model-backed Agent tools require the existing Agent identity"
+                )
+            scope = json.dumps(
+                [agent_name, delegation_depth, tool_round, call.id, call.name],
+                separators=(",", ":"),
+            )
+            result = await calls.complete(
+                request=request, effect_key=f"agent-tool:{scope}", timeout_s=30.0
+            )
+            choices = result.body.get("choices")
+            message = (
+                choices[0].get("message")
+                if isinstance(choices, list) and choices and isinstance(choices[0], dict)
+                else None
+            )
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, str):
+                raise RuntimeError("Agent tool model returned no text content")
+            return content
+
+        return await dispatch_tool(call.name, call.arguments, model_call=model_call)
+
+    return ToolCallExecutor(execute)

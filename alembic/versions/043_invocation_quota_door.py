@@ -5,20 +5,16 @@ Revises: 055
 Create Date: 2026-09-27
 
 The effect door's budget reservations (#1196) and the at-most-once provider
-usage evidence (#718) attach to the canonical Invocation. They follow the
-current chain tip so they do not reuse revision ids 033/035/036, which
-develop already assigned. Re-parented onto each new develop head as this
-branch has stayed open -- 046, then 047, 048, 050, 051, 052, 053, 054, now
-055: a migration must append after the deployed head, never fork beside
-it, or `alembic upgrade head` refuses with multiple heads. The Goal store
-(#1572) re-parented onto this door, and the next develop sync restored the
-merged identities this chain had collided with: #1047's user-model tables
-(``056_user_model_facts``) and #863's planner-stability revision
-(``057_run_store_planner_stability``) keep the ids develop already shipped
-(#1951's ``c560d4c``, #1914's ``4675101``), so installed databases stamped
-``056`` or ``057`` keep their meaning, and the Goal DDL appends after the
-integrated 058 learning-validation provenance revision as
-`061_canonical_goals`.
+usage evidence (#718) attach to the canonical Invocation. They do not reuse
+revision ids 033/035/036, which develop already assigned. The quota door
+keeps its shipped parent `055`; merged user-model `056_user_model_facts`
+(#1951's ``c560d4c``) follows this door, and planner-stability
+`057_run_store_planner_stability` (#1914's ``4675101``) follows `056`.
+Installed databases stamped `056` or `057` must keep those meanings.
+The integrated chain then adds `058_learning_validation_provenance`,
+`059_backlog_work_source`, and `060_backlog_authority_cutover`. The new
+Goal DDL (#1572) appends as `061_canonical_goals` after `060`, preserving
+one linear head without reassigning any merged identity.
 
 Every table here is created only when missing, and every column added
 only when absent, because the store bootstraps these same tables itself:

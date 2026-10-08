@@ -2,7 +2,7 @@
   "_comment": "Raw fetch and hand-typed frontend entity debt for Workspace cutover P0.3 (#1048). Judged against the trusted merge base; a fixed entry must be deleted here.",
   "metric_definition_version": "1",
   "summary": {
-    "hand_typed": 142,
+    "hand_typed": 139,
     "raw_fetch": 60
   },
   "tolerated": {
@@ -104,8 +104,6 @@
     "hand_typed::packages/hive-conductor/frontend/src/pages/Login.tsx:39:LoginProps": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Login.tsx:5:Mode": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Login.tsx:7:RegistrationMode": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/MCP.tsx:12:Tool": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/MCP.tsx:6:Server": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Memory.tsx:5:Entry": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/MessageBoard.tsx:13:MessagePriority": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/MessageBoard.tsx:15:Message": "local interface/type in pages/ or components/",
@@ -134,7 +132,6 @@
     "hand_typed::packages/hive-conductor/frontend/src/pages/RSI.tsx:79:PollHealth": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/RSI.tsx:8:RsiStatus": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/RSI.tsx:9:ModelOption": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/Schedules.tsx:6:Schedule": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Settings.tsx:6:Settings": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Setup.tsx:12:FirstRunQuestionMeta": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Setup.tsx:14:IdentityStatus": "local interface/type in pages/ or components/",
