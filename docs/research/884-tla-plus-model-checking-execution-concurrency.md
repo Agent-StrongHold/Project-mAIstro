@@ -13,11 +13,11 @@ Not GRADUATE: a protocol-level model is **not** implementation equivalence, and 
 
 Not REJECT: the experiment paid for itself immediately — the checker rediscovered both historically real bug shapes (#1335's completion window and ADR-082426-e3ff's stale acceptance) from the interleaving space alone, in BFS-minimal form, and proved the shipped guards close every interleaving up to the bound. No randomized or hand-written test in the tree makes the second claim.
 
-Not WATCH: WATCH would be right if the protocol were still moving or the tooling were expensive. The spine's windows are now fenced and tested at the store level; the checker costs ~0.2–0.5 s per exploration and zero dependencies. INCUBATE: keep the model + checker as the standing experiment harness for the next concurrency-relevant change to the spine (lease semantics, recovery cadence, a second claimant class), not as a shipped CI gate.
+Not WATCH: WATCH would be right if the protocol were still moving or the tooling were expensive. The spine's windows are now fenced and tested at the store level; the checker costs ~0.6–1.5 s per exploration and zero dependencies. INCUBATE: keep the model + checker as the standing experiment harness for the next concurrency-relevant change to the spine (lease semantics, recovery cadence, a second claimant class), not as a shipped CI gate.
 
 ## Hypothesis, and where it landed
 
-The issue hypothesizes that a bounded state-machine model checker can expose unsafe interleavings in claim → admit → execute → cancel → crash → recover → retry protocols that randomized async tests may never schedule. Result: **confirmed, with one sharpening.** The interleaving space of a *single node's* attempt lifecycle under two consumers and a bounded clock is 9,520 states / 25,756 edges — exhaustively checkable in 0.17 s — and it contains both known bug shapes at depths of 5 and 6 actions. The sharpening: the value was not in finding *unknown* bugs (the two violations the unguarded variant produces correspond to races the repo already fixed and documents), but in turning "these guards closed the races we thought of" into "these guards close every interleaving up to the bound," and in making the *semantics boundary* explicit (effect-once holds exactly under `once` replay semantics; under `retryable`, re-execution of a crashed in-flight effect is the contract, not a violation — § Evidence).
+The issue hypothesizes that a bounded state-machine model checker can expose unsafe interleavings in claim → admit → execute → cancel → crash → recover → retry protocols that randomized async tests may never schedule. Result: **confirmed, with one sharpening.** The interleaving space of a *single node's* attempt lifecycle under two consumers and a bounded clock is 11,784 states / 32,420 edges — exhaustively checkable in 0.8 s — and it contains both known bug shapes at depths of 5 and 6 actions. The sharpening: the value was not in finding *unknown* bugs (the two violations the unguarded variant produces correspond to races the repo already fixed and documents), but in turning "these guards closed the races we thought of" into "these guards close every interleaving up to the bound," and in making the *semantics boundary* explicit (effect-once holds exactly under `once` replay semantics; under `retryable`, re-execution of a crashed in-flight effect is the contract, not a violation — § Evidence).
 
 ## Modeled protocol and scope
 
@@ -33,7 +33,8 @@ Modeled actions (each mapped to its source):
 | `crash(c)` | process death; renewals stop, durable state stands | ADR-082526-b36a |
 | `dispatch(c)` | the physical effect (tool/provider call) starts | live lease + fence (ADR-081626-f383); ReplayRefused for `once` nodes (#1194) |
 | `begin_commit(c)` | `_settle_provider_success` step 1: **read the Run** | the #1335 window, modeled explicitly |
-| `land_commit(c)` | step 2: **write the Attempt** | `refuse_completion_under_terminal_run` (#1335): converts to CANCELLED under a terminal Run; transition table refuses a write over a reclaimed Attempt |
+| `land_commit(c)` | step 2: **write the Attempt** | `refuse_completion_under_terminal_run` (#1335): the write re-reads the Run and **raises** — the stale success is refused, the Attempt stays RUNNING for recovery; the transition table refuses a write over a reclaimed Attempt |
+| `replay_refused` | the #1194 `_replay_refused` disposition for a `once` node's fresh recovery Attempt: the Attempt records the refusal as its own durable result (the ADR-082826-08f0 `[CANCELLED, COMPLETED]` rotation) and the fold's exhausted-failure rule fails the Run | ReplaySemantics + the exhausted-failure fold; a still-claimed in-flight Attempt is never silently failed |
 | `accept(c)` | `accept_outcome` projection terminalizing the Run | ADR-082426-e3ff: acceptance carries the live token, latest attempt only |
 | `cancel` | run-level cancellation; settles open Attempts (requested) | RUN_TRANSITIONS / attempt cascade |
 | `recover` | `reclaim_expired_attempts` (CANCELLED, `CancellationCause.RECOVERED`) | `lease_is_expired` |
@@ -71,16 +72,16 @@ Model-vs-implementation conformance seams (the only two that exist today):
 
 All numbers from `scripts/model_check_consumer_claim.py` at this head; explorations are deterministic (same states, same first counterexample, pinned by test).
 
-**The guarded protocol is clean.** `Spec()` (all shipped fences) exhaustively explored: **9,520 states, 25,756 edges, 0 violations** across S1–S5, no deadlock beyond ceilings, progress under the stated fairness. Every interleaving of claim/dispatch/commit/accept/cancel/crash/recover/retry up to the bound, checked, in 0.17 s.
+**The guarded protocol is clean.** `Spec()` (all shipped fences) exhaustively explored: **11,784 states, 32,420 edges, 0 violations** across S1–S5, no deadlock beyond ceilings, progress under the stated fairness. Every interleaving of claim/dispatch/commit/accept/cancel/crash/recover/retry up to the bound, checked, in 0.8 s.
 
-**The unguarded protocol violates exactly the two invariants whose guards were removed** (`FencedAcceptance=FALSE`, `TerminalRunRefusal=FALSE` — the pre-fix world): 14,320 states; `S3_acceptance_is_current` and `S4_no_completion_under_terminal_run` fire, and nothing else (S1/S2/S5 hold by construction in both variants — verified).
+**The unguarded protocol violates exactly the two invariants whose guards were removed** (`FencedAcceptance=FALSE`, `TerminalRunRefusal=FALSE` — the pre-fix world): 16,160 states; `S3_acceptance_is_current` and `S4_no_completion_under_terminal_run` fire, and nothing else (S1/S2/S5 hold by construction in both variants — verified).
 
 The counterexamples are the shipped races, BFS-minimal:
 
 - **S3** (ADR-082426-e3ff's reproduced interleaving): `claim(c0) → dispatch(c0) → begin_commit(c0) → land_commit(c0) → retry(c0) → accept(c0)` — worker completes, its completed-but-unaccepted node is parked for retry (the pre-fix era behavior), a successor attempt goes live, and the stale acceptance lands. The ADR's own reproduction ("worker A completes an Attempt but has not yet committed its outcome; recovery parks the node as orphaned; worker B claims Attempt 2 and is live; worker A then commits") is this trace.
 - **S4** (#1335's window): `claim(c0) → dispatch(c0) → begin_commit(c0) → cancel → land_commit(c0)` — the Run lands CANCELLED *inside* the read/commit window and the stale success lands COMPLETED underneath it. Because the model keeps the window open as explicit state, the guard's correctness claim is "no interleaving of the window escapes," not "the interleaving we wrote down is handled."
 
-**Effect-once holds exactly under `once` semantics.** Under `retryable` (14,032 states), S2 fires — and the violating trace re-dispatches only through `recover` (a crashed in-flight effect re-runs; that is the at-least-once contract ReplaySemantics defines, not a bug). A completed Attempt's node is never re-driven in the guarded world: guarded `retry` demands the RECOVERED cause (pinned by a direct action test).
+**Effect-once holds exactly under `once` semantics.** S2 is scoped the way the TLA+ invariant's `~Once` guard is: under `retryable` (16,440 states, clean), a crashed in-flight effect legitimately re-dispatches — only through `recover` → `retry` (that is the at-least-once contract ReplaySemantics defines, not a violation; the legitimate repeat is pinned as an act-level witness by a test). A completed Attempt's node is never re-driven in the guarded world: guarded `retry` demands the RECOVERED cause (pinned by a direct action test).
 
 **Invariant can-fail discipline** (formal/INVARIANTS.md #410): beyond the unguarded variant itself, each remaining invariant was demonstrated to fire against a realistic mutant, each a documented bug class: resume over a live owner (the `LiveAttemptOwned` hazard) → S1; a dropped ReplayRefused → S2; acceptance over a terminal Run → S5; a store dropping the Attempt transition-table guard on the landing write → S5; a clockless world → the stuck-state detector counts states a person would have to unstick. A checker that never fires is not evidence.
 
@@ -88,15 +89,15 @@ The counterexamples are the shipped races, BFS-minimal:
 
 | Configuration | States | Edges | Time |
 |---|---:|---:|---:|
-| ttl=2, horizon=6, max_attempts=2 (base) | 9,520 | 25,756 | 0.17 s |
-| horizon=7 | 15,736 | 42,872 | 0.33 s |
-| horizon=8 | 24,328 | 66,652 | 0.51 s |
-| ttl=3, horizon=7 | 7,840 | 21,668 | 0.20 s |
-| max_attempts=3 | 17,616 | 44,796 | 0.42 s |
-| `retryable` | 14,032 | 38,028 | 0.31 s |
-| unguarded (base) | 14,320 | 39,116 | 0.30 s |
+| ttl=2, horizon=6, max_attempts=2 (base) | 11,784 | 32,420 | 0.8 s |
+| horizon=7 | 19,488 | 54,008 | 1.7 s |
+| horizon=8 | 30,120 | 83,956 | 3.3 s |
+| ttl=3, horizon=7 | 9,720 | 27,284 | 0.6 s |
+| max_attempts=3 | 21,896 | 56,484 | 1.5 s |
+| `retryable` | 16,440 | 45,428 | 1.5 s |
+| unguarded (base) | 16,160 | 44,140 | 1.5 s |
 
-Growth is roughly linear in the horizon (~8.5k states/tick at these bounds) and modest in the attempt bound; a longer TTL *shrinks* the space at fixed horizon (fewer recovery paths explored). One node + two consumers stays tractable by a wide margin; the growth risk is per-node and per-claimant multiplicity, which is why the scope cut to one node matters (§ Fidelity risks).
+Growth is roughly linear in the horizon (~8–11k states/tick at these bounds) and modest in the attempt bound; a longer TTL *shrinks* the space at fixed horizon (fewer recovery paths explored). One node + two consumers stays tractable by a wide margin; the growth risk is per-node and per-claimant multiplicity, which is why the scope cut to one node matters (§ Fidelity risks).
 
 **Comparison against current async/property tests.** The tree already covers this protocol three ways, and the checker complements rather than replaces each:
 
@@ -104,11 +105,11 @@ Growth is roughly linear in the horizon (~8.5k states/tick at these bounds) and 
 - `packages/maistro-core/tests/runs/test_spine_conformance.py` — ten workers raced by hand against the store: the named interleavings, forced. The checker generalizes "the ones we named" to "all of them, bounded."
 - `packages/maistro-core/tests/runs/test_crash_window_invariants.py` — process kills forced at the named two-write seams with an explicit `KNOWN_GAPS` ledger. The checker's `begin_commit`/`land_commit` split is the same discipline applied to a fifth window (#1335's) and explores every fill of it rather than one.
 
-Counterexample usefulness, measured: both discovered traces are 5–6 actions deep, land within the existing documentation (#1335's docstring narrates the S4 trace almost line by line), and would be actionable as store-level regression tests had they been unknown. Modeling effort: the transition relation is 804 lines of checker (including CLI, reports, and the progress graph) plus a 252-line TLA+ rendering and 582 lines of tests — roughly 1:1 with the 1,632 lines of production spine it models. A protocol change touching guards is a one-flag or one-action edit; a structural change (new actor class) reopens the action inventory.
+Counterexample usefulness, measured: both discovered traces are 5–6 actions deep, land within the existing documentation (#1335's docstring narrates the S4 trace almost line by line), and would be actionable as store-level regression tests had they been unknown. Modeling effort: the transition relation is 854 lines of checker (including CLI, reports, and the progress graph) plus a 284-line TLA+ rendering and 612 lines of tests — roughly 1:1 with the 1,632 lines of production spine it models. A protocol change touching guards is a one-flag or one-action edit; a structural change (new actor class) reopens the action inventory.
 
 ## Tooling: TLA+/TLC/Apalache vs. the justified equivalent
 
-The issue allows "TLA+ with Apalache, TLC, or a justified equivalent." This environment (and this repo's CI) has no JVM: TLC and Apalache were not executable here, and no check in this record depends on them. The justified equivalent is the Python explorer: same bounded exhaustive semantics (BFS over a hashed frontier, all interleavings to the bound), zero dependencies, deterministic, reviewable by the same engineers as the protocol, and fast enough for a per-PR budget (0.2–0.5 s per safety exploration; the fairness graph adds ~1 s). The portable TLA+ module (`ConsumerClaimLease.tla` + `.cfg`) renders the identical relation — constants, actions, guards, and the violations-flag trick that expresses S4/S5 as state invariants for TLC — so a JVM-having reviewer can cross-run it:
+The issue allows "TLA+ with Apalache, TLC, or a justified equivalent." This environment (and this repo's CI) has no JVM: TLC and Apalache were not executable here, and no check in this record depends on them. The justified equivalent is the Python explorer: same bounded exhaustive semantics (BFS over a hashed frontier, all interleavings to the bound), zero dependencies, deterministic, reviewable by the same engineers as the protocol, and fast enough for a per-PR budget (0.6–1.5 s per safety exploration, progress graph included; the full both-variant CLI run is ~2.5 s). The portable TLA+ module (`ConsumerClaimLease.tla` + `.cfg`) renders the identical relation — constants, actions, guards, and the violations-flag trick that expresses S4/S5 as state invariants for TLC — so a JVM-having reviewer can cross-run it:
 
 ```
 java -cp tla2tools.jar tlc2.TLC docs/research/models/884-execution-lease/ConsumerClaimLease.cfg
@@ -128,7 +129,7 @@ Honest status: the TLA+ module is hand-checked against the Python relation but w
 
 ## CI feasibility and maintenance burden
 
-Feasible and cheap: stdlib-only, offline, deterministic, ~2 s for the full both-variant run inside a 27-test file that also proves the machinery fires. It is *not* wired as a gate in this change — INCUBATE, not GRADUATE — so there is no new required check and no ledger touch. Maintenance: the model lives beside the research record, the tests pin the evidence, and the lifecycle-table import makes the most drift-prone part (transition legality) tracked. The residual maintenance cost is guard restatement (risk 2): a guard change to the spine should be reviewed against this model, and a second claimant class, a new terminal disposition, or a recovery-cadence change should reopen it.
+Feasible and cheap: stdlib-only, offline, deterministic, ~2.5 s for the full both-variant run inside a 27-test file that also proves the machinery fires. It is *not* wired as a gate in this change — INCUBATE, not GRADUATE — so there is no new required check and no ledger touch. Maintenance: the model lives beside the research record, the tests pin the evidence, and the lifecycle-table import makes the most drift-prone part (transition legality) tracked. The residual maintenance cost is guard restatement (risk 2): a guard change to the spine should be reviewed against this model, and a second claimant class, a new terminal disposition, or a recovery-cadence change should reopen it.
 
 ## Conformance strategy (what graduation would require)
 

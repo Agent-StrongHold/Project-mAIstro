@@ -9,9 +9,15 @@
 (* are modeled as explicit steps:                                          *)
 (*                                                                         *)
 (*   - `_settle_provider_success` reads the Run, then writes the Attempt    *)
-(*     (#1335): BeginCommit is the read, LandCommit the write.              *)
+(*     (#1335): BeginCommit is the read, LandCommit the write. The shipped  *)
+(*     store re-reads the Run inside the write and refuses a stale success  *)
+(*     outright when the Run terminalized inside the window — the Attempt   *)
+(*     stays Running for the recovery sweep.                                *)
 (*   - the `accept_outcome` projection (ADR-082426-e3ff): Accept carries    *)
 (*     the live fencing token when FencedAcceptance is TRUE.                *)
+(*   - the #1194 `once`-node disposition (`_replay_refused`): a fresh       *)
+(*     recovery Attempt for a node whose effect already ran records the     *)
+(*     refusal as its own durable result and the Run fails.                 *)
 (*                                                                         *)
 (* Constants:                                                               *)
 (*   Consumers          set of consumer identities, e.g. {"a", "b"}         *)
@@ -30,7 +36,7 @@
 (*                                                                         *)
 (* S4 (no completion lands under a terminal Run) is a transition property;  *)
 (* TLC checks state invariants, so the landing action records a "S4" flag   *)
-(* into `violations` when it would land COMPLETED under a cancelled Run,    *)
+(* into `violations` when it would land COMPLETED under a terminal Run,     *)
 (* and InvNoViolations refuses any flag. This mirrors the Python checker's  *)
 (* edge checks exactly.                                                     *)
 (*                                                                         *)
@@ -64,10 +70,12 @@ VARIABLES
   dispatched,
   \* @type: [ordinal: Int, holder: Str, token: Int, observed: Str];
   pending,
+  \* @type: Int;
+  accepted,
   \* @type: Set(Str);
   violations
 
-vars == <<run, attempts, aliveSet, clock, fence, dispatched, pending, violations>>
+vars == <<run, attempts, aliveSet, clock, fence, dispatched, pending, accepted, violations>>
 
 NoAttempt == [ordinal |-> 0, status |-> "none", holder |-> "none",
               token |-> 0, expires |-> 0, cause |-> "none", dispatched |-> FALSE]
@@ -93,7 +101,7 @@ ReplaceAttempt(updated) ==
 
 CapExpiry == Min({clock + TTL, Horizon})
 
-TerminalRun == run \in {"completed", "cancelled"}
+TerminalRun == run \in {"completed", "cancelled", "failed"}
 
 Init ==
   /\ run = "queued"
@@ -103,6 +111,7 @@ Init ==
   /\ fence = 0
   /\ dispatched = {}
   /\ pending = "none"
+  /\ accepted = 0
   /\ violations = {}
 
 Claim(c) ==
@@ -111,7 +120,7 @@ Claim(c) ==
   /\ run' = "running"
   /\ attempts' = <<Attempt(1, c, 1, CapExpiry)>>
   /\ fence' = 1
-  /\ UNCHANGED <<aliveSet, clock, dispatched, pending, violations>>
+  /\ UNCHANGED <<aliveSet, clock, dispatched, pending, accepted, violations>>
 
 Renew(c) ==
   /\ c \in aliveSet
@@ -119,17 +128,17 @@ Renew(c) ==
   /\ OpenAttempt.holder = c
   /\ OpenAttempt.expires > clock
   /\ attempts' = ReplaceAttempt([OpenAttempt EXCEPT !.expires = CapExpiry])
-  /\ UNCHANGED <<run, aliveSet, clock, fence, dispatched, pending, violations>>
+  /\ UNCHANGED <<run, aliveSet, clock, fence, dispatched, pending, accepted, violations>>
 
 Tick ==
   /\ clock < Horizon
   /\ clock' = clock + 1
-  /\ UNCHANGED <<run, attempts, aliveSet, fence, dispatched, pending, violations>>
+  /\ UNCHANGED <<run, attempts, aliveSet, fence, dispatched, pending, accepted, violations>>
 
 Crash(c) ==
   /\ c \in aliveSet
   /\ aliveSet' = aliveSet \ {c}
-  /\ UNCHANGED <<run, attempts, clock, fence, dispatched, pending, violations>>
+  /\ UNCHANGED <<run, attempts, clock, fence, dispatched, pending, accepted, violations>>
 
 Dispatch(c) ==
   /\ c \in aliveSet
@@ -141,7 +150,7 @@ Dispatch(c) ==
   /\ (~Once \/ dispatched = {})
   /\ attempts' = ReplaceAttempt([OpenAttempt EXCEPT !.dispatched = TRUE])
   /\ dispatched' = dispatched \cup {OpenAttempt.ordinal}
-  /\ UNCHANGED <<run, aliveSet, clock, fence, pending, violations>>
+  /\ UNCHANGED <<run, aliveSet, clock, fence, pending, accepted, violations>>
 
 BeginCommit(c) ==
   /\ HasOpen
@@ -150,7 +159,7 @@ BeginCommit(c) ==
   /\ pending = "none"
   /\ pending' = [ordinal |-> OpenAttempt.ordinal, holder |-> c,
                  token |-> OpenAttempt.token, observed |-> run]
-  /\ UNCHANGED <<run, attempts, aliveSet, clock, fence, dispatched, violations>>
+  /\ UNCHANGED <<run, attempts, aliveSet, clock, fence, dispatched, accepted, violations>>
 
 LandCommit(c) ==
   /\ pending # "none"
@@ -159,18 +168,20 @@ LandCommit(c) ==
        /\ a.ordinal = pending.ordinal
        /\ Running(a)
        /\ IF TerminalRunRefusal /\ run = "cancelled"
-          THEN  \* #1335: the stale success converts, never lands COMPLETED.
-                attempts' = ReplaceAttempt(
-                  [a EXCEPT !.status = "cancelled", !.cause = "requested"])
+          THEN  \* #1335: the store raises InvalidLifecycleTransition before
+                \* any Attempt write — the stale success is refused outright,
+                \* the window just closes, and the Attempt stays Running for
+                \* the recovery sweep (Recover, then Retry).
+                attempts' = attempts
                 /\ violations' = violations
           ELSE  \* run not terminal, or the pre-#1335 landing:
                 attempts' = ReplaceAttempt([a EXCEPT !.status = "completed"])
-                /\ violations' = IF run = "cancelled"
+                /\ violations' = IF TerminalRun
                                  THEN violations \cup {"S4"}
                                  ELSE violations
   /\ run' = IF TerminalRun THEN run ELSE "running"
   /\ pending' = "none"
-  /\ UNCHANGED <<aliveSet, clock, fence, dispatched>>
+  /\ UNCHANGED <<aliveSet, clock, fence, dispatched, accepted>>
 
 Accept(c) ==
   /\ ~TerminalRun
@@ -179,6 +190,7 @@ Accept(c) ==
        /\ a.status = "completed"
        /\ (~FencedAcceptance
            \/ (a.ordinal = attempts[Len(attempts)].ordinal /\ a.token = fence))
+       /\ accepted' = a.ordinal
   /\ run' = "completed"
   /\ UNCHANGED <<attempts, aliveSet, clock, fence, dispatched, pending, violations>>
 
@@ -190,7 +202,7 @@ Cancel ==
           /\ (pending = "none" \/ pending.ordinal # attempts[i].ordinal)
        THEN [attempts[i] EXCEPT !.status = "cancelled", !.cause = "requested"]
        ELSE attempts[i]]
-  /\ UNCHANGED <<aliveSet, clock, fence, dispatched, pending, violations>>
+  /\ UNCHANGED <<aliveSet, clock, fence, dispatched, pending, accepted, violations>>
 
 Recover ==
   /\ \E a \in Range(attempts) : LeaseExpired(a)
@@ -198,7 +210,7 @@ Recover ==
        IF LeaseExpired(attempts[i])
        THEN [attempts[i] EXCEPT !.status = "cancelled", !.cause = "recovered"]
        ELSE attempts[i]]
-  /\ UNCHANGED <<run, aliveSet, clock, fence, dispatched, pending, violations>>
+  /\ UNCHANGED <<run, aliveSet, clock, fence, dispatched, pending, accepted, violations>>
 
 Retry(c) ==
   /\ run = "running"
@@ -210,12 +222,29 @@ Retry(c) ==
   /\ attempts' = Append(attempts,
        Attempt(Len(attempts) + 1, c, fence + 1, CapExpiry))
   /\ fence' = fence + 1
-  /\ UNCHANGED <<run, aliveSet, clock, dispatched, pending, violations>>
+  /\ UNCHANGED <<run, aliveSet, clock, dispatched, pending, accepted, violations>>
+
+ReplayRefused ==
+  /\ Once
+  /\ run = "running"
+  /\ dispatched # {}
+  /\ HasOpen
+     \* a still-claimed in-flight Attempt is live work, never silently failed:
+     \* the open Attempt must not be the one that dispatched.
+  /\ OpenAttempt.ordinal \notin dispatched
+     \* _replay_refused: the node body is never invoked — the fresh Attempt
+     \* records the refusal as its own durable result (COMPLETED carrying the
+     \* failed NodeResult, ADR-082826-08f0's [CANCELLED, COMPLETED] rotation)
+     \* and the fold's exhausted-failure rule terminalizes the Run FAILED.
+  /\ attempts' = ReplaceAttempt([OpenAttempt EXCEPT !.status = "completed"])
+  /\ run' = "failed"
+  /\ UNCHANGED <<aliveSet, clock, fence, dispatched, pending, accepted, violations>>
 
 Next ==
   \/ Tick
   \/ Cancel
   \/ Recover
+  \/ ReplayRefused
   \/ \E c \in Consumers :
        \/ Claim(c)
        \/ Renew(c)
@@ -232,9 +261,10 @@ Next ==
 (***************************************************************************)
 
 TypeOK ==
-  /\ run \in {"queued", "running", "completed", "cancelled"}
+  /\ run \in {"queued", "running", "completed", "cancelled", "failed"}
   /\ clock \in 0..Horizon
   /\ fence \in 0..MaxAttempts
+  /\ accepted \in 0..MaxAttempts
   /\ aliveSet \subseteq Consumers
   /\ pending = "none"
      \/ pending \in [ordinal: 1..MaxAttempts, holder: Consumers,
@@ -247,7 +277,7 @@ InvEffectOnce ==
   ~Once \/ Cardinality(dispatched) <= 1
 
 InvAcceptanceIsCurrent ==
-  run # "completed" \/ attempts[Len(attempts)].status = "completed"
+  run # "completed" \/ accepted = attempts[Len(attempts)].ordinal
 
 InvNoViolations == violations = {}
 

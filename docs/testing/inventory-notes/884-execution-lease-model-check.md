@@ -25,7 +25,7 @@ All additions, no removals:
   lease-expiry predicate derives time identically to the shipped
   `lease_is_expired`, cross-checked over unexpired/lapsed/terminal/
   lease-less Attempts built from the real pydantic models); the guarded
-  protocol exhaustively clean (9,520 states, zero violations, no deadlock
+  protocol exhaustively clean (11,784 states, zero violations, no deadlock
   beyond the declared ceilings, progress without a person under the stated
   fairness); the unguarded protocol violating exactly S3+S4 with traces that
   are the shipped races (ADR-082426-e3ff's stale acceptance; #1335's cancel
@@ -35,12 +35,13 @@ All additions, no removals:
   against a realistic mutant (resume over a live owner, dropped
   ReplayRefused, acceptance over a terminal Run, a store dropping the
   Attempt transition-table guard, a clockless world for the stuck-state
-  detector); named-window behavior (landing refused after reclamation,
-  guarded conversion vs unguarded COMPLETED-under-CANCELLED, fenced
-  acceptance refusing a superseded holder); determinism of exploration;
-  CLI JSON/human output and exit codes; and `Spec` bound validation.
+  detector); named-window behavior (landing refused after reclamation, the
+  guarded terminal-Run refusal vs unguarded COMPLETED-under-CANCELLED,
+  fenced acceptance refusing a superseded holder); determinism of
+  exploration; CLI JSON/human output and exit codes; and `Spec` bound
+  validation.
 
 Everything is offline, stdlib-only and deterministic (seedless by
 construction: exhaustive BFS in a fixed action order), with the full
-both-variant exploration ~2 s, respecting the root suite's `--timeout=30`
+both-variant exploration ~2.5 s, respecting the root suite's `--timeout=30`
 producer budget.

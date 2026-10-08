@@ -473,9 +473,13 @@ class TestNamedWindows:
         assert reclaimed.attempts[0].status == checker.ATT_CANCELLED
         assert checker.act_land_commit(spec, reclaimed, 0) is None
 
-    def test_guarded_landing_converts_under_a_cancelled_run(self) -> None:
-        """#1335's shipped behavior: a stale success meeting the terminal-Run
-        fence lands as a CANCELLED Attempt, never COMPLETED under CANCELLED."""
+    def test_guarded_landing_is_refused_under_a_cancelled_run(self) -> None:
+        """#1335's shipped behavior: the landing write re-reads the Run inside
+        its transaction and the terminal-Run fence raises before any Attempt
+        row is written — the stale success is refused outright, the window
+        just closes, and the Attempt stays RUNNING for crash reclamation
+        (recover settles it CANCELLED/RECOVERED; retry re-drives the node).
+        Nothing ever lands COMPLETED under the CANCELLED Run."""
         spec = checker.Spec()
         state = self._dispatched_and_begun(spec)
         cancelled = checker.act_cancel(spec, state)
@@ -485,9 +489,20 @@ class TestNamedWindows:
         landing = checker.act_land_commit(spec, cancelled_state, 0)
         assert landing is not None
         label, landed = landing
-        assert landed.attempts[0].status == checker.ATT_CANCELLED
+        assert label == "land_commit->refused(c0)"
+        assert landed.attempts[0].status == checker.ATT_RUNNING
         assert landed.run == checker.RUN_CANCELLED
-        assert "cancelled" in label
+        assert landed.pending is None
+        # And the refusal is what makes recovery settle the Attempt: the
+        # lapsed-lease sweep after the refused landing lands CANCELLED.
+        ticked = landed
+        for _ in range(2):
+            step = checker.act_tick(spec, ticked)
+            assert step is not None
+            ticked = step[1]
+        recovered = checker.act_recover(spec, ticked)
+        assert recovered is not None
+        assert recovered[1].attempts[0].status == checker.ATT_CANCELLED
 
     def test_unguarded_landing_lands_completed_under_a_cancelled_run(self) -> None:
         """The pre-#1335 world: the same window lands COMPLETED underneath the
