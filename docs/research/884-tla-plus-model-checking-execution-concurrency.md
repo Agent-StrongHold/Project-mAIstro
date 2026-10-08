@@ -147,3 +147,45 @@ uv run python scripts/model_check_consumer_claim.py --json               # machi
 uv run python scripts/model_check_consumer_claim.py --variant unguarded  # the two counterexamples
 uv run pytest tests/test_model_check_consumer_claim.py -q                # the pinned evidence
 ```
+
+## CI status at this head (repair-round note)
+
+The one red check on this head, the `test` job's `packages/maistro-core/tests`
+step (run 37803037407, job 113399946146, 2026-10-08T15:46Z), is a transient
+race in code this change does not touch, not a regression of this record:
+
+- The failing case was
+  `graph/durable_runs/test_harness_timer_recovery.py::test_two_recovery_stores_cannot_poll_the_same_observation_twice[sqlite]`
+  — a file and a seam introduced on `develop` by the M8-A3 merge (`af799688`,
+  #2056). This change's diff is `quality.yml` (coverage-producer rooting), the
+  research record, the model artifacts, and the root-suite checker + tests.
+- The same `test` job on `develop` (job 113415019310, 2026-10-08T16:15Z, same
+  content for that suite) completed green with zero failures ~25 minutes later.
+- Local reproduction on this exact head: the step passes with CI's own
+  arguments and env (`REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest
+  packages/maistro-core/tests -q --tb=short`: 14,422 passed, 983 skipped,
+  1 xfailed), and the named case alone passed 30/30 repetitions.
+- Failure shape, from the CI assertion dump: after both concurrent recovery
+  sweeps returned, the record was still `RUNNING` with `resume_at` exactly
+  `clock + GRAPH_RECOVERY_CLAIM_TTL` (60 s) and `version=9` — the recovery
+  *claim* checkpoint
+  (`attempt_executor.resume_durable_graph`, `GRAPH_RECOVERY_CLAIM_TTL`) was
+  the last write, i.e. the winning walk stranded mid-flight instead of
+  completing. The plausible mechanism is the continuation store's version
+  fence being check-then-act across two independently composed store
+  instances (`SqliteGraphContinuationStore.update` reads, compares, then
+  writes under a per-instance lock, so two connections to one sqlite file can
+  both pass the fence), letting a late writer clobber the completion and
+  strand the run until the claim expires. The state is recoverable by design
+  (`list_due_run_ids` rescans `RUNNING` rows once `resume_at` lapses), so this
+  is a liveness delay in a test seam, not lost work — and it is M8-A3's seam
+  to harden, not this record's.
+- Everything this change actually adds was green on the same CI run and is
+  re-proven locally: the checker reproduces the record's numbers exactly
+  (guarded 11,784 states / 32,420 edges / 0 violations; unguarded 16,160 with
+  exactly S3+S4 and the BFS-minimal traces quoted above), the 27 pinned tests
+  pass, the root suite passes (4,792 passed, 128 skipped),
+  `scripts/check-suite-inventory.py`, `scripts/check-test-duplicates.py`, and
+  the vulture exact-debt-ledger scan (`packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`: 1,328 reviewed identities → 1,328 findings)
+  all pass.
