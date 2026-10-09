@@ -84,12 +84,28 @@ Probed on the pre-fix module: the node case raised `KeyError: 'node_id'`,
   `_require_record` and the asset lookup already use — and the test pins
   both side-by-side install orders.
 
-## Reviewed and deliberately deferred (recorded for the #968 lane)
+## Recorded as deferred at the time — repaired in the CI-repair round
 
-Two review findings need decisions above this slice's contract, so they are
-recorded rather than half-fixed here:
+Two review findings were recorded as deferred when this note was written;
+both are **repaired in this branch** as of the CI-repair round — see
+`966-pack-provenance-snapshot-immutability.md` for the implementation,
+the tests, and the mutation evidence:
 
-- Rubric provenance carries only `pack_id` (publisher/version/asset/
+- Rubric provenance now carries the exact source-snapshot identity
+  (publisher, pack version, asset id/version, manifest digest) through
+  five optional all-or-nothing `RubricProvenance` fields — a canonical
+  model change, but an additive one that leaves every existing
+  construction valid, and it is #966's own acceptance ("retain
+  publisher/version provenance"), not #968's.
+- Manifest snapshots are now anchored to their bytes: persona payload
+  trees are frozen recursively, and `PackManifest.asset` resolves every
+  use against a pristine re-parse of `raw`, closing the
+  `RubricDimension` mutability that cannot be frozen here (canonical
+  model) by construction rather than by a #968 store-boundary decision.
+
+The original deferral rationale, kept for the record:
+
+- Rubric provenance carried only `pack_id` (publisher/version/asset/
   digest ride on the GraphTemplate metadata and Persona fields, because
   those canonical models have extension metadata slots). Enriching it means
   extending the canonical `RubricProvenance` model — this slice shipped

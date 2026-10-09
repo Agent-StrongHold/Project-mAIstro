@@ -30,10 +30,18 @@ The invariants this module enforces (each pinned by
   ``(asset_id, version)``; every instantiated object carries the pack's
   publisher/version provenance (``GraphTemplate`` metadata, ``Persona``
   ``source_template_*``/``extension_metadata``, Rubric
-  ``ProvenanceOrigin.PACK`` + ``pack_id``). For Rubrics the canonical model
-  has no free provenance slot beyond ``pack_id``; the exact asset version is
-  pinned by the registry's immutable manifest snapshot (digest-addressed)
-  plus the revision immutability the Rubric store enforces.
+  ``ProvenanceOrigin.PACK`` + the full snapshot identity on
+  ``RubricProvenance`` — publisher, pack version, asset id/version, and
+  the manifest digest — so rubrics instantiated from different versions
+  of the same pack are provenance-distinguishable).
+- **The manifest snapshot is anchored to its bytes.** The snapshot's outer
+  dataclasses and tuples are frozen and persona payload trees are frozen
+  recursively; the one part of the tree that cannot be frozen here (the
+  canonical ``RubricDimension`` objects inside a rubric asset — a canonical
+  model, not this contract's to re-freeze) is closed by construction:
+  ``PackManifest.asset`` resolves every use against a pristine re-parse of
+  ``raw``, so a caller who mutates a stored asset cannot make new
+  instantiations diverge from the bytes ``source_sha256`` names.
 - **Dependencies resolve through the M9 compatibility machinery.** A pack
   declares ``api_version`` plus dependencies on other extensions (packs are
   extensions that ship assets; capability providers are extensions), and
@@ -66,6 +74,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from pydantic import ValidationError
@@ -290,7 +299,9 @@ class PackPersonaDefinition:
     arguments built from these string keys, so the scanner's name-level
     analysis keeps attributing ``purpose``/``style_guidance`` usages to the
     canonical Persona model that owns them (their banked debt lives there),
-    not to this pass-through payload.
+    not to this pass-through payload. The tree is frozen recursively
+    (``MappingProxyType`` over tuples): a caller holding the manifest
+    snapshot cannot mutate a stored payload in place.
     """
 
     name: str
@@ -408,6 +419,37 @@ def _validate_entry_node_member(entry_node: str | None, node_ids: set[str]) -> N
         raise _reject(f"graph entry_node {entry_node!r} is not a node of this graph")
 
 
+def _freeze(value: Any) -> Any:
+    """Recursively freeze a parsed JSON tree into immutable containers.
+
+    The manifest snapshot hands its parsed assets to callers; plain dicts
+    and lists inside a persona payload would let a caller mutate a stored
+    snapshot in place. Frozen mappings over tuples close every container
+    the parser builds — the remaining mutable surface (canonical
+    ``RubricDimension`` objects) is closed by :meth:`PackManifest.asset`
+    resolving against a pristine re-parse of ``raw``.
+    """
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
+def _thaw(value: Any) -> Any:
+    """The inverse of :func:`_freeze`, as fresh plain containers.
+
+    Canonical models validate ``dict``/``list`` fields; every thaw is a
+    fresh copy, so an instantiated object never aliases the frozen
+    snapshot tree it came from.
+    """
+    if isinstance(value, Mapping):
+        return {key: _thaw(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw(item) for item in value]
+    return value
+
+
 def _parse_persona_payload(payload: object) -> PackPersonaDefinition:
     if not isinstance(payload, dict):
         raise _reject("persona payload must be an object")
@@ -428,7 +470,7 @@ def _parse_persona_payload(payload: object) -> PackPersonaDefinition:
     name = _require_str(payload, "name")
     _validate_persona_surfaces(payload)
     _validate_persona_objects(payload)
-    return PackPersonaDefinition(name=name, payload=dict(payload))
+    return PackPersonaDefinition(name=name, payload=_freeze(payload))
 
 
 def _validate_persona_surfaces(payload: dict[str, Any]) -> None:
@@ -636,7 +678,10 @@ class PackManifest:
     ``raw`` is the exact bytes the operator's decision is about and
     ``source_sha256`` anchors them; a pack identity is
     ``(pack_id, version, source_sha256)`` — a semantic version alone never
-    names a pack (the M9-B1 rule, inherited unchanged).
+    names a pack (the M9-B1 rule, inherited unchanged). The frozen
+    dataclasses and tuples keep the outer tree immutable, and every *use*
+    of an asset (``asset``/instantiation) is anchored to ``raw`` itself —
+    see :meth:`asset`.
     """
 
     manifest_version: int
@@ -666,8 +711,18 @@ class PackManifest:
 
         Without ``version`` the highest declared version answers — the same
         version-addressing the registry's active-version resolution uses.
+
+        Resolution runs against a pristine re-parse of ``raw``, never the
+        stored tree: the outer dataclasses/tuples are frozen and persona
+        payload trees are frozen recursively, but the canonical
+        ``RubricDimension`` objects inside a rubric asset are mutable (a
+        canonical model this contract must not re-freeze). Anchoring every
+        use to the immutable bytes means a caller who mutates a stored
+        asset cannot make new instantiations diverge from what
+        ``source_sha256`` names — the digest stays truthful provenance.
         """
-        candidates = [asset for asset in self.assets if asset.asset_id == asset_id]
+        pristine = inspect_pack_manifest(self.raw)
+        candidates = [asset for asset in pristine.assets if asset.asset_id == asset_id]
         if version is not None:
             candidates = [asset for asset in candidates if asset.version == version]
         if not candidates:
@@ -778,8 +833,11 @@ def _persona_constructor_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
     The payload's ``behavior`` key is the pack-facing spelling of the
     canonical model's ``behavior_defaults`` field; everything else maps
     one-to-one. String-keyed by construction (see ``PackPersonaDefinition``).
+    The frozen snapshot tree is thawed into fresh plain containers — the
+    canonical model validates ``dict``/``list`` fields, and the instantiated
+    Persona never aliases the snapshot.
     """
-    fields = dict(payload)
+    fields: dict[str, Any] = _thaw(payload)
     fields["behavior_defaults"] = fields.pop("behavior", {})
     return fields
 
@@ -1067,8 +1125,11 @@ def instantiate_rubric_asset(
 
     Identity is canonical: ``rubric_id`` is minted (or caller-supplied) and
     the Goal/Workspace/Project scopes are the caller's canonical ones. The
-    pack origin rides in ``provenance`` (``ProvenanceOrigin.PACK`` plus the
-    pack id) — the pack supplied defaults; it does not own the Rubric.
+    pack origin rides in ``provenance`` — ``ProvenanceOrigin.PACK`` plus the
+    exact source-snapshot identity (pack id/publisher/version, asset
+    id/version, manifest digest), so two revisions instantiated from
+    different versions of the same pack stay provenance-distinguishable.
+    The pack supplied defaults; it does not own the Rubric.
     """
     for field_name, value in (
         ("goal_id", goal_id),
@@ -1084,6 +1145,7 @@ def instantiate_rubric_asset(
     definition = asset.rubric
 
     rubric = _probe_rubric(definition, pack_id=manifest.pack_id)
+    pack_provenance = manifest.provenance()
     instantiated = rubric.model_copy(
         update={
             "rubric_id": _canonical_id(rubric_id, "rubric_id"),
@@ -1095,7 +1157,12 @@ def instantiate_rubric_asset(
             "provenance": RubricProvenance(
                 authored_by=authored_by,
                 origin=ProvenanceOrigin.PACK,
-                pack_id=manifest.pack_id,
+                pack_id=pack_provenance.pack_id,
+                publisher=pack_provenance.publisher,
+                pack_version=pack_provenance.version,
+                asset_id=asset.asset_id,
+                asset_version=asset.version,
+                manifest_sha256=pack_provenance.manifest_sha256,
             ),
         }
     )

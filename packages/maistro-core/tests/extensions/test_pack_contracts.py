@@ -428,6 +428,63 @@ class TestVersionAddressableProvenance:
 
         assert rubric.provenance.origin is ProvenanceOrigin.PACK
         assert rubric.provenance.pack_id == "acme.film_critique"
+        # The rubric records the same exact-source provenance the graph and
+        # persona metadata carry: rubrics instantiated from different
+        # versions of one pack are provenance-distinguishable (review P1).
+        assert rubric.provenance.publisher == "acme"
+        assert rubric.provenance.pack_version == "1.0.0"
+        assert rubric.provenance.asset_id == "scene"
+        assert rubric.provenance.asset_version == "1.0.0"
+        assert rubric.provenance.manifest_sha256 == pack_meta["pack.manifest_sha256"]
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_rubric_provenance_distinguishes_pack_versions(self) -> None:
+        """Two installed versions of one pack stamp different provenance.
+
+        With only ``pack_id`` on the rubric, v1.0.0 and v1.1.0 of the same
+        pack produced provenance-identical revisions — the persisted object
+        could not say which registry snapshot supplied it.
+        """
+        registry = InstallablePackRegistry(platform_api_version="1.0.0")
+        registry.install(
+            _pack_bytes(pack_id="acme.film_critique", publisher="acme", version="1.0.0")
+        )
+        registry.install(
+            _pack_bytes(
+                pack_id="acme.film_critique",
+                publisher="acme",
+                version="1.1.0",
+                assets=[_rubric_asset("scene", "1.0.1")],
+            )
+        )
+        scope = {
+            "goal_id": GOAL_ID,
+            "goal_revision": GOAL_REVISION,
+            "workspace_id": WORKSPACE_ID,
+            "project_id": PROJECT_ID,
+            "authored_by": "principal-1",
+        }
+        from_v1 = registry.instantiate_rubric(
+            "acme.film_critique", "scene", version="1.0.0", **scope
+        )
+        from_v2 = registry.instantiate_rubric(
+            "acme.film_critique", "scene", version="1.1.0", **scope
+        )
+        assert from_v1.provenance.pack_id == from_v2.provenance.pack_id
+        assert from_v1.provenance.pack_version == "1.0.0"
+        assert from_v2.provenance.pack_version == "1.1.0"
+        assert from_v1.provenance.asset_version == "1.0.0"
+        assert from_v2.provenance.asset_version == "1.0.1"
+        assert (
+            from_v1.provenance.manifest_sha256
+            == registry.record("acme.film_critique", "1.0.0").manifest.source_sha256
+        )
+        assert (
+            from_v2.provenance.manifest_sha256
+            == registry.record("acme.film_critique", "1.1.0").manifest.source_sha256
+        )
+        assert from_v1.provenance != from_v2.provenance
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
@@ -453,6 +510,84 @@ class TestVersionAddressableProvenance:
         second = registry.install(ACME_PACK)
         assert first is second
         assert len(registry.records()) == 1
+
+
+# --- The snapshot is anchored to its bytes ------------------------------------
+
+
+class TestManifestSnapshotIntegrity:
+    """Review P2: a stored snapshot cannot be mutated into lying about raw.
+
+    The snapshot's outer dataclasses/tuples are frozen and persona payload
+    trees are frozen recursively; the one canonical-model object in the tree
+    (``RubricDimension``) cannot be frozen here, so every *use* is anchored
+    to a pristine re-parse of ``raw`` instead of the stored tree.
+    """
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_persona_payload_trees_are_frozen(self) -> None:
+        manifest = _active_registry().record("acme.film_critique").manifest
+        stored = next(a for a in manifest.assets if a.asset_id == "critic")
+        with pytest.raises(TypeError):
+            stored.persona.payload["defaults"] = {"tone": "warm"}
+        with pytest.raises(TypeError):
+            stored.persona.payload["defaults"]["tone"] = "warm"
+        with pytest.raises(AttributeError):
+            stored.persona.payload["surfaces"].append("cli")  # type: ignore[union-attr]
+        # Frozen trees still instantiate: thawing feeds the canonical model.
+        persona = instantiate_persona_asset(manifest, "critic", workspace_id=WORKSPACE_ID)
+        assert persona.defaults == {"tone": "dry"}
+        assert persona.behavior_defaults == {"ask_before_override": True}
+        assert persona.surfaces == {"ui"}
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_mutating_a_stored_dimension_cannot_serve_wrong_bytes(self) -> None:
+        manifest = _active_registry().record("acme.film_critique").manifest
+        stored = next(a for a in manifest.assets if a.asset_id == "scene")
+        # The canonical RubricDimension inside the stored tree really is
+        # mutable — this is the hole the raw-anchored resolution closes.
+        stored.rubric.dimensions[0].weight = 999.0
+        assert stored.rubric.dimensions[0].weight == 999.0
+        # Resolution ignores the stored tree: the pristine bytes answer.
+        assert manifest.asset("scene").rubric.dimensions[0].weight == 0.6
+        rubric = instantiate_rubric_asset(
+            manifest,
+            "scene",
+            goal_id=GOAL_ID,
+            goal_revision=GOAL_REVISION,
+            workspace_id=WORKSPACE_ID,
+            project_id=PROJECT_ID,
+            authored_by="principal-1",
+        )
+        assert rubric.dimensions[0].weight == 0.6
+        # The digest provenance still names the bytes actually used.
+        assert rubric.provenance.manifest_sha256 == manifest.source_sha256
+        assert rubric.provenance.manifest_sha256 == hashlib.sha256(manifest.raw).hexdigest()
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_instantiated_objects_never_alias_the_snapshot_tree(self) -> None:
+        manifest = _active_registry().record("acme.film_critique").manifest
+        persona = instantiate_persona_asset(manifest, "critic", workspace_id=WORKSPACE_ID)
+        rubric = instantiate_rubric_asset(
+            manifest,
+            "scene",
+            goal_id=GOAL_ID,
+            goal_revision=GOAL_REVISION,
+            workspace_id=WORKSPACE_ID,
+            project_id=PROJECT_ID,
+            authored_by="principal-1",
+        )
+        # Mutating the returned canonical objects cannot reach the snapshot.
+        persona.defaults["tone"] = "warm"
+        rubric.dimensions[0].weight = 999.0
+        stored_persona = next(a for a in manifest.assets if a.asset_id == "critic")
+        stored_rubric = next(a for a in manifest.assets if a.asset_id == "scene")
+        assert stored_persona.persona.payload["defaults"]["tone"] == "dry"
+        assert manifest.asset("scene").rubric.dimensions[0].weight == 0.6
+        assert stored_rubric.rubric is not None and stored_rubric.rubric.gate_pass_threshold == 70.0
 
 
 # --- AC-3: pack-local ids never become canonical ids -------------------------
