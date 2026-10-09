@@ -76,6 +76,7 @@ from maistro.extensions import (
     InvalidTransition,
     LoadedExtension,
     UnknownInstall,
+    VersionPinned,
     resolve_lock,
 )
 from maistro.extensions.resolution import (
@@ -1049,10 +1050,12 @@ class LifecycleProof:
         superseded_history = await self.store.transitions_for(first.install_id)
         stage.check(
             "superseded-version-still-queryable",
-            len(superseded_history) == len(first_history)
-            and superseded_history[0].install_id == first.install_id,
+            len(superseded_history) == len(first_history) + 1
+            and superseded_history[0].install_id == first.install_id
+            and superseded_history[-1].to_state is ExtensionState.SUPERSEDED,
             "the superseded 1.0.0 record keeps its full audited transition "
-            "trail — deactivation is not deletion",
+            "trail, closed by an explicit SUPERSEDED row naming the actor — "
+            "deactivation is not deletion",
         )
 
         broader = await self._inspect(NOTARY_2_0_0)
@@ -1156,6 +1159,195 @@ class LifecycleProof:
             "install_id": broader_active.install_id,
             "version": broader_active.version,
             "granted": list(broader_active.granted_permissions),
+        }
+        return stage
+
+    async def stage_post_install_lifecycle(self) -> Stage:
+        """Post-install lifecycle (#954): disable, pin, rollback, remove.
+
+        Every operation is an explicit, audited operator decision on the same
+        governed records — none re-runs the loader, none widens a grant, and
+        none ever deletes evidence.
+        """
+        stage = self._stage("post-install-lifecycle")
+        active = await self.service.active(self.scope, "acme.notary")
+        assert active is not None
+        served_before = await self.store.installed_versions(self.scope)
+        # Snapshot the trail of every record this stage will transition — the
+        # active 2.0.0 record, the rollback's restore target (1.1.0) and the
+        # removal target (1.0.0) — so the closing audit check covers every
+        # touched install id, not just the one active at stage start.
+        restore_target = await self.store.latest_record(self.scope, "acme.notary", "1.1.0")
+        oldest = await self.store.latest_record(self.scope, "acme.notary", "1.0.0")
+        assert restore_target is not None and oldest is not None
+        trail_len_before = {
+            active.install_id: len(await self.store.transitions_for(active.install_id)),
+            restore_target.install_id: len(
+                await self.store.transitions_for(restore_target.install_id)
+            ),
+            oldest.install_id: len(await self.store.transitions_for(oldest.install_id)),
+        }
+
+        disabled = await self.service.disable(
+            active.install_id,
+            actor=OPERATOR,
+            scope=self.scope,
+            reason="suspending the notary for incident triage",
+        )
+        pointer_after_disable = await self.service.active(self.scope, "acme.notary")
+        served_after_disable = await self.store.installed_versions(self.scope)
+        stage.check(
+            "disable-stops-serving-preserves-everything",
+            disabled.state is ExtensionState.DISABLED
+            and pointer_after_disable is None
+            and "acme.notary" in served_before
+            and "acme.notary" not in served_after_disable
+            and served_after_disable.get("acme.greeter") == served_before.get("acme.greeter")
+            and disabled.granted_permissions == active.granted_permissions,
+            "disabling drops the active pointer so the version stops being "
+            "served — this extension only — while the frozen grant and the "
+            "audit trail stay intact and other extensions keep running",
+        )
+
+        reenabled = await self.service.enable(
+            disabled.install_id,
+            actor=OPERATOR,
+            scope=self.scope,
+            reason="triage clean; restoring service",
+        )
+        stage.check(
+            "re-enable-reuses-the-frozen-activation",
+            reenabled.state is ExtensionState.ACTIVE
+            and reenabled.install_attempts == active.install_attempts
+            and reenabled.granted_permissions == active.granted_permissions,
+            "re-enabling re-serves the already-activated artifact under its "
+            "frozen grant — no loader run, no authority change",
+        )
+
+        pinned = await self.service.set_pinned(
+            reenabled.install_id,
+            actor=OPERATOR,
+            scope=self.scope,
+            pinned=True,
+            reason="holding 2.0.0 through the change freeze",
+        )
+        pin_rows = [
+            row
+            for row in await self.store.transitions_for(pinned.install_id)
+            if row.reason.startswith("pin:")
+        ]
+        stage.check(
+            "pin-is-an-audited-same-state-decision",
+            pinned.pinned
+            and pinned.state is ExtensionState.ACTIVE
+            and bool(pin_rows)
+            and pin_rows[-1].actor == OPERATOR,
+            "pinning is a flag held by an explicit, audited same-state "
+            "decision — the trail carries who and why without reading as a "
+            "state change",
+        )
+
+        fenced = False
+        try:
+            await self.service.rollback(
+                actor=OPERATOR,
+                scope=self.scope,
+                extension_id="acme.notary",
+                to_version="1.1.0",
+                reason="must be fenced while pinned",
+            )
+        except VersionPinned:
+            fenced = True
+        still_active = await self.service.active(self.scope, "acme.notary")
+        stage.check(
+            "pinned-version-fences-rollback",
+            fenced
+            and still_active is not None
+            and still_active.version == "2.0.0"
+            and still_active.pinned,
+            "while the active version is pinned, rolling back to another "
+            "version is fenced until an explicit unpin decision",
+        )
+
+        await self.service.set_pinned(
+            pinned.install_id,
+            actor=OPERATOR,
+            scope=self.scope,
+            pinned=False,
+            reason="change freeze lifted",
+        )
+        restored = await self.service.rollback(
+            actor=OPERATOR,
+            scope=self.scope,
+            extension_id="acme.notary",
+            to_version="1.1.0",
+            reason="2.0.0 misbehaves; returning to the last good notary",
+        )
+        retired = await self.store.latest_record(self.scope, "acme.notary", "2.0.0")
+        stage.check(
+            "rollback-restores-a-prior-authorized-version",
+            restored.version == "1.1.0"
+            and restored.state is ExtensionState.ACTIVE
+            and retired is not None
+            and retired.state is ExtensionState.DISABLED
+            and STORAGE_CAPABILITY not in restored.granted_permissions,
+            "rollback moves the active version back to a previously "
+            "authorized version under its frozen grant — the broader 2.0.0 "
+            "authority leaves the served set without executing anything",
+        )
+
+        removed = await self.service.remove(
+            oldest.install_id,
+            actor=OPERATOR,
+            scope=self.scope,
+            reason="1.0.0 retired from the catalog",
+        )
+        still_queryable = await self.service.get(oldest.install_id, scope=self.scope)
+        rollback_to_removed_refused = False
+        try:
+            await self.service.rollback(
+                actor=OPERATOR,
+                scope=self.scope,
+                extension_id="acme.notary",
+                to_version="1.0.0",
+                reason="must be refused: removed is terminal",
+            )
+        except InvalidTransition:
+            rollback_to_removed_refused = True
+        stage.check(
+            "removal-is-terminal-but-history-outlives-it",
+            removed.state is ExtensionState.REMOVED
+            and still_queryable.state is ExtensionState.REMOVED
+            and rollback_to_removed_refused,
+            "REMOVED never reactivates — a rollback to it is refused — yet "
+            "the record, its grant and its trail stay queryable",
+        )
+
+        new_trails = {
+            install_id: (await self.store.transitions_for(install_id))[before:]
+            for install_id, before in trail_len_before.items()
+        }
+        new_rows = [row for rows in new_trails.values() for row in rows]
+        stage.check(
+            "every-lifecycle-step-is-audited",
+            all(bool(rows) for rows in new_trails.values())
+            and all(row.actor == OPERATOR and row.reason.strip() for row in new_rows)
+            and all(
+                row.from_state != row.to_state or row.reason.startswith(("pin:", "unpin:"))
+                for row in new_rows
+            ),
+            "every lifecycle decision lands on the audit trail of the record "
+            "it touched — the active, the rollback-restored and the removed "
+            "install alike — with an accountable actor and a recorded "
+            "reason; same-state pin rows are the only rows that do not "
+            "change state",
+        )
+        stage.evidence["lifecycle"] = {
+            "disabled_install_id": disabled.install_id,
+            "rollback_restored": {"version": restored.version, "install_id": restored.install_id},
+            "removed_install_id": removed.install_id,
+            "audited_rows": len(new_rows),
+            "audited_install_ids": len(new_trails),
         }
         return stage
 
@@ -1307,11 +1499,14 @@ class LifecycleProof:
         stage.note = (
             "Activation-state restart durability (the B2 activation store) is "
             "in-memory by design at this base commit; the durable registry "
-            "layer (B1 + SQLite) is what restart proves here. Disable/remove/"
-            "rollback operations are #954's surface and are not reachable at "
-            "this base; the properties they must preserve — append-only "
-            "records, denial leaves the prior version active, history "
-            "queryable after deactivation — are pinned by the stages above."
+            "layer (B1 + SQLite) is what restart proves here. The #954 "
+            "post-install operations — disable, pin, rollback, remove — are "
+            "reachable at the service layer and pinned by the "
+            "post-install-lifecycle stage above, but their durability beyond "
+            "the process lifetime is not provable at this base; the "
+            "properties they must preserve — append-only records, denial "
+            "leaves the prior version active, history queryable after "
+            "deactivation — are pinned by the stages above."
         )
         return stage
 
@@ -1355,6 +1550,7 @@ class LifecycleProof:
         await self.stage_invoke_and_observe(notary_active)
         await self.stage_denials()
         await self.stage_update_and_fence()
+        await self.stage_post_install_lifecycle()
         await self.stage_catalog_tamper_and_outage()
         await self.stage_durable_restart()
         self.stage_canonical_truth_untouched()
