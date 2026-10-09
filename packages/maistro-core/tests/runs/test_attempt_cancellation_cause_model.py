@@ -249,6 +249,21 @@ class TestTheSerializerOmitsOnlyTheUnknownCause:
         """
         assert "cancellation_cause" in Attempt.model_json_schema()["properties"]
 
+    def test_the_serialization_mode_schema_keeps_every_declared_field(self) -> None:
+        """A wrap serializer's return annotation drives the serialization-mode schema.
+
+        Pydantic derives a model's serialization-mode JSON schema from the
+        wrap serializer's return annotation when one exists: annotating
+        ``-> dict[str, Any]`` collapses Attempt to an opaque
+        ``{"type": "object", "additionalProperties": true}`` and hides every
+        field from serialization-schema consumers, even though validation
+        mode still lists them. The serializer must therefore stay free of a
+        return annotation (verified against pydantic 2.13.5).
+        """
+        serialization = Attempt.model_json_schema(mode="serialization")
+
+        assert set(serialization["properties"]) == LEGACY_PAYLOAD_FIELDS | {"cancellation_cause"}
+
     def test_the_serializer_applies_when_the_attempt_is_nested(self) -> None:
         class _ExecutionRecord(BaseModel):
             attempts: tuple[Attempt, ...]
