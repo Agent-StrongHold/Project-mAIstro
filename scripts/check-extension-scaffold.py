@@ -510,6 +510,11 @@ def load_policy(path: Path) -> tuple[str, ...]:
         raise FixtureError(f"policy file not found: {path}") from exc
     except json.JSONDecodeError as exc:
         raise FixtureError(f"policy file is not valid JSON: {path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        # A policy whose root is a list (or any non-object) would otherwise
+        # escape as AttributeError from the lookup below; every malformed
+        # policy is this function's FixtureError, not a traceback.
+        raise FixtureError("policy file must be a JSON object")
     roots = raw.get("product_private_namespaces")
     if not isinstance(roots, list) or not all(isinstance(r, str) for r in roots):
         raise FixtureError("policy product_private_namespaces must be a list of strings")

@@ -32,6 +32,7 @@ import json
 import struct
 import subprocess
 import sys
+import types
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
@@ -41,8 +42,11 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from maistro_ext_harness.backends import Backend, BackendRegistry
 from maistro_ext_harness.certification import (
+    CERTIFICATION_SCHEMA,
     CertificationProfile,
+    CertificationReport,
     CertificationRequest,
+    _verdicts_from_checks,
     certify,
     verify_certification,
 )
@@ -1458,3 +1462,301 @@ class TestCli:
         assert proc.returncode == 2
         assert "cannot read --signing-key-file" in proc.stderr
         assert "Traceback" not in proc.stderr
+
+
+# ------------------------------------------------------------ report rendering
+#
+# `human_summary` is the CI-log face of the certification: every branch of it
+# must name the state it is in, including the unhappy ones a green run never
+# produces (a missing artifact, a failed/skipped/not-applicable check, a
+# conformance stage that never executed).
+
+
+def _summary_report(**overrides: object) -> CertificationReport:
+    """A minimal report for summary rendering; tests mutate what they pin."""
+    fields: dict[str, object] = {
+        "schema": CERTIFICATION_SCHEMA,
+        "profile": CertificationProfile.STANDARD.value,
+        "harness_version": "test",
+        "contract_version": "1.0.0",
+        "supported_contract_majors": (1,),
+        "sdk_package_version": None,
+        "environment": {},
+        "subject": {"id": "acme.widget", "version": "1.0.0", "family": "tool"},
+        "artifact": {"filename": "acme-widget-1.0.0-py3-none-any.whl", "sha256": "ab" * 32},
+    }
+    fields.update(overrides)
+    return CertificationReport(**fields)  # type: ignore[arg-type]
+
+
+class TestHumanSummary:
+    def test_an_unsigned_certified_report_names_its_state(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        report = _summary_report(certified=True, claims=["a check: did the thing"])
+        summary = report.human_summary()
+        assert "CERTIFIED (profile standard)" in summary
+        assert "acme.widget 1.0.0 (tool, contract None)" in summary
+        assert "acme-widget-1.0.0-py3-none-any.whl sha256:abababababababab" in summary
+        assert "unsigned (no key supplied)" in summary
+        assert "1 proven" in summary
+
+    def test_a_signed_declined_report_renders_every_failure_face(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from maistro_ext_harness.checks import CheckRecord
+
+        report = _summary_report(
+            certified=False,
+            decline_reasons=["check x/y failed: no"],
+            not_proven=["platform certification: " + "x"],
+            claims=[],
+            checks=[
+                CheckRecord(
+                    check_id="x/y",
+                    description="a check",
+                    status=CheckStatus.FAILED,
+                    detail="no",
+                ),
+                CheckRecord(
+                    check_id="z/w",
+                    description="a skipped check",
+                    status=CheckStatus.SKIPPED,
+                    detail="backend absent",
+                ),
+                CheckRecord(
+                    check_id="n/a",
+                    description="not applicable here",
+                    status=CheckStatus.NOT_APPLICABLE,
+                    detail="family has no such case",
+                ),
+            ],
+            conformance_executed=False,
+            conformance_reason="manifest did not validate",
+            signature={"signed": True, "public_key": "cd" * 32},
+        )
+        summary = report.human_summary()
+        assert "DECLINED" in summary
+        assert "ed25519, public key cdcdcdcdcdcdcdcd" in summary
+        assert "DECLINE: check x/y failed: no" in summary
+        assert "FAIL x/y: no" in summary
+        assert "SKIPPED z/w: backend absent" in summary
+        assert "NOT-APPLICABLE n/a: family has no such case" in summary
+        assert "conformance did NOT execute: manifest did not validate" in summary
+
+    def test_a_report_without_an_artifact_says_so(self) -> None:
+        report = _summary_report(artifact=None, certified=False, decline_reasons=["no artifact"])
+        summary = report.human_summary()
+        assert "artifact:  n/a" in summary
+
+
+class TestVerdictsFromChecks:
+    """`_verdicts_from_checks` is the honesty hinge: each status x profile
+    combination must land in exactly one of claim / decline / not-proven."""
+
+    @staticmethod
+    def _pipeline(checks: list[object], profile: CertificationProfile) -> object:
+        from maistro_ext_harness.certification import _Pipeline
+
+        return _Pipeline(
+            request=types.SimpleNamespace(  # type: ignore[arg-type]
+                profile=profile, subject=None, artifact=None
+            ),
+            checks=checks,
+        )
+
+    @pytest.mark.parametrize(
+        ("status", "profile", "required"),
+        [
+            (CheckStatus.PASSED, CertificationProfile.STANDARD, False),
+            (CheckStatus.FAILED, CertificationProfile.STANDARD, False),
+            (CheckStatus.FAILED, CertificationProfile.STRICT, False),
+            (CheckStatus.SKIPPED, CertificationProfile.STANDARD, False),
+            (CheckStatus.SKIPPED, CertificationProfile.STANDARD, True),
+            (CheckStatus.SKIPPED, CertificationProfile.STRICT, False),
+            (CheckStatus.NOT_APPLICABLE, CertificationProfile.STANDARD, False),
+            (CheckStatus.NOT_APPLICABLE, CertificationProfile.STRICT, False),
+        ],
+        ids=[
+            "passed-claims",
+            "failed-declines",
+            "failed-strict-declines",
+            "skip-lenient-not-proven",
+            "skip-required-declines",
+            "skip-strict-declines",
+            "na-lenient-not-proven",
+            "na-strict-declines",
+        ],
+    )
+    def test_each_status_lands_in_its_bucket(
+        self,
+        status: CheckStatus,
+        profile: CertificationProfile,
+        required: bool,
+    ) -> None:
+        from maistro_ext_harness.certification import _Pipeline
+        from maistro_ext_harness.checks import CheckRecord
+
+        record = CheckRecord(
+            check_id="bucket/test",
+            description="a bucket check",
+            status=status,
+            detail="because",
+            required=required,
+        )
+        pipeline = self._pipeline([record], profile)
+        _verdicts_from_checks(pipeline)  # type: ignore[arg-type]
+        assert pipeline is not None and isinstance(pipeline, _Pipeline)
+        if status is CheckStatus.PASSED:
+            assert pipeline.claims and not pipeline.decline_reasons
+        elif status is CheckStatus.FAILED:
+            assert pipeline.decline_reasons and "failed" in pipeline.decline_reasons[0]
+        elif status is CheckStatus.SKIPPED and (profile.declines_skips or required):
+            assert pipeline.decline_reasons and "did not execute" in pipeline.decline_reasons[0]
+        elif status is CheckStatus.SKIPPED:
+            assert pipeline.not_proven and not pipeline.decline_reasons
+        elif profile.declines_skips:
+            assert pipeline.decline_reasons and "not applicable" in pipeline.decline_reasons[0]
+        else:
+            assert pipeline.not_proven and not pipeline.decline_reasons
+
+
+class TestSigningStageHonesty:
+    def test_certifying_without_a_key_says_the_report_is_unsigned(
+        self, make_extension: Callable[..., Path], tmp_path: Path
+    ) -> None:
+        root, wheel = _certifiable(make_extension, tmp_path)
+        report = certify(_request(root, wheel))
+        assert report.certified
+        assert report.signature == {
+            "signed": False,
+            "reason": "no signing key supplied; the report is unsigned",
+        }
+
+    def test_signing_with_an_unreadable_artifact_leaves_the_report_unsigned(
+        self, make_extension: Callable[..., Path], tmp_path: Path
+    ) -> None:
+        """The digests the signature would cover never came into existence
+        (the artifact did not validate), so nothing is signed — and the
+        reason says that, rather than implying a signature exists."""
+        root, _wheel = _certifiable(make_extension, tmp_path)
+        not_a_zip = tmp_path / "acme-widget-1.0.0-py3-none-any.whl"
+        not_a_zip.write_bytes(b"this is not a zip file")
+        report = certify(_request(root, not_a_zip, signing_key_hex="11" * 32))
+        assert not report.certified
+        assert report.signature["signed"] is False
+        assert "digests are unavailable" in report.signature["reason"]
+
+
+class TestVerifierEarlyRejections:
+    """Malformed reports are verification failures with named reasons —
+    the arms a well-formed signed report never reaches."""
+
+    def _report_file(self, tmp_path: Path, document: object) -> Path:
+        path = tmp_path / "report.json"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        return path
+
+    def test_a_report_that_is_not_an_object_fails(
+        self, make_extension: Callable[..., Path], tmp_path: Path
+    ) -> None:
+        _root, wheel = _certifiable(make_extension, tmp_path)
+        result = verify_certification(self._report_file(tmp_path, ["not", "an", "object"]), wheel)
+        assert not result.ok
+        assert "report is not a JSON object" in result.failures
+
+    def test_a_report_without_an_artifact_digest_binds_nothing(
+        self, make_extension: Callable[..., Path], tmp_path: Path
+    ) -> None:
+        _root, wheel = _certifiable(make_extension, tmp_path)
+        result = verify_certification(
+            self._report_file(tmp_path, {"certification_schema": CERTIFICATION_SCHEMA}), wheel
+        )
+        assert not result.ok
+        assert "records no artifact digest" in result.failures[0]
+
+    def test_an_artifact_that_is_no_longer_a_zip_is_named(
+        self, make_extension: Callable[..., Path], tmp_path: Path
+    ) -> None:
+        root, wheel = _certifiable(make_extension, tmp_path)
+        report = certify(_request(root, wheel))
+        out = tmp_path / "report.json"
+        report.write_json(out)
+        garbage = tmp_path / "garbage.whl"
+        garbage.write_bytes(b"definitely not a zip")
+        result = verify_certification(out, garbage)
+        assert not result.ok
+        assert any("no longer ships the discovery manifest" in f for f in result.failures), (
+            result.failures
+        )
+
+    def test_a_vanished_artifact_is_named_as_unreadable(
+        self, make_extension: Callable[..., Path], tmp_path: Path
+    ) -> None:
+        root, wheel = _certifiable(make_extension, tmp_path)
+        report = certify(_request(root, wheel))
+        out = tmp_path / "report.json"
+        report.write_json(out)
+        result = verify_certification(out, tmp_path / "gone.whl")
+        assert not result.ok
+        assert any("no longer a zip archive" in f for f in result.failures), result.failures
+
+    def test_a_zip_without_the_manifest_member_is_named(
+        self, make_extension: Callable[..., Path], tmp_path: Path
+    ) -> None:
+        root, wheel = _certifiable(make_extension, tmp_path)
+        report = certify(_request(root, wheel))
+        out = tmp_path / "report.json"
+        report.write_json(out)
+        manifest_less = tmp_path / "manifest-less.whl"
+        with zipfile.ZipFile(manifest_less, "w") as archive:
+            archive.writestr("only/one/member.txt", "no extension.json anywhere")
+        result = verify_certification(out, manifest_less)
+        assert not result.ok
+        assert any("no longer ships the discovery manifest" in f for f in result.failures), (
+            result.failures
+        )
+
+    def test_a_decision_that_is_not_an_object_fails(
+        self, make_extension: Callable[..., Path], tmp_path: Path
+    ) -> None:
+        root, wheel = _certifiable(make_extension, tmp_path)
+        report = certify(_request(root, wheel))
+        document = report.to_dict()
+        document["decision"] = ["not", "an", "object"]
+        out = self._report_file(tmp_path, document)
+        result = verify_certification(out, wheel)
+        assert not result.ok
+        assert any("decision is not an object" in f for f in result.failures), result.failures
+
+    def test_a_payload_digest_that_does_not_rederive_fails(
+        self, make_extension: Callable[..., Path], tmp_path: Path
+    ) -> None:
+        """The signed identity payload must re-derive from the report's own
+        subject/artifact records; a digest over anything else is corrupt."""
+        key = Ed25519PrivateKey.generate()
+        root, wheel = _certifiable(make_extension, tmp_path)
+        report = certify(_request(root, wheel, signing_key_hex=key.private_bytes_raw().hex()))
+        document = report.to_dict()
+        document["signature"]["payload_sha256"] = "00" * 32
+        out = self._report_file(tmp_path, document)
+        result = verify_certification(
+            out, wheel, publisher_key_hex=key.public_key().public_bytes_raw().hex()
+        )
+        assert not result.ok
+        assert any("does not re-derive" in f for f in result.failures), result.failures
+
+    def test_a_signed_report_whose_subject_record_is_not_an_object_fails(
+        self, make_extension: Callable[..., Path], tmp_path: Path
+    ) -> None:
+        key = Ed25519PrivateKey.generate()
+        root, wheel = _certifiable(make_extension, tmp_path)
+        report = certify(_request(root, wheel, signing_key_hex=key.private_bytes_raw().hex()))
+        document = report.to_dict()
+        document["subject"] = "not an object"
+        out = self._report_file(tmp_path, document)
+        result = verify_certification(out, wheel)
+        assert not result.ok
+        assert any("subject/artifact records are not objects" in f for f in result.failures), (
+            result.failures
+        )

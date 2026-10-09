@@ -1,7 +1,8 @@
 ---
 inventory-delta:
-  packages/maistro-ext-sdk/tests: +28
-  packages/maistro-ext-harness/tests: +69
+  packages/maistro-ext-sdk/tests: +29
+  packages/maistro-ext-harness/tests: +135
+  tests/: +32
 ---
 # 945 — extension developer tooling: scaffold, certification (epic M9-H #945)
 
@@ -159,6 +160,68 @@ deltas against the pre-change baselines (SDK 118, harness 138).
   claiming `security/imports-public-only`. The assignment-binding scan now
   follows importlib module and callable aliases to a fixed point; the test
   fails against the prior literal-receiver-only implementation.
+- **coverage-closure round (+66 harness, +1 SDK, +32 root `tests/`):** the
+  CI coverage gate (publish-set floor + per-file diff coverage) failed on
+  this branch's own new code; these tests close exactly those files, each
+  asserting behavior (not scanner shape):
+  - `tests/test_check_extension_scaffold.py` (+32, root suite): the
+    scaffold fixture (`scripts/check-extension-scaffold.py`, new in this
+    branch, previously measured 0% by the diff gate) tested in process on
+    the `test_check_reference_extension.py` pattern — the pure logic
+    (dist-name normalization, unique-wheel discovery both directions,
+    policy loading including malformed JSON shapes, key generation, the
+    report's publisher-key extraction), `_run`'s four-outcome contract
+    (success, failure, and both negative-control directions), the full
+    recorded command plan for a family round trip and the reference leg
+    (install list, unimportable-root probes with their neutral cwd,
+    staged sample tests, certify → verify → mutated-byte refusal with the
+    mutation asserted to be exactly one byte), and `main`'s aggregation
+    (all families by default, `--family` selection, a family failure
+    skipping the reference leg, exit codes). Driving these found one real
+    fixture gap, fixed: a policy file whose JSON root is a list escaped
+    `load_policy` as `AttributeError` instead of the function's own
+    `FixtureError` contract; `scripts/check-extension-scaffold.py` now
+    fails malformed policies truthfully.
+  - `test_certification.py` (+23): `human_summary` rendered on both faces
+    (unsigned certified; signed declined with FAIL/SKIPPED/
+    NOT-APPLICABLE checks, decline reasons, and conformance that never
+    executed — plus the artifact-less `n/a` line);
+    `_verdicts_from_checks` parametrized over every status × profile ×
+    required combination landing in exactly one of claim/decline/
+    not-proven; the signing stage's two honest unsigned reasons (no key
+    supplied; signing requested but the artifact never produced digests);
+    and seven `verify_certification` early rejections (non-object report,
+    missing artifact digest, artifact no longer a zip, artifact missing,
+    vanished artifact, non-object `decision`, payload digest that does
+    not re-derive, non-object `subject` record).
+  - `test_cli.py` (+9): the `certify` and `verify-certification`
+    subcommands driven through `main` in process (the subprocess tests
+    pin exit codes for a foreign CI but are invisible to the coverage
+    producers) — report writing, the summary's signature line, key
+    resolution from `--signing-key`, a key file, and `-` (stdin), the
+    unreadable key file's exit 2 without a traceback, a declined
+    certification's truthful exit-1 report, and verification of a signed
+    report vs a mutated artifact (INVALID lines, exit 1).
+  - `test_security_scan.py` (+27, new): the security scanner's rules unit
+    scoped — pyproject declaration parsing (dependencies + extras, the
+    non-list extra, missing/unparseable/no-project-table files declaring
+    nothing), test-only roots allowed in `tests/` and declined outside,
+    repo-relative and private-seam findings, alias-map and
+    installed-metadata declaration resolution (with
+    `packages_distributions` patched, both verdicts), chained importlib
+    module/callable aliases, dynamic-import calls with no or non-literal
+    arguments, relative imports, src/flat/namespace ownership, and the
+    shipped-sources boundary (unparseable file, unparsed manifest leaving
+    the entrypoint check honest, local environment/build directories not
+    scanned).
+  - `test_signing.py` (+7, new): the missing-backend outcome names the
+    extra to install and `verify_payload` re-raises rather than folding it
+    into `False`; key material rejected at each rung (non-hex, wrong
+    length, unusable); generation/derivation round trip; malformed
+    signature material is `False`, never a crash; `sha256_hex`.
+  - SDK `test_cli.py` (+1): reaching the dispatcher with no subcommand
+    prints help and exits 2 (the dispatcher arc the `new`/`validate`/
+    `schema` tests never took).
 
 The physical acceptance — scaffold each family, build its wheel, install
 it with the SDK + harness wheels into a fresh venv, run the sample tests,
