@@ -53,17 +53,26 @@ reproduction procedure and the full survivor table live in
 
 Net collected node-ID delta: **+34** (new file, no parametrization).
 
-## 2026-10-08 repair (develop-sync round)
+## 2026-10-08 repair (develop-sync rounds)
 
-Resolved the preserved origin/develop sync conflict in `docs/research/README.md`
-(union of the #894 and #896 index rows; INCUBATE count corrected to four) and
-corrected the miniature-engine kill-mapping claims to the measured violation
-sets: executing the battery showed the deny-all fallback flip is killed by two
-oracles (`deny_all_fallback` and `action_guards_are_exact`), not one, so
+Two develop-sync rounds are recorded here.
+
+First round: resolved a preserved origin/develop sync conflict in
+`docs/research/README.md` (union of the #894 and #896 index rows; INCUBATE count
+corrected to four) and corrected the miniature-engine kill-mapping claims to the
+measured violation sets: executing the battery showed the deny-all fallback flip is
+killed by two oracles (`deny_all_fallback` and `action_guards_are_exact`), not one, so
 `test_each_oracle_kills_exactly_its_named_mutator` (membership-only) became
 `test_battery_kills_match_the_recorded_violation_sets`, asserting the exact
 per-mutator sets (`EXACT_VIOLATIONS`). Companion prose corrections in
 `docs/research/894-critical-zone-mutation-strategy.md` (C5 scope, PEP 563
 equivalence phrasing, TTL operator directions, broad-gate comparison vs the
-existing annotation filter). Node count unchanged: 34 — the +34 delta above is
-still exact.
+existing annotation filter).
+
+Second round (this worktree): origin/develop advanced by 8 commits and the
+preserved merge had one remaining conflict in `docs/research/README.md` — both
+sides of the closing INCUBATE paragraph claimed "four" with disjoint leaf lists.
+Resolved to the union of the merged index table: **five** INCUBATE leaves
+(#894, #896, #914, #916, and #929, which develop added as INCUBATE via the
+graph-pattern-reuse note). Harness and note content unchanged in this round;
+node count still 34, so the +34 delta above remains exact.
