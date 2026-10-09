@@ -2043,3 +2043,53 @@ above is unchanged; this appendix is the round's only artifact.
   grants) and which awaits the separately reviewed #1845 integration
   consumer or a base-landed authorization plus banking rebase. The stack
   stays unmerged by design.
+
+## Round 25 — post-develop-merge re-validation at `e52a5b4440d2` (2026-10-09)
+
+The branch now contains `origin/develop` (`675db8be6c41`) via merge commit
+`e52a5b444`; the diff vs develop is exactly the eight sanctioned leaf files
+(two production modules, two test files, two inventory notes,
+`_vulture_whitelist.py` extension) and `git diff --numstat origin/develop --
+quality/` is empty — no ledger, grant, or baseline row was touched. All
+round-24 evidence was re-derived at this head rather than trusted:
+
+- **Gates (CI argv)**: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` exit 0, 1323 == 1323 (the
+  lane-brief vulture amendment is empty — no unbanked identities exist);
+  `check-ratchet-provenance.py` fails ONLY on the reachability ratchet (169 →
+  171 of 1377, naming `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_generation`); `check-reachability.py` exit 1 with
+  exactly those two NEWLY UNREACHABLE modules; `check-shipped-surface-truth.py`,
+  `check-reachability-dispositions.py` (169 dispositioned) and
+  `check-promotion-surface.py` all exit 0.
+- **Tests**: focused battery `test_admission_generation_assessment.py +
+  test_root_admission_identity.py + test_idempotency.py` = 272 passed; mypy
+  clean on both new modules; ruff check/format clean on all four leaf files;
+  meta-sweep `tests/test_check_reachability.py +
+  tests/test_reachability_baseline_identity.py` = exactly 3 failed / 35
+  passed (the same three gate-identity tests CI's `test` and Coverage jobs
+  failed on, all diffing on the same two-module delta);
+  `check-suite-inventory.py` full run OK, 17 suites, 30650 collected node
+  IDs.
+- **All four issue-named mutations re-executed at this head**; each restore
+  verified byte-identical (md5 `257a6e45c382349dd12f559099663fbc`): swap
+  TAKEOVER/REPLACE_EXPIRED → 50 failed / 82 passed; lease row before binding
+  → 14 failed / 118 passed; LEGACY_UNRESOLVED row deleted (legacy falls
+  through to v2 lease logic) → 10 failed / 122 passed; mismatch row before
+  expiry → 22 failed / 110 passed.
+- **Whitelist extension proven load-bearing, not cosmetic**: reverting only
+  the `_vulture_whitelist.py` hunk (develop's file, branch modules present)
+  makes the vulture gate fail 1325 vs 1323 with two unbanked identities —
+  `admission_identity.py:222/223` `receipt_snapshot`/`provenance_snapshot`
+  dataclass fields validated by name in `__post_init__` — demanding a
+  base-landed grant. The extension is therefore the only issue-compliant way
+  to ship C1's fields (the file's established shipped-first posture, e.g.
+  CampaignSelector), changes no gate outcome on its own (reachability stays
+  red by design), and keeps `quality/` byte-identical to develop.
+- **Blocker statement (unchanged in substance)**: the four red hosted-CI jobs
+  at `c5acaf9` share the single sanctioned two-module unwired reachability
+  delta, reproduced locally in full at this head. Issue #1852 forbids
+  in-lane repair (no wiring, no baseline entries, no grants, no waivers) and
+  mandates reporting implementation/test readiness plus the explicit merge
+  blocker while leaving the stack unmerged until the separately reviewed
+  #1845 integration head. This lane takes no merge/PR action.
