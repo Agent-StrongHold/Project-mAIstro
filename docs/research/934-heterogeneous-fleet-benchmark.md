@@ -216,6 +216,22 @@ records); `uv run ruff check .`, `uv run ruff format --check .`,
 (`pytest tests/ packages/hive-conductor/backend/tests
 packages/maistro-design/tests -q --timeout=60`) → 9,064 passed, 149 skipped.
 
+Second develop-sync re-validation (merge head 88f459145, 2026-10-09): merged
+origin/develop again (adds research leaves #923/#929/#930 and the #929
+graph-pattern-reuse workflow to the same two registry rows this leaf owns;
+conflicts resolved keeping both sides). The probe command re-run to a temp
+output reproduced `docs/benchmarks/fleet-routing-baseline.json` exactly
+(byte-identical excluding `generated_at`); `uv run pytest
+tests/test_bench_fleet_routing.py -q` → 48 passed; `uv run ruff check .`
+and `uv run ruff format --check .` clean; `scripts/check-suite-inventory.py`
+(17 suites match), `scripts/check-workflow-inventory.py` (28 workflows
+dispositioned), `scripts/check-ratchet-provenance.py`,
+`scripts/check-model-egress.py` (20 rows, zero new direct callers),
+`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` (1,323 reviewed identities match),
+`scripts/check-doc-links.py`, and `scripts/check-reachability.py` all exit 0
+at this merge head.
+
 ## Threats to validity
 
 - The outcome model is authored, not observed: tier comfort zones, the
