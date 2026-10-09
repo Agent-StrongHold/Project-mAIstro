@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  docs/research/: +0
+  packages/maistro-rsi/tests: +0
 ---
 # auto-927-develop-sync-1c55afe5-resolution
 
