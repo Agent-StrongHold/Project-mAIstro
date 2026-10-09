@@ -2251,3 +2251,71 @@ head shows there is nothing to amend:
   reachability delta that no lawful in-leaf edit can retire. The stack
   stays unmerged awaiting the separately reviewed #1845 integration
   consumer; this lane takes no merge/PR action.
+
+## Round 28 — repair round at dispatched head `6b3226984c72` (2026-10-09):
+## develop merge absorbed; lane-brief vulture amendment re-proven EMPTY at the
+## new head; exact-debt-ledger red fully attributed to the sanctioned
+## two-module reachability provenance delta
+
+The dispatched head advances round 27's `10dfd9c1dea0` by exactly the
+absorption of `origin/develop` `0d49d4e068de` (two research-WIP commits,
+#2076/#2077): `git log 88240af..HEAD` is the merge commit plus those two, and
+`git diff 88240af..HEAD` over the four leaf source/test files and
+`_vulture_whitelist.py` is byte-empty, so the round 25–27 mutation battery
+(50/14/10/22 failures + 132 pristine control) carries over unchanged to this
+head. `origin/develop` is still `0d49d4e068de` after a fresh fetch and
+`git merge-base HEAD origin/develop` equals it — the lane brief's develop-sync
+trigger (a merge conflict) did not occur; the merge was already in place at
+dispatch.
+
+- **Lane-brief vulture repair executed and empty**: `uv run python
+  scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI's exact argv) exits 0 at this head — 1323
+  findings == 1323 reviewed identities, `unclassified: 0`,
+  `never_allowlist: 0`. Zero unbanked identities exist, so no
+  `quality/vulture-baseline.json` row is added or removed;
+  `git diff --numstat origin/develop -- quality/` is empty.
+- **exact-debt-ledger red fully attributed**: of the job's three steps,
+  `check-shipped-surface-truth.py` exits 0 and the vulture step exits 0; the
+  sole failure is `check-ratchet-provenance.py` exit 1 ("ratchet provenance
+  inventory is incomplete"), whose failing sub-gate is
+  `check-reachability-provenance.py`: reachability ratchet 169 trusted ->
+  171 current of 1379 modules, with `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_generation` NEW unreachable, "absent from trusted
+  base and not previously authorized". All other sub-ratchets report OK
+  (shell 3/3, contract-markers 358/358, enumerations 1/1, lifecycle 0/0).
+  This is the issue-sanctioned #1845 integration blocker: #1852 forbids
+  candidate-side reachability baseline rows, grants, or fake wiring for this
+  leaf, and the two-merge rule reads authorizations from the grantless merge
+  base, so no lawful in-leaf edit can retire the red.
+- **Other hosted reds re-derived at this head**: `check-reachability.py`
+  exit 1 naming exactly the two leaf modules as NEWLY UNREACHABLE;
+  `check-reachability-dispositions.py` exit 0 (49 groups / 169 banked);
+  `check-promotion-surface.py` exit 0. The root-suite reachability meta-tests
+  fail 3 / pass 35 and every assertion diff names only the two-module delta
+  (`test_check_reachability.py::test_baseline_matches_the_tree`, both
+  `test_reachability_baseline_identity.py` gate-identity assertions, the
+  set-diff "Extra items" being exactly the two identities) — CI's `test` red,
+  with the Coverage gate's producers aborting on the same root suite.
+- **Focused acceptance re-executed at this exact head**: C2 suite 132
+  passed; C1 + unchanged live-flow suite 140 passed; `ruff check` and
+  `ruff format --check` on both leaf files clean; `mypy` on the classifier
+  clean; full `check-suite-inventory.py` exit 0 (17 suites, 30934 collected
+  identities, 0 duplicates, matching the recorded inventory, whose C2 delta
+  is this note's `+132` front matter); all ten issue-named tests present by
+  name.
+- **Hygiene re-verified**: grep over `packages/*/src` finds no production
+  importer of `maistro.tasks.admission_generation`; whitelist additions
+  remain C1 snapshot-field names and `AdmissionAssessment` StrEnum members
+  only (never `_assess`/`admission_generation`); no commit subject or body
+  in `0d49d4e068de..HEAD` carries a closure directive with an issue
+  reference (0 matches for fix(es)/clos(es)/resolv(es) + number).
+- **Verdict-relevant statement**: the round's prescribed repair (the vulture
+  per-identity ledger amendment) is empty by construction at this head and
+  the carried NEEDS-DEEP-REVIEW block is resolved by full fresh
+  re-verification — every leaf acceptance criterion is independently proven
+  at `6b3226984c72`, and every merge-queue red reduces to the single
+  sanctioned two-module unwired reachability delta. Retirement paths remain
+  the separately reviewed #1845 integration consumer (which wires both
+  modules and prunes any banked rows on arrival). The stack stays unmerged
+  by design; this lane takes no merge/PR action.
