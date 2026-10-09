@@ -1840,3 +1840,122 @@ fresh this round; no source, test, or ledger file changed, so the
   by the banking rebase, or the separately reviewed #1845 integration
   consumer that wires both modules. The stack stays unmerged by design;
   this round's only artifact is this evidence appendix.
+
+## Round 23 — exact-debt-ledger CI-repair round at merged head 954e08435:
+## the named vulture red is retired by the develop merge itself (23rd
+## consecutive empty amendment); every other red re-derived as the same
+## sanctioned two-module delta or develop-inherited debt
+
+Scope: CI-repair round dispatched at HEAD `954e08435159c34d2c6142022eb51587f55b3e33`
+(develop base `d99e598e1084a183d1280fbe9a2c4de8b50b7f2b`, which is also the
+merge base and `origin/develop` at capture time; the branch absorbed
+`82097f6b7acca58ffc27a934b305faaee7a37915` and `d99e598e1` since round 22).
+Every claim below was re-executed fresh this round at this head; no source,
+test, or ledger file changed, so the `inventory-delta` front-matter above is
+unchanged.
+
+- **exact-debt-ledger (the named repair) is GREEN at this head**:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` — CI's exact argv — exits 0 with 1323 reviewed
+  identities -> 1323 findings, `unclassified: 0`, `never_allowlist: 0`.
+  **The prescribed vulture-ledger amendment is empty for the 23rd
+  consecutive round.** The merge-queue red recorded at `afc11663491e` is
+  retired by the develop merge, not by an edit: develop's side legitimately
+  removed the three `unused method 'enable'` rows
+  (`security/pg_strikes.py`, `security/strike_recovery.py`,
+  `security/strikes.py` — methods wired by #2019-era changes), and after the
+  merge `git diff --numstat origin/develop -- quality/` is EMPTY (the
+  branch's quality/ tree is identical to develop's; no rows lost, per the
+  AGENTS.md merge-hygiene rule).
+- **check-ratchet-provenance** exits 1 with 8 of 9 sub-ratchets OK
+  (adr-status-language, citation-status, promotion-surface, reachability-
+  dispositions 169->169, shell-execution 3->3, contract-markers 358->358,
+  enumerations 1->1, lifecycle 0->0) and the sole FAIL in the reachability
+  trusted-base gate: `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_generation` NEW unreachable, 171 of 1367 modules
+  vs trusted 169. Grants are read from merge base `d99e598e1`, whose
+  `quality/ratchet-authorizations.json` carries zero rows for either
+  identity (11 reachability authorizations, none admission-related; the
+  candidate's copy is identical). The two-merge rule makes every
+  candidate-side ledger edit mechanically ineffective, and issue #1852
+  forbids baseline additions, grants, and waivers for this leaf outright;
+  the candidate still carries zero admission rows in
+  `reachability-baseline.json`.
+- **check-reachability** exits 1 listing exactly the two leaf modules as
+  NEWLY UNREACHABLE — added = the two leaf modules, stale = none (scan 171,
+  baseline 169, diff computed directly against
+  `quality/reachability-baseline.json`). This is the Quality gate's failing
+  step; every other deterministic step of that job was re-run green this
+  round: ruff check + format, radon-baseline, release-consistency,
+  doc-links, workspace-retirement, route-permissions, principal-identity,
+  frontend-typed-client, credential-authority (both invocations),
+  wiring-reads, agent-store-writes, contract-markers, convergence-matrix,
+  reachability-dispositions, security-inventory, image-inventory,
+  image-pins, workflow-inventory, backlog-consistency,
+  execution-lifecycles, model-egress, foreign-harness-egress,
+  shipped-surface-truth — all exit 0 — plus xenon with CI's exact
+  invocation (139 block violations <= baseline 145, 0 module-rank, 0
+  average; the one `admission`-named hit is the unrelated canvas
+  `_reconcile_admission`, rank C, counted in the 139).
+- **test job red re-derived at this head**: root suite
+  (`uv run pytest tests/ --ignore=tests/tools/registry`) 4867 passed /
+  4 failed locally. Three are the sanctioned reachability meta-tests
+  (`test_check_reachability.py::test_baseline_matches_the_tree`, both
+  `tests/test_reachability_baseline_identity.py` gate-identity assertions)
+  diffing on exactly the two leaf module names. The fourth,
+  `test_branch_independence_repository.py::test_every_quality_json_state_surface_is_classified_once`,
+  is proven a local-environment artifact this round: it fails only because a
+  gitignored, regenerable `quality/ac-state.json` (output of
+  `scripts/check-ac-state.py`, dated before this session, absent from
+  `git ls-tree` and matched by `.gitignore:81`) sits in this worktree;
+  with the artifact relocated the same test passes 1/1, and the artifact
+  was restored byte-identical afterwards (599725 bytes). A fresh CI
+  checkout has no such file, so the CI red is exactly the 3 sanctioned
+  meta-tests.
+- **Changed-package suite**: `packages/maistro-core/tests` 14973 passed /
+  2 failed / 1030 skipped. Both failures
+  (`extensions/test_cli_certification.py::test_certify_refuses_a_malformed_signing_key`,
+  `extensions/test_cli_compat.py::test_compat_preflight_rejects_unreadable_input`)
+  are **develop-inherited, not branch-caused**: both files ship unchanged
+  from develop commit `2a11c1cc0` (#2019), and both tests fail identically
+  at base `d99e598e1` itself, re-executed in a throwaway worktree
+  (`git diff d99e598e1 HEAD -- packages/maistro-core/tests/extensions/` is
+  empty). The failures are the tests' own wrap-sensitive assertion ("not
+  a hex Ed25519 private key" split across wrapped lines when the pytest
+  tmp path prefix is long); they are out of this lane's scope and stand as
+  develop debt.
+- **Coverage gate**: leaf diff coverage re-derived against base
+  `d99e598e1` — `admission_generation.py` 100% lines, `admission_identity.py`
+  97% (3 missed of 242 stmts), `check-diff-coverage.py` exit 0 (test files
+  exempt by declaration; `_vulture_whitelist.py` unmeasured by any
+  producer, as in every prior round). The CI Coverage-gate red remains
+  bound to its root-suite producer re-running the 3 sanctioned meta-tests,
+  not to any leaf surface.
+- **Leaf acceptance battery re-proven, all green**: classifier suite 132
+  passed; `test_root_admission_identity.py` + unchanged `test_idempotency.py`
+  140 passed; mypy clean on both leaf modules; the module md5
+  `257a6e45c382349dd12f559099663fbc` is byte-identical to round 22; full
+  `check-suite-inventory.py` exit 0 — 17 suites, 30301 collected
+  identities, 0 duplicates (grown from round 22's 30068 solely by
+  develop's own additions; the recorded inventory baseline came with the
+  merge and the `+132` front-matter delta still matches). Purity
+  re-verified: no production importer of `maistro.tasks.admission_generation`;
+  `maistro.runs.admission_identity` imported only by the C2 module and the
+  scanner-input `_vulture_whitelist.py`.
+- **Four-mutation battery re-derived at this exact head** in a throwaway
+  `git worktree` (assigned tree never modified; module restored from
+  backup after each mutation, md5 `257a6e45c382349dd12f559099663fbc`
+  byte-identical before and after; worktree removed clean): swap
+  TAKEOVER/REPLACE_EXPIRED -> 50 failed; lease row before binding -> 14
+  failed; LEGACY_UNRESOLVED row deleted (legacy treated as v2) -> 10
+  failed; mismatch row before expiry -> 22 failed; unmutated control ->
+  132 passed. Same 50/14/10/22 profile as rounds 13–22.
+- **Verdict-relevant statement**: the named exact-debt-ledger repair is
+  complete and proven green at this head with an empty amendment; no
+  in-lane lawful repair exists for the remaining merge-queue reds — the
+  reachability/provenance pair and the 3 root meta-tests wait on the
+  unchanged retirement paths (a base-landed authorization plus banking
+  rebase, or the separately reviewed #1845 integration consumer), and the
+  2 extension-test failures are develop-inherited debt on files this
+  branch never touched. The stack stays unmerged by design; this round's
+  only artifact is this evidence appendix.
