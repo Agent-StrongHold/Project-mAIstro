@@ -158,7 +158,12 @@ by design.
 
 - #930 (self-consistency / semantic entropy): **WATCH** — machinery ready; no real-model
   evidence yet. Move to INCUBATE on measured AUROC/AUPRC gain over self-report on
-  representative MAIstro workloads with acceptable token cost/latency.
+  representative MAIstro workloads with acceptable token cost/latency. The leaf now has
+  its own comparison note and harness:
+  [930 — self-consistency, semantic entropy, answer-variation signals](930-answer-variation-uncertainty-signals.md)
+  (the three signal families side by side, with sampling temperature, the equivalence
+  clusterer, and the confident-convergence blind spot identified as the variables a real
+  experiment must control).
 - #931 (historical outcome calibration): **WATCH** — the leaf's comparative study now exists
   and is fixture-validated (frequency / Beta-posterior / Platt / histogram / logistic
   estimators vs self-report and no-confidence baselines, leakage-safe temporal split,
