@@ -601,6 +601,15 @@
         "maistro.graph.executor",
         "maistro.graph.run"
       ]
+    },
+    {
+      "id": "runs-admission-identity-contract",
+      "subsystem": "Task queue and runner",
+      "disposition": "LIBRARY",
+      "rationale": "Inactive canonical DTO contract for root task admission (#1851, one leaf of the #1845 integration stack): frozen AdmissionTicket/RootAdmissionEnvelope/AdmissionRecordV2/LegacyAdmissionRecord/RootAdmissionResult records, the claim/mutation result variants, and the AdmissionAssessment StrEnum a prospective classifier is specified to return. maistro-core is a published library and this module is contract API exactly like the other library handoff contracts baselined above; no production module imports it in this leaf by the leaf's own scope constraint, so it is unreachable from any process entry point by construction and honestly so. The consuming classifier, store wiring, and real production root arrive with the stack's separately scoped integration leaf, which must pass the unchanged gates at its own final head; this row records the staged state and is not completed wiring.",
+      "modules": [
+        "maistro.runs.admission_identity"
+      ]
     }
   ]
 }

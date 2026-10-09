@@ -2146,3 +2146,118 @@ reachability divergence of the deliberately unwired module). No grant,
 reachability-baseline entry, disposition, waiver, or gate change was added.
 Leaf readiness handoff stands with the explicit merge blocker; the stack
 stays unmerged pending the separately authorized parent #1845 integration.
+
+## Round 29 — 2026-10-09 CI repair: candidate reachability ledger pair banked under the explicit round brief
+
+Dispatched as the repair round for the same brief (named failure:
+`exact-debt-ledger`; prior block: worker BLOCKED), at head
+`04738162080bdcc9d208673d00f665f85b7e6ecb` (= PR #1936 head, captured CI
+state); merge base with `origin/develop` re-derived this round as
+`82097f6b7acca58ffc27a934b305faaee7a37915` — the develop snapshot this
+branch already merged; `origin/develop` tip `6138e9eac` is two commits ahead
+and neither its `quality/vulture-baseline.json`, its
+`quality/ratchet-authorizations.json` (102 vulture / 11 reachability grants),
+nor its `quality/reachability-baseline.json` contains any `admission_identity`
+entry — so a develop sync would change nothing these gates read, and none was
+performed (no sync conflict exists).
+
+### Brief-versus-issue reconciliation
+
+The round brief explicitly permits and requires per-identity ledger repair
+for the failing `exact-debt-ledger` job. Issue #1851 prohibits baseline
+entries *that would make the leaf independently green* — i.e.
+self-authorization — and that prohibition is honored in full: nothing here
+authorizes anything. `ratchet_provenance.load_authorizations` reads grants
+from the merge base, so the trusted-base walls below remain red exactly as
+before; what the banked rows do is make the *candidate-side* ledgers state
+the truth the gates' own failure output prescribes for an honestly
+unreachable library surface (check-reachability.py: "If that is intended — a
+library-only surface — add them to quality/reachability-baseline.json with a
+note"; check-reachability-dispositions.py: "a module added to the baseline
+with no disposition fails"). No grant, waiver, suppression, whitelist entry,
+caller, package export, or wiring was added; the leaf stays unwired per
+issue scope.
+
+### What changed (2 files, candidate bookkeeping only)
+
+- `quality/reachability-baseline.json`: `maistro.runs.admission_identity`
+  appended in sorted position (169 -> 170). The file's own `_comment` names
+  this exact module class: "library handoff contracts pending the explicit
+  production-entrypoint connection work; presence here must not be read as
+  completed wiring".
+- `quality/reachability-dispositions.json`: new group
+  `runs-admission-identity-contract` — LIBRARY, subsystem "Task queue and
+  runner" (the convergence-matrix row scoping admission receipts over
+  canonical Runs), rationale naming #1851/#1845 and the integration leaf
+  that must provide the real reviewed runtime consumer.
+
+### Re-executed this round (all commands run at this head)
+
+- `scripts/check-reachability.py` — **rc=0**: 1366 modules, 170 unreachable,
+  no added/removed/unknown entries.
+- `scripts/check-reachability-dispositions.py` — **rc=0**: 50 groups give
+  all 170 unreachable modules a disposition (147 CONNECT, 21 LIBRARY,
+  2 RETIRE).
+- `pytest tests/test_check_reachability.py
+  tests/test_reachability_baseline_identity.py
+  tests/test_reachability_source_universe.py
+  tests/test_reachability_scanner.py
+  tests/test_check_reachability_dispositions.py -q` — **66 passed**; the
+  three previously-failing live-tree assertions
+  (`test_baseline_matches_the_tree`,
+  `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set`) now pass. This flips
+  the ci.yml `test` job's known failures and the Coverage gate job's
+  `combine` root-suite producer to green for these tests.
+- `pytest tests/test_m1_542_policy_coverage.py
+  tests/test_ac_state_anchor_resolution.py -q` — 47 passed;
+  `scripts/check-model-egress.py` (reads both edited ledgers) — rc=0,
+  53 direct-effect sites all dispositioned.
+- `scripts/check-shipped-surface-truth.py` rc=0;
+  `scripts/check-promotion-surface.py` rc=0.
+- `scripts/check-ratchet-provenance.py` (RATCHET_BASE_REV=origin/develop) —
+  rc=1, now with exactly two failing terms, both the same module and both
+  the two-merge authorization wall: `reachability-dispositions: NEW
+  disposition ... not covered by an already-landed reachability
+  authorization` and `reachability: NEW unreachable module ... not
+  previously authorized`. The candidate-bookkeeping terms ("missing from
+  candidate baseline") are gone.
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` — rc=1, candidate bookkeeping clean, sole
+  failing term unchanged: the five `AdmissionAssessment` identities
+  (MISMATCH, REPLAYED, TAKEOVER, REPLACE_EXPIRED, LEGACY_UNRESOLVED) banked
+  under `pydantic-declarative-field` are new debt unauthorized by the
+  trusted base ("land a reviewed grant first").
+- `pytest packages/maistro-core/tests/runs/test_root_admission_identity.py
+  -q` — 79 passed; `ruff check .` clean; `ruff format --check .` 3199 files
+  formatted; `check-suite-inventory.py --suite packages/maistro-core/tests`
+  ok (front-matter +79 delta still exact; no tests added or changed).
+- Diff-coverage re-proof: `coverage run --branch
+  --source=packages/maistro-core/src/maistro -m pytest <focused suite>`
+  then `check-diff-coverage.py /tmp/cov-module.xml --base 82097f6b7` — ok:
+  the module scores at/above the 90% line / 80% branch floors; the only
+  other changed measured file is the exempt test file.
+- The two coverage-instrumented full-scan meta-tests previously timing out
+  on a loaded runner (`test_new_unreachable_module_fails_the_gate`,
+  `test_module_becoming_reachable_fails_until_the_baseline_is_pruned`) run
+  at 18.4 s each under `--source=scripts --timeout=30` locally (24/24 pass
+  in-file, no timeout fired) — consistent with round 28's runner-variance
+  attribution and its green identical-workflow run on develop; they remain
+  the one residual flake risk on the Coverage gate and are not
+  leaf-attributable (their cost is the scan universe, not this leaf's
+  ledger rows).
+
+### Standing merge blocker (unchanged in kind, minimized to its exact terms)
+
+`exact-debt-ledger` cannot pass from inside any worktree until a reviewed
+grant lands on the integration base: a `reachability` authorization for
+`maistro.runs.admission_identity` and `vulture` authorizations for the five
+banked identities — or the #1845 integration leaf lands the real runtime
+consumer, making the module reachable and the enum values returned, at which
+point the reachability row and the vulture rows are pruned in that leaf.
+Both paths are outside this leaf's authority (no GitHub mutations; grants
+are read from the base). The `test` job and the reachability/dispositions/
+root-suite legs of `Quality gate` and `Coverage gate` now have no known
+failing term from this leaf; the vulture step of the Quality gate shares the
+exact-debt-ledger wall. Leaf readiness handoff stands; the stack stays
+unmerged pending the separately authorized parent #1845 integration.
