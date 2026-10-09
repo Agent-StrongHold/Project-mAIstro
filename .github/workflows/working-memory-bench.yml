@@ -53,7 +53,7 @@ jobs:
           --records-per-workspace ${{ inputs.records-per-workspace }}
           --output working-memory-bench.json
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: working-memory-bench
           path: working-memory-bench.json
