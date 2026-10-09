@@ -29,7 +29,7 @@ marketplace tiers cannot overwrite ``t0``/``t1`` stays in force.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from importlib import import_module
 from typing import Any
@@ -56,6 +56,10 @@ class RegistrationError(ContractError):
 
 class ToolNotAllowlisted(RegistrationError):
     """A tool (or a Skill's composed tool) is outside the access allowlist."""
+
+
+class PermissionBeyondGrant(RegistrationError):
+    """A tool contract requests authority its install record never granted."""
 
 
 class TrustTierError(RegistrationError):
@@ -154,6 +158,7 @@ class ExtensionToolCatalog:
         entrypoint_object: Mapping[str, Any],
         *,
         handler: Any,
+        granted_permissions: Collection[str] | None = None,
     ) -> RegisteredExtensionTool:
         """Register one tool-family package.
 
@@ -161,6 +166,13 @@ class ExtensionToolCatalog:
         under an id that is already registered is refused — a registration
         conflict is an install-lifecycle problem (#954 owns upgrades), never
         a silent overwrite.
+
+        ``granted_permissions`` is the host's approved authority set (the
+        install record's ``granted_permissions``); passing it makes the
+        check fail-closed: a contract whose capabilities exceed the grant
+        is refused here, so runtime Bindings can never carry authority that
+        was not presented at inspect/authorize. ``None`` skips the check
+        for hosts that authorize through another seam.
         """
         if contract.family != ExtensionFamily.TOOL:
             raise RegistrationError(
@@ -172,6 +184,13 @@ class ExtensionToolCatalog:
                 f"{contract.extension_id}: entrypoint handler "
                 f"{entrypoint.handler!r} is not callable"
             )
+        if granted_permissions is not None:
+            ungranted = sorted(set(contract.capabilities) - set(granted_permissions))
+            if ungranted:
+                raise PermissionBeyondGrant(
+                    f"{contract.extension_id}: contract requests authority the "
+                    f"install record never granted: {', '.join(ungranted)}"
+                )
         existing = self._tools.get(contract.extension_id)
         if existing is not None:
             if (
