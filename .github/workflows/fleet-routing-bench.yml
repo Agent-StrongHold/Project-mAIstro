@@ -63,7 +63,7 @@ jobs:
           --scenario ${{ inputs.scenario }}
           --output fleet-routing-bench.json
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: fleet-routing-bench
           path: fleet-routing-bench.json
