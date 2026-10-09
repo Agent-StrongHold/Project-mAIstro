@@ -554,7 +554,10 @@ def default_note_slug() -> str | None:
     if proc.returncode != 0 or not branch or branch == "HEAD":
         return None
     readable = re.sub(r"[^a-z0-9]+", "-", branch.lower()).strip("-")
-    digest = hashlib.sha1(branch.encode()).hexdigest()[:4]
+    # sha256, not the broken legacy digest DevSkim DS126858 flags: the suffix
+    # is a non-cryptographic discriminator, but this script sits in the
+    # DevSkim-scanned tree, so the derivation must stay off broken hashes.
+    digest = hashlib.sha256(branch.encode()).hexdigest()[:4]
     return f"{readable}-{digest}" if readable else digest
 
 

@@ -490,7 +490,10 @@ def _seed_mcp_servers() -> None:
             id="mcp-1",
             name="Filesystem",
             description="Local workspace tools",
-            url="http://127.0.0.1:9999/mcp",
+            # Loopback is the truthful origin for a fabricated "Local workspace
+            # tools" row; the health check that may dial it goes through the
+            # outbound guard and records the connection failure harmlessly.
+            url="http://127.0.0.1:9999/mcp",  # devskim: ignore DS162092 until 2027-12-31 -- fabricated demo seed row, never a production origin
             status="connected",
             tools_count=6,
             last_ping=t,

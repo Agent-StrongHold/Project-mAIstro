@@ -20,6 +20,7 @@ count.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -585,6 +586,25 @@ class TestDefaultNoteSlug:
             lambda *a, **k: type("P", (), {"stdout": "claude/x\n", "returncode": 0})(),
         )
         assert gate.default_note_slug() == gate.default_note_slug()
+
+    @pytest.mark.ac("CI devskim DS126858")
+    def test_the_slug_digest_is_derived_from_sha256_not_a_broken_hash(self, gate, monkeypatch):
+        """The digest must stay on sha256; sha1 reintroduces a DevSkim finding.
+
+        The four-hex suffix is a non-cryptographic discriminator, but this
+        script sits in the DevSkim-scanned tree and DS126858 flags sha1
+        wherever it appears — as the code-scanning check-run proved when it
+        attributed exactly that finding to a PR whose diff merely grew around
+        the line. Pinning the derivation here means a revert to sha1 fails a
+        named test instead of a red gate on the next large PR.
+        """
+        monkeypatch.setattr(
+            gate.subprocess,
+            "run",
+            lambda *a, **k: type("P", (), {"stdout": "claude/x\n", "returncode": 0})(),
+        )
+        expected = hashlib.sha256(b"claude/x").hexdigest()[:4]
+        assert gate.default_note_slug() == f"claude-x-{expected}"
 
     def test_detached_head_yields_nothing(self, gate, monkeypatch):
         monkeypatch.setattr(
