@@ -152,6 +152,7 @@ def _build_tool_schema(name: str, *, registry: Any = None) -> dict[str, object]:
 
 if TYPE_CHECKING:
     from maistro.agents.context_builder import ContextBuilder
+    from maistro.protocols.coins import CoinLedger
     from maistro.protocols.llm import LLMClient
     from maistro.protocols.memory import LearningStore, OutcomeStore, SessionStore
     from maistro.protocols.prompts import PromptManager
@@ -239,7 +240,7 @@ class Agent:
         outcome_store: OutcomeStore | None = None,
         session_store: SessionStore | None = None,
         quota_tracker: QuotaTracker | None = None,
-        coin_ledger: Any = None,
+        coin_ledger: CoinLedger | None = None,
         tracer: TracingBackend | None = None,
         tool_executor: Any = None,
         tool_registry: Any = None,
@@ -1039,16 +1040,25 @@ class Agent:
             "charged_microchips": 0,
             "pricing_version": "",
         }
-        # The turn's own execution, not its conversation. `session_id` was
-        # passed here, which makes every turn of one session share a key: a
-        # ledger that dedupes on it drops every charge after the first, and one
-        # that only groups reports per session what was spent per turn. The Run
-        # is right under both readings, which is why it is the correction made
-        # without the ledger's contract in hand (ADR-083026-56ee).
+        # Audit and idempotency are separate fields under the coin-ledger
+        # contract (ADR-100826-c0e1, #827). `charge_key` names the billable
+        # unit — the canonical Run, which every governed admission mints and
+        # every retry preserves — so canonical retries charge exactly once and
+        # unrelated operations cannot collide. `request_id` is audit
+        # correlation and may be a client-supplied `X-Request-ID`, so it must
+        # never become the dedup key: a turn with no Run in scope charges
+        # under no key at all rather than under a value the client chose, and
+        # a conforming ledger records an unkeyed charge unconditionally. (The
+        # Run-as-key choice itself predates the contract — ADR-083026-56ee —
+        # which is why the turn, not its conversation, is what is billed.)
         context = current_execution_context()
         if self._coin_ledger:
+            # The idempotency identity is the canonical Run id, or None when
+            # this turn ran outside any Run — never a client-supplied value.
+            charge_key = context.run_id or None
             charge_info = await self._coin_ledger.charge_usage(
-                request_id=context.run_id or context.request_id,
+                charge_key=charge_key,
+                request_id=context.request_id,
                 org_id=org_id,
                 team_id=team_id,
                 user_id=getattr(auth, "user_id", ""),

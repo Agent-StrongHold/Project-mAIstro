@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import os
 
+import aiosqlite
 import pytest
 
 from maistro.events.consumer_cursor import InMemoryConsumerCursorStore, SqliteConsumerCursorStore
@@ -66,8 +67,6 @@ def _require_postgres() -> str:
 
 
 async def _sqlite_conn():
-    import aiosqlite
-
     return await aiosqlite.connect(":memory:")
 
 
@@ -85,58 +84,144 @@ async def _pg_pool():
     return pool
 
 
+@pytest.fixture(autouse=True)
+def _fail_on_leaked_aiosqlite_connections(monkeypatch):
+    """Regression guard for #1077: every `aiosqlite` connection opened by this
+    module's fixtures must be closed by that fixture's own teardown, while the
+    test's event loop is still alive.
+
+    This fixture is set up before the store fixtures (autouse) and therefore
+    torn down after them, so any connection still open here was leaked by its
+    fixture — exactly the failure mode that used to surface much later as GC
+    ResourceWarnings and `Event loop is closed` callbacks in CI teardown,
+    attributed to whichever unrelated test happened to trigger the collection.
+
+    Ownership order is explicit: the sqlite-backed fixture that opens the
+    connection closes it; this guard only *observes*, after all of them have
+    finalized.
+
+    Closed-state is probed through aiosqlite internals because `Connection`
+    has no public accessor:
+      - `_connection is not None` → the sqlite handle is still held (open)
+      - `_running` with a released handle → the background thread was started
+        but the connection never awaited to open nor closed (leaked at birth)
+    A cleanly closed connection has `_connection is None` and `_running` False.
+    """
+
+    created: list[aiosqlite.Connection] = []
+    real_connect = aiosqlite.connect
+
+    def tracking_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        created.append(conn)
+        return conn
+
+    monkeypatch.setattr(aiosqlite, "connect", tracking_connect)
+    yield
+    leaked = [conn for conn in created if conn._connection is not None or conn._running]
+    assert not leaked, (
+        f"{len(leaked)} of {len(created)} aiosqlite connection(s) outlived their "
+        "fixture teardown (#1077); close the connection where it is owned — the "
+        "fixture — not via GC finalizers"
+    )
+
+
+# Fixture ownership (#1077): the sqlite legs of these fixtures open a real
+# `aiosqlite` connection and the postgres legs open a real asyncpg pool, so
+# each fixture that opens a resource closes it in its own teardown — an async
+# generator with `try/finally`, not a bare `return`. Returning a live store
+# used to leak one connection per parametrized instantiation; the connection's
+# background thread kept running into the loop's close and surfaced much later
+# as `Event loop is closed` teardown noise on CI. The autouse guard below
+# turns any regression back into a deterministic failure at the fixture's own
+# boundary.
 @pytest.fixture(params=BACKENDS)
 async def event_log(request):
     if request.param == "memory":
-        return InMemoryEventLog()
-    if request.param == "sqlite":
-        store = SqliteEventLog(await _sqlite_conn())
-        await store.ensure_schema()
-        return store
-    from maistro.events.pg_stores import PgEventLog
+        yield InMemoryEventLog()
+    elif request.param == "sqlite":
+        conn = await _sqlite_conn()
+        try:
+            store = SqliteEventLog(conn)
+            await store.ensure_schema()
+            yield store
+        finally:
+            await conn.close()
+    else:
+        from maistro.events.pg_stores import PgEventLog
 
-    return PgEventLog(await _pg_pool())
+        pool = await _pg_pool()
+        try:
+            yield PgEventLog(pool)
+        finally:
+            await pool.close()
 
 
 @pytest.fixture(params=BACKENDS)
 async def trigger_store(request):
     if request.param == "memory":
-        return InMemoryTriggerStore()
-    if request.param == "sqlite":
-        store = SqliteTriggerStore(await _sqlite_conn())
-        await store.ensure_schema()
-        return store
-    from maistro.events.pg_stores import PgTriggerStore
+        yield InMemoryTriggerStore()
+    elif request.param == "sqlite":
+        conn = await _sqlite_conn()
+        try:
+            store = SqliteTriggerStore(conn)
+            await store.ensure_schema()
+            yield store
+        finally:
+            await conn.close()
+    else:
+        from maistro.events.pg_stores import PgTriggerStore
 
-    return PgTriggerStore(await _pg_pool())
+        pool = await _pg_pool()
+        try:
+            yield PgTriggerStore(pool)
+        finally:
+            await pool.close()
 
 
 @pytest.fixture(params=BACKENDS)
 async def invocations(request):
     if request.param == "memory":
-        return InMemoryInvocationStore()
-    if request.param == "sqlite":
-        store = SqliteInvocationStore(await _sqlite_conn())
-        await store.ensure_schema()
-        return store
-    from maistro.events.pg_stores import PgInvocationStore
+        yield InMemoryInvocationStore()
+    elif request.param == "sqlite":
+        conn = await _sqlite_conn()
+        try:
+            store = SqliteInvocationStore(conn)
+            await store.ensure_schema()
+            yield store
+        finally:
+            await conn.close()
+    else:
+        from maistro.events.pg_stores import PgInvocationStore
 
-    return PgInvocationStore(await _pg_pool())
+        pool = await _pg_pool()
+        try:
+            yield PgInvocationStore(pool)
+        finally:
+            await pool.close()
 
 
 @pytest.fixture(params=BACKENDS)
 async def cursor_store(request):
     if request.param == "memory":
-        return InMemoryConsumerCursorStore()
-    if request.param == "sqlite":
-        store = SqliteConsumerCursorStore(await _sqlite_conn())
-        await store.ensure_schema()
-        return store
-    from maistro.events.pg_stores import PgConsumerCursorStore
+        yield InMemoryConsumerCursorStore()
+    elif request.param == "sqlite":
+        conn = await _sqlite_conn()
+        try:
+            store = SqliteConsumerCursorStore(conn)
+            await store.ensure_schema()
+            yield store
+        finally:
+            await conn.close()
+    else:
+        from maistro.events.pg_stores import PgConsumerCursorStore
 
-    pool = await _pg_pool()
-    await pool.execute("TRUNCATE consumer_cursors")
-    return PgConsumerCursorStore(pool)
+        pool = await _pg_pool()
+        try:
+            await pool.execute("TRUNCATE consumer_cursors")
+            yield PgConsumerCursorStore(pool)
+        finally:
+            await pool.close()
 
 
 class TestEventLog:
