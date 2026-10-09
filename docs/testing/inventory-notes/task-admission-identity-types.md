@@ -2816,3 +2816,72 @@ The branch-side alternatives are each prohibited by the issue body (wiring,
 fake callers, enum alteration, suppressions, re-exports) or ineffective by
 gate design (branch-side grants are not read from the candidate). Stack
 stays unmerged at e261c4c0c; leaf readiness handoff stands.
+
+## Round 37 — 2026-10-09 verifier+writer round at dd711c99e: develop advance assessed (research-only, no grants); all four recorded CI failures attributed by local reproduction
+
+Independent re-execution at this exact head, plus one new external fact.
+
+- Fresh `git fetch origin`: `origin/develop` advanced `d592654aca61` ->
+  `0d49d4e068de9` via two research WIP lands (#2076, #2077) that touch only
+  `packages/maistro-rsi/tests`, `docs/research/`, and inventory notes.
+  `git diff d592654aca61..0d49d4e068de9 -- quality/` is empty: the trusted
+  base still carries zero rows for `runs/admission_identity` in
+  `quality/ratchet-authorizations.json`, `quality/reachability-baseline.json`,
+  and `quality/vulture-baseline.json`, so the wall is unchanged. A develop
+  sync therefore brings no authorization and additionally imports +52
+  unrecorded-in-`baseline.json` `packages/maistro-core/tests` node IDs
+  (develop recorded them only in notes), so the sync belongs to the
+  integration round that also resolves the suite inventory. No merge
+  performed; the block is not a develop-sync conflict.
+- exact-debt-ledger re-executed step-by-step with CI's exact arguments at
+  this head: `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` rc=1 listing exactly the five
+  `AdmissionAssessment` identities (`admission_identity.py:515-520`), all
+  five already banked at `quality/vulture-baseline.json:283-287`;
+  `scripts/ratchet_provenance.py::load_authorizations` re-read at source
+  confirms grants load from the base revision only, so a candidate-side
+  grant is structurally ineffective as well as issue-prohibited;
+  `check-ratchet-provenance.py` (`RATCHET_BASE_REV=origin/develop`) rc=1
+  via exactly the two reachability trusted-base sub-gates;
+  `check-shipped-surface-truth.py` rc=0. The lane's amendment instruction
+  is again a verified no-op: nothing genuinely dead to fix (the five
+  members are issue-mandated) and nothing to amend (rows present).
+- CI `test` job reproduced locally, every Python step green at this head:
+  root suite `pytest tests/ --ignore=tests/tools/registry` 4,951 passed /
+  128 skipped with `RATCHET_BASE_REV=origin/develop`, `REQUIRE_AUTH=false`,
+  `MAISTRO_DRY_RUN=1`; `maistro-server` 535 passed / 9 skipped;
+  `maistro-turing` + backend + design 872 passed / 1 skipped;
+  `maistro-ext-harness` + `maistro-ext-sdk` 420 passed. The job's remaining
+  steps (npm builds, OpenAPI generated types) cannot move from this leaf:
+  the branch diff contains no `maistro_server` change, so the OpenAPI
+  document is unchanged.
+- Coverage gate pillars reproduced locally: the new module measures 100%
+  lines / 100% branches (245 statements, 82 branches, 0 missed) under the
+  focused suite, and `scripts/check-diff-coverage.py` against base
+  `d592654aca61` rc=0 (1 measured file; the test file exempt by
+  declaration). Publish-set producers locally: `maistro-core` 15,088
+  passed, `maistro-canvas` 465 passed, `maistro-evolve` 995 passed with 3
+  sandbox failures all reading "Cannot connect to the Docker daemon"
+  (environmental: the local daemon is down; the branch does not touch
+  `maistro-evolve`; CI's own `coverage (no services)` job succeeded at
+  `8282c19e`). All three recorded CI coverage producers succeeded at
+  `8282c19e`, so the Coverage-gate red has no locally reproducible content
+  pillar and is consistent with the documented timeout/runner behavior of
+  the serial combine step; no content defect found and none repairable
+  branch-side.
+- Closure-keyword audit: PR #1936 body and all 119 branch commit subjects
+  contain no fixes/closes/resolves forms.
+- Candidate-side gates re-green fresh at this head: `check-reachability.py`
+  rc=0 (170/1,378), `check-reachability-dispositions.py` rc=0 (50 groups),
+  `check-promotion-surface.py` rc=0, `check-shipped-surface-truth.py` rc=0,
+  `check-convergence-matrix.py` rc=0 (52 subsystems, 170 unreachable
+  attributed), full `check-suite-inventory.py` rc=0 (17 suites; core 16,121;
+  the +79 front-matter delta unchanged), whole-tree `ruff check .` and
+  `ruff format --check .` clean, leaf `mypy` clean.
+
+No tree change was needed or made this round beyond this note. The merge
+blocker and its owner are unchanged: grant-first landing on the integration
+base (the five vulture identities plus the reachability baseline/disposition
+rows) or the parent #1845 integration that makes the module reachable, then
+a develop sync resolved together with the suite inventory. Stack stays
+unmerged at dd711c99e; leaf readiness handoff stands.
