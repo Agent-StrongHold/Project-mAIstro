@@ -92,3 +92,11 @@ class TestConsoleScriptWiring:
         parser = build_parser()
         with pytest.raises(SystemExit):
             parser.parse_args(["frobnicate"])
+
+
+class TestNoCommand:
+    def test_no_command_prints_help_and_exits_2(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Reaching the dispatcher without a subcommand is a usage error, not
+        a crash and not a silent success."""
+        assert main([]) == 2
+        assert "usage:" in capsys.readouterr().out
