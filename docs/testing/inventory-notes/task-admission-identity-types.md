@@ -2509,3 +2509,105 @@ line) plus a `subclass: Any` annotation; no test body, assertion, param id, or
 case count changed. Post-repair: mypy clean (strict) on both leaf files, ruff
 check/format clean, focused suite `79 passed`, suite inventory still matches
 (no delta), scoped diff-coverage rc=0 re-proven.
+
+## Round 33 — 2026-10-09 verifier+writer round at 4c29b2c14: full independent gate re-execution; round-32 commit audited; trusted-base wall re-confirmed with no candidate-side residual
+
+State at start: exact head `4c29b2c14deb`, clean tree, `origin/develop` fetched
+(now `d592654aca61`, 14 commits past the unchanged merge base `82097f6b7acc` —
+merge-base re-derived, so every trusted-base computation below is unchanged).
+Driver logs in this round's job directory re-read: `uv sync --locked --extra
+dev` ok, `ruff check .` clean, `ruff format --check .` 3,199 files, focused
+suite 79 passed, `check-suite-inventory.py --suite packages/maistro-core/tests`
+ok (15,855 node IDs). None of the earlier rounds' claims was assumed; every
+gate below was re-executed this round.
+
+Leaf acceptance evidence (all commands run this round):
+
+- Focused suite `pytest
+  packages/maistro-core/tests/runs/test_root_admission_identity.py -q` —
+  79 passed; all twelve issue-mandated test functions present and
+  behavior-asserting (fencing conjunction incl. same-owner/new-generation and
+  role-coincidence cases, repr field omission, frozen/immutability, exact-type
+  rejection, canonical-JSON normalization/rejection).
+- Leaf lint/types: `ruff check` + `ruff format --check` clean on both leaf
+  files; `mypy` clean on the source module and clean under `--strict` on both
+  leaf files (round-32's ignore-only repair re-verified by diff audit: 5
+  `pytest.param` entries re-wrapped multi-line with identical ids, zero
+  assertions or cases removed).
+- Scope hygiene re-proven: zero production importers of
+  `maistro.runs.admission_identity`; no `maistro.runs.__init__` export; no
+  `_vulture_whitelist.py` reference; branch delta vs the merge base remains
+  exactly the six leaf surfaces.
+- Suite inventory (whole repo, no args): 17 suites / 30,040 unique node IDs
+  match the recorded ledger; `+79` front-matter delta unchanged;
+  `check-test-duplicates.py` ok (0 byte-identical groups).
+
+exact-debt-ledger re-executed with CI's exact arguments at this head:
+
+- `check-ratchet-provenance.py` (`RATCHET_BASE_REV=origin/develop`) — rc=1 via
+  exactly its two reachability trusted-base sub-gates for
+  `maistro.runs.admission_identity` ("NEW unreachable module absent from
+  trusted base and not previously authorized"; "NEW disposition absent from
+  trusted ledger"). All seven other sub-ratchets report OK.
+- `check-shipped-surface-truth.py` — rc=0.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` — rc=1 with the candidate ledger exact (1,326 reviewed ->
+  1,331 findings; the five banked `AdmissionAssessment` identities are the only
+  candidate delta); the sole failing term is the trusted-base authorization
+  block ("land a reviewed grant first"). The lane brief's mandated repair
+  action (list unbanked identities; amend for reviewed retained identities)
+  therefore resolves to a verified no-op: there are no unbanked identities,
+  and the five retained identities are already the ledger rows the CI-repair
+  lane permits.
+
+Quality-gate candidate-side steps re-executed green this round:
+`check-reachability.py` rc=0 (170/1,366 banked);
+`check-reachability-dispositions.py` rc=0 (50 groups: 147 CONNECT / 21 LIBRARY
+/ 2 RETIRE); `check-promotion-surface.py` rc=0; `check-doc-links.py` rc=0;
+`check-radon-baseline.py` rc=0 (137 -> 137); xenon over CI's exact package
+scope: 139 block violations (<= 145 baseline), zero module-rank and zero
+average errors, none in the leaf module; `bump_version.py --check` (42 sites);
+`check_enumerations.py`, `check-workspace-retirement.py`,
+`check-principal-identity.py`, `check-route-permissions.py` all rc=0;
+`vendor_ifeval.py --check` and `vendor_bfcl.py --check` ok.
+
+test-job red class stays repaired: `pytest tests/test_check_reachability.py
+tests/test_reachability_baseline_identity.py tests/test_check_ac_state.py
+tests/test_no_placeholder_modules.py -q` -> 154 passed; gate meta-tests
+`tests/test_check_vulture_baseline.py tests/test_check_ratchet_provenance.py
+tests/test_ratchet_provenance.py tests/test_ratchet_provenance_integration_base.py
+tests/test_ratchet_provenance_repository.py tests/test_shipped_surface_truth.py`
+-> 132 passed.
+
+Coverage gate re-proven scoped but CI-faithful: `git diff --name-only
+82097f6b7acc...HEAD` shows the only measured changed file is the leaf module
+(test file exempt by declaration in `check-diff-coverage.py`; ledgers/docs are
+non-Python). `coverage run --branch --source=packages/maistro-core/src/maistro`
+over the focused suite, then `check-diff-coverage.py /tmp/cov-1851.xml --base
+82097f6b7acc` — rc=0, at or above the 90% lines / 80% branch floors. The
+script diffs `base...HEAD` (three-dot, verified in source), so the proof holds
+for any integration base at or above the merge base, including the new
+develop tip. The publish-set floor is not at risk from this leaf: the module
+adds fully covered statements to the aggregate denominator only.
+
+Develop-drift check: origin/develop `82097f6b7acc` -> `d592654aca61` touches
+136 files including `quality/vulture-baseline.json`, but its edit removes four
+unrelated security rows in a disjoint region of the file from this leaf's five
+`runs/admission_identity.py` rows — a future merge auto-resolves cleanly with
+no row-loss overlap (`git diff 82097f6b7acc..origin/develop -- <leaf surfaces>`
+names only the vulture ledger, disjoint hunks). No sync conflict exists to
+resolve.
+
+Resolution (unchanged from rounds 29-32, now independently re-proven): the
+candidate-side state of every failing gate is complete and correct; the only
+red terms are the two-merge trusted-base authorizations, which
+`ratchet_provenance.load_authorizations` reads from the merge base only and
+which no develop state through `d592654aca61` carries for this module. They
+clear when a reviewed grant pair lands on the integration base and the branch
+syncs, or when the parent #1845 integration leaf supplies the real runtime
+consumer that makes the module reachable and the enum values returned (at
+which point these rows are pruned there). No ledger row, grant, waiver,
+suppression, caller, export, whitelist reference, or test was added this
+round; the front-matter `+79` delta is unchanged. Leaf readiness handoff
+stands with the explicit merge blocker; the stack stays unmerged pending the
+separately authorized parent #1845 integration.
