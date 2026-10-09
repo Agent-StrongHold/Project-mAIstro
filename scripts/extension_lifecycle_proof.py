@@ -1521,20 +1521,37 @@ class LifecycleProof:
             / "maistro"
             / "extensions"
         )
+        # The boundary this stage protects is *write* access: extension
+        # install/activation status must have no path that records or executes
+        # canonical Goal/Run state. Imports of the declarative definition
+        # types (``from maistro.graph.definitions import ...``) are the one
+        # sanctioned exception: the installable domain-pack contract (M9-F1,
+        # #966) instantiates canonical Graph objects by construction — value
+        # assembly, not persistence or execution (the Workspace-scoped
+        # activation that drives packs in production is #968). Any other
+        # maistro.graph import, and any maistro.runs / maistro.goals import
+        # at all, stays forbidden.
+        allowed_exact = "from maistro.graph.definitions import"
         forbidden: list[str] = []
         for source in sorted(extensions_dir.glob("*.py")):
             for line in source.read_text(encoding="utf-8").splitlines():
                 stripped = line.strip()
-                if stripped.startswith(("import ", "from ")) and any(
+                if not stripped.startswith(("import ", "from ")):
+                    continue
+                if allowed_exact in stripped:
+                    continue
+                if any(
                     name in stripped for name in ("maistro.runs", "maistro.goals", "maistro.graph")
                 ):
                     forbidden.append(f"{source.name}: {stripped}")
         stage.check(
             "no-import-path-into-canonical-truth",
             not forbidden,
-            "no module under maistro/extensions imports maistro.runs, "
-            "maistro.goals or maistro.graph — extension status has no write "
-            "path into canonical Goal/Run truth by construction"
+            "no module under maistro/extensions imports maistro.runs or "
+            "maistro.goals, or maistro.graph beyond the declarative "
+            "maistro.graph.definitions types the #966 pack contract "
+            "instantiates — extension status has no write path into "
+            "canonical Goal/Run truth by construction"
             + ("" if not forbidden else f" (found: {'; '.join(forbidden)})"),
         )
         stage.evidence["scanned_modules"] = sorted(p.name for p in extensions_dir.glob("*.py"))
