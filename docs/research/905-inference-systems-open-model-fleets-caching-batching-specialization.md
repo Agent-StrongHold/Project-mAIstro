@@ -1,7 +1,9 @@
 # M8-F research plan — inference systems, open-model fleets, caching, batching, and specialization
 
-Epic: #905. Initiative: #879. Leaves: #934 (M8-F1), #935 (M8-F2, already
-dispositioned in [935-cross-agent-batching-kv-reuse.md](935-cross-agent-batching-kv-reuse.md)).
+Epic: #905. Initiative: #879. Leaves: #934 (M8-F1, dispositioned in
+[934-heterogeneous-fleet-benchmark.md](934-heterogeneous-fleet-benchmark.md)),
+#935 (M8-F2, already dispositioned in
+[935-cross-agent-batching-kv-reuse.md](935-cross-agent-batching-kv-reuse.md)).
 
 ## Hypothesis
 
@@ -99,7 +101,9 @@ requirements, operational complexity, provider portability.
   agent/tool-heavy workloads, and what is the failover behavior under
   provider outage/capacity pressure (the router's declared `fallback_to`
   chains vs observed gateway behavior)? Baseline: the hosted-only fleet at
-  identical budgets. This is leaf #934's experiment; no result exists yet.
+  identical budgets. This is leaf #934's experiment; its structural
+  (simulated-outcome, recorded-telemetry-absent) result is dispositioned
+  **WATCH** in [934-heterogeneous-fleet-benchmark.md](934-heterogeneous-fleet-benchmark.md).
 - **C. Batching across independent Agent work — absent.** Leaf #935's
   territory; the shipped serving path is one call per Invocation and no
   scheduler batches across Agents. See
@@ -233,15 +237,18 @@ breakpoint and the RSI no-cache bodies.
 
 ## Record
 
-This note reports no experiment. No fleet composition, batching scheme,
-cache, or specialization has been measured against a canonical MAIstro seam
-under the epic's six metrics. What exists — the governed Binding →
-Invocation → gateway path, the `CostAwareRouter` fleet policy over the YAML
-registry, compute tiers, the resilience substrate, the rate-limit header
-contract, the RSI open-weight research loop, and the single-caller prefix
-breakpoint — is prior substrate that defines the baselines. Leaf #935 is
-dispositioned **WATCH** in its own note; leaf #934 has no experiment and
-therefore no disposition beyond this epic-level WATCH. Gaps worth naming for
+This note reports no experiment at its own level. No fleet composition,
+batching scheme, cache, or specialization has been measured against a
+canonical MAIstro seam under the epic's six metrics *by this note*. What
+exists — the governed Binding → Invocation → gateway path, the
+`CostAwareRouter` fleet policy over the YAML registry, compute tiers, the
+resilience substrate, the rate-limit header contract, the RSI open-weight
+research loop, and the single-caller prefix breakpoint — is prior substrate
+that defines the baselines. Leaf #935 is dispositioned **WATCH** in its own
+note; leaf #934 now carries the fleet-composition benchmark and its
+**WATCH** disposition in
+[934-heterogeneous-fleet-benchmark.md](934-heterogeneous-fleet-benchmark.md).
+Gaps worth naming for
 whoever picks leaves up: ADR-079 (registry/routing/embeddings) is still
 **Proposed** while `CostAwareRouter` ships as its implementation — a
 fleet-benchmark leaf that produces adoption pressure should either accept
