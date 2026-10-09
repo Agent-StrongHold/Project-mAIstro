@@ -61,7 +61,7 @@ jobs:
           --scenario ${{ inputs.scenario }}
           --output model-routing-bench.json
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: model-routing-bench
           path: model-routing-bench.json
