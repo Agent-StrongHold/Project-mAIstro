@@ -67,7 +67,7 @@ jobs:
           --drift-at ${{ inputs.drift-at }}
           --output graph-pattern-reuse-bench.json
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: graph-pattern-reuse-bench
           path: graph-pattern-reuse-bench.json
