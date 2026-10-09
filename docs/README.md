@@ -29,7 +29,7 @@ Historical snapshots ([DECISION-BACKLOG.md](adr/DECISION-BACKLOG.md), [testing/i
 | [testing/](testing/) | ~760 | Suite inventory + per-change `inventory-notes/` (CI ratchet evidence) |
 | [extensions/](extensions/) | 5 | Extension SDK boundary: authoring guide, manifest reference, lifecycle, capabilities |
 | [persistence/](persistence/) | 1 | Durable vs ephemeral container state |
-| [research/](research/) | 19 | M8 research program ([README](research/README.md), charter + note index) — research notes, not governance |
+| [research/](research/) | 32 | M8 research program ([README](research/README.md), charter + note index) — research notes, not governance |
 | [exploratory-sessions/](exploratory-sessions/) | 3 | Manual probing session logs |
 
 Root guides: [WAYS-OF-WORKING.md](WAYS-OF-WORKING.md), [quality-gates.md](quality-gates.md), [EXPLORATORY-TESTING.md](EXPLORATORY-TESTING.md).
