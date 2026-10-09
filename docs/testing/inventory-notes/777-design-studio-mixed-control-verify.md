@@ -17872,3 +17872,93 @@ declared base, the battery is green at HEAD, and the freshest capture
 re-proves every #777 prerequisite open. No lawful repair exists until
 #804/#805/#806 (and #774/#776/#53/#93/#95) land; the issue's stop condition
 forbids the substitute implementation. (Refs #777)
+
+---
+
+## Round 258 (repair round at `8e59504e3142`, job bb44dbc42f4f44dcaea46f3d75063045)
+
+No code changed since round 257 (`git status` clean at `8e59504e3142`; HEAD is
+the round-257 commit, which is exactly the declared head
+`8e59504e314233bdbb454bfe04d187667c3be5ed`). This round independently
+re-verified the standing evidence rather than trusting prior claims.
+
+### Driver checks pointer — stale 11th consecutive time
+
+`manifest.json` for job `bb44dbc42f4f44dcaea46f3d75063045` records
+`"checks": []` and the job directory contains **no `check-*.log` files**.
+The prior block's `check-2.log` pointer again resolves only to stale job
+`53d5e08bf02748ed84f3fd3724f2f9fa` (dated Oct 4, predating rounds 255-257;
+its sole content was a `ruff format` finding on `builders/agent_loop.py`
+long since fixed — 3206 files format-clean today). All validation below was
+executed directly at HEAD.
+
+### Develop-sync status
+
+`git fetch origin` → `origin/develop` still
+`8fbbbfb91d78d30d756cf675b7b1a4c1ccff06e5` (the declared base, already
+merged as `6f027435f` in round 256); `HEAD..origin/develop = 0`.
+Nothing to sync; no merge conflict exists to resolve.
+
+### Dependency block re-proven from the freshest capture
+
+Dispatch capture completed `2026-10-09T00:24:50Z` (72 API calls,
+`complete_for_scope: true`): **#804 (EPIC M3-D Persistent Workspace Agent
+and Goal reconciliation) OPEN, #805 (M3-D1) OPEN, #806 (M3-D2) OPEN,
+#774 (CreativeBrief) OPEN, #776 (Workspace Ladybug graph) OPEN, #53 OPEN,
+#93 OPEN, #95 OPEN**; linked PR **#1660 open, `merged: false`** (draft at
+`6280009610e8`). #775/#39/#458 are closed — and #775's `maistro-design`
+CreativeBrief/graph code lives on `origin/develop`, not on this branch
+(`git ls-tree origin/develop packages/maistro-design` non-empty), so this
+branch's own diff vs base remains exactly the 16 manifest surfaces. Every
+#804/#805/#806-owned acceptance-criterion owner remains unlanded.
+
+### AC prerequisites re-proven absent at HEAD `8e59504e3142`
+
+- `grep -rEi "GoalReconciler|delegate_goal|WorkspaceAgentReconciler|goal_reconcil"
+  packages/*/src` — **0 hits**.
+- No `maistro/goals` module in the tree.
+- `packages/maistro-core/src/maistro/runs/reconciliation.py:1-8` —
+  self-described "universal lifecycle bookkeeping only", never deciding Goal
+  eligibility; not Goal reconciliation.
+- `packages/maistro-core/src/maistro/security/sentinel/permission_source.py:79-81`
+  — binding-scoped tool authorization "is #804's governed tool-use work" and
+  "plugs in as another `PermissionSource`" (future work).
+- `packages/hive-conductor/backend/services/design_service.py` — 0 `goal`
+  mentions; no Design-Studio-private Agent/Goal runtime introduced (stop
+  condition respected).
+
+### Battery (all exit 0)
+
+- `uv run ruff check .` — All checks passed.
+- `uv run ruff format --check .` — 3206 files already formatted.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI-exact) — base `8fbbbfb91d78`,
+  candidate `8e59504e3142`, 1326 -> 1325, **no amendment** (zero unbanked
+  identities; ledger delta vs `origin/develop` remains the branch's own
+  1-row change, numstat-verified).
+- `check-suite-inventory.py` — 17 suites match.
+- `check-test-duplicates.py` — 0 byte-identical groups.
+- `check-backlog-consistency.py` — 167 items OK.
+- `check-closure-targets.py` — skip (no PR body).
+- `check-doc-links.py` — every relative markdown link resolves.
+- Targeted pytest (round 257 parity anchors reproduced exactly):
+  `packages/maistro-design/tests packages/maistro-bootstrap/tests` —
+  **805 passed, 8 skipped** in 21.87s;
+  `packages/hive-conductor/backend/tests -k 'design or workspace'` —
+  **375 passed, 5 skipped, 3170 deselected** in 16.45s.
+
+### Inventory delta
+
+Documentation-only append; delta remains **+0** across all recorded suites.
+
+### Verdict
+
+BLOCKED — dependency-blocking (75th consecutive round). The prior block
+(worker requested attention: BLOCKED) is resolved as follows: the pointed-to
+`check-2.log` is stale-job evidence from Oct 4 whose only finding (`ruff
+format` on `builders/agent_loop.py`) no longer reproduces at HEAD;
+develop is already synced to the declared base (`HEAD..origin/develop = 0`);
+the battery is green at the declared head; and the freshest capture
+re-proves every #777 prerequisite open. No lawful repair exists until
+#804/#805/#806 (and #774/#776/#53/#93/#95) land; the issue's stop condition
+forbids the substitute implementation. (Refs #777)
