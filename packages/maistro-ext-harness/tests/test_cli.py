@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+
+import pytest
 
 from maistro_ext_harness.cli import main
 
@@ -124,3 +127,279 @@ def test_cli_reports_skip_lines_for_waived_backends(
     assert code == 0
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     assert "SKIP" in captured.out
+
+
+# ----------------------------------------------------------- certify / verify
+#
+# The subprocess tests above pin what a foreign CI sees (exit codes, output).
+# These drive `main` in process so the certify and verify-certification
+# subcommands — argument handling, signing-key resolution, the report file,
+# and the OK/INVALID lines — are themselves measured evidence, not just
+# exercised in a child interpreter.
+
+
+def _write_pyproject(root: Path) -> None:
+    """The packaging metadata the certify pipeline checks."""
+    (root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[build-system]",
+                'requires = ["hatchling"]',
+                'build-backend = "hatchling.build"',
+                "",
+                "[project]",
+                'name = "acme-widget"',
+                'version = "1.0.0"',
+                'description = "fabricated for the CLI suite"',
+                "dependencies = []",
+                "",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _make_wheel(tmp_path: Path, root: Path) -> Path:
+    """A wheel whose bytes match the fabricated source tree and manifest."""
+    import zipfile
+
+    manifest = json.loads((root / "extension.json").read_text(encoding="utf-8"))
+    package = tmp_path / "stage" / "acme_widget"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""fabricated acme_widget."""\n', encoding="utf-8")
+    (package / "plugin.py").write_text(
+        (root / "src" / "acme_widget" / "plugin.py").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    wheel = tmp_path / "acme-widget-1.0.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for module in sorted(package.glob("*.py")):
+            archive.writestr(f"acme_widget/{module.name}", module.read_text(encoding="utf-8"))
+        archive.writestr("acme_widget/extension.json", json.dumps(manifest, indent=2))
+        archive.writestr(
+            "acme-widget-1.0.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: acme-widget\nVersion: 1.0.0\n",
+        )
+    return wheel
+
+
+@pytest.fixture
+def certifiable(make_extension, tmp_path):
+    """A conforming subject plus its pyproject and matching wheel."""
+    root = make_extension()
+    _write_pyproject(root)
+    return root, _make_wheel(tmp_path, root)
+
+
+class TestCertifyCommand:
+    def test_certify_writes_the_report_and_prints_the_summary(
+        self, certifiable, tmp_path, capsys
+    ) -> None:
+        root, wheel = certifiable
+        report_path = tmp_path / "certification.json"
+        code = main(
+            ["certify", "--path", str(root), "--artifact", str(wheel), "--report", str(report_path)]
+        )
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "CERTIFIED" in out
+        assert f"certification report: {report_path}" in out
+        document = json.loads(report_path.read_text(encoding="utf-8"))
+        assert document["decision"]["certified"] is True
+
+    def test_certify_without_a_report_flag_still_prints_the_verdict(
+        self, certifiable, capsys
+    ) -> None:
+        root, wheel = certifiable
+        assert main(["certify", "--path", str(root), "--artifact", str(wheel)]) == 0
+        assert "CERTIFIED" in capsys.readouterr().out
+
+    def test_certify_signs_with_a_key_and_the_summary_names_it(self, certifiable, capsys) -> None:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        key = Ed25519PrivateKey.generate()
+        root, wheel = certifiable
+        code = main(
+            [
+                "certify",
+                "--path",
+                str(root),
+                "--artifact",
+                str(wheel),
+                "--signing-key",
+                key.private_bytes_raw().hex(),
+            ]
+        )
+        assert code == 0
+        assert "ed25519, public key" in capsys.readouterr().out
+
+    def test_certify_reads_the_key_from_stdin_with_a_dash_file(
+        self, certifiable, monkeypatch, capsys
+    ) -> None:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        key = Ed25519PrivateKey.generate()
+        monkeypatch.setattr(sys, "stdin", io.StringIO(key.private_bytes_raw().hex() + "\n"))
+        root, wheel = certifiable
+        code = main(
+            [
+                "certify",
+                "--path",
+                str(root),
+                "--artifact",
+                str(wheel),
+                "--signing-key-file",
+                "-",
+            ]
+        )
+        assert code == 0
+        assert "ed25519, public key" in capsys.readouterr().out
+
+    def test_certify_reads_the_key_from_a_file(self, certifiable, tmp_path, capsys) -> None:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        key = Ed25519PrivateKey.generate()
+        key_file = tmp_path / "seed.hex"
+        key_file.write_text(key.private_bytes_raw().hex() + "\n", encoding="utf-8")
+        root, wheel = certifiable
+        code = main(
+            [
+                "certify",
+                "--path",
+                str(root),
+                "--artifact",
+                str(wheel),
+                "--signing-key-file",
+                str(key_file),
+            ]
+        )
+        assert code == 0
+        assert "ed25519, public key" in capsys.readouterr().out
+
+    def test_an_unreadable_key_file_is_exit_2_without_a_traceback(
+        self, certifiable, capsys
+    ) -> None:
+        root, wheel = certifiable
+        code = main(
+            [
+                "certify",
+                "--path",
+                str(root),
+                "--artifact",
+                str(wheel),
+                "--signing-key-file",
+                str(wheel.parent / "absent.hex"),
+            ]
+        )
+        assert code == 2
+        err = capsys.readouterr().err
+        assert "cannot read --signing-key-file" in err
+        assert "Traceback" not in err
+
+    def test_a_declined_certification_is_exit_1_but_the_report_is_truthful(
+        self, make_extension, tmp_path, capsys
+    ) -> None:
+        """A recorded decline is exit 1 — and the decision document still exists."""
+        root = make_extension(
+            plugin_source="PLUGIN: dict[str, object] = {'kind': 'tool', 'handler': 'absent'}\n"
+        )
+        _write_pyproject(root)
+        wheel = _make_wheel(tmp_path, root)
+        report_path = tmp_path / "declined.json"
+        code = main(
+            ["certify", "--path", str(root), "--artifact", str(wheel), "--report", str(report_path)]
+        )
+        assert code == 1
+        assert "DECLINED" in capsys.readouterr().out
+        document = json.loads(report_path.read_text(encoding="utf-8"))
+        assert document["decision"]["certified"] is False
+        assert document["decision"]["decline_reasons"]
+
+
+class TestVerifyCertificationCommand:
+    def test_a_signed_certification_verifies_with_the_publisher_key(
+        self, certifiable, tmp_path, capsys
+    ) -> None:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        key = Ed25519PrivateKey.generate()
+        private_hex, public_hex = (
+            key.private_bytes_raw().hex(),
+            key.public_key().public_bytes_raw().hex(),
+        )
+        root, wheel = certifiable
+        report_path = tmp_path / "signed.json"
+        assert (
+            main(
+                [
+                    "certify",
+                    "--path",
+                    str(root),
+                    "--artifact",
+                    str(wheel),
+                    "--signing-key",
+                    private_hex,
+                    "--report",
+                    str(report_path),
+                ]
+            )
+            == 0
+        )
+        capsys.readouterr()
+        code = main(
+            [
+                "verify-certification",
+                "--report",
+                str(report_path),
+                "--artifact",
+                str(wheel),
+                "--publisher-key",
+                public_hex,
+            ]
+        )
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "OK " in out and "verified:" in out
+
+    def test_a_mutated_artifact_prints_INVALID_lines_and_exits_1(
+        self, certifiable, tmp_path, capsys
+    ) -> None:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        key = Ed25519PrivateKey.generate()
+        root, wheel = certifiable
+        report_path = tmp_path / "signed.json"
+        main(
+            [
+                "certify",
+                "--path",
+                str(root),
+                "--artifact",
+                str(wheel),
+                "--signing-key",
+                key.private_bytes_raw().hex(),
+                "--report",
+                str(report_path),
+            ]
+        )
+        mutated = tmp_path / "mutated.whl"
+        data = bytearray(wheel.read_bytes())
+        data[-1] ^= 0xFF
+        mutated.write_bytes(bytes(data))
+        capsys.readouterr()
+        code = main(
+            [
+                "verify-certification",
+                "--report",
+                str(report_path),
+                "--artifact",
+                str(mutated),
+                "--publisher-key",
+                key.public_key().public_bytes_raw().hex(),
+            ]
+        )
+        assert code == 1
+        captured = capsys.readouterr()
+        assert "INVALID" in captured.err
+        assert "verification failed" in captured.err
