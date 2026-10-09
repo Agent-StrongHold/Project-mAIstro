@@ -107,15 +107,18 @@ Every child research epic/leaf defines:
 | [921 — learned reranking and query rewriting](921-reranking-query-rewriting.md) | M8-C2 | leaf [#921](https://github.com/Agent-StrongHold/Project-mAIstro/issues/921), epic #901 | WATCH |
 | [922 — adaptive context budgeting, hierarchical compression, selective omission](922-adaptive-context-budgeting.md) | M8-C3 | leaf [#922](https://github.com/Agent-StrongHold/Project-mAIstro/issues/922), epic #901 | WATCH |
 | [923 — episodic-to-semantic consolidation, temporal contradiction handling, forgetting](923-episodic-consolidation-temporal-forgetting.md) | M8-C4 | leaf [#923](https://github.com/Agent-StrongHold/Project-mAIstro/issues/923), epic #901 | WATCH |
+| [924 — provenance-, trust-, and uncertainty-aware memory selection and write suppression](924-provenance-trust-uncertainty-memory-selection.md) | M8-C5 | leaf [#924](https://github.com/Agent-StrongHold/Project-mAIstro/issues/924), epic #901 | WATCH |
 | [926 — automatic canonical Graph synthesis from Goals](926-graph-synthesis-from-goals.md) | M8-D2 | leaf [#926](https://github.com/Agent-StrongHold/Project-mAIstro/issues/926), epic #903 | WATCH |
+| [928 — bounded beam/tree/MCTS-style plan search](928-bounded-plan-search.md) | M8-D4 | leaf [#928](https://github.com/Agent-StrongHold/Project-mAIstro/issues/928), epic #903 | INCUBATE |
 | [929 — Graph pattern induction and reuse across Goals](929-graph-pattern-induction-reuse.md) | M8-D5 | leaf [#929](https://github.com/Agent-StrongHold/Project-mAIstro/issues/929), epic #903 | INCUBATE |
 | [930 — self-consistency, semantic entropy, answer-variation signals](930-answer-variation-uncertainty-signals.md) | M8-E1 | leaf [#930](https://github.com/Agent-StrongHold/Project-mAIstro/issues/930), epic #904 | WATCH |
 | [934 — heterogeneous local + cloud fleet benchmark](934-heterogeneous-fleet-benchmark.md) | M8-F1 | leaf [#934](https://github.com/Agent-StrongHold/Project-mAIstro/issues/934), epic #905 | WATCH |
 | [935 — cross-Agent batching, prefix/KV reuse, semantic caching](935-cross-agent-batching-kv-reuse.md) | M8-F2 | leaf [#935](https://github.com/Agent-StrongHold/Project-mAIstro/issues/935), epic #905 | WATCH |
 
-No leaf currently holds a GRADUATE or REJECT disposition; five are INCUBATE (critical-zone
-mutation #894, fuzzing leaf #896, model-routing leaves #914 and #916, and graph-pattern
-reuse leaf #929) and the rest are WATCH. Dispositions are owned by the individual notes —
+No leaf currently holds a GRADUATE or REJECT disposition; six are INCUBATE (critical-zone
+mutation #894, fuzzing leaf #896, model-routing leaves #914 and #916, plan-search leaf
+#928, and graph-pattern reuse leaf #929) and the rest are WATCH. Dispositions are owned by
+the individual notes —
 update the note first, then this table.
 
 The initial research family, M8-A advanced software verification and assurance
