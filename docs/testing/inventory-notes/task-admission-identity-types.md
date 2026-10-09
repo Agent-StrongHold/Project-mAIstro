@@ -2700,3 +2700,58 @@ change this round is the convergence-matrix row. Two of the four CI jobs
 trusted-base authorizations exactly as rounds 29–33 documented. Leaf
 readiness handoff stands; the stack stays unmerged pending the separately
 authorized parent #1845 integration.
+
+## Round 35 — 2026-10-09 verifier+writer round at 068d0b5ce4c8: full independent re-execution of the round-34 attribution; ledger-amendment brief instruction determined to be a verified no-op
+
+This round re-derived every round-34 conclusion from primary evidence at this
+head without assuming it, and executed the round brief's CI-repair instruction
+(`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'`, then amend `quality/vulture-baseline.json` for reviewed
+retained identities) end to end:
+
+- Fresh origin fetch: `origin/develop` is still `d592654aca61` — the merge
+  base itself. No grant for `maistro.runs.admission_identity` exists upstream,
+  so a develop sync has nothing to merge and the grant-first two-merge
+  (`scripts/ratchet_provenance.py`, `load_authorizations`: "a new grant does
+  not take effect in the change that introduces it. Authorizing a floor-raise
+  is now two merges") cannot start from this lane.
+- The brief's amendment instruction resolves to a verified no-op: the scan
+  lists no unbanked identity (the candidate-side ledger already carries the
+  five reviewed `AdmissionAssessment` rows, round 27, and the check reports
+  no stale or unrecorded candidate row — the multiset matches the scan
+  exactly), and no identity was eliminated by any fix this round because the
+  five members are the issue-mandated fixed representation (`#1851` body:
+  "Define `AdmissionAssessment(StrEnum)` with exactly these member/value
+  pairs") — removing or renaming them would break the leaf's own contract.
+  The rc=1 is solely the trusted-base authorization branch ("New Vulture
+  debt is not authorized by the trusted base … land a reviewed grant
+  first"), which reads ledger and grants from the merge base by design.
+- exact-debt-ledger step-by-step at this head, CI-exact scope:
+  `check-ratchet-provenance.py` (`RATCHET_BASE_REV=origin/develop`) rc=1 via
+  exactly the two reachability trusted-base sub-gates
+  (`maistro.runs.admission_identity`: NEW unreachable module / NEW
+  disposition, both absent from the trusted base);
+  `check-shipped-surface-truth.py` rc=0; `check-vulture-baseline.py` rc=1
+  solely on the five trusted-base authorizations.
+- Candidate-side halves all green at this head: `check-reachability.py` rc=0
+  (170/1,378 banked), `check-reachability-dispositions.py` rc=0 (50 groups:
+  147 CONNECT / 21 LIBRARY / 2 RETIRE), `check-convergence-matrix.py` rc=0
+  with its suite 60/60 (round-34 row fix re-proven for the `test` and
+  Coverage gate jobs), `check-shipped-surface-truth.py` rc=0.
+- Leaf contract re-proven fresh: focused suite 79 passed; leaf ruff check and
+  format clean; `mypy packages/maistro-core/src/maistro/runs/admission_identity.py`
+  clean; grep over `packages/*/src` shows zero production importers of
+  `maistro.runs.admission_identity` and no `maistro.runs.__init__` export.
+
+No tree change was needed or made this round beyond this note: every red CI
+term at this head is a base-side two-merge authorization (exact-debt-ledger
+and Quality gate directly; the round-34 `test`/Coverage-gate causes are green
+locally and await CI re-evaluation at the next pushed head), and the only
+branch-side edits that could turn them green — wiring a consumer, altering
+the mandated enum, fake callers, suppressions, or branch-side grants — are
+each prohibited by the issue body or ineffective by the gate's own trusted
+base design. The blocker for the driver to route: a reviewed grant (or the
+`#1851`-rows ledger update) must land on the integration base first, or the
+parent #1845 integration leaf must land, making the module reachable and the
+assessment values returned, at which point these banked rows are pruned
+there. Stack stays unmerged; leaf readiness handoff stands.
