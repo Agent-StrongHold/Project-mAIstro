@@ -19397,3 +19397,54 @@ only state change this round is branch hygiene (develop sync landed);
 the upstream blocker is unchanged, and the stop condition forbids
 fabricating a private reconciler/Goal owner. Inventory delta **+0**
 (this record only). (Refs #777)
+
+## Round 280 record (repair round, job 60cd03aacca74df69d31f6c4dd46db0f)
+
+**Driver checks:** this job's directory contains **no `check-*.log`
+files** and `manifest.json` has `checks=[]` (31st stale-pointer
+disproval). The inherited "Validation failed" pointer again resolves to
+the Oct-4 job `53d5e08bf` (head `a99c6bd78`, an `agent_loop.py` format
+complaint); the current tree is format-clean. Nothing to repair from
+driver evidence.
+
+**Branch state:** HEAD `4462defc7` equals the assigned starting head;
+`HEAD..origin/develop = 0` (base `0d49d4e06` fully merged); tree clean.
+The round-279 salvage (wrap-serializer return-annotation fix + schema-pin
+test + `777-attempt-serialization-schema-pin.md`) is present at HEAD.
+
+**Dependency block re-proven from the freshest capture** (this job's
+dispatch-context.json, captured 2026-10-09T09:49–09:52Z, 61 sources,
+`complete_for_scope: true`): issue #777 OPEN; parent #773 OPEN;
+blockers #804/#805/#806/#53/#774/#776/#93/#95 OPEN; #39/#458/#775
+closed. PR #1660 open draft, `merged: false`, head `6280009610e8` —
+which this round proved to be an **older commit of this same lane
+branch** (`Merge commit 'af7996883' into auto-777`, reachable from HEAD,
+absent from `origin/develop`): the draft PR is the lane claim-stake, not
+independent implementation progress.
+
+**AC probes re-run at HEAD `4462defc7`:** 0
+GoalReconciler/reconcile_goal/goal_reconcil symbols in `packages/*/src`;
+`design_service.py` (376 lines) 0 goal/reconcile mentions. The #804
+producer API the first acceptance criterion consumes still does not
+exist in production; no mixed-control browser E2E exists.
+
+**Validation battery (all exit 0, executed this round):** `ruff check .`
+(All checks passed); `ruff format --check .` (3243 files); vulture
+CI-exact: 1323 reviewed -> 1322 findings, 0 unbanked, no amendment (gate
+reads authorizations from merge base `0d49d4e06`);
+`check-ratchet-provenance.py` (0 violations, 53 consumers);
+`check-suite-inventory.py` (17 suites match);
+`check-backlog-consistency.py` (167 items);
+`check-shipped-surface-truth.py` (complete). Targeted pytest:
+`test_attempt_cancellation_cause_model.py` + `hive-conductor/backend` ->
+**3595 passed, 20 skipped** (incl. the 34 runs-model tests, schema-pin
+among them). Schema-pin regression re-proven live against pydantic:
+a wrap serializer annotated `-> dict[str, Any]` yields a
+serialization-mode schema with **zero** properties; unannotated keeps
+all declared fields — the round-279 test fails exactly against that
+regression.
+
+**Verdict: BLOCKED** — dependency-blocking (97th consecutive round).
+No state change affects the block; the stop condition forbids
+fabricating a private reconciler/Goal owner. Inventory delta **+0**
+(this record only). (Refs #777)
