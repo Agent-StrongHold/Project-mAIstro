@@ -111,5 +111,8 @@ b5c22a358a8b0a0fb064e89eb6b4eba6855b58c2:.gitleaksignore:generic-api-key:54
 
 # Historical M4-A8 merge commit (#1750): producer-attribution test arguments.
 # Both findings are Python names and an enum qualifier, not credential values.
-77c17b9b89d92a209e5f5081cf31112b93ac7e45:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:462
-77c17b9b89d92a209e5f5081cf31112b93ac7e45:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:476
+# (The two 77c17b9b8 fingerprints this note originally carried are the ones in
+# the re-keyed M4-A8 block above: a develop-side edit re-added them verbatim
+# and the merge kept both copies. Duplicates add no suppression coverage —
+# tests/test_gitleaksignore_contract.py::test_fingerprints_are_unique — so the
+# redundant pair was dropped, keeping the single keyed copy.)
