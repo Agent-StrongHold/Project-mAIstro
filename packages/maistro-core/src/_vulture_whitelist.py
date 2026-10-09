@@ -61,6 +61,7 @@ from maistro.extensions.metering import (
     ExtensionQuotaLedger,
     ExtensionUsageEvent,
 )
+from maistro.extensions.packs import InstallablePackRegistry
 from maistro.extensions.resolution import LockState
 from maistro.extensions.service import ExtensionInstallService
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
@@ -550,6 +551,21 @@ _VULTURE_WHITELIST = (
     # (packages/maistro-core/tests/extensions/test_effective_authority.py) — the
     # same contract-ships-first posture as the seams above.
     EffectiveAuthority.with_execution_context,
+    # Installable domain-pack contracts (M9-F1, #966). The pack contract
+    # ships first by design, the same posture as the M9-B1 store seams and
+    # the M9-D1 registry above: its in-tree consumers are the conformance
+    # suite (packages/maistro-core/tests/extensions/test_pack_contracts.py),
+    # and the Workspace-scoped activation/configuration lifecycle that drives
+    # these verbs in production is M9-F3 (#968). `activate` is the disable
+    # gate's reversal (new use only — nothing was deleted; named activate,
+    # not enable, so the scanner's name-level matching cannot un-bank the
+    # unrelated security-store `enable` rows); the three `instantiate_*`
+    # methods are the gated instantiation entrypoints that compose the
+    # module-level pure functions behind the registry's active check.
+    InstallablePackRegistry.activate,
+    InstallablePackRegistry.instantiate_graph,
+    InstallablePackRegistry.instantiate_persona,
+    InstallablePackRegistry.instantiate_rubric,
     # Extension post-install lifecycle decisions (M9, #954). The operator
     # decisions — re-enabling a disabled version and pinning/unpinning the
     # active version — are enforced by the service state machine and exercised

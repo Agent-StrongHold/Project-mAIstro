@@ -1,10 +1,17 @@
-# Full-stack compose for e2e testing.
-# Usage:
-#   docker compose -f docker-compose.test.yml up --build -d
-#   docker compose -f docker-compose.test.yml run --rm api-tests
-#   docker compose -f docker-compose.test.yml run --rm e2e-tests
-#   docker compose -f docker-compose.test.yml down -v
-
+# Optional override for docker-compose.test.yml: publish the hive service's
+# host port on 18101 instead of 8101, for machines where 8101 is already
+# bound by another stack (this one, while the campaign runs several lanes in
+# parallel). `ports` lists merge by appending, so the replacement needs the
+# compose `!override` tag — without it the merged config asks for BOTH ports
+# and `up`/`run` fail with "Bind for 127.0.0.1:8101 failed: port is already
+# allocated" (observed while producing the #1420 evidence on such a machine).
+#
+# Usage (from packages/hive-conductor):
+#   docker compose -f docker-compose.test.yml -f docker-compose.e2e-port.yml up --build -d hive
+#   docker compose -f docker-compose.test.yml -f docker-compose.e2e-port.yml run --rm e2e-tests
+#   docker compose -f docker-compose.test.yml -f docker-compose.e2e-port.yml down -v
+# The operator read-back in docs/RUM.md's smoke procedure then uses
+# localhost:18101 instead of localhost:8101.
 services:
   hive:
     build:
@@ -16,8 +23,8 @@ services:
         # backend below ingests. rum-telemetry.spec.ts pins the payloads.
         VITE_RUM_ENABLED: "true"
         VITE_RUM_BUILD_ID: e2e
-    ports:
-      - "8101:8101"
+    ports: !override
+      - "18101:8101"
     environment:
       - PYTHONUNBUFFERED=1
       - HARDWARE_PRESET=beast
@@ -50,7 +57,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8101/health/ready', timeout=3).status==200 else 1)",
+          "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8101/health/ready', timeout=3).status==200 else 1)",  # devskim: ignore DS162092 until 2027-12-31 -- in-container readiness probe against the container's own loopback, mirroring the image HEALTHCHECK
         ]
       interval: 5s
       timeout: 3s
@@ -62,7 +69,9 @@ services:
       context: .
       dockerfile: tests/Dockerfile
     environment:
-      - HIVE_BASE_URL=http://hive:8101
+      # Service DNS over the harness's declared plain transport; both are
+      # fixed by the compose network, not operator choice.
+      - HIVE_BASE_URL=http://hive:8101 # devskim: ignore DS137138 until 2027-12-31 -- compose-internal service name on the plain-transport local harness declared above
     depends_on:
       hive:
         condition: service_healthy
@@ -74,7 +83,9 @@ services:
       context: .
       dockerfile: tests/Dockerfile.playwright
     environment:
-      - HIVE_BASE_URL=http://hive:8101
+      # Service DNS over the harness's declared plain transport; both are
+      # fixed by the compose network, not operator choice.
+      - HIVE_BASE_URL=http://hive:8101 # devskim: ignore DS137138 until 2027-12-31 -- compose-internal service name on the plain-transport local harness declared above
       # Forwarded from the host, not inherited: compose does not pass the
       # runner's environment into a container. playwright.config.ts keys its
       # reduced CI budget off this, and without it the suite runs at local
