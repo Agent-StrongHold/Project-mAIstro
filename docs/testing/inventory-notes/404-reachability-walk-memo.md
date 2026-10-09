@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests: +0
+  tests/: +0
 ---
 
 # Coverage-gate repair: memoize the reachability walk inside its own test module
@@ -89,3 +89,62 @@ include those tests, their modules, or `uv.lock`, so the behavior is
 identical at base and head; CI's `coverage (no services)` job passed at this
 exact head. They are recorded here so the next reader does not mistake them
 for lane regressions.
+
+## Correction (repair round)
+
+The front-matter delta key above was first written as `tests: +0` — without
+the trailing slash — so the ledger recorded a suite named `tests` that no
+`RECIPES` entry collects, and every `check-suite-inventory.py` invocation
+failed closed before comparing any count:
+
+```
+error: recorded suites with no collection recipe in check-suite-inventory.py: tests
+       Add each to RECIPES so it is actually gated.
+```
+
+The suite being described is the root `tests/` suite (the memoized module is
+`tests/test_check_reachability.py`), whose recipe and baseline key are spelled
+`tests/` — the same spelling the earlier
+`858-turing-provision-reachability-root` note uses. The key is corrected to
+`tests/: +0`; the count itself was and remains `+0` (memoization changes no
+collected node IDs).
+
+### Evidence at the repair head (ff51e5bcb, gate re-proven)
+
+Re-executed at the head carrying this correction, with CI's exact argv:
+
+- `python scripts/check-suite-inventory.py --suite packages/maistro-core/tests`
+  → exit 0 (16038 node IDs, 0 duplicates); the full 17-suite run → exit 0
+  (30592 identities, root `tests/` at 5124).
+- The coverage gate's root producer — the exact command CI timed out on at
+  b837ac5 (`coverage run --branch --source=scripts -m pytest tests/
+  tests/test_model_check_consumer_claim.py
+  packages/maistro-core/tests/extensions/test_lifecycle_proof.py
+  --timeout=30 -q`) → **5006 passed, 129 skipped** in 627s; the two
+  `test_check_reachability.py` ratchet tests that died at >30s now pass inside
+  the ceiling (file alone: 24 passed in 4.5s).
+- Diff pillar with real combined data (core git-suite producer under
+  `--source=packages/maistro-core/src/maistro` + the root producer above):
+  `check-diff-coverage.py coverage.xml --base c4bd944393` → exit 0, 1 measured
+  file (`tools/git/server.py`), 5 exempt test files.
+- `ruff check .` / `ruff format --check .` clean; lane set
+  (`test_server_security.py` + RSI `test_cli.py`/`test_harvest_entry_point.py`/
+  `test_selfbranch.py`) → 138 passed; vulture exact-debt ledger
+  (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) exit 0
+  (1323 = 1323, baseline read from the declared base c4bd944393) — no ledger
+  amendment needed this round.
+- Environmental, not the branch: the root producer's one local failure before
+  this correction round's cleanup was
+  `test_every_quality_json_state_surface_is_classified_once` refusing a stray
+  **gitignored** `quality/ac-state.json` — a generated artifact
+  (`generated_by: scripts/check-ac-state.py`, Oct 8 21:52) left in this
+  worktree by an earlier round's ac-state measurement. Fresh CI checkouts do
+  not contain the file; moved to `/tmp/maistro-404-salvage/` (preserved, not
+  deleted) the test passes and the producer is green as recorded above.
+- The publish-set floor pillar (`coverage report --fail-under=87`) is not
+  re-measured locally this round (it needs every publish-set producer); in the
+  merge-queue run this repair answers (37879373619) that pillar already passed
+  before the root producer's timeouts killed the step, and no publish-set
+  source file has changed since (`git diff --name-only c4bd944393..HEAD
+  -- '*.py'` excludes exactly one non-test source, `server.py`, unchanged
+  across every round since the last fully-green hosted run).
