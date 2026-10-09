@@ -21,12 +21,19 @@ import "./themes/workspace-tokens.css";
 import "./themes/workspace-bridge.css";
 import "./index.css";
 import { applyAppearance } from "./lib/appearance";
+// #1420: production perceived-load telemetry. A no-op unless the build set
+// VITE_RUM_ENABLED=true; see lib/rum.ts and docs/RUM.md for the contract.
+import { initRum } from "./lib/rum";
 import App from "./App";
 
 // Apply the stored (or OS-preferred) light/dark scheme before first paint so
 // a dark-mode user never sees a white flash. A workspace's persona template
 // is a separate attribute WorkspaceContext sets once it loads.
 applyAppearance();
+
+// Start the RUM reporter before the first fetch so the initial page load's
+// API probes are measured like every later one.
+initRum();
 
 // When Vite is built with VITE_BASE_PATH=/pm/, the browser is at /pm/ but
 // React Router needs `basename` to strip that prefix before matching nested

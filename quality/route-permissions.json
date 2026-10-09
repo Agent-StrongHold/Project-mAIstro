@@ -181,6 +181,12 @@
       "disposition": "permanent",
       "reason": "RSI runs push branches and can open PRs; GET and POST require rsi.execute."
     },
+    "/v1/rum": {
+      "permission": "rum.read",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "GET /events and /events/summary gate on rum.read in middleware/auth.py _PROTECTED_OPS: the ring is an instance-wide aggregate of every principal's navigation telemetry (route templates, session ids, timings), the same operator-only posture as persona-wide feedback. POST ingest is authenticated-only: the SPA reporter beacons its own bounded, schema-projected timings on the session it already holds, and every user's browser must be able to report without task-scoped elevation (#1420)."
+    },
     "/v1/schedules": {
       "permission": "schedules.write",
       "owner": "@BlakeMatthews-dev",
