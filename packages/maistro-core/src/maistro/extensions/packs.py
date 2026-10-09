@@ -59,6 +59,7 @@ that will drive it is M9-F3 (#968).
 from __future__ import annotations
 
 import json
+import math
 import re
 import uuid
 from collections.abc import Mapping
@@ -202,6 +203,23 @@ def _require_str(document: Mapping[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise _reject(f"{key} must be a non-empty string")
     return value
+
+
+def _require_finite_number(value: object, what: str) -> float:
+    """Require a finite JSON number (bools excluded).
+
+    ``json.loads`` maps overflow literals like ``1e400`` to infinities and
+    accepts ``NaN`` spellings, and the canonical models only constrain these
+    values by ordering (``gt=0``), which infinities satisfy — so finiteness
+    is checked here, fail-closed, before a pack rubric is accepted.
+    """
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+    ):
+        raise _reject(f"{what} must be a finite number")
+    return float(value)
 
 
 def _validate_semver(value: object, what: str) -> str:
@@ -485,12 +503,26 @@ def _parse_scale(raw: object) -> PackRubricScale:
         block = raw["numeric"]
         if not isinstance(block, dict) or set(block) - {"min_value", "max_value"}:
             raise _reject("numeric scale must have only min_value and max_value")
-        numeric = PackRubricNumericScale(**block)
+        numeric = PackRubricNumericScale(
+            min_value=_require_finite_number(
+                block.get("min_value", 0.0), "numeric scale min_value"
+            ),
+            max_value=_require_finite_number(
+                block.get("max_value", 100.0), "numeric scale max_value"
+            ),
+        )
     if "pass_fail" in raw:
         block = raw["pass_fail"]
         if not isinstance(block, dict) or set(block) - {"pass_value", "fail_value"}:
             raise _reject("pass_fail scale must have only pass_value and fail_value")
-        pass_fail = PackRubricPassFailScale(**block)
+        pass_fail = PackRubricPassFailScale(
+            pass_value=_require_finite_number(
+                block.get("pass_value", 1.0), "pass_fail scale pass_value"
+            ),
+            fail_value=_require_finite_number(
+                block.get("fail_value", 0.0), "pass_fail scale fail_value"
+            ),
+        )
     return PackRubricScale(numeric=numeric, pass_fail=pass_fail)
 
 
@@ -516,7 +548,7 @@ def _parse_rubric_dimension(item: object) -> PackRubricDimension:
     return PackRubricDimension(
         id=_require_str(item, "id"),
         name=_require_str(item, "name"),
-        weight=item["weight"],
+        weight=_require_finite_number(item["weight"], "rubric dimension weight"),
         scale=_parse_scale(item["scale"]),
         method=ScoringMethod(method),
         evidence_required=evidence_required,
@@ -550,14 +582,12 @@ def _parse_rubric_payload(payload: object) -> PackRubricDefinition:
     if missing:
         raise _reject(f"missing rubric payload keys: {missing}")
     name = _require_str(payload, "name")
-    threshold = payload["gate_pass_threshold"]
-    if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
-        raise _reject("rubric gate_pass_threshold must be a number")
-
     return PackRubricDefinition(
         name=name,
         dimensions=_parse_rubric_dimensions(payload),
-        gate_pass_threshold=float(threshold),
+        gate_pass_threshold=_require_finite_number(
+            payload["gate_pass_threshold"], "rubric gate_pass_threshold"
+        ),
         veto_dimension_ids=_parse_veto_dimension_ids(payload),
     )
 

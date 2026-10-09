@@ -1213,7 +1213,47 @@ class TestManifestInspection:
         )
         self._rejected(
             with_rubric({"name": "r", "gate_pass_threshold": "high", "dimensions": dimensions}),
-            "gate_pass_threshold must be a number",
+            "gate_pass_threshold must be a finite number",
+        )
+        self._rejected(
+            with_rubric({"name": "r", "gate_pass_threshold": 1e400, "dimensions": dimensions}),
+            "gate_pass_threshold must be a finite number",
+        )
+        self._rejected(
+            with_rubric(
+                {
+                    "name": "r",
+                    "gate_pass_threshold": 1.0,
+                    "dimensions": [
+                        {
+                            "id": "d",
+                            "name": "D",
+                            "weight": 1e400,
+                            "method": "model_judge",
+                            "scale": {"numeric": {"min_value": 0.0, "max_value": 1.0}},
+                        }
+                    ],
+                }
+            ),
+            "weight must be a finite number",
+        )
+        self._rejected(
+            with_rubric(
+                {
+                    "name": "r",
+                    "gate_pass_threshold": 1.0,
+                    "dimensions": [
+                        {
+                            "id": "d",
+                            "name": "D",
+                            "weight": 1.0,
+                            "method": "model_judge",
+                            "scale": {"pass_fail": {"pass_value": float("nan")}},
+                        }
+                    ],
+                }
+            ),
+            "pass_value must be a finite number",
         )
         self._rejected(
             with_rubric({"name": "r", "gate_pass_threshold": 1.0, "dimensions": []}),
