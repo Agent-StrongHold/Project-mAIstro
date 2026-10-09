@@ -15,7 +15,11 @@ production seams. The load-bearing properties:
 * the harness's own guards are real (artifact path escapes are refused; a
   plugin lying about its identity is recorded FAILED with nothing active);
 * the lineage stays honest about what this base cannot prove yet (the #954
-  post-install boundary note is present, not hidden).
+  post-install restart-durability boundary note is present, not hidden);
+* the #954 post-install lifecycle is covered by its dedicated suite
+  (test_post_install_lifecycle.py); this proof pins the record-level
+  properties its durable siblings must preserve (append-only trails, audited
+  version displacement, queryable history after deactivation).
 """
 
 from __future__ import annotations

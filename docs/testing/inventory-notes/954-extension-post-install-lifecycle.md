@@ -51,6 +51,14 @@ rollback → disable → resume → remove through the real service and store:
   org/workspace scope, version and a reason; the new states cannot reach
   ACTIVE without the loader; scope isolation holds for the new verbs.
 
+The concurrent-activation case (`TestConcurrentActivation`, #937) is counted
+once, by `937-activation-lock-concurrency.md`, whose race test this suite
+carries after the develop-sync resolution: two separately authorized installs
+of one scoped extension race while the store yields inside `active_record` /
+`set_active` — exactly one record stays ACTIVE, the pointer names it, and the
+loser is SUPERSEDED (the per-`(scope, extension)` extension lock serializes
+the pointer read-modify-write).
+
 ## packages/maistro-server/tests (+9)
 
 `test_extensions_api.py` adds `TestPostInstallLifecycleHttp` (9 cases) proving
