@@ -109,10 +109,16 @@ def _run_snapshot(run_id: str = "run-1") -> CanonicalJsonObject:
 
 def _subclass_copy(base: type[object], instance: object) -> object:
     """Construct a frozen dataclass subclass carrying an otherwise valid value."""
-    subclass = dataclass(frozen=True, slots=True)(type("ContractSubclass", (base,), {}))
+    # Deliberately built through ``Any``: a frozen-dataclass subclass is valid
+    # data for the runtime checks below but must be statically rejected.
+    subclass: Any = dataclass(frozen=True, slots=True)(type("ContractSubclass", (base,), {}))
     constructor: Any = subclass
     return constructor(
-        **{item.name: getattr(instance, item.name) for item in fields(instance) if item.init}
+        **{
+            item.name: getattr(instance, item.name)
+            for item in fields(instance)  # type: ignore[arg-type]
+            if item.init
+        }
     )
 
 
@@ -276,15 +282,18 @@ def test_nested_dtos_require_exact_declared_types() -> None:
         lambda: _legacy(request_snapshot=snapshot_subclass),
         lambda: _legacy(binding=binding_subclass),
         lambda: RootAdmissionResult(
-            run_id="run-1", receipt_id="receipt-1", run_snapshot=snapshot_subclass, created=True
+            run_id="run-1",
+            receipt_id="receipt-1",
+            run_snapshot=snapshot_subclass,  # type: ignore[arg-type]
+            created=True,
         ),
-        lambda: Claimed(ticket=ticket_subclass, record=record),
-        lambda: Claimed(ticket=_ticket(), record=record_subclass),
+        lambda: Claimed(ticket=ticket_subclass, record=record),  # type: ignore[arg-type]
+        lambda: Claimed(ticket=_ticket(), record=record_subclass),  # type: ignore[arg-type]
         lambda: Replayed(record=_record(binding=binding_subclass)),
-        lambda: Replayed(record=legacy_subclass),
-        lambda: Pending(record=record_subclass),
-        lambda: LegacyUnresolved(record=legacy_subclass),
-        lambda: AlreadyBound(binding=binding_subclass),
+        lambda: Replayed(record=legacy_subclass),  # type: ignore[arg-type]
+        lambda: Pending(record=record_subclass),  # type: ignore[arg-type]
+        lambda: LegacyUnresolved(record=legacy_subclass),  # type: ignore[arg-type]
+        lambda: AlreadyBound(binding=binding_subclass),  # type: ignore[arg-type]
     )
     for build in invalid_builders:
         with pytest.raises(ValueError):
@@ -478,12 +487,14 @@ def test_legacy_pending_record_has_no_invented_identity() -> None:
             id="scope-too-short",
         ),
         pytest.param(
-            lambda: AdmissionTicket(scope_key=1, generation_id=_GENERATION, owner_token=_OWNER),
+            lambda: AdmissionTicket(scope_key=1, generation_id=_GENERATION, owner_token=_OWNER),  # type: ignore[arg-type]
             id="scope-not-str",
         ),
         pytest.param(
             lambda: AdmissionTicket(
-                scope_key=_SCOPE, generation_id="not-a-uuid", owner_token=_OWNER
+                scope_key=_SCOPE,
+                generation_id="not-a-uuid",  # type: ignore[arg-type]
+                owner_token=_OWNER,
             ),
             id="generation-string",
         ),
@@ -547,20 +558,35 @@ def test_legacy_pending_record_has_no_invented_identity() -> None:
             lambda: Claimed(ticket=_ticket(owner_token=_GENERATION), record=_record()),
             id="claimed-with-wrong-owner",
         ),
-        pytest.param(lambda: Claimed(ticket=_record(), record=_record()), id="claimed-non-ticket"),
+        pytest.param(
+            lambda: Claimed(ticket=_record(), record=_record()),  # type: ignore[arg-type]
+            id="claimed-non-ticket",
+        ),
         pytest.param(lambda: Replayed(record=_record()), id="replayed-unbound-v2"),
         pytest.param(lambda: Replayed(record=_legacy()), id="replayed-unbound-legacy"),
-        pytest.param(lambda: Replayed(record="record"), id="replayed-non-record"),
+        pytest.param(
+            lambda: Replayed(record="record"),  # type: ignore[arg-type]
+            id="replayed-non-record",
+        ),
         pytest.param(
             lambda: Pending(record=_record(binding=_binding())), id="pending-bound-record"
         ),
-        pytest.param(lambda: Pending(record=_legacy()), id="pending-legacy-record"),
+        pytest.param(
+            lambda: Pending(record=_legacy()),  # type: ignore[arg-type]
+            id="pending-legacy-record",
+        ),
         pytest.param(
             lambda: LegacyUnresolved(record=_legacy(binding=_binding())),
             id="legacy-unresolved-bound",
         ),
-        pytest.param(lambda: LegacyUnresolved(record=_record()), id="legacy-unresolved-v2"),
-        pytest.param(lambda: AlreadyBound(binding="binding"), id="already-bound-str"),
+        pytest.param(
+            lambda: LegacyUnresolved(record=_record()),  # type: ignore[arg-type]
+            id="legacy-unresolved-v2",
+        ),
+        pytest.param(
+            lambda: AlreadyBound(binding="binding"),  # type: ignore[arg-type]
+            id="already-bound-str",
+        ),
     ],
 )
 def test_invalid_ids_timestamps_and_variant_combinations_are_rejected(

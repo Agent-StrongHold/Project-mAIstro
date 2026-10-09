@@ -2435,3 +2435,77 @@ ledger row, grant, waiver, suppression, caller, or export was added this
 round; no tests added (front-matter `+79` delta unchanged). Leaf readiness
 handoff stands with the explicit merge blocker; the stack stays unmerged
 pending the separately authorized parent #1845 integration.
+
+## Round 32 — 2026-10-09 verifier+writer round at a9b07daab: trusted-base wall re-proven; strict-mypy errors in the focused suite repaired
+
+State at start: exact head `a9b07daab`, clean tree. Driver checks inspected in
+the job directory: `uv sync --locked --extra dev` ok, `ruff check .` clean,
+`ruff format --check .` 3,199 files, focused suite `79 passed`,
+`check-suite-inventory.py --suite packages/maistro-core/tests` ok (15,855 node
+IDs). `git fetch origin`: `origin/develop` unmoved at `675db8be6` (merge base
+`82097f6b7acc`); `origin/auto-1851` still at `0473816208`, so the four local
+round-27/29 banking commits remain unpushed and un-evaluated by hosted CI
+(push is worker-prohibited).
+
+exact-debt-ledger re-executed with CI-exact arguments at this head:
+
+- `check-ratchet-provenance.py` (`RATCHET_BASE_REV=origin/develop`) — fails on
+  exactly its two reachability trusted-base sub-gates
+  (`check-reachability-provenance.py`: "maistro.runs.admission_identity: NEW
+  unreachable module absent from trusted base and not previously authorized";
+  `check-reachability-dispositions-provenance.py`: same module, "NEW
+  disposition absent from trusted ledger"). Every other sub-ratchet reports OK.
+- `check-shipped-surface-truth.py` — rc=0.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` — rc=1 with the candidate ledger exact (1,326 reviewed ->
+  1,331 findings; the five banked `AdmissionAssessment` identities are the only
+  candidate delta; `PENDING` pre-existed in the ledger); the sole failing term
+  is the trusted-base authorization block ("land a reviewed grant first").
+- Candidate-side gates re-proven green: `check-reachability.py` rc=0 (170
+  unreachable / 1,366 modules), `check-reachability-dispositions.py` rc=0 (50
+  groups: 147 CONNECT / 21 LIBRARY / 2 RETIRE).
+- Gate self-check meta-tests pass: `tests/test_check_reachability.py`
+  `tests/test_check_reachability_dispositions.py`
+  `tests/test_check_vulture_baseline.py` `tests/test_check_diff_coverage.py`
+  -> 65 passed; plus `tests/test_check_ratchet_provenance.py`,
+  `tests/test_ratchet_provenance*.py` (3 files),
+  `tests/test_shipped_surface_truth.py`,
+  `tests/test_reachability_baseline_identity.py` -> 136 passed.
+- Coverage gate re-proven scoped but CI-faithful: `git diff --name-only
+  82097f6b7acc...HEAD` shows the only measured changed file is the leaf module
+  (test file exempt by declaration; ledgers/docs are non-Python). Coverage run
+  over `--source=packages/maistro-core/src/maistro` with the focused suite, then
+  `check-diff-coverage.py --base 82097f6b7acc` (PR #1936's CI base) — rc=0, at
+  or above the 90%/80% floors.
+
+Grant re-check against the trusted base (prior rounds' "zero admission grants"
+claim corrected in wording, confirmed in substance): the vulture grant sections
+of `quality/ratchet-authorizations.json` at `82097f6b7acc` and `675db8be6`
+contain five rows matching the string "admission", all authorizing unrelated
+identities (`recover_stranded_chat_admissions`, the a2a transport-admission
+handlers, `ScheduleRunAdmitter.admit_due@11`,
+`CanvasCanonicalExecution._reconcile_admission@12`). No grant exists for
+`maistro.runs.admission_identity` or any of its five banked vulture
+identities, on the base, on develop, or on the new merge-queue ref observed
+this round (`gh-readonly-queue/develop/pr-2095-...`, unrelated M9-F domain-pack
+work, also without such grants). The trusted-base terms of
+exact-debt-ledger/Quality-gate therefore remain mechanically unpassable from
+this topic branch (two-merge rule, `scripts/ratchet_provenance.py`
+`load_authorizations` reads grants from the base revision only), exactly as
+issue #1851 predicts and as rounds 29-31 recorded.
+
+Genuine repair performed this round (actual evidence, not scanner guesses):
+strict `mypy packages/maistro-core/src/maistro/runs/admission_identity.py
+packages/maistro-core/tests/runs/test_root_admission_identity.py` reported 16
+pre-existing errors in the focused suite — the intentional wrong-type
+constructor-validation cases (frozen-dataclass subclass copies, non-UUID
+generation ids, non-record result payloads) carried no `# type: ignore[arg-type]`
+and `_subclass_copy` lacked an annotation, contradicting the file's own
+convention (13 existing ignores) and the earlier rounds' "mypy clean on both
+leaf files" claims, which had only ever type-checked the source module. Fixed
+by comments-only `# type: ignore[arg-type]` placement on the offending
+argument lines (mypy attributes multi-line arg-type errors to the argument's
+line) plus a `subclass: Any` annotation; no test body, assertion, param id, or
+case count changed. Post-repair: mypy clean (strict) on both leaf files, ruff
+check/format clean, focused suite `79 passed`, suite inventory still matches
+(no delta), scoped diff-coverage rc=0 re-proven.
