@@ -1219,6 +1219,12 @@ class TestManifestInspection:
             with_rubric({"name": "r", "gate_pass_threshold": 1e400, "dimensions": dimensions}),
             "gate_pass_threshold must be a finite number",
         )
+        # JSON ``true`` is a bool: isinstance(True, int) holds, so the guard
+        # must reject it on the explicit bool arm, not the numeric arm.
+        self._rejected(
+            with_rubric({"name": "r", "gate_pass_threshold": True, "dimensions": dimensions}),
+            "gate_pass_threshold must be a finite number",
+        )
         self._rejected(
             with_rubric(
                 {

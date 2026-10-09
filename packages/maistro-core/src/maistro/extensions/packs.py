@@ -213,11 +213,7 @@ def _require_finite_number(value: object, what: str) -> float:
     values by ordering (``gt=0``), which infinities satisfy — so finiteness
     is checked here, fail-closed, before a pack rubric is accepted.
     """
-    if (
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not math.isfinite(value)
-    ):
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
         raise _reject(f"{what} must be a finite number")
     return float(value)
 
