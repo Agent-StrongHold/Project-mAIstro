@@ -3025,3 +3025,86 @@ integration branch), or the parent #1845 integration that makes the module
 reachable; the unchanged gates must then pass at that integration head, per
 the issue's own staging contract. Leaf readiness handoff stands; stack stays
 unmerged.
+
+## Round 40 — 2026-10-09 independent verifier+writer round at 5c0b0487e6d2: all named-gate failures reproduced verbatim; three-wall attribution sharpened; leaf acceptance re-proven; no tree change beyond this note
+
+Prior attempt `f8213c7a` died on a provider timeout after all five driver
+checks had already passed (uv sync, ruff check, ruff format --check, focused
+pytest 79 passed, suite inventory ok) — no evidence was lost and the tree was
+untouched; this round re-executed everything independently at
+`5c0b0487e6d22fffb85581ab0f319c5337dd9ae0` (base `0d49d4e068de`).
+
+- Develop sync re-check: `git fetch origin` → `origin/develop` is still exactly
+  `0d49d4e068de`; merge-base(origin/develop, HEAD) = `0d49d4e068de`. No grant
+  has landed upstream; no sync conflict exists.
+- Named gate `exact-debt-ledger` — **both of its failing steps reproduced
+  verbatim with CI-exact arguments**:
+  1. `uv run python scripts/check-ratchet-provenance.py` → rc=1:
+     `reachability` reports "NEW unreachable module absent from trusted base
+     and not previously authorized" for `maistro.runs.admission_identity`, and
+     `reachability-dispositions` reports "NEW disposition absent from trusted
+     ledger"; inventory incomplete via
+     `check-reachability-provenance.py` and
+     `check-reachability-dispositions-provenance.py` (both rc=1). All other
+     ratchets in the inventory OK (adr-status-language, citation-status,
+     promotion-surface 74→74, shell-execution 3→3, contract-markers 358→358,
+     enumerations 1→1, lifecycle 0→0).
+  2. `uv run python scripts/check-vulture-baseline.py packages/*/src
+     --min-confidence 60 --exclude '*/third_party/*'` → rc=1: 1,328 findings,
+     0 unclassified, 0 never-allowlist, candidate ledger exact (397
+     `pydantic-declarative-field` rows incl. this leaf's 5); trusted side
+     reports 5 NEW identities (`MISMATCH`, `REPLAYED`, `TAKEOVER`,
+     `REPLACE_EXPIRED`, `LEGACY_UNRESOLVED` at `admission_identity.py:515-520`)
+     with the gate's own verdict: "New Vulture debt is not authorized by the
+     trusted base. Running --update in this branch cannot authorize it; land a
+     reviewed grant first."
+- Attribution sharpened vs the round-39 summary line: the job fails at its
+  **first** step (`check-ratchet-provenance.py`) on the reachability and
+  reachability-dispositions trusted-base walls before the vulture step runs, so
+  "the single vulture trusted-base wall" under-counted the affected ratchets —
+  there are **three** (vulture, reachability, reachability-dispositions), all
+  one root-cause class: base-side grant-first authorization
+  (`quality/ratchet-authorizations.json` read from merge base `0d49d4e068de`,
+  re-enumerated directly this round: `vulture` 102 grants — none for
+  `admission_identity.py` beyond the unrelated `container.py::
+  recover_stranded_chat_admissions`; `reachability` 11 grants — none for
+  `maistro.runs.admission_identity`). Conclusion unchanged.
+- Candidate-side gates all green at this head (the rows banked in rounds 27/29
+  do their candidate bookkeeping correctly and nothing more):
+  `check-reachability.py` rc=0 (170/1,378),
+  `check-reachability-dispositions.py` rc=0 (50 groups / 147 CONNECT /
+  21 LIBRARY / 2 RETIRE), `check-shipped-surface-truth.py` rc=0.
+- Acceptance battery re-executed fresh: focused suite 79 passed;
+  `packages/maistro-core/tests/runs` 1,297 passed / 280 skipped; full
+  `packages/maistro-core/tests` 15,140 passed / 1,030 skipped / 3 xfailed;
+  `ruff check` + `ruff format --check` clean;
+  `mypy` (canonical seven-package command) clean over 877 files;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok
+  (16,173 node IDs, 0 duplicate identities);
+  diff-coverage gate reproduced with CI arguments
+  (`coverage run --branch --source=packages/maistro-core/src/maistro -m pytest
+  packages/maistro-core/tests`, then `check-diff-coverage.py coverage.xml
+  --base 0d49d4e0`) → rc=0, module measured at 245/245 statements and 82/82
+  branch arcs (100.0% lines / 100.0% branches), test file exempt as test code.
+- Contract spot-checks beyond the suite: `__all__` is exactly the 21 mandated
+  names; `AdmissionAssessment` has exactly the six mandated member/value pairs
+  and subclasses `StrEnum`; all 17 record classes are `frozen=True,
+  slots=True`; the five empty variants define neither `__bool__` nor `__len__`
+  and keep default truthiness; `owner_token` is absent from `AdmissionTicket`
+  repr. Isolation audit: no production module imports
+  `maistro.runs.admission_identity` and `maistro.runs.__init__` does not
+  export it. Security-signature revalidation: `require_admitted_actor(
+  actor_principal_id: str | None) -> str`, `get_run(..., *, principal_id:
+  str | None = None)`, and the `actor_principal_id` guards on
+  `create_run`/`claim_run_by_effect` are byte-identical between the accepted
+  #1841 head `053f93969b4d` and this HEAD.
+- Tree changes this round: this note only. No code, ledger, gate, or workflow
+  edit.
+
+Merge blocker (restated): identical to rounds 34-39 — the five vulture
+identities plus the reachability baseline row and its disposition each require
+a reviewed grant landed on the integration base **before** this stack can pass
+the unchanged gates (two-merge rule; the gate messages say so verbatim), or
+the parent #1845 integration that wires the real runtime consumer. This lane
+holds no push/merge authority and the issue forbids self-authorized grants.
+Leaf readiness handoff stands; stack stays unmerged.
