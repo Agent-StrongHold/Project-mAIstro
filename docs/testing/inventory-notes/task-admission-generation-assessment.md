@@ -2319,3 +2319,74 @@ dispatch.
   the separately reviewed #1845 integration consumer (which wires both
   modules and prunes any banked rows on arrival). The stack stays unmerged
   by design; this lane takes no merge/PR action.
+
+## Round 29 (independent repair-round re-verification at c531f4d8a682)
+
+Fresh worker, no prior claims trusted; every gate re-run locally at the
+dispatched exact head `c531f4d8a682fd9d66aa17e182a7c5f394c133a0`
+(develop base `0d49d4e068de`). No source, test, or quality/ file changed this
+round; the only tree edit is this evidence section. Per-command evidence:
+
+- **Lane-brief vulture amendment re-proven empty (29th round)**:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` exit 0, 1323 reviewed identities ->
+  1323 findings, 0 unbanked — `quality/vulture-baseline.json` needs no row.
+  Load-bearing-whitelist probe: reverting the branch's
+  `_vulture_whitelist.py` additions makes exactly 2 unbanked identities, both
+  C1 `admission_identity.py` snapshot fields (receipt/provenance_snapshot);
+  the C2 module and `_assess` contribute zero identities either way,
+  matching the issue's symbol-collision caveat. Whitelist restored
+  byte-identical (sha256 b13c13b4…).
+- **exact-debt-ledger trio at CI argv** (`RATCHET_BASE_REV=origin/develop`):
+  `check-shipped-surface-truth.py` exit 0; vulture exit 0 (above);
+  `check-ratchet-provenance.py` exit 1 solely via the reachability
+  sub-ratchet — 169 trusted -> 171 current unreachable, the two leaf modules
+  "NEW … absent from trusted base and not previously authorized"; shell 3/3,
+  contract-markers 358/358, enumerations 1/1, lifecycle 0/0 all OK. The
+  two-merge rule makes this unretirable in-lane; the issue forbids
+  candidate-side rows/grants and mandates leaving the stack unmerged.
+- **Quality-gate attribution completed by full local step battery**: of the
+  job's gates re-run with CI env, only `check-reachability.py` fails (exit 1,
+  "171 unreachable", the two NEW modules named; +1 local-only red from a
+  gitignored `quality/ac-state.json` artifact — `.gitignore:81` — that a
+  clean CI checkout cannot contain). Verified exit 0 at this head:
+  radon ledger, enumerations, workspace-retirement, route-permissions,
+  principal-identity, frontend-typed-client, credential-authority,
+  wiring-reads, agent-store-writes, contract-markers, convergence-matrix,
+  reachability-dispositions, security-inventory, bump-version,
+  release-consistency, doc-links, both vendored-benchmark checks, and xenon
+  (139 block violations <= baseline 145; 0 module-ledger; 0 average).
+- **Root suite re-derived as CI's `test` job runs it** (`REQUIRE_AUTH=false
+  MAISTRO_DRY_RUN=1 RATCHET_BASE_REV=origin/develop pytest tests/
+  --ignore=tests/tools/registry`): 4 failed / 4947 passed / 128 skipped —
+  the 3 sanctioned reachability meta-tests (each diff naming exactly
+  `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`)
+  plus the local gitignored ac-state artifact (CI-invisible). All other
+  `test`-job Python suites green: server 535, turing 210, turing/backend 90,
+  design 572, ext-harness 273, ext-sdk 147.
+- **Coverage-gate attribution**: producers were green per the recorded
+  check-runs; the combine step re-runs the root suite under `set -e`, so its
+  red is the same three meta-tests. The diff-coverage gate itself re-proven
+  green at this head: leaf-only branch coverage run over
+  `--source=packages/maistro-core/src/maistro`, `check-diff-coverage.py
+  coverage.xml --base origin/develop` exit 0 ("every measured file this
+  change touches is at or above 90% lines / 80% branch arcs"; tests exempt;
+  `_vulture_whitelist.py` named out-of-scope, not failed).
+- **Leaf acceptance re-executed**: C2 suite 132 passed; C1 + unchanged
+  live-flow suite 140 passed (272 with `test_idempotency.py` in one run);
+  `ruff check .` + `ruff format --check .` clean; `mypy` clean on both leaf
+  modules; full `check-suite-inventory.py` exit 0 (17 suites, 30934
+  identities, 0 duplicates); all ten issue-named tests present by name;
+  `git diff --numstat origin/develop -- quality/` empty (no baseline rows,
+  no grants, no ledger edits).
+- **Required mutations re-caught in place** (backup -> mutate -> focused run
+  -> restore byte-identical sha256 578c1f17…): TAKEOVER<->REPLACE_EXPIRED
+  swap 50 failed; lease-before-binding reorder 16 failed; legacy-pending-as-v2
+  (LEGACY_UNRESOLVED row dropped) 10 failed; mismatch-before-expiry reorder
+  22 failed. 132/132 pass on the restored file.
+- **Verdict-relevant statement**: unchanged from round 28 and now re-proven
+  first-hand — implementation and tests meet every #1852 acceptance
+  criterion at this exact head; all four hosted merge-queue reds reduce to
+  the single issue-sanctioned two-module unwired reachability delta whose
+  lawful retirement is the separately reviewed #1845 integration consumer.
+  The stack stays unmerged by design; this lane takes no merge/PR action.
