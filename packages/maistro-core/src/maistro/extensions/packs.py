@@ -330,31 +330,38 @@ class PackAsset:
     rubric: PackRubricDefinition | None = None
 
 
+def _parse_graph_node(item: object, node_ids: set[str]) -> PackGraphNode:
+    """Keys, identity, and name type for one graph node — the per-item half
+    of the node-list pass, extracted so each function stays under the
+    complexity floor (same decomposition style as ``_validate_graph_head``)."""
+    if not isinstance(item, dict) or set(item) - {"node_id", "node_type", "name"}:
+        raise _reject("each graph node must have only node_id, node_type, name")
+    # The shape check above only refuses *unknown* keys; without this, a
+    # node missing node_id/node_type reaches _require_str's direct index
+    # and a raw KeyError escapes the typed PackManifestRejected boundary.
+    missing_node = [key for key in ("node_id", "node_type") if key not in item]
+    if missing_node:
+        raise _reject(f"missing graph node keys: {missing_node}")
+    node_id = _require_str(item, "node_id")
+    if _ASSET_ID_RE.match(node_id) is None:
+        raise _reject(f"malformed graph node_id: {node_id!r}")
+    if node_id in node_ids:
+        raise _reject(f"duplicate graph node_id: {node_id!r}")
+    node_name = item.get("name", "")
+    if not isinstance(node_name, str):
+        raise _reject("graph node name must be a string")
+    return PackGraphNode(node_id=node_id, node_type=_require_str(item, "node_type"), name=node_name)
+
+
 def _parse_graph_nodes(raw_nodes: object) -> tuple[PackGraphNode, ...]:
     if not isinstance(raw_nodes, list) or not raw_nodes:
         raise _reject("graph nodes must be a non-empty list")
     nodes: list[PackGraphNode] = []
     node_ids: set[str] = set()
     for item in raw_nodes:
-        if not isinstance(item, dict) or set(item) - {"node_id", "node_type", "name"}:
-            raise _reject("each graph node must have only node_id, node_type, name")
-        # The shape check above only refuses *unknown* keys; without this, a
-        # node missing node_id/node_type reaches _require_str's direct index
-        # and a raw KeyError escapes the typed PackManifestRejected boundary.
-        missing_node = [key for key in ("node_id", "node_type") if key not in item]
-        if missing_node:
-            raise _reject(f"missing graph node keys: {missing_node}")
-        node_id = _require_str(item, "node_id")
-        if _ASSET_ID_RE.match(node_id) is None:
-            raise _reject(f"malformed graph node_id: {node_id!r}")
-        if node_id in node_ids:
-            raise _reject(f"duplicate graph node_id: {node_id!r}")
-        node_ids.add(node_id)
-        node_type = _require_str(item, "node_type")
-        node_name = item.get("name", "")
-        if not isinstance(node_name, str):
-            raise _reject("graph node name must be a string")
-        nodes.append(PackGraphNode(node_id=node_id, node_type=node_type, name=node_name))
+        node = _parse_graph_node(item, node_ids)
+        node_ids.add(node.node_id)
+        nodes.append(node)
     return tuple(nodes)
 
 
@@ -929,7 +936,10 @@ def inspect_pack_manifest(raw: bytes) -> PackManifest:
         raise _reject(f"payload fails canonical validation: {exc}") from exc
 
 
-def _inspect_document(raw: bytes, document: dict[str, Any]) -> PackManifest:
+def _validate_manifest_envelope(document: dict[str, Any]) -> None:
+    """Envelope keys, supported version, and kind — everything before
+    identity/asset parsing, extracted so ``_inspect_document`` stays under
+    the complexity floor (same decomposition style as ``_parse_pack_identity``)."""
     required = (
         "manifest_version",
         "kind",
@@ -958,6 +968,10 @@ def _inspect_document(raw: bytes, document: dict[str, Any]) -> PackManifest:
         raise _reject(f"unsupported manifest_version: {declared_version!r}")
     if document["kind"] != PACK_MANIFEST_KIND:
         raise _reject(f"unsupported manifest kind: {document['kind']!r}")
+
+
+def _inspect_document(raw: bytes, document: dict[str, Any]) -> PackManifest:
+    _validate_manifest_envelope(document)
 
     pack_id, name, publisher, version, api_version = _parse_pack_identity(document)
 
