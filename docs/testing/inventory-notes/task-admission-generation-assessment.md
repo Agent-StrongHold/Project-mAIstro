@@ -2390,3 +2390,70 @@ round; the only tree edit is this evidence section. Per-command evidence:
   the single issue-sanctioned two-module unwired reachability delta whose
   lawful retirement is the separately reviewed #1845 integration consumer.
   The stack stays unmerged by design; this lane takes no merge/PR action.
+
+## Round 30 (independent repair-round re-verification at dispatched head `62bf487bb0d7`)
+
+Fresh worker, no prior claims trusted; every acceptance criterion re-derived
+locally at the dispatched exact head `62bf487bb0d76d6be85d42b4c09e6cea862e7ac2`
+(develop base `0d49d4e0`, which equals `origin/develop` and the merge base —
+no base drift). No source, test, or quality/ file changed this round; the only
+tree edit is this evidence section. Per-criterion evidence:
+
+- **CI red attribution re-derived at CI argv** — all four hosted failures
+  reduce to the sanctioned two-module reachability delta, nothing else:
+  `check-ratchet-provenance.py` (`RATCHET_BASE_REV=origin/develop`) exit 1
+  solely via reachability 169 -> 171 (`maistro.runs.admission_identity`,
+  `maistro.tasks.admission_generation` — NEW, absent from trusted base, not
+  previously authorized); vulture leg exit 0 (1323 == 1323);
+  `check-shipped-surface-truth.py` exit 0; `check-reachability.py` exit 1
+  naming exactly those two modules; root suite as CI's `test` job runs it:
+  4F/4947P/128S — the 3 reachability meta-tests
+  (`test_check_reachability.py::test_baseline_matches_the_tree`, both
+  `test_reachability_baseline_identity.py` gate-identity tests) plus the
+  local gitignored `quality/ac-state.json` artifact (`.gitignore:81`,
+  CI-invisible, so CI sees 3F); `coverage-gate` red = its `combine` step
+  re-running the root suite under `set -euo pipefail` (same 3 meta-tests).
+- **Quality-gate steps re-run green at this head**: `mypy --strict
+  packages/maistro-core/src` (775 files, clean), xenon at CI argv (139 block
+  violations <= 145; 0 module-ledger; 0 average), radon ledger 137 == 137,
+  enumerations, route-permissions (41 declared, 0 new), principal-identity
+  (4 == 4), convergence matrix (52 subsystems, exit 0),
+  reachability-dispositions (49 groups, exit 0), promotion-surface (74
+  tolerated, exit 0).
+- **Diff-coverage gate re-proven exit 0 at this head**: core producer re-run
+  under coverage exactly as `quality.yml` does (15266 passed / 1030 skipped /
+  3 xfailed), `check-diff-coverage.py coverage.xml --base origin/develop`
+  exit 0 — both new modules measured >= 90% lines / >= 80% branch arcs;
+  tests exempt; `_vulture_whitelist.py` named unmeasured, not failed.
+- **All other `test`-job Python suites re-run green at this head**: server
+  535, turing 210, turing/backend 90, ext-harness 273, design 572, ext-sdk
+  147 (matching the round-29 numbers; the diff touches only maistro-core,
+  docs, and the scanner-input whitelist).
+- **Required mutations re-caught in a shadow copy**
+  (`/tmp/shadow-1852`, worktree untouched): TAKEOVER<->REPLACE_EXPIRED swap
+  50 failed; lease-before-binding reorder **14 failed** (round 29's section
+  recorded 16 for a slightly different row construction; 14 is this round's
+  byte-exact row-move count and matches the round-27/29 commit records);
+  legacy-pending-as-v2 (LEGACY_UNRESOLVED row dropped) 10 failed;
+  mismatch-before-expiry reorder 22 failed; restored file 132/132 pass.
+- **Mutation-methodology trap recorded for future rounds**: a shadow-source
+  mutation run that only sets `PYTHONPATH` silently imports the worktree
+  module and false-passes, because pytest's `pythonpath` ini option
+  (pyproject.toml `tool.pytest.ini_options.pythonpath`, first entry
+  `packages/maistro-core/src`) is prepended ahead of `PYTHONPATH` entries.
+  This round's first swap attempt reported "132 passed" on a provably
+  mutated shadow (direct `_assess` probe returned `takeover` for an expired
+  row); overriding with `-o pythonpath=<shadow>` is required and is what the
+  counts above used. In-place mutation with a byte-identical restore (round
+  29's method) does not hit this.
+- **Leaf acceptance re-executed**: C2 suite 132 passed; C1 + unchanged live
+  suite 140 passed; ruff/format/mypy clean on the leaf files; full
+  `check-suite-inventory.py` exit 0 (17 suites, 30934 identities);
+  `git diff --numstat origin/develop -- quality/` empty (no baseline rows,
+  no grants, no ledger edits); all ten issue-named tests present; closure-
+  keyword scan over all branch commit messages: none.
+- **Verdict-relevant statement**: unchanged — implementation and tests meet
+  every #1852 acceptance criterion at this exact head; all four hosted reds
+  are the single issue-sanctioned unwired-reachability delta whose lawful
+  retirement is the separately reviewed #1845 integration consumer. The
+  stack stays unmerged by design; this lane takes no merge/PR action.
