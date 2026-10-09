@@ -769,17 +769,45 @@ def test_million_row_corpus_pages_in_bounded_time(durable: DurableAudit) -> None
     assert first_page_s < 5.0, f"first page took {first_page_s:.3f}s on {_PERF_ROWS} rows"
 
     # Structural evidence: the exact production SQL is index-driven, no sort.
-    sql, params = _page_sql(
-        action=None, severity=None, actor=None, cursor=None, actor_scope=None, limit=50
-    )
+    # Both single-seek shapes (unfiltered operator page, one-alias scoped page)
+    # must be emitted flat — a wrapper co-routine makes SQLite <= 3.46 re-sort
+    # the ordered page with a TEMP B-TREE even though it holds only page rows.
+    # Multi-seek shapes (cursor ranges, cross-alias scope) merge ordered
+    # bounded streams in SQL; their bounded merge sort is by design and their
+    # bounded work is proven by the VM-step assertions below.
     reader = durable.state.open_reader()
     try:
-        plan = reader.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()
+        for label, kwargs, index in (
+            (
+                "operator",
+                {
+                    "action": None,
+                    "severity": None,
+                    "actor": None,
+                    "cursor": None,
+                    "actor_scope": None,
+                },
+                "idx_audit_log_order",
+            ),
+            (
+                "scoped",
+                {
+                    "action": None,
+                    "severity": None,
+                    "actor": None,
+                    "cursor": None,
+                    "actor_scope": frozenset({"perf-actor-0000"}),
+                },
+                "idx_audit_log_actor",
+            ),
+        ):
+            sql, params = _page_sql(**kwargs, limit=50)
+            plan = reader.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()
+            plan_text = " ".join(str(row) for row in plan)
+            assert index in plan_text, f"{label}: {plan_text}"
+            assert "TEMP B-TREE" not in plan_text, f"{label}: {plan_text}"
     finally:
         reader.close()
-    plan_text = " ".join(str(row) for row in plan)
-    assert "idx_audit_log_order" in plan_text, plan_text
-    assert "TEMP B-TREE" not in plan_text, plan_text
 
     cursor = page1.next_cursor
     walked_ids = [e["id"] for e in page1.entries]

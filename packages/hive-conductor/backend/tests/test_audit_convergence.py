@@ -446,6 +446,29 @@ async def test_core_cursor_route_filters_before_page_and_streams_same_corpus(
     assert (await client.get("/v1/audit", params={"cursor": "invalid"})).status_code == 400
 
 
+async def test_unmatchable_severity_returns_an_empty_page_without_querying(
+    client: httpx.AsyncClient,
+    booted: Container,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's AuditLog has no `critical` severity: a filter it cannot match is
+    an empty page by contract, answered before the authority is asked a
+    question it cannot mean — never an error, never a proxied foreign value."""
+    await _login(client, _ADMIN[1], _ADMIN[2])
+    assert booted.audit_log is not None
+
+    async def forbidden_page(**kwargs):
+        pytest.fail(f"severity the authority cannot match must not reach it: {kwargs}")
+
+    monkeypatch.setattr(booted.audit_log, "get_page", forbidden_page)
+    page = await client.get("/v1/audit", params={"severity": "critical"})
+    assert page.status_code == 200, page.text
+    assert page.json() == {"entries": [], "next_cursor": None}
+    export = await client.get("/v1/audit/export", params={"severity": "critical"})
+    assert export.status_code == 200, export.text
+    assert export.text == ""
+
+
 @pytest.mark.parametrize(
     "path", ["/v1/audit", "/v1/audit/export", "/v1/settings/audit", "/v1/schedules/history"]
 )

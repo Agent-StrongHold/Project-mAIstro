@@ -337,6 +337,14 @@ def _page_sql(
     index for a tuple inequality or OR; splitting the ranges also bounds work
     when millions of rows share a timestamp. The final merge sorts at most
     limit * aliases * 2 rows (HTTP principals have at most two aliases).
+
+    A page that is one seek (no cursor, one alias) is emitted flat: wrapping a
+    lone ordered seek in a UNION co-routine makes SQLite re-sort the
+    already-ordered page — ``USE TEMP B-TREE FOR ORDER BY`` in EXPLAIN QUERY
+    PLAN on SQLite 3.45/3.46 — the per-request sort this module exists to
+    refuse, even though it holds only page rows. The multi-seek merge is
+    different: its input is several limit-bounded ordered streams, and the
+    sort is the merge itself.
     """
     allowed, actor_filter = _resolve_scope(actor, actor_scope)
     actors = [actor_filter] if actor_filter is not None or allowed is None else sorted(allowed)
@@ -361,14 +369,27 @@ def _page_sql(
         for boundary, boundary_params in boundaries:
             clauses = where + ([boundary] if boundary else [])
             seeks.append(
-                "SELECT key, value, json_extract(value, '$.created_at') AS created_at "
-                f"FROM kv_store INDEXED BY {_AUDIT_INDEXES[fields]} WHERE "
-                + " AND ".join(clauses)
-                + " ORDER BY created_at DESC, key DESC LIMIT ?"
+                f"FROM kv_store INDEXED BY {_AUDIT_INDEXES[fields]} WHERE " + " AND ".join(clauses)
             )
             params.extend([*filter_params, *boundary_params, limit])
+    if len(seeks) == 1:
+        # The seek alone is the page. ORDER BY names the indexed expression so
+        # the planner walks idx_audit_log_order in order on every supported
+        # SQLite; see the docstring for why nothing may wrap this seek.
+        return (
+            "SELECT key, value "
+            + seeks[0]
+            + " ORDER BY json_extract(value, '$.created_at') DESC, key DESC LIMIT ?",
+            params,
+        )
     # Even the merge happens in SQL; no scope/filter decision follows LIMIT.
-    union = " UNION ALL ".join(f"SELECT * FROM ({seek})" for seek in seeks)
+    union = " UNION ALL ".join(
+        "SELECT * FROM (SELECT key, value, "
+        "json_extract(value, '$.created_at') AS created_at "
+        + seek
+        + " ORDER BY created_at DESC, key DESC LIMIT ?)"
+        for seek in seeks
+    )
     return (
         f"SELECT key, value FROM ({union}) ORDER BY created_at DESC, key DESC LIMIT ?",
         [*params, limit],
