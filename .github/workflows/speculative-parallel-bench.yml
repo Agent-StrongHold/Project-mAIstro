@@ -53,7 +53,7 @@ jobs:
           --seed ${{ inputs.seed }}
           --output speculative-parallel-bench.json
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: speculative-parallel-bench
           path: speculative-parallel-bench.json
