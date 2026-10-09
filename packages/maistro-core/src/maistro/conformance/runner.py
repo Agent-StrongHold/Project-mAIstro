@@ -251,6 +251,8 @@ class ConformanceRunner:
                     detail="egress probes ran against a real loopback socket",
                 )
                 real_backend_executed = True
+                # devskim: ignore DS137138 -- same loopback-only audit
+                # fixture server as above; ephemeral, per-run lifetime.
                 probe_url = f"http://127.0.0.1:{audit.port}/conformance-probe"
                 results.append(
                     await _guarded(
