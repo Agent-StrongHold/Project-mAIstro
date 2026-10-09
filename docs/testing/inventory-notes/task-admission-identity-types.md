@@ -42,9 +42,16 @@ The DTO suite proves only representation and invariant behavior. It does not
 prove atomic admission or activate #1845. The module is deliberately
 unreachable until the separately authorized parent integration supplies its
 real consumer. Accordingly, the required reachability and provenance gates are
-expected to report the module as a new unreachable production module; no
-reachability baseline, disposition, grant, fake caller, suppression, or waiver
-is present in this leaf.
+expected to report the module as a new unreachable production module. (Round-38
+correction: the sentence below originally read "no reachability baseline,
+disposition ... is present in this leaf"; that stopped being true when rounds
+27/29 banked the candidate vulture rows and the reachability
+baseline/disposition pair under the then-current lane briefs. What remains true
+and re-verified at 540d32e97dba is: no grant, fake caller, keep-alive import,
+package re-export, suppression, disabled gate, or quality waiver is present,
+and the banked rows are outcome-neutral bookkeeping that has never made this
+leaf green — the exact-debt-ledger gate stays red on the trusted-base
+authorization wall.)
 
 The five `AdmissionAssessment` enum identities the scan exposes
 (MISMATCH, REPLAYED, TAKEOVER, REPLACE_EXPIRED, LEGACY_UNRESOLVED at
@@ -2885,3 +2892,63 @@ base (the five vulture identities plus the reachability baseline/disposition
 rows) or the parent #1845 integration that makes the module reachable, then
 a develop sync resolved together with the suite inventory. Stack stays
 unmerged at dd711c99e; leaf readiness handoff stands.
+
+## Round 38 — 2026-10-09 independent verifier round at 540d32e97dba: named exact-debt-ledger failure reproduced at the develop-synced head; leaf acceptance fully re-proven; wall confirmed structural
+
+Independent re-execution by the assigned verifier at the exact assigned head
+`540d32e97dba997012c9652272143756d4e942f3` (merge of develop base
+`0d49d4e068de`); worktree clean throughout; no state-changing git command run.
+
+- Leaf-focused acceptance re-executed fresh at this head:
+  `uv run pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q`
+  → 79 passed; `ruff check` + `ruff format --check` clean on module and tests;
+  `uv run mypy packages/maistro-core/src/maistro/runs/admission_identity.py`
+  clean; full `uv run python scripts/check-suite-inventory.py` rc=0 (17
+  suites, 30,808 unique identities cross-suite, 0 duplicate evidence; core
+  suite matches its recorded inventory, +79 front-matter delta unchanged).
+- Spec conformance re-audited by reading source, not trusting summaries:
+  21-name `__all__`, fixed field order/annotations for all nine records and
+  seven result variants, frozen+slots everywhere, `CanonicalJsonObject`
+  duplicate-key/non-finite/non-object/non-string rejection plus
+  sort-keys/compact/ensure-ascii=False/allow-nan=False canonicalization, all
+  documented validation invariants (hex64, non-nil UUID instances, stripped
+  identity strings, int64-not-bool `_us` fields, v2 lease chain, legacy
+  unclamped lease, binding/receipt agreement, acknowledgement ≥ creation and
+  bound-only, variant constructor guards, bool-typed `created`),
+  generation/owner never compared to each other, `owner_token` omitted from
+  generated reprs, no clock reads, no automatic ID generation.
+- Isolation re-verified: zero non-test importers of `admission_identity`;
+  no `maistro.runs.__init__` export; branch diff confined to the seven
+  declared surfaces; `tasks/idempotency.py`, RunStore protocols, and SQL
+  untouched; no `maistro.tasks.admission_generation` module exists.
+- Dispatch's named gate `exact-debt-ledger` re-executed step-by-step with CI's
+  exact arguments and `RATCHET_BASE_REV=0d49d4e068de`:
+  `check-ratchet-provenance.py` rc=1 (reachability-dispositions FAIL: NEW
+  disposition `runs-admission-identity-contract` not covered by a landed
+  authorization; reachability FAIL: `maistro.runs.admission_identity` NEW
+  unreachable module absent from trusted base);
+  `check-shipped-surface-truth.py` rc=0;
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=1 (5 NEW pydantic-declarative-field identities at
+  `admission_identity.py:515-520`; "New Vulture debt is not authorized by the
+  trusted base ... land a reviewed grant first"). The gate failure therefore
+  persists at this exact head and, per rounds 29–37 and this round's
+  reproduction, is the trusted-base authorization wall — not removable
+  candidate debt: `load_authorizations` reads the merge base only, the five
+  enum members are issue-mandated verbatim, and every in-leaf cure is
+  issue-prohibited or already ruled a prohibited suppression (rounds 6/12).
+- Candidate-side gates re-confirmed green at this head:
+  `check-reachability.py` rc=0 (170/1,378),
+  `check-reachability-dispositions.py` rc=0, `check-promotion-surface.py`
+  rc=0, `check-shipped-surface-truth.py` rc=0.
+- Closure-keyword audit repeated at this head: PR #1936 body carries only
+  "Refs #1851"; zero fixes/closes/resolves forms across the 78 non-merge
+  commit subjects in `0d49d4e06..540d32e97`.
+- Note repair this round: the stale "Staging result" sentence described above
+  was corrected. No other tree change.
+
+Merge blocker (unchanged, outside this lane's authority): grant-first landing
+of the five vulture identities plus the reachability baseline/disposition rows
+on the integration base, or the parent #1845 integration that makes the module
+reachable — either followed by the develop/suite-inventory sync resolution.
+Leaf readiness handoff stands; stack stays unmerged.
