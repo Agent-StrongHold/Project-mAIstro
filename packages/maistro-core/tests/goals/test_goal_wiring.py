@@ -6,12 +6,14 @@ the store cannot prove about itself: a `goal_store` field nothing constructs is
 a library, not composition. So this file proves three claims:
 
 * **Backend selection** — `wire_goal_store` picks the durable twin over the
-  SQLite pool the deployment already has, the PostgreSQL store over a pool
-  whose migration-062 tables exist, and refuses to answer an *unmigrated*
-  PostgreSQL pool with an in-process store that merely looks the same (the
-  split-backend defect the Workspace wiring documents). No database at all
-  means the in-memory reference — loudly, since canonical Goals that die with
-  the process are not canonical.
+  SQLite pool the deployment already has, and the PostgreSQL store over a pool
+  whose database has not run `alembic upgrade head` yet: the missing
+  migration-062 tables are created at wiring (`ensure_goal_schema`, the event
+  stores' "wiring creates the schema it needs" contract) so the Container comes
+  up with Goals on the durable backend it selected — never answered with an
+  in-process store that merely looks the same, the split-backend defect the
+  Workspace wiring documents. No database at all means the in-memory reference
+  — loudly, since canonical Goals that die with the process are not canonical.
 * **Container exposure** — `create_container` (the one composition Hive's
   adapter and maistro-server's main() both call) exposes `goal_store` and the
   authorized `goal_reader` seam, and the reader is wired over the container's
@@ -24,6 +26,7 @@ a library, not composition. So this file proves three claims:
 from __future__ import annotations
 
 import logging
+import uuid
 
 import pytest
 
@@ -37,7 +40,6 @@ from maistro.goals import (
 from maistro.goals.wiring import GOAL_PG_TABLES
 from maistro.testing.postgres import postgres_dsn
 from maistro.types.config import AgentConfig
-from maistro.types.errors import ConfigError
 
 
 async def test_container_exposes_the_goal_store_and_its_seam() -> None:
@@ -84,17 +86,38 @@ async def test_wire_goal_store_falls_back_to_memory_loudly(caplog) -> None:
     )
 
 
-class _SchemaPool:
-    """Answer only the PostgreSQL schema probe; never substitute Goal storage."""
+class _RecordingPool:
+    """Answer only the PostgreSQL bootstrap path; never substitute storage.
 
-    def __init__(self, missing: tuple[str, ...]) -> None:
-        self.missing = missing
-        self.probes: list[str] = []
+    `ensure_goal_schema` acquires a connection, opens a transaction, takes the
+    advisory lock and executes the DDL — this double records exactly those
+    statements and nothing else, so the test can pin what wiring ran without a
+    live server.
+    """
 
-    async def fetchval(self, sql: str, table: str) -> bool:
-        assert sql == "SELECT to_regclass($1) IS NOT NULL"
-        self.probes.append(table)
-        return table not in {f"public.{name}" for name in self.missing}
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    async def execute(self, sql: str, *args: object) -> None:
+        self.statements.append(sql)
+
+    def acquire(self):
+        import contextlib
+
+        @contextlib.asynccontextmanager
+        async def _conn():
+            yield self
+
+        return _conn()
+
+    def transaction(self):
+        import contextlib
+
+        @contextlib.asynccontextmanager
+        async def _tx():
+            yield
+
+        return _tx()
 
 
 @pytest.fixture(params=[False, True], ids=["no-sqlite", "sqlite-available"])
@@ -108,35 +131,50 @@ async def optional_sqlite(request, tmp_path):
         yield conn
 
 
-@pytest.mark.parametrize("missing", [GOAL_PG_TABLES, *((table,) for table in GOAL_PG_TABLES)])
-async def test_wire_goal_store_refuses_an_unmigrated_pg_pool_as_memory(
-    optional_sqlite, missing
+async def test_wire_goal_store_creates_the_schema_an_unmigrated_pg_pool_needs(
+    optional_sqlite,
 ) -> None:
-    """Neither an absent nor partially migrated schema may split Goals from PG."""
+    """A pool that never ran `alembic upgrade head` gets its Goal tables here.
+
+    The Container must come up on a database without the migration-062 tables —
+    the durable-events contract the refusal broke — and Goals must stay on the
+    durable PostgreSQL the deployment selected, never fall back to SQLite or
+    memory. So wiring creates the schema (advisory-locked, like every
+    concurrent bootstrap path) and selects the durable store.
+    """
+    from maistro.goals.pg_store import PgGoalStore
     from maistro.goals.wiring import wire_goal_store
 
-    pool = _SchemaPool(missing)
-    with pytest.raises(ConfigError, match="alembic upgrade head") as exc:
-        await wire_goal_store(optional_sqlite, pg_pool=pool)
-    for table in missing:
-        assert table in str(exc.value)
-    assert pool.probes == [f"public.{table}" for table in GOAL_PG_TABLES]
+    pool = _RecordingPool()
+    store = await wire_goal_store(optional_sqlite, pg_pool=pool)
+
+    assert isinstance(store, PgGoalStore)
+    assert any("pg_advisory_xact_lock" in sql for sql in pool.statements), (
+        "concurrent bootstrap must serialise on the advisory lock"
+    )
+    ddl = "\n".join(pool.statements)
+    for table in GOAL_PG_TABLES:
+        assert f"CREATE TABLE IF NOT EXISTS {table}" in ddl
     if optional_sqlite is not None:
         async with optional_sqlite.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'"
         ) as cursor:
-            assert await cursor.fetchall() == [], "refusal must not initialize a fallback store"
+            assert await cursor.fetchall() == [], (
+                "a PostgreSQL pool must not initialize a SQLite fallback store"
+            )
 
 
-async def test_wire_goal_store_keeps_a_migrated_pg_pool_even_with_sqlite(optional_sqlite) -> None:
+async def test_wire_goal_store_keeps_a_migrated_pg_pool_even_with_sqlite(
+    optional_sqlite,
+) -> None:
     """Exercise backend selection without claiming this stub is a live PG test."""
     from maistro.goals.pg_store import PgGoalStore
     from maistro.goals.wiring import wire_goal_store
 
-    pool = _SchemaPool(())
+    pool = _RecordingPool()
     store = await wire_goal_store(optional_sqlite, pg_pool=pool)
     assert isinstance(store, PgGoalStore)
-    assert pool.probes == [f"public.{table}" for table in GOAL_PG_TABLES]
+    assert any("canonical_goals" in sql for sql in pool.statements)
 
 
 async def test_wire_goal_store_selects_postgres_over_a_migrated_pool() -> None:
@@ -153,6 +191,67 @@ async def test_wire_goal_store_selects_postgres_over_a_migrated_pool() -> None:
         assert isinstance(store, PgGoalStore)
     finally:
         await pool.close()
+
+
+async def test_wiring_brings_a_bare_database_up_with_the_goal_schema() -> None:
+    """Against a real server: a database that never ran the chain comes up.
+
+    The durable-events job caught exactly this: `create_container` wired a bare
+    PostgreSQL service and the Goal refusal killed the Container before the
+    event schema existed. Here the same shape, on a throwaway database of its
+    own so no migrated database is touched: wire, then create and read a Goal
+    through the store that wiring answered with — durable tables, not a
+    refusal, not a second backend.
+    """
+    dsn = postgres_dsn()
+    if not dsn:
+        pytest.skip("set MAISTRO_TEST_PG_DSN to a reachable PostgreSQL server")
+    asyncpg = pytest.importorskip("asyncpg")
+    psycopg = pytest.importorskip("psycopg")
+
+    from maistro.goals import GoalRevisionDraft
+    from maistro.goals.pg_store import PgGoalStore
+    from maistro.goals.wiring import GOAL_PG_TABLES, wire_goal_store
+
+    base = dsn.rsplit("/", 1)[0]
+    name = f"goal_wiring_{uuid.uuid4().hex[:12]}"
+    bare = f"{base}/{name}"
+    # Admin over the existing test database (a URL without one would connect
+    # to a database named after the user): CREATE DATABASE needs autocommit.
+    with psycopg.connect(dsn, autocommit=True) as admin:  # type: ignore[arg-type]
+        admin.execute(f'CREATE DATABASE "{name}"')  # type: ignore[union-attr]
+    try:
+        pool = await asyncpg.create_pool(bare, min_size=1, max_size=2)
+        try:
+            rows = await pool.fetch(
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public' "
+                "AND tablename <> 'alembic_version'"
+            )
+            assert {row["tablename"] for row in rows} == set(), (
+                "a bare database must not ship user tables"
+            )
+
+            store = await wire_goal_store(None, pg_pool=pool)
+            assert isinstance(store, PgGoalStore)
+            rows = await pool.fetch(
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public' "
+                "AND tablename <> 'alembic_version'"
+            )
+            assert {row["tablename"] for row in rows} == set(GOAL_PG_TABLES)
+
+            goal = await store.create_goal(
+                workspace_id="ws-bare",
+                project_id="prj-bare",
+                agent_id="agent-1",
+                draft=GoalRevisionDraft(desired_state="up", author="op"),
+            )
+            read = await store.get_goal(goal.goal_id)
+            assert read is not None and read.current_revision == 1
+        finally:
+            await pool.close()
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as cleanup:  # type: ignore[arg-type]
+            cleanup.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')  # type: ignore[union-attr]
 
 
 async def test_goal_reader_rides_the_container_end_to_end() -> None:

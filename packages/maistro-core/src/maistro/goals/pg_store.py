@@ -1,10 +1,13 @@
 """PostgreSQL persistence for the canonical Goal (#1572).
 
 The durable twin of `sqlite_store.py` and of `InMemoryGoalStore`, run against
-the same conformance suite. The tables come from Alembic migration ``059`` —
-this store creates nothing of its own, so a deployment that has not run
-`alembic upgrade head` fails loudly at the first query instead of quietly
-keeping Goals in a second schema nobody migrates.
+the same conformance suite. For a managed deployment the tables come from
+Alembic migration ``062_canonical_goals``; ``ensure_goal_schema`` mirrors that
+DDL for tests and single-command dev runs the way ``ensure_event_schema``
+mirrors migration 004 — a database that never ran the chain still gets the
+real durable tables, never a substitute schema nobody migrates. The two DDL
+sources are held to one catalogue by
+``packages/maistro-core/tests/goals/test_goal_pg_schema_agreement.py``.
 
 What differs from the reference is not the rules but the concurrency, and it
 concentrates in one rule: **mutations are compare-and-set on
@@ -32,7 +35,7 @@ like every other PG store.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from maistro.goals.model import (
     Goal,
@@ -53,6 +56,85 @@ from maistro.runs.evidence_json import json_of, model_of
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
     import asyncpg.pool
+
+#: Tables the PostgreSQL Goal store answers through. Migration 062 owns their
+#: DDL for managed deployments; ``_PG_SCHEMA`` below mirrors it.
+GOAL_PG_TABLES: Final = (
+    "canonical_goals",
+    "canonical_goal_revisions",
+    "canonical_goal_transitions",
+)
+
+#: The Goal tables' DDL, mirroring ``alembic/versions/062_canonical_goals.py``
+#: statement for statement. Written out rather than imported on purpose — a
+#: migration must keep creating what it created on the day it ran, so it cannot
+#: import live application code — which is exactly why the agreement test
+#: compares the two against a real catalogue instead of trusting the review.
+_PG_SCHEMA = """
+CREATE TABLE IF NOT EXISTS canonical_goals (
+    goal_id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    parent_goal_id TEXT
+        REFERENCES canonical_goals (goal_id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    current_revision INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    payload JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_canonical_goals_project ON canonical_goals (project_id);
+
+CREATE TABLE IF NOT EXISTS canonical_goal_revisions (
+    goal_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    payload JSONB NOT NULL,
+    PRIMARY KEY (goal_id, revision),
+    FOREIGN KEY (goal_id)
+        REFERENCES canonical_goals (goal_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS canonical_goal_transitions (
+    goal_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    at TIMESTAMPTZ NOT NULL,
+    kind TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    PRIMARY KEY (goal_id, seq),
+    FOREIGN KEY (goal_id)
+        REFERENCES canonical_goals (goal_id) ON DELETE CASCADE
+);
+"""
+
+#: Namespace for the Goal bootstrap advisory lock. Arbitrary but fixed, and
+#: distinct from the event stores' ``0x6D61_6973``: any two processes running
+#: ``ensure_goal_schema`` must pick the same number, and no unrelated advisory
+#: lock in this database should pick it either.
+_SCHEMA_LOCK_KEY = 0x676F_616C  # "goal"
+
+
+async def ensure_goal_schema(pool: asyncpg.Pool) -> None:
+    """Create the three Goal tables when the database does not have them.
+
+    Idempotent, and safe to call concurrently: ``CREATE TABLE IF NOT EXISTS``
+    is idempotent but **not** serialised, so — same failure ``ensure_event_schema``
+    documents — two workers that both observe the tables as absent can both run
+    the DDL and one loses with a ``pg_type`` unique violation rather than a
+    clean no-op. A transaction-scoped advisory lock serialises them and is
+    released when the transaction ends, including by crash.
+
+    Migration 062 remains the real path for a managed deployment; this is what
+    lets the Container come up — with Goals on the same durable PostgreSQL the
+    deployment already selected — in tests and single-command dev runs that
+    never ran the chain, instead of refusing startup over tables one statement
+    away.
+    """
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute("SELECT pg_advisory_xact_lock($1)", _SCHEMA_LOCK_KEY)
+        await conn.execute(_PG_SCHEMA)
+
 
 #: The guarded UPDATE's shape, shared by all three mutations. ``$1`` is the
 #: goal id and the last parameter is always the ``expected_revision`` the
@@ -75,6 +157,10 @@ _REASSIGN_SQL = """UPDATE canonical_goals
 
 class PgGoalStore:
     """The PostgreSQL Goal store. One pool, one guarded statement per write."""
+
+    async def ensure_schema(self) -> None:
+        """Create the three Goal tables if the database does not have them."""
+        await ensure_goal_schema(self._pool)
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool

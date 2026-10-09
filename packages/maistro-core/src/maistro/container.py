@@ -2354,9 +2354,12 @@ async def create_container(
     # the cost, rather than a silent durability lie (#103, AC-5).
     campaign_store: CampaignStore | None = await _wire_campaign_backend(db_pool)
     # The canonical Goal store rides the same backend decision, upgraded where
-    # the deployment offers it: a PostgreSQL pool requires migrated Goal
-    # tables or refuses startup; without a PG pool, SQLite selects its twin
-    # and no database selects memory with a warning (#1572).
+    # the deployment offers it: a PostgreSQL pool always selects the durable
+    # PgGoalStore, creating the migration-062 tables when the database has not
+    # run `alembic upgrade head` yet — the event stores' "wiring creates the
+    # schema it needs" contract, never a second (in-process) backend (#1572).
+    # Without a PG pool, SQLite selects its twin and no database selects memory
+    # with a warning.
     # The authorized `goal_reader` seam is derived on
     # the Container from this store and the Workspace store.
     goal_store = await wire_goal_store(db_pool, pg_pool=pg_pool)

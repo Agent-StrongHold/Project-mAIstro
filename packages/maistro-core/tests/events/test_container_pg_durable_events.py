@@ -152,3 +152,33 @@ class TestTheOtherTwoBackendsAreUnchanged:
         container = await wire(_config("sqlite://"), pg_pool=pg_pool)
 
         assert isinstance(container.durable_event_log, PgEventLog)
+
+    async def test_wiring_a_bare_pool_also_creates_the_goal_schema(self, pg_pool, wire):
+        """The Container composes Goals on the pool too (#1572), and a Goal
+        store that refused a database without migration 062 used to kill the
+        whole Container before the event schema existed — every test in this
+        file went red on a bare service. The contract is the same one the
+        event stores ship: wiring creates the schema it needs, and Goals stay
+        on the durable PostgreSQL the pool selected — never in memory, never
+        on the SQLite tier."""
+        from maistro.goals import GoalRevisionDraft
+        from maistro.goals.pg_store import PgGoalStore
+
+        # Put the pool's database back to bare first: earlier tests in this
+        # file wired Containers, and wiring now creates the Goal tables.
+        await pg_pool.execute(
+            "DROP TABLE IF EXISTS "
+            "canonical_goal_transitions, canonical_goal_revisions, canonical_goals"
+        )
+
+        container = await wire(_config(), pg_pool=pg_pool)
+
+        assert isinstance(container.goal_store, PgGoalStore)
+        goal = await container.goal_store.create_goal(
+            workspace_id="ws-events",
+            project_id="prj-events",
+            agent_id="agent-1",
+            draft=GoalRevisionDraft(desired_state="durable", author="op"),
+        )
+        read = await container.goal_store.get_goal(goal.goal_id)
+        assert read is not None and read.current_revision == 1
