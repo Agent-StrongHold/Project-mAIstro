@@ -57,7 +57,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8101/health/ready', timeout=3).status==200 else 1)",
+          "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8101/health/ready', timeout=3).status==200 else 1)",  # devskim: ignore DS162092 until 2027-12-31 -- in-container readiness probe against the container's own loopback, mirroring the image HEALTHCHECK
         ]
       interval: 5s
       timeout: 3s
@@ -69,7 +69,9 @@ services:
       context: .
       dockerfile: tests/Dockerfile
     environment:
-      - HIVE_BASE_URL=http://hive:8101
+      # Service DNS over the harness's declared plain transport; both are
+      # fixed by the compose network, not operator choice.
+      - HIVE_BASE_URL=http://hive:8101 # devskim: ignore DS137138 until 2027-12-31 -- compose-internal service name on the plain-transport local harness declared above
     depends_on:
       hive:
         condition: service_healthy
@@ -81,7 +83,9 @@ services:
       context: .
       dockerfile: tests/Dockerfile.playwright
     environment:
-      - HIVE_BASE_URL=http://hive:8101
+      # Service DNS over the harness's declared plain transport; both are
+      # fixed by the compose network, not operator choice.
+      - HIVE_BASE_URL=http://hive:8101 # devskim: ignore DS137138 until 2027-12-31 -- compose-internal service name on the plain-transport local harness declared above
       # Forwarded from the host, not inherited: compose does not pass the
       # runner's environment into a container. playwright.config.ts keys its
       # reduced CI budget off this, and without it the suite runs at local
