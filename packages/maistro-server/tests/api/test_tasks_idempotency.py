@@ -448,21 +448,31 @@ async def test_a_mid_admission_timeout_across_a_durable_restart_resumes_the_work
     store = queue._idempotency
     assert store is not None
     hang = asyncio.Event()
+    parked = asyncio.Event()
 
     async def complete_then_hang(scope_key: str, **kwargs: object) -> bool:
         # Death in the instant after the Run was minted and queued, before
         # the outcome was recorded — the write never lands and the receipt is
         # never enqueued.
+        parked.set()
         await hang.wait()
         return True
 
     real_complete = store.complete
     store.complete = complete_then_hang  # type: ignore[method-assign]
+    request = asyncio.create_task(
+        client.post("/tasks", json=body, headers={"Idempotency-Key": "k-1"})
+    )
+    # Reach the death point before the client gives up. A fixed deadline on
+    # the bare request raced admission itself: on a runner slow enough (or
+    # under coverage tracing) the 0.3s could fire while admission was still
+    # before ``begin``, cancelling a request whose begun claim never got
+    # written — and the crash state below would not exist. With the gate, the
+    # 0.3s measures only what it always meant: a parked request never
+    # answers, because the parked coroutine waits on an event nothing sets.
+    assert await asyncio.wait_for(parked.wait(), timeout=10.0)
     with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(
-            client.post("/tasks", json=body, headers={"Idempotency-Key": "k-1"}),
-            timeout=0.3,
-        )
+        await asyncio.wait_for(request, timeout=0.3)
     store.complete = real_complete  # type: ignore[method-assign]
 
     # The crash state, read from the durable files (the 'process' is gone):

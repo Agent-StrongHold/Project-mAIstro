@@ -295,6 +295,17 @@ class Settings(BaseSettings):
 
     _check_cors_origins = field_validator("cors_origins")(validate_cors_origins)
 
+    # --- Perceived-load telemetry (RUM, #1420) ---------------------------------
+    # The SPA reporter (frontend/src/lib/rum.ts) is separately off unless its
+    # build set VITE_RUM_ENABLED=true; both sides must opt in before any
+    # observation exists. Contract: packages/hive-conductor/docs/RUM.md.
+    # Off by default: an operator who never hears about RUM gets no collector.
+    rum_ingest_enabled: bool = False
+    # Retention bound: the in-memory ring never holds more than this many
+    # observations, oldest evicted first. Clamped by RumStore to
+    # [50, 10_000]; the default keeps roughly a day of light browsing.
+    rum_max_events: int = 500
+
     # Mark the session cookie Secure so browsers refuse to send it over plain
     # HTTP. **On by default** (#369). It used to default off, with the reason
     # given as the documented dev loop being http://localhost:8101 — where a

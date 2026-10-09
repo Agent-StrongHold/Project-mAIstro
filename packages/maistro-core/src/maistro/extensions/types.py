@@ -304,6 +304,14 @@ class ExtensionState(StrEnum):
     inspection, so a denied or abandoned request never leaves an active
     extension behind. ``FAILED`` is the recoverable post-authorization state —
     the grant stands, the artifact bound at inspection may be presented again.
+
+    The post-install lifecycle (#954) adds three served-version states. A
+    version leaves ``ACTIVE`` only through an explicit operator decision
+    (``DISABLED``, ``REMOVED``) or by being superseded by another authorized
+    version's activation (``SUPERSEDED``). ``DISABLED`` and ``SUPERSEDED``
+    keep their frozen grants and full history and can return to ``ACTIVE``
+    (re-enable, rollback) or be removed; ``REMOVED`` is terminal — the record
+    and its evidence stay queryable forever, nothing reactivates.
     """
 
     INSPECTING = "inspecting"
@@ -311,16 +319,22 @@ class ExtensionState(StrEnum):
     AUTHORIZED = "authorized"
     INSTALLING = "installing"
     ACTIVE = "active"
+    SUPERSEDED = "superseded"
+    DISABLED = "disabled"
     DENIED = "denied"
     REJECTED = "rejected"
     ABANDONED = "abandoned"
     FAILED = "failed"
+    REMOVED = "removed"
 
 
 #: The legal transition table. Every state is named here so an unfamiliar
 #: edge fails loudly at lookup instead of silently widening the machine.
-#: ``ACTIVE`` has no outgoing edges in B2 — pin/upgrade/disable/remove is
-#: #954's lifecycle and must not grow here by accident.
+#: The post-install edges are #954's lifecycle; each names the operation that
+#: owns it: disable/remove, supersede (a newer version's activation),
+#: re-enable, and restore (rollback to a prior version). Every one of them
+#: preserves the record and its audit trail — the stores are append-only, so
+#: no lifecycle operation ever rewrites or deletes evidence.
 TRANSITIONS: dict[ExtensionState, frozenset[ExtensionState]] = {
     ExtensionState.INSPECTING: frozenset(
         {ExtensionState.AWAITING_AUTHORIZATION, ExtensionState.REJECTED}
@@ -337,10 +351,19 @@ TRANSITIONS: dict[ExtensionState, frozenset[ExtensionState]] = {
     # A failed activation is retried with the same bound artifact: re-entering
     # INSTALLING is the recovery path, not a new authority grant.
     ExtensionState.FAILED: frozenset({ExtensionState.INSTALLING}),
-    ExtensionState.ACTIVE: frozenset(),
+    # Post-install lifecycle (#954): a version leaves ACTIVE only through an
+    # explicit operator decision (disable, remove) or by being superseded by
+    # another authorized version's activation. DISABLED and SUPERSEDED can
+    # return to ACTIVE (re-enable / rollback-restore) or be removed.
+    ExtensionState.ACTIVE: frozenset(
+        {ExtensionState.DISABLED, ExtensionState.SUPERSEDED, ExtensionState.REMOVED}
+    ),
+    ExtensionState.DISABLED: frozenset({ExtensionState.ACTIVE, ExtensionState.REMOVED}),
+    ExtensionState.SUPERSEDED: frozenset({ExtensionState.ACTIVE, ExtensionState.REMOVED}),
     ExtensionState.DENIED: frozenset(),
     ExtensionState.REJECTED: frozenset(),
     ExtensionState.ABANDONED: frozenset(),
+    ExtensionState.REMOVED: frozenset(),
 }
 
 #: States that can never reach ``ACTIVE`` without a brand-new inspection.
@@ -349,6 +372,7 @@ TERMINAL_STATES: frozenset[ExtensionState] = frozenset(
         ExtensionState.DENIED,
         ExtensionState.REJECTED,
         ExtensionState.ABANDONED,
+        ExtensionState.REMOVED,
     }
 )
 
@@ -377,6 +401,16 @@ class InspectionConflict(ExtensionLifecycleError):
 
 class InvalidTransition(ExtensionLifecycleError):
     """A lifecycle operation was attempted from a state that forbids it."""
+
+
+class VersionPinned(ExtensionLifecycleError):
+    """The active version is pinned; moving to another version is fenced.
+
+    A pin is an explicit operator hold (#954): upgrades and rollbacks that
+    would move the active version away from the pinned one are refused until
+    the pin is lifted with another explicit decision. Pinning deliberately
+    never fences disabling or removal, so incident response is never blocked
+    by a pin."""
 
 
 class UnknownInstall(ExtensionLifecycleError):
@@ -532,6 +566,11 @@ class ExtensionInstallRecord:
     #: Decision deadline for the AWAITING_AUTHORIZATION state. Expired
     #: requests become ABANDONED — lazily on touch and via the sweep.
     expires_at: datetime | None = None
+    #: #954: an explicit operator hold on this version. A pinned record fences
+    #: activation of a *different* version of the same extension (and rollback
+    #: away from it) until the pin is lifted; pinning never fences disabling
+    #: or removal, so incident response is never blocked by a pin.
+    pinned: bool = False
 
 
 @dataclass(frozen=True)
