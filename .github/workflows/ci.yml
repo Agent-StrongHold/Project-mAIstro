@@ -153,6 +153,16 @@ jobs:
       # import to build or test.
       - name: Reference extension builds and tests in a clean environment
         run: python3 scripts/check-reference-extension.py
+      # The physical half of the developer-tooling epic (#945): every family
+      # template `maistro-ext-sdk new` emits is scaffolded, built as a wheel,
+      # installed with the SDK + harness wheels into a fresh venv, sampled-
+      # tested, conformed, certified (structure + security + conformance +
+      # digest + Ed25519 signature), verified, and refused on a mutated byte;
+      # the built-in reference extension certifies through the same installed
+      # tooling. A pass here is the executed "new -> test -> validate ->
+      # package -> sign without cloning MAIstro core" acceptance.
+      - name: Extension scaffold builds, conforms, and certifies out of tree
+        run: python3 scripts/check-extension-scaffold.py
       # The same question one seam further out. That one asks whether an import
       # names something that exists; this asks whether the path the frontend
       # fetches reaches a route the backend registers. `fetch` does not reject
