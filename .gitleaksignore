@@ -57,6 +57,16 @@ ae2c7d23f3e36409dc876e0a741e524a315e5dd1:packages/maistro-core/tests/skills/test
 cde47a2edf6c24a72bacfcc6fab85073d6a67919:packages/maistro-core/tests/graph/durable_runs/test_recovery_wakeup.py:generic-api-key:276
 cde47a2edf6c24a72bacfcc6fab85073d6a67919:packages/maistro-core/tests/graph/durable_runs/test_recovery_wakeup.py:generic-api-key:319
 43d02d6398a465e92321d241a2d237ec7428e017:packages/maistro-core/tests/tasks/test_idempotency.py:generic-api-key:754
+# ---- #860 soak-harness synthetic keys (fixed in the same lane) ----
+# Commit 8185c1d0 introduced two synthetic soak credentials with hex-padded
+# shapes ("soak-{delegation,router}-key-0123456789abcdef"). They are harness
+# fixtures the script itself passes to its own throwaway dockerized stack —
+# TASK_DELEGATION_KEY is opaque to the server and ROUTER_API_KEY only needs to
+# clear the >=32-char Settings warning; there is no secret content. The tree
+# no longer carries the shapes (de-shaped in this lane), but the introducing
+# commit's blob is immutable and every `BASE..HEAD` range scan that contains
+# 8185c1d0 re-reports it. Fingerprint is keyed to that commit SHA.
+8185c1d076e3471e41fd948ac2bc43c6c2d110b8:scripts/soak/run_soak.py:generic-api-key:51
 # ---- M4-A8 producer-attribution tests (#115) ----
 # gitleaks' generic-api-key rule matches a keyword-argument call shape in
 # the ledger's operator-weighting tests: a parameter whose name ends in
@@ -72,11 +82,37 @@ cde47a2edf6c24a72bacfcc6fab85073d6a67919:packages/maistro-core/tests/graph/durab
 bd8dc5faa7c063b8e146d5b72d3475c779111168:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:361
 bd8dc5faa7c063b8e146d5b72d3475c779111168:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:375
 b5c22a358a8b0a0fb064e89eb6b4eba6855b58c2:.gitleaksignore:generic-api-key:54
+# ---- #860 production-stack probe correlation ID (recorded evidence pack) ----
+# Commit 88edcc7e committed the round-7 production-stack evidence pack. One
+# recorded probe field — the `idempotency_key` the probe client generated to
+# deduplicate its own POST /tasks retries against the throwaway m3a860
+# Compose stack — has the `..._key": "<32-hex>"` shape the generic-api-key
+# rule matches. It authenticates to nothing: the probe's principal traveled
+# in a separate auth header, and the stack the key named no longer exists.
+# The file is a recorded observation tied to the round's artifact hashes, so
+# de-shaping the value in place would falsify the record, and rewriting the
+# introducing commit is not an option — the same bind as the 8185c1d0 entry
+# above, so the fingerprint is likewise keyed to that commit.
+88edcc7ea03baf4257a9edfb47e56a5493d6d329:docs/testing/soak/evidence/m3a-round7-prodstack-quick-probes.json:generic-api-key:13
+# ---- M4-A8 producer-attribution call shape, re-keyed after line drift ----
+# The bd8dc5fa entries above fingerprint this same generic-api-key false
+# positive — a `context_key` argument passed alongside a ProducerKind
+# qualifier, which the rule reads as an assignment of a key-like value — at
+# the lines that commit introduced. Later develop-side edits moved the calls,
+# so the shape now re-reports under commit 77c17b9b8 ("WIP: M4-A8 …#1750",
+# already on develop) at its new lines. Same content, no secret on either
+# line (gitleaks' own --redact output shows only argument text); the
+# fingerprints are re-keyed to the commit whose patch now introduces them.
+77c17b9b89d92a209e5f5081cf31112b93ac7e45:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:462
+77c17b9b89d92a209e5f5081cf31112b93ac7e45:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:476
 # #2045: Python caller-context/delegation arguments, not a credential.
 # The fixture spelling is corrected; retain only this historical finding.
 7907644e80b7abf22e8371d5529d6d0a49d3d906:packages/maistro-core/tests/agents/test_tool_call_identity.py:generic-api-key:127
 
 # Historical M4-A8 merge commit (#1750): producer-attribution test arguments.
 # Both findings are Python names and an enum qualifier, not credential values.
-77c17b9b89d92a209e5f5081cf31112b93ac7e45:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:462
-77c17b9b89d92a209e5f5081cf31112b93ac7e45:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:476
+# (The two 77c17b9b8 fingerprints this note originally carried are the ones in
+# the re-keyed M4-A8 block above: a develop-side edit re-added them verbatim
+# and the merge kept both copies. Duplicates add no suppression coverage —
+# tests/test_gitleaksignore_contract.py::test_fingerprints_are_unique — so the
+# redundant pair was dropped, keeping the single keyed copy.)
