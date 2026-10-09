@@ -6,9 +6,10 @@ tests; no production caller resolves semantic objects through it yet.
 
 Thread-safety: not thread-safe. Wrap with a lock for concurrent access.
 
-Connecting this subsystem to a consumer is tracked by #34, which the
-reachability ledger records as the CONNECT disposition for
-``maistro.ontology``.
+Connecting this subsystem to a process consumer is tracked by #34. The
+modules are import-reachable (first consumer:
+:mod:`maistro.projects.rubric_store`), so they have left the
+reachability baseline and the ledger records no disposition for them.
 """
 
 from __future__ import annotations
