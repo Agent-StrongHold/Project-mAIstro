@@ -86,3 +86,55 @@ Gate evidence after the round (all run locally, CI arguments):
 - `uv run pytest packages/maistro-ext-harness/tests -q` — 138 passed.
 - `uv run python scripts/check-ratchet-provenance.py`,
   `check-shipped-surface-truth.py`, `check-backlog-consistency.py` — all OK.
+
+## 2. Second develop-sync round (current `origin/develop` `d99e598e1`) + #954 integration fix
+
+Round 3 (2026-10-09): merged the advanced `origin/develop` (`d99e598e1`)
+into `auto-978`. One conflict, resolved additively:
+
+- `packages/maistro-core/src/_vulture_whitelist.py` — develop's
+  `ExtensionInstallService` import alongside the branch's
+  `SqliteExtensionHealthStore` import (both modules exist in the merged
+  tree; both names stay banked). Merge commit `ae8588ef6`.
+
+**Integration regression surfaced by the merge (fixed):** develop's #954
+post-install lifecycle now marks the prior install record's lifecycle
+state `SUPERSEDED` on upgrade (`extensions/service.py:_supersede_prior`),
+while `extensions/health.py:_is_superseded` only recognized supersession
+as "record still `ACTIVE` + active pointer moved". A superseded record
+therefore fell through to `_uninstalled_summary` and projected
+`NOT_INSTALLED` — falsifying the acceptance criterion that removed/
+superseded versions remain identifiable in historical telemetry without
+appearing active. Two tests failed post-merge
+(`test_superseded_version_is_identifiable_and_never_active`,
+`test_detail_can_project_a_historical_version`). Fix in
+`extensions/health.py`: the registry's own lifecycle state is canonical
+supersession evidence (`record.state is SUPERSEDED`), and
+`_superseded_status` stays total when the successor is itself gone
+(`active_record=None` → truthful reason string, verdict unchanged).
+
+**Upstream flaky assertions hardened (test-only, count unchanged):** the
+two rich-wrapping failures recorded in section 1
+(`test_cli_compat.py::test_compat_preflight_rejects_unreadable_input`,
+`test_cli_certification.py::test_certify_refuses_a_malformed_signing_key`)
+wrap the asserted phrase at a console-width column that depends on the
+machine-specific `tmp_path` prefix length. Both now flatten whitespace
+before the substring assert — same node identities, same semantics.
+
+### Round-3 validation
+
+- `uv run pytest packages/maistro-core/tests/extensions -q` — 941 passed,
+  0 failed (was 939 passed / 2 failed pre-fix).
+- `uv run pytest packages/maistro-server/tests/api -q` — 526 passed, 7
+  skipped; the four #978 health suites together: 73 passed.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0, 1323
+  reviewed identities == 1323 findings.
+- `uv run python scripts/check-suite-inventory.py` — 17 suites match.
+- `uv run ruff check .` / `uv run ruff format --check .` — clean.
+- `uv run mypy packages/maistro-core/src packages/maistro-server/src` —
+  only the pre-existing `maistro_canvas.py.typed`-absent import note
+  (canvas ships no `py.typed`; unrelated to #978).
+
+Inventory delta for this round: +0 everywhere (fix + assertion
+hardening only; `check-suite-inventory.py` passes unmodified).

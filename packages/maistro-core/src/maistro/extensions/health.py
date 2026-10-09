@@ -653,7 +653,7 @@ def _failing_summary(
 
 def _superseded_status(
     record: ExtensionInstallRecord,
-    active_record: ExtensionInstallRecord,
+    active_record: ExtensionInstallRecord | None,
     health: ExtensionHealth,
     operator_state: ExtensionOperatorState,
 ) -> ExtensionOperationalStatus:
@@ -661,8 +661,15 @@ def _superseded_status(
 
     The version keeps its telemetry and its identity, and never reports
     active or ready again — the acceptance requirement that superseded
-    versions stay identifiable without appearing active.
+    versions stay identifiable without appearing active. ``active_record``
+    names the version that took the pointer when the registry still has
+    one; a state-carried SUPERSEDED with no current active install (the
+    successor was itself removed) stays truthful about what is known.
     """
+    if active_record is not None and active_record.install_id != record.install_id:
+        reason = f"superseded by {active_record.version} (install {active_record.install_id})"
+    else:
+        reason = "superseded by a newer version's activation"
     return ExtensionOperationalStatus(
         extension_id=record.extension_id,
         version=record.version,
@@ -675,9 +682,7 @@ def _superseded_status(
         ready=False,
         live=False,
         summary=ExtensionOperationalState.SUPERSEDED,
-        not_ready_reasons=(
-            f"superseded by {active_record.version} (install {active_record.install_id})",
-        ),
+        not_ready_reasons=(reason,),
     )
 
 
@@ -736,7 +741,16 @@ def _subject(
 def _is_superseded(
     record: ExtensionInstallRecord, active_record: ExtensionInstallRecord | None
 ) -> bool:
-    """Whether another version of this extension owns the active pointer."""
+    """Whether this version no longer owns the active pointer.
+
+    Two forms of canonical evidence agree: the registry's own lifecycle
+    state (the post-install lifecycle marks the prior record ``SUPERSEDED``
+    when another authorized version activates) and a moved active pointer
+    on a still-``ACTIVE`` record. Either one means the version can never
+    report active or ready again.
+    """
+    if record.state is ExtensionState.SUPERSEDED:
+        return True
     return (
         record.state is ExtensionState.ACTIVE
         and active_record is not None
@@ -781,7 +795,6 @@ def project_operational_status(
         return _refusal_status(record, extension_id, version, health, operator_state)
 
     if _is_superseded(record, active_record):
-        assert active_record is not None  # narrowing for the record builder
         return _superseded_status(record, active_record, health, operator_state)
 
     # Platform compatibility is re-derived against the *current* platform:
