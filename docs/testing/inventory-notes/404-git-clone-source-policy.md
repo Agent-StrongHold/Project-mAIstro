@@ -605,3 +605,68 @@ round (not inherited from prior rounds' notes):
 - Hosted CI at the dispatch snapshot: head-SHA check-runs
   `in_progress`/`queued` (one `success`, one `skipped`) — recorded
   UNVERIFIED, never inferred green.
+
+## Repair round (head 7c6d69bd7 → docs head; develop sync to 82097f6b7acca58)
+
+The previous round's evidence was **rejected** ("verification worktree
+changed; evidence rejected") because the docs-only record commit `cb55e5c0d`
+moved the head during verification (4b40aa369a → cb55e5c0d). This round
+resolves that block by re-executing everything at a stable head and then
+re-running the core battery at the exact final head after the last docs
+commit, so evidence and final tree coincide again. No source or test file
+changed in this round (`git diff --name-only 4b40aa369a80..HEAD` is docs
+only — this note, the synced-in research note and README index line, and the
+synced-in auto-900 testing note).
+
+- **Develop sync.** `origin/develop` moved one commit to `82097f6b7acca`
+  (M8-B research consolidation #2069 — docs-only: a `docs/research/` note,
+  its README index line, and the auto-900 develop-sync testing note). That
+  SHA is exactly this lane's declared develop base. Merged into `auto-404`
+  at `7c6d69bd7` (`ort`, zero conflicts — verified beforehand: the branch
+  touched no `docs/research/` path since merge base 8fbbbfb91 and
+  `git merge-tree` reported 0 conflict markers). `git merge-base HEAD
+  origin/develop` is now exactly `82097f6b7acc`, and `git diff --numstat
+  origin/develop HEAD -- quality/` shows only the additive
+  `quality/ac-state-notes/auto-404.json` (+17/−0) — no multiset rows lost.
+- **Lane tests re-executed at the merge head**: `pytest
+  packages/maistro-core/tests/tools/git` → 135 passed; `test_cli.py` +
+  `test_harvest_entry_point.py` + `test_selfbranch.py` → 80 passed.
+- **Gates, CI's exact argv** (grepped from the workflows, not from memory):
+  `ruff check .` clean; `ruff format --check .` clean (3197 files);
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` exit 0 (1326 → 1326, baseline correctly read from the
+  new base 82097f6b7acc); `check-radon-baseline.py` exit 0 (137 → 137);
+  `check-suite-inventory.py` (no args, all suites) ok — 17 suites, 29957
+  unique identities, 0 duplicates; `check-test-duplicates.py` ok;
+  `check-reachability.py` exit 0; `check-security-inventory.py` exit 0;
+  `uv sync --locked --all-extras` then `mypy --strict
+  packages/maistro-core/src` (quality.yml:1465) — no issues in 771 source
+  files.
+- **ac-state with the CI service shape.** The `pgvector` Postgres service
+  (native PostgreSQL 18.6 with `CREATE EXTENSION vector` available,
+  maistro/maistro@127.0.0.1:5432/maistro_test — quality.yml's exact service
+  env) was up; `uv run alembic upgrade head` then `check-ac-state.py
+  --run-tests --ratchet --mandate 82097f6b7acca…` **passed, exit 0**:
+  design coverage 43.8998 exactly on the floor, ratchet OK (10 debt
+  counters on ceilings, 1 progress counter on floor, folded from 35 notes
+  at the new base), acceptance mandate OK (0 criteria touched, 0 unproven),
+  chain mandate OK. The service-less measurement undercut documented in
+  earlier rounds remains inherited develop debt, not moved here.
+- **Independent mechanism probes (not the suite)**: with
+  `asyncio.create_subprocess_exec` replaced by a tripwire and
+  `_ALLOWED_CLONE_SCHEMES` adversarially widened to include `git://` and
+  `file://`, `_validate_clone_url` still refuses `git://`, `GIT://`,
+  `Git://`, `%67it://…`, `git:%2F%2F…`, `http://`, bare paths and scp-like
+  paths pre-subprocess with `blocked_url_scheme`, while `https://` and
+  `ssh://` for an allowlisted host pass — the hard-deny-before-allowlist
+  precedence is load-bearing and intact. Defense in depth re-confirmed with
+  real git: `git -c <each _TRANSPORT_PIN pair> ls-remote git://…` exits 128
+  `fatal: transport 'git' not allowed`.
+- **Closure keywords**: none in any commit message 8fbbbfb91..HEAD (only
+  "Refs #404" and develop's own PR-merge references); no issue-closure
+  actions performed.
+- Hosted CI on the exact final head is not observable from this sandbox (no
+  push) — recorded UNVERIFIED; the last merge-queue evaluation reported the
+  gate set green, and every required gate was re-proven locally at CI's
+  argv above, then the core battery (ruff, format, both lane suites, both
+  suite inventories, vulture) re-run at the exact final docs head.
