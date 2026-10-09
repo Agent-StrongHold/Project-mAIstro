@@ -97,6 +97,7 @@ from maistro.runs.pg_store import PgRunStore
 from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.store import InMemoryRunStore, RunStore
+from maistro.security.strikes import InMemoryStrikeTracker
 from maistro.state import PersistedStore
 from maistro.workspaces.campaigns.model import (
     Actor,
@@ -537,4 +538,15 @@ _VULTURE_WHITELIST = (
     # (packages/maistro-core/tests/extensions/test_effective_authority.py) — the
     # same contract-ships-first posture as the seams above.
     EffectiveAuthority.with_execution_context,
+    # Strike-tracker admin verb (M3 lockout ladder, #134). The protocol
+    # (maistro.protocols.strikes) deliberately keeps `enable` off the DI seam:
+    # it "exist[s] on the in-memory implementation and [is] admin surface
+    # reached through other paths", and no operator console exists yet
+    # (types/config.py strike_tracking_enabled documents the missing recovery
+    # path). The durable twins carry reviewed ledger grants (#1172:
+    # PgStrikeTracker.enable, StrikeRecoveryService.enable -- consumers outside
+    # the packages/*/src scan); the in-memory verb is the same reviewed public
+    # admin API, so it is named here as retained surface rather than banked as
+    # unclassified debt.
+    InMemoryStrikeTracker.enable,
 )
