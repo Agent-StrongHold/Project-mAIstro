@@ -202,6 +202,13 @@
       "disposition": "MANUAL_DIAGNOSTIC",
       "triggers": ["workflow_dispatch"],
       "rationale": "On-demand #934 (RESEARCH M8-F1) heterogeneous fleet benchmark (scripts/bench_fleet_routing.py: hosted-only / local-only / shipped-router / difficulty-aware local-first fleet policies over one shared corpus and one shared, policy-independent outcome table, across benign, local-outage, hosted-outage, and capacity-pressure scenarios); deterministic and offline, re-measured when the router, the fleet catalog, or the outcome model changes - a measurement, not a gate. Wires no fleet policy into production; the research disposition lives in docs/research/934-heterogeneous-fleet-benchmark.md."
+    },
+    {
+      "id": "graph-pattern-reuse-bench",
+      "file": ".github/workflows/graph-pattern-reuse-bench.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "On-demand #929 / epic #903 M8-D5 Graph-pattern induction/reuse benchmark (mining successful Runs into versioned canonical Graph candidates per ADR-082926-65bf, naive/guarded reuse vs from-scratch planning on held-out Goals with a latent validation-drift phase); deterministic and offline, run when the corpus model, the induction bar, or the planners change — a measurement, not a gate. Wires no reuse path into production; the research disposition lives in docs/research/929-graph-pattern-induction-reuse.md."
     }
   ],
   "retained_branches": [

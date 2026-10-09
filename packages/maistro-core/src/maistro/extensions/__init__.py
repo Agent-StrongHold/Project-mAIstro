@@ -36,7 +36,10 @@ This package carries the extension surface of epic #938, in four layers:
   the activation store seam, and :class:`ExtensionInstallService`. Nothing in
   this package ever imports extension code; activation runs only through the
   host-supplied :class:`ExtensionCodeLoader`, and only after explicit
-  authorization.
+  authorization. The post-install lifecycle (#954) lives on the same
+  service: disable/re-enable, rollback to a previously authorized version,
+  terminal removal, and operator pins that fence version moves — every step
+  audited, none ever re-running the loader or widening a grant.
 - **M9-C1 policy (issue #955, ``maistro.extensions.compat``)**: decides
   whether an extension's declared contract, features, and deprecation posture
   are compatible with this host — from metadata alone, before any code
@@ -359,6 +362,7 @@ from maistro.extensions.types import (
     TrustEvidence,
     UnknownInstall,
     UnknownPublisher,
+    VersionPinned,
     canonical_install_payload,
     identity_key,
     manifest_snapshot,
@@ -602,6 +606,7 @@ __all__ = [
     "UnwiredExtensionLoader",
     "UsageTotals",
     "Verdict",
+    "VersionPinned",
     "VersionRange",
     "ViolationKind",
     "WorkspaceExtensionPolicy",
