@@ -2755,3 +2755,64 @@ base design. The blocker for the driver to route: a reviewed grant (or the
 parent #1845 integration leaf must land, making the module reachable and the
 assessment values returned, at which point these banked rows are pruned
 there. Stack stays unmerged; leaf readiness handoff stands.
+
+## Round 36 — 2026-10-09 verifier+writer round at e261c4c0c: driver repair instruction executed to closure; amendment re-proven a no-op; trusted-base wall re-proven with definitive per-file greps
+
+Driver job `6d66d06d` supplied fresh deterministic checks at this exact head
+(all green: `uv sync --locked --extra dev`; `ruff check .`; `ruff format
+--check .` 3,234 files; focused suite 79 passed in 1.06s; suite inventory ok
+at 16,121 node IDs) and routed one CI-repair instruction: run the vulture
+scan with CI's exact arguments, fix what is genuinely dead, and amend
+`quality/vulture-baseline.json` for reviewed retained identities. Every step
+was re-derived independently at this head rather than assuming round 35:
+
+- Leaf contract re-proven fresh: 79 passed; all twelve issue-named
+  prospective tests present verbatim; `__all__` is exactly the 21 mandated
+  names; leaf ruff check/format clean; `mypy
+  packages/maistro-core/src/maistro/runs/admission_identity.py` clean; grep
+  over `packages/*/src` finds zero importers of the module outside itself
+  and no `maistro.runs.__init__` export; `git diff --name-only
+  origin/develop...HEAD` touches only the seven in-scope files.
+- The repair instruction resolves to a verified no-op, now with row-level
+  evidence: `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` rc=1 lists exactly the five
+  `AdmissionAssessment` identities (admission_identity.py:515-520), and the
+  candidate ledger already banks all five at
+  `quality/vulture-baseline.json:283-287` — nothing genuinely dead exists to
+  fix and nothing to amend. The five members are issue-mandated verbatim
+  ("Define `AdmissionAssessment(StrEnum)` with exactly these member/value
+  pairs"), so removal/rename would break the leaf's own fixed representation
+  and any module-local reference would be the prohibited fake caller.
+- Trusted-base wall re-proven with definitive per-file greps after a fresh
+  `git fetch origin develop`: `origin/develop` is still `d592654aca61` (the
+  merge base), and it contains zero rows for `runs/admission_identity` in
+  `quality/ratchet-authorizations.json`, `quality/reachability-baseline.json`,
+  and `quality/vulture-baseline.json` (its five textual "admission" grant
+  matches are unrelated identities: chat_admissions recovery, a2a reason
+  prose, scheduling/admission.py, canvas _reconcile_admission). A develop
+  sync therefore has nothing to merge; the grant-first two-merge
+  (`load_authorizations` reads grants from the base) cannot start in-lane.
+- exact-debt-ledger re-executed step-by-step with CI's exact arguments:
+  step 1 `check-ratchet-provenance.py` (`RATCHET_BASE_REV=origin/develop`)
+  rc=1 via exactly the two reachability trusted-base sub-gates (NEW
+  unreachable module / NEW disposition absent from trusted base; the other
+  eight ratchets all OK with no candidate-approved expansion); step 2
+  `check-shipped-surface-truth.py` rc=0; step 3 `check-vulture-baseline.py`
+  rc=1 solely on the five trusted-base authorizations.
+- Candidate-side halves all green fresh: `check-reachability.py` rc=0
+  (170/1,378), `check-reachability-dispositions.py` rc=0 (50 groups:
+  147 CONNECT / 21 LIBRARY / 2 RETIRE), `check-promotion-surface.py` rc=0,
+  `check-convergence-matrix.py` rc=0 with its suite 60/60, and the full
+  `check-suite-inventory.py` rc=0 across all 17 suites (front-matter +79
+  delta unchanged; no test added or removed).
+
+No tree change was needed or made this round beyond this note. The single
+remaining blocker is unchanged and belongs to the driver: land the reviewed
+grant (the five vulture identities plus the reachability/disposition rows)
+on the integration base in a grant-first commit, or land the parent #1845
+integration leaf that makes the module reachable — after either, a develop
+sync into this branch turns every red gate green at its exact final head.
+The branch-side alternatives are each prohibited by the issue body (wiring,
+fake callers, enum alteration, suppressions, re-exports) or ineffective by
+gate design (branch-side grants are not read from the candidate). Stack
+stays unmerged at e261c4c0c; leaf readiness handoff stands.
