@@ -2347,3 +2347,91 @@ reading the provenance loader. This round adds no tests, no ledger rows, no
 docs beyond this record: the round-29 candidate state is correct as it
 stands, and the leaf remains implementation/test-ready with the explicit
 merge blocker, per the issue's own reporting directive.
+
+## Round 31 — 2026-10-09 CI repair round at 409436869: exact-debt-ledger re-executed; candidate state confirmed complete, no lawful further in-leaf edit
+
+Dispatched as the repair round for the same brief (named failure:
+`exact-debt-ledger`; prior block: worker BLOCKED), at exact starting head
+`409436869ff8b1f241f6c1995be4746f1af236d7` (= round-30 tip; clean tree;
+`git diff 6d18d8c9c..HEAD` is the docs-only round-30 note commit). Develop
+was re-fetched: `origin/develop` tip is still `675db8be6c41`, merge base with
+this branch still `82097f6b7acc`, and both the tip's and the merge base's
+`quality/ratchet-authorizations.json` carry zero `admission_identity` grants
+(102 `vulture` / 11 `reachability` grants at the tip, none for the five
+identities or the module) — so no develop sync conflict exists and a sync
+would change nothing these gates read.
+
+The brief's exact-debt-ledger instruction ("list unbanked identities; fix
+what is genuinely dead; amend `quality/vulture-baseline.json` for reviewed
+retained identities") was executed as written and resolves to a no-op on the
+ledger: the scan lists exactly the five `AdmissionAssessment` identities, all
+five are already banked in the candidate ledger (round-27 commit `8659eb1a2`,
+under `pydantic-declarative-field`, whose `source_contains_any` covers
+`StrEnum` declarative members), the candidate ledger is exact against the
+scan (no unbanked/removed terms in the gate output), and none of the five is
+"genuinely dead" — they are the issue-mandated six-member contract
+(`PENDING` escapes the scan only via the tree-wide `JobStatus.PENDING` name
+usage in maistro-canvas). Amending the ledger further would break candidate
+exactness; removing rows would re-open the candidate-bookkeeping failure
+class closed in round 27.
+
+Re-execution battery at this head (all commands run this round):
+
+- Driver checks (job logs in the round job directory): `uv sync --locked
+  --extra dev` ok; `ruff check .` clean; `ruff format --check .` 3,199 files;
+  focused suite `79 passed`; `check-suite-inventory.py --suite
+  packages/maistro-core/tests` ok (15,855 node IDs).
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` — rc=1, `1326 reviewed identities -> 1331 findings`,
+  candidate bookkeeping clean, sole failing term the trusted-base
+  authorization block for the five banked identities ("land a reviewed grant
+  first").
+- `check-reachability.py` rc=0 (170 unreachable / 1,366 modules — the
+  round-29 candidate banking holds); `check-reachability-dispositions.py`
+  rc=0 (50 groups, 147 CONNECT / 21 LIBRARY / 2 RETIRE);
+  `check-promotion-surface.py` rc=0; `check-shipped-surface-truth.py` rc=0.
+- `check-ratchet-provenance.py` — rc=1 via exactly its two reachability
+  sub-gates (`check-reachability-provenance.py`: "NEW unreachable module
+  absent from trusted base and not previously authorized";
+  `check-reachability-dispositions-provenance.py`: "NEW disposition absent
+  from trusted ledger and not covered by an already-landed reachability
+  authorization") — both the two-merge wall for the same single module.
+- The hosted `test` job's known red class stays repaired:
+  `pytest tests/test_check_reachability.py
+  tests/test_reachability_baseline_identity.py tests/test_check_ac_state.py
+  tests/test_no_placeholder_modules.py -q` — **154 passed**, including the
+  three assertions that failed in CI at `0473816208`.
+- Diff-coverage re-proof at this head: `coverage run --branch
+  --source=packages/maistro-core/src/maistro` over the focused suite (79
+  passed), then `check-diff-coverage.py /tmp/cov-1851.xml --base
+  82097f6b7acc` — rc=0, "ok: every measured file this change touches is at
+  or above 90% lines / 80% branch arcs" (test file exempt by declaration).
+- Focused leaf checks: `ruff check` + `ruff format --check` clean on both
+  leaf files; `mypy packages/maistro-core/src/maistro/runs/admission_identity.py`
+  clean. Contract shape re-derived by AST this round: `__all__` set-exact 21
+  names (alphabetized under ruff's enforced ordering); `AdmissionAssessment`
+  exactly the six mandated member/value pairs; `owns()` is exactly the
+  scope AND generation AND owner conjunction and never compares the two role
+  values to each other; `owner_token` uses `field(repr=False)` on both
+  `AdmissionTicket` and `AdmissionRecordV2`; all twelve issue-mandated test
+  functions present.
+- Scope hygiene re-proven: zero production importers of
+  `maistro.runs.admission_identity`; no `maistro.runs.__init__` export; the
+  branch delta vs the merge base is exactly the three leaf files plus the
+  three sanctioned round-27/29 bookkeeping ledgers
+  (`git diff --stat 82097f6b7..HEAD`).
+
+Resolution: the candidate-side state of `exact-debt-ledger` is complete and
+correct as it stands; this round's brief-mandated repair action resolves to a
+documented no-op because the only remaining red terms are trusted-base
+authorizations (`ratchet_provenance.load_authorizations` reads
+`quality/ratchet-authorizations.json` from the merge base only — two-merge
+rule), and no reviewed grant for these identities exists on any develop state
+through `675db8be6`. They clear when a reviewed grant pair lands on the
+integration base and the branch syncs, or when the parent #1845 integration
+leaf supplies the real runtime consumer that makes the module reachable and
+the enum values returned (at which point these rows are pruned there). No
+ledger row, grant, waiver, suppression, caller, or export was added this
+round; no tests added (front-matter `+79` delta unchanged). Leaf readiness
+handoff stands with the explicit merge blocker; the stack stays unmerged
+pending the separately authorized parent #1845 integration.
