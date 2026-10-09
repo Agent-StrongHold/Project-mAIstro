@@ -75,10 +75,16 @@ Usage
 -----
     python3 scripts/check-suite-inventory.py              # check every suite
     python3 scripts/check-suite-inventory.py --suite formal/
+    python3 scripts/check-suite-inventory.py --suite packages/hive-conductor/tests
     python3 scripts/check-suite-inventory.py --show       # render expected counts
     python3 scripts/check-suite-inventory.py --update     # record this change's delta
     python3 scripts/check-suite-inventory.py --update --note 208-delta-ledger
     python3 scripts/check-suite-inventory.py --compact    # fold deltas into baseline
+
+``--suite`` names a recipe exactly, or a parent directory — every recipe
+beneath it is checked (``packages/hive-conductor/tests`` reaches the nested
+``tests/e2e`` suite; its backend suite is a sibling, not a child). An
+argument matching no recipe at all is an error, never a silent no-op.
 """
 
 from __future__ import annotations
@@ -741,6 +747,42 @@ def record_delta(
     return 0
 
 
+def resolve_suites(requested: list[str]) -> tuple[set[str], list[str]]:
+    """Map ``--suite`` arguments onto collection recipes.
+
+    An argument naming a recipe selects exactly that suite. A parent directory
+    selects every recipe beneath it: ``packages/hive-conductor/tests`` names
+    the nested ``tests/e2e`` suite without repeating the leaf, which is how
+    the directory layout actually nests the hive-conductor suites (the backend
+    suite is a sibling at ``backend/tests``, not a child). Prefix matching is
+    component-wise, so ``tests`` reaches ``tests/`` but ``form`` never
+    reaches ``formal/``. An argument matching nothing — neither a recipe nor
+    a recipe's ancestor — comes back unresolved and stays an error, so a
+    typo can never silently narrow the check to zero suites.
+    """
+    resolved: set[str] = set()
+    missing: list[str] = []
+    for arg in requested:
+        prefix = arg.rstrip("/") + "/"
+        hits = {recipe for recipe in RECIPES if recipe == arg or recipe.startswith(prefix)}
+        if hits:
+            resolved |= hits
+        else:
+            missing.append(arg)
+    return resolved, missing
+
+
+def requested_suites(args: argparse.Namespace) -> tuple[set[str] | None, list[str]]:
+    """The recipes ``--suite`` selects, and any argument that selected none.
+
+    ``None`` means no narrowing: every recipe is checked, exactly as a run
+    without ``--suite`` would.
+    """
+    if not args.suite:
+        return None, []
+    return resolve_suites(args.suite)
+
+
 def ledger_only_mode(
     args: argparse.Namespace,
     expected: dict[str, int],
@@ -799,9 +841,9 @@ def main() -> int:
     if (code := ledger_only_mode(args, expected, deltas)) is not None:
         return code
 
-    wanted = set(args.suite) if args.suite else None
-    if wanted and (missing := sorted(wanted - set(RECIPES))):
-        print(f"error: no collection recipe for {missing}", file=sys.stderr)
+    wanted, missing = requested_suites(args)
+    if missing:
+        print(f"error: no collection recipe for {sorted(missing)}", file=sys.stderr)
         return 2
     suites = [s for s in RECIPES if s in expected and (wanted is None or s in wanted)]
 

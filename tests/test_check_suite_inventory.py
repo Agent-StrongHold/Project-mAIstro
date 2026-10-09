@@ -720,6 +720,78 @@ class TestDriver:
         assert two_suites.main() == 2
 
 
+class TestSuitePathResolution:
+    """`--suite` must reach a gated suite nested below a named directory (#358).
+
+    The hive-conductor layout nests a gated suite inside another suite's
+    parent: `packages/hive-conductor/tests/e2e` lives under
+    `packages/hive-conductor/tests`, which names no recipe of its own (the
+    backend suite is a sibling at `backend/tests`). A caller that resolves a
+    changed test path to its nearest `tests/` directory — the way scope
+    evidence does — must get the nested suite checked, not a `no collection
+    recipe` error; and the resolution must still check the suite it names,
+    never silently narrow to zero.
+    """
+
+    @pytest.fixture
+    def nested(self, ledger, monkeypatch):
+        """Re-arm the miniature repo with the nested-suite shape."""
+        monkeypatch.setattr(
+            ledger,
+            "RECIPES",
+            {"tests/": ledger.Recipe(args=[]), "tests/e2e": ledger.Recipe(args=[])},
+        )
+        ledger.BASELINE.write_text(
+            json.dumps({"counts": {"tests/": 100, "tests/e2e": 23}, "folded": []}),
+            encoding="utf-8",
+        )
+        ledger.INVENTORY.write_text(
+            "see [notes](inventory-notes/)\n\n"
+            "| `tests/` | `ci.yml` |\n| `tests/e2e` | `ci.yml` |\n",
+            encoding="utf-8",
+        )
+        return ledger
+
+    def test_the_hive_conductor_parent_resolves_to_the_nested_e2e_suite(self, gate):
+        """The exact argument the integration-scope evidence passes."""
+        resolved, missing = gate.resolve_suites(["packages/hive-conductor/tests"])
+        assert resolved == {"packages/hive-conductor/tests/e2e"}
+        assert missing == []
+
+    def test_a_parent_argument_selects_every_recipe_beneath_it(self, gate):
+        resolved, missing = gate.resolve_suites(["tests"])
+        assert "tests/" in resolved
+        assert missing == []
+
+    def test_an_exact_recipe_still_selects_only_itself(self, gate):
+        resolved, missing = gate.resolve_suites(["formal/"])
+        assert resolved == {"formal/"}
+        assert missing == []
+
+    def test_prefix_matching_is_component_wise(self, gate):
+        """`form` is not `formal/`; a partial name must stay an error."""
+        resolved, missing = gate.resolve_suites(["form"])
+        assert resolved == set()
+        assert missing == ["form"]
+
+    def test_a_resolved_nested_suite_is_actually_checked(self, nested, monkeypatch):
+        """Resolution is a lookup, not a bypass: drift in the nested suite
+        must still fail the narrowed check."""
+        monkeypatch.setattr(nested.sys, "argv", ["x", "--suite", "tests"])
+        monkeypatch.setattr(nested, "collect", fake_collect({"tests/": 100, "tests/e2e": 24}))
+        assert nested.main() == 1
+
+    def test_a_parent_argument_passes_when_the_nested_suite_matches(self, nested, monkeypatch):
+        monkeypatch.setattr(nested.sys, "argv", ["x", "--suite", "tests"])
+        monkeypatch.setattr(nested, "collect", fake_collect({"tests/": 100, "tests/e2e": 23}))
+        assert nested.main() == 0
+
+    def test_an_unresolvable_argument_still_exits_two(self, nested, monkeypatch):
+        monkeypatch.setattr(nested.sys, "argv", ["x", "--suite", "packages/ghost"])
+        monkeypatch.setattr(nested, "collect", lambda *a: pytest.fail("must not collect on a typo"))
+        assert nested.main() == 2
+
+
 class TestNotesDirectoryGuard:
     """The pointer and the directory must agree, or the split silently rots."""
 
