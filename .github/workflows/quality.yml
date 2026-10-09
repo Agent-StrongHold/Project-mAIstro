@@ -153,6 +153,18 @@ jobs:
       # config when another package's tests configure structlog first) — the
       # same cross-package state-pollution risk ci.yml's `test` job already
       # avoids by giving every package its own pytest step.
+      #
+      # This job is the ONLY executor of these five suites (#654). ci.yml's
+      # `test` job no longer re-runs them on the same SHA: both checks are
+      # independently required by the PR ruleset, so the second execution was
+      # duplicate computation, not independent evidence. The partition — these
+      # five run exactly once, here, under `coverage run`; `test` keeps
+      # server, Turing, design, the extension suites, the root integration
+      # tree, Hive, the frontends, the cross-suite leakage proof, and the
+      # suite-inventory check — is enforced by
+      # tests/test_unit_suite_execution_partition.py. Service-backed variants
+      # (coverage (MinIO), coverage (PostgreSQL), ci.yml's postgres and
+      # object-storage jobs) are distinct evidence and stay.
       - name: pytest with coverage (line + branch)
         env:
           PYTHONPATH: >-
