@@ -3108,3 +3108,59 @@ the unchanged gates (two-merge rule; the gate messages say so verbatim), or
 the parent #1845 integration that wires the real runtime consumer. This lane
 holds no push/merge authority and the issue forbids self-authorized grants.
 Leaf readiness handoff stands; stack stays unmerged.
+
+## Round 41 — CI-repair brief executed to its fixed point (2026-10-09)
+
+The round brief ("run `check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` to list unbanked identities;
+fix what is genuinely dead, and amend quality/vulture-baseline.json for
+reviewed retained identities (remove identities your fix eliminated)") was
+executed step by step at HEAD `2a12cbe98f3f`:
+
+- Fresh CI-exact scan: exactly the five known identities remain unbanked
+  against the trusted base (`admission_identity.py:515-520`, the
+  `AdmissionAssessment` members `MISMATCH`, `REPLAYED`, `TAKEOVER`,
+  `REPLACE_EXPIRED`, `LEGACY_UNRESOLVED`; the scan classifies them under the
+  trusted `pydantic-declarative-field` rule). No other new identity exists.
+- Member-by-member triage: all five (and the unflagged `PENDING`) are mandated
+  by the issue's fixed representation — "Define `AdmissionAssessment(StrEnum)`
+  with exactly these member/value pairs" — so removal would violate the
+  contract, and manufacturing a reference would be exactly the "keep-alive
+  import / dummy caller / suppression" the issue forbids. None is genuinely
+  dead; none was eliminated by a fix. `PENDING` escapes the scan only through
+  the bare-name coincidence with `JobStatus.PENDING` in maistro-canvas
+  (vulture matches names, not qualified paths), which also confirms that
+  clearing the other five would require exactly such a foreign reference.
+- Candidate-ledger amendment: verified no-op. The banked
+  `pydantic-declarative-field` rows are exactly the five fresh identities
+  (multiset-equal), so `check-vulture-baseline.py` prints no
+  candidate-bookkeeping delta — only the trusted-base section. Zero rows to
+  remove, zero to add.
+- Residual failure is structural: `ratchet_provenance.load_authorizations`
+  reads grants from the merge base `0d49d4e0` (102 vulture grants, 11
+  reachability grants, none naming `admission_identity` — re-read from
+  `origin/develop` this round), and `unauthorized` is computed purely from
+  trusted-state deltas, so no candidate-tree edit can change it. The
+  exact-debt-ledger job was reproduced with CI-exact arguments:
+  `check-ratchet-provenance.py` rc=1 (reachability + dispositions
+  "NEW ... not previously authorized" for `maistro.runs.admission_identity`),
+  `check-shipped-surface-truth.py` rc=0, `check-vulture-baseline.py` rc=1.
+  Resolution requires the separately scoped C2/integration leaf (which
+  references the members and wires the module, emptying all three deltas at
+  its own head) or a base-landed grant — both outside this lane; the issue's
+  staging contract mandates reporting readiness plus the blocker and leaving
+  the stack unmerged.
+- Acceptance battery re-executed fresh this round: focused suite 79 passed;
+  full `packages/maistro-core/tests` 15,140 passed / 1,030 skipped / 3
+  xfailed; `ruff check` + `ruff format --check` clean; mypy (canonical
+  seven-package command) clean over 877 files; diff-coverage gate with the
+  real base (`--base 0d49d4e0`) rc=0 with the module at 245/245 statements,
+  100.0% lines / 100.0% branches; #1841 anchors (`require_admitted_actor`,
+  `get_run(*, principal_id=...)`, `create_run`/`claim_run_by_effect`
+  `actor_principal_id: str | None = None`) byte-identical at `0d49d4e0`.
+- Tree changes this round: this note only. No code, ledger, gate, or workflow
+  edit.
+
+Merge blocker (unchanged): two-merge trusted-base wall on vulture +
+reachability + dispositions; leaf readiness handoff stands; stack stays
+unmerged pending the C2/integration leaf.
