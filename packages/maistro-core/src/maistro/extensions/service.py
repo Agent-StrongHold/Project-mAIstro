@@ -667,32 +667,25 @@ class ExtensionInstallService:
                 "evaluates compatible: " + "; ".join(compatibility.failures)
             )
 
-    async def _activate(
+    async def _activation_refusal(
         self,
-        install_id: str,
+        record: ExtensionInstallRecord,
         *,
-        actor: str,
-        scope: ExtensionScope,
-        payload: bytes,
+        install_id: str,
+        payload_digest: str,
         why: str,
-        reason: str = "",
-    ) -> ExtensionInstallRecord:
-        """Run one activation under the caller's extension lock.
+        scope: ExtensionScope,
+    ) -> ExtensionInstallRecord | None:
+        """Run every pre-load guard one activation must pass, in order.
 
-        ``why`` names the lifecycle verb (installed / resumed / rolled back)
-        for the audit reasons and selects the source states the entry point
-        accepts. ``reason`` carries the operator-supplied rationale that
-        resume and rollback require; it is quoted verbatim in the transition
-        evidence so the trail records not just that the artifact moved but
-        why. Shared by install, resume and rollback: every path back to
-        running code digests the payload, re-crosses the loader, and swaps
-        the active pointer under the same discipline.
+        Returns the record untouched on the idempotent-retry path (already
+        ``ACTIVE`` with the same artifact bound) and ``None`` when activation
+        may proceed. Every refusal raises, in the order a record meets them:
+        an unaccepted source state, a pin holding a different version, a
+        FAILED record whose reactivation gates no longer hold, and a payload
+        that does not match the artifact bound at inspection. Nothing here
+        transitions the record — refusals leave it exactly as it was.
         """
-        detail = f"{why}: {reason}" if reason else why
-        record = await self._require(install_id, scope)
-        now = self._clock()
-        payload_digest = sha256_hex(payload)
-
         retry = await self._active_retry_guard(record, payload_digest, install_id)
         if retry is not None:
             return retry
@@ -720,6 +713,43 @@ class ExtensionInstallService:
                 f"payload digest {payload_digest} does not match the artifact bound at "
                 f"inspection ({record.artifact_sha256}); authorization does not transfer"
             )
+        return None
+
+    async def _activate(
+        self,
+        install_id: str,
+        *,
+        actor: str,
+        scope: ExtensionScope,
+        payload: bytes,
+        why: str,
+        reason: str = "",
+    ) -> ExtensionInstallRecord:
+        """Run one activation under the caller's extension lock.
+
+        ``why`` names the lifecycle verb (installed / resumed / rolled back)
+        for the audit reasons and selects the source states the entry point
+        accepts. ``reason`` carries the operator-supplied rationale that
+        resume and rollback require; it is quoted verbatim in the transition
+        evidence so the trail records not just that the artifact moved but
+        why. Shared by install, resume and rollback: every path back to
+        running code digests the payload, re-crosses the loader, and swaps
+        the active pointer under the same discipline.
+        """
+        detail = f"{why}: {reason}" if reason else why
+        record = await self._require(install_id, scope)
+        now = self._clock()
+        payload_digest = sha256_hex(payload)
+
+        retry = await self._activation_refusal(
+            record,
+            install_id=install_id,
+            payload_digest=payload_digest,
+            why=why,
+            scope=scope,
+        )
+        if retry is not None:
+            return retry
 
         record = await self._transition(
             record,
