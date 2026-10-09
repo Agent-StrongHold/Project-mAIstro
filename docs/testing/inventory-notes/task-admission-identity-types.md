@@ -2952,3 +2952,76 @@ of the five vulture identities plus the reachability baseline/disposition rows
 on the integration base, or the parent #1845 integration that makes the module
 reachable — either followed by the develop/suite-inventory sync resolution.
 Leaf readiness handoff stands; stack stays unmerged.
+
+## Round 39 — 2026-10-09 CI-repair round for exact-debt-ledger: repair instruction executed to its proven fixed point; ledger amendment already exact; wall re-proven with base-grant enumeration; both remaining CI failures attributed to the single vulture trusted-base wall
+
+Dispatched as the explicit vulture-ledger CI-repair round (lane brief permits and
+requires `quality/vulture-baseline.json` amendment here). Instruction executed
+literally at head `0745b48d9567` with a clean tree; outcome recorded step by step.
+
+- Repair instruction step 1 — scan with CI's exact arguments:
+  `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → rc=1, enumerating exactly
+  5 unbanked-vs-trusted identities
+  (`admission_identity.py:515-520`, `unused variable` at 60%: `MISMATCH`,
+  `REPLAYED`, `TAKEOVER`, `REPLACE_EXPIRED`, `LEGACY_UNRESOLVED`), 0
+  unclassified, 0 never-allowlist.
+- Repair instruction step 2 — "fix what is genuinely dead": each of the 5 was
+  reviewed against the issue text. All five are verbatim-mandated
+  `AdmissionAssessment` members ("exactly these member/value pairs") pinned by
+  the leaf's own mandated export test. **None is genuinely dead; 0 removed.**
+  The only mechanism that spares a sibling member (`PENDING`) is vulture's
+  global name match on the unrelated `JobStatus.PENDING` token in
+  `maistro_canvas`; manufacturing matching tokens for the other five names
+  would be precisely the dummy-caller cure the issue prohibits, so no code
+  change is warranted.
+- Repair instruction step 3 — "amend quality/vulture-baseline.json for
+  reviewed retained identities": the candidate ledger already carries exactly
+  these 5 sorted rows (banked rounds 27/29). The fresh scan produced **zero**
+  candidate-side deltas (no `Candidate ledger bookkeeping` section, no
+  "prune them" rows, no unbanked rule) — the ledger is exact, so the
+  amendment is a proven no-op, and by gate design it is also outcome-neutral:
+  `scripts/ratchet_provenance.py::load_authorizations` reads grants **from the
+  merge base only** ("a new grant does not take effect in the change that
+  introduces it"), so no candidate-side edit can turn this gate green.
+- Sharpened wall evidence this round — trusted-base grant enumeration at
+  `RATCHET_BASE_REV=0d49d4e068de` (`git show
+  0d49d4e0:quality/ratchet-authorizations.json`): `reachability` carries 11
+  grants (events/interop/entra/strike_recovery/graph.*), none for
+  `maistro.runs.admission_identity`; `vulture` carries 102 grants, none in
+  `admission_identity.py`. The row the gate demands therefore does not exist
+  on the base and cannot be created by this lane (no push/merge authority;
+  issue: "A candidate baseline update cannot grant itself permission").
+- Develop sync re-check: `git fetch origin` → `origin/develop` still exactly
+  `0d49d4e068de`; the branch already contains it (merge `540d32e97`), so no
+  conflict exists and no grant has landed upstream.
+- Full acceptance battery re-executed fresh at this head: focused pytest 79
+  passed; `ruff check` + `ruff format --check` clean (module+tests and repo);
+  `mypy` clean; `check-suite-inventory.py` rc=0 (17 suites, 30,808 unique
+  identities); candidate-side `check-reachability.py` (170/1,378),
+  `check-reachability-dispositions.py` (50 groups), `check-promotion-surface.py`,
+  `check-shipped-surface-truth.py` all rc=0.
+- Exact-head CI census (check-runs captured at `0745b48d`): 29/31 concluded
+  success/skipped — `test`, `Coverage gate`, `lint-and-type-check`,
+  `postgres (pg17/pg18)`, `hive-conductor-e2e`, `formal-conformance`,
+  `security`, `block` all green; the round-33 test/coverage failures are
+  resolved by the develop sync. Remaining failures: `exact-debt-ledger` and
+  `Quality gate (Pillars 1–4, 7, 8)`. Both attributed to the single wall:
+  the quality-gate job runs the identical vulture command under the same
+  `RATCHET_BASE_REV`, and every one of its pre-vulture steps was verified
+  green locally at this head (ruff, radon ratchet, version/release
+  consistency, doc links, enumerations, workspace retirement, route
+  permissions, principal identity, frontend typed client, vendor provenance
+  ×2, xenon 139 block ≤ 145 baseline / 0 module / 0 average via
+  `uv run --with xenon`), leaving the vulture per-identity ledger step as the
+  first failing step.
+- Tree changes this round: this note only. No code, ledger, or gate edit —
+  the repair instruction terminates at a proven fixed point.
+
+Merge blocker (unchanged, restated with base-grant evidence): the five vulture
+identities plus the reachability row/disposition require a **reviewed,
+grant-first landing on the integration base** (develop or the #1845
+integration branch), or the parent #1845 integration that makes the module
+reachable; the unchanged gates must then pass at that integration head, per
+the issue's own staging contract. Leaf readiness handoff stands; stack stays
+unmerged.
