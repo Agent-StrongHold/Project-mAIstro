@@ -152,8 +152,11 @@ _CAPABILITY_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
 #: extension/platform identities the compatibility machinery understands.
 _EXTENSION_ID_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
 
-#: Pack-id segments: slug pieces of ``publisher.name``.
-_PACK_SEGMENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+#: Pack-id name segment: the slug after the ``publisher.`` prefix. Same
+#: alphabet as the publisher slug (hyphens/underscores fine), so every
+#: publisher the extension manifest accepts can name packs under itself —
+#: including hyphenated (``pub-1.my_pack``) and dotted (``a.b.my_pack``) ones.
+_PACK_SEGMENT_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 
 class PackContractError(RuntimeError):
@@ -883,16 +886,18 @@ def _parse_pack_identity(
 ) -> tuple[str, str, str, str, str]:
     """Validate and return (pack_id, name, publisher, version, api_version)."""
     pack_id = _require_str(document, "pack_id")
-    segments = pack_id.split(".")
-    if len(segments) != 2 or any(_PACK_SEGMENT_RE.match(s) is None for s in segments):
-        raise _reject(f"pack_id must be publisher.name (two slug segments), got {pack_id!r}")
-    name = _require_str(document, "name")
     publisher = _require_str(document, "publisher")
     if _PUBLISHER_RE.match(publisher) is None:
         raise _reject(f"malformed publisher id: {publisher!r}")
-    if segments[0] != publisher:
+    # Any publisher slug the extension manifest accepts can publish: the id is
+    # the publisher namespace plus one slug segment, so hyphenated ("pub-1.x")
+    # and dotted ("a.b.x") publishers namespace packs exactly like plain ones.
+    name = _require_str(document, "name")
+    prefix = f"{publisher}."
+    if not pack_id.startswith(prefix) or _PACK_SEGMENT_RE.match(pack_id[len(prefix) :]) is None:
         raise _reject(
-            f"pack_id {pack_id!r} must live under its own publisher namespace {publisher!r}"
+            "pack_id must be publisher.name — a single slug segment under its own "
+            f"publisher namespace — got {pack_id!r} for publisher {publisher!r}"
         )
     version = _validate_semver(document["version"], "version")
     api_version = _validate_semver(document["api_version"], "api_version")
@@ -1125,7 +1130,9 @@ def instantiate_rubric_asset(
     Identity is canonical: ``rubric_id`` is minted (or caller-supplied) and
     the Goal/Workspace/Project scopes are the caller's canonical ones. The
     pack origin rides in ``provenance`` (``ProvenanceOrigin.PACK`` plus the
-    pack id) — the pack supplied defaults; it does not own the Rubric.
+    full registry snapshot — publisher, pack version, manifest digest, and
+    the exact asset id/version) — the pack supplied defaults; it does not own
+    the Rubric.
     """
     for field_name, value in (
         ("goal_id", goal_id),
@@ -1139,6 +1146,7 @@ def instantiate_rubric_asset(
     if asset.kind is not PackAssetKind.RUBRIC or asset.rubric is None:
         raise PackAssetUnknown(f"pack asset {asset_id!r} is not a rubric asset")
     definition = asset.rubric
+    pack_prov = manifest.provenance()
 
     rubric = _probe_rubric(definition, pack_id=manifest.pack_id)
     # ``model_copy(update=...)`` does not validate, so revalidate the final
@@ -1156,7 +1164,12 @@ def instantiate_rubric_asset(
             "provenance": {
                 "authored_by": authored_by,
                 "origin": ProvenanceOrigin.PACK,
-                "pack_id": manifest.pack_id,
+                "pack_id": pack_prov.pack_id,
+                "publisher": pack_prov.publisher,
+                "pack_version": pack_prov.version,
+                "manifest_sha256": pack_prov.manifest_sha256,
+                "asset_id": asset.asset_id,
+                "asset_version": asset.version,
             },
         }
     )

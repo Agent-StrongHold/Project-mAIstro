@@ -432,6 +432,11 @@ class TestVersionAddressableProvenance:
 
         assert rubric.provenance.origin is ProvenanceOrigin.PACK
         assert rubric.provenance.pack_id == "acme.film_critique"
+        assert rubric.provenance.publisher == "acme"
+        assert rubric.provenance.pack_version == "1.0.0"
+        assert rubric.provenance.manifest_sha256 == pack_meta["pack.manifest_sha256"]
+        assert rubric.provenance.asset_id == "scene"
+        assert rubric.provenance.asset_version == "1.0.0"
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
@@ -977,6 +982,16 @@ class TestManifestInspection:
             _pack_bytes(pack_id="acme.film.critique", publisher="acme"),
             "pack_id must be publisher.name",
         )
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_publisher_slugs_allowed_by_manifests_can_publish(self) -> None:
+        # Hyphenated and dotted publisher slugs are valid per _PUBLISHER_RE;
+        # their namespaced pack ids must parse too.
+        for publisher, pack_id in (("pub-1", "pub-1.my_pack"), ("a.b", "a.b.my_pack")):
+            manifest = inspect_pack_manifest(_pack_bytes(pack_id=pack_id, publisher=publisher))
+            assert manifest.pack_id == pack_id
+            assert manifest.publisher == publisher
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")

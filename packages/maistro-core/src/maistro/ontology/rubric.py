@@ -143,13 +143,28 @@ class RubricGate(BaseModel):
 
 
 class RubricProvenance(BaseModel):
-    """Who authored a revision and which pack supplied its defaults."""
+    """Who authored a revision and which pack snapshot supplied its defaults.
+
+    ``pack_id`` names the supplier; the optional ``publisher`` /
+    ``pack_version`` / ``manifest_sha256`` / ``asset_id`` / ``asset_version``
+    fields pin the exact registry snapshot and asset the revision was minted
+    from, so rubrics instantiated from different versions of one pack stay
+    provenance-distinguishable (the version-addressable contract). Catalog
+    adoption — which carries no manifest snapshot — records ``pack_id`` only.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     authored_by: str = Field(min_length=1)
     origin: ProvenanceOrigin = ProvenanceOrigin.AUTHORED
     pack_id: str | None = None
+    #: The exact pack snapshot the revision was instantiated from (all set
+    #: together by ``instantiate_rubric_asset``; absent for catalog adoption).
+    publisher: str | None = None
+    pack_version: str | None = None
+    manifest_sha256: str | None = None
+    asset_id: str | None = None
+    asset_version: str | None = None
 
     @model_validator(mode="after")
     def _pack_shape(self) -> RubricProvenance:
