@@ -2261,3 +2261,89 @@ root-suite legs of `Quality gate` and `Coverage gate` now have no known
 failing term from this leaf; the vulture step of the Quality gate shares the
 exact-debt-ledger wall. Leaf readiness handoff stands; the stack stays
 unmerged pending the separately authorized parent #1845 integration.
+
+## Round 30 — 2026-10-09 independent verifier re-execution at 6d18d8c9c; four-job CI-log attribution from the primary logs
+
+Dispatched as the next repair round for the same brief (named failure:
+`exact-debt-ledger`; prior block: worker BLOCKED at the round-29 head after a
+provider timeout, with all five deterministic driver checks green). Starting
+head `6d18d8c9c1a4f3d358156f30f0bb6e13e9303280` (round-29 tip, clean tree).
+This round re-derived every attribution from the primary CI logs (fetched
+read-only via the jobs API, run 37864997840/37864997951/37864997883 at
+`04738162080bdcc9d208673d00f665f85b7e6ecb`, synthetic merge candidate
+`c28d8a9ee5fc`) instead of trusting prior summaries, then re-executed the
+full local battery at the round-29 tip.
+
+### CI-log-verified failure attribution at 0473816208 (round-29 parent)
+
+- `test` job (113609511628): failed on exactly the three live-tree
+  reachability assertions (`test_baseline_matches_the_tree`,
+  `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set`) — the then-unbanked
+  `maistro.runs.admission_identity`. Candidate-side; fixed by the round-29
+  banking commit.
+- `Coverage gate` (113613045882): the same three assertions inside the
+  combine producer ("3 failed, 4972 passed"); the 87% publish-set floor
+  itself PASSED (TOTAL 94%) — floor arithmetic was never the failure.
+- `Quality gate` (113609511776): died at the vulture step, which runs before
+  reachability in quality.yml — "5 NEW identit(y/ies) not in the ledger" is
+  the TRUSTED-base delta and "not authorized by the trusted base ... land a
+  reviewed grant first" is the sole fatal term (the round-29 parent already
+  carried the five candidate rows).
+- `exact-debt-ledger` (113609510638): died in the provenance inventory at
+  `check-reachability-provenance.py` — at that head BOTH terms were live
+  ("NEW unreachable module absent from trusted base and not previously
+  authorized" AND "current unreachable module missing from candidate
+  baseline"); the round-29 banking removed only the second.
+
+### Independent re-execution at 6d18d8c9c (this round, all commands run here)
+
+- `check-reachability.py` rc=0 (170 unreachable); `check-reachability-dispositions.py`
+  rc=0 (50 groups, 147 CONNECT / 21 LIBRARY / 2 RETIRE).
+- `pytest tests/test_check_reachability.py::test_baseline_matches_the_tree
+  tests/test_reachability_baseline_identity.py -q` — 15 passed (the three
+  CI-failing assertions included).
+- `check-shipped-surface-truth.py` rc=0; `check-promotion-surface.py` rc=0;
+  `check-model-egress.py` rc=0 (53 direct-effect sites, all dispositioned).
+- `check-ratchet-provenance.py` rc=1 with exactly the two trusted-base
+  authorization terms from round 29; candidate-bookkeeping terms absent.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` rc=1 — candidate ledger clean, sole failing
+  term the five unauthorized `AdmissionAssessment` identities.
+- Focused acceptance: 79 passed (`test_root_admission_identity.py -q`);
+  ruff check/format clean on both leaf files; `mypy
+  packages/maistro-core/src/maistro/runs/admission_identity.py` clean;
+  `check-suite-inventory.py` full run ok (17 suites, 30,040 unique node
+  IDs; front-matter +79 delta still exact — no tests added this round, so
+  no delta change).
+- Diff-coverage re-proof repeated: module at/above 90% lines / 80% branches
+  ("ok: every measured file this change touches is at or above 90% lines /
+  80% branch arcs"), test file exempt by declaration.
+- Contract shape spot-checks (AST, independent of the suite): `__all__` is
+  exactly the 21 issue-mandated names as a set (alphabetized under ruff's
+  enforced ordering; the issue fixes the name set, not the listing order)
+  and `AdmissionAssessment` carries exactly the six issue-mandated
+  member/value pairs. `maistro.runs.__init__` does not re-export the module
+  and no production module imports it (leaf unwired per scope).
+
+### Blocker refresh (now checked against the CURRENT origin/develop tip)
+
+`origin/develop` has advanced to `675db8be6` (M8-A14 research, #2064) since
+round 29 noted `6138e9eac`; re-fetched and re-inspected this round: its
+`quality/ratchet-authorizations.json` (102 vulture / 11 reachability
+grants), `quality/vulture-baseline.json`, and
+`quality/reachability-baseline.json` still contain no `admission_identity`
+entry. The merge base with this branch remains `82097f6b7acc`. The
+exact-debt-ledger wall is therefore unchanged in kind and confirmed against
+the newest base: a reviewed `reachability` grant for
+`maistro.runs.admission_identity` (which also covers the dispositions gate)
+plus `vulture` grants for the five banked identities must land on the
+integration base first (two-merge rule, `ratchet_provenance.load_authorizations`
+reads the base only), or the #1845 integration leaf must supply the real
+runtime consumer that makes the module reachable and the enum values
+returned (at which point these rows are pruned in that leaf). No candidate-
+side ledger edit can flip the gate — proven by the gate's own output and by
+reading the provenance loader. This round adds no tests, no ledger rows, no
+docs beyond this record: the round-29 candidate state is correct as it
+stands, and the leaf remains implementation/test-ready with the explicit
+merge blocker, per the issue's own reporting directive.
