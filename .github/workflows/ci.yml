@@ -560,16 +560,23 @@ jobs:
             age-keygen --help > /dev/null && echo "✓ age-keygen ready" || exit 1
           fi
       - run: uv sync --locked --extra dev --extra bootstrap
-      - run: uv run pytest packages/maistro-bootstrap/tests -v --tb=short
-      - run: uv run pytest packages/maistro-core/tests -v --tb=short
-        env:
-          REQUIRE_AUTH: "false"
-          MAISTRO_DRY_RUN: "1"
+      # The publish-set unit suites (maistro-core, -canvas, -evolve, -rsi,
+      # -bootstrap) are deliberately NOT run here (#654): quality.yml's
+      # `coverage (no services)` job is their canonical producer on the same
+      # SHA. Both `test` and `coverage (no services)` are independently
+      # required by the PR ruleset (.github/branch-protection.json), so a
+      # second execution of the same suites was duplicate computation, not
+      # independent evidence. The producer is at least as strong as the steps
+      # it replaces: same collected node IDs (the suite-inventory gate pins
+      # those), the same REQUIRE_AUTH=false / MAISTRO_DRY_RUN=1 environment,
+      # `uv sync --all-extras` (a superset of this job's extras), bubblewrap
+      # installed with the same sysctl relaxation, and every test additionally
+      # under a 30s pytest-timeout. The partition itself is enforced by
+      # tests/test_unit_suite_execution_partition.py. This job keeps what the
+      # producer cannot execute: server, Turing, design, the extension
+      # harness/SDK suites, the root integration tree, Hive, the frontends,
+      # the cross-suite leakage proof, and the suite-inventory check.
       - run: uv run pytest packages/maistro-server/tests -v --tb=short
-        env:
-          REQUIRE_AUTH: "false"
-          MAISTRO_DRY_RUN: "1"
-      - run: uv run pytest packages/maistro-canvas/tests -v --tb=short
         env:
           REQUIRE_AUTH: "false"
           MAISTRO_DRY_RUN: "1"
@@ -596,11 +603,6 @@ jobs:
         env:
           REQUIRE_AUTH: "false"
           MAISTRO_DRY_RUN: "1"
-      - run: uv run pytest packages/maistro-rsi/tests packages/maistro-evolve/tests -v --tb=short
-        env:
-          REQUIRE_AUTH: "false"
-          MAISTRO_DRY_RUN: "1"
-          PYTHONPATH: packages/maistro-rsi/src:packages/maistro-evolve/src
       - uses: actions/setup-node@v7
         with:
           node-version: "22"

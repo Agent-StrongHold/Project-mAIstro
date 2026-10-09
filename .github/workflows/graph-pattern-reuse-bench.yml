@@ -1,0 +1,73 @@
+name: Graph-pattern-reuse bench
+
+# Manual only, on purpose.
+#
+# This runs scripts/bench_graph_pattern_reuse.py — the #929 (RESEARCH M8-D5)
+# measurement behind docs/research/929-graph-pattern-induction-reuse.md:
+# mining successful Runs into reusable Graph motifs (clustered by kind-level
+# structural signature, inducted as versioned canonical Graph candidates per
+# ADR-082926-65bf) and comparing naive/guarded reuse against from-scratch
+# planning on held-out Goals, with a latent validation-drift phase. It is
+# deterministic and offline, so the results it uploads are comparable
+# run-to-run. It is not a gate and not a per-PR job: the research numbers are
+# re-measured when the corpus model, the induction bar, or the planners
+# change, not on every commit.
+#
+# It is also what makes `scripts/bench_graph_pattern_reuse.py` a *real* entry
+# point rather than a script nobody can reach: `scripts/check-reachability.py`
+# roots tooling at the workflow steps that execute it, matching on filename.
+# This job runs it (same pattern as outcome-routing-bench.yml).
+on:
+  workflow_dispatch:
+    inputs:
+      corpus-runs:
+        description: "Historical Runs generated per seed before induction"
+        required: false
+        default: "600"
+        type: string
+      episodes:
+        description: "Held-out Goals planned per seed"
+        required: false
+        default: "400"
+        type: string
+      seeds:
+        description: "Number of seeds (0..N-1) to average over"
+        required: false
+        default: "5"
+        type: string
+      drift-at:
+        description: "Episode at which latent validation tightens on the drift family"
+        required: false
+        default: "200"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: graph-pattern-reuse-bench
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+      - name: uv sync (dev deps)
+        run: uv sync --locked --extra dev
+      - name: Benchmark Graph-pattern induction and reuse against from-scratch planning
+        run: >-
+          uv run python scripts/bench_graph_pattern_reuse.py
+          --corpus-runs ${{ inputs.corpus-runs }}
+          --episodes ${{ inputs.episodes }}
+          --seeds ${{ inputs.seeds }}
+          --drift-at ${{ inputs.drift-at }}
+          --output graph-pattern-reuse-bench.json
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: graph-pattern-reuse-bench
+          path: graph-pattern-reuse-bench.json
