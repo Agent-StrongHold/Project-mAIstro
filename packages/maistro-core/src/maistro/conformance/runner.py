@@ -80,6 +80,8 @@ class _AuditServer:
         return int(server.sockets[0].getsockname()[1])
 
     async def start(self) -> _AuditServer:
+        # devskim: ignore DS137138 -- loopback-only fixture server on an
+        # ephemeral port (0); lives only for the duration of this run.
         self._server = await asyncio.start_server(self._accept, "127.0.0.1", 0)
         return self
 
