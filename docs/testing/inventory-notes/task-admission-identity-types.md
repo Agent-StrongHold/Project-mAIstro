@@ -2036,3 +2036,113 @@ requires a reviewed `vulture` grant landed in develop first (two-merge rule),
 which belongs to the separately authorized parent #1845 integration — the
 stack stays unmerged and the explicit merge blocker stands with readiness,
 per the issue directive.
+
+## Round 28 — independent four-job CI-log attribution and full re-execution at 06d36af4
+
+Dispatched as the repair round for the same brief (named failure:
+`exact-debt-ledger`; prior block: worker BLOCKED), starting at head
+`06d36af4f67ffc2d6a29e9c92b4a0c7bd0cb5ac2` — round 27's banking commit
+`8659eb1a2` plus two develop merge commits (`273ff404`, `b90df19a`);
+worktree clean at start. Nothing was assumed from prior rounds: every claim
+below was re-executed or read from primary evidence this round.
+
+### Four-job root-cause attribution (read from the CI job logs, not inferred)
+
+At evaluated head `06d36af4`, all four red jobs reduce to the two documented
+designed blockers; no third defect exists:
+
+- `exact-debt-ledger` (run 37858990129, job 113589954383): the five
+  `AdmissionAssessment` identities are new debt unauthorized by the trusted
+  base — re-verified locally with CI's exact arguments (below).
+- Quality gate (Pillars 1–4, 7, 8) (run 37858989976, job 113590042862):
+  failed at exactly one step, "vulture (dead-code; confidence ≥ 60 —
+  per-identity ledger)" — the same root cause, no additional pillar failed.
+- `test` (run 37858989897, job 113590107096): exactly three failures —
+  `tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `tests/test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`
+  — each a direct assertion of the reachability gate diverging on the
+  unbanked, issue-predicted unwired module.
+- Coverage gate (run 37858989976, job 113595048708, step `combine`): the
+  same three failures plus two `pytest-timeout` (>30 s) failures in
+  `test_new_unreachable_module_fails_the_gate` and
+  `test_module_becoming_reachable_fails_until_the_baseline_is_pruned` — both
+  run a full in-process reachability scan, which measures 3.6 s uninstrumented
+  locally at this head; the timeouts are coverage-instrumentation overhead
+  variance, evidenced by the identical workflow being green on develop tip
+  `8fbbbfb9` (run 37860149504). Not gate-weakened, not leaf-attributable as a
+  defect, and moot while the three designed failures hold the job red.
+
+### Develop-side grant state (why the remaining red is not in-leaf-curable)
+
+`origin/develop` = `8fbbbfb91d78d30d756cf675b7b1a4c1ccff06e5`, five commits
+ahead of merge base `b90df19a24a1`. Its `quality/ratchet-authorizations.json`
+carries 102 `vulture` grants and 11 `reachability` grants — **none** for the
+five `AdmissionAssessment` identities or for `maistro.runs.admission_identity`.
+`ratchet_provenance.load_authorizations` reads that file **from the base
+revision** (scripts/ratchet_provenance.py, "a new grant does not take effect
+in the change that introduces it"), so no branch-side edit can authorize this
+debt, and the issue prohibits exactly that edit anyway. Correction to the
+round-27 numstat note, against the advanced develop tip:
+`git diff --numstat 8fbbbfb9 HEAD -- quality/` = 2 files —
+`vulture-baseline.json` +5/0 (the sanctioned banking) and
+`workflow-inventory.json` 0/7, where the 7 are develop-side workflow rows
+added strictly after the merge base (`git diff b90df19a2 8fbbbfb9 --
+quality/workflow-inventory.json` = 7/0 additions only). No leaf deletion.
+
+A develop sync was considered and deliberately **not** performed: the brief
+conditions it on a develop sync conflict, which this is not, and the PR's
+CI already evaluates the develop-merged ref — the same four reds re-derive
+there, so a sync repairs nothing named.
+
+### Re-execution battery at 06d36af4 (all executed this round)
+
+- `uv sync --locked --extra dev` — ok.
+- `uv run pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q`
+  — **79 passed**; all twelve issue-mandated test names present in the file,
+  including the export/enum-shape contract pin.
+- `uv run ruff check .` — clean; `uv run ruff format --check .` — 3194 files
+  already formatted; `uv run mypy .../admission_identity.py` — no issues.
+- `uv run python scripts/check-suite-inventory.py` — 17 suite(s) match the
+  recorded inventory (29,951 unique identities); front-matter `+79` delta
+  still exact; this round adds no tests.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — rc=1 with candidate
+  bookkeeping clean (1331 findings vs 1326 trusted identities; the five
+  identities banked under `pydantic-declarative-field`) and the sole failing
+  term the trusted-base authorization block — unchanged from round 27.
+- `uv run python scripts/check-reachability.py` — rc=1 with the single NEWLY
+  UNREACHABLE `maistro.runs.admission_identity` (170 unreachable / 1365
+  modules).
+- `uv run python scripts/check-reachability-dispositions.py` — OK (49 groups
+  classify all 169 baselined modules). `uv run python
+  scripts/check-promotion-surface.py` — ok.
+- Acceptance re-read of `admission_identity.py` in full: `@dataclass(frozen=True,
+  slots=True)` throughout; exact field order/annotations per issue;
+  `CanonicalJsonObject` rejects non-string input, invalid JSON, non-object
+  roots, duplicate keys at any depth (`object_pairs_hook`), non-finite
+  constants, and overflow-to-inf floats (`1e999` via `parse_float`), then
+  canonicalizes with `sort_keys`/compact separators and retains only the
+  string; `__all__` is exactly the 21 mandated names;
+  `AdmissionAssessment` exactly six members with the mandated values;
+  fencing `owns()` compares scope AND generation AND owner and never the two
+  role values to each other.
+- Inactive-leaf constraint re-proven: zero production imports of
+  `admission_identity`; no `maistro.runs.__init__` export; the leaf's
+  non-merge commits touch only the note, `quality/vulture-baseline.json`, and
+  the leaf's own module/test files (`runs/__init__.py`, `runs/store.py`,
+  `runs/store_boundary.py`, `runs/model.py`, `tasks/idempotency.py` unchanged
+  versus merge base). #1841 security signatures intact at this head:
+  `require_admitted_actor(actor_principal_id: str | None) -> string-stripped`,
+  `get_run(..., principal_id: str | None = None)`, `create_run`/
+  `claim_run_by_effect` retain `actor_principal_id: str | None = None`, `Run`
+  validates `actor_principal_id`.
+
+Resolution recorded: the round-27 banking remains the complete and correct
+in-leaf repair for `exact-debt-ledger`; the four-job red at this head is
+fully attributed to the two designed blockers (two-merge vulture
+authorization awaiting the develop-side grant; the issue-predicted
+reachability divergence of the deliberately unwired module). No grant,
+reachability-baseline entry, disposition, waiver, or gate change was added.
+Leaf readiness handoff stands with the explicit merge blocker; the stack
+stays unmerged pending the separately authorized parent #1845 integration.
