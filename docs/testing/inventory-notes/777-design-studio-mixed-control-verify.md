@@ -19640,3 +19640,66 @@ producer APIs that remain OPEN upstream and the stop condition
 forbids private substitutes. The committed salvage remains the
 implementable subset. Inventory delta **+0** (this record only).
 (Refs #777)
+
+## Round 284 record (job dfb882563e6548e5bbf0f0f71713acfe, repair)
+
+Head `a25ee5e90a93` (assigned start exact; verified `git rev-parse HEAD`),
+base `0d49d4e068de`, tree clean before this record.
+
+**Driver checks absent again (35th stale-pointer disproval):** this job's
+`manifest.json` has `checks: []` and the job directory
+`/home/dev/maistro/jobs/dfb882563e6548e5bbf0f0f71713acfe` contains no
+`check-*.log` files (direct `ls` exit 2). The prompt's pointer to
+"check-*.log files in your job directory" resolves to nothing for this
+round, as in the previous 34 rounds; the inherited Oct-4 pointer
+(job 53d5e08bf `check-2.log`) remains an old-head `agent_loop.py` format
+complaint already disproven by direct execution in rounds 281-283
+(current tree format-clean). All deterministic checks below were
+re-executed in this round rather than trusted from any prior claim.
+
+**Branch state:** fetch origin develop -> `origin/develop` = `0d49d4e06`
+= assigned base, merge-base(HEAD, origin/develop) = `0d49d4e06`, behind
+0, no sync conflict, no sync needed. PR #1660 head `6280009610e8`
+re-proven ancestor of HEAD (`git merge-base --is-ancestor` exit 0);
+capture shows PR1660 state=open draft=true merged=false with 31
+check-runs (30 success, 1 skipped) — the lane claim-stake, not
+independent progress.
+
+**Dependency block re-proven from the freshest capture**
+(`dispatch-context.json` completed 2026-10-09T11:35:11Z, 61 sources,
+`complete_for_scope: true`): #777 and parent #773 OPEN; Depends-on
+markers verbatim in the body target #804/#805/#806/#53/#774/#776/#93/#95
+— **all still OPEN**; #39/#458/#775 closed; native `blocked_by` API
+returns [] (body markers authoritative). No state change affects the
+block.
+
+**AC probes re-run at `a25ee5e90a93`:** 0 hits for
+`GoalReconciler|reconcile_goal` in `packages/*/src`;
+`design_service.py` (376 lines) 0 goal mentions;
+`workspace_agent.py` (149 lines) 0 goal/reconciliation machinery —
+acceptance criterion 1 consumes #804 producer APIs that do not exist in
+production, and the stop condition forbids a private reconciler/Goal
+owner substitute.
+
+**Validation battery (all exit 0, CI-exact args re-read from
+`vulture-ratchet.yml`):** `ruff check .` (All checks passed); `ruff
+format --check .` (3243 files already formatted);
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'`: 1323 reviewed -> 1322 findings, 0 unbanked, no
+amendment (gate reads merge base `0d49d4e06`);
+`check-ratchet-provenance.py` (0 violations, 53 consumers);
+`check-shipped-surface-truth.py` (complete);
+`check-suite-inventory.py` (17 suites match);
+`check-backlog-consistency.py` (167 items). Targeted pytest:
+`packages/maistro-core/tests/runs` -> **1219 passed, 280 skipped**;
+`packages/maistro-bootstrap/tests` -> **233 passed, 7 skipped**;
+hive-conductor `backend/tests -k 'design or workspace or brief'` ->
+**387 passed, 5 skipped** (3189 deselected).
+
+**Verdict: BLOCKED** — dependency-blocking (101st consecutive round).
+No implementable #777 work exists at this head: every acceptance
+criterion consumes producer APIs from OPEN issues (#804/#805/#806
+primary; #53/#774/#776/#93/#95 supporting), and the stop condition
+forbids fabricating substitutes. The committed salvage remains the
+implementable subset. Inventory delta **+0** (this record only).
+(Refs #777)
