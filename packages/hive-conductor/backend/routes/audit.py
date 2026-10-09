@@ -20,7 +20,9 @@ from services.audit_bridge import (
 from services.audit_query import (
     DEFAULT_AUDIT_PAGE_SIZE,
     EXPORT_MAX_ENTRIES,
+    AuditEntry,
     AuditPage,
+    AuditRetention,
     actor_of,
     iter_export_entries,
     page_entries,
@@ -31,18 +33,6 @@ from services.request_principal import require_principal
 router = APIRouter(tags=["audit"])
 
 logger = logging.getLogger(__name__)
-
-
-class AuditEntry(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    id: str
-    action: str
-    actor: str
-    target: str | None = None
-    detail: dict[str, Any] = {}
-    severity: Literal["info", "warning", "critical"] = "info"
-    created_at: datetime
 
 
 def _now() -> datetime:
@@ -233,8 +223,8 @@ def export_entries(
     )
 
 
-@router.get("/retention")
-def retention_policy(request: Request) -> dict[str, Any]:
+@router.get("/retention", response_model=AuditRetention)
+def retention_policy(request: Request) -> AuditRetention:
     """What this deployment's audit read surface keeps and bounds.
 
     Deployment-level constants, not corpus data — the same shape as
@@ -244,10 +234,11 @@ def retention_policy(request: Request) -> dict[str, Any]:
     route cannot swallow these paths.
     """
     require_principal(request)
-    return retention() | {
-        "durable": stores.persistence_backend() is not None,
-        "scope": "deployment" if _actor_scope(request) is None else "own",
-    }
+    return AuditRetention(
+        **retention(),
+        durable=stores.persistence_backend() is not None,
+        scope="deployment" if _actor_scope(request) is None else "own",
+    )
 
 
 @router.get("/{entry_id}")

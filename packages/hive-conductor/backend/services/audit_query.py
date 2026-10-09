@@ -50,7 +50,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from itertools import combinations, product
 from threading import RLock
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict
 
 from services.model_store import JsonStore
 
@@ -102,17 +104,56 @@ _AUDIT_INDEX_MIGRATION = "DROP INDEX IF EXISTS idx_audit_log_order;" + ";".join(
 _AUDIT_INDEX_MIGRATION_NAME = "audit_log_seek_idx_002"
 
 
+class AuditEntry(BaseModel):
+    """One audit row exactly as ``/v1/audit`` serves it.
+
+    The legacy Hive write shape (``routes.audit.log_audit``) and the core
+    projection (``services.audit_bridge.core_entry_to_hive``) both produce
+    this shape, so the page contract can name it: the generated frontend
+    types then carry ``AuditPage.entries`` as real rows, not anonymous
+    objects (#358, typed-client ratchet #1048 AC-P3).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    action: str
+    actor: str
+    target: str | None = None
+    detail: dict[str, Any] = {}
+    severity: Literal["info", "warning", "critical"] = "info"
+    created_at: datetime
+
+
 @dataclass(frozen=True)
 class AuditPage:
     """One bounded page plus the opaque handle for the next one."""
 
-    entries: list[dict[str, Any]]
+    entries: list[AuditEntry]
     next_cursor: str | None
+
+
+class AuditRetention(BaseModel):
+    """The /v1/audit/retention body, typed so the OpenAPI document carries it.
+
+    The frontend reads this endpoint's shape from the generated contract
+    (`src/api/models.ts` aliases it); a hand-written copy in a page component
+    is exactly the drift the typed-client ratchet (#1048 AC-P3) exists for.
+    Field order is the response's field order.
+    """
+
+    ordering: str
+    default_page_size: int
+    max_page_size: int
+    export_max_entries: int
+    corpus_purge: str
+    durable: bool | None = None
+    scope: Literal["deployment", "own"] = "own"
 
 
 def retention() -> dict[str, Any]:
     """Deployment read-surface constants. Carries no corpus data."""
-    return dict(_RETENTION, durable=None)  # durable filled by the route
+    return dict(_RETENTION)  # durable/scope are filled by the route
 
 
 def _encode_cursor(created_at: str, entry_id: str) -> str:

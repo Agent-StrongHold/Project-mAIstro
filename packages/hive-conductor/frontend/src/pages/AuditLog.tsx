@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet } from "../lib/api";
+import type { AuditEntry, AuditPage, AuditRetention, AuditSeverity } from "../api/models";
 import {
   Card,
   EmptyState,
@@ -9,39 +10,6 @@ import {
   SearchInput,
   useToast,
 } from "../components/shared";
-
-type Severity = "info" | "warning" | "critical";
-
-type AuditEntry = {
-  id: string;
-  action: string;
-  actor: string;
-  target: string | null;
-  detail: Record<string, unknown>;
-  severity: Severity;
-  created_at: string;
-};
-
-/** One bounded page from GET /v1/audit (#358). `next_cursor` is the opaque
- * keyset handle; null means the walk reached the end of the (scope-filtered)
- * corpus. The page never claims a total: counting the whole corpus is
- * exactly the unbounded read this page stopped doing. */
-type AuditPage = {
-  entries: AuditEntry[];
-  next_cursor: string | null;
-};
-
-type AuditRetention = {
-  ordering: string;
-  default_page_size: number;
-  max_page_size: number;
-  export_max_entries: number;
-  corpus_purge: string;
-  durable: boolean | null;
-  /** "deployment" = operator reading the whole trail; "own" = this account's
-   * entries only — the server's own answer, not a client-side guess. */
-  scope: "deployment" | "own";
-};
 
 const PAGE_SIZE = 100;
 // Keep a sliding client window, not the entire cursor walk. Virtualization
@@ -73,7 +41,7 @@ const SEVERITY_OPTIONS: { value: string; label: string }[] = [
   { value: "critical", label: "Critical" },
 ];
 
-const SEVERITY_COLORS: Record<Severity, { bg: string; fg: string }> = {
+const SEVERITY_COLORS: Record<AuditSeverity, { bg: string; fg: string }> = {
   info: { bg: "rgba(120,120,120,0.15)", fg: "#888" },
   warning: { bg: "rgba(212,160,23,0.15)", fg: "#b8860b" },
   critical: { bg: "rgba(196,69,42,0.15)", fg: "#c4452a" },
@@ -101,7 +69,7 @@ function relativeTime(iso: string): string {
   return `${days}d ago`;
 }
 
-function severityBadge(s: Severity) {
+function severityBadge(s: AuditSeverity) {
   const c = SEVERITY_COLORS[s];
   return (
     <span style={{
