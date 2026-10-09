@@ -359,6 +359,14 @@ class ExtensionStore(Protocol):
         """
         ...
 
+    async def clear_active(self, record: ExtensionInstallRecord) -> None:
+        """Drop the scope's active pointer iff it names this record.
+
+        The condition matters: disable/remove must not clobber a pointer that
+        a concurrent activation has already moved to a different record.
+        """
+        ...
+
     async def installed_versions(self, scope: ExtensionScope) -> dict[str, str]:
         """extension_id -> version for every ACTIVE record in the scope."""
         ...
@@ -426,6 +434,11 @@ class InMemoryExtensionStore:
 
     async def set_active(self, record: ExtensionInstallRecord) -> None:
         self._active[(record.org_id, record.workspace_id, record.extension_id)] = record.install_id
+
+    async def clear_active(self, record: ExtensionInstallRecord) -> None:
+        key = (record.org_id, record.workspace_id, record.extension_id)
+        if self._active.get(key) == record.install_id:
+            del self._active[key]
 
     async def installed_versions(self, scope: ExtensionScope) -> dict[str, str]:
         versions: dict[str, str] = {}
