@@ -2611,3 +2611,92 @@ suppression, caller, export, whitelist reference, or test was added this
 round; the front-matter `+79` delta is unchanged. Leaf readiness handoff
 stands with the explicit merge blocker; the stack stays unmerged pending the
 separately authorized parent #1845 integration.
+
+## Round 34 — 2026-10-09 verifier+writer round at 8282c19e59f3 (develop-merged head): convergence-matrix drift found and repaired; two structural trusted-base authorizations remain the only red terms
+
+State at start: exact head `8282c19e59f33aaecfff99a7c6c239f93caab466` (the
+merge of `origin/develop` at `d592654aca61` into this branch — the same SHA
+CI's four failing jobs evaluated), clean tree, `origin/develop` re-fetched
+(unchanged). This round is the first to attribute all four CI failures from
+the primary GitHub Actions job logs of `8282c19e59f3` rather than from
+gate-name inference, and the first to execute `check-convergence-matrix.py`
+— which is where a real, branch-caused defect was hiding.
+
+Four-job attribution from the primary CI logs at `8282c19e59f3`:
+
+1. **test** — exactly one failing test out of 5,055:
+   `tests/test_check_convergence_matrix.py::test_the_shipped_matrix_matches_the_shipped_code`
+   (AssertionError `1 == 0`); captured stdout: "Run / NodeRun / Attempt
+   lifecycle: Unreachable says `none`, code says `few` (1 of 32 modules,
+   3.1%)". The leaf's new unwired module moved the subsystem census and the
+   matrix row was never updated — rounds 22–33 re-ran the reachability and
+   gate meta-tests but never this checker, so the drift survived 12 rounds.
+2. **Coverage gate** — the serial non-publish root-suite leg failed on the
+   same single test (`1 failed, 5054 passed`); every producer artifact and
+   the 87% publish-set floor step succeeded, and `coverage (PostgreSQL)` —
+   the producer that measures `packages/maistro-core/tests/runs` — was
+   green, so the leaf module's own coverage was never the problem.
+3. **exact-debt-ledger** — fails at `check-ratchet-provenance.py`:
+   `check-reachability-provenance.py` and
+   `check-reachability-dispositions-provenance.py` each return 1 on
+   `maistro.runs.admission_identity` being a candidate-authored addition to
+   a trusted ledger ("not covered by an already-landed reachability
+   authorization"); the job's later steps never ran in CI.
+4. **Quality gate** — fails at `check-vulture-baseline.py packages/*/src
+   --min-confidence 60 --exclude '*/third_party/*'`: `pydantic-declarative-field:
+   5 NEW identit(y/ies)` (the `AdmissionAssessment` members; `PENDING`
+   escapes only via the favorable `JobStatus.PENDING` name collision the
+   issue itself disclaims as a consumer), candidate ledger exact at 1,323
+   reviewed -> 1,328 findings; "New Vulture debt is not authorized by the
+   trusted base ... land a reviewed grant first."
+
+Repair executed this round (the only branch-caused, in-authority defect):
+
+- `docs/architecture/CONVERGENCE-MATRIX.md`, Run / NodeRun / Attempt lifecycle
+  row: Unreachable cell `none` -> `few` (census: 1/32 = 3.1%, within the
+  `few` band, `scripts/check-convergence-matrix.py --census`), with the
+  Disposition cell naming `maistro.runs.admission_identity` and its
+  deliberate #1845-integration-pending inactivity so the row explains its
+  own drift. This is the census update the checker itself prescribes
+  ("Update the matrix row (or the code) so the two agree"), not a waiver:
+  the reachability baseline row and the LIBRARY disposition that feed the
+  census were already banked in rounds 27/29 under the standing CI-repair
+  brief.
+
+Re-execution evidence at this round's head, all run this round:
+
+- `check-convergence-matrix.py` — rc=0 (52 subsystems classify all 1,378
+  modules; 170 unreachable attributed); `pytest
+  tests/test_check_convergence_matrix.py -q` — 60 passed. This clears the
+  failing test of both the `test` job and the Coverage gate's serial leg.
+- Coverage floors for the measured changed file re-proven: `coverage run
+  --branch` over the focused suite reports `admission_identity.py` at 100%
+  lines and 100% branches (245 stmts / 82 branches, 0 missed, 0 partial)
+  against the per-file 90%/80% diff floors.
+- Focused suite 79 passed; leaf ruff/format/mypy clean (round-33 commands,
+  CI-exact, re-run); `check-suite-inventory.py` (no args) ok, 17 suites,
+  front-matter `+79` delta unchanged (no test added or removed).
+- `check-reachability.py` rc=0 (170/1,378 banked);
+  `check-reachability-dispositions.py` rc=0 (50 groups: 147 CONNECT / 21
+  LIBRARY / 2 RETIRE); `check-shipped-surface-truth.py` rc=0;
+  `check-promotion-surface.py` rc=0 — the candidate-side half of every
+  ledger gate stays exact.
+- Structural red terms re-confirmed unchanged, now at the develop-merged
+  head CI evaluated: `check-ratchet-provenance.py` (`RATCHET_BASE_REV=origin/develop`)
+  rc=1 via exactly the two reachability trusted-base sub-gates;
+  `check-vulture-baseline.py` rc=1 solely on trusted-base authorization of
+  the five reviewed retained `AdmissionAssessment` identities. Both
+  authorizations are read from the merge base (`d592654aca61`, which
+  `origin/develop` still is — re-fetched this round, no grant for this
+  module exists there or can be created branch-side), so no edit available
+  to this leaf can clear them; they clear only via the grant-first merge on
+  the integration base or the parent #1845 integration leaf that makes the
+  module reachable and the enum values returned (pruning these rows there).
+
+No caller, export, suppression, waiver, or test was added; the only tree
+change this round is the convergence-matrix row. Two of the four CI jobs
+(`test`, `Coverage gate`) are addressed by evidence above; the other two
+(`exact-debt-ledger`, `Quality gate`) remain blocked on the two-merge
+trusted-base authorizations exactly as rounds 29–33 documented. Leaf
+readiness handoff stands; the stack stays unmerged pending the separately
+authorized parent #1845 integration.
