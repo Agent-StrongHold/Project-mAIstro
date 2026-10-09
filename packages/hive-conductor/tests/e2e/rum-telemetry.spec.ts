@@ -37,6 +37,7 @@ import {
 } from "../../frontend/src/lib/rumSchema";
 
 const SECRET_TOKEN = "supersecret-rum-token";
+const BUILD_ID = process.env.E2E_RUM_BUILD_ID || "e2e";
 const RAW_AGENT_ID = "a1e40b7c-9931-4f0e-8d5c-77b2aa01fed9";
 
 // ---------------------------------------------------------------------------
@@ -303,7 +304,7 @@ test.describe("RUM live collection", () => {
     for (const batch of captured) {
       expect(Object.keys(batch).sort()).toEqual(["build_id", "events", "schema", "session_id"]);
       expect(batch.schema).toBe("hive.rum.v1");
-      expect(batch.build_id).toBeTruthy();
+      expect(batch.build_id).toBe(BUILD_ID);
       expect(batch.session_id).toMatch(/^[0-9a-f]{12}$/);
       expect(batch.events.length).toBeLessThanOrEqual(25);
     }
@@ -397,11 +398,20 @@ test.describe("RUM live collection", () => {
       .map((e) => e["request_id"])
       .filter((id): id is string => typeof id === "string");
     expect(storedIds.length).toBeGreaterThan(0);
+    const emitted = captured.flatMap((batch) => batch.events);
+    expect(emitted.some((event) => event.type === "api_request" && event.request_id)).toBe(true);
+    for (const event of emitted) {
+      expect(body.events).toContainEqual(expect.objectContaining({ ...event, build_id: BUILD_ID }));
+    }
+    for (const id of emitted.map((event) => event.request_id).filter(Boolean)) {
+      expect(storedIds).toContain(id);
+      expect(observedRequestIds.has(id as string)).toBe(true);
+    }
 
     const summary = await operator.get("/v1/rum/events/summary");
     expect(summary.status()).toBe(200);
     const grouped = (await summary.json()) as {
-      groups: Array<{ type: string; metric: string; route: string; count: number }>;
+      groups: Array<{ build_id: string; type: string; metric: string; route: string; count: number }>;
       window_events: number;
     };
     expect(grouped.window_events).toBeGreaterThan(0);
@@ -417,8 +427,12 @@ test.describe("RUM live collection", () => {
     }
     // Load metrics and API timings land in separate groups — the shape a
     // maintainer compares across builds or time windows.
-    expect(grouped.groups.some((g) => g.type === "web_vital")).toBe(true);
-    expect(grouped.groups.some((g) => g.type === "api_request")).toBe(true);
+    expect(grouped.groups.some((g) => g.build_id === BUILD_ID && g.type === "web_vital")).toBe(true);
+    expect(grouped.groups.some((g) => g.build_id === BUILD_ID && g.type === "api_request")).toBe(true);
+    await test.info().attach("collector-receipts", {
+      body: JSON.stringify({ observations: body.events, summary: grouped }, null, 2),
+      contentType: "application/json",
+    });
     await operator.dispose();
   });
 });

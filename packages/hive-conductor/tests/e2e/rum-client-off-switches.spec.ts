@@ -63,6 +63,7 @@ const scenarios: Scenario[] = [
   // The collector rejects this build's batches with 500.
   { name: "breaker", env: { ...ENABLED_BASE, VITE_RUM_BUILD_ID: "breaker" } },
   { name: "bounded", env: { ...ENABLED_BASE, VITE_RUM_BUILD_ID: "bounded" } },
+  { name: "api-client", env: { ...ENABLED_BASE, VITE_RUM_BUILD_ID: "api-client" } },
   // Firefox-shaped environment: no LCP observer support.
   {
     name: "no-observer",
@@ -203,7 +204,8 @@ test.beforeAll(async () => {
         `${SRC_ROOT}/frontend/src/lib/rum`,
       )};
 
-const driver = { initRum, api: rumApiRequest, pending: rumPendingForTests };
+${scenario.name === "api-client" ? `import { apiFetch } from ${JSON.stringify(`${SRC_ROOT}/frontend/src/lib/api`)};` : ""}
+const driver = { initRum, api: rumApiRequest, pending: rumPendingForTests${scenario.name === "api-client" ? ", request: apiFetch" : ""} };
 (window as unknown as { __rumDriver: typeof driver }).__rumDriver = driver;
 // main.tsx calls this unconditionally on every page load; the module itself
 // decides whether collection is on.
@@ -362,5 +364,129 @@ test("without PerformanceObserver the reporter still initializes and ships the l
     false,
   );
   expect(pageErrors, "an unsupported API must be a silent degradation").toEqual([]);
+  await context.close();
+});
+
+/** Exercise api.ts itself, not a test-supplied timing/outcome. */
+async function clientRequest(page: import("@playwright/test").Page, path: string) {
+  return page.evaluate(async (path) => {
+    const driver = (window as unknown as {
+      __rumDriver: { request(path: string, init: RequestInit): Promise<unknown> };
+    }).__rumDriver;
+    try {
+      return { data: await driver.request(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Test-Secret": "header-secret" },
+        body: JSON.stringify({ prompt: "prompt-secret", password: "password-secret" }),
+      }) };
+    } catch (error) {
+      const e = error as Error & { status: number; path: string };
+      return { error: { name: e.name, message: e.message, status: e.status, path: e.path } };
+    }
+  }, path);
+}
+
+function assertPrivateApiEvents(events: RumEnvelope["events"]) {
+  const api = events.filter((e) => e.type === "api_request");
+  expect(api.length).toBeGreaterThan(0);
+  for (const event of api) {
+    expect(Object.keys(event).sort()).toEqual([
+      "duration_ms", "method", "outcome", "request_id", "route", "status_class", "ts", "type",
+    ]);
+    expect(event.route).toBe("/v1/agents/*");
+    expect(Number.isFinite(event.duration_ms)).toBe(true);
+    expect(event.duration_ms).toBeGreaterThanOrEqual(0);
+  }
+  const wire = JSON.stringify(events);
+  for (const secret of [RAW_AGENT_ID, "query-secret", "fragment-secret", "header-secret",
+    "prompt-secret", "password-secret", "response-secret", "error-secret"]) {
+    expect(wire).not.toContain(secret);
+  }
+  return api;
+}
+
+test("shared-client success and HTTP errors preserve parsing and emit only approved fields", async ({ browser }) => {
+  const { context, page, pageErrors } = await loadScenario(browser, scenarioByName("api-client"));
+  const start = batches.length;
+  const path = `/v1/agents/${RAW_AGENT_ID}?token=query-secret#fragment-secret`;
+  for (const [status, body, id] of [
+    [200, '{"value":"response-secret"}', "success-id"],
+    [400, '{"detail":"error-secret"}', "error-id"],
+    [200, "response-secret", "text-id"],
+    [204, "", "empty-id"],
+  ] as const) {
+    await page.route("**/v1/agents/**", (route) => route.fulfill({
+      status, body, headers: { "X-Request-ID": id },
+    }));
+    const result = await clientRequest(page, path);
+    if (status === 400) {
+      expect(result.error).toEqual({ name: "ApiError", message: "error-secret", status, path });
+    } else {
+      expect(result.data).toEqual(status === 204 ? undefined : id === "text-id" ? body : JSON.parse(body));
+    }
+    await page.unroute("**/v1/agents/**");
+  }
+  await dispatchPagehide(page);
+  await expect.poll(() => batches.length).toBe(start + 1);
+  const events = assertPrivateApiEvents(batches[start].events);
+  expect(events.map((e) => [e.outcome, e.status_class, e.request_id])).toEqual([
+    ["ok", 2, "success-id"], ["http_error", 4, "error-id"],
+    ["ok", 2, "text-id"], ["ok", 2, "empty-id"],
+  ]);
+  expect(pageErrors).toEqual([]);
+  await context.close();
+});
+
+test("offline requests and unload delivery fail without retrying or breaking rendering", async ({ browser }) => {
+  const { context, page, pageErrors } = await loadScenario(browser, scenarioByName("api-client"));
+  const start = batches.length;
+  const path = `/v1/agents/${RAW_AGENT_ID}?token=query-secret`;
+  await context.setOffline(true);
+  const result = await clientRequest(page, path);
+  expect(result.error).toEqual({ name: "ApiError", status: 0, path,
+    message: "Couldn't reach the server. Check your connection and try again." });
+  // Capture the actual beacon bytes even though an offline browser cannot
+  // deliver them. Returning false models the documented queue-rejection path.
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "sendBeacon", { value: (_url: string, body: Blob) => {
+      (window as unknown as { beacon: Promise<string> }).beacon = body.text();
+      return false;
+    } });
+  });
+  await dispatchPagehide(page);
+  const wire = await page.evaluate(() => (window as unknown as { beacon: Promise<string> }).beacon);
+  const events = assertPrivateApiEvents((JSON.parse(wire) as RumEnvelope).events);
+  expect(events.map((e) => [e.outcome, e.status_class, e.request_id])).toEqual([["network_error", 0, null]]);
+  await context.setOffline(false);
+  await page.clock.install();
+  await page.clock.fastForward(30_000);
+  expect(batches.length, "failed unload batch is dropped, never replayed after reconnect").toBe(start);
+  expect(await page.evaluate(() => (window as unknown as { __rumDriver: RumDriver }).__rumDriver.pending())).toBe(0);
+  await expect(page.locator("#alive")).toBeVisible();
+  expect(pageErrors).toEqual([]);
+  await context.close();
+});
+
+test("shared-client timeout keeps the 30s budget and emits no fabricated server id", async ({ browser }) => {
+  const { context, page, pageErrors } = await loadScenario(browser, scenarioByName("api-client"));
+  const start = batches.length;
+  await page.clock.install();
+  await page.route("**/v1/agents/**", () => { /* deliberately never send headers */ });
+  const requested = page.waitForRequest("**/v1/agents/**");
+  const path = `/v1/agents/${RAW_AGENT_ID}?token=query-secret`;
+  let settled = false;
+  const result = clientRequest(page, path).then((value) => { settled = true; return value; });
+  await requested;
+  await page.clock.fastForward(29_999);
+  expect(settled, "the existing request budget must not be shortened").toBe(false);
+  await page.clock.fastForward(1);
+  expect((await result).error).toEqual({ name: "ApiError", status: 0, path,
+    message: "This took too long and was cancelled. Try again." });
+  await dispatchPagehide(page);
+  await expect.poll(() => batches.slice(start).flatMap((b) => b.events)
+    .filter((e) => e.type === "api_request").length).toBe(1);
+  const events = assertPrivateApiEvents(batches.slice(start).flatMap((b) => b.events));
+  expect(events.map((e) => [e.outcome, e.status_class, e.request_id])).toEqual([["timeout", 0, null]]);
+  expect(pageErrors).toEqual([]);
   await context.close();
 });

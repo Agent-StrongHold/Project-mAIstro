@@ -28,7 +28,7 @@ threshold. Nothing here introduces one.
 
 | Metric | Start boundary | End boundary | Unit | Lifecycle | Fallback |
 |---|---|---|---|---|---|
-| `web_vital` / `LCP` | Navigation start (`performance.timeOrigin`) | Render time of the largest contentful element, as of the first flush after candidates are observed (LCP finalizes at first user input or pagehide, whichever comes first) | ms (fractional), one event per navigation | Buffered `PerformanceObserver({type:"largest-contentful-paint"})` | None — browsers without LCP support (e.g. Firefox) simply omit it |
+| `web_vital` / `LCP` | Navigation start (`performance.timeOrigin`) | Latest observed largest-contentful-paint candidate at first pointer/key input, pagehide or document hidden | ms (fractional), at most one event per document | Buffered `PerformanceObserver({type:"largest-contentful-paint"})`; finalized at that lifecycle boundary, never an interval flush | None — browsers without LCP support simply omit it |
 | `web_vital` / `load` | Navigation start | `PerformanceNavigationTiming.loadEventEnd` | ms, once per page load | Sent on the first flush after the `load` event | If the Performance API is unavailable, the metric is absent; this is the documented equivalent that every browser reports |
 | `api_request` | Immediately before the shared client's `fetch()` (`lib/api.ts`) | After the response body is read (headers → body, matching the client's 30 s timeout window) or at the transport failure | ms (fractional), one event per request through the shared client | Emitted per call; batched like everything else | Transport failures are `outcome: "timeout"` / `"network_error"` with `status_class: 0` and **no** `request_id` — none is fabricated |
 
@@ -162,8 +162,61 @@ curl -s localhost:8101/v1/rum/events/summary   # grouped by metric/route/outcome
 ```
 
 The spec's own assertions are the receipt evidence: finite non-negative
-values at the endpoint, stored observations read back, and build/route
-grouping — no console.log, no dev server, no synthetic number.
+values at the endpoint, the actual emitted observations read back, matching
+server-issued request IDs, and build/route grouping. The queried observations
+and summary are attached as `collector-receipts` to the Playwright result —
+no console.log, no dev server, no synthetic number. The expected build defaults
+to compose's `e2e`; set `E2E_RUM_BUILD_ID` to the build stamp for other builds.
+
+### Local smoke without Docker
+
+From the repository root, build the **production** bundle, not a Vite dev server:
+
+```bash
+(cd packages/hive-conductor/frontend && \
+  VITE_DEBUG_API=false VITE_RUM_ENABLED=true VITE_RUM_SAMPLE_RATE=1 \
+  VITE_RUM_BUILD_ID=repair-1420 npm run build)
+```
+
+In one terminal, run the real backend (choose an available port; the fresh data
+directory isolates test accounts from any existing installation):
+
+```bash
+CONDUCTOR_DATA_DIR=$(mktemp -d) RUM_INGEST_ENABLED=true \
+SESSION_COOKIE_SECURE=false ALLOW_INSECURE_TRANSPORT=true HARDWARE_PRESET=beast \
+uv run python -m uvicorn main:app --app-dir packages/hive-conductor/backend \
+  --host 127.0.0.1 --port 18142
+```
+
+In another terminal, with the e2e dependencies and Chromium installed:
+
+```bash
+CI=true HIVE_BASE_URL=http://127.0.0.1:18142 E2E_RUM_BUILD_ID=repair-1420 \
+E2E_SRC_ROOT=$PWD/packages/hive-conductor \
+E2E_NODE_PATHS=$PWD/packages/hive-conductor/tests/e2e/node_modules \
+packages/hive-conductor/tests/e2e/node_modules/.bin/playwright test \
+  --config=packages/hive-conductor/tests/e2e/playwright.config.ts \
+  rum-telemetry.spec.ts rum-client-off-switches.spec.ts
+```
+
+Stop the backend afterwards. The HTTP/cookie switches above are for this
+loopback-only test, not production deployment settings.
+
+### Receipt example (executed 2026-10-09)
+
+A fresh local production-build smoke returned 12 observations and 9 summary
+groups under `repair-1420`. A representative stored observation (random session
+and server request ID redacted here; the test compares them verbatim):
+
+```json
+{"type":"api_request","method":"GET","route":"/v1/agents","status_class":2,"outcome":"ok","duration_ms":18.699999928474426,"request_id":"<server-id>","ts":1791504716192,"build_id":"repair-1420","session_id":"<page-session>","received_at":1791504717.2074008}
+```
+
+The same document's `/agents` groups contained `load=39.39999997615814 ms`
+and `LCP=84 ms`. These are receipt examples, not thresholds or an SLO. The
+API observation's unredacted ID matched the backend's `GET /v1/agents 200`
+request log. The ordinary reporting session received 403 on read-back;
+the admin session queried the observations and summary successfully.
 
 ### Comparing a load metric across builds or time windows
 
