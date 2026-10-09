@@ -19703,3 +19703,60 @@ primary; #53/#774/#776/#93/#95 supporting), and the stop condition
 forbids fabricating substitutes. The committed salvage remains the
 implementable subset. Inventory delta **+0** (this record only).
 (Refs #777)
+
+## Round 285 (job 5c065a9591364d2697bccd9b012f942b, head 0f7d2788c77c)
+
+All round-284 claims independently re-verified this round; nothing taken on
+trust. Driver checks absent again (36th stale-pointer instance): job dir
+`5c065a9591364d2697bccd9b012f942b` contains no `check-*.log` and
+`manifest.checks == []`, so the full battery was re-executed directly.
+
+**Branch state verified:** HEAD `0f7d2788c77c` = assigned start exact; fetch
+origin develop -> `origin/develop = 0d49d4e068de` = assigned base;
+merge-base identical; behind 0 / ahead 447; working tree clean. No develop
+sync conflict. PR1660 head `6280009610e8` re-proven ancestor of HEAD
+(`git merge-base --is-ancestor` exit 0): open **draft**, `merged: false`,
+16 files (13 docs/research salvage + 3 inventory notes + 1-line
+`design_service.py` + 6-line `agent_loop.py` + one vulture ledger row) with
+31 check-runs (30 success / 1 skipped) — a claim-stake, not independent
+progress.
+
+**Dependency block re-proven from the freshest capture**
+(`dispatch-context.json` completed 2026-10-09T11:58:31Z, 61 sources,
+`complete_for_scope: true`): #777 and parent #773 OPEN; body Depends-on
+markers target #804/#805/#806/#53/#774/#776/#93/#95 — **all still OPEN**
+(#94 outside capture scope; block holds via #93/#95); #39/#458/#775
+closed; native `blocked_by` API returns [] (body markers authoritative).
+No state change affects the block.
+
+**AC probes re-run at `0f7d2788c77c`:** 0 hits for
+`GoalReconciler|reconcile_goal|goal_reconcil` in `packages/*/src`;
+`design_service.py` (376 lines) 0 goal mentions;
+`workspace_agent.py` (149 lines, roster materializer:
+`resolve_workspace_agent`/`set_workspace_agent_persona`) 0 goal or
+reconciliation machinery. Acceptance criterion 1 consumes #804 producer
+APIs that do not exist in production, and the stop condition forbids a
+private reconciler/Goal owner substitute.
+
+**Validation battery (all exit 0, CI-exact args re-read from
+`vulture-ratchet.yml`):** `ruff check .` (All checks passed); `ruff
+format --check .` (3243 files already formatted);
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'`: 1323 reviewed -> 1322 findings, 0 unbanked, no
+amendment (gate reads merge base `0d49d4e06`);
+`check-ratchet-provenance.py` (0 violations, 53 consumers);
+`check-shipped-surface-truth.py` (complete);
+`check-suite-inventory.py` (17 suites match);
+`check-backlog-consistency.py` (167 items). Targeted pytest:
+`packages/maistro-core/tests/runs` -> **1219 passed, 280 skipped**;
+`packages/maistro-bootstrap/tests` -> **233 passed, 7 skipped**;
+hive-conductor `backend/tests -k 'design or workspace or brief'` ->
+**387 passed, 5 skipped** (3189 deselected).
+
+**Verdict: BLOCKED** — dependency-blocking (102nd consecutive round).
+No implementable #777 work exists at this head: every acceptance
+criterion consumes producer APIs from OPEN issues (#804/#805/#806
+primary; #53/#774/#776/#93/#95 supporting), and the stop condition
+forbids fabricating substitutes. The committed salvage remains the
+implementable subset. Inventory delta **+0** (this record only).
+(Refs #777)
