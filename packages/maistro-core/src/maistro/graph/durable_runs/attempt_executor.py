@@ -271,22 +271,7 @@ async def resume_durable_graph(
         resume_at=claim_until,
     )
 
-    run = record.run
-    if run.status in {RunStatus.WAITING, RunStatus.QUEUED}:
-        stepped: Run | None = None
-        if spine is not None:
-            canonical = await spine.get_run(run.run_id)
-            if canonical is not None:
-                for step in transition_path(canonical.status, RunStatus.RUNNING):
-                    canonical = await spine.transition_run(run.run_id, step)
-                stepped = canonical
-        if stepped is None:
-            record = traversal._replace_record(
-                record,
-                run=transition_run(run, RunStatus.RUNNING),
-            )
-        else:
-            record = traversal._replace_record(record, run=stepped)
+    record = await _reactivate_for_walk(record, spine)
 
     return await _walk(
         record,
@@ -296,6 +281,35 @@ async def resume_durable_graph(
         run_store=spine,
         max_steps=max_steps,
     )
+
+
+async def _reactivate_for_walk(
+    record: DurableRunRecord,
+    spine: RunStore | None,
+) -> DurableRunRecord:
+    """Mirror a resumable WAITING/QUEUED record onto RUNNING before the walk.
+
+    A canonical spine receives the full transition path hop by hop (each
+    transition audited on the lifecycle mirror); without one the durable
+    record moves directly. Records already RUNNING -- including one resumed
+    straight from a stolen-but-expired claim -- pass through untouched.
+    """
+    run = record.run
+    if run.status not in {RunStatus.WAITING, RunStatus.QUEUED}:
+        return record
+    stepped: Run | None = None
+    if spine is not None:
+        canonical = await spine.get_run(run.run_id)
+        if canonical is not None:
+            for step in transition_path(canonical.status, RunStatus.RUNNING):
+                canonical = await spine.transition_run(run.run_id, step)
+            stepped = canonical
+    if stepped is None:
+        return traversal._replace_record(
+            record,
+            run=transition_run(run, RunStatus.RUNNING),
+        )
+    return traversal._replace_record(record, run=stepped)
 
 
 async def _reconcile_orphaned_attempts(
