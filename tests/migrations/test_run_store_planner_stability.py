@@ -604,8 +604,8 @@ class TestStatusDomainsAreDatabaseConstrained:
 
 
 class TestTheRevisionShapedTheCatalog:
-    async def test_058s_indexes_exist_and_the_redundant_one_is_gone(self, migrated_url) -> None:
-        """The write-cost side of the acceptance: 058 adds exactly its three
+    async def test_057s_indexes_exist_and_the_redundant_one_is_gone(self, migrated_url) -> None:
+        """The write-cost side of the acceptance: 057 adds exactly its three
         indexes and *drops* `ix_graph_continuations_status` — (status,
         project_id) — whose filter the status listing never used as an order
         and whose job the new index subsumes. One index on the table, not two."""

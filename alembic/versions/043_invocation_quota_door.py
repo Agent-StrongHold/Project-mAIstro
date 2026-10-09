@@ -12,9 +12,10 @@ keeps its shipped parent `055`; merged user-model `056_user_model_facts`
 `057_run_store_planner_stability` (#1914's ``4675101``) follows `056`.
 Installed databases stamped `056` or `057` must keep those meanings.
 The integrated chain then adds `058_learning_validation_provenance`,
-`059_backlog_work_source`, and `060_backlog_authority_cutover`. The new
-Goal DDL (#1572) appends as `061_canonical_goals` after `060`, preserving
-one linear head without reassigning any merged identity.
+`059_backlog_work_source`, `060_backlog_authority_cutover`, and develop's
+`061_hitl_pause_kind_index`. The new Goal DDL (#1572) appends as
+`062_canonical_goals` after that `061` tip, preserving one linear head
+without reassigning any merged identity.
 
 Every table here is created only when missing, and every column added
 only when absent, because the store bootstraps these same tables itself:
