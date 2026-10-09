@@ -15,7 +15,9 @@ production seams. The load-bearing properties:
 * the harness's own guards are real (artifact path escapes are refused; a
   plugin lying about its identity is recorded FAILED with nothing active);
 * the lineage stays honest about what this base cannot prove yet (the #954
-  post-install boundary note is present, not hidden).
+  post-install restart-durability boundary note is present, not hidden);
+* the #954 post-install lifecycle — disable, pin, rollback, remove — is
+  proven as explicit, audited decisions on the governed records.
 """
 
 from __future__ import annotations
@@ -46,6 +48,7 @@ EXPECTED_STAGES = (
     "invoke-observe",
     "denials",
     "update-fence",
+    "post-install-lifecycle",
     "catalog-integrity",
     "durable-restart",
     "canonical-truth-boundary",
