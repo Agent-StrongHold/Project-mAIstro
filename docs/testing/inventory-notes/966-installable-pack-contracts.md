@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +125
+  packages/maistro-core/tests: +133
 ---
 
 # 966 — Installable domain-pack contracts over canonical objects (M9-F1)
@@ -9,8 +9,7 @@ Adds `packages/maistro-core/src/maistro/extensions/packs.py` (the pack
 manifest subtype, version-addressable asset inventory, instantiation rules,
 and the `InstallablePackRegistry` side-by-side install/disable surface) and
 `packages/maistro-core/tests/extensions/test_pack_contracts.py` (+58 collected
-node IDs; the extensions suite goes 153 → 215, +62 with the review-fix
-regressions below), plus the four registry verbs
+node IDs at landing; 65 after the develop sync below), plus the four registry verbs
 whose only in-tree consumers are this suite whitelisted in
 `packages/maistro-core/src/_vulture_whitelist.py` with the
 contract-ships-first rationale (the production driver is M9-F3, #968). No
@@ -110,6 +109,83 @@ sequence (`uv sync --locked`, `uv pip install pip-audit`, freeze, `pip-audit
 triaged `ecdsa PYSEC-2026-1325` remaining, plus
 `scripts/check-dependency-namespaces.py` green. No test-count change from the
 repair; the +58 above is the suite truth.
+## Develop sync resolution: union of the develop-line repair rounds (this note carries the round)
+
+`origin/develop` advanced three commits past the round-7 sync (M8-D2 graph
+synthesis #2075, the M9-F pack epic #2095 — this same feature cherry-picked
+onto develop with its own repair rounds — and the M8-F1 fleet bench #2084).
+The pack-contract collision was semantic, not textual: develop's cherry-pick
+predates this branch's review fixes, and its repair round re-derived refusal
+coverage this branch already pins. Resolved as this branch's implementation
+plus develop's genuinely-additive tests; `quality/*.json` auto-resolved
+row-identical to origin/develop.
+
+Kept from this branch (the later, reviewed implementation), with evidence:
+
+- **Pack-id grammar** — `pack_id` is `publisher.` + one name slug, where the
+  publisher half reuses `_PUBLISHER_RE` (`^[a-z0-9][a-z0-9._-]*$`, which
+  accepts hyphenated AND dotted publishers), so `pub-1.my_pack` and
+  `a.b.my_pack` both parse
+  (`test_publisher_slugs_allowed_by_manifests_can_publish`). Develop's
+  two-dot-segment split would reject dotted publishers its own comment claims
+  to accept; its `pub-1.film-critique` refusal row (hyphen in the name
+  segment) contradicts this grammar and was dropped.
+- **Snapshot representation** — rubric dimensions are stored as pack-local
+  frozen dataclasses and the whole snapshot tree is immutable
+  (`test_manifest_snapshot_is_deep_frozen`). Develop stores canonical
+  (mutable) `RubricDimension` objects and re-parses `raw` on every use; the
+  frozen tree is the stronger closure (nothing can be mutated, so no use
+  ever needs re-anchoring), and develop's mutation test is ported below in
+  its frozen form.
+
+Ported from develop (+7 collected in `test_pack_contracts.py`, 58 → 65;
++1 in `tests/ontology/test_rubric_model.py`):
+
+- `test_rubric_provenance_distinguishes_pack_versions` — two installed
+  versions of one pack stamp different provenance (develop's P1 round).
+- `TestManifestSnapshotIntegrity` —
+  `test_mutating_a_stored_dimension_cannot_serve_wrong_bytes` (adapted: the
+  frozen tree refuses the mutation, and the digest truthfulness assertion
+  `manifest_sha256 == sha256(raw)` is kept) and
+  `test_instantiated_objects_never_alias_the_snapshot_tree` (as written).
+  `test_persona_payload_trees_are_frozen` was not ported: every assertion it
+  makes — nested writes raise, arrays are tuples, a frozen tree still
+  instantiates — is already pinned by
+  `test_manifest_snapshot_is_deep_frozen`.
+- `test_dependency_resolution_is_independent_of_install_order` — pins the
+  `_active_versions()` highest-active aggregation that the round-2 note
+  recorded as "(no test)".
+- `test_manifest_version_must_be_a_literal_integer` — the `1.0` float case
+  is new (`True == 1` and `1.0 == 1`); adapted to this branch's message
+  (`unsupported manifest_version:`, from `_parse_manifest_version`).
+- `test_unknown_pack_with_pinned_version_names_the_version` — the typed
+  unknown-pack refusal names a requested pinned version.
+- `test_record_provenance_is_the_manifests_provenance` — the install
+  record's provenance equals the manifest snapshot's
+  (`manifest_sha256 == sha256(raw)`).
+
+Subsumed, not ported (develop's refusal-matrix round re-derived coverage this
+branch already pins — `TestFailClosedParseMatrix` alone carries 48 rows to
+develop's 36, and the overlapping assertions were checked row by row):
+`TestInspectionRefusalMatrix` in full; the blank-workspace / wrong-kind /
+blank-scope / blank-canonical-id / activate-is-idempotent cases of
+`TestInstantiationRefusals` (covered by `TestInstantiationInputValidation`
+and `test_activate_on_an_active_pack_changes_nothing`);
+`test_non_finite_rubric_numbers_are_rejected` (`test_rubric_payload_is_rejected_fail_closed`
+covers the same guard, including the bool arm and the
+weight/pass_value/gate numbers);
+`test_hyphenated_publisher_slug_is_accepted` (subsumed by the grammar test
+above); `test_instantiated_rubric_revalidates_caller_supplied_counts`
+(covered by `test_caller_rubric_bindings_are_revalidated`; develop's
+ValueError wrapper is an implementation detail of its source — the pydantic
+ValidationError this branch raises is itself a ValueError subclass, so the
+catch-type contract holds either way).
+
+`packages/maistro-core/tests` delta +125 → +133. The develop-line repair
+notes (`966-pack-contract-refusal-repairs.md`,
+`966-pack-provenance-snapshot-immutability.md`) describe develop-side rounds
+whose surviving tests are counted here, so their `inventory-delta` blocks are
+removed to keep the ledger additive without double counting.
 
 ## Naming notes future lanes should not undo
 

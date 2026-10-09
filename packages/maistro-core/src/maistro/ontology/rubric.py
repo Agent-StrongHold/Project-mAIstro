@@ -151,6 +151,11 @@ class RubricProvenance(BaseModel):
     from, so rubrics instantiated from different versions of one pack stay
     provenance-distinguishable (the version-addressable contract). Catalog
     adoption — which carries no manifest snapshot — records ``pack_id`` only.
+
+    The five detail fields are all-or-nothing — either the full snapshot
+    identity rides along or none of it does — because every one of them
+    comes from the same immutable manifest snapshot, and a half-stamped
+    provenance would be a third state that names no real install.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -160,16 +165,33 @@ class RubricProvenance(BaseModel):
     pack_id: str | None = None
     #: The exact pack snapshot the revision was instantiated from (all set
     #: together by ``instantiate_rubric_asset``; absent for catalog adoption).
-    publisher: str | None = None
-    pack_version: str | None = None
-    manifest_sha256: str | None = None
-    asset_id: str | None = None
-    asset_version: str | None = None
+    #: Blank strings name nothing, so the fields are non-empty when present.
+    publisher: str | None = Field(default=None, min_length=1)
+    pack_version: str | None = Field(default=None, min_length=1)
+    manifest_sha256: str | None = Field(default=None, min_length=1)
+    asset_id: str | None = Field(default=None, min_length=1)
+    asset_version: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def _pack_shape(self) -> RubricProvenance:
         if self.origin is ProvenanceOrigin.PACK and not self.pack_id:
             raise ValueError("pack-origin provenance requires pack_id")
+        details = (
+            self.publisher,
+            self.pack_version,
+            self.asset_id,
+            self.asset_version,
+            self.manifest_sha256,
+        )
+        supplied = [detail is not None for detail in details]
+        if any(supplied) and not all(supplied):
+            raise ValueError(
+                "pack provenance details are all-or-nothing: publisher, pack_version, "
+                "asset_id, asset_version, and manifest_sha256 name one manifest "
+                "snapshot together"
+            )
+        if any(supplied) and self.origin is not ProvenanceOrigin.PACK:
+            raise ValueError("pack provenance details require origin='pack'")
         return self
 
 

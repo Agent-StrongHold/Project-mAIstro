@@ -440,6 +440,55 @@ class TestVersionAddressableProvenance:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_rubric_provenance_distinguishes_pack_versions(self) -> None:
+        """Two installed versions of one pack stamp different provenance.
+
+        With only ``pack_id`` on the rubric, v1.0.0 and v1.1.0 of the same
+        pack produced provenance-identical revisions — the persisted object
+        could not say which registry snapshot supplied it.
+        """
+        registry = InstallablePackRegistry(platform_api_version="1.0.0")
+        registry.install(
+            _pack_bytes(pack_id="acme.film_critique", publisher="acme", version="1.0.0")
+        )
+        registry.install(
+            _pack_bytes(
+                pack_id="acme.film_critique",
+                publisher="acme",
+                version="1.1.0",
+                assets=[_rubric_asset("scene", "1.0.1")],
+            )
+        )
+        scope = {
+            "goal_id": GOAL_ID,
+            "goal_revision": GOAL_REVISION,
+            "workspace_id": WORKSPACE_ID,
+            "project_id": PROJECT_ID,
+            "authored_by": "principal-1",
+        }
+        from_v1 = registry.instantiate_rubric(
+            "acme.film_critique", "scene", version="1.0.0", **scope
+        )
+        from_v2 = registry.instantiate_rubric(
+            "acme.film_critique", "scene", version="1.1.0", **scope
+        )
+        assert from_v1.provenance.pack_id == from_v2.provenance.pack_id
+        assert from_v1.provenance.pack_version == "1.0.0"
+        assert from_v2.provenance.pack_version == "1.1.0"
+        assert from_v1.provenance.asset_version == "1.0.0"
+        assert from_v2.provenance.asset_version == "1.0.1"
+        assert (
+            from_v1.provenance.manifest_sha256
+            == registry.record("acme.film_critique", "1.0.0").manifest.source_sha256
+        )
+        assert (
+            from_v2.provenance.manifest_sha256
+            == registry.record("acme.film_critique", "1.1.0").manifest.source_sha256
+        )
+        assert from_v1.provenance != from_v2.provenance
+
     def test_versions_install_side_by_side_and_stay_individually_addressable(
         self,
     ) -> None:
@@ -456,6 +505,17 @@ class TestVersionAddressableProvenance:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    def test_record_provenance_is_the_manifests_provenance(self) -> None:
+        registry = _active_registry()
+        record = registry.record("acme.film_critique")
+        provenance = record.provenance
+        assert provenance.pack_id == "acme.film_critique"
+        assert provenance.publisher == "acme"
+        assert provenance.version == "1.0.0"
+        assert provenance.manifest_sha256 == hashlib.sha256(ACME_PACK).hexdigest()
+
     def test_reinstalling_identical_bytes_is_idempotent(self) -> None:
         registry = InstallablePackRegistry(platform_api_version="1.0.0")
         first = registry.install(ACME_PACK)
@@ -758,6 +818,33 @@ class TestCompatibilityThroughM9Machinery:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_dependency_resolution_is_independent_of_install_order(self) -> None:
+        # Several versions install side by side, but the evaluator resolves a
+        # dependency id against one version: the highest active one — the same
+        # default lookup everywhere else in the registry. Installing v1 after
+        # v2 must not make a ^2.0.0 dependent fail; insertion order is not
+        # resolution order.
+        for install_order in (("2.1.0", "1.0.0"), ("1.0.0", "2.1.0")):
+            registry = InstallablePackRegistry(platform_api_version="1.0.0")
+            for version in install_order:
+                registry.install(
+                    _pack_bytes(
+                        pack_id="vertex.product_lab",
+                        publisher="vertex",
+                        version=version,
+                    )
+                )
+            record = registry.install(
+                _pack_bytes(
+                    pack_id="acme.film_critique",
+                    publisher="acme",
+                    dependencies=[{"id": "vertex.product_lab", "range": "^2.0.0"}],
+                )
+            )
+            assert record.state is PackState.ACTIVE
+
     def test_dependency_on_a_plain_extension_is_satisfied(self) -> None:
         # Capability providers are extensions installed through the M9-B2
         # service; a pack names them exactly like any other dependency.
@@ -959,6 +1046,17 @@ class TestManifestInspection:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_manifest_version_must_be_a_literal_integer(self) -> None:
+        # Python's `True == 1` and `1.0 == 1`: an equality-only check accepts
+        # both as the supported version and the snapshot silently normalizes
+        # the malformed value. The envelope must refuse non-integers by type.
+        for forged in (True, 1.0):
+            document = json.loads(ACME_PACK)
+            document["manifest_version"] = forged
+            self._rejected(json.dumps(document).encode(), "unsupported manifest_version:")
+
     def test_wrong_subtype_is_rejected(self) -> None:
         document = json.loads(ACME_PACK)
         document["kind"] = "ui-pack"
@@ -1397,6 +1495,69 @@ class TestManifestInspection:
         assert registry.records() == ()
 
 
+class TestManifestSnapshotIntegrity:
+    """A stored snapshot cannot be mutated into lying about ``raw``.
+
+    The whole snapshot tree is immutable: the outer dataclasses and tuples
+    are frozen, persona payload trees are frozen recursively, and a rubric's
+    dimensions are stored as pack-local frozen dataclasses — the canonical
+    Pydantic models are minted fresh at every probe/instantiation. There is
+    no mutable object inside the snapshot, so the bytes ``source_sha256``
+    anchors are exactly the bytes every resolution and instantiation answers
+    from.
+    """
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_mutating_a_stored_dimension_cannot_serve_wrong_bytes(self) -> None:
+        manifest = _active_registry().record("acme.film_critique").manifest
+        stored = next(a for a in manifest.assets if a.asset_id == "scene")
+        # The stored dimension is a frozen pack-local dataclass: there is no
+        # mutable canonical object in the tree to corrupt in place
+        # (FrozenInstanceError is an AttributeError subclass).
+        with pytest.raises(AttributeError):
+            stored.rubric.dimensions[0].weight = 999.0  # type: ignore[misc]
+        # Resolution answers from the immutable snapshot: the declared weight.
+        assert manifest.asset("scene").rubric.dimensions[0].weight == 0.6
+        rubric = instantiate_rubric_asset(
+            manifest,
+            "scene",
+            goal_id=GOAL_ID,
+            goal_revision=GOAL_REVISION,
+            workspace_id=WORKSPACE_ID,
+            project_id=PROJECT_ID,
+            authored_by="principal-1",
+        )
+        assert rubric.dimensions[0].weight == 0.6
+        # The digest provenance still names the bytes actually used.
+        assert rubric.provenance.manifest_sha256 == manifest.source_sha256
+        assert rubric.provenance.manifest_sha256 == hashlib.sha256(manifest.raw).hexdigest()
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_instantiated_objects_never_alias_the_snapshot_tree(self) -> None:
+        manifest = _active_registry().record("acme.film_critique").manifest
+        persona = instantiate_persona_asset(manifest, "critic", workspace_id=WORKSPACE_ID)
+        rubric = instantiate_rubric_asset(
+            manifest,
+            "scene",
+            goal_id=GOAL_ID,
+            goal_revision=GOAL_REVISION,
+            workspace_id=WORKSPACE_ID,
+            project_id=PROJECT_ID,
+            authored_by="principal-1",
+        )
+        # Mutating the returned canonical objects cannot reach the snapshot.
+        persona.defaults["tone"] = "warm"
+        rubric.dimensions[0].weight = 999.0
+        stored_persona = next(a for a in manifest.assets if a.asset_id == "critic")
+        stored_rubric = next(a for a in manifest.assets if a.asset_id == "scene")
+        assert stored_persona.persona.payload["defaults"]["tone"] == "dry"
+        assert manifest.asset("scene").rubric.dimensions[0].weight == 0.6
+        assert stored_rubric.rubric is not None
+        assert stored_rubric.rubric.gate_pass_threshold == 70.0
+
+
 # The fail-closed parse matrix: one mutation per row, each pinning a distinct
 # rejection the parser promises. Every branch outcome of the manifest/asset/
 # payload validators is exercised here — a malformed pack must fail closed
@@ -1720,6 +1881,15 @@ class TestInstantiationInputValidation:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_unknown_pack_with_pinned_version_names_the_version(self) -> None:
+        registry = _active_registry()
+        with pytest.raises(PackDisabledError, match=r"at version '9\.9\.9'"):
+            registry.instantiate_graph(
+                "ghost.pack", "any-asset", workspace_id=WORKSPACE_ID, version="9.9.9"
+            )
+
     def test_wrong_kind_assets_are_refused_with_the_kind_named(self) -> None:
         manifest = inspect_pack_manifest(ACME_PACK)
         with pytest.raises(PackAssetUnknown, match="is not a graph asset"):

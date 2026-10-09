@@ -32,10 +32,18 @@ subtype (`"kind": "domain-pack"`, parsed fail-closed from bytes by
 `maistro.extensions.packs.inspect_pack_manifest`, the M9-B machinery's
 namespace), and its contract is canonical-object-only: instantiation mints
 canonical `GraphTemplate`/`Persona`/`RubricSemantic` identities bound to
-caller-named Workspaces, the pack-local asset ids ride only in provenance,
-dependencies resolve through the same compatibility evaluator every extension
-uses, and disabling a pack gates new use without touching anything already
-created. No pack can declare an executor, a store, or a Goal/Persona/Rubric
+caller-named Workspaces, the pack-local asset ids ride only in provenance
+(full exact-source identity: publisher, pack version, asset id/version, and
+the manifest digest — on `GraphTemplate` metadata, `Persona`
+`extension_metadata`/`source_template_*`, and the canonical
+`RubricProvenance` detail fields), dependencies resolve through the same
+compatibility evaluator every extension uses, and disabling a pack gates new
+use without touching anything already created. The manifest snapshot is
+anchored to its bytes — payload trees and rubric dimensions are frozen at
+parse time as pack-local immutable data (canonical models are minted fresh
+at every probe/instantiation), so a stored snapshot cannot be mutated away
+from the digest its provenance names. No pack can declare an executor, a
+store, or a Goal/Persona/Rubric
 authority — the schema has no such field, and instantiation persists nothing.
 The in-repo product/game/book packs of `maistro_design.packs` (#793) remain
 the shipped defaults; `maistro.extensions.packs` is the installable,
