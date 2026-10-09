@@ -2197,3 +2197,57 @@ experiments ran in a throwaway `git worktree` at HEAD.
   by the banking rebase, or the separately reviewed #1845 integration
   consumer that wires both modules and prunes the entries on arrival. The
   stack stays unmerged by design; this lane takes no merge/PR action.
+
+## Round 27 — repair round at dispatched head `10dfd9c1dea0` (2026-10-09):
+## lane-brief vulture amendment re-run and proven EMPTY; all four hosted reds
+## re-executed locally as the same sanctioned two-module delta
+
+The repair brief asked for a vulture per-identity ledger amendment against
+`exact-debt-ledger`'s red. Re-running the job's three steps at this exact
+head shows there is nothing to amend:
+
+- **`check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI's argv) exit 0**: 1323 findings ==
+  1323 reviewed identities, every bucket classified, `unclassified: 0`,
+  `never_allowlist: 0`. Zero unbanked identities exist, so no
+  `quality/vulture-baseline.json` row is added, removed, or touched
+  (`git diff --numstat` over `quality/` vs merge base `d592654ac` is
+  empty — unchanged from every prior round).
+- **`check-shipped-surface-truth.py` exit 0**; the job's sole failing
+  step remains `check-ratchet-provenance.py`, exit 1 with 8 of 9
+  sub-ratchets OK and the one FAIL the reachability trusted-base gate:
+  `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`
+  are NEW unreachable (171 of 1379 vs trusted 169), "absent from trusted
+  base and not previously authorized". The two-merge rule reads grants
+  from the merge base (zero rows for either identity), and issue #1852
+  forbids candidate-side baseline rows, grants, and fake wiring for this
+  leaf — so the red is the documented integration blocker, not debt to
+  bank.
+- **The other three hosted reds re-derived at this head**:
+  `check-reachability.py` exit 1 naming exactly the two leaf modules as
+  NEWLY UNREACHABLE (the Quality gate's failing step);
+  `check-reachability-dispositions.py` exit 0 (49 groups / 169 banked) and
+  `check-promotion-surface.py` exit 0; exactly three root-suite meta-tests
+  fail and only on the two-module delta (`test_check_reachability.py::
+  test_baseline_matches_the_tree`, both
+  `test_reachability_baseline_identity.py` gate-identity assertions) —
+  CI's `test` red, and the Coverage gate's `combine` step aborts on the
+  same producer per round 26's trace.
+- **Focused acceptance re-executed**: C2 suite 132 passed; C1 + unchanged
+  live-flow suite 140 passed; `mypy` on the classifier clean; `ruff check`
+  and `ruff format --check` on both leaf files clean; all ten issue-named
+  tests present by name; no production importer of
+  `maistro.tasks.admission_generation` under `packages/*/src`; no closure
+  keyword in any commit subject/body since the merge base.
+- **Mutation battery re-executed in a `/tmp` shadow copy (assigned tree
+  byte-identical, `admission_generation.py` md5 `257a6e45…` before and
+  after)**: swap TAKEOVER/REPLACE_EXPIRED -> 50 failed; lease before
+  binding -> 14 failed; legacy pending classified as v2 -> 10 failed;
+  mismatch before expiry -> 22 failed; pristine control -> 132 passed.
+- **Verdict-relevant statement**: the lane brief's prescribed repair is
+  empty by construction and the previous deep-review block stays closed —
+  every acceptance criterion is independently proven at this exact head,
+  and each hosted red reduces to the single sanctioned two-module unwired
+  reachability delta that no lawful in-leaf edit can retire. The stack
+  stays unmerged awaiting the separately reviewed #1845 integration
+  consumer; this lane takes no merge/PR action.
