@@ -558,3 +558,50 @@ changed file, `quality/` diff vs base is the additive
   recorded as UNVERIFIED here, not claimed green.
 - Closure-keyword scan of the PR body and every non-merge commit message
   on the branch: 0 `fixes/closes/resolves #N` references.
+
+## Independent verification round (head 4b40aa369a80, base 8fbbbfb91d78)
+
+Verifier-run at the exact lane head, every claim below executed locally this
+round (not inherited from prior rounds' notes):
+
+- Lane tests, after `uv sync --locked --all-extras` (CI's sync): git suite
+  `packages/maistro-core/tests/tools/git` **135 passed**; changed RSI suites
+  (`test_cli.py`, `test_harvest_entry_point.py`, `test_selfbranch.py`)
+  **80 passed**; combined re-run **215 passed**.
+- Test meaningfulness re-proven by in-memory differential (no tree edit):
+  simulating the pre-fix policy (`_FORBIDDEN_CLONE_SCHEMES` emptied,
+  allowlist widened to include `git://`) makes `git://github.com/...` reach
+  the subprocess — firing the suites' no-subprocess guard — while on the
+  current tree the same widened allowlist still refuses `git://`
+  pre-subprocess with `blocked_url_scheme`. The case/encoding variants
+  (`GIT://`, `%67it://`, `git:%2F%2F`) all refuse identically.
+- Gates, CI argv where CI defines one: `ruff check .` clean; `ruff format
+  --check` clean (3197 files); `mypy --strict packages/maistro-core/src`
+  clean (771 files — note: without `--all-extras` this reports 5
+  `maistro_bootstrap` import-not-found errors, the AGENTS.md fresh-venv
+  trap, not a candidate regression); `check-suite-inventory.py` ok
+  (17 suites, 29957 unique identities, 0 duplicates/byte-identical files);
+  `check-test-duplicates.py` ok; `check-backlog-consistency.py` ok;
+  `check-doc-links.py` ok; `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` exit 0 (1326 → 1326).
+- `check-ac-state.py --run-tests --ratchet --mandate 8fbbbfb91d78…`
+  service-less FAILs on `design_coverage: 39.2752 falls below the floor of
+  43.8998` — reproduced and then resolved the Round-10 way: with the
+  CI-equivalent service DB up (native postgresql-18 + pgvector,
+  `maistro:maistro@127.0.0.1:5432/maistro_test`, `alembic upgrade head`,
+  `MAISTRO_TEST_PG_DSN`/`DATABASE_URL` set — the quality.yml job's exact
+  service shape), the same CI-exact argv **passes, exit 0**: design
+  coverage 43.8998 exactly on the floor, "10 debt counters sit exactly on
+  their ceilings and 1 progress counter sits exactly on its floor",
+  criterion mandate OK ("every criterion this change declares is proven"),
+  chain mandate OK. The undercut is the service-less measurement path,
+  inherited unchanged from develop; the candidate does not move it.
+- Ledger integrity vs base: `git diff --numstat 8fbbbfb91..HEAD -- quality/`
+  shows exactly one row added (`quality/ac-state-notes/auto-404.json`,
+  +17) and zero deletions — no `quality/*.json` rows lost in the merges.
+- Closure-keyword audit: no `fixes/closes/resolves` reference to #404 or
+  #1729 in any commit message on the branch or in the PR body ("Refs #404"
+  only) — the issue stays open pending independent review.
+- Hosted CI at the dispatch snapshot: head-SHA check-runs
+  `in_progress`/`queued` (one `success`, one `skipped`) — recorded
+  UNVERIFIED, never inferred green.
