@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from sqlalchemy.exc import SQLAlchemyError
@@ -33,6 +33,9 @@ from maistro.agents.strategies.direct import DirectStrategy
 from maistro.runs.task_kinds import DIRECT_SUBMISSION_AGENT
 from maistro.types.agent import AgentIdentity
 from maistro.types.errors import ConfigError
+
+if TYPE_CHECKING:
+    from maistro.protocols.coins import CoinLedger
 
 logger = logging.getLogger("maistro.agents.factory")
 
@@ -561,7 +564,7 @@ async def create_agents(
     session_store: Any,
     quota_tracker: Any,
     tracer: Any,
-    coin_ledger: Any = None,
+    coin_ledger: CoinLedger | None = None,
     tool_executor: Any = None,
     sa_engine: Any = None,
     rca_extractor: Any = None,
