@@ -1959,3 +1959,87 @@ unchanged.
   2 extension-test failures are develop-inherited debt on files this
   branch never touched. The stack stays unmerged by design; this round's
   only artifact is this evidence appendix.
+
+## Round 24 — verification round at dispatched head c5acaf9ac170: hosted CI
+## logs completed and read; all four red jobs root-caused to the single
+## sanctioned two-module unwired delta; the named vulture red does not exist
+## in CI's own log; no repairable defect exists in-lane
+
+Scope: verification round dispatched at HEAD `c5acaf9ac1702c93d861dcd1003b08473c1932bb`
+(develop base `675db8be6c41b020ffffb224b2748c159c78a122`; the branch tip is
+byte-identical in leaf content to the head rounds 22–23 measured — module md5
+`257a6e45c382349dd12f559099663fbc` re-verified). New evidence this round: the
+four hosted check runs that prior rounds could only record as `in_progress`
+finished, and their logs were read (read-only `gh run view --log`,
+jobs 113646100595, 113646100253, 113646100590, 113648188332, run 37876462146/7/107).
+No source, test, or ledger file changed, so the `inventory-delta` front-matter
+above is unchanged; this appendix is the round's only artifact.
+
+- **All four CI reds are one root cause.** In CI's own logs the candidate is
+  the synthetic merge `8a817e58abd7` over base `1c55afe51896`:
+  - *exact-debt-ledger* (job 113646100595) fails in its FIRST step,
+    `check-ratchet-provenance.py`: "reachability ... 169 unreachable modules
+    -> 171 unreachable of 1377 modules". The vulture sub-ratchet inside the
+    same job printed GREEN: "1323 reviewed identities -> 1323 findings",
+    `unclassified: 0`. The lane-brief repair target (unbanked vulture
+    identities) does not exist; the red is the sanctioned unwired-module
+    delta, so the prescribed `quality/vulture-baseline.json` amendment is
+    empty for the 24th consecutive round.
+  - *Quality gate* (job 113646100253) is green through every earlier step —
+    ruff both, radon, xenon (139 block violations <= 145, 0 module, 0
+    average), vulture ledger (1323 -> 1323) — and fails at the next step,
+    `check-reachability.py`: "2 module(s) are NEWLY UNREACHABLE", naming
+    exactly `maistro.runs.admission_identity` and
+    `maistro.tasks.admission_generation`.
+  - *test* (job 113646100590): "3 failed, 4900 passed, 128 skipped" — the
+    three sanctioned reachability meta-tests
+    (`test_check_reachability.py::test_baseline_matches_the_tree`, both
+    `tests/test_reachability_baseline_identity.py` gate-identity assertions),
+    each diffing on exactly the two leaf module names. The `##[error]`
+    `RuntimeError('Event loop is closed')` lines in the server step are
+    non-fatal teardown noise: that step totals "535 passed, 9 skipped".
+  - *Coverage gate* (job 113648188332): its `combine` sweep totals
+    "3 failed, 5004 passed" — the same three sanctioned meta-tests.
+- **Local re-execution at this head matches CI**: focused suites 205 passed
+  (132 assessment + 73 identity); `test_root_admission_identity.py` +
+  unchanged `test_idempotency.py` 140 passed; mypy clean on both leaf
+  modules; `ruff check .` and `ruff format --check .` clean; CI-exact
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` exit 0 (1323 == 1323); `check-reachability.py` exit 1
+  listing exactly the two leaf modules; `check-reachability-dispositions.py`
+  OK (49 groups / 169 banked); `check-promotion-surface.py` OK; full
+  `check-suite-inventory.py` OK (17 suites, 30588 collected identities,
+  0 duplicates); `git diff --numstat origin/develop -- quality/` EMPTY
+  (no self-granted baseline/grant; the two-merge rule makes a candidate-side
+  grant mechanically ineffective anyway, and issue #1852 forbids one).
+- **Meta-tests reproduced locally**: `pytest tests/test_check_reachability.py
+  tests/test_reachability_baseline_identity.py` -> exactly 3 failed /
+  35 passed, the same three identities CI failed on, for the same two-module
+  delta.
+- **Mutation spot-check re-executed at this head** (rounds 13–23 profile):
+  swapping the TAKEOVER and REPLACE_EXPIRED rows in the decision table makes
+  the assessment suite fail 50 / pass 82; the module was restored
+  byte-identical afterwards (md5 `257a6e45c382349dd12f559099663fbc`,
+  `git status` clean). A `/tmp` `pythonpath` overlay attempt was tried first
+  and discarded with evidence: the installed regular package `maistro`
+  shadows a namespace-portion overlay (`import` resolved to the worktree
+  file), which is why rounds 20+ mutate in place from a byte-identical
+  backup.
+- **Develop-sync risk checked and retired**: `origin/develop` moved two
+  commits past the merged base (`30a8ff9d7` #2073, `675db8be6` #2064, both
+  research-test additions). `git merge-tree --write-tree HEAD origin/develop`
+  is conflict-free; neither side touched the other's inventory-notes (develop
+  added `894-critical-zone-mutation-strategy.md` and
+  `925-planning-strategy-benchmark.md` with their own deltas), so the
+  delta-sum ledger design keeps the synthetic merge's suite inventory
+  consistent — CI's own run over candidate `8a817e58abd7` already exercised a
+  develop-ahead merge and showed no inventory or research failure. The lane
+  brief's merge-origin/develop trigger (a sync conflict) is not met.
+- **Verdict-relevant statement**: unchanged from round 23 — the leaf's
+  implementation/test/inventory acceptance is fully proven at this head with
+  zero vulture-ledger debt; the only merge-queue reds are the sanctioned
+  unwired-module reachability delta (four jobs, one cause), which issue
+  #1852 forbids repairing in-lane (no wiring, no baseline entries, no
+  grants) and which awaits the separately reviewed #1845 integration
+  consumer or a base-landed authorization plus banking rebase. The stack
+  stays unmerged by design.
