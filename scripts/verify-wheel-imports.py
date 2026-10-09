@@ -248,11 +248,13 @@ PACKAGES = [
     Package("maistro-registry", "maistro_registry"),
     Package("maistro-rsi", "maistro_rsi"),
     Package("maistro-bootstrap", "maistro_bootstrap", widest_extra="builders"),
-    # The extension host harness (#974). The whole point of the package is
-    # third-party CI installability, so its wheel importing clean with zero
+    # The extension host harness (#974, #975). The whole point of the package
+    # is third-party CI installability, so its wheel importing clean with zero
     # declared dependencies IS the acceptance surface — stdlib-only is not a
-    # detail here, it is the promise.
-    Package("maistro-ext-harness", "maistro_ext_harness"),
+    # detail here, it is the promise. The one optional extra, `signing`
+    # (Ed25519 certification signatures), is the widest extra so the `all`
+    # tier still sweeps signing.py with its dependency installed.
+    Package("maistro-ext-harness", "maistro_ext_harness", widest_extra="signing"),
 ]
 
 # Distributions that are BUILT by the CI loop but not import-verified here. Both
