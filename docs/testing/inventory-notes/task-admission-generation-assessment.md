@@ -2093,3 +2093,107 @@ round-24 evidence was re-derived at this head rather than trusted:
   mandates reporting implementation/test readiness plus the explicit merge
   blocker while leaving the stack unmerged until the separately reviewed
   #1845 integration head. This lane takes no merge/PR action.
+
+## Round 26 — verify/repair round at dispatched head `995de9cf3b0e` (2026-10-09):
+## every acceptance criterion independently re-executed; all four hosted CI
+## reds re-derived as the same sanctioned two-module delta; no repairable
+## defect exists in-lane; prior deep-review block closed by fresh evidence
+
+Scope: verification round dispatched at HEAD
+`995de9cf3b0e809b66b7672937d0ad3d86e70db6` (develop base `d592654aca614`,
+merge base `2b897bc78b68`; PR #1941 head == dispatched head, open, unmerged).
+No prior verification claim was trusted: every item below was executed fresh
+this round. No source, test, or ledger file changed, so the `inventory-delta`
+front-matter above is unchanged; this appendix is the round's only artifact.
+The assigned worktree was never mutated — the mutation and whitelist
+experiments ran in a throwaway `git worktree` at HEAD.
+
+- **Leaf acceptance battery, all green, re-executed**: classifier suite 132
+  passed (front-matter `+132` == actual collection);
+  `test_root_admission_identity.py` + unchanged `test_idempotency.py` 140
+  passed; `ruff check` + `ruff format --check` clean on the leaf pair;
+  `mypy` clean on `admission_generation.py`; full `check-suite-inventory.py`
+  exit 0 (17 suites, 30691 collected identities, 0 duplicates). The module's
+  decision table (`admission_generation.py:119-136`) re-read against the
+  issue text row by row: inclusive expiry first, mismatch second, binding
+  third, legacy fourth, lease fifth, `PENDING` fallback; exact-class input
+  gate (`type(record) is ...`), `[0-9a-f]{64}` fullmatch fingerprint,
+  bool-rejecting signed-int64 `now_us`; `acknowledged_at_us` never read.
+  All ten issue-named tests present by grep.
+- **Four-mutation battery re-derived at this exact head** in a throwaway
+  worktree (`uv sync --locked --extra dev` first, assigned tree untouched):
+  swap TAKEOVER/REPLACE_EXPIRED -> 50 failed / 82 passed; lease row hoisted
+  above binding (diff-verified applied) -> 14 failed / 118 passed;
+  LEGACY_UNRESOLVED row deleted (legacy falls through to v2 lease logic) ->
+  10 failed / 122 passed; mismatch row hoisted above expiry -> 22 failed /
+  110 passed; unmutated control -> 132 passed with md5
+  `257a6e45c382349dd12f559099663fbc` byte-identical before and after and a
+  clean `git status`. Same 50/14/10/22 profile as rounds 13–25. (One harness
+  slip was caught by the battery itself: a pattern-based string replace that
+  silently no-op'd produced 132 passed — repeated with a line-splice mutation
+  proven by `git diff` before trusting the run.)
+- **exact-debt-ledger re-derived step by step with CI's exact argv**: the
+  prescribed vulture amendment is EMPTY for the 26th consecutive round —
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` exits 0 at 1323 reviewed identities -> 1323 findings,
+  so no unbanked identity exists to fix or bank and
+  `quality/vulture-baseline.json` is deliberately not edited.
+  `check-shipped-surface-truth.py` exit 0. The job's red is its first step,
+  `check-ratchet-provenance.py`: 8 of 9 sub-ratchets OK (adr-status-language,
+  citation-status, promotion-surface 74->74, reachability-dispositions
+  169->169, shell-execution 3->3, contract-markers 358->358, enumerations
+  1->1, lifecycle 0->0) and the sole FAIL in the reachability trusted-base
+  gate: `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_generation` are NEW unreachable (171 of 1377 vs
+  trusted 169), "absent from trusted base and not previously authorized".
+  Grants are read from the merge base, which carries zero rows for either
+  identity (the two-merge rule), and issue #1852 forbids baseline rows,
+  grants, and fake wiring for this leaf outright.
+- **Quality gate / test / Coverage reds re-bound to the same delta, each
+  reproduced locally**: `check-reachability.py` exit 1 listing exactly the
+  two leaf modules as NEWLY UNREACHABLE (the Quality gate's failing step);
+  `check-reachability-dispositions.py` exit 0 (49 groups / 169 banked) and
+  `check-promotion-surface.py` exit 0; the root-suite meta-tests fail at
+  exactly three identities — `test_check_reachability.py::
+  test_baseline_matches_the_tree` (stderr `::error title=New unreachable
+  modules::maistro.runs.admission_identity,maistro.tasks.admission_generation`)
+  and both `test_reachability_baseline_identity.py` gate-identity assertions
+  (`check.main() == 0` fails; `set(unreachable) == baseline` diffs on exactly
+  the two leaf modules) — which is what CI's `test` job reds on and what
+  aborts the Coverage gate's `combine` step (its `--source=scripts` producer
+  re-runs `pytest tests/ ...` under `set -euo pipefail`, so it dies before
+  `coverage xml`). Leaf diff coverage re-measured with the coverage-unit
+  producer recipe against the merge base:
+  `admission_generation.py` 100% (25 stmts / 12 branches, 0 missed),
+  `admission_identity.py` 97% (3 of 242 missed), `check-diff-coverage.py
+  coverage.xml --base 2b897bc78b68` exit 0 — the Coverage red is therefore
+  not a coverage defect.
+- **Whitelist extension re-proven load-bearing**: reverting only the
+  `_vulture_whitelist.py` hunk (develop's file, branch modules present) in
+  the throwaway worktree makes the vulture gate report 2 NEW unbanked
+  identities — `admission_identity.py:222/223`
+  `receipt_snapshot`/`provenance_snapshot` — demanding a base-landed grant;
+  restored byte-identical afterwards.
+- **Purity and stack hygiene re-verified**: grep over `packages/*/src` finds
+  no production importer of `maistro.tasks.admission_generation`;
+  `maistro.runs.admission_identity` is imported only by the C2 module and
+  the scanner-input `_vulture_whitelist.py`; the branch diff vs the merge
+  base is exactly the eight sanctioned leaf files; no commit subject and not
+  the PR body carries a closure keyword (PR body says only "Refs #1852").
+- **Develop-sync risk re-checked and not triggered**: `origin/develop` moved
+  two commits past the merge base (`c4bd94439` M9-F WIP, `d592654ac` M8-F1
+  WIP); `git merge-tree --write-tree HEAD origin/develop` is conflict-free;
+  the only `quality/` difference is develop's own newer
+  `fleet-routing-bench.yml` row in `workflow-inventory.json` (branch behind,
+  not row-dropped). The lane brief's merge-origin/develop trigger (a sync
+  conflict) did not occur, so no merge was made.
+- **Verdict-relevant statement**: implementation, focused-test, inventory,
+  and mutation readiness are all independently proven at this exact head;
+  each of the four merge-queue reds reduces to the single sanctioned
+  two-module unwired reachability delta, which no in-leaf lawful edit can
+  retire (the two-merge rule makes candidate-side ledger rows mechanically
+  ineffective before the issue's prohibitions even bite). Retirement paths
+  remain the two named since round 13: a base-landed authorization followed
+  by the banking rebase, or the separately reviewed #1845 integration
+  consumer that wires both modules and prunes the entries on arrival. The
+  stack stays unmerged by design; this lane takes no merge/PR action.
