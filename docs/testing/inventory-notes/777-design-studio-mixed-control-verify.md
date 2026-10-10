@@ -20753,3 +20753,72 @@ graph), #93/#95 (Canvas/Design Studio cutover) stay open; the issue's stop
 condition forbids a Design-Studio-private reconciler/Goal owner, so
 implementing ahead of the producers would violate the issue. Inventory delta
 **+0** (this record only). (Refs #777)
+
+## Round 120 (job 3802767671) — re-validation at unchanged head 2b702d95b, independent re-probes
+
+Fresh round at the same head (`2b702d95b738`, tree clean; this job's
+`manifest.checks` empty — no driver `check-*.log` to inspect, so all checks
+below were re-executed locally rather than carried).
+
+**Dependency re-capture (this round's own evidence, 14:42Z):** blocking
+#53/#93/#95/#773/#774/#776/#804/#805/#806 all `state=open`; #39/#458/#775
+closed; `issues/777/dependencies/blocked_by` API empty (deps are
+body-textual "Depends on:"). #94 was not re-captured this round (last
+observed open, round 119); the #93/#95 production-path family being open
+blocks regardless. Fresh `git fetch origin`: `origin/develop` ==
+`bb4257f09` == merge-base HEAD — 0 behind, **not a sync conflict**.
+
+**AC probes re-executed at HEAD (not carried from prior rounds):**
+- `grep -ril reconcil packages/hive-conductor/backend/services/` → generic
+  recovery/idempotency only (dag_recovery, evolution_recovery, graph_runner,
+  scheduler, engine); canonical `AttemptLifecycleReconciler` only in
+  `packages/maistro-canvas/src/maistro_canvas/canvas/canonical_execution.py`
+  (+ maistro-core runs, maistro-server chat_completions). **0
+  Design-Studio-private reconciler** — stop condition respected.
+- `packages/hive-conductor/backend/services/design_service.py`: 376 lines,
+  0 goal/delegation/brief/persona/reconcil matches.
+- `packages/hive-conductor/backend/services/workspace_agent.py`: 149 lines,
+  roster-only (#1037 materialization; persona attribute swap, no Goal loop).
+- `ControlMode`/`ArtifactLockConflict` consumers confined to
+  `maistro-design` (versions.py/version_store.py/__init__.py) — no #804
+  integration.
+- Neighbor surface clarified this round: `maistro-design/creative_graph.py`
+  + `creative_nodes.py` are the **#775 (closed)** plan/instantiate/run/
+  inspection arithmetic over canonical Graph/Run; `brief.py`/`brief_store.py`
+  project `goal_id`/`goal_revision` columns (early #774-adjacent surface).
+  Neither is the #777 mixed-control integration: the Design Studio
+  production service still has 0 seams and no #804/#805/#806 reconciliation
+  authority exists to consume.
+
+**Battery re-executed, all exit 0:** `uv run ruff check .`; `uv run ruff
+format --check .` (3277 files); `uv run python
+scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` (1323 reviewed → 1322 findings, 0 unbanked);
+`scripts/check-ratchet-provenance.py` (0 violations, 53 consumers);
+`scripts/check-shipped-surface-truth.py`; `scripts/check-reachability.py`
+(1392 production modules, 169 unreachable — gate OK);
+`scripts/check-suite-inventory.py` (17/17);
+`scripts/check-backlog-consistency.py` (167 items).
+
+**Targeted pytest re-executed with live PG legs:**
+- Dedicated DB `maistro_test_777` recreated on the healthy pg18 container
+  (published 127.0.0.1:5433), `uv run alembic upgrade head` → rev
+  **062 (head)**; `MAISTRO_TEST_PG_DSN` set.
+- `uv run pytest packages/maistro-core/tests/runs -q` → **1506 passed,
+  3 skipped** (live-PG legs execute; matches round 119 exactly).
+- Merge-introduced proofs `test_pg_root_preparation.py +
+  test_pg_run_insert_connection.py` → **10 passed**.
+- 11 hive design/workspace/agent suites (test_design_* ×6,
+  test_workspace_agent_identity, test_workspace_authority,
+  test_workspace_mode, test_workspaces, test_agent_materialization) →
+  **198 passed**.
+- `packages/maistro-bootstrap/tests -k agent_loop` → **40 passed**;
+  `test_attempt_cancellation_cause_model.py` → **34 passed**.
+
+**Verdict: BLOCKED** — dependency-blocking (120th consecutive round). All
+13 acceptance criteria remain UNVERIFIED: the persistent Workspace Agent +
+Goal reconciliation APIs (#804/#805/#806), the versioned CreativeBrief
+contract (#774), the workspace working graph (#776), the front door (#53),
+and the production Canvas/Design Studio path (#93/#94/#95) do not exist to
+consume, and the issue's stop condition forbids a Design-Studio-private
+substitute. Inventory delta **+0** (this record only). (Refs #777)
