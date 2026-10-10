@@ -3983,3 +3983,55 @@ standalone reviewed `quality/ratchet-authorizations.json` grant on develop
 then sync this branch, or (b) land the parent #1845 integration leaf with the
 real reviewed runtime consumer, which must pass the unchanged gates at its own
 final head. Tree changes this round: this note only.
+
+## Round 54 — re-verification at 42df45dd (2026-10-10)
+
+Prior jobs da3c0307 and 5eb92e91 ended in `provider error ... Request timed
+out` after their driver checks had already passed; their BLOCKED state was a
+transport artifact, not validation evidence. This round re-derived the state
+firsthand at `42df45ddbdeb` (base `4aa68edc0b6b` = origin/develop, re-fetched
+and unchanged; merge base identical).
+
+- Driver battery green at this head (job aef09036 logs check-0..check-4):
+  `uv sync --locked --extra dev`, `ruff check .`, `ruff format --check .`,
+  focused suite 79 passed, suite inventory ok (16276 identities, +79 delta).
+- CI failure 1 re-reproduced with exact CI argv (`uv run python
+  scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`) → rc=1: the five NEW identities at
+  `admission_identity.py:515-520` are "not authorized by the trusted base";
+  scan-to-ledger is exact at 1323→1328 with `unclassified: 0`, so the
+  lane-prescribed `quality/vulture-baseline.json` amendment remains a
+  byte-level no-op (the five rows verified present in the candidate ledger's
+  `pydantic-declarative-field` findings multiset).
+- New fact, round 54: only five of the six `AdmissionAssessment` members are
+  flagged because vulture matches at name granularity — `PENDING` is masked by
+  unrelated same-name uses elsewhere in `packages/*/src` (e.g.
+  `orchestrator/master.py:65`), not because this module consumes it. The
+  module itself references none of the six members; that is the pinned staging
+  contract ("Prospective classifier values for the not-yet-wired C2 assessor").
+- CI failure 2 re-reproduced (`uv run python scripts/check-ratchet-provenance.py`)
+  → rc=1, solely via `check-reachability-provenance.py` ("NEW unreachable
+  module absent from trusted base and not previously authorized") and
+  `check-reachability-dispositions-provenance.py` ("NEW disposition absent
+  from trusted ledger"); `check-shipped-surface-truth.py` rc=0. Candidate-side
+  `check-reachability.py` (170 unreachable) and
+  `check-reachability-dispositions.py` (50 groups / 147 CONNECT / 21 LIBRARY /
+  2 RETIRE) both rc=0.
+- Base grant ledger re-enumerated at `origin/develop` after fetch: 102 vulture
+  + 11 reachability grants, zero naming `admission_identity` in either
+  ratchet. Wall mechanism re-read from source (`scripts/ratchet_provenance.py:478-508`,
+  `load_authorizations`): grants load from the base revision; "a new grant does
+  not take effect in the change that introduces it. Authorizing a floor-raise
+  is now two merges."
+- Leaf acceptance re-proven firsthand: 79/79 focused; mypy clean on the
+  module; programmatic shape (21-name `__all__`, exact six-member/value
+  `AdmissionAssessment`, 17 records frozen+slots); zero production importers
+  outside the module; #1841 anchor `require_admitted_actor` intact at
+  `store_boundary.py:56`; inventory note front-matter `inventory-delta:
+  packages/maistro-core/tests: +79` unchanged.
+
+Conclusion (round 54): identical to rounds 51–53; the two CI failures have
+exactly one external cause (missing owner-side base grants, or the parent
+#1845 integration consumer) and no in-leaf repair exists without violating the
+issue's no-waiver/no-fake-caller staging contract and the two-merge protocol.
+Tree changes this round: this note only.
