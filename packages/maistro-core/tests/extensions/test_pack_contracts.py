@@ -1433,6 +1433,20 @@ class TestManifestInspection:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    def test_pack_id_colliding_with_an_active_extension_is_refused(self) -> None:
+        # Packs and M9-B2 extensions share one dependency namespace; a pack
+        # install must never shadow an active extension's version.
+        registry = InstallablePackRegistry(
+            platform_api_version="1.0.0",
+            active_extensions={"acme.capability_core": "1.4.0"},
+        )
+        with pytest.raises(PackIdentityConflict, match="already an active extension"):
+            registry.install(_pack_bytes(pack_id="acme.capability_core", publisher="acme"))
+        assert registry.records() == ()
+        assert registry._active_versions()["acme.capability_core"] == "1.4.0"
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
     def test_same_version_different_bytes_is_an_identity_conflict(self) -> None:
         registry = InstallablePackRegistry(platform_api_version="1.0.0")
         registry.install(ACME_PACK)

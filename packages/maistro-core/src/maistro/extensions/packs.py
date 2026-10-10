@@ -186,7 +186,11 @@ class PackDisabledError(PackContractError):
 
 
 class PackIdentityConflict(PackContractError):
-    """The same (pack_id, version) was installed again with different bytes.
+    """An install collided with an identity this registry already holds.
+
+    Either the same (pack_id, version) was installed again with different
+    bytes, or the pack_id is already held by an active extension from the
+    M9-B2 service.
 
     Mirrors the M9-B1 rule for extension packages: a semantic version alone
     does not name a pack — the manifest digest is part of the identity, and
@@ -1267,6 +1271,18 @@ class InstallablePackRegistry:
                     "becomes different bytes"
                 )
             return existing
+
+        if manifest.pack_id in self._active_extensions:
+            # Extensions installed through the M9-B2 service and packs share
+            # one dependency namespace: installing a pack under an id an
+            # active extension already holds would let this registry's
+            # dependency resolution silently shadow the extension's version
+            # with the pack's.
+            raise PackIdentityConflict(
+                f"{manifest.pack_id} is already an active extension in this "
+                "registry; an install may not take over an existing "
+                "extension identity"
+            )
 
         report = evaluate_pack_compatibility(
             manifest,
