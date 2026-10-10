@@ -4732,3 +4732,70 @@ handoff the issue mandates ("report implementation/test readiness plus the
 explicit merge blocker and leave the stack unmerged"). This handoff is not an
 integration approval and does not claim #1845 is complete. Note-only commit;
 no gate, ledger, or source change.
+
+## Round 65 — CI-repair re-verification at 29b92cb4e4c13ee0d571739efec03d93c581f4b1 (2026-10-10)
+
+Dispatched as repair after the merge-queue Quality-gate + exact-debt-ledger
+failures and the round-64 BLOCKED. Nothing was assumed from prior rounds; every
+claim below was re-proven firsthand at this head.
+
+- **Driver checks 5/5 green** (job check-0..4 logs): `uv sync --locked --extra
+  dev`; `ruff check .` pass; `ruff format --check .` clean (3275 files);
+  focused pytest 79/79; `check-suite-inventory.py --suite
+  packages/maistro-core/tests` ok (16341 ids match recorded baseline).
+- **Focused battery re-run by this round:** pytest 79/79; leaf ruff check +
+  format clean; leaf mypy — Success. All 12 issue-named tests present, one
+  definition each.
+- **Independent import-level structural probe green:** 21-name `__all__`
+  set-exact; 16/16 record/result dataclasses frozen+slots; AdmissionAssessment
+  StrEnum with exactly the six issue-pinned member/value pairs; ReleaseResult /
+  CompletionResult unions exact; no `__bool__` on any empty variant (default
+  truthiness — callers discriminate by type, as mandated); CanonicalJsonObject
+  rejects non-string input and multi-object text, canonicalizes
+  sort_keys + `(",", ":")` (probe initially asserted spaces — probe bug, not
+  module); `format_version` init=False on v1/v2.
+- **Scope isolation re-proven:** `git diff --name-only base..HEAD` is exactly
+  the 7 leaf surfaces; zero production importers of `admission_identity`; no
+  `maistro.runs.__init__` export; `require_admitted_actor` at
+  store_boundary.py:56; actor guards present in store.py.
+- **Both merge-queue failures re-reproduced with CI's exact argv**
+  (RATCHET_BASE_REV=origin/develop, which is also the merge-group base since
+  merge-base(origin/develop, HEAD) == origin/develop == 435dc1937):
+  - `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+    '*/third_party/*'` → rc=1 solely on the five issue-mandated
+    `AdmissionAssessment` identities at admission_identity.py:515-520 (scan
+    total 1328 = base 1323 + 5; unclassified 0).
+  - `check-ratchet-provenance.py` → rc=1 solely via the two reachability
+    sub-gates naming `maistro.runs.admission_identity` (NEW unreachable module
+    / NEW disposition absent from the trusted base). The third
+    exact-debt-ledger step, `check-shipped-surface-truth.py`, is rc=0.
+- **Lane-brief repair actions executed and shown to be no-ops:** the five
+  identities are already banked in the candidate ledger (`git diff --numstat
+  base..HEAD -- quality/vulture-baseline.json` = +5/-0, exactly those rows), so
+  there is nothing to amend and nothing genuinely dead to delete — the members
+  are contract surface the issue fixes verbatim for the not-yet-wired C2
+  assessor. Banking is not authorizing.
+- **Two-merge wall re-verified in code, not by trust:** `load_authorizations`
+  (scripts/ratchet_provenance.py:478-519) reads
+  `quality/ratchet-authorizations.json` from the base revision via
+  `resolve_baseline(path, base=base, ...)`; the base file has 11 `reachability`
+  grants and 102 `vulture` grants, none for `maistro.runs.admission_identity`
+  or any of the five identities. No edit on this branch — including the
+  grant file, which this lane is forbidden to touch — can turn either gate
+  green. The issue independently forbids it: "Do not add keep-alive imports,
+  dead branches, dummy callers, package re-exports, artificial
+  framework/CLI registration, suppressions, allowlist/baseline entries, or
+  grants to make this leaf independently green," and predicts both failures
+  verbatim ("check-reachability.py would classify the new module as newly
+  unreachable... contain no entry/grant for maistro.runs.admission_identity").
+- **No develop advance:** origin/develop re-fetched, still 435dc1937; no sync
+  conflict exists to resolve. PR #1936 remains open WIP.
+
+Round-65 verdict: writer handoff (unchanged). All leaf acceptance criteria are
+proven firsthand at this head. The only path to green required-checks is
+external to this branch and to this lane: an owner-landed reviewed grant on
+develop per the repo's documented two-merge rule, or the #1845 integration
+head landing the reviewed runtime consumer so the module stops being newly
+unreachable and the assessment members become consumed. Per the issue's own
+staging constraint the stack stays unmerged and this note is not an
+integration approval. Note-only commit; no gate, ledger, or source change.
