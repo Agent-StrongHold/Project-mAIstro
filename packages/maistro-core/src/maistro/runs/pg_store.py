@@ -404,8 +404,10 @@ class PgRunStore:
 
         A parentless request routes to :meth:`prepare_root_run`, the root-only
         seam ``create_run`` itself uses; only the child path is decided here.
+        The scope check lives in each branch: the parentless route relies on
+        :meth:`prepare_root_run`'s own validation, so an admission through this
+        method performs the Project-store lookup once, not twice.
         """
-        await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
             raise RunIntegrityError("parent_node_run_id requires parent_run_id")
         if parent_run_id is None:
@@ -417,6 +419,7 @@ class PgRunStore:
                 retention_expires_at=retention_expires_at,
                 initial_status=initial_status,
             )
+        await self._validate_graph_scope(graph)
         parent = await self._require_run(parent_run_id)
         # The shared check, not a second copy of its two conditions. Its own
         # docstring says duplicating them at a call site is "the smaller diff
