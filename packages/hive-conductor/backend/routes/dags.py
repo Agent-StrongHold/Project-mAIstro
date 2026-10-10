@@ -390,14 +390,24 @@ async def run_dag(
             execution_mode="interactive",
         )
     except CanonicalDagExecutionError as exc:
-        result = exc.result
+        logger.warning("Canonical DAG Run failed", exc_info=True)
+        # Copy the transport projection; retain the canonical record for operators.
+        result = {**exc.result, "error": "DAG execution failed; see server logs"}
+        result["node_results"] = {
+            node_id: (
+                node
+                if node.get("success")
+                else {**node, "response": "DAG node failed; see server logs"}
+            )
+            for node_id, node in result.get("node_results", {}).items()
+        }
         await _record_run_projection(dag_id=dag_id, user_id=actor, result=result)
         run_id = result.get("run_id")
         return {
             "status": result.get("status", "failed"),
             "execution_id": run_id,
             "run_id": run_id,
-            "error": str(exc),
+            "error": "DAG execution failed; see server logs",
             "result": result,
         }
     except Exception as exc:

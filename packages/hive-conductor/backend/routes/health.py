@@ -110,7 +110,7 @@ def _workspace_authority_available() -> bool:
 
 
 def _optional_routers_state(app: Any) -> dict[str, str | None]:
-    """`{module: error | None}` for the optional feature routers (M3-B7, #97).
+    """`{module: public failure | None}` for optional routers (M3-B7, #97).
 
     `_include_optional_router` records every mount outcome on
     `app.state.optional_routers` precisely so a caller can ask what happened;
@@ -121,7 +121,10 @@ def _optional_routers_state(app: Any) -> dict[str, str | None]:
     state = getattr(app.state, "optional_routers", None)
     if not isinstance(state, dict):
         return {}
-    return {str(module): (None if error is None else str(error)) for module, error in state.items()}
+    return {
+        str(module): (None if error is None else "router initialization failed; see server logs")
+        for module, error in state.items()
+    }
 
 
 def _degraded_services(
@@ -283,7 +286,7 @@ def health(request: Request) -> dict:
         # 2xx from a mutation route means the State writer committed it.
         "persistence": _persistence_status(),
         # M3-B7 (#97): a user-facing operating state names what is degraded.
-        # `optional_routers` is the raw mount outcome per feature router;
+        # `optional_routers` is the sanitized mount outcome per feature router;
         # `degraded_services` is the human-readable rendering of every
         # degraded capability, which the UI banner and `hctl status` show.
         "optional_routers": optional_routers,
