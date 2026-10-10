@@ -3876,3 +3876,45 @@ leaf's already-banked rows authorize as step two, or (b) land the parent
 the module, re-passing the unchanged gates at its own final head. This leaf
 remains implementation/test-ready and explicitly unmergeable by itself,
 exactly as the issue's staging directive requires.
+
+## Round 52 (repair job 93c213b6) — block re-proven at the merged head; repair space re-verified empty
+
+Fresh, independent re-runs at this exact head `404f5a648fe9` (the develop sync
+merge of `4aa68edc0b6b` is this head's parent; merge-base == origin/develop):
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → rc=1, solely "New Vulture
+  debt is not authorized by the trusted base": the five `AdmissionAssessment`
+  identities are the only delta (trusted 1323 → scan 1328) and the trusted base
+  grants none of them. The candidate ledger is exact — no unbanked, stale, or
+  unclassified findings, so the lane-prescribed ledger amendment is a proven
+  byte-level no-op and was (correctly) not performed.
+- `uv run python scripts/check-ratchet-provenance.py` → rc=1, solely via its
+  two reachability sub-gates: `maistro.runs.admission_identity` is a "NEW
+  unreachable module absent from trusted base and not previously authorized"
+  (`check-reachability-provenance.py` rc=1) and a "NEW disposition absent from
+  trusted ledger" (`check-reachability-dispositions-provenance.py` rc=1).
+  `check-shipped-surface-truth.py` → rc=0.
+- `git fetch origin develop`: unchanged at `4aa68edc0b6b` — no grant-bearing
+  sync exists to absorb; the wall is unchanged by this round's develop merge.
+- `scripts/ratchet_provenance.py:478-508` (`load_authorizations`) reads grants
+  from the base revision by design: "a new grant does not take effect in the
+  change that introduces it" — every branch-side substitute is inert.
+- Leaf acceptance re-proven firsthand (prior claims not trusted): 79/79
+  focused; ruff check + format clean on both leaf files; mypy clean on the
+  module; programmatic contract check — 21-name `__all__` exact,
+  `AdmissionAssessment(StrEnum)` with the exact six member/value pairs, all 15
+  record types frozen+slots; all 12 issue-named test functions present;
+  `git diff origin/develop` is exactly the seven declared surfaces; #1841
+  anchors intact (`store_boundary.py:56`, `store.py:537`).
+
+Conclusion (round 52): identical to round 51, now re-derived end-to-end at the
+merged head. The two CI failures have one external cause — the reviewed grants
+do not exist on the integration base and cannot be created in-leaf without
+violating both the issue ("A candidate baseline update cannot grant itself
+permission"; "No ... grants ... are permitted") and the two-merge protocol.
+Unblocking remains an owner action: (a) a standalone reviewed
+`quality/ratchet-authorizations.json` grant merge on develop (five `vulture`
+identity keys + `reachability` key `maistro.runs.admission_identity`, then
+sync), or (b) the parent #1845 integration leaf providing the real runtime
+consumer. Tree changes this round: this note only.
