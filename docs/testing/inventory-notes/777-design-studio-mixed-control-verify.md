@@ -19818,3 +19818,55 @@ round's only actionable defect (formatting) is fixed upstream of this head;
 all 13 acceptance criteria still consume producer APIs from OPEN issues
 (#804/#805/#806 primary; #53/#774/#776/#93/#95 supporting). Inventory delta
 **+0** (this record only). (Refs #777)
+
+## Round 287 (job 93365ebc0f4d4ef2a29e6cc582db91fd, repair, head 478f7fec7b26)
+
+Branch state at start: HEAD `478f7fec7b2642e75807e65cb4e81b38b0924aba` = assigned
+exact start = linked PR #1660 head (per dispatch digest); tree clean. HEAD is a
+merge of develop `01cf44a5a716` (MCP-URL security fix) into `auto-777`; assigned
+base `790f343fa263` is NOT an ancestor of HEAD (merge base is `01cf44a5a716`).
+
+**Blocker re-check from this dispatch's own freshest capture
+(2026-10-10T03:57–03:58Z, 61 sources):** #777 OPEN; blockers **#53/#93/#95/
+#774/#776/#804/#805/#806 all OPEN**; #39/#458/#775 closed. The dependency block
+persists (104th consecutive round).
+
+**AC probes re-run at `478f7fec7b26` (independent, not inherited):** 0 hits for
+`GoalReconciler|reconcile_goal|goal_reconcil|ReconciliationLoop` in
+`packages/*/src`; `design_service.py` still 376 lines with 0 goal and 0 canvas
+mentions; `workspace_agent.py` still 149 lines (roster materializer only).
+`maistro-design` brief_store/creative_graph exist from CLOSED #775, but #774
+(the CreativeBrief shared-context contract) is OPEN and no Design-Studio
+consumption of a persistent reconciler exists. Stop condition forbids private
+substitutes, so no implementable #777 work exists at this head.
+
+**Develop-sync decision:** origin/develop moved to `ed5613457d6f` (+2: CORS
+loopback authority #2106, M8-D3 replanning research #2074); both touch zero
+#777 surfaces (`settings.py` CORS, `docs/research/927-*`, inventory notes 927).
+No sync conflict exists (the standing block is a dependency block), the lane
+brief mandates a merge only for sync conflicts, and merging would import
+upstream's unbaselined 2033-line `test_m8d3_replanning_benchmark_research.py`
+suite into this PR's suite-inventory surface — recorded as skipped-with-reason,
+matching round 286 precedent. Also verified: the merge that produced this HEAD
+dropped develop's dead `AgentLoopConfig.tool_definitions` field (banked as
+unused in develop's own vulture ledger; 0 readers on both sides) — no
+functional regression; this branch's vulture ledger carries no stale row for it.
+
+**Validation battery (all exit 0 at this head, CI-exact args):** `ruff check .`
+(All checks passed); `ruff format --check .` (3268 files already formatted);
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'`: 1323 reviewed -> 1322 findings, 0 unbanked, no ledger
+amendment (gate reads base `01cf44a5a716` = merge base);
+`check-ratchet-provenance.py` (0 violations, 53 consumers);
+`check-shipped-surface-truth.py` (complete);
+`check-suite-inventory.py` (17 suites match);
+`check-backlog-consistency.py` (167 items). Targeted pytest:
+`packages/maistro-core/tests/runs` -> **1219 passed, 280 skipped**;
+`packages/maistro-bootstrap/tests -k 'agent_loop or builders'` -> **77 passed,
+1 skipped**; hive-conductor `backend/tests -k 'design or workspace or brief'`
+-> **387 passed, 5 skipped** (3203 deselected).
+
+**Verdict: BLOCKED** — dependency-blocking (104th consecutive round). All 13
+acceptance criteria still consume producer APIs from OPEN issues
+(#804/#805/#806 primary; #53/#774/#776/#93/#95 supporting). Inventory delta
+**+0** (this record only). (Refs #777)
