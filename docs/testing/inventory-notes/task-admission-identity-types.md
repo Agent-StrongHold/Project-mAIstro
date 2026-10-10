@@ -4163,3 +4163,65 @@ issue's staging contract forbids in-leaf workarounds (fake callers, grants,
 suppressions, gate changes) and directs reporting readiness plus the explicit
 merge blocker while leaving the stack unmerged. Tree changes this round: this
 note only.
+
+## Round 57 (2026-10-10, repair job 3ef93585 at 034ce4333)
+
+- Round-56's prior job (`87695fe7`) was again a provider timeout **after** all
+  five driver checks returned green; no code defect existed to repair. This
+  round re-ran the full battery firsthand at `034ce4333` before syncing:
+  focused 79/79, repo-wide `ruff check` + `format --check`, leaf `mypy`,
+  suite inventory ok, 12 issue-named tests present, contract re-proven
+  programmatically (21-name `__all__`, exact six-member StrEnum, frozen+slots
+  on all 16 records, `owns()` conjunction with all three negative cases, no
+  `__bool__` override, `owner_token`-free repr, `CanonicalJsonObject`
+  duplicate-key/non-finite/non-object/dict-input rejections, exact field
+  order on all six records, union membership of all three result aliases,
+  `format_version` literals).
+- **New round fact: `origin/develop` advanced for the first time since round
+  52** — two commits, `d11368cd7` (#2115, prepare validated PG root Runs
+  before transaction acquisition) and `bb4257f09` (#2114, reuse PG Run
+  insertion inside caller transaction), both parent-#1845 work touching
+  `runs/pg_store.py` plus two new PG test files. Merged cleanly into this
+  branch at `078a853ff` (no conflicts; `git status` clean).
+- Ledger integrity verified across the merge: vs `origin/develop` the branch
+  adds exactly the leaf rows (`reachability-baseline.json` +1,
+  `reachability-dispositions.json` +9, `vulture-baseline.json` +5) with zero
+  deletions against either merge parent (`git diff --numstat` both sides) —
+  the known quality/*.json silent-row-loss hazard did not fire.
+- Post-merge re-verification: focused 79/79; suite inventory ok at 16,286
+  (= 16,276 + the 10 develop-side nodes); repo-wide ruff check + format green.
+- Both merge-queue CI failures re-proven at the NEW merged head with CI's
+  exact argv and the NEW trusted base `bb4257f09`:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → FAIL solely on the five issue-mandated
+  `AdmissionAssessment` identities (MISMATCH/REPLAYED/TAKEOVER/
+  REPLACE_EXPIRED/LEGACY_UNRESOLVED; PENDING name-masked by unrelated src
+  uses), message "New Vulture debt is not authorized by the trusted base…
+  land a reviewed grant first"; `check-ratchet-provenance.py` → FAIL solely
+  via `check-reachability-dispositions-provenance.py` and
+  `check-reachability-provenance.py` naming `maistro.runs.admission_identity`
+  as a new unreachable module. Candidate-side gates all green at this head:
+  `check-reachability.py` rc=0, `check-reachability-dispositions.py` rc=0,
+  `check-promotion-surface.py` rc=0, `check-shipped-surface-truth.py` rc=0.
+- The develop-side commits add neither a grant nor a consumer: zero
+  `admission_identity` references in `packages/*/src` at `origin/develop`;
+  the two commits touch no `quality/` file. The two-merge wall stands
+  (grants are read from the merge base; a candidate cannot authorize itself).
+- Scope isolation re-proven at `078a853ff`: branch-side diff vs develop is
+  exactly the seven manifest surfaces; zero production importers; no
+  `maistro.runs.__init__` export; convergence-matrix row documents the
+  deliberately inactive module; #1841 anchors intact
+  (`store_boundary.py:56`, `store.py:537`, retained
+  `actor_principal_id: str | None = None`).
+
+Conclusion (round 57): unchanged from rounds 51–56, now re-proven on top of
+current develop. Implementation, tests, and candidate ledgers are complete,
+scan-exact, and merge-clean with the advanced base. The two CI failures have
+exactly one external cause — the owner-side base grants (five vulture
+identities plus the reachability baseline/disposition rows for
+`maistro.runs.admission_identity`) have not landed on develop, and the parent
+#1845 integration leaf supplying the runtime consumer has not landed. The
+issue's staging contract forbids in-leaf workarounds (fake callers, grants,
+suppressions, gate changes) and directs reporting readiness plus the explicit
+merge blocker while leaving the stack unmerged. Tree changes this round: this
+note only, plus the clean develop merge commit.
