@@ -19960,3 +19960,56 @@ passed, 1 skipped**.
 acceptance criteria still consume producer APIs from OPEN issues
 (#804/#805/#806 primary; #53/#774/#776/#93/#95 supporting). Inventory delta
 **+0** (this record only). (Refs #777)
+
+## Round 290 — re-validation at unchanged head 716e99007; dependency block persists (job 7d6770fad)
+
+**Capture:** dispatch-context.json 2026-10-10T05:42–05:43Z, 61 sources,
+`complete_for_scope: true` (freshest). Dependency states in that capture:
+**#53, #93, #95, #774, #776, #804, #805, #806 all `state=open`**
+(#39/#458/#775 closed, consumed where applicable); PR #1660 open draft at
+head `31a0e5bffaa1`, base `ed5613457d6f` (= this branch's merge head, so the
+PR branch is base-up-to-date). The immediately prior attempt (job
+565a178727a8) died on a provider timeout after ~57 s with zero commands run —
+nothing to salvage. No `check-*.log` files exist in this job's directory
+(recorded: not found; skipped).
+
+**Previous block resolution:** none actionable. `git fetch origin` confirms
+`origin/develop` still at `ed5613457d6f` = `git merge-base HEAD
+origin/develop` (`git rev-list --count HEAD..origin/develop` → 0): already
+merged as `31a0e5bffaa1` in round 288; no sync possible.
+
+**AC probes at HEAD `716e99007`:** narrow reconciler probe
+(`GoalReconciler|reconcile_goal|goal_reconcil|ReconciliationLoop` over
+`packages/*/src`) → **0 hits**. A broader case-insensitive probe
+(`goal.?reconcil|reconcil(er|iation).?loop|persistent.?workspace.?agent`)
+hits 8 files, every one docstring/comment **prose** reserving seams for the
+future consumer (e.g. `memory/working_graph/__init__.py:3` "consumers
+(#773/#777, the persistent Workspace Agent …)",
+`workspaces/backlog_history/__init__.py:3` "Consumers — the persistent
+Workspace Agent (#804), reconcilers (#805/#806)") — zero reconciler
+implementations. `packages/hive-conductor/backend/services/design_service.py`
+→ 0 goal/canvas/reconciler/creativebrief mentions;
+`workspace_agent.py` 149 lines, roster/persona-only (`resolve_workspace_agent`,
+`set_workspace_agent_persona`). `packages/maistro-design` remains this lane's
+provisional scaffolding pending the OPEN canonical contracts (#774 store
+docstring self-describes the #774 dependency), consistent with the stop
+condition's prohibition on Design-Studio-private substitutes for #804.
+
+**Validation battery (all exit 0 at `716e99007`, CI-exact args):**
+`ruff check .` (All checks passed); `ruff format --check .` (**3269** files
+already formatted); `check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'`: 1323 reviewed -> 1322
+findings, 0 unbanked, no ledger amendment (base `ed5613457d6f` = merge base);
+`check-ratchet-provenance.py` (0 violations, 53 consumers);
+`check-shipped-surface-truth.py` (complete); `check-suite-inventory.py`
+(**17** suites match); `check-backlog-consistency.py` (167 items). Targeted
+pytest: `packages/maistro-core/tests/runs` + `tests/config` → **1384 passed,
+280 skipped**; hive-conductor `backend/tests -k 'design or workspace or
+brief'` → **387 passed, 5 skipped** (3203 deselected);
+`packages/maistro-bootstrap/tests -k 'agent_loop or builders'` → **77
+passed, 1 skipped**.
+
+**Verdict: BLOCKED** — dependency-blocking (107th consecutive round). All 13
+acceptance criteria still consume producer APIs from OPEN issues
+(#804/#805/#806 primary; #53/#774/#776/#93/#95 supporting). Inventory delta
+**+0** (this record only). (Refs #777)
