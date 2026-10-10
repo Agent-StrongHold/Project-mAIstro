@@ -4644,3 +4644,91 @@ implementation/test readiness plus the explicit merge blocker and leave the
 stack unmerged"). Unblocking requires an owner-landed grant on develop (or
 the #1845 integration head providing the reviewed runtime consumer). Note-only
 commit; no gate, ledger, or source change.
+
+## Round 64 — verifier+writer handoff round at 19fded390 (job 0d2d160a77c944f79cb36b1abf28f195, 2026-10-10)
+
+Dispatched after round-63's successor job (3dc78529) died of a provider
+timeout (`failure_kind=provider_error`) **after** all five driver checks had
+already returned green — no new contrary evidence existed; this round re-proves
+the battery firsthand at 19fded390 (tree clean, no source change):
+
+- **Driver checks 5/5 green** (check-0..4.log): `uv sync --locked --extra dev`;
+  `ruff check .` all clear; `ruff format --check .` 3275 files formatted;
+  focused pytest **79 passed**; `check-suite-inventory.py --suite
+  packages/maistro-core/tests` 16341 ids ok.
+- **Independent import-level representation probe: 80/80 PASS** (new this
+  round, run at this head against the installed module): `__all__` set-exact
+  21 names/len 21; frozen+slots on all 16 record/result classes;
+  `CanonicalJsonObject` single `text: str` field, sort+compact normalization,
+  and `ValueError` rejection of duplicate keys, non-object roots, NaN,
+  1e999-infinity, bytes input; `AdmissionAssessment` StrEnum exactly 6 members
+  with exact values; envelope field order exact; `owner_token` repr=False on
+  ticket and v2; `format_version` init=False defaults 2/1; empty variants
+  fieldless with no `__bool__` override; ClaimResult/ReleaseResult/
+  CompletionResult unions exact; functional fencing — matching triple owns(),
+  same-owner/diff-generation, same-generation/diff-owner, and diff-scope all
+  rejected; equal-role ticket still owned with the UUID text appearing exactly
+  once in repr (field omission, not text absence); legacy record accepts
+  unclamped lease and carries no generation/owner fields; `RootAdmissionResult`
+  rejects snapshot run-id mismatch and integer `created` with `ValueError`.
+- **One probe anomaly dispositioned as stock CPython behavior, not a defect:**
+  assigning a *non-field* attribute (e.g. the read-only `admitted` property) on
+  a frozen+slots DTO raises `TypeError: super(type, obj) …` instead of
+  `FrozenInstanceError`. A stock `@dataclass(frozen=True, slots=True)` control
+  class under the same CPython 3.12.14 reproduces it exactly (the generated
+  `__setattr__` closure binds the pre-slots class, so its `super(cls, self)`
+  fails once `_add_slots` recreates the class). *Field* mutation raises
+  `FrozenInstanceError` on both the control class and the module's DTOs — which
+  is what the issue's contract states and what the suite pins (test lines
+  303–336, all passing). No repair exists or is needed here.
+- **Both merge-queue failures re-reproduced with CI's exact argv**
+  (RATCHET_BASE_REV resolves to base 435dc1937):
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → rc=1, solely the five `AdmissionAssessment` identities
+  (admission_identity.py:515–520; scan total 1328, unclassified 0),
+  "New Vulture debt is not authorized by the trusted base … land a reviewed
+  grant first"; `check-ratchet-provenance.py` → rc=1, solely via
+  check-reachability-dispositions-provenance.py (169→170) and
+  check-reachability-provenance.py (170/1395), each naming only
+  `maistro.runs.admission_identity`; all other sub-ratchets OK.
+- **Ledger amendment remains a proven no-op; nothing is removable.** Candidate
+  `quality/vulture-baseline.json` walked: 1328 findings = base 1323 + exactly
+  the five flagged identities already banked under `pydantic-declarative-field`
+  (the six-member enum is mandated verbatim by the issue; PENDING is unflagged
+  because the module itself references it). Base
+  `quality/ratchet-authorizations.json` walked across all 11 keys: zero
+  `admission_identity` grants — grants are read from the merge base by design,
+  so no commit on this branch can authorize the rows (two-merge wall).
+- **Candidate-side quality steps green this round:** check-reachability.py
+  rc=0 (170 unreachable of 1395, banked), check-reachability-dispositions.py
+  rc=0 (50 groups cover all 170), check-shipped-surface-truth.py rc=0,
+  check-promotion-surface.py rc=0; full `check-suite-inventory.py` rc=0
+  (17 suites / 31208 unique ids match the recorded baseline).
+- **Leaf commands from the issue all green at this head:** focused pytest 79/79;
+  leaf `ruff check` + `ruff format --check` clean; leaf `mypy
+  packages/maistro-core/src/maistro/runs/admission_identity.py` — Success, no
+  issues.
+- **Scope isolation and #1841 anchors re-proven:** diff vs base 435dc1937 is
+  exactly the 7 leaf surfaces; store.py, model.py, idempotency.py byte-identical
+  to base; zero production importers of `admission_identity`; no
+  `maistro.runs.__init__` export; all 12 issue-named tests present (one
+  definition each); `require_admitted_actor` at store_boundary.py:56 in this
+  tree, at recorded #1841 heads 053f9396 and c66c5c8f, with the admitted-actor
+  guard applied at store.py:921 and :1323 (two call sites at the #1841 final
+  head as well).
+- **No develop advance:** origin/develop re-fetched, still 435dc1937; PR #1936
+  remains open WIP at fac0f42f (branch tip now 19fded390). No new owner
+  guidance in the issue's latest comments (only attempt bookkeeping markers).
+
+Round-64 verdict: writer handoff. Every leaf acceptance criterion is proven
+firsthand at 19fded390 (implementation, tests, inventory note with the +79
+delta, focused battery, scope isolation, #1841 anchor record, and the recorded
+exact-head CI outcome). The two failing merge-queue jobs are the issue-predicted
+external authorization wall and are not repairable from this branch: the debt
+rows are issue-mandated enum members already banked in the candidate ledger,
+and authorization can only come from an owner-landed grant on develop or the
+#1845 integration head providing the reviewed runtime consumer — exactly the
+handoff the issue mandates ("report implementation/test readiness plus the
+explicit merge blocker and leave the stack unmerged"). This handoff is not an
+integration approval and does not claim #1845 is complete. Note-only commit;
+no gate, ledger, or source change.
