@@ -19870,3 +19870,50 @@ amendment (gate reads base `01cf44a5a716` = merge base);
 acceptance criteria still consume producer APIs from OPEN issues
 (#804/#805/#806 primary; #53/#774/#776/#93/#95 supporting). Inventory delta
 **+0** (this record only). (Refs #777)
+
+## Round 288 — develop sync resolved at merge-head 31a0e5bfa; dependency block persists (job ed299972b)
+
+**Capture:** dispatch-context.json 2026-10-10T04:41:44Z, 61 sources,
+`complete_for_scope: true` (freshest, postdates round 287's 03:57Z capture).
+Dependency states in that capture: **#53, #93, #95, #774, #776, #804, #805,
+#806 all `state=open`**; PR #1660 open draft at head `31a0e5bffaa1` (= this
+HEAD). Last three issue comments are progress-bot records only (02:31Z–04:08Z);
+no new steering.
+
+**Previous block resolution:** round 287's verdict carried "if develop sync
+conflict: merge origin/develop". This round starts at `31a0e5bffaa1` = merge of
+`ed5613457d6f` (origin/develop tip: CORS #2106, M8-D3 research #2074) into the
+lane — the sync directive is resolved in-place, no conflicts remained. The
+merge delta is 11 files / +2626: `maistro-core` CORS settings + its test,
+the 2033-line M8-D3 research suite (now inventory-baselined — see battery),
+docs. Zero #777 surfaces touched. The prior "unbaselined upstream suite"
+sync-deferral concern is therefore moot at this head.
+
+**AC probes at HEAD (grep over `packages/*/src`):** 0 hits for
+`GoalReconciler|reconcile_goal|goal_reconcil|ReconciliationLoop`;
+`design_service.py` 376 lines, 0 goal/canvas mentions;
+`workspace_agent.py` 149 lines roster-only — AC1–AC13 producer APIs still
+absent from the tree, matching the stop condition's prohibition on
+Design-Studio-private substitutes.
+
+**Validation battery (all exit 0 at `31a0e5bffaa1`, CI-exact args):**
+`ruff check .` (All checks passed); `ruff format --check .` (**3269** files
+already formatted); `check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'`: 1323 reviewed -> 1322
+findings, 0 unbanked, no ledger amendment (gate reads base `ed5613457d6f` =
+merge base, so this head is its own authorized base);
+`check-ratchet-provenance.py` (0 violations, 53 consumers);
+`check-shipped-surface-truth.py` (complete); `check-suite-inventory.py`
+(**17** suites match, 30952 node IDs — upstream M8-D3 suite inventory absorbed
+by the merge without a delta on this lane); `check-backlog-consistency.py`
+(167 items). Targeted pytest: `packages/maistro-core/tests/config` ->
+**165 passed** (covers merged-in CORS tests); `packages/maistro-core/tests/runs`
+-> **1219 passed, 280 skipped**; hive-conductor `backend/tests -k 'design or
+workspace or brief'` -> **387 passed, 5 skipped** (3203 deselected);
+`packages/maistro-bootstrap/tests -k 'agent_loop or builders'` -> **77 passed,
+1 skipped**.
+
+**Verdict: BLOCKED** — dependency-blocking (105th consecutive round). All 13
+acceptance criteria still consume producer APIs from OPEN issues
+(#804/#805/#806 primary; #53/#774/#776/#93/#95 supporting). Inventory delta
+**+0** (this record only). (Refs #777)
