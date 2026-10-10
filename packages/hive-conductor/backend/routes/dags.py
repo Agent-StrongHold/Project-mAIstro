@@ -381,7 +381,7 @@ async def run_dag(
         ) from exc
     log_audit("dag_run", actor, target=dag_id)
 
-    from services.graph_runner import CanonicalDagExecutionError, execute_dag
+    from services.graph_runner import CanonicalDagExecutionError, execute_dag, public_result
 
     try:
         result = await execute_dag(
@@ -391,16 +391,7 @@ async def run_dag(
         )
     except CanonicalDagExecutionError as exc:
         logger.warning("Canonical DAG Run failed", exc_info=True)
-        # Copy the transport projection; retain the canonical record for operators.
-        result = {**exc.result, "error": "DAG execution failed; see server logs"}
-        result["node_results"] = {
-            node_id: (
-                node
-                if node.get("success")
-                else {**node, "response": "DAG node failed; see server logs"}
-            )
-            for node_id, node in result.get("node_results", {}).items()
-        }
+        result = public_result(exc.result)
         await _record_run_projection(dag_id=dag_id, user_id=actor, result=result)
         run_id = result.get("run_id")
         return {

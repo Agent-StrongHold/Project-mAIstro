@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +7
+  packages/hive-conductor/backend/tests: +13
   packages/maistro-canvas/tests: +1
 ---
 
@@ -16,3 +16,8 @@ at both run and node level and verifies the complete response stays clean.
 Negative control: all nine selected regression cases fail on the original
 implementation at cc6e4899 (including the existing DAG case strengthened here).
 Run identity and status remain public; internal diagnostic strings do not.
+
+Six additional live/replay × failed/cancelled/timed_out cases verify safe
+stream frames, persisted projection callbacks, run identity, sequence cursors,
+successful node output, and unchanged internal diagnostic records. The real
+WS/HTTP transport parity test also injects credentials and checks projections.
