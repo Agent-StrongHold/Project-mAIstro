@@ -70,3 +70,36 @@ Integration-scope resolution used the actual `git diff --no-renames --name-only 
 Required handoff: owner lands the lifecycle authorization separately, supplies exact-candidate specialized CI results and reachable PG17/18 infrastructure, then rerun blocked acceptance. No integration approval or closure claim.
 
 Progress: {checked: 1, done: 0, skipped: 0, errors: 1, next: external trusted-base authorization and missing acceptance infrastructure/evidence}. The one error is the lifecycle gate blocker, also reproduced by its regression test; Docker is an additional environmental limitation. Evidence report committed locally.
+
+---
+
+# Round 10 — 2026-10-10, worktree auto-1572 (job 70001ccff84440bd8506e5ae7b3a31c1)
+
+Scope snapshot: issue #1572 only; starting HEAD `63dc1b40b43e45a842185148f50db9c9f5d2bca3`, develop base for this round `4aa68edc0b6b85ae23f97e611d693927218863dc`. Worktree started clean; no prior uncommitted work found. Named CI reds to address: `test` job, Quality gate (Pillars 1–4, 7, 8), Coverage gate — all last evaluated at stale branch tip `ec7394a33ea`.
+
+## Develop sync (dispatch-mandated)
+
+`git fetch origin` → origin/develop advanced `1f328be96` → `4aa68edc0` (M9-B extension post-install lifecycle, #2094). `git diff --name-only 1f328be96 4aa68edc0` vs branch changes: **zero overlapping files**; 4aa68edc0 adds no Alembic revision. Merged conflict-free → `3c156242c7cca2f076548bbc0a0e7a66a30862c2` (branch now 0 behind develop). Goal migration `063` still the single head, chained on develop's `062` (`uv run alembic heads` → `063`).
+
+## Fresh gates at 3c156242c (all run this round, not inherited)
+
+- `uv run ruff check .` / `ruff format --check .` → PASS (3281 files)
+- `scripts/check-suite-inventory.py --suite packages/maistro-core/tests` → PASS (16269 nodes; develop's +41 tests arrive via its own recorded deltas)
+- vulture, CI-exact args (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) → **EXIT 0, 1323/1323 identities banked; no amendment warranted**
+- radon, reachability, reachability-dispositions, promotion-surface, route-permissions, wiring-reads, contract-markers, shipped-surface-truth (all `RATCHET_BASE_REV=origin/develop`) → EXIT 0
+- `check-m1-convergence-freeze.py --base origin/develop` → EXIT 0 (no GoalRun/OrchestratorRun/second executor)
+- `mypy` on the seven canonical packages → Success, 897 files
+- `check-ac-state.py` → EXIT 0; regenerated gitignored `quality/ac-state.json` (byproduct documented at .gitignore:77-81) removed afterwards; `test_branch_independence_repository.py` re-verified PASS
+- Goal acceptance: focused `packages/maistro-core/tests/goals` + schema parity + pack contracts → 159 passed; **PG legs `MAISTRO_REQUIRE_PG_LEGS=1` on live containers: 70/70 on pg18 (127.0.0.1:55712) and 70/70 on pg17 (127.0.0.1:55717)**; `tests/migrations` under coverage on pg18 → **168/168** (installed-base upgrade, chain, downgrade refusal); container durable-events + pack contracts → 112 passed
+- CI `test` job, exact failing step: `RATCHET_BASE_REV=origin/develop REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 pytest tests/ --ignore=tests/tools/registry -q` → **1 failed, 4977 passed, 135 skipped**; the 1 is `tests/test_check_execution_lifecycles.py::test_the_shipped_ledger_matches_the_shipped_code`
+- CI Coverage gate producer legs, CI-parity env under `coverage run --branch`: maistro-core **15209 passed / 1057 skipped / 3 xfailed**, canvas 465, evolve 998, rsi 1624, bootstrap 233 — zero failures
+
+## The single remaining red, and why it is not in-branch repairable
+
+`RATCHET_BASE_REV=origin/develop scripts/check-execution-lifecycles.py` → sole finding: `maistro.goals.model::GoalStatus: NEW work-state vocabulary is absent from the trusted base and has no already-landed authorization` (19 → 20 discovered). Verified after the sync: `git diff 1f328be96 4aa68edc0 -- quality/ratchet-authorizations.json` is empty — **the grant has not landed on develop even at this round's base**. `ratchet_provenance.load_authorizations` reads grants from the merge base by design ("a new grant does not take effect in the change that introduces it... two merges"), so a branch-local grant is mechanically ineffective, and ledger/grant edits are prohibited in ordinary rounds (the CI-repair exception names the vulture ledger only; vulture is clean). Eliminating the identity is not an option: the Goal lifecycle is required issue acceptance, the detector keys on member names (ACTIVE/CANCELLED/FAILED ≥ 3 work states), and renaming to evade discovery would be gate-gaming. The competing open implementation (#1855, `GoalState`, same member names, no ledger entry) hits the same ratchet.
+
+## Disposition
+
+**BLOCKED** — unchanged in nature: branch content is fully validated and synced; the sole CI red resolves only when an owner lands the `execution-lifecycles: maistro.goals.model::GoalStatus` authorization on develop (two-merge rule), after which this branch should be requeued unchanged. No source, tests, workflows, ledgers or grants were altered this round; only this checkpoint was appended and the sync merge committed. No GitHub mutations.
+
+Progress: {checked: 1, done: 1 (sync + first-hand re-validation at merged head), skipped: 0, errors: 1 (external GoalStatus authorization), next: owner lands the lifecycle grant on develop, then merge-queue re-evaluation}
