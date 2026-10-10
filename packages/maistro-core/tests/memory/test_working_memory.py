@@ -302,6 +302,40 @@ class TestManagerLifecycle:
         assert manager.hot("ws-b") is None
         assert manager.hot("ws-c") is None
 
+    async def test_capacity_eviction_follows_touch_order_not_clock_reads(
+        self, env: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: the capacity sweep re-read ``idle_seconds`` per
+        candidate at eviction time. Projections hydrate microseconds apart,
+        so a scheduler preemption between two clock reads ranked the newer
+        projection as older and evicted it instead of the true LRU
+        (coverage-unit red: ``test_eviction_by_capacity_and_ttl`` kept ws-a
+        while evicting ws-b). Eviction must follow touch generations —
+        whatever the clock reports.
+        """
+        _, manager = env
+        manager.max_projections = 2
+        await manager.projection("ws-a")
+        await manager.projection("ws-b")
+        # Force the exact contradiction a preempted read produces: the clock
+        # ranks ws-b (hydrated later) as far more idle than ws-a.
+        monkeypatch.setattr(
+            WorkspaceWorkingMemory,
+            "idle_seconds",
+            property(lambda self: 100.0 if self.workspace_id == "ws-b" else 0.0),
+        )
+        await manager.projection("ws-c")
+        assert manager.hot("ws-a") is None
+        assert manager.hot("ws-b") is not None
+        assert manager.hot("ws-c") is not None
+        # A use refreshes the generation: the observed workspace outlives the
+        # next capacity pass even though the clock still calls it the idlest.
+        await manager.observe("ws-b", cycle=1, text="refresh")
+        manager.max_projections = 1
+        manager.evict()
+        assert manager.hot("ws-b") is not None
+        assert manager.hot("ws-c") is None
+
     async def test_dispose_keeps_the_log(self, env: Any) -> None:
         store, manager = env
         await manager.projection(WS)
