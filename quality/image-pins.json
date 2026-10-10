@@ -3,11 +3,11 @@
   "pins": [
     {
       "image": "python",
-      "tag": "3.13.15-slim-bookworm",
-      "digest": "sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26",
-      "recorded": "2026-09-30",
-      "recorded_in": "#349",
-      "note": "CPython 3.13.15 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose.",
+      "tag": "3.13.16-slim-bookworm",
+      "digest": "sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641",
+      "recorded": "2026-10-10",
+      "recorded_in": "#1776, #1778",
+      "note": "CPython 3.13.16 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose.",
       "used_by": ["Dockerfile", "packages/hive-conductor/Dockerfile"]
     },
     {
@@ -26,10 +26,10 @@
     },
     {
       "image": "python",
-      "tag": "3.12.12-slim-bookworm",
-      "digest": "sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c",
-      "recorded": "2026-09-30",
-      "recorded_in": "#349",
+      "tag": "3.12.15-slim-bookworm",
+      "digest": "sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258",
+      "recorded": "2026-10-10",
+      "recorded_in": "#1777",
       "note": "Copier template base: rendered downstream images pin the identical digest.",
       "used_by": ["templates/autonoetic/Dockerfile.jinja",
                   "templates/single-tenant-multi-user/{% if host_target in ['docker', 'podman'] %}Dockerfile{% endif %}.jinja"]

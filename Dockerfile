@@ -20,7 +20,7 @@
 # Digest-pinned (#349): a tag move must not change what installs every
 # dependency without a repository diff. Refresh via Dependabot's docker
 # ecosystem and record the new digest in quality/image-pins.json.
-FROM python:3.13.15-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26 AS builder
+FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641 AS builder
 WORKDIR /app
 # CI evidence (run 36835563311, job 110282105809): both buildx attempts of the
 # sibling research image died inside pip on `files.pythonhosted.org` read
@@ -77,7 +77,7 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # stays Wolfi (low-CVE) while providing the `git` binary the orchestrator's git
 # tools (maistro.tools.git — used by orchestrator/waves/fan_in.py) exec directly;
 # the previous distroless runtime shed git and broke those tools.
-FROM python:3.13.15-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26
+FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
