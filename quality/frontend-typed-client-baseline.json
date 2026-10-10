@@ -2,8 +2,8 @@
   "_comment": "Raw fetch and hand-typed frontend entity debt for Workspace cutover P0.3 (#1048). Judged against the trusted merge base; a fixed entry must be deleted here.",
   "metric_definition_version": "1",
   "summary": {
-    "hand_typed": 138,
-    "raw_fetch": 59
+    "hand_typed": 136,
+    "raw_fetch": 56
   },
   "tolerated": {
     "hand_typed::packages/hive-conductor/frontend/src/components/ErrorBoundary.tsx:3:Props": "local interface/type in pages/ or components/",
@@ -38,8 +38,6 @@
     "hand_typed::packages/hive-conductor/frontend/src/pages/Agents.tsx:20:Agent": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Agents.tsx:36:IntentRow": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Agents.tsx:46:ForgeProvenance": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/AuditLog.tsx:13:Severity": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/AuditLog.tsx:15:AuditEntry": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Backlog.tsx:13:AutonomyMode": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Backlog.tsx:19:ProvenanceEntry": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Backlog.tsx:21:BacklogItem": "local interface/type in pages/ or components/",

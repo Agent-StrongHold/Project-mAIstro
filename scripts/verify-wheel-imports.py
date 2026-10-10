@@ -72,6 +72,10 @@ CORE_PUBLIC_SURFACE = [
     # connectors import. Pure-library surface; httpx is a base dependency, so
     # the bare tier asserts it imports.
     "maistro.connectors",
+    # Shared extension-family conformance suite (M9-E4, #965): stdlib +
+    # maistro-internal imports only, so a bare install can import and run it
+    # against any ConformanceSubject.
+    "maistro.conformance",
     "maistro.conduit",
     "maistro.container",
     "maistro.credentials",

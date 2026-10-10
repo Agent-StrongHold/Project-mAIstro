@@ -351,19 +351,31 @@ class ExtensionStore(Protocol):
         self, scope: ExtensionScope, extension_id: str
     ) -> ExtensionInstallRecord | None: ...
 
+    async def clear_active(self, scope: ExtensionScope, extension_id: str) -> None:
+        """Drop the scope's active pointer for the extension.
+
+        Disable and remove call this so "no active version" is structural:
+        hosts resolving through ``active_record`` cannot reach a suspended or
+        uninstalled extension, rather than being trusted to check a state.
+        Clearing a missing pointer is a no-op (idempotent sweeps).
+        """
+        ...
+
+    async def records_for_extension(
+        self, scope: ExtensionScope, extension_id: str
+    ) -> list[ExtensionInstallRecord]:
+        """Every record for one extension in the scope, oldest first.
+
+        The lifecycle reads this to find the pinned record and rollback
+        candidates without reaching into store internals.
+        """
+        ...
+
     async def set_active(self, record: ExtensionInstallRecord) -> None:
         """Swap the scope's active pointer for the record's extension id.
 
         Implementations must make this a single atomic replacement: callers
         rely on it for caller-perceived activation atomicity.
-        """
-        ...
-
-    async def clear_active(self, record: ExtensionInstallRecord) -> None:
-        """Drop the scope's active pointer iff it names this record.
-
-        The condition matters: disable/remove must not clobber a pointer that
-        a concurrent activation has already moved to a different record.
         """
         ...
 
@@ -421,13 +433,29 @@ class InMemoryExtensionStore:
             return None
         return self._records.get(install_id)
 
+    async def clear_active(self, scope: ExtensionScope, extension_id: str) -> None:
+        self._active.pop((scope.org_id, scope.workspace_id, extension_id), None)
+
+    async def records_for_extension(
+        self, scope: ExtensionScope, extension_id: str
+    ) -> list[ExtensionInstallRecord]:
+        matches = [
+            record
+            for record in self._records.values()
+            if record.org_id == scope.org_id
+            and record.workspace_id == scope.workspace_id
+            and record.extension_id == extension_id
+        ]
+        return sorted(
+            matches,
+            key=lambda record: (
+                record.created_at or datetime.min.replace(tzinfo=UTC),
+                record.install_id,
+            ),
+        )
+
     async def set_active(self, record: ExtensionInstallRecord) -> None:
         self._active[(record.org_id, record.workspace_id, record.extension_id)] = record.install_id
-
-    async def clear_active(self, record: ExtensionInstallRecord) -> None:
-        key = (record.org_id, record.workspace_id, record.extension_id)
-        if self._active.get(key) == record.install_id:
-            del self._active[key]
 
     async def installed_versions(self, scope: ExtensionScope) -> dict[str, str]:
         versions: dict[str, str] = {}

@@ -109,6 +109,7 @@ Every child research epic/leaf defines:
 | [923 — episodic-to-semantic consolidation, temporal contradiction handling, forgetting](923-episodic-consolidation-temporal-forgetting.md) | M8-C4 | leaf [#923](https://github.com/Agent-StrongHold/Project-mAIstro/issues/923), epic #901 | WATCH |
 | [924 — provenance-, trust-, and uncertainty-aware memory selection and write suppression](924-provenance-trust-uncertainty-memory-selection.md) | M8-C5 | leaf [#924](https://github.com/Agent-StrongHold/Project-mAIstro/issues/924), epic #901 | WATCH |
 | [926 — automatic canonical Graph synthesis from Goals](926-graph-synthesis-from-goals.md) | M8-D2 | leaf [#926](https://github.com/Agent-StrongHold/Project-mAIstro/issues/926), epic #903 | WATCH |
+| [927 — observation-driven replanning](927-observation-driven-replanning.md) | M8-D3 | leaf [#927](https://github.com/Agent-StrongHold/Project-mAIstro/issues/927), epic #903 | WATCH |
 | [928 — bounded beam/tree/MCTS-style plan search](928-bounded-plan-search.md) | M8-D4 | leaf [#928](https://github.com/Agent-StrongHold/Project-mAIstro/issues/928), epic #903 | INCUBATE |
 | [929 — Graph pattern induction and reuse across Goals](929-graph-pattern-induction-reuse.md) | M8-D5 | leaf [#929](https://github.com/Agent-StrongHold/Project-mAIstro/issues/929), epic #903 | INCUBATE |
 | [930 — self-consistency, semantic entropy, answer-variation signals](930-answer-variation-uncertainty-signals.md) | M8-E1 | leaf [#930](https://github.com/Agent-StrongHold/Project-mAIstro/issues/930), epic #904 | WATCH |

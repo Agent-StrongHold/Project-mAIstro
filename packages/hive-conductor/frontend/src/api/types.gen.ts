@@ -168,11 +168,69 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Entries */
+        /**
+         * List Entries
+         * @description Bounded pages from the bound authority, with authorization before I/O.
+         *
+         *     Core decision audit is admin-only (ADR-073). Only deployments without a
+         *     core binding use the scoped legacy store; never switch corpora mid-query.
+         */
         get: operations["list_entries_v1_audit_get"];
         put?: never;
         /** Create Entry */
         post: operations["create_entry_v1_audit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/audit/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Entries
+         * @description Stream the (scope- and cap-bounded) trail as NDJSON.
+         *
+         *     Server-side this walks bounded pages through the same query seam as the
+         *     list route — at most EXPORT_MAX_ENTRIES entries, a few hundred rows of
+         *     memory at a time — so an export never materialises the corpus. Same scope
+         *     contract as the list route: canonical decisions require admin; only the
+         *     unbound legacy fallback permits a non-admin's own entries.
+         */
+        get: operations["export_entries_v1_audit_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/audit/retention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retention Policy
+         * @description What this deployment's audit read surface keeps and bounds.
+         *
+         *     Deployment-level constants, not corpus data — the same shape as
+         *     /v1/dag-runs/retention (#697's rule: a bound nobody can see is a bound
+         *     nobody can hold anyone to). The corpus itself is append-only today; the
+         *     purge lane is #325. Declared before /{entry_id} so the parameterised
+         *     route cannot swallow these paths.
+         */
+        get: operations["retention_policy_v1_audit_retention_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -186,7 +244,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Entry */
+        /**
+         * Get Entry
+         * @description One entry, under the same scope contract as list and export.
+         *
+         *     When a canonical authority is bound, ADR-073's admin gate also protects
+         *     mirrored legacy detail IDs, before any lookup. Without that binding an
+         *     operator reads any legacy row, a non-admin only rows naming themselves.
+         *     An out-of-scope legacy row answers 404 to avoid confirming its existence.
+         */
         get: operations["get_entry_v1_audit__entry_id__get"];
         put?: never;
         post?: never;
@@ -3552,7 +3618,7 @@ export interface paths {
          * @description The settings-change trail, read from the durable audit log (#389).
          *
          *     Read through the shared `audit_entries_view` — the same core-store-first
-         *     read `GET /v1/audit` serves, never a second log. Returned newest-first,
+         *     paginated read `GET /v1/audit` serves, never a second log. Returned newest-first,
          *     capped at `limit` (bounded 1..1000). Empty means no settings write has
          *     been recorded yet — an empty-valid answer, distinct from a failure (which
          *     raises) or an authorization refusal (handled by the `/v1/settings` auth
@@ -4836,7 +4902,16 @@ export interface components {
              */
             role: "user" | "assistant" | "system" | "tool";
         };
-        /** AuditEntry */
+        /**
+         * AuditEntry
+         * @description One audit row exactly as ``/v1/audit`` serves it.
+         *
+         *     The legacy Hive write shape (``routes.audit.log_audit``) and the core
+         *     projection (``services.audit_bridge.core_entry_to_hive``) both produce
+         *     this shape, so the page contract can name it: the generated frontend
+         *     types then carry ``AuditPage.entries`` as real rows, not anonymous
+         *     objects (#358, typed-client ratchet #1048 AC-P3).
+         */
         AuditEntry: {
             /** Action */
             action: string;
@@ -4864,6 +4939,45 @@ export interface components {
             severity: "info" | "warning" | "critical";
             /** Target */
             target?: string | null;
+        };
+        /**
+         * AuditPage
+         * @description One bounded page plus the opaque handle for the next one.
+         */
+        AuditPage: {
+            /** Entries */
+            entries: components["schemas"]["AuditEntry"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /**
+         * AuditRetention
+         * @description The /v1/audit/retention body, typed so the OpenAPI document carries it.
+         *
+         *     The frontend reads this endpoint's shape from the generated contract
+         *     (`src/api/models.ts` aliases it); a hand-written copy in a page component
+         *     is exactly the drift the typed-client ratchet (#1048 AC-P3) exists for.
+         *     Field order is the response's field order.
+         */
+        AuditRetention: {
+            /** Corpus Purge */
+            corpus_purge: string;
+            /** Default Page Size */
+            default_page_size: number;
+            /** Durable */
+            durable?: boolean | null;
+            /** Export Max Entries */
+            export_max_entries: number;
+            /** Max Page Size */
+            max_page_size: number;
+            /** Ordering */
+            ordering: string;
+            /**
+             * Scope
+             * @default own
+             * @enum {string}
+             */
+            scope: "deployment" | "own";
         };
         /** BacklogBlock */
         BacklogBlock: {
@@ -7454,6 +7568,8 @@ export interface operations {
                 action?: string | null;
                 severity?: string | null;
                 actor?: string | null;
+                limit?: number;
+                cursor?: string | null;
             };
             header?: never;
             path?: never;
@@ -7467,9 +7583,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    }[];
+                    "application/json": components["schemas"]["AuditPage"];
                 };
             };
             /** @description Validation Error */
@@ -7512,6 +7626,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_entries_v1_audit_export_get: {
+        parameters: {
+            query?: {
+                action?: string | null;
+                severity?: string | null;
+                actor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retention_policy_v1_audit_retention_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditRetention"];
                 };
             };
         };

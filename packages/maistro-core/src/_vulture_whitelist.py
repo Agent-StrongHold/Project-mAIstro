@@ -63,7 +63,6 @@ from maistro.extensions.metering import (
 )
 from maistro.extensions.packs import InstallablePackRegistry
 from maistro.extensions.resolution import LockState
-from maistro.extensions.service import ExtensionInstallService
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
     ExtensionInstallStore,
@@ -93,12 +92,17 @@ from maistro.ontology.rubric import (
     RubricScale,
     RubricSemantic,
 )
+from maistro.persistence.pg_audit import PgAuditLog
+from maistro.persistence.sqlite_audit import SqliteAuditLog
 from maistro.projects.rubric_store import RubricStore
+from maistro.protocols.memory import AuditLog
 from maistro.runs.model import EvalJudge, EvalMethod, RunEvalScore
 from maistro.runs.pg_store import PgRunStore
 from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.store import InMemoryRunStore, RunStore
+from maistro.security.sentinel.audit import InMemoryAuditLog
+from maistro.security.strikes import InMemoryStrikeTracker
 from maistro.state import PersistedStore
 from maistro.workspaces.campaigns.model import (
     Actor,
@@ -160,6 +164,14 @@ _VULTURE_WHITELIST = (
     # this `packages/*/src` scan does not walk.
     Container.run_reader,
     ScopedRunReader.get_runs,
+    # Audit cursor reads (#358) are called through AuditLog by Hive's
+    # backend/services/audit_bridge.py::page_core_audit_entries. That real
+    # consumer lies outside the packages/*/src scan. Preserve the protocol
+    # and all three Container-bound adapters, not a list-and-slice fallback.
+    AuditLog.get_page,
+    PgAuditLog.get_page,
+    SqliteAuditLog.get_page,
+    InMemoryAuditLog.get_page,
     # --- #102 backlog work-source (maistro.backlog) -----------------------
     # Pydantic invokes these field/model validators at runtime; static import
     # scanning cannot see decorator-based dispatch (same shape as
@@ -539,6 +551,17 @@ _VULTURE_WHITELIST = (
     # (packages/maistro-core/tests/extensions/test_effective_authority.py) — the
     # same contract-ships-first posture as the seams above.
     EffectiveAuthority.with_execution_context,
+    # Strike-tracker admin verb (M3 lockout ladder, #134). The protocol
+    # (maistro.protocols.strikes) deliberately keeps `enable` off the DI seam:
+    # it "exist[s] on the in-memory implementation and [is] admin surface
+    # reached through other paths", and no operator console exists yet
+    # (types/config.py strike_tracking_enabled documents the missing recovery
+    # path). The durable twins carry reviewed ledger grants (#1172:
+    # PgStrikeTracker.enable, StrikeRecoveryService.enable -- consumers outside
+    # the packages/*/src scan); the in-memory verb is the same reviewed public
+    # admin API, so it is named here as retained surface rather than banked as
+    # unclassified debt.
+    InMemoryStrikeTracker.enable,
     # Installable domain-pack contracts (M9-F1, #966). The pack contract
     # ships first by design, the same posture as the M9-B1 store seams and
     # the M9-D1 registry above: its in-tree consumers are the conformance
@@ -554,18 +577,4 @@ _VULTURE_WHITELIST = (
     InstallablePackRegistry.instantiate_graph,
     InstallablePackRegistry.instantiate_persona,
     InstallablePackRegistry.instantiate_rubric,
-    # Extension post-install lifecycle decisions (M9, #954). The operator
-    # decisions — re-enabling a disabled version and pinning/unpinning the
-    # active version — are enforced by the service state machine and exercised
-    # by the lifecycle suite
-    # (packages/maistro-core/tests/extensions/test_post_install_lifecycle.py)
-    # and the #981 proof harness (scripts/extension_lifecycle_proof.py); the
-    # operator-facing route/CLI surfaces that call them land with later M9
-    # issues, so no scanned src call site exists yet. disable/rollback/remove
-    # survive the scan today only through unrelated name collisions
-    # (`disable` locals in maistro.scheduling, `conn.rollback()` and
-    # `list.remove()`), which is not protection — but only the two unshadowed
-    # verbs are named here, as the reviewed public API they are.
-    ExtensionInstallService.enable,
-    ExtensionInstallService.set_pinned,
 )

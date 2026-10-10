@@ -16,8 +16,10 @@ production seams. The load-bearing properties:
   plugin lying about its identity is recorded FAILED with nothing active);
 * the lineage stays honest about what this base cannot prove yet (the #954
   post-install restart-durability boundary note is present, not hidden);
-* the #954 post-install lifecycle — disable, pin, rollback, remove — is
-  proven as explicit, audited decisions on the governed records.
+* the #954 post-install lifecycle is covered by its dedicated suite
+  (test_post_install_lifecycle.py); this proof pins the record-level
+  properties its durable siblings must preserve (append-only trails, audited
+  version displacement, queryable history after deactivation).
 """
 
 from __future__ import annotations
@@ -48,7 +50,6 @@ EXPECTED_STAGES = (
     "invoke-observe",
     "denials",
     "update-fence",
-    "post-install-lifecycle",
     "catalog-integrity",
     "durable-restart",
     "canonical-truth-boundary",
