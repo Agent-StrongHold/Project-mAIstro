@@ -2515,3 +2515,80 @@ unchanged.
   unwired-reachability delta whose lawful retirement is the separately
   reviewed #1845 integration consumer. The stack stays unmerged by design;
   this lane takes no merge/PR action.
+
+## Round 32 — develop-sync conflict resolution at merged head `b56d493c7c5a` (2026-10-10)
+
+The dispatched worktree arrived mid-merge: develop `1f328be96a5e` (#1712,
+Conductor audit-log pagination) conflicted with the branch in exactly one
+file, `packages/maistro-core/src/_vulture_whitelist.py` (both sides appended
+scanner-input imports at the same alphabetical position: the branch's
+`AdmissionAssessment` from `maistro.runs.admission_identity`, develop's
+`AuditLog` from `maistro.protocols.memory` plus the two persistence audit
+adapters). Resolved as the union of both sides — the branch's #1851/#1852
+entries (snapshot-field names, StrEnum members) and develop's #358
+`get_page` entries all remain — merge committed as `b56d493c7c5a` with the
+assigned tree left clean. No other file conflicted; `tasks/idempotency.py`,
+`tasks/__init__.py`, and `runs/__init__.py` are byte-identical to the
+pre-merge branch head `68bbe97fb3b1`.
+
+Everything below re-executed fresh at `b56d493c7c5a`; the classifier module
+is byte-identical to rounds 22–31 (md5 `257a6e45c382349dd12f559099663fbc`)
+and the test suite is unchanged since `68bbe97fb3b1`, so the round-22–31
+mutation profile carries over; it was additionally re-spot-checked
+first-hand this round.
+
+- **Lane-brief vulture amendment empty for the 32nd consecutive round**:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI's exact argv) exit 0 — 1323 reviewed identities ->
+  1323 findings, `unclassified: 0`, `never_allowlist: 0`. The merged
+  whitelist union keeps every identity on both sides banked, so no
+  `quality/vulture-baseline.json` row is added or removed.
+- **exact-debt-ledger fully attributed at CI argv**:
+  `check-shipped-surface-truth.py` exit 0; `check-ratchet-provenance.py`
+  (`RATCHET_BASE_REV=origin/develop`) exit 1 with the sole FAIL the
+  reachability trusted-base gate — `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_generation` NEW unreachable (169 -> 171 of 1394),
+  all other sub-ratchets OK (promotion 74/270, dispositions 169/169, shell
+  3/3, contract-markers 358/358, enumerations 1/1, lifecycle 0/0).
+  `check-reachability.py` exit 1 naming exactly those two modules;
+  `check-reachability-dispositions.py` and `check-promotion-surface.py`
+  exit 0. Unchanged sanctioned blocker: #1852 forbids in-leaf baseline
+  rows/grants/wiring, and the two-merge rule reads grants from the
+  grantless merge base.
+- **Suite inventory green at this head**: the driver logs' `DRIFT +1`
+  (`expected 16388, collected 16389`) is the salvage test committed at
+  `732b3c55b` (`test_pack_id_colliding_with_an_active_extension_is_refused`,
+  +14 lines in `test_pack_contracts.py`), not a #1852 surface. Recorded as
+  this branch's own delta note `auto-1852-4bd6.md` (+1, salvage
+  attribution); full `check-suite-inventory.py` now exits 0 — 17 suites,
+  16389 in `packages/maistro-core/tests`, 0 duplicate identities.
+- **Leaf acceptance re-executed**: focused battery
+  (`test_admission_generation_assessment.py` +
+  `test_root_admission_identity.py` + unchanged `test_idempotency.py`)
+  272 passed; `mypy --strict packages/maistro-core/src` clean over all 782
+  source files (after `uv sync --locked --all-extras` — the 5 local
+  `maistro_bootstrap` import-not-found errors are the missing-extra
+  artifact AGENTS.md documents; CI syncs `--all-extras`); `ruff check .`
+  and `ruff format --check .` clean (3270 files, conflict markers gone).
+- **Mutation spot-check first-hand this round** (in place, backup ->
+  mutate -> run -> restore, md5-verified byte-identical): mismatch row
+  hoisted above expiry -> 22 failed / 110 passed, exactly the round-27/30/31
+  profile; restored control 132 passed.
+- **Purity and hygiene re-verified**: no production importer of
+  `maistro.tasks.admission_generation` under `packages/*/src`;
+  `git diff --numstat origin/develop -- quality/` shows only
+  `shipped-surface-truth.json` (61 pure develop-side additions, 0
+  deletions — develop advanced to `4aa68edc0` / #2094 after dispatch, so
+  the branch is behind, not row-dropped; `check-shipped-surface-truth.py`
+  still exits 0 at this head). No closure keyword in this round's commit
+  subjects.
+- **Verdict-relevant statement**: the develop-sync conflict is resolved and
+  committed; every #1852 acceptance criterion is proven at `b56d493c7c5a`
+  with the named exact-debt-ledger vulture leg green and an empty
+  amendment. The only remaining reds are the sanctioned two-module
+  unwired-reachability delta (provenance/reachability/meta-tests) awaiting
+  the separately reviewed #1845 integration consumer, plus develop's new
+  `4aa68edc0` (#2094 extension registry) not yet synced — it overlaps the
+  branch's extension salvage files and will need a conflict-aware merge in
+  a future round. The stack stays unmerged by design; this lane takes no
+  merge/PR action.
