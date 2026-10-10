@@ -3691,3 +3691,84 @@ unwired leaf, exactly as the issue's "Quality staging and mergeability" section
 predicts. Unblocking still requires the owner-side grant merge onto the
 integration base or the parent #1845 integration leaf; the stack stays
 implementation/test-ready and unmerged per the issue.
+
+## Round 50 — independent verifier+writer round at a1bd8dba4: leaf contract re-proven against the issue text line by line; wall stands; prior attempt's post-check provider death cost nothing (2026-10-10)
+
+Prior job `ff466eed` died on a provider timeout *after* all five of its driver
+checks had passed (its `result.json` records rc=0 for uv sync, `ruff check .`,
+`ruff format --check .`, focused pytest 79 passed, and
+`check-suite-inventory.py --suite packages/maistro-core/tests`) — no evidence
+was lost and the tree was untouched. This round re-executed everything
+independently at head `a1bd8dba4722` (base `1f328be96a5e`), trusting no prior
+round's claims:
+
+- Develop movement: `git fetch` then `git rev-parse origin/develop` → still
+  exactly `1f328be96`; `git ls-remote origin` shows `refs/heads/auto-1851` at
+  `7aff5a047` (this HEAD is one local note-commit ahead; no push authority, so
+  it stays local) and develop unchanged. No sync conflict, no grant landed
+  upstream.
+- Contract re-read against the issue's fixed representation, programmatically
+  (AST, not by eye): `__all__` is set-exact to the 21 mandated names;
+  `AdmissionAssessment` subclasses `StrEnum` with exactly the six mandated
+  member/value pairs (`admission_identity.py:515-520`); all 17 record/result
+  classes carry `@dataclass(frozen=True, slots=True)`; the five empty variants
+  (`Released`, `StaleOwner`, `Acknowledged`, `AlreadyAcknowledged`,
+  `BindingMismatch`) are fieldless with no `__bool__`, and `AlreadyBound`
+  carries the declared `binding: AdmissionBinding` field — an initial scan
+  misread of `BindingMismatch` was re-checked byte-precise against the
+  unedited issue body (GitHub timeline contains zero `edited` events) and the
+  implementation is exact. The fencing conjunction, `CanonicalJsonObject`
+  canonicalization/rejection semantics, and all stated validation invariants
+  match the issue text.
+- All 12 issue-named tests present in the focused file; suite 79/79 passed
+  (`pytest packages/maistro-core/tests/runs/test_root_admission_identity.py
+  -q`); focused ruff check/format clean; `mypy
+  packages/maistro-core/src/maistro/runs/admission_identity.py` clean; full
+  `check-suite-inventory.py` ok (17 suites, 31,108 unique identities, 0
+  duplicates; the `inventory-delta: +79` front-matter is unchanged — no code
+  or test changed this round).
+- Isolation and anchors re-proven at this head: zero production references to
+  `admission_identity` outside the module itself; no `maistro.runs.__init__`
+  export; no admission reference in
+  `packages/maistro-core/src/_vulture_whitelist.py`; `git diff
+  origin/develop...HEAD` over `packages/` is exactly the module + test files;
+  #1841 anchors intact (`store_boundary.py:56`
+  `require_admitted_actor(actor_principal_id: str | None) -> str`,
+  `store.py:537` `get_run(..., *, principal_id: str | None = None)`,
+  `store.py:507/563` `actor_principal_id: str | None = None` on
+  `create_run`/`claim_run_by_effect`, `model.py:300` `Run.actor_principal_id`).
+- exact-debt-ledger job re-run with CI's exact argv at this head:
+  `check-ratchet-provenance.py` rc=1 solely via its two reachability
+  sub-gates naming `maistro.runs.admission_identity` (NEW unreachable module
+  169→170 and NEW disposition vs trusted base; all eight other ratchets OK
+  with zero candidate-approved expansion); `check-shipped-surface-truth.py`
+  rc=0; `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` rc=1 with 1,328 findings, 0 unclassified, 0
+  never-allowlist, candidate ledger exact at 1,328 rows (zero bookkeeping
+  deltas — the lane-prescribed amendment re-verified a no-op), and exactly
+  the five trusted-side `AdmissionAssessment` identities
+  (`admission_identity.py:515-520`: MISMATCH, REPLAYED, TAKEOVER,
+  REPLACE_EXPIRED, LEGACY_UNRESOLVED; PENDING masked by the unrelated
+  `JobStatus.PENDING` token) rejected solely as unauthorized-at-base with the
+  gate's own verdict "land a reviewed grant first". Base grant census
+  re-read from `origin/develop`: 102 `vulture` grants, none for
+  `admission_identity`; the only grant whose text contains "admission" is the
+  unrelated `container.py::recover_stranded_chat_admissions`.
+  `scripts/ratchet_provenance.py:478-506` re-read: authorizations load from
+  the base revision ("a new grant does not take effect in the change that
+  introduces it"), so no branch-side edit can authorize the rows, and the
+  issue's staging directive forbids grants/suppressions/callers anyway.
+- Candidate-side gates all rc=0 at this head: `check-reachability.py`
+  (1,393 modules, 170 unreachable, all dispositioned),
+  `check-reachability-dispositions.py` (50 groups: 147 CONNECT / 21 LIBRARY /
+  2 RETIRE), `check-promotion-surface.py`.
+
+Conclusion (round 50): leaf acceptance is fully proven and unchanged; the
+exact-debt-ledger red remains the issue-anticipated two-merge trusted-base
+wall (five issue-mandated `AdmissionAssessment` members plus the
+intentionally-unwired module), unresolvable inside this lane by both the gate
+design and the issue's own staging contract. Handoff: implementation/test
+ready; merge blocker owner-side (land the six grants on the integration base
+as a standalone reviewed merge, or land the parent #1845 integration leaf
+whose real consumer references the members and wires the module); the stack
+stays unmerged per the issue. Tree changes this round: this note only.
