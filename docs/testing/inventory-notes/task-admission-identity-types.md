@@ -3636,3 +3636,58 @@ identities are issue-mandated contract members. The exact-debt-ledger failure
 is the issue-anticipated staging wall; unblocking still requires the owner-side
 grant merge onto the integration base or the parent #1845 integration leaf.
 The stack stays implementation/test-ready and unmerged per the issue.
+
+## Round 49 — trusted base moved to develop tip by the develop merge; wall re-derived and stands (2026-10-10)
+
+Driver job 57712b33 re-dispatched this lane at head `7aff5a047`, which is the
+merge commit of develop tip `1f328be96` into `auto-1851`. This is a real state
+change, not a re-run: the trusted merge base moved from `01cf44a5` (rounds
+45–48) to `1f328be96`, so every base-relative claim was re-derived from
+primary evidence at the new base instead of being carried forward.
+
+- Base census: `git merge-base HEAD origin/develop` = `1f328be96`; develop tip
+  unchanged at `1f328be96`. Grant census at the new base:
+  `git show 1f328be96:quality/ratchet-authorizations.json | grep -c
+  admission_identity` = 0. Consumer census:
+  `git grep -lE 'admission_identity|AdmissionAssessment' origin/develop --
+  packages` = zero matches. No merge path eliminates the findings.
+- Exact-debt-ledger steps re-executed with CI's exact argv at `7aff5a047`:
+  `check-shipped-surface-truth.py` rc=0; `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` rc=1 with
+  `1323 reviewed identities -> 1328 findings`, zero unbanked/stale complaints,
+  and exactly the five `admission_identity.py:515-520` identities named
+  unauthorized-at-base; `check-ratchet-provenance.py` rc=1 via only its two
+  reachability sub-gates (`check-reachability-provenance.py`: 169 -> 170
+  unreachable, `maistro.runs.admission_identity` NEW and not previously
+  authorized; `check-reachability-dispositions-provenance.py` likewise).
+  Candidate-side reachability gates rc=0 (`check-reachability.py`: 170
+  unreachable all dispositioned; `check-reachability-dispositions.py`: 50
+  groups OK).
+- Ledger-amendment no-op re-proven at the new base:
+  `git diff --numstat 1f328be96 HEAD -- quality/` shows only additions
+  (vulture +5, reachability-baseline +1, reachability-dispositions +9), zero
+  deletions; every banked row is an accurate identity of the issue-mandated
+  unwired leaf, and no fix this round eliminated any identity, so no row is
+  pruned. Banking remains unauthorized by design; no grant was or can be added
+  branch-side.
+- Repair-protocol sweep: the five identities are the `AdmissionAssessment`
+  members whose exact member/value list the issue fixes and whose consumer is
+  the future C2 classifier; AST inspection re-confirmed `StrEnum` base, six
+  exact members, no extra members/methods, `__all__` set-equal to the 21
+  mandated names, and all 17 record/result types
+  `@dataclass(frozen=True, slots=True)`. Nothing genuinely dead is removable;
+  the issue forbids consumers, re-exports, suppressions, and grants.
+- Leaf acceptance re-proven firsthand at `7aff5a047`: 79/79 focused tests
+  rc=0; `mypy packages/maistro-core/src/maistro/runs/admission_identity.py`
+  clean; `ruff check` + `ruff format --check` clean on both leaf files and
+  repo-wide; full `check-suite-inventory.py` ok across 17 suites (31,108
+  unique node IDs, +79 front-matter delta unchanged); driver logs
+  (sync/ruff/format/pytest/inventory) all rc=0.
+
+Conclusion (round 49): the develop merge changed the base and the wall
+re-derived identically at it. The two-step rule ("banking is not
+authorizing") leaves the exact-debt-ledger failure standing by design for this
+unwired leaf, exactly as the issue's "Quality staging and mergeability" section
+predicts. Unblocking still requires the owner-side grant merge onto the
+integration base or the parent #1845 integration leaf; the stack stays
+implementation/test-ready and unmerged per the issue.
