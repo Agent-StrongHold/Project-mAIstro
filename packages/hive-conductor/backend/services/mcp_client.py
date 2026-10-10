@@ -6,7 +6,6 @@ import logging
 import os
 import re
 from typing import Any
-from urllib.parse import urlsplit
 
 import httpx
 
@@ -109,6 +108,8 @@ async def test_jira_rest(*, user_id: str | None = None) -> dict[str, Any]:
 
 def _is_local_mcp_url(url: str) -> bool:
     """Recognize loopback authorities, never string prefixes or URL userinfo."""
+    from urllib.parse import urlsplit
+
     if "\\" in url or any(ord(char) <= 32 or ord(char) == 127 for char in url):
         return False
     try:
