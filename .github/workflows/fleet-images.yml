@@ -1,0 +1,72 @@
+name: Fleet Images
+
+# Builds the fleet runtime images (maistro-engine, hive-conductor) on every
+# merge to develop and publishes them to GHCR tagged with the trunk SHA plus a
+# rolling `develop` tag. The box-side deployer (fleet-deploy.sh) can pull these
+# instead of building locally once GHCR auth is configured on the host;
+# until then it keeps building the same commit locally.
+#
+# Why this exists: the Oct 7–10 2026 incidents were caused by fleet containers
+# silently aging past trunk (engine image pre-dated migration 061 and
+# crash-looped at boot; conductor image pre-dated a schema wipe). CI-built,
+# SHA-tagged images make image age visible and rollbacks exact.
+
+on:
+  push:
+    branches: [develop]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: engine
+            dockerfile: Dockerfile
+            image: maistro-engine
+          - name: conductor
+            dockerfile: packages/hive-conductor/Dockerfile
+            image: hive-conductor
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+        run: |
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:sha-${GITHUB_SHA::10}"
+            echo "${IMAGE}:develop"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ${{ matrix.name }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.repositoryUrl }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
