@@ -49,8 +49,9 @@ jobs:
       - name: Compute tags
         id: tags
         env:
-          IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          OWNER_LC: ${{ github.repository_owner }}
         run: |
+          IMAGE="ghcr.io/${OWNER_LC,,}/${{ matrix.image }}"
           {
             echo "tags<<EOF"
             echo "${IMAGE}:sha-${GITHUB_SHA::10}"
