@@ -21206,3 +21206,59 @@ front door and #93/#95 production path are open, and the issue's stop
 condition forbids a Design-Studio-private substitute. The implementable
 invariants hold and are green. Inventory delta **+0** (this record only).
 (Refs #777)
+
+## Round 126 (job dd115582dcb6, 2026-10-10 ~18:2xZ) — repair round at unchanged head `0d5a6c6b4`
+
+Trigger: prior round ended BLOCKED (worker-requested attention); driver gave
+no check-*.log this time — the job directory contains none, so **all
+deterministic checks were re-executed locally** at `0d5a6c6b4` (working tree
+clean).
+
+Sync-conflict path (the driver's only named resolution) probed and ruled out
+again: fresh `git fetch origin` → `origin/develop` = `435dc1937` = merge-base,
+**0 behind / 479 ahead** — nothing to merge, no conflict to resolve.
+
+Dependency re-capture (this job's dispatch-context, 18:02–18:28Z): #777
+open; blockers **#773/#774/#776/#804/#805/#806/#53/#93/#95 all still OPEN**
+(#779/#780/#783/#794/#986/#1823 also open); #775/#39/#458 closed;
+`issues/777/dependencies/blocked_by` → **0 items** (relation lives in the
+issue body); sub_issues 0; PR #1660 draft open, head `460ad5802`,
+mergeable_state `clean`.
+
+Branch production diff vs develop re-measured: **4 files, +30/−5**
+(`design_service.py` ±1, `builders/agent_loop.py` +6/−2, `runs/model.py`
++8/−2, `test_attempt_cancellation_cause_model.py` +15) plus salvage docs and
+inventory notes — unchanged scope, still no #777 feature surface.
+
+Battery at `0d5a6c6b4`, all exit 0: `ruff check .`; `ruff format --check .`
+→ **3282 files already formatted** (round 125's stale-failure finding stays
+resolved); vulture **CI-exact args** `packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` → 1323 reviewed → 1322 findings, **0 unbanked**;
+`check-ratchet-provenance.py` → 0/53 consumers, 0 lifecycle violations;
+`check-shipped-surface-truth.py`; `check-suite-inventory.py` → **17/17**;
+`check-backlog-consistency.py` → 167 items.
+
+Targeted pytest WITH live PG `maistro_test_777` @ alembic **062**
+(127.0.0.1:5433, `postgresql://maistro:…` DSN): branch-touched suites
+`runs/test_attempt_cancellation_cause_model.py` + bootstrap
+`test_agent_loop_turns.py` + `test_agent_loop_run_tests_args.py` → **74
+passed**; `packages/maistro-design/tests` → **572 passed / 1 skipped**; hive
+`-k "design or workspace or agent"` → **559 passed** (3086 deselected).
+
+Negative invariants re-probed at this head: `workspace_agent.py` **149
+lines, 0** reconcil/Goal/delegat hits (roster-only); **no**
+`GoalReconcil*`/`ReconciliationLoop` class anywhere in `packages/*/src`
+(#804/#805/#806 surface absent); `GoalRevisionCatalog` still a **Protocol**
+at `rubric_store.py:71` ("instead of a Goal store") while
+`maistro-design/brief_store.py` persists `goal_id`/`goal_revision` columns
+with no canonical owner; `ladybugdb` still unpublished
+(`working_graph/backend.py` port + embedded reference backend only, #776
+open); `permission_source.py:79` still defers governed tool-use to #804.
+
+**Verdict: BLOCKED** — dependency-blocking (126th consecutive round; not a
+sync conflict, nothing stale left to repair). All 13 acceptance criteria
+remain UNVERIFIED: #804/#805/#806 Goal reconciliation, #774 CreativeBrief
+contract owner, #776 per-Workspace working graph, #53 front door and
+#93/#95 production path are open, and the issue's stop condition forbids a
+Design-Studio-private substitute. The implementable invariants hold and are
+green. Inventory delta **+0** (this record only). (Refs #777)
