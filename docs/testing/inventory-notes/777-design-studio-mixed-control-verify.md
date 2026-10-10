@@ -21025,3 +21025,110 @@ condition forbids a Design-Studio-private substitute. The only
 implementable invariant (no private reconciler/agent/authority in
 Design Studio) continues to hold at the merged head. Inventory delta
 **+0** (this record only). (Refs #777)
+
+---
+
+## Round 124 — job `aca7e905126f47fe90b6b089d4ea5ea4` (2026-10-10)
+
+Head `b3b9a4858` (unchanged from round 123), base `435dc1937`; tree clean.
+The driver again produced **no `check-*.log` files** for this job, so every
+check below was re-executed locally; earlier claims were not trusted.
+
+**Block classification (driver asked: develop sync conflict?):** NO.
+Fresh `git fetch origin` → `origin/develop` = `435dc1937` ==
+`git merge-base HEAD origin/develop`; 0 behind / 477 ahead — nothing to
+merge. The block is the dependency blockade, unchanged.
+
+**Dispatch capture 17:17Z:** #53/#93/#95/#773/#774/#776/#779/#780/#783/
+#794/#804/#805/#806/#986/#1823 OPEN; #39/#458/#775 closed; native
+`dependencies/blocked_by` API empty (relation lives in the issue body).
+PR #1660 open draft, `mergeable_state: clean`, head `460ad5802` (== local
+HEAD~1; local carries only the round-123 docs commit — no push allowed).
+
+**AC probes re-executed at this head (all match round 123):** 0 Python
+`class *Reconciler` matches under `packages/hive-conductor/` — sole regex
+hit is the vendored minified `swagger-ui-bundle.js`. Canonical
+`AttemptLifecycleReconciler` confined to
+`maistro-canvas/canonical_execution.py`, `maistro-core` (`container.py`,
+`runs/{reconciliation,execution}.py`,
+`graph/durable_runs/attempt_executor.py`,
+`graph/nodes/agent_delegate_remote.py`) and
+`maistro-server/chat_completions.py`. `workspace_agent.py` 149 lines,
+roster-only (`resolve_workspace_agent` / `set_workspace_agent_persona`).
+`design_service.py` 376 lines, 0 `reconcil|delegat` matches.
+`ControlMode`/`ArtifactLockConflict` confined to `packages/maistro-design`.
+
+**Regression-mechanism proof for the schema pin, reproduced standalone on
+pydantic 2.13.5** (scratch model, no tree edit): a wrap serializer
+annotated `-> dict[str, Any]` collapses `model_json_schema(mode=
+"serialization")` to zero properties; the unannotated serializer keeps all
+declared fields — exactly the regression the new
+test_the_serialization_mode_schema_keeps_every_declared_field pins.
+**Reader verification for the restored `system_prompt`:**
+`maistro-rsi/local_loop.py:817` reads
+`system_prompt or config.system_prompt` inside
+`make_builders_apply_patch` (def at :755) — a real production reader, so
+the field is not dead and the accompanying vulture row removal
+(`tool_definitions`) is the only ledger delta vs develop.
+
+**Battery all exit 0:** `ruff check .`; `ruff format --check .` (3282
+files); `check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` (1323 reviewed → 1322 findings, 0 unbanked);
+`check-ratchet-provenance.py` (0 violations, 53 consumers);
+`check-shipped-surface-truth.py`; `check-reachability.py` (1394 modules,
+169 unreachable — OK); `check-suite-inventory.py` (17/17);
+`check-backlog-consistency.py` (167); CI-exact `mypy --strict
+packages/maistro-core/src` — 782 files clean. Bootstrap `mypy` (non-CI)
+shows 8 pre-existing `import-untyped`/`no-any-return` errors confined to
+`responses_callable.py`, `model_selector.py`, `schema.py`,
+`credentials.py`, `wizard.py` — files this branch never touches;
+`agent_loop.py` itself is clean.
+
+**Targeted pytest with live PG:** reused `maistro_test_777` on
+maistro-postgres (127.0.0.1:5433, user `maistro`), alembic rev **062
+(head)** confirmed via psql; `MAISTRO_TEST_PG_DSN` plain `postgresql://`
+scheme.
+- `uv run pytest packages/maistro-core/tests/runs -q` → **1506 passed,
+  3 skipped** (matches rounds 119–123 exactly).
+- cancellation-cause model + pg proof suites (`
+  test_attempt_cancellation_cause_model`, `test_pg_store_internals`,
+  `test_pg_root_preparation`, `test_pg_run_insert_connection`,
+  `test_pg_result_repair_lock_order`, `test_m8a7_pg_race_harness`) →
+  **84 passed** (34 + 50).
+- Hive batch 1 (test_design_* ×7 + workspace identity/authority/
+  authority_durable/mode) → **143 passed, 5 skipped**; batch 2 (agent
+  invocation/materialization/model_tools/routes, chat_created_agents,
+  dag_agents, workspaces, production/schedule workspace scope,
+  workspace_scoped_submission, workspace_tokens_sync) → **266 passed**.
+- Bootstrap agent-loop trio (test_agent_loop_turns,
+  test_agent_loop_run_tests_args, test_builders_sandbox) → **77 passed,
+  1 skipped** (broader than round 123's 40-test file set; same files
+  green).
+- `packages/maistro-design/tests` full package → **572 passed, 1
+  skipped**.
+
+**Dependency-absence probes refreshed** (develop moved precursor
+substrates onto the branch via the round-123 sync; blockade unchanged):
+no #804/#805/#806 Goal-reconciliation API exists — the
+`Reconciliation*` classes in `capabilities/invocation.py`,
+`quota/reconciliation.py`, `workspaces/backlog_history/model.py` and
+`graph/durable_runs/recovery.py` are provider-invocation, quota,
+backlog-reference and persistence-repair machinery, not Goal
+reconciliation; `security/sentinel/permission_source.py:79` still defers
+governed tool-use to #804. `projects/rubric_store.py` now declares a
+`GoalRevisionSnapshot`/`GoalRevisionCatalog` **Protocol** and explicitly
+says it is "instead of a Goal store" — #458's Goal store remains
+unlanded. #774 CreativeBrief records still absent (docstring mentions +
+pre-commit interview draft only). #776: `memory/working_graph/`
+registration substrate exists, but the per-Workspace Ladybug adapter is
+absent (`ladybugdb` unpublished).
+
+**Verdict: BLOCKED** — dependency-blocking (124th consecutive round;
+not a sync conflict). All 13 acceptance criteria remain UNVERIFIED:
+#804/#805/#806 Goal reconciliation, #774 CreativeBrief, #776 working
+graph, #53 front door and #93/#95 production path are open, and the
+issue's stop condition forbids a Design-Studio-private substitute. The
+only implementable invariants (no private reconciler/agent/authority in
+Design Studio; the branch's own dead-seam removal + serialization-schema
+pin) continue to hold and are green. Inventory delta **+0** (this record
+only). (Refs #777)
