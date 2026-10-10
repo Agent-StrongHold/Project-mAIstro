@@ -90,3 +90,48 @@ class TestOpaqueOrigin:
         """Only the exact opaque-origin token is refused, not any host that
         happens to contain those letters."""
         assert validate_cors_origins(["https://nullable.example"]) == ["https://nullable.example"]
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://localhost.attacker.example",
+        "http://localhost@attacker.example",
+        "http://localhost:80@attacker.example",
+        "http://localhost:invalid",
+        "http://localhost:65536",
+        "http://localhost:0",
+        "http://localhost\\@attacker.example",
+        "http://localhost\n.attacker.example",
+        "http://user@localhost",
+        "http://localhost/path",
+        "http://localhost?query=1",
+        "http://localhost#fragment",
+        "http://[::1",
+    ],
+)
+def test_non_loopback_or_malformed_http_origin_warns_without_changing_membership(
+    origin: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level("WARNING"):
+        assert validate_cors_origins([origin]) == [origin]
+    assert "not HTTPS" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://localhost",
+        "http://localhost:3000",
+        "http://127.0.0.1",
+        "http://127.0.0.1:3000",
+        "http://[::1]",
+        "http://[::1]:3000",
+    ],
+)
+def test_exact_loopback_http_origin_does_not_warn(
+    origin: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level("WARNING"):
+        assert validate_cors_origins([origin]) == [origin]
+    assert "not HTTPS" not in caplog.text
