@@ -466,7 +466,6 @@
       ],
       "rationale": "Dataclass/typed record fields are constructed and serialized by convention or reflection, not always read directly in package-local code.",
       "findings": [
-        "packages/maistro-bootstrap/src/maistro_bootstrap/builders/agent_loop.py::unused variable 'tool_definitions'",
         "packages/maistro-bootstrap/src/maistro_bootstrap/resolver.py::unused variable 'copier_hint'",
         "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py::unused variable 'CREATE_TABLE_SQL'",
         "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py::unused variable 'reference_images'",
