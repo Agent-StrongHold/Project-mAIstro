@@ -4799,3 +4799,94 @@ head landing the reviewed runtime consumer so the module stops being newly
 unreachable and the assessment members become consumed. Per the issue's own
 staging constraint the stack stays unmerged and this note is not an
 integration approval. Note-only commit; no gate, ledger, or source change.
+
+## Round 66 — CI-repair verification at 2a2d5fe70e8b80df10a83645b9cbed178bf0c456 (2026-10-10)
+
+Dispatched as repair after the round-65 successor job (5bffd036) died on a
+provider timeout following five green driver checks. Nothing assumed from
+prior rounds; every claim below re-proven firsthand at this exact head.
+
+- **Driver checks 5/5 green** from this job's check-0..4 logs: `uv sync
+  --locked --extra dev`; `ruff check .` pass; `ruff format --check .` clean
+  (3275 files); focused pytest 79/79; `check-suite-inventory.py --suite
+  packages/maistro-core/tests` ok (16341 ids = recorded 16262 + this leaf's
+  +79 delta).
+- **Focused battery re-run firsthand:** pytest 79/79; leaf ruff check +
+  format clean; leaf mypy — Success; full inventory 17 suites / 31208 ids ok;
+  full-tree `ruff check .` + `ruff format --check .` green. All 12
+  issue-named tests present, one definition each.
+- **Independent runtime probe green by execution:** 21-name `__all__`
+  set-exact; AdmissionAssessment exactly the six issue-pinned member/value
+  pairs; every module dataclass frozen+slots; CanonicalJsonObject
+  normalization (`{"a":" x ","b":1}` ordering, no-space separators) with
+  rejections for non-string input, multi-object text, non-object roots,
+  duplicate keys, NaN and 1e999, no parsed-object accessor or dict field;
+  fencing tested across all four ticket variants (same owner/different
+  generation, same generation/different owner, different scope, matching
+  triple — including equal role values); Claimed/Replayed/Pending/
+  LegacyUnresolved constructors enforce their combinations; empty variants
+  default-truthy with no `__bool__`; `created=1` rejected; frozen mutation
+  raises FrozenInstanceError; run_id/snapshot mismatch rejected; ack-requires-
+  binding and unchanged deadline; binding-receipt/envelope mismatch rejected;
+  legacy record accepts an unclamped 10**12 lease with no invented identity;
+  owner_token field omitted from repr while generation text stays printable.
+  (Two probe-side bugs during authoring — a ticket built against the wrong
+  envelope generation, and `expires_at_us` read off the record instead of the
+  envelope — were probe errors, not module defects; both corrected.)
+- **Scope isolation re-proven:** net diff vs 435dc1937 is exactly the 7 leaf
+  surfaces; zero production importers of `admission_identity`; no
+  `maistro.runs.__init__` export; `runs/store.py`, `runs/store_boundary.py`,
+  `runs/model.py`, `tasks/idempotency.py` byte-identical to base;
+  `require_admitted_actor` at store_boundary.py:56 with actor guards applied
+  at store.py:921/1323 (accepted #1841 anchors).
+- **Both merge-queue failures re-reproduced with CI's exact argv**
+  (RATCHET_BASE_REV=origin/develop; PR #1936 targets develop at
+  435dc1937 = merge-base):
+  - exact-debt-ledger job steps in CI order (vulture-ratchet.yml:86-93):
+    `check-ratchet-provenance.py` rc=1 — all ratchets OK (shell-execution
+    3→3, contract-markers 358→358, enumerations 1→1, lifecycle 0→0) except
+    the two reachability sub-gates; `check-shipped-surface-truth.py` rc=0;
+    `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+    '*/third_party/*'` rc=1 — 1328 findings, unclassified 0, failing solely
+    on the five issue-mandated `AdmissionAssessment` identities at
+    admission_identity.py:515-520 (classified pydantic-declarative-field).
+  - Sub-gates run individually: `check-reachability-provenance.py` rc=1 and
+    `check-reachability-dispositions-provenance.py` rc=1, each naming only
+    `maistro.runs.admission_identity` (NEW unreachable module / NEW
+    disposition absent from the trusted base).
+  - Quality gate root cause pinned: its failing step is the vulture step at
+    quality.yml:1078 (same argv as above); quality.yml does not invoke the
+    provenance script, and its own `check-reachability.py` (line 1089) and
+    `check-reachability-dispositions.py` (line 1384) steps are
+    candidate-green.
+- **Lane-brief repair actions re-walked and shown to be no-ops:** the
+  candidate ledger holds 1328 rows = base 1323 + exactly the five banked
+  identities (per-rule delta pydantic-declarative-field 392→397; removed vs
+  base: 0), so there is nothing to amend and nothing genuinely dead to
+  delete — the members are contract surface the issue fixes verbatim for the
+  not-yet-wired C2 assessor. Banking is not authorizing.
+- **Two-merge wall re-verified in code:** `load_authorizations`
+  (scripts/ratchet_provenance.py:478) reads
+  `quality/ratchet-authorizations.json` from the base revision; the base file
+  contains zero occurrences of `admission_identity`/`admission_generation`
+  across all 11 ratchet keys. No edit on this branch — including the grant
+  file this lane may not touch — can turn either gate green, and the issue
+  independently forbids every candidate fix while predicting both failures
+  verbatim.
+- **Candidate-side gates green:** `check-reachability.py` rc=0 (170/1395
+  unreachable, all dispositioned), `check-reachability-dispositions.py`
+  rc=0 (50 groups over 170), `check-promotion-surface.py` rc=0,
+  `check-shipped-surface-truth.py` rc=0.
+- **No develop advance:** origin/develop re-fetched, still 435dc1937; no
+  sync conflict exists to resolve. PR #1936 remains open WIP targeting
+  develop @ 435dc1937.
+
+Round-66 verdict: writer handoff (unchanged). All leaf acceptance criteria are
+proven firsthand at this head; no in-scope repair exists. The only path to
+green required-checks is external to this branch and to this lane: an
+owner-landed reviewed grant on develop per the repo's documented two-merge
+rule, or the #1845 integration head landing the reviewed runtime consumer so
+the module stops being newly unreachable and the assessment members become
+consumed. Per the issue's own staging constraint the stack stays unmerged and
+this note is not an integration approval. Note-only commit; no gate, ledger,
+or source change.
