@@ -126,3 +126,27 @@ def test_download_example_requires_review_before_execution() -> None:
     review = help_text.index("Review the downloaded script", inspect)
     execute = help_text.index("\n  .\\get.ps1", review)
     assert download < inspect < review < execute
+
+
+def test_download_example_requires_approved_execution_policy() -> None:
+    """Static documentation contract; this does not execute PowerShell."""
+    help_text = GET_PS1.read_text(encoding="utf-8").split("#>", 1)[0]
+    example = help_text.split(".EXAMPLE", 1)[1].split(".EXAMPLE", 1)[0]
+    check = example.index("Get-ExecutionPolicy -List")
+    stop = example.index("If execution is disallowed, stop", check)
+    approval = example.index("administrator-approved setup instructions", stop)
+    download = example.index("Invoke-WebRequest", approval)
+    assert check < stop < approval < download
+    assert "Restricted" in help_text
+    assert "Group\n  Policy takes precedence" in help_text
+    assert "signing requirements" in help_text
+    assert "not a zero-setup guarantee" in help_text
+    for forbidden in (
+        "set-executionpolicy",
+        " -executionpolicy",
+        "bypass",
+        "-encodedcommand",
+        "| iex",
+        "invoke-expression",
+    ):
+        assert forbidden not in help_text.lower()
