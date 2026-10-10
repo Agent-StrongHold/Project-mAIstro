@@ -20340,3 +20340,58 @@ failure stale; battery and targeted suites green at the unchanged head.
 No implementable #777 work exists while #804/#805/#806 (primary
 producers) and #53/#774/#776/#93/#95 stay open. Inventory delta **+0**
 (this record only). (Refs #777)
+
+## Round 297 — re-validation at unchanged head 4e3093062 (job a8dcfe8cc, 2026-10-10T09:5xZ)
+
+Branch `auto-777` HEAD re-verified == `4e30930625aca58029d6af864fd531406b2a64e9`
+(the lane-expected starting head; round 296's commit), `origin/develop`
+re-fetched still `1f328be96` == merge base (0 behind, no sync conflict),
+branch 464 ahead, working tree clean. PR #1660 head `31a0e5bfa` re-verified
+ancestor of branch HEAD (`git merge-base --is-ancestor`).
+
+**Job checks:** this job directory contains **no `check-*.log` files**
+(`manifest.checks == []`). The only carried failure ref remains job
+`53d5e08bf` `check-2.log` (`Would reformat:
+packages/maistro-bootstrap/src/maistro_bootstrap/builders/agent_loop.py`,
+1 of 2863). Re-executed at HEAD: file-scoped → `1 file already formatted`,
+exit 0; full tree → `3275 files already formatted`, exit 0. Does not
+reproduce.
+
+**Dependency state (this job's own fresh capture, dispatch-context.json,
+captured 2026-10-10T09:38–09:41Z):** issue #777 `state=open`; blocking deps
+#53/#93/#95/#774/#776/#804/#805/#806 all `state=open`; non-blocking
+#39/#458/#775 all `closed`; PR #1660 `state=open draft=true`,
+`mergeable_state=clean`.
+
+**AC probes at HEAD `4e3093062` (re-executed):** narrow reconciler probe
+(`WorkspaceAgentReconciler|GoalReconciler|goal_reconcil|reconcile_goal`
+over `packages/*/src`) → **0 files**; `design_service.py` → **0**
+goal/reconciler mentions; `workspace_agent.py` → **149 lines**, 0
+goal/reconcile mentions (roster-identity only); repo-wide `mixed.control`
+probe over `packages/*/src` + `hive-conductor/backend` → **1 source file**,
+both matches docstring forward-references in
+`packages/maistro-design/src/maistro_design/versions.py` lines 22 and 1048
+naming #777 as future owner — zero executable mixed-control code or E2E.
+Branch delta vs develop under `packages/` remains the 4 audited non-doc
+files (agent_loop.py, runs/model.py + pinning test, design_service.py).
+
+**Battery at HEAD `4e3093062` (all exit 0, re-executed):** `ruff check .`
+(All checks passed); `ruff format --check .` (3275 files);
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` → 1323 reviewed → 1322 findings, 0 unbanked;
+`check-ratchet-provenance.py` (0 violations, 53 consumers);
+`check-shipped-surface-truth.py` (matrix complete);
+`check-suite-inventory.py` (17 suites match);
+`check-backlog-consistency.py` (167 items).
+
+**Targeted pytest (re-executed):** maistro-core `tests/runs tests/config`
+→ **1384 passed, 280 skipped**; hive-conductor `backend/tests -k "design
+or workspace or brief"` → **387 passed, 5 skipped**; maistro-bootstrap
+full `tests/` → **233 passed, 7 skipped** (matches rounds 292–296).
+
+**Verdict: BLOCKED** — dependency-blocking (114th consecutive round).
+All eight blocking dependencies open in this job's own capture; carried
+failure stale; battery and targeted suites green at the unchanged head.
+No implementable #777 work exists while #804/#805/#806 (primary
+producers) and #53/#774/#776/#93/#95 stay open. Inventory delta **+0**
+(this record only). (Refs #777)
