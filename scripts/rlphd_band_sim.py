@@ -169,7 +169,8 @@ def classify(
 
 
 def main() -> None:
-    rng = random.Random(7)
+    # Fixed seed makes this synthetic design simulation reproducible; no secrets are generated.
+    rng = random.Random(7)  # DevSkim: ignore DS148264 until 2027-12-31
     test = [sample_promotion(rng) for _ in range(600)]
     truth = [1 if sigmoid(dot(TRUE_BETA, x)) >= THETA else 0 for x in test]
 

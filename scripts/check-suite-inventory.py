@@ -548,7 +548,10 @@ def default_note_slug() -> str | None:
     if proc.returncode != 0 or not branch or branch == "HEAD":
         return None
     readable = re.sub(r"[^a-z0-9]+", "-", branch.lower()).strip("-")
-    digest = hashlib.sha1(branch.encode()).hexdigest()[:4]
+    # Four hex digits only disambiguate readable note filenames; not an integrity/security hash.
+    digest = hashlib.sha1(  # DevSkim: ignore DS126858 until 2027-12-31
+        branch.encode()
+    ).hexdigest()[:4]
     return f"{readable}-{digest}" if readable else digest
 
 
