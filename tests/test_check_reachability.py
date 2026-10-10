@@ -29,6 +29,42 @@ def check():
     return module
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _walk_once_per_distinct_arguments(check):
+    """Compute the module graph once per distinct argument set, not once per call.
+
+    Every public entry point re-walks the repository: ``unreachable_modules()``
+    and ``main()`` each call ``_reachability`` from scratch. Under the coverage
+    producer's tracing a walk costs ~9s, so a test that asks twice — the two
+    ratchet-direction tests call ``unreachable_modules()`` and then ``main()`` —
+    spent ~18s and exceeded the workflow's 30s per-test ceiling on slower
+    runners (quality.yml run 37879373619: both timed out and failed the
+    Coverage gate for every open PR that hour, including auto-978 and
+    auto-1852, whose diffs touch none of this).
+
+    The graph is a pure function of the tree, and this file deliberately keeps
+    the tree static — baseline changes are simulated by monkeypatching
+    ``BASELINE``, never by writing into ``packages/`` — so identical arguments
+    have identical results within a session. Memoizing them keeps every
+    assertion reading the real walk; it only stops paying for the same walk
+    repeatedly. Returns are copied because callers receive mutable dict/set
+    and must not alias one test's view into another's.
+    """
+    real = check._reachability
+    memo: dict[tuple, tuple[dict[str, Path], set[str]]] = {}
+
+    def _memoized(*args: object, **kwargs: object):
+        key = (args, tuple(sorted(kwargs.items())))
+        if key not in memo:
+            memo[key] = real(*args, **kwargs)  # type: ignore[arg-type]
+        mods, seen = memo[key]
+        return dict(mods), set(seen)
+
+    check._reachability = _memoized
+    yield
+    check._reachability = real
+
+
 def test_baseline_matches_the_tree(check):
     """The committed baseline is the current truth — otherwise the first CI run
     after any merge fails for reasons unrelated to that merge."""
