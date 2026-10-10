@@ -47,6 +47,7 @@ def _has_http_origin_authority(parsed: SplitResult) -> bool:
         parsed.scheme == "http"
         and parsed.username is None
         and parsed.password is None
+        and not parsed.netloc.endswith(":")
         and not any((parsed.path, parsed.query, parsed.fragment))
         and (port is None or port > 0)
     )
@@ -54,7 +55,9 @@ def _has_http_origin_authority(parsed: SplitResult) -> bool:
 
 def _is_http_loopback_origin(origin: str) -> bool:
     """Classify the local HTTP warning exception without trusting URL prefixes."""
-    if "\\" in origin or any(ord(char) <= 32 or ord(char) == 127 for char in origin):
+    if any(char in origin for char in "\\?#") or any(
+        ord(char) <= 32 or ord(char) == 127 for char in origin
+    ):
         return False
     try:
         parsed = urlsplit(origin)

@@ -135,3 +135,14 @@ def test_exact_loopback_http_origin_does_not_warn(
     with caplog.at_level("WARNING"):
         assert validate_cors_origins([origin]) == [origin]
     assert "not HTTPS" not in caplog.text
+
+
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "[::1]"])
+@pytest.mark.parametrize("delimiter", ["?", "#", ":"])
+def test_empty_origin_delimiters_warn_without_changing_membership(
+    host: str, delimiter: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    origin = f"http://{host}{delimiter}"
+    with caplog.at_level("WARNING"):
+        assert validate_cors_origins([origin]) == [origin]
+    assert "not HTTPS" in caplog.text
