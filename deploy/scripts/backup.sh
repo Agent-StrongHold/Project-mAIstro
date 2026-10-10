@@ -14,6 +14,12 @@
 # Cron example (daily 03:15):  15 3 * * * /opt/maistro/deploy/scripts/backup.sh
 set -euo pipefail
 
+# Database dumps and stored files may contain credentials and personal data.
+# This only affects files created by this process; never widen or recursively
+# rewrite permissions on an operator's existing backup tree.
+umask 077
+fail() { echo "[backup] FAIL: $*" >&2; exit 1; }
+
 # ── Deployment-specific configuration ────────────────────────────────────────
 BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/maistro}"          # TODO: set to your backup mount
 COMPOSE_FILE="${COMPOSE_FILE:-deploy/docker-compose.prod.yml}"
@@ -30,7 +36,12 @@ REMOTE_TARGET="${REMOTE_TARGET:-}"
 
 STAMP="$(date -u +%Y-%m-%d)"
 DEST="${BACKUP_ROOT}/${STAMP}"
-mkdir -p "${DEST}"
+[[ ! -L "${DEST}" ]] || fail "backup destination must not be a symlink"
+mkdir -p -m 700 -- "${DEST}"
+[[ -d "${DEST}" && -O "${DEST}" ]] || fail "backup destination must be owned by this user"
+DEST_MODE="$(stat -c '%a' -- "${DEST}")"
+(( (8#${DEST_MODE} & 077) == 0 )) \
+  || fail "backup destination must have owner-only permissions"
 
 compose() { docker compose -f "${COMPOSE_FILE}" "$@"; }
 
