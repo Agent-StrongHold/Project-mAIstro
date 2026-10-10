@@ -45,11 +45,11 @@
     },
     {
       "image": "golang",
-      "tag": "1.25.13-alpine",
-      "digest": "sha256:1e0126852075c9c60731c8ba49088448b91f63e2aed97ca9d1a9791622a05946",
-      "recorded": "2026-09-30",
-      "recorded_in": "#349",
-      "note": "Builds the age static binaries; the tag resolves to b8564ad per the Dockerfile's own verification.",
+      "tag": "1.26.9-alpine",
+      "digest": "sha256:cdfd4fe2da6b225d8b40c6b7a105736e548e83ff56d5d8f9394446eeb5eb84e0",
+      "recorded": "2026-10-10",
+      "recorded_in": "#1774",
+      "note": "Supported Go 1.26.9 security toolchain builds age v1.3.1 (source commit b8564ad), retaining the pinned x/crypto dependency.",
       "used_by": ["packages/hive-conductor/Dockerfile"]
     },
     {
