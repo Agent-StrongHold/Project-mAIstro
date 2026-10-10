@@ -4481,3 +4481,80 @@ at `f0d26d56`; merge blocked solely by the external authorization wall
 (owner grant landed on develop, or the #1845 parent integration supplying
 the real reviewed runtime consumer, which must pass the unchanged full gates
 at its own exact head). Note-only commit; no gate, ledger, or source change.
+
+## Round 62 (job 60ac1fa4, head d4f2479cc56d, base 435dc1937e04)
+
+Round-61's successor job (dd462324) died of a provider timeout AFTER its five
+driver checks had all returned rc=0 — no report was produced. This round
+re-executed the full battery firsthand at the same head; nothing below is
+inherited from a prior round's claims.
+
+- Driver checks (job 60ac1fa4 check-0..4.log): `uv sync --locked --extra dev`
+  ok; `uv run ruff check .` pass; `uv run ruff format --check .` 3275 files
+  already formatted; focused pytest 79/79; targeted suite inventory ok
+  (packages/maistro-core/tests 16341 = develop 16262 + 79).
+- Representation re-proven by import at this head: `__all__` 21 names
+  set-exact; frozen+slots on all 18 dataclasses; envelope 14-field order
+  exact; `owner_token` repr=False on both AdmissionTicket and
+  AdmissionRecordV2; AdmissionAssessment StrEnum exactly the six issue
+  members; ClaimResult/ReleaseResult/CompletionResult unions exact; empty
+  variants carry no fields and define no `__bool__`; format_version
+  init=False defaults 2/1. Functional smoke: canonicalization normalizes and
+  rejects (non-object root, duplicate keys, NaN/Infinity, overflow-to-inf,
+  non-string); fencing conjunction exact (same-gen/diff-owner rejected,
+  equal role values both succeed, generation still printable in repr while
+  owner_token omitted); Claimed/Replayed/Pending/LegacyUnresolved variant
+  preconditions enforced; FrozenInstanceError on mutation; `created` rejects
+  1/0/"true"; string and nil UUIDs rejected; legacy lease may exceed expiry.
+- All 12 issue-named tests present (one definition each); 79/79 pass.
+- Scope isolation re-proven: `grep admission_identity packages/*/src` hits
+  only the module; `maistro/runs/__init__.py` has no export; diff vs base is
+  exactly the 7 leaf surfaces; store.py/store_boundary.py/model.py/
+  idempotency.py byte-identical to base. #1841 anchors verified at this
+  head: `require_admitted_actor(actor_principal_id: str | None) -> str`
+  (store_boundary.py:56), `get_run(..., principal_id: str | None = None)`
+  (store.py:537 protocol, 1249 impl), `actor_principal_id: str | None =
+  None` retained in create_run/claim_run_by_effect with the admitted-actor
+  guard applied (store.py:921, 1323), `Run.actor_principal_id` validation
+  intact (model.py:300, 320-321).
+- Focused commands green: ruff check + format --check on the two leaf files;
+  `mypy packages/maistro-core/src/maistro/runs/admission_identity.py` clean.
+- Both merge-queue failures re-reproduced with CI's exact argv at
+  RATCHET_BASE_REV=435dc1937: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → rc=1, solely the five
+  banked AdmissionAssessment identities (MISMATCH/REPLAYED/TAKEOVER/
+  REPLACE_EXPIRED/LEGACY_UNRESOLVED; PENDING masked by an unrelated token),
+  closing with "New Vulture debt is not authorized by the trusted base.
+  Running --update in this branch cannot authorize it; land a reviewed grant
+  first." `check-ratchet-provenance.py` → rc=1, FAIL solely via
+  check-reachability-dispositions-provenance.py and
+  check-reachability-provenance.py (both also run directly, each naming only
+  `maistro.runs.admission_identity` as NEW/not-previously-authorized).
+  Candidate vulture ledger re-walked: 1328 rows = base 1323 + exactly the
+  five flagged identities (scan-exact), so the CI-repair ledger amendment is
+  already in place and cannot change the verdict; base AND candidate grant
+  files contain zero admission_identity rows across all 11 ratchet keys.
+- Quality-gate (Pillars 1–4, 7, 8) candidate-side steps green firsthand:
+  check-reachability.py rc=0 (170 unreachable of 1395),
+  check-reachability-dispositions.py rc=0 (50 groups cover all 170),
+  check-promotion-surface.py rc=0, check-shipped-surface-truth.py rc=0,
+  check-convergence-matrix.py rc=0 (52 subsystems, 170 attributed),
+  check-contract-markers.py rc=0, check-backlog-consistency.py rc=0. Pillar-4
+  `mypy --strict packages/maistro-core/src` reports 5 errors, all
+  import-not-found for `maistro_bootstrap` (optional extra absent from the
+  local --extra-dev env; CI installs --all-extras), confined to
+  cli/_builders_tui.py and cli/_install.py — both byte-identical to base and
+  untouched by this leaf; the leaf module itself is mypy-clean. Full
+  `check-suite-inventory.py`: rc=0, 17 suites / 31208 unique ids match the
+  recorded baseline. `origin/develop` re-fetched: still 435dc1937 (no
+  develop advance; the two-merge wall's base is unchanged).
+
+Round-62 verdict: unchanged and re-proven firsthand — every leaf acceptance
+criterion is satisfied at d4f2479cc56d; both merge-queue failures are the
+same external authorization wall (vulture +5 and reachability +1/+9 rows are
+banked scan-exactly on the candidate but must be authorized by a grant
+landed on develop first, per load_authorizations' deliberate two-merge
+design at scripts/ratchet_provenance.py:478-509). No in-scope repair exists:
+removing the five enum identities would violate the issue's fixed
+representation, and grants/dummy callers/waivers are explicitly forbidden.
+Note-only commit; no gate, ledger, or source change.
