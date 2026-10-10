@@ -28,7 +28,7 @@ import ssl
 from typing import Any, Literal
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from models.schemas import CapabilitySetting, SettingsModel
 from pydantic import BaseModel, ConfigDict, ValidationError
 from services import settings_store
@@ -207,21 +207,26 @@ _SETTINGS_AUDIT_ACTIONS = frozenset({"settings_update", "settings_patch", "setti
 
 
 @router.get("/audit")
-async def settings_audit(limit: int = 100) -> list[dict[str, Any]]:
+async def settings_audit(request: Request, limit: int = 100) -> list[dict[str, Any]]:
     """The settings-change trail, read from the durable audit log (#389).
 
     Read through the shared `audit_entries_view` — the same core-store-first
-    read `GET /v1/audit` serves, never a second log. Returned newest-first,
+    paginated read `GET /v1/audit` serves, never a second log. Returned newest-first,
     capped at `limit` (bounded 1..1000). Empty means no settings write has
     been recorded yet — an empty-valid answer, distinct from a failure (which
     raises) or an authorization refusal (handled by the `/v1/settings` auth
     scope in middleware/auth.py).
     """
     limit = max(1, min(limit, 1000))
-    entries = [
-        e for e in await audit_entries_view() if e.get("action", "") in _SETTINGS_AUDIT_ACTIONS
-    ]
-    entries.sort(key=lambda e: e.get("created_at", ""), reverse=True)
+    entries = []
+    for action in sorted(_SETTINGS_AUDIT_ACTIONS):
+        count = 0
+        async for entry in audit_entries_view(request, action=action):
+            entries.append(entry)
+            count += 1
+            if count >= limit:
+                break
+    entries.sort(key=lambda e: (e.get("created_at", ""), e["id"]), reverse=True)
     return entries[:limit]
 
 
