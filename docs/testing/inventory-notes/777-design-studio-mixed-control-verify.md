@@ -21740,3 +21740,43 @@ dependency-driven. Independently re-derived at HEAD `fe7859fd4`:
 
 **Verdict: BLOCKED** — dependency-blocking (135th round); nothing repairable
 in-tree. Inventory delta **+0** (this record only). (Refs #777)
+
+## Round 136 — job 7c889f99 (repair round at unchanged head 11cc773cd)
+
+Driver supplied `checks: []` and no `check-*.log` exists in the job directory:
+**no deterministic check ran or failed in this job**; round-135's BLOCKED was
+dependency-driven, so there is nothing to repair from driver evidence. The
+historical "Validation failed" (job 53d5e08b `check-2.log`) was
+`ruff format --check` rejecting `agent_loop.py` at the older head `a99c6bd7`;
+commit `b154ad0f9` (system_prompt restore + format) already fixed it —
+re-executed here: `ruff format --check .` → 3282 files already formatted,
+exit 0.
+
+- **Sync conflict ruled out** (fresh fetch): `origin/develop` `435dc1937` ==
+  merge-base == manifest base; branch 0 behind / 489 ahead; PR #1660 head
+  `460ad5802` is an ancestor of HEAD.
+- **Dispatch snapshot** (23:43Z, 61 sources): #777 open, 13/13 acceptance
+  boxes unchecked, `blocked_by` API empty; blockers #804/#805/#806/#53/#774/
+  #776/#93/#95/#783 all OPEN (#775/#39/#458 closed); PR #1660 open draft,
+  mergeable, 0 reviews.
+- **Battery re-executed at HEAD, all exit 0**: ruff check; ruff format (3282
+  files); vulture CI-exact `packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` 1323→1322, 0 unbanked; ratchet provenance 0/53;
+  shipped-surface; reachability 169/1394; suite-inventory; backlog; radon;
+  `mypy --strict packages/maistro-core/src/maistro/runs/model.py` Success.
+- **Targeted pytest with live PG** (`maistro_test_777` @ 127.0.0.1:5433,
+  pgvector:pg18): cancellation-cause model 34 passed; bootstrap `-k agent_loop`
+  40 passed; hive `-k 'design or workspace or agent'` 554 passed / 5 skipped.
+- **Regression test has teeth** (proven outside the tree): annotating a wrap
+  serializer `-> dict[str, Any]` collapses `model_json_schema(mode=
+  "serialization")` to `{type, additionalProperties}` with no `properties`
+  key — `test_the_serialization_mode_schema_keeps_every_declared_field`
+  cannot pass against the regression it names.
+- **Negative invariants re-probed**: 0 `class GoalReconcil*|ReconciliationLoop`
+  in `packages/*/src` + hive backend; `workspace_agent.py` 149 lines, 0
+  reconcil/delegat hits; `permission_source.py:79` (security/sentinel) defers
+  binding-scoped tool authorization to #804; `GoalRevisionCatalog` still a
+  `Protocol` (projects/rubric_store.py).
+
+**Verdict: BLOCKED** — dependency-blocking (136th round); nothing repairable
+in-tree. Inventory delta **+0** (this record only). (Refs #777)
