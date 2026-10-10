@@ -4404,3 +4404,80 @@ Round-60 verdict: unchanged — all leaf acceptance criteria proven at
 (owner grant on develop, or the #1845 parent integration supplying the real
 runtime consumer, which must pass the unchanged gates at its own head).
 Note-only commit; no gate, ledger, or source change.
+
+## Round 61 — independent re-verification at `f0d26d56` (2026-10-10)
+
+Prior job `515da49d` was again a provider timeout after five green driver
+checks (uv sync, repo ruff, repo format, focused pytest, suite inventory —
+all rc=0). Every claim below was re-proven firsthand at this head; nothing
+was taken from earlier round notes.
+
+- Driver checks re-confirmed green: `uv sync --locked --extra dev` ok;
+  `uv run ruff check .` ok; `uv run ruff format --check .` (3275 files) ok;
+  `uv run pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q`
+  → 79 passed; `check-suite-inventory.py --suite packages/maistro-core/tests`
+  ok.
+- Focused leaf battery re-run firsthand: pytest 79/79; ruff check + format on
+  both leaf files rc=0; `mypy packages/maistro-core/src/maistro/runs/admission_identity.py`
+  → "Success: no issues found in 1 source file". Full
+  `check-suite-inventory.py` → 17 suites, 31208 unique ids, duplicate
+  evidence 0, rc=0 (absolute moved 31141 → 31208 solely via the develop
+  merge at this head, `435dc1937` bringing #2021's suites; recorded
+  inventory matches; the leaf delta remains the noted `+79`).
+- No develop sync conflict: fetched origin/develop → `435dc1937…`, byte-equal
+  to this branch's merge base; tree clean at `f0d26d56`.
+- Representation re-probed by import: `__all__` set-equal to the issue's
+  exact 21 names (none missing/extra; module orders them alphabetically —
+  `__all__` order has no Python semantics and the export-set contract test
+  pins the set); all 7 records `frozen=True, slots=True`; envelope field
+  order exact per issue; `format_version` `init=False` default 2;
+  `owner_token` `repr=False` on both `AdmissionTicket` and
+  `AdmissionRecordV2`; `ClaimResult`/`ReleaseResult`/`CompletionResult`
+  unions exact; `Released` empty; `AdmissionAssessment` StrEnum with the six
+  exact member/value pairs; `admitted` property on both record types;
+  `owns(self, ticket) -> bool`; `CanonicalJsonObject` single `text` field.
+  All 12 issue-named tests present (19 test functions, 79 cases with
+  parameterization).
+- Scope isolation re-proven: grep of `packages/*/src` for
+  `admission_identity` → only the module itself; `maistro/runs/__init__.py`
+  unchanged with no export; branch diff vs base touches exactly the 7 leaf
+  files; `runs/store.py`, `runs/store_boundary.py`, `runs/model.py`,
+  `tasks/idempotency.py` byte-identical to base. #1841 anchors re-verified
+  at this head: `require_admitted_actor(actor_principal_id: str | None)`
+  (store_boundary.py:56), `get_run(..., principal_id: str | None = None)`
+  (store.py:537), `actor_principal_id` retained in create/claim signatures,
+  `Run.actor_principal_id` validation intact (model.py:300-321).
+- Ledger integrity: branch adds exactly vulture +5, reachability-baseline +1,
+  dispositions +9 rows and zero grants (`ratchet-authorizations.json` diff
+  empty). The candidate vulture ledger banks exactly the five flagged
+  identities (`LEGACY_UNRESOLVED`/`MISMATCH`/`REPLACE_EXPIRED`/`REPLAYED`/
+  `TAKEOVER` under `pydantic-declarative-field`), so it is scan-exact at
+  1328 = 1323 + 5 and the lane-brief "amend quality/vulture-baseline.json"
+  remains a proven no-op.
+- Both merge-queue failures re-reproduced with CI's exact argv and bare exit
+  codes: `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → rc=1, "New Vulture debt is not authorized by
+  the trusted base. … land a reviewed grant first" (solely the five banked
+  identities); `check-ratchet-provenance.py` → rc=1, FAIL solely via
+  `check-reachability-dispositions-provenance.py` and
+  `check-reachability-provenance.py`, each naming
+  `maistro.runs.admission_identity` as NEW/uncovered. All candidate-side
+  gates rc=0 firsthand: `check-shipped-surface-truth.py`,
+  `check-reachability.py` (170 unreachable of 1395),
+  `check-reachability-dispositions.py` (50 groups cover all 170),
+  `check-promotion-surface.py`, `check-convergence-matrix.py`,
+  `check-wiring-reads.py`.
+- The wall is structural at the exact current base: `load_authorizations`
+  (scripts/ratchet_provenance.py:478-509) resolves grants from the base
+  revision — its docstring states the two-merge consequence ("a new grant
+  does not take effect in the change that introduces it"). The base
+  `435dc1937` grant file walked across all 11 ratchet keys (359 grants):
+  zero grants name `maistro.runs.admission_identity`; the only 'admission'
+  substring hits are reasons on unrelated container/a2a/quota/radon
+  identities.
+
+Round-61 verdict: unchanged — all leaf acceptance criteria proven firsthand
+at `f0d26d56`; merge blocked solely by the external authorization wall
+(owner grant landed on develop, or the #1845 parent integration supplying
+the real reviewed runtime consumer, which must pass the unchanged full gates
+at its own exact head). Note-only commit; no gate, ledger, or source change.
