@@ -38,7 +38,6 @@ history:
 
 # ADR-092926-7a01: Closed-loop design process
 
-**Status:** Proposed
 
 *Merge-blocking status:* this ADR is the M7-A1 contract (#790, parent #789). It blocks every
 M7 implementation lane (A2–A7): no Rubric persistence, eval wiring, pack, fence, or Design

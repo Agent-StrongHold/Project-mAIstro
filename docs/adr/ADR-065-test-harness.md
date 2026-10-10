@@ -53,7 +53,6 @@ history:
 
 # ADR-065: Test harness with full wiring factory
 
-**Status:** Accepted
 **Date:** 2026-05-20
 **Impacts:** IMP-033
 

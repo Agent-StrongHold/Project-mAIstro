@@ -53,7 +53,6 @@ owners:
 
 # SPEC-081426-1f7c: ExecutionRuntime Contract
 
-- **Status:** AC Defined
 - **Date:** 2026-08-14
 - **ADR:** `ADR-081426-1f7c`
 

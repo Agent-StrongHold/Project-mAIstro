@@ -57,7 +57,6 @@ owners:
 
 # SPEC-081226-a66b: Run, NodeRun and Attempt Lifecycle
 
-- **Status:** AC Defined
 - **Date:** 2026-08-14 revision
 - **ADR:** `ADR-081226-a66b`
 

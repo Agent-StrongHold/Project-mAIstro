@@ -33,7 +33,6 @@ history:
 
 # ADR-090: Builders Pipeline
 
-**Status:** Accepted
 **Date:** 2026-05-30
 
 ---

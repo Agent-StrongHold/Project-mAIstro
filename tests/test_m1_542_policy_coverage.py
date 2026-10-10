@@ -177,7 +177,11 @@ def test_adr_status_language_adapter_covers_introduction_expansion_and_oracle(
 
     def checker_for(*, candidate: set[str]) -> SimpleNamespace:
         problem = SimpleNamespace(identity=identity)
+        (tmp_path / "adr-status.json").write_text(
+            json.dumps({"metric_definition_version": "2", "known": sorted(candidate)})
+        )
         return SimpleNamespace(
+            METRIC_DEFINITION_VERSION="2",
             DOC_ROOTS=[tmp_path],
             audit=lambda: [problem],
             _load_baseline=lambda: frozenset(candidate),
@@ -197,7 +201,7 @@ def test_adr_status_language_adapter_covers_introduction_expansion_and_oracle(
 
     # Steady state: expansion beyond the trusted base without a landed grant fails.
     checker = checker_for(candidate={identity})
-    present = _Baseline(text=json.dumps({"known": []}))
+    present = _Baseline(text=json.dumps({"metric_definition_version": "2", "known": []}))
     _wire_adapter(module, monkeypatch, checker, _provenance(None, baseline=present))
     assert module.main() == 1
 

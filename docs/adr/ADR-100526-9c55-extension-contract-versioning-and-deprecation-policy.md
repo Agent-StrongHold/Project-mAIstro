@@ -43,7 +43,6 @@ owners:
 
 # ADR-100526-9c55: Extension contract versioning, feature negotiation, and deprecation policy are host-enforced metadata contracts
 
-**Status:** Implemented
 
 ## Context
 

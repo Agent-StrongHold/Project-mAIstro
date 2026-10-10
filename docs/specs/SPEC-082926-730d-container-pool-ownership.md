@@ -42,7 +42,6 @@ owners:
 
 # SPEC-082926-730d: Container Pool Ownership
 
-- **Status:** AC Defined
 - **Decision:** ADR-082926-730d
 - **Closes:** #335
 

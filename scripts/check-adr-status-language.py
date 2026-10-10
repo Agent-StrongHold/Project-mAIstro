@@ -10,14 +10,15 @@ not moved to `Deferred` or `Superseded`." Different readers received different
 authority answers, and no check could see it because nothing read the body's
 status claims at all.
 
-This gate reads the structured status markers a body can carry and requires
-each to agree with the front matter:
+This gate retires duplicated body status lines and requires the remaining
+structured status claims to agree with front matter:
 
-1. `**Status:** X` lines — 63 ADRs and 20 specs carry one, written either bare
-   or as a Markdown list item (`- **Status:** X`); either way it is a status
-   declaration, not prose, so it must equal the front-matter status. The whole
-   value is read, because the vocabulary has multi-word members (`AC Defined`,
-   `In Progress`, `Will Not Implement`) that a first-word match would mangle.
+1. `**Status:** X` lines — **retired entirely** (ADR-092126-a28a). Any such
+   line in a body is a finding, in either the bare or the list-item spelling,
+   whatever value it carries. This category used to check *agreement* with
+   front matter; the 91 documents that carried a line are now cleared, and a
+   line that agrees today is one that drifts tomorrow, so absence is what is
+   enforced. The fix is always the same: delete the line.
 2. `**Superseded by [ID](...)`` banners — when present on a Superseded
    document, every ID it names must be in the front matter's `superseded-by`
    (and the canonical spelling is the one to fix, because front matter feeds
@@ -39,13 +40,14 @@ front matter was canonical: a new one fails, and a fixed one must shrink the
 ledger in the same change. Category-2 and category-3 contradictions are *not*
 baselined — they were zero at filing, so any occurrence is new.
 
-**The ledger is now empty.** #387 banked 28 legacy lines it could see; the
-19 list-form spec lines it could not see were corrected when the category
-learned that spelling, and the 28 were corrected after. Every body status
-line in the corpus now agrees with its front matter, so the ratchet has
-nothing left to tolerate and any contradiction this gate reports is new by
-construction. Refilling it is an expansion, which the provenance adapter
-requires a landed grant for (#534) — prefer fixing the document.
+**The ledger is empty and category 1 keeps it that way.** #387 banked 28
+legacy lines it could see; the 19 list-form spec lines it could not see were
+corrected when the category learned that spelling, the 28 were corrected
+after, and ADR-092126-a28a then removed the remaining 91 lines outright. The
+ratchet has nothing left to tolerate, and any finding this gate reports is
+new by construction. Refilling the ledger is an expansion, which the
+provenance adapter requires a landed grant for (#534) — delete the line
+instead.
 """
 
 from __future__ import annotations
@@ -64,17 +66,15 @@ from maistro_registry.validator import validate_file  # noqa: E402
 
 DOC_ROOTS = (ROOT / "docs" / "adr", ROOT / "docs" / "specs")
 LEDGER = ROOT / "quality" / "adr-status-language-baseline.json"
+METRIC_DEFINITION_VERSION = "2"
 
-#: `**Status:** Accepted` — the body status line many documents carry, either
-#: bare or as a Markdown list item (`- **Status:** Accepted`). Both forms are a
-#: status declaration; matching only the bare one exempted 3 ADRs and all 20
-#: specs that carry the line from this category entirely. The rest of the line
-#: is the claim: statuses are multi-word (`AC Defined`), so reading only the
-#: first word reported `AC` against a front matter saying `AC Defined`. A line
-#: that trails prose after the status therefore claims all of it — the corpus
-#: writes none that way, and a status *declaration* that needs a qualifier is
-#: the reader-confusion shape this gate exists to name.
-_BODY_STATUS_RE = re.compile(r"^(?:[-*+]\s+)?\*\*Status:\*\*(.*)$", re.M)
+#: A body status line, bare or as a Markdown list item (`- **Status:** X`).
+#: Both spellings are retired (ADR-092126-a28a), so the *value* is never
+#: parsed — only quoted back in the diagnostic. That is the simplification
+#: retirement buys: while this category compared body against front matter it
+#: needed the status vocabulary, multi-word values (`AC Defined` read as `AC`)
+#: and case folding, and each of those was a defect in turn.
+_BODY_STATUS_RE = re.compile(r"^ {0,3}(?:[-*+][ \t]+)?\*\*Status:\*\*.*$", re.M)
 
 #: `**Superseded by [ADR-xxx](...)`` — the banner naming the replacement.
 #: `^`-anchored per line, tolerating the blockquote and emphasis markup the
@@ -122,10 +122,10 @@ def _display(path: Path) -> str:
 
 
 def audit(*, roots: tuple[Path, ...] | None = None) -> list[StatusProblem]:
-    """Every structured status marker that contradicts its front matter."""
+    """Every retired body status line or claim contradicting front matter."""
     problems: list[StatusProblem] = []
     for root in roots or DOC_ROOTS:
-        for path in sorted(root.glob("*.md")):
+        for path in sorted(root.rglob("*.md")):
             if path.name == "ADR-INDEX.md":
                 continue
             problems.extend(_audit_file(path))
@@ -141,17 +141,15 @@ def _audit_file(path: Path) -> list[StatusProblem]:
     problems: list[StatusProblem] = []
 
     for match in _BODY_STATUS_RE.finditer(body):
-        claimed = _claimed_status(match[1])
-        if claimed is None:
-            continue  # `**Status:**` with nothing after it declares nothing
-        if claimed.casefold() != front_matter.status.value.casefold():
-            problems.append(
-                StatusProblem(
-                    path,
-                    "body-status-line",
-                    f"body says '{claimed}', front matter says '{front_matter.status.value}'",
-                )
+        problems.append(
+            StatusProblem(
+                path,
+                "body-status-line",
+                f"body carries {match[0].strip()!r}; body status lines are retired "
+                f"(ADR-092126-a28a) — front matter ({front_matter.status.value}) is the "
+                f"only status. Delete the line.",
             )
+        )
 
     superseded_by = {ref.removeprefix(_REF_PREFIX) for ref in front_matter.superseded_by}
     for match in _BANNER_RE.finditer(body):
@@ -185,15 +183,6 @@ def _audit_file(path: Path) -> list[StatusProblem]:
     return problems
 
 
-def _claimed_status(raw: str) -> str | None:
-    """The status a body line declares, with the corpus's markup stripped.
-
-    Trailing emphasis (`**Accepted**`) and the two-space Markdown hard break
-    both appear in the corpus and are presentation, not claim.
-    """
-    return raw.strip().strip("*").strip() or None
-
-
 def _body_without_front_matter(path: Path) -> str:
     text = path.read_text()
     if not text.startswith("---"):
@@ -211,6 +200,7 @@ def _load_baseline() -> frozenset[str]:
 
 def _write_baseline(problems: list[StatusProblem]) -> None:
     payload = {
+        "metric_definition_version": METRIC_DEFINITION_VERSION,
         "_comment": (
             "Legacy body '**Status:**' lines written before front matter was canonical (#379). "
             "Body status language is checked per-identity (#387): a new contradiction fails, "
@@ -246,13 +236,13 @@ def main(argv: list[str] | None = None) -> int:
     stale = sorted(known - found)
 
     if new:
-        print(f"FAIL: {len(new)} new body/front-matter status contradiction(s)\n")
+        print(f"FAIL: {len(new)} new body-status-language finding(s)\n")
         for identity in new:
             problem = next(p for p in problems if p.identity == identity)
             print(f"  {problem.render()}")
         print(
-            "\nFront matter is canonical (#379). Make the body agree with it, or bank a "
-            "reviewed legacy exception with --update if this predates that rule."
+            "\nFront matter is canonical (#379). Delete retired body status lines "
+            "(ADR-092126-a28a); align replacement banners and status assertions with front matter."
         )
         return 1
 

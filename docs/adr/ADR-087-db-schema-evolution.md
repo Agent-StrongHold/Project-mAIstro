@@ -29,7 +29,6 @@ history:
 
 # ADR-087: Database Schema Evolution — expand/contract, zero-downtime
 
-**Status:** Accepted
 **Date:** 2026-05-30
 **Extends the first migration** (ADR-012) into a standing rule for how schema changes ship without
 taking the system down: expand, backfill, switch, contract.
