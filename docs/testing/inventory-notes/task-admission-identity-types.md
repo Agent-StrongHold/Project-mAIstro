@@ -4035,3 +4035,66 @@ exactly one external cause (missing owner-side base grants, or the parent
 #1845 integration consumer) and no in-leaf repair exists without violating the
 issue's no-waiver/no-fake-caller staging contract and the two-merge protocol.
 Tree changes this round: this note only.
+
+## Round 55 (2026-10-10, verifier+writer at `1e9b55ff8359`, base `4aa68edc0b6b`)
+
+Prior attempt `b928851668144fbe` failed on a model provider timeout, not on any
+check; its five driver checks and this round's driver logs (check-0..check-4)
+are all green at the same head. Independent re-verification this round:
+
+- Driver checks re-read from the job logs and re-run firsthand: `uv sync
+  --locked --extra dev` rc=0; `uv run ruff check .` rc=0; `uv run ruff format
+  --check .` rc=0 (3268 files); focused `uv run pytest
+  packages/maistro-core/tests/runs/test_root_admission_identity.py -q` 79
+  passed; `uv run python scripts/check-suite-inventory.py --suite
+  packages/maistro-core/tests` ok (+79 unchanged).
+- CI failure 1 re-reproduced with exact CI argv (`uv run python
+  scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`) → rc=1: the same five NEW identities at
+  `admission_identity.py:515-519` ("not authorized by the trusted base");
+  1323 trusted reviewed identities → 1328 findings with zero candidate-ledger
+  bookkeeping deltas, so the five rows are already banked and the
+  lane-prescribed `quality/vulture-baseline.json` amendment remains a
+  byte-level no-op. `PENDING` still unflagged via name-granular masking by
+  unrelated `packages/*/src` uses (round-54 fact re-observed in the same run).
+- CI failure 2 re-reproduced: `check-reachability-provenance.py` rc=1 ("NEW
+  unreachable module absent from trusted base and not previously authorized")
+  and `check-reachability-dispositions-provenance.py` rc=1 ("NEW disposition
+  absent from trusted ledger"); `check-ratchet-provenance.py` rc=1 solely via
+  those two sub-gates. Candidate-side `check-reachability.py` (170
+  unreachable), `check-reachability-dispositions.py` (50 groups),
+  `check-shipped-surface-truth.py`, `check-promotion-surface.py`, and
+  `check-convergence-matrix.py` all rc=0.
+- Base re-fetched: `origin/develop` unchanged at `4aa68edc0b6b`; its
+  `quality/ratchet-authorizations.json` re-enumerated directly: 102 vulture +
+  11 reachability grants, zero naming `admission_identity`. `load_authorizations`
+  reads grants from the merge base (`scripts/ratchet_provenance.py`), so a
+  candidate-side grant cannot authorize this floor raise (two-merge protocol).
+- Leaf contract re-proven programmatically: 21-name `__all__` exact; six-member
+  `AdmissionAssessment` with exact values; 16 record/result dataclasses
+  frozen+slots; `owns()` the exact scope∧generation∧owner conjunction with
+  independent roles (equal-values and differing-values cases); `admitted` ==
+  `binding is not None`; empty variants define no truthiness override (default
+  truthy, type-discriminated); `owner_token` field omitted from repr while the
+  independently printable `generation_id` still carries its text;
+  `CanonicalJsonObject` normalizes sorted/compact and rejects duplicate keys
+  (incl. nested), non-object roots, NaN/Infinity/1e999, and non-string input.
+- Scope isolation re-proven: zero production importers of
+  `maistro.runs.admission_identity`; no `maistro.runs.__init__` export; branch
+  diff vs base is exactly the module (520 L), the test suite (660 L), this
+  note, the three candidate ledger rows, and the one convergence-matrix line.
+- #1841 prerequisite anchors re-checked at this head:
+  `require_admitted_actor(actor_principal_id: str | None) -> str` at
+  `runs/store_boundary.py:56`; `get_run(..., principal_id: str | None = None)`
+  at `runs/store.py:537`; `actor_principal_id: str | None = None` retained on
+  `create_run`/`claim_run_by_effect`.
+
+Conclusion (round 55): unchanged from rounds 51–54. Leaf implementation, tests,
+and candidate ledgers are complete and scan-exact; the two merge-queue CI
+failures have exactly one external cause — the owner-side base grants (five
+vulture identities plus the reachability/disposition rows for
+`maistro.runs.admission_identity`) have not landed on develop, and the parent
+#1845 integration leaf that supplies the runtime consumer has not landed. The
+issue's own staging contract forbids in-leaf workarounds and requires reporting
+implementation/test readiness plus the explicit merge blocker while leaving the
+stack unmerged. Tree changes this round: this note only.
