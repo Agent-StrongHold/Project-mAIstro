@@ -21664,3 +21664,42 @@ in-tree. All 13 acceptance criteria require APIs owned by open issues
 (#804/#805/#806/#774/#776/#53/#93/#95), and the issue text forbids duplicating
 them Design-Studio-privately. Inventory delta **+0** (this record only).
 (Refs #777)
+
+## Round 134 — repair round at unchanged head 3040f7892 (job eed7d9de)
+
+Job `eed7d9def30343e5b7e15cbdaa0cda54`: manifest `checks: []`, no
+`check-*.log` in the job dir — no deterministic check ran or failed; nothing
+to repair from the driver side. Prior round-133 BLOCKED (job `1f2bb407`) was
+dependency-driven. Independently re-derived at HEAD `3040f7892`:
+
+- **Sync-conflict ruled out** (fresh fetch): `origin/develop` `435dc1937` ==
+  merge-base == manifest base, HEAD 0 behind / 487 ahead; `origin/auto-777`
+  `460ad5802` (PR #1660 head) is an ancestor of HEAD.
+- **22:59Z dispatch capture** (61 sources / 76 calls): #777 open, 13/13
+  acceptance boxes unchecked, blocked_by API empty; blockers #773/#774/
+  #776/#804/#805/#806/#53/#93/#95 all OPEN (#775/#39/#458 closed); PR #1660
+  open draft, head `460ad5802`, mergeable_state clean, 0 reviews; #777
+  comment tail automation-only through 22:36:52Z.
+- **Battery re-executed, all exit 0**: ruff check; ruff format 3282 files;
+  vulture CI-exact `packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` 1323→1322, 0 unbanked; ratchet 0/53; shipped-surface;
+  reachability 1394/169; suite-inventory 17/17; backlog 167; radon 137→137;
+  `mypy --strict` on `runs/model.py` Success.
+- **Targeted pytest with live PG** `maistro_test_777` @ 127.0.0.1:5433
+  (`maistro-postgres`, PG 18.6): cancellation-cause model 34 passed;
+  bootstrap `-k agent_loop` 40 passed; hive `-k "design or workspace or
+  agent"` 554 passed / 5 skipped.
+- **Diff claims audited**: branch diff vs base on `packages` = 4 files
+  (+30/−6) plus sanctioned vulture row −1, unchanged from round 133.
+  `system_prompt` reader real at `maistro_rsi/local_loop.py:817`
+  (`system_prompt or config.system_prompt`); `tool_definitions` 0 remaining
+  `AgentLoopConfig` consumers (residual `chat_completion.py:2587` hits are an
+  unrelated local variable); schema-pin regression test present and passing.
+- **Negative invariants re-probed**: 0 `class GoalReconcil*|ReconciliationLoop`
+  in `packages/*/src` + hive backend; `workspace_agent.py` 149 lines;
+  `permission_source.py:79` (`maistro/security/sentinel/`) defers governed
+  tool-use to #804; `GoalRevisionCatalog` still a `Protocol`
+  (rubric_store.py:71).
+
+**Verdict: BLOCKED** — dependency-blocking (134th round); nothing repairable
+in-tree. Inventory delta **+0** (this record only). (Refs #777)
