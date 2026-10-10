@@ -4890,3 +4890,70 @@ the module stops being newly unreachable and the assessment members become
 consumed. Per the issue's own staging constraint the stack stays unmerged and
 this note is not an integration approval. Note-only commit; no gate, ledger,
 or source change.
+
+## Round 67 — CI-repair re-verification at ce40d86b8f36 (job aff5322203384)
+
+Dispatched to resolve the round-66 BLOCKED. The direct predecessor job
+(2fb995e70a35, per its result.json) was a provider timeout after five green
+driver checks (uv sync, ruff check ., ruff format --check ., focused pytest
+79 passed, suite inventory ok — all rc=0; failure_kind=provider_error). All
+evidence re-proven firsthand at this exact head:
+
+- **Driver checks 5/5 green** for this job (check-0..4.log in the job
+  directory, all at head ce40d86b8f36).
+- **Focused acceptance commands re-run firsthand:**
+  `pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q`
+  → 79 passed; leaf `ruff check` and `ruff format --check` clean;
+  `mypy packages/maistro-core/src/maistro/runs/admission_identity.py` →
+  no issues. All 12 issue-named tests present (one `def` each).
+- **`__all__` re-verified via AST** (not regex): exactly 21 names, set-exact
+  against the issue's list, none missing, none extra. (A round-67
+  quick-regex probe first reported 20 — probe-authoring error, consistent
+  with rounds 64–66's corrected probes; the module was never wrong.)
+  `AdmissionAssessment` member/value pairs re-extracted: the exact six
+  mandated pairs.
+- **Vulture gate re-run with CI exact argv** (`check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) rc=1.
+  Scan-exact: 1328 findings = base ledger 1323 + 5; unclassified 0. The five
+  findings are the issue-mandated `AdmissionAssessment` members at
+  admission_identity.py:515-520. The candidate ledger banks exactly those
+  five in the matching bucket (pydantic-declarative-field 392→397, walked
+  programmatically via `rules[].findings`; removed-vs-base 0), so the
+  ledger-matches-scan half passes and the gate fails solely on its final
+  line: "New Vulture debt is not authorized by the trusted base. Running
+  --update in this branch cannot authorize it; land a reviewed grant first."
+- **exact-debt-ledger job re-walked in CI order** (vulture-ratchet.yml:86-93):
+  `check-ratchet-provenance.py` rc=1 — every ratchet OK (shell-execution
+  3→3, contract-markers 358→358, enumerations 1→1, lifecycle 0→0) except the
+  two reachability sub-gates naming only `maistro.runs.admission_identity`;
+  `check-shipped-surface-truth.py` rc=0; vulture step as above.
+  `check-reachability-provenance.py` rc=1 ("NEW unreachable module absent
+  from trusted base and not previously authorized") and
+  `check-reachability-dispositions-provenance.py` rc=1 ("NEW disposition
+  absent from trusted ledger"). Candidate-side gates green:
+  `check-reachability.py` rc=0 (170/1395),
+  `check-reachability-dispositions.py` rc=0 (50 groups),
+  `check-promotion-surface.py` rc=0, shipped-surface rc=0.
+- **Grant state pinned in both revisions:** `quality/ratchet-authorizations.json`
+  contains zero `admission_identity` occurrences in the base (435dc1937) and
+  in this candidate, across all 11 ratchet keys. `load_authorizations`
+  (scripts/ratchet_provenance.py:478-520) reads grants from the base
+  revision by design — docstring: "a new grant does not take effect in the
+  change that introduces it. Authorizing a floor-raise is now two merges."
+  Adding the grant here therefore cannot work and is independently forbidden
+  by the issue.
+- **Lane-brief repair re-walked:** the 5 identities are contract surface the
+  issue fixes verbatim (exact 21-name `__all__`, exact six enum members), so
+  none is genuinely dead-removable; the ledger amendment the brief permits is
+  already present (+5/-0) and is a no-op; nothing to remove.
+- **No develop advance:** origin/develop = 435dc1937 = merge-base; no sync
+  conflict to resolve. Recent issue comments re-read: only automated
+  maistro-progress markers, no new owner guidance.
+
+Round-67 verdict: writer handoff (unchanged from rounds 64–66). Leaf
+acceptance criteria proven; both merge-queue failures re-reproduced and
+root-caused to the trusted-base authorization wall that no candidate-side
+edit can cross; the issue itself forbids every remaining candidate fix and
+prescribes exactly this report-and-hold outcome when integration is
+unavailable. Green CI requires an owner-landed grant on develop or the #1845
+integration head. Note-only commit; no gate, ledger, or source change.
