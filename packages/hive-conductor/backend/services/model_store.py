@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from collections.abc import Callable, ItemsView, Iterator, KeysView, ValuesView
+from collections.abc import Callable, ItemsView, Iterator, KeysView, MutableMapping, ValuesView
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel
@@ -215,7 +215,7 @@ class ModelStore(Generic[T]):
 class JsonStore:
     def __init__(self, store_name: str, persisted: Any | None = None) -> None:
         self._store_name = store_name
-        self._data: dict[str, Any] = {}
+        self._data: MutableMapping[str, Any] = {}
         self._persisted = persisted
         # Serializes `put_if_absent`'s check-then-insert (#1126). The durable
         # half is already single-winner — SQLite's primary key decides. When no
