@@ -50,6 +50,9 @@ RUNTIME_STATE_FIELDS: frozenset[str] = frozenset(
         "resume_checkpoint_id",
         "accepted_outcome",
         "retention_expires_at",
+        # runtime cancellation evidence: R12 forbids runtime cancellation
+        # state, and no template legitimately defines a "cancellation_cause"
+        "cancellation_cause",
     }
 )
 
