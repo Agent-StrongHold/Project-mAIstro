@@ -21132,3 +21132,77 @@ only implementable invariants (no private reconciler/agent/authority in
 Design Studio; the branch's own dead-seam removal + serialization-schema
 pin) continue to hold and are green. Inventory delta **+0** (this record
 only). (Refs #777)
+
+## Round 125 (job cb55a3b5, 2026-10-10 ~18:0xZ) — repair round at unchanged head `fd5bc74fe`
+
+Trigger: driver classified the lane NEEDS-REPAIR off verify job `53d5e08b`,
+whose only failing check was `check-2.log` — `uv run ruff format --check .`
+→ `Would reformat: packages/maistro-bootstrap/src/maistro_bootstrap/builders/agent_loop.py`.
+That check ran at verify head **`a99c6bd7`** (base `eed1d097`), many commits
+before the current head. Evidence the failure no longer exists:
+
+- `git diff --stat a99c6bd7..HEAD -- …/builders/agent_loop.py` → +14 lines
+  (commit `b154ad0f9`, the `system_prompt` restore).
+- `uv run ruff format --check packages/…/agent_loop.py` → **1 file already
+  formatted, exit 0**; full-tree `ruff format --check .` → **3282 files
+  already formatted, exit 0** at `fd5bc74fe`. The historical validation
+  failure is already repaired; nothing to fix.
+
+Sync-conflict path (driver's conditional) probed and ruled out again:
+fresh `git fetch origin` → `origin/develop` = `435dc1937` = merge-base,
+**0 behind / 478 ahead** — nothing to merge.
+
+Dependency re-capture (this job's dispatch-context, 17:53–17:54Z, newer
+than round 124's 17:17Z): #777 open; blockers **#773/#774/#776/#804/#805/
+#806/#53/#93/#95 all still OPEN**; #775/#39/#458 closed;
+`issues/777/dependencies/blocked_by` → **0 items** (relation lives in the
+issue body); PR #1660 draft open, head `460ad5802` (= local HEAD~2; two
+docs commits ahead — may not push).
+
+Battery re-executed at `fd5bc74fe` (all exit 0):
+`ruff check .`; `ruff format --check .` (3282 files); vulture CI-exact
+(`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) →
+1323 reviewed → **1322 findings, 0 unbanked**; `check-ratchet-provenance.py`
+→ **0/53 consumers, every ratchet no-expansion**;
+`check-shipped-surface-truth.py`; `check-reachability.py` (169/1394);
+`check-suite-inventory.py` (**17/17**); `check-backlog-consistency.py`
+(167); CI-exact `mypy --strict packages/maistro-core/src` → **782 files,
+no issues**.
+
+Targeted pytest, live PG `maistro-postgres` 127.0.0.1:5433,
+`maistro_test_777` @ alembic 062 (confirmed accepting connections):
+- bootstrap agent-loop files (`test_agent_loop_turns`,
+  `test_agent_loop_run_tests_args`) + cancellation-cause model test →
+  **74 passed**;
+- `packages/maistro-core/tests/runs -q` → **1506 passed, 3 skipped**
+  (identical to rounds 119–124);
+- `packages/maistro-design/tests -q` → **572 passed, 1 skipped**;
+- hive `-k "design or workspace or agent"` → **559 passed** (broader
+  single-filter sweep than round 124's two-batch 409+5).
+
+Negative-invariant probes re-executed (not trusted from prior rounds):
+`workspace_agent.py` = **149 lines, roster-only** (WorkspaceNotFound/
+WorkspaceAgentConflict/persona resolve+set; no Goal machinery);
+`design_service.py` = **376 lines, 0** reconcil/delegat hits; sole hive
+"Reconcil" regex hit is `evolution_graph.py:73
+FinalizeReconciliationRequired(RuntimeError)` — the unrelated M9 finalize
+error (classified in round 123); canonical `AttemptLifecycleReconciler`
+confined to maistro-canvas/maistro-core/maistro-server;
+`ControlMode`/`ArtifactLockConflict` confined to maistro-design
+(`versions.py`). Dependency absence re-confirmed:
+`permission_source.py:79` still defers governed tool-use to #804;
+`rubric_store.py` still "instead of a Goal store" via
+`GoalRevisionCatalog` Protocol; `working_graph/backend.py` still records
+`ladybugdb` unpublished (port + embedded reference backend only);
+restored `system_prompt` has its live reader at
+`maistro-rsi/local_loop.py:817` (`system_content = system_prompt or
+config.system_prompt`).
+
+**Verdict: BLOCKED** — dependency-blocking (125th consecutive round; the
+flagged validation failure is stale, already fixed by `b154ad0f9`; not a
+sync conflict). All 13 acceptance criteria remain UNVERIFIED: #804/#805/
+#806 Goal reconciliation, #774 CreativeBrief, #776 working graph, #53
+front door and #93/#95 production path are open, and the issue's stop
+condition forbids a Design-Studio-private substitute. The implementable
+invariants hold and are green. Inventory delta **+0** (this record only).
+(Refs #777)
