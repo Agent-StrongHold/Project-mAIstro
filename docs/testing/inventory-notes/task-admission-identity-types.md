@@ -3164,3 +3164,87 @@ executed step by step at HEAD `2a12cbe98f3f`:
 Merge blocker (unchanged): two-merge trusted-base wall on vulture +
 reachability + dispositions; leaf readiness handoff stands; stack stays
 unmerged pending the C2/integration leaf.
+
+## Round 42 — 2026-10-10 independent verifier+writer round at 1abdea0768 (develop-merged head): first full Quality-gate battery execution past the vulture step; every job step now has exact-head evidence; wall re-proven unchanged
+
+Dispatched as the CI-repair round for the Quality gate (Pillars 1–4, 7, 8) +
+exact-debt-ledger failures at CI `1abdea076`. Since round 41's head
+(`2a12cbe98f3f`) the branch absorbed the develop merge `5df964aba0` (101 files,
++11,166/−1,731, including `scripts/check-reachability.py` +35 and
+`scripts/check-security-inventory.py` +49), so every prior round's gate result
+was re-executed fresh at this head rather than inherited. Driver checks (uv
+sync, ruff check, ruff format --check, focused pytest, suite inventory) all
+passed (job `354c775d` logs).
+
+- Develop sync: `merge-base(HEAD, origin/develop)` = `5df964aba0`; develop tip
+  `01cf44a5a` is 2 commits ahead (`#2104`, `#2105`) touching only
+  `deploy/scripts/backup.sh`, hive-conductor `mcp_client.py`, and their tests —
+  zero overlap with this leaf, `quality/`, or the gate scripts; no sync
+  conflict, and `quality/` remains additions-only vs the develop tip
+  (`git diff 01cf44a5a...HEAD --numstat -- quality/` = 1/9/5).
+- exact-debt-ledger job, all three steps with CI-exact arguments at this head:
+  `check-ratchet-provenance.py` rc=1 with 8 of 10 ratchets OK and the only
+  FAILs the trusted-base pair (`reachability`: "NEW unreachable module ...
+  not previously authorized"; `reachability-dispositions`: "NEW disposition ...
+  not covered by an already-landed reachability authorization" — both
+  `maistro.runs.admission_identity`), inventory incomplete via the two
+  rc=1 provenance sub-gates on the same single wall;
+  `check-shipped-surface-truth.py` rc=0; `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` rc=1 with
+  1,328 findings, 0 unclassified, 0 never-allowlist, **candidate ledger exact
+  (zero bookkeeping deltas)** and exactly the five trusted-side identities
+  (`MISMATCH`, `REPLAYED`, `TAKEOVER`, `REPLACE_EXPIRED`, `LEGACY_UNRESOLVED`,
+  classified under the trusted `pydantic-declarative-field` rule) meeting the
+  gate's verdict "land a reviewed grant first".
+- Quality gate job: **every step CI never reached was executed at this head** —
+  the 21 non-xenon non-vulture steps all rc=0 (radon ratchet, version
+  consistency, release consistency, doc links, enumerations, workspace
+  retirement, route permissions, principal identity, frontend typed client,
+  vendor provenance ×2, credential authority, wiring reads, agent store
+  writes, contract markers, convergence matrix, security inventory, image
+  inventory, image pins, workflow inventory, backlog consistency), and xenon
+  with the CI env (`XENON_BASELINE=145`, empty module ledger) measures
+  0 block / 0 module / 0 average violations. Candidate-side
+  `check-reachability.py` rc=0 (1,391 modules, 170 unreachable, all
+  dispositioned) and `check-reachability-dispositions.py` rc=0 (50 groups:
+  147 CONNECT / 21 LIBRARY / 2 RETIRE), as is `check-promotion-surface.py`.
+  The job's first failing step is therefore the vulture ledger step alone,
+  on the same wall as the exact-debt-ledger job.
+- Wall re-proof at the current bases: `quality/ratchet-authorizations.json`
+  at merge base `5df964aba0` carries 102 `vulture` grants and 11
+  `reachability` grants, none naming `admission_identity`; grants are read
+  from the merge base only (`ratchet_provenance.load_authorizations`), so no
+  candidate-tree edit can clear the three deltas (vulture, reachability,
+  dispositions — one root cause). Member triage unchanged: all five flagged
+  members are issue-mandated `AdmissionAssessment` contract surface; none is
+  genuinely dead; `PENDING` is masked only by the unrelated in-tree
+  `JobStatus.PENDING` token, confirming that clearing the five by reference
+  would require exactly the dummy-caller cure the issue prohibits.
+- Leaf acceptance re-proven fresh at this head: focused suite 79 passed;
+  full `packages/maistro-core/tests` 15,184 passed / 1,030 skipped / 3
+  xfailed; mypy clean (module and the canonical seven-package command, 890
+  files); `ruff check` + `ruff format --check` clean; full
+  `check-suite-inventory.py` ok (17 suites, 30,925 unique identities, 0
+  duplicates). Contract re-read against the issue text: 21-name `__all__`,
+  frozen+slots records with exact field orders, `repr=False` owner tokens,
+  `CanonicalJsonObject` canonicalization/rejection semantics, the exact
+  fencing conjunction, the six-member `AdmissionAssessment`, and all 12
+  issue-named tests present and passing. Scope isolation: `git diff
+  5df964aba0...HEAD --stat` = exactly the 7 issue-scoped files; zero
+  production importers of `maistro.runs.admission_identity`; no
+  `maistro.runs.__init__` export. #1841 anchors verified at this head:
+  `store_boundary.py:56` `require_admitted_actor(actor_principal_id: str |
+  None) -> str`, `store.py:537` `get_run(..., *, principal_id: str | None =
+  None)`, `store.py:507/563` `actor_principal_id: str | None = None` on
+  `create_run`/`claim_run_by_effect`, `Run.actor_principal_id` retained.
+- Tree changes this round: this note only. No code, ledger, gate, or
+  workflow edit — the repair instruction again terminates at its proven
+  fixed point (banked rows already exact; nothing genuinely dead to remove;
+  authorization lives on the base, not the candidate).
+
+Merge blocker (unchanged): two-merge trusted-base wall on vulture +
+reachability + dispositions, now with exact-head evidence for **every** step
+of both failing CI jobs. Resolution requires the separately scoped C2/
+integration leaf (which references the members and wires the module, emptying
+all three deltas at its own head) or reviewed grants landed on the
+integration base first. Leaf readiness handoff stands; stack stays unmerged.
