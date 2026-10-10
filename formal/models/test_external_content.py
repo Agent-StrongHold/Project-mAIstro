@@ -100,7 +100,8 @@ TestExternalContentMachine = ExternalContentMachine.TestCase
             "__import__('os')",
             "subprocess.call('rm -rf /')",
             "os.system('cat /etc/passwd')",
-            "eval('malicious code')",
+            # Adversarial text passed to the injection detector; never executed.
+            "eval('malicious code')",  # DevSkim: ignore DS189424 until 2027-12-31
             "base64.b64decode('payload')",
         ]
     )
