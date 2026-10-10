@@ -293,6 +293,8 @@ class PgRunStore:
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> Run:
         if parent_run_id is None and parent_node_run_id is None:
             # The parentless branch prepares through the root-only seam
@@ -309,6 +311,8 @@ class PgRunStore:
                 provenance=provenance,
                 retention_expires_at=retention_expires_at,
                 initial_status=initial_status,
+                goal_id=goal_id,
+                goal_revision=goal_revision,
             )
         else:
             run = await self.prepare_run(
@@ -321,6 +325,8 @@ class PgRunStore:
                 provenance=provenance,
                 retention_expires_at=retention_expires_at,
                 initial_status=initial_status,
+                goal_id=goal_id,
+                goal_revision=goal_revision,
             )
         async with self._pool.acquire() as conn:
             try:
@@ -344,6 +350,8 @@ class PgRunStore:
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> Run:
         """Validate and build one *parentless* Run, writing nothing (#1882).
 
@@ -373,6 +381,8 @@ class PgRunStore:
             actor_principal_id=require_admitted_actor(actor_principal_id),
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
+            goal_id=goal_id,
+            goal_revision=goal_revision,
         )
         # Before the insert, not after it: one commit, so there is no window in
         # which a process death leaves a CREATED Run whose receipt was queued.
@@ -390,6 +400,8 @@ class PgRunStore:
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> Run:
         """Build one Run without writing anything — the admission-side half.
 
@@ -418,6 +430,8 @@ class PgRunStore:
                 provenance=provenance,
                 retention_expires_at=retention_expires_at,
                 initial_status=initial_status,
+                goal_id=goal_id,
+                goal_revision=goal_revision,
             )
         await self._validate_graph_scope(graph)
         parent = await self._require_run(parent_run_id)
@@ -446,6 +460,8 @@ class PgRunStore:
             actor_principal_id=require_admitted_actor(actor_principal_id),
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
+            goal_id=goal_id,
+            goal_revision=goal_revision,
         )
         # Before the insert, not after it: one commit, so there is no window in
         # which a process death leaves a CREATED Run whose receipt was queued.

@@ -111,3 +111,14 @@ issue closed kept assertable. Two domain tests write an out-of-domain status
 to each spine table (refused) and every model status (accepted), and the
 catalog test asserts the replaced `ix_graph_continuations_status` is actually
 gone — the write-cost side of the acceptance: one index on the table, not two.
+
+Update (auto-1572 develop sync, Goal-store collision): the Goal-store lane
+(#1572) had landed `056_canonical_goals` on the quota door, colliding with
+develop's `056_user_model_facts`, and this revision — `057` on develop,
+re-parented onto the user-model tip — collided in turn with the renumbered
+`057_user_model_facts`. Per the chain's convention the later-integrated
+revision renumbers onto the landed tip, so this revision continues the chain
+as `058_run_store_planner_stability` (`down_revision = "057"`). The renamed
+test method (`test_058s_indexes_exist_and_the_redundant_one_is_gone`), the
+loaded source path, and the lockstep revision name track the renumber; the
+index shapes and plan assertions are unchanged, so no count moves.

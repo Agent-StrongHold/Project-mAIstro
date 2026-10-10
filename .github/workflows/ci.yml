@@ -379,6 +379,14 @@ jobs:
         env:
           MAISTRO_REQUIRE_PG_LEGS: "1"
         run: uv run pytest packages/maistro-core/tests/workspaces -v --tb=short
+      # The canonical Goal store (#1572). Same contract as the Workspace step
+      # above: the conformance suite's PostgreSQL leg must not silently skip
+      # in the one job that owns a real server, and the canonical_goals tables
+      # (migration 062) must answer on every supported major.
+      - name: Goal stores conform across memory, SQLite and PostgreSQL
+        env:
+          MAISTRO_REQUIRE_PG_LEGS: "1"
+        run: uv run pytest packages/maistro-core/tests/goals -v --tb=short
       # The #851 Canvas supported-path E2E lives under maistro-server/tests,
       # whose only CI invocations (`test` here, the coverage combine job in
       # quality.yml) have no PostgreSQL service — so without this step the

@@ -6,23 +6,16 @@ Create Date: 2026-09-27
 
 The effect door's budget reservations (#1196) and the at-most-once provider
 usage evidence (#718) attach to the canonical Invocation. They do not reuse
-revision ids 033/035/036, which develop already assigned, and each sync
-re-parents whichever branch-side revision trails the chain onto the new
-tip -- 046, then 047, 048, 050, 051, 052, 053, 054, 055, 056, now 057,
-#863's planner-stability revision: a migration must append
-after the deployed head, never fork beside it, or `alembic upgrade head`
-refuses with multiple heads. On develop the quota door itself claimed
-`055`'s child slot, so the door keeps that parent here and #863's
-revision follows the `056_user_model_facts` tip as `057`. This sync
-(56332162c) delivered develop's originals of the branch's renumbered
-copies verbatim -- `053_learning_lifecycle_columns`,
-`054_learning_applicability_epistemics`, `055_task_admission_generations`,
-`056_user_model_facts` -- dropping the branch-side duplicates and
-re-parenting this branch's genuinely-new backlog work source (#82) past
-the `057` tip as `058` -- since re-parented again, first onto develop's
-`058_learning_validation_provenance` as `059_backlog_work_source`, then
-with its authority-cutover ledger `060_backlog_authority_cutover` on top,
-keeping exactly one linear head.
+revision ids 033/035/036, which develop already assigned. The quota door
+keeps its shipped parent `055`; merged user-model `056_user_model_facts`
+(#1951's ``c560d4c``) follows this door, and planner-stability
+`057_run_store_planner_stability` (#1914's ``4675101``) follows `056`.
+Installed databases stamped `056` or `057` must keep those meanings.
+The integrated chain then adds `058_learning_validation_provenance`,
+`059_backlog_work_source`, `060_backlog_authority_cutover`, and develop's
+`061_hitl_pause_kind_index`, develop's audit cursor indexes append as `062`
+on that tip, and the new Goal DDL (#1572) appends as `063_canonical_goals`,
+preserving one linear head without reassigning any merged identity.
 
 Every table here is created only when missing, and every column added
 only when absent, because the store bootstraps these same tables itself:

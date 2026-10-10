@@ -85,6 +85,10 @@
     "models.schemas::MissionStep.status": {
       "classification": "DOMAIN",
       "rationale": "Mission-step progress is a Hive product-domain projection; it does not replace canonical Run/NodeRun/Attempt state."
+    },
+    "maistro.goals.model::GoalStatus": {
+      "classification": "DOMAIN",
+      "rationale": "The Goal's desired-state lifecycle (maistro.goals, #1572): ACTIVE while the Goal is the Workspace's pursued desired state, then a terminal state (SATISFIED/CANCELLED/FAILED/SUPERSEDED) that freezes it as an immutable record. Deliberately not execution state: Runs execute work toward a Goal and carry the canonical RunStatus; a Goal never drives a scheduler, admits work, or mirrors Run/NodeRun/Attempt. A genuinely different lifecycle over desired state and accountability, not a second execution identity."
     }
   }
 }
