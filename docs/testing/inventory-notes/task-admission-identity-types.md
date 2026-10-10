@@ -3522,3 +3522,73 @@ the parent #1845 integration leaf whose real consumer references the members and
 wires the module, re-passing the unchanged gates at its own final head. This
 leaf remains implementation/test-ready and explicitly unmergeable, exactly as
 the issue's staging directive requires.
+
+## Round 47 — develop-movement sweep at tip 1f328be96 (2026-10-10)
+
+Driver dispatched this CI-repair round after the round-46 BLOCKED report, with
+the same two CI failures at merge-queue head
+`970be8553621bf1b8a1878f07c1db9fc3a737203` (exact-debt-ledger, Quality gate
+Pillars 1–4/7/8) and the lane instruction to resolve the block. This round
+re-derived the wall from primary evidence at
+`913c93a62b82005e20712ad736d50923aaf41e1c` instead of trusting round 43–46
+claims, and adds one genuinely new fact: develop moved after round 46.
+
+- Develop advanced three commits to tip `1f328be96` (2026-10-10 05:30Z) since
+  the round-46 evaluation: audit-log pagination (#1712/#358), observation-driven
+  replanning research, and CORS loopback authority classification (#2106).
+  Programmatic inspection: `quality/ratchet-authorizations.json` is
+  authorization-identical at the merge base `01cf44a5` and at `1f328be96` —
+  102 `vulture` grant keys in both, none referencing `admission_identity`; none
+  of the three commits touches `quality/vulture-baseline.json`,
+  `quality/reachability-baseline.json`, or
+  `quality/reachability-dispositions.json`. `git merge-base origin/develop
+  HEAD` is still `01cf44a5`, so a develop merge would move the trusted base
+  with identical authorization content — gate-neutral churn on a 133-commit
+  stack. No sync conflict exists (the three commits touch none of this
+  branch's quality or source files); the merge is therefore deliberately
+  skipped and recorded.
+- No consumer exists on develop: `git grep AdmissionAssessment origin/develop
+  -- packages` and `git grep 'MISMATCH|TAKEOVER' origin/develop -- 'packages/*/src'`
+  both return zero matches. The sibling stack leaves already on develop
+  (#1944/#1892 migration 055 task-admission generations, #1940 PG admission
+  atomicity) ship the SQL/PG side in hive-conductor; they do not reference this
+  contract. No merge path can eliminate the five findings.
+- All three exact-debt-ledger steps re-executed firsthand with CI's exact
+  argv at this head: `check-shipped-surface-truth.py` rc=0;
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=1 with the identical five identities
+  (`admission_identity.py:515-520`: MISMATCH, REPLAYED, TAKEOVER,
+  REPLACE_EXPIRED, LEGACY_UNRESOLVED, 60% confidence) rejected solely as "not
+  authorized by the trusted base" (base 01cf44a5, 1323 reviewed identities ->
+  1328 findings), with zero candidate-side added/removed/unbanked deltas — the
+  lane-prescribed ledger amendment is re-verified as a byte-level no-op (the
+  five rows are already banked in `quality/vulture-baseline.json`);
+  `check-ratchet-provenance.py` rc=1 via exactly its two sub-gates
+  (`check-reachability-provenance.py`, `check-reachability-dispositions-
+  provenance.py`), each naming only `maistro.runs.admission_identity` as NEW
+  at 169 -> 170.
+- Candidate-side gates all rc=0 at this head:
+  `check-reachability.py`, `check-reachability-dispositions.py`,
+  `check-promotion-surface.py`.
+- Leaf acceptance re-proven firsthand at this head: focused suite 79/79
+  (rc=0); `ruff check .` and `ruff format --check .` clean repo-wide; `mypy
+  packages/maistro-core/src/maistro/runs/admission_identity.py` clean;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` rc=0. No code
+  or test changed this round; front-matter `inventory-delta` unchanged (+79).
+
+Conclusion (round 47): the wall is structural, now verified against the
+current develop tip. The five findings are issue-mandated members of
+`AdmissionAssessment` (the issue fixes the exact member/value list) in an
+issue-mandated inactive module; every branch-side elimination path is
+forbidden by the issue's staging directive (no member removal, no fake
+callers or keep-alive references, no suppressions, no re-exports, no
+baseline/grant self-authorization), and `scripts/ratchet_provenance.py` loads
+authorizations from the merge base only, making branch-side substitutes inert.
+Unblocking remains an owner action outside worker authority: (a) a standalone
+reviewed merge landing the six grants (five `vulture` identity keys plus the
+`reachability` key `maistro.runs.admission_identity`) on the integration base
+— after which this leaf's already-banked rows authorize as step two — or
+(b) the parent #1845 integration leaf whose real runtime consumer references
+the members and wires the module, re-passing the unchanged gates at its own
+final head. This leaf remains implementation/test-ready and explicitly
+unmergeable by itself, exactly as the issue's staging directive requires.
