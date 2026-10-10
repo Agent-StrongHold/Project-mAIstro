@@ -2867,3 +2867,72 @@ every step was then re-executed locally at CI argv at this head.
   maintainer-landed two-merge reachability grant), both outside this
   lane's authority. The stack stays unmerged by design; this lane takes no
   merge/PR action and amends no ledger.
+
+## Round 36 — repair round at `63a6cfd47950` (2026-10-10): independent
+## re-derivation of every red and of the empty ledger amendment; no code change
+
+Dispatch job `6dd01ec3` re-opened the lane with the same four hosted reds
+at `26d5df6aa46b` (branch tip `63a6cfd47950` = round-35 evidence commit,
+zero code delta over the round-35 tree). This round re-executed each
+claim of rounds 34–35 first-hand instead of trusting them; every one
+reproduced, and the driver's deterministic battery passed unchanged.
+
+- **Driver battery at this head (all green)**: `uv sync --locked --extra
+  dev` ok; `ruff check .` clean; `ruff format --check .` (3277 files)
+  clean; focused 315 (`test_pack_contracts.py` +
+  `test_root_admission_identity.py` +
+  `test_admission_generation_assessment.py`) passed;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok
+  (16468 collected == recorded, +132 this leaf).
+- **exact-debt-ledger**: vulture step exit 0 — 1323 reviewed identities
+  -> 1323 findings, unclassified 0, never_allowlist 0 — so the lane
+  brief's `quality/vulture-baseline.json` amendment list is empty for the
+  36th consecutive round and the ledger was not touched;
+  `check-shipped-surface-truth.py` exit 0; the job's red step is
+  `check-ratchet-provenance.py` (exit 1), whose `reachability` sub-gate
+  reports "169 unreachable modules -> 171" with exactly
+  `maistro.runs.admission_identity` and `maistro.tasks.admission_generation`
+  as NEW unreachable modules absent from the trusted base and from the
+  candidate baseline.
+- **Quality gate**: `check-reachability.py` exit 1 on the same two
+  modules ("2 module(s) are NEWLY UNREACHABLE" of 1396);
+  `check-reachability-dispositions.py` and `check-promotion-surface.py`
+  both exit 0.
+- **test / Coverage gate**: re-ran the three sanctioned root meta-tests —
+  `test_check_reachability.py::test_baseline_matches_the_tree` and both
+  `test_reachability_baseline_identity.py` gate-identity tests — 3 failed
+  as hosted, with the other 12 in those files passing, so both the `test`
+  job red and the Coverage gate's root-suite producer red reduce to the
+  same two-module delta (the producer fails before `combine`).
+- **Two-merge rule re-read at source**
+  (`scripts/ratchet_provenance.py::load_authorizations`, this head):
+  grants are read from the base revision — "a new grant does not take
+  effect in the change that introduces it" — and base `435dc1937e04`
+  holds no grant for either module, so no in-branch ledger edit can green
+  the provenance gate, and #1852's prohibition on baseline additions,
+  grants and fake callers stands in the way of every alternative.
+- **Leaf contract re-proven at this head**: focused suite 132 passed;
+  C1 sibling suite 73 passed; module re-read against the issue text —
+  exact-class record gate, `[0-9a-f]{64}` fullmatch, int64-not-bool
+  `now_us`, envelope-vs-top-level field reads, and the decision table in
+  exact issue order (inclusive expiry -> mismatch -> binding ->
+  legacy-unresolved -> lease takeover -> pending); all 10 issue-named
+  tests present at the round-35 line numbers; `mypy
+  packages/maistro-core/src/maistro/tasks/admission_generation.py` clean.
+- **Forbidden-surface hygiene re-verified**:
+  `git diff 435dc1937e04..HEAD -- quality/ packages/maistro-core/src/maistro/tasks/idempotency.py
+  packages/maistro-core/src/maistro/tasks/__init__.py
+  packages/maistro-core/src/maistro/runs/__init__.py` is EMPTY; no
+  production importer of `maistro.tasks.admission_generation` under
+  `packages/*/src`; no `fixes/closes/resolves` directive in any commit
+  message in `435dc1937e04..HEAD`; the `_vulture_whitelist.py` rows in
+  the branch diff belong to the #1851 sibling's reviewed scan-input
+  mechanism (dispositioned LIBRARY, authorized from #1142), not to this
+  leaf.
+- **Verdict-relevant statement**: identical to round 35 — leaf
+  acceptance fully proven; all four hosted reds are the one sanctioned
+  unwired two-module reachability delta; the lawful fix is the future
+  #1845 integration consumer (or a maintainer-landed grant from the base
+  side of the two-merge rule), both outside this lane. The stack stays
+  unmerged by design; no ledger was amended and no merge/PR action was
+  taken.
