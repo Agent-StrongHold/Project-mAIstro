@@ -20939,3 +20939,89 @@ reconciliation, #774 CreativeBrief, #776 workspace graph, #53 front
 door and #93/#95 production path are open, and the issue's stop
 condition forbids a Design-Studio-private substitute. Inventory delta
 **+0** (this record only). (Refs #777)
+
+## Round 123 (job cca247b0) — develop base moved; sync merge 460ad5802 verified conflict-free; no driver checks this round
+
+Driver supplied **no `check-*.log`** (manifest `checks: []`), so the full
+battery was re-executed locally at the new head.
+
+**New state:** base moved `bb4257f09 → 435dc1937`; HEAD is now the
+two-parent merge `460ad5802` (parents `afa1e1b2e` × `435dc1937`),
+working tree clean. The sync-conflict path is **resolved / ruled out**:
+fresh `git fetch` → `origin/develop` = `435dc1937` = merge-base, 0
+behind / 476 ahead — nothing to merge, no resolution owed by this
+worker.
+
+**Merge integrity:** no `<<<<<<<`/`>>>>>>>`/`=======` markers in
+packages/, docs/, quality/, scripts/. `quality/` vs pre-merge tip
+`afa1e1b2e`: additive only (`durable-table-retention.json` +24,
+`shipped-surface-truth.json` +10 — both arriving from develop); vs
+`origin/develop` the sole vulture-baseline delta is this branch's own
+earlier sanctioned CI-repair removal (0 added / 1 deleted). No
+per-identity ledger rows lost in the merge. Merge content is the #978
+extension-health work (21 files, ~5.4k insertions) — no #777-relevant
+surface.
+
+**Dependency re-capture (this round's dispatch, 16:51Z, 75 API calls):**
+#53/#93/#95/#773/#774/#776/#779/#780/#783/#794/#804/#805/#806/#986/#1823
+all `state=open`; #39/#458/#775 closed; native
+`dependencies/blocked_by` API empty (the Depends-on relation lives in
+the issue body). PR #1660 open, head `460ad5802` == local HEAD.
+
+**AC probes re-executed at the merged head (all match round 122):**
+0 Python `class *Reconciler` matches in
+`packages/hive-conductor/backend/` — the sole regex hit is inside a
+minified vendored Swagger-UI JS bundle (not Python); the Python-side
+`FinalizeReconciliationRequired` (evolution_graph.py:73) is an
+unrelated M9 finalize error type. Canonical
+`AttemptLifecycleReconciler` confined to maistro-canvas/canonical_execution.py,
+maistro-core (container, runs/{reconciliation,execution},
+attempt_executor, agent_delegate_remote) and
+maistro-server/chat_completions.py. `workspace_agent.py` 149 lines,
+roster-only (#1037/ADR-092326-7ed7 materialization).
+`design_service.py` 376 lines, 0 reconcil/delegat seams.
+`ControlMode`/`ArtifactLockConflict` confined to
+`packages/maistro-design` (__init__, versions, version_store).
+
+**Battery all exit 0:** `ruff check .`; `ruff format --check .`
+(3282 files); `check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` (1323 reviewed →
+1322 findings, 0 unbanked); `check-ratchet-provenance.py` (0
+violations, 53 consumers); `check-shipped-surface-truth.py`;
+`check-reachability.py` (1394 modules, 169 unreachable — OK);
+`check-suite-inventory.py` (17/17); `check-backlog-consistency.py`
+(167).
+
+**Targeted pytest with live PG:** reused `maistro_test_777` on
+maistro-postgres (127.0.0.1:5433), alembic rev **062 (head)**
+confirmed; `MAISTRO_TEST_PG_DSN` plain `postgresql://…` scheme.
+- `uv run pytest packages/maistro-core/tests/runs -q` → **1506
+  passed, 3 skipped** (matches rounds 119–122 exactly).
+- `test_attempt_cancellation_cause_model.py` → **34 passed**.
+- pg proof suites (`test_pg_store_internals`,
+  `test_pg_root_preparation`, `test_pg_run_insert_connection`,
+  `test_pg_result_repair_lock_order`, `test_m8a7_pg_race_harness`) →
+  **50 passed**.
+- Hive design/workspace/agent suites, broadened beyond the prior
+  11-suite/198-test battery to 22 suites → batch 1 (test_design_* ×7 +
+  test_workspace_agent_identity + test_workspace_authority +
+  test_workspace_authority_durable + test_workspace_mode): **143
+  passed, 5 skipped**; batch 2 (test_agent_invocation,
+  test_agent_materialization, test_agent_model_tools,
+  test_agents_routes, test_chat_created_agents, test_dag_agents,
+  test_workspaces, test_production_workspace_scope,
+  test_schedule_workspace_scope, test_workspace_scoped_submission,
+  test_workspace_tokens_sync): **266 passed**.
+- `packages/maistro-bootstrap/tests` agent_loop files → **40 passed**.
+- `packages/maistro-design/tests` full package → **572 passed, 1
+  skipped** (supersedes the 39-test artifact-versions subset cited in
+  rounds 120–122).
+
+**Verdict: BLOCKED** — dependency-blocking (123rd consecutive round).
+All 13 acceptance criteria remain UNVERIFIED: #804/#805/#806 Goal
+reconciliation, #774 CreativeBrief, #776 workspace graph, #53 front
+door and #93/#95 production path are open, and the issue's stop
+condition forbids a Design-Studio-private substitute. The only
+implementable invariant (no private reconciler/agent/authority in
+Design Studio) continues to hold at the merged head. Inventory delta
+**+0** (this record only). (Refs #777)
