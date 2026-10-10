@@ -4957,3 +4957,63 @@ edit can cross; the issue itself forbids every remaining candidate fix and
 prescribes exactly this report-and-hold outcome when integration is
 unavailable. Green CI requires an owner-landed grant on develop or the #1845
 integration head. Note-only commit; no gate, ledger, or source change.
+
+## Round 68 re-verification — head ad5c6d8ac, driver job 2c98b6d756b9 (2026-10-11)
+
+Dispatched to resolve the round-67 BLOCKED handoff. No source, gate, ledger,
+or test content changed; every prior claim re-proven firsthand at this exact
+head, plus one new reconciliation.
+
+- **Driver checks 5/5 green** (check-0..4.log in the job directory): sync ok,
+  full-tree ruff clean ("All checks passed!"), 3275 files formatted, focused
+  suite 79 passed, `check-suite-inventory.py --suite packages/maistro-core/tests`
+  ok (16,341 collected node IDs, 0 duplicates).
+- **Focused battery re-run firsthand:** pytest 79/79; leaf ruff check clean,
+  format clean, mypy clean.
+- **NEW reconciliation — sorted `__all__`:** AST probe finds the 21 names
+  set-exact but alphabetically ordered rather than in the issue's listing
+  order. Reconciled in the module's favor: pyproject.toml:224 selects the
+  `RUF` rule family, and RUF022 (`__all__` is not sorted) fails on an
+  unsorted list (verified with `--isolated` on a control file), so the
+  issue-mandated ruff check acceptance command forces the sort. Set-exact is
+  the binding contract; no defect.
+- **Vulture gate re-run with CI exact argv**
+  (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`): rc=1,
+  scan-exact 1328 = base-ledger 1323 + the five AdmissionAssessment enum
+  members at admission_identity.py:515-520 (MISMATCH, REPLAYED, TAKEOVER,
+  REPLACE_EXPIRED, LEGACY_UNRESOLVED; PENDING is not flagged). Ledger walk
+  via `rules[].findings`: candidate total 1328 = base 1323, rows added vs
+  base exactly 5 (all five, bucket `declarative_model_field`), rows removed
+  0 — the lane-brief amendment is present and a further amendment is a
+  proven no-op. The gate fails solely on "New Vulture debt is not authorized
+  by the trusted base … land a reviewed grant first."
+- **exact-debt-ledger job re-walked in CI order**
+  (vulture-ratchet.yml:75-93): `check-ratchet-provenance.py` rc=1 with every
+  ratchet OK (shell 3→3, contract-markers 358→358, enumerations 1→1,
+  lifecycle 0→0) except the two reachability sub-gates naming only
+  `maistro.runs.admission_identity`; `check-shipped-surface-truth.py` rc=0;
+  vulture step as above. The named failure signature is byte-identical to
+  the merge-queue failures at ce40d86b8f36.
+- **Candidate-side gates green:** `check-reachability.py` rc=0 (170
+  unreachable / 1395 modules), `check-reachability-dispositions.py` rc=0
+  (50 groups: 147 CONNECT, 21 LIBRARY, 2 RETIRE),
+  `check-promotion-surface.py` rc=0, shipped-surface rc=0.
+- **Two-merge wall re-verified in code:** `load_authorizations`
+  (scripts/ratchet_provenance.py:478) resolves grants from the base revision
+  (`resolve_baseline(path, base=base, …)`); docstring states the two-merge
+  rule verbatim. `quality/ratchet-authorizations.json` has zero
+  `admission_identity` occurrences at base 435dc1937 and at this head.
+- **No external advance:** origin/develop re-fetched, still 435dc1937 =
+  merge-base; no grant landed, no sync conflict applies. The issue body
+  re-read in full still predicts both failures verbatim, forbids every
+  candidate-side fix (keep-alive imports, dummy callers, re-exports,
+  suppressions, baseline-entry self-authorization, grants), and prescribes
+  reporting readiness plus the explicit merge blocker while leaving the
+  stack unmerged.
+
+Round-68 verdict: unchanged writer handoff. All leaf acceptance criteria
+proven at this head; both CI failures reproduced and root-caused to the
+trusted-base authorization wall, crossable only by an owner-landed grant on
+develop or the #1845 integration head that wires a real runtime consumer.
+No inventory delta this round (no tests added or moved; front-matter `+79`
+remains accurate).
