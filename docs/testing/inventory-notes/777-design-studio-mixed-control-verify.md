@@ -20223,3 +20223,70 @@ targeted suites green; no implementable #777 work exists at this head
 while #804/#805/#806 (primary producers) and #53/#774/#776/#93/#95 stay
 open, and the issue's stop condition forbids private substitutes.
 Inventory delta **+0** (this record only). (Refs #777)
+
+## Round 295 — re-validation at unchanged head `76411b7a6` (job `5ec68a859f084b91bd0b018efe424b7c`, 2026-10-10)
+
+Documentation-only verifier record. No production or test code changed;
+`inventory-delta: +0` (front-matter unchanged).
+
+**Git state (re-fetched this round):** HEAD `76411b7a6c50` equals the lane's
+exact starting commit; `git fetch origin` → `origin/develop` still
+`1f328be96a5e` == merge base (0 behind, no sync conflict); branch 462 commits
+ahead. PR #1660 head `31a0e5bfa` re-verified ancestor of branch HEAD via
+`git merge-base --is-ancestor` — its content is fully contained in this
+branch. Fresh capture `dispatch-context.json` (2026-10-10T08:27:31Z →
+08:28:02Z, 74 API calls, 61 sources, `complete_for_scope=true`): PR #1660
+`state=open draft=true mergeable_state=clean`, 0 reviews; its head's check
+runs all terminal-success (27 runs incl. `block` success) — the draft
+remains unreviewed and unmerged, which is outside worker authority.
+
+**Dependency audit (this job's own capture, not inherited):** body
+`Depends on:` markers #804/#805/#806/#53/#774/#776/#93/#95 all
+`state=open` (captured 08:27:43Z–08:27:56Z); non-blocking body deps
+#39/#458/#775 all `closed`. GitHub `blocked_by` API returns `[]` — the
+dependency edges are the body markers, consistent with rounds ≥108.
+Issue #777 `state=open updated 2026-10-10T07:52:41Z`; latest comments are
+`maistro-progress` bot markers only (no new human instructions).
+
+**Carried failure, directly re-checked:** job `53d5e08bf` `check-2.log`
+reads `Would reformat: .../builders/agent_loop.py` (1 of 2864 files).
+Re-executed at HEAD: `uv run ruff format --check
+packages/maistro-bootstrap/src/maistro_bootstrap/builders/agent_loop.py`
+→ `1 file already formatted`, exit 0; full tree → `3275 files already
+formatted`, exit 0. The finding does not reproduce.
+
+**AC probes at HEAD `76411b7a6` (re-executed):** narrow reconciler probe
+(`goal_reconcil|GoalReconciler|reconcile_goal|persistent_workspace_agent`
+over `packages/*/src`) → **0 files**; `design_service.py` → **0**
+goal/canvas mentions; `workspace_agent.py` → **149 lines**,
+roster-identity materialization only (#1037), 0 reconciliation. Delta vs
+round 294: the repo-wide `mixed_control|mixed.control` probe over
+`packages/*/src` + `packages/*/tests` now matches **2 files** — both
+docstring/comment forward-references in
+`packages/maistro-design/src/maistro_design/versions.py` lines 22 and
+1048 (#780's versioned-artifact module naming #777 as the future owner of
+the mixed-control surface); zero executable mixed-control code or E2E.
+Probe conclusion unchanged: no producer API and no mixed-control E2E
+exist to consume.
+
+**Battery at HEAD `76411b7a6` (all exit 0, re-executed):** `ruff check .`
+(All checks passed); `ruff format --check .` (3275 files);
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` → 1323 reviewed → 1322 findings, 0 unbanked (base
+`1f328be96a5e`); `check-ratchet-provenance.py` (0 violations, 53
+consumers); `check-shipped-surface-truth.py` (matrix complete);
+`check-suite-inventory.py` (17 suites match); `check-backlog-consistency.py`
+(167 items).
+
+**Targeted pytest (re-executed):** maistro-core `tests/runs tests/config`
+→ **1384 passed, 280 skipped**; maistro-bootstrap full `tests/` → **233
+passed, 7 skipped**; hive-conductor `backend/tests` design/workspace/brief
+selection (15 files) → **179 passed, 5 skipped**.
+
+**Verdict: BLOCKED** — dependency-blocking (112th consecutive round).
+Carried stale check-2.log finding again did not reproduce; gates and
+targeted suites green; PR #1660 CI green but draft/0 reviews (merge is
+not worker authority). No implementable #777 work exists at this head
+while #804/#805/#806 (primary producers) and #53/#774/#776/#93/#95 stay
+open, and the issue's stop condition forbids private substitutes.
+Inventory delta **+0** (this record only). (Refs #777)
