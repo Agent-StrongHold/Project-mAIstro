@@ -226,10 +226,14 @@ async def run_pm_workflow():
         print("\n🐝 Step 13: Verify audit trail...")
         r = await pm.api("get", "/v1/audit")
         assert r.status_code == 200
-        entries = r.json()
+        # #358: bounded page envelope {entries, next_cursor}, and a non-admin
+        # read is scoped to entries naming this principal — pmuser's own
+        # ``login``; ``dag_create`` is actor "system" and stays out of scope.
+        page = r.json()
+        entries = page["entries"]
         actions = [e.get("action") for e in entries]
-        assert "dag_create" in actions, f"Missing dag_create in audit. Got: {actions}"
-        print(f"   ✅ Audit trail has {len(entries)} entries: {set(actions)}")
+        assert "login" in actions, f"Missing pmuser login in scoped audit page. Got: {actions}"
+        print(f"   ✅ Audit page has {len(entries)} entries: {set(actions)}")
 
         # ─── Step 14: Final UI walkthrough (vision quality check) ───
         print("\n🐝 Step 14: Final visual quality check...")
