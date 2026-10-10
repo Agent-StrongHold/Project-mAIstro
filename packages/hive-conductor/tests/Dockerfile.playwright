@@ -1,6 +1,6 @@
 # Digest-pinned (#349): v1.52.0-noble index digest resolved 2026-09-30; the tag
 # stays as the human-readable version annotation, the digest is the authority.
-FROM mcr.microsoft.com/playwright:v1.52.0-noble@sha256:a021500a801bab0611049217ffad6b9697d827205c15babb86a53bc1a61c02d5
+FROM mcr.microsoft.com/playwright:v1.64.0-noble@sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f
 WORKDIR /tests
 # `@axe-core/playwright` is what makes the accessibility assertions in
 # `modal-a11y.spec.ts` a scan rather than a hand-written checklist (#371).
