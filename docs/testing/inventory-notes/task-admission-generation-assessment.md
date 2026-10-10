@@ -2936,3 +2936,60 @@ reproduced, and the driver's deterministic battery passed unchanged.
   side of the two-merge rule), both outside this lane. The stack stays
   unmerged by design; no ledger was amended and no merge/PR action was
   taken.
+
+## Round 37 (independent repair-lane re-verification at `1edad592f3ae`)
+
+Every round-34/35/36 claim re-executed first-hand in a fresh session; none
+taken on faith. Results identical, plus one new testing-methodology finding.
+
+- **Leaf acceptance re-proven**: focused suite 132 passed;
+  `test_root_admission_identity.py` + `test_idempotency.py` combined run
+  140 passed (272 with this leaf's file); `ruff check .` and
+  `ruff format --check .` clean (3277 files); `mypy
+  packages/maistro-core/src/maistro/tasks/admission_generation.py`
+  clean; full `scripts/check-suite-inventory.py` exit 0 (17 suites /
+  31335 identities). All 10 issue-named tests present; grep for
+  skip/xfail in the test file finds nothing.
+- **Vulture at CI argv green, 37th consecutive empty amendment**:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` exit 0, 1323 -> 1323. Dispositions exit 0
+  (169 modules); promotion-surface exit 0 (74 tolerated).
+- **The four hosted reds re-attributed to the same sanctioned delta**:
+  `check-reachability.py` exit 1 naming exactly
+  `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`
+  newly unreachable; `check-ratchet-provenance.py` exit 1 solely via the
+  reachability sub-gate (169 -> 171; every other sub-gate OK) — the
+  exact-debt-ledger red is the provenance gate, not vulture; the three
+  root reachability meta-tests fail 3/39 with a failure diff of exactly
+  the two modules, which is the root cause of both the `test` job red and
+  the Coverage gate red (the scripts-source producer runs
+  `pytest tests/` at `.github/workflows/quality.yml:712-713` and the
+  combine job runs under `set -euo pipefail` at line 554).
+  `git diff --numstat` for `quality/` is empty against base `435dc1937e04`
+  and against `origin/develop`.
+- **All four issue-named regression mutations killed** (fresh `/tmp`
+  shadow copy of the package, tree untouched, pristine copy restored and
+  re-proven green between mutations): swap TAKEOVER/REPLACE_EXPIRED ->
+  50 failed; lease row moved above the binding row -> 16 failed;
+  `LEGACY_UNRESOLVED` row deleted so an unbound legacy row falls through
+  to the v2 lease comparison -> 10 failed; mismatch row moved above the
+  expiry row -> 22 failed. Restore after each mutation: 132 passed.
+- **NEW — shadow-mutation trap for future rounds**: this repo's
+  `pyproject.toml` sets pytest `pythonpath = ["packages/maistro-core/src",
+  ...]` (lines 294-305). pytest inserts those entries at the FRONT of
+  `sys.path`, AHEAD of a bare `PYTHONPATH` override, so a shadow copy of
+  the package exported only via `PYTHONPATH` is silently ignored and a
+  mutation battery reports a false "all green under mutation" (observed
+  first-hand: the TAKEOVER/REPLACE_EXPIRED swap passed 132/132 that way,
+  while a `pytest_runtest_call` plugin probe showed the test modules
+  bound to the real tree file). A valid shadow run must override the ini
+  (`-o pythonpath=<shadow>`) and verify precedence by asserting the
+  imported module's `__file__` from inside the session. The mutation
+  numbers above were all produced under the verified-precedence setup.
+- **Verdict-relevant statement**: unchanged from rounds 35/36 — leaf
+  acceptance fully proven; all four hosted reds are the one sanctioned
+  unwired two-module reachability delta; the lawful fix is the future
+  #1845 integration consumer (or a maintainer-landed grant from the base
+  side of the two-merge rule), both outside this lane. The stack stays
+  unmerged by design; no ledger was amended and no merge/PR action was
+  taken.
