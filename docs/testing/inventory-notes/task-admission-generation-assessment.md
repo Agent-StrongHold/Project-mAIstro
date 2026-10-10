@@ -2662,3 +2662,108 @@ no repairable in-lane defect exists.
   (the sanctioned unwired two-module reachability delta) whose fix belongs
   to the future #1845 integration head. The stack stays unmerged by design;
   this lane takes no merge/PR action.
+
+## Round 34 — independent repair-round re-verification at merged head `54cbd6e1daa1` (2026-10-10)
+
+Dispatch job `04dd27a4` arrived with a further develop merge already
+committed as `54cbd6e1daa1` (develop tip `bb4257f0960f`, #2114/#2115 PG
+root-Run insertion work) and the same four hosted CI reds, plus an open
+deep-review block to resolve. This round re-derived every red first-hand at
+CI argv, re-proved leaf acceptance, re-executed all four issue-named
+mutations, and closed the deep-review block; no repairable in-lane defect
+exists.
+
+- **Classifier byte-identical across the develop merge**: md5
+  `257a6e45c382349dd12f559099663fbc`, the rounds 22–33 fingerprint; the test
+  file unchanged too, so all recorded mutation profiles carry over — and
+  were re-executed first-hand anyway (below). `git diff
+  bb4257f0960f..HEAD` is the same 11 sanctioned surface files.
+- **All four hosted reds re-derived locally as the single sanctioned
+  two-module delta, job by job**:
+  - `Quality gate`: `check-reachability.py` exit 1 naming exactly
+    `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`
+    (169 -> 171 of 1394). Every other plausibly-affected step re-run green
+    at CI argv: `check-radon-baseline.py` (137 -> 137), xenon 0 block
+    violations (baseline 145), `mypy --strict packages/maistro-core/src`
+    clean (782 files, under CI's `uv sync --locked --all-extras`),
+    convergence-matrix, credential-authority, wiring-reads,
+    agent-store-writes, workspace-retirement, route-permissions,
+    principal-identity, backlog-consistency, security-inventory, ruff check
+    + format, vulture ledger 1323 -> 1323, reachability-dispositions,
+    promotion-surface.
+  - `exact-debt-ledger`: `check-ratchet-provenance.py` (RATCHET_BASE_REV=
+    origin/develop) exit 1 whose ONLY FAIL is the reachability trusted-base
+    gate — the same two modules NEW unreachable and missing from the
+    candidate baseline; shell 3/3, contract-markers 358/358, enumerations
+    1/1, lifecycle 0/0 all OK. `check-vulture-baseline.py packages/*/src
+    --min-confidence 60 --exclude '*/third_party/*'` exit 0 (1323 -> 1323,
+    amendment empty for the 34th consecutive round);
+    `check-shipped-surface-truth.py` exit 0.
+  - `test`: full root suite re-run (`pytest tests/ --ignore=
+    tests/tools/registry`, RATCHET_BASE_REV=origin/develop): 4 failed /
+    4967 passed / 129 skipped. Three are the sanctioned reachability
+    meta-tests (`tests/test_reachability_baseline_identity.py` x2,
+    `tests/test_check_reachability.py::test_baseline_matches_the_tree`),
+    each naming only the two modules. The fourth,
+    `test_branch_independence_repository.py::
+    test_every_quality_json_state_surface_is_classified_once`, fails on
+    `quality/ac-state.json` — an UNTRACKED, gitignored local artifact
+    (`.gitignore:81`, dated before this round) that hosted CI never sees;
+    the test passes with the artifact moved aside (artifact restored
+    sha256-verified byte-exact). Hosted attribution: the sanctioned three.
+  - `Coverage gate`: the maistro-core producer re-run in full
+    (`coverage run --branch --source=packages/maistro-core/src/maistro -m
+    pytest packages/maistro-core/tests --timeout=30 -q`): 15366 passed /
+    1044 skipped / 3 xfailed; `check-diff-coverage.py` on the resulting xml
+    at the CI floors (90% lines / 80% branch arcs) — `ok: every measured
+    file this change touches is at or above` the floors for all three
+    measured changed files (`admission_identity.py`,
+    `admission_generation.py`, `packs.py`); `_vulture_whitelist.py` is
+    logged unmeasured (no producer reaches `src/_vulture_whitelist.py`),
+    which the gate names without failing. The gate's red input is the
+    `combine` step's root-suite producer, i.e. the same sanctioned three
+    meta-tests.
+- **No in-lane repair is lawful**: unchanged from rounds 27–33 — #1852
+  forbids baseline rows, grants, dummy callers, keep-alive imports, and
+  edits to the live flow, and the two-merge rule makes a same-branch grant
+  self-authorizing (null). The red is the issue's own predicted state for
+  the unwired leaf; its lawful retirement remains the separately reviewed
+  #1845 integration consumer.
+- **Leaf acceptance re-proven at this head**: focused suite
+  `test_admission_generation_assessment.py` 132 passed; C1 + unchanged live
+  flow (`test_root_admission_identity.py` + `test_idempotency.py`) 140
+  passed; all 10 issue-named tests present by exact name; `ruff check` +
+  `ruff format --check` clean on both leaf files; `mypy` clean on the
+  classifier module; full `check-suite-inventory.py` ok (17 suites /
+  31268 node IDs, including this suite's 16413).
+- **All four issue-named mutations re-executed first-hand this round**
+  (backup -> mutate -> focused pytest -> restore, sha256-verified
+  byte-exact restoration, control 132 passed): (M1)
+  TAKEOVER/REPLACE_EXPIRED outcomes swapped -> 50 failed; (M2) lease row
+  hoisted above binding (binding row removed from its original position) ->
+  12 failed; (M3) LEGACY_UNRESOLVED row deleted (legacy pending treated as
+  v2) -> 10 failed; (M4) mismatch row hoisted above expiry -> 22 failed.
+  M2/M3/M4 counts match round 33; M2's 12 vs round 33's 16 reflects this
+  round's slightly different hoist construction (original binding row
+  removed rather than shadowed), not a suite change — both constructions
+  kill.
+- **Forbidden-surface hygiene re-verified**: `git diff --numstat
+  bb4257f0960f..HEAD -- quality/` is EMPTY; `tasks/__init__.py` and
+  `runs/__init__.py` diffs empty; `tasks/idempotency.py` untouched; no
+  production importer of `maistro.tasks.admission_generation` under
+  `packages/*/` (grep over `tasks/idempotency.py` + `tasks/queue.py`:
+  none); no `fixes/closes/resolves #N` directive in any commit message in
+  `bb4257f0960f..HEAD`.
+- **Deep-review block closed**: the prior round's
+  `test_every_quality_json_state_surface_is_classified_once` discrepancy is
+  resolved as a local gitignored artifact (above), and a new environment
+  note is recorded for future rounds: `mypy --strict
+  packages/maistro-core/src` is NOT clean under a `--extra dev`-only sync
+  (5 `maistro_bootstrap.*` import-not-found errors in files this branch
+  never touches) and IS clean under CI's `--all-extras` sync — run the
+  latter before trusting a mypy red in this lane.
+- **Verdict-relevant statement**: every #1852 leaf acceptance criterion is
+  proven at `54cbd6e1daa1`; all four hosted reds reduce to the one
+  sanctioned unwired two-module reachability delta whose fix belongs to the
+  future #1845 integration head. The stack stays unmerged by design; this
+  lane takes no merge/PR action.
