@@ -12,6 +12,8 @@
 name: "CodeQL Advanced"
 
 on:
+  # Opt-in verification of a selected repair branch; existing automatic triggers stay unchanged.
+  workflow_dispatch:
   push:
     branches: [ "main" ]
   pull_request:
