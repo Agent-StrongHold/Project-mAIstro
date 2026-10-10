@@ -2457,3 +2457,61 @@ tree edit is this evidence section. Per-criterion evidence:
   are the single issue-sanctioned unwired-reachability delta whose lawful
   retirement is the separately reviewed #1845 integration consumer. The
   stack stays unmerged by design; this lane takes no merge/PR action.
+
+## Round 31 — independent verifier re-derivation at `a6a173420d3c` (dispatch `0b2d6dc6`)
+
+Fresh verifier; no trusted prior claims; no source/test/ledger file changed
+(working tree carries two uncommitted foreign salvage files outside every
+#1852 surface — `extensions/packs.py`, `extensions/test_pack_contracts.py` —
+preserved untouched, backed up as `incoming-1852-uncommitted.patch`, and
+attributed below where they touch a gate). Test-count front matter above is
+unchanged.
+
+- **Leaf acceptance re-executed green**: classifier suite 132 passed;
+  `test_root_admission_identity.py` + unchanged `test_idempotency.py` 140
+  passed; ruff check + format clean (leaf files and repo-wide, 3238 files);
+  mypy clean on `admission_generation.py` and over all 775 core source files;
+  all ten issue-named tests present and passing.
+- **Mutation battery re-derived in a `/tmp` shadow copy** (assigned tree never
+  modified; module restored byte-exact after each mutation, sha256 verified;
+  `-o pythonpath=<shadow>` override so `maistro` resolves to the shadow — the
+  bare-`PYTHONPATH` false-pass trap from round 30 avoided): swap
+  TAKEOVER/REPLACE_EXPIRED → 50 failed; lease row before binding → 16 failed;
+  LEGACY_UNRESOLVED row disabled (legacy treated as v2) → 10 failed; mismatch
+  row before expiry → 22 failed; restored control → 132 passed. (Lease-reorder
+  count 16 here vs 14 in the round-30 note: different but equivalent
+  formulation of the same reorder; the acceptance requirement is that the
+  mutation is caught, which it is under both.)
+- **exact-debt-ledger re-derived with CI's exact argv**: vulture leg exit 0
+  (1323 == 1323, `packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`); `check-shipped-surface-truth.py` exit 0;
+  `check-ratchet-provenance.py` at `RATCHET_BASE_REV=origin/develop` exit 1
+  with the sole FAIL the reachability ratchet 169→171, naming exactly
+  `maistro.runs.admission_identity` and `maistro.tasks.admission_generation`
+  as NEW unauthorized unreachable modules (promotion 270, dispositions 169,
+  shell 3, contract-markers 358, enumerations 1, citations, contradictions all
+  OK). That is the blocker #1852 itself mandates for the unwired leaf —
+  baseline/grant edits are in-leaf unauthorized — so the red is the
+  documented merge blocker, not a defect.
+- **Other gates re-run**: `check-reachability.py` exit 1 listing only the two
+  sanctioned modules; `check-reachability-dispositions.py` exit 0;
+  `check-promotion-surface.py` exit 0; `check-suite-inventory.py --suite
+  packages/maistro-core/tests` reports expected 16299 vs collected 16300 —
+  the +1 is exactly the uncommitted foreign `test_pack_id_colliding_with_an_
+  active_extension_is_refused` in the salvage file (committed file has 66
+  tests, worktree 67); the committed tree therefore matches the recorded
+  baseline exactly, as the prior driver's clean-tree log (16299 ok) confirms.
+- **Scope re-proven**: `git diff --name-only <base>...HEAD` = exactly the 8
+  sanctioned surfaces; `tasks/idempotency.py`, `tasks/__init__.py`,
+  `runs/__init__.py` byte-identical to base; no production importer of the
+  classifier; import-spy test green; `git log` closure-keyword scan: none;
+  `git diff --numstat origin/develop -- quality/` shows zero inserted rows
+  (only two develop-side `ac-state-notes/auto-*.json` files absent because the
+  branch predates them — develop divergence for the parent sync, not a
+  self-grant).
+- **Verdict-relevant statement**: unchanged — implementation and tests meet
+  every #1852 acceptance criterion at this exact head; the single hosted red
+  that is the leaf's own doing remains the issue-sanctioned
+  unwired-reachability delta whose lawful retirement is the separately
+  reviewed #1845 integration consumer. The stack stays unmerged by design;
+  this lane takes no merge/PR action.
