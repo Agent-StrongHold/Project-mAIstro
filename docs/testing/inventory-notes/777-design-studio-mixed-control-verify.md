@@ -21317,3 +21317,65 @@ contract owner, #776 per-Workspace working graph, #53 front door and
 #93/#95 production path are open, and the issue's stop condition forbids a
 Design-Studio-private substitute. Inventory delta **+0** (this record only).
 (Refs #777)
+
+## Round 128 (job 622cd347346e4f0a83a6af4205808657, 2026-10-10 ~19:2xZ) — repair round at unchanged head `0d9d725ad`
+
+Trigger: prior job `63ed1f623c4a` (`result.json` inspected directly) failed
+on **provider error only** — `error: "provider error (llama-cpp-gemma/…):
+Request timed out."`, `agent_exit 0`, `checks: []`. No deterministic check
+ran and none failed; there is no code finding to repair. This job's
+directory contains **no `check-*.log`**, so the full battery was re-executed
+locally at `0d9d725ad` (working tree clean, HEAD == dispatch head).
+
+Sync-conflict path ruled out again: fresh `git fetch origin` →
+`origin/develop` = `435dc1937` = merge-base, **0 behind / 481 ahead** —
+nothing to merge.
+
+Dependency re-capture (this job's dispatch-context, 19:22Z snapshot):
+#777 open; blockers **#773/#774/#776/#804/#805/#806/#53/#93/#95 all still
+OPEN** (#779/#780/#783/#794/#986/#1823 also open); #775/#39/#458 closed;
+PR #1660 draft open (issue record), head `460ad5802` == HEAD~2.
+
+Branch production diff vs develop re-verified: **4 files +30/−5**
+(`design_service.py` comment-only ±1, `agent_loop.py` +6/−2 restoring the
+`system_prompt` field + dropping dead `tool_definitions`, `runs/model.py`
++8/−2 unannotated wrap serializer, cancellation-cause test +15) plus the
+earlier sanctioned vulture row removal. Diff claims audited directly this
+round: (a) removed `AgentLoopConfig.tool_definitions` has **0 remaining
+consumers** (remaining `tool_definitions` hits are unrelated hive
+chat-completion locals at `chat_completion.py:2587-2594`); (b) the
+documented `system_prompt` reader is real at
+`packages/maistro-rsi/src/maistro_rsi/local_loop.py:817` inside
+`make_builders_apply_patch`; (c) the schema-pin regression test
+`test_the_serialization_mode_schema_keeps_every_declared_field` is present
+and passing within the 34-test suite (standalone pydantic 2.13.5 mechanism
+proof from round 124 stands).
+
+Battery at `0d9d725ad`, all exit 0: `ruff check .`; `ruff format --check .`
+→ **3282 files already formatted**; vulture **CI-exact args**
+(`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) →
+**1323 reviewed → 1322 findings, 0 unbanked**; `check-ratchet-provenance.py`
+(0 violations, 53 consumers); `check-shipped-surface-truth.py`;
+`check-reachability.py` (1394 modules, 169 unreachable); `check-suite-inventory.py`
+(17/17 — a first attempt with bare `python3` failed on missing `structlog`
+and was re-run under `uv run`, exit 0); `check-backlog-consistency.py` →
+167 items; `check-radon-baseline.py` → **137 → 137**; `mypy --strict` on the
+touched `runs/model.py` → **Success**.
+
+Targeted pytest (live PG `maistro-postgres` @ 127.0.0.1:5433, db
+`maistro_test_777`, alembic rev **062** confirmed via `alembic_version`,
+DSN `postgresql://maistro:test@…`): branch-touched
+`runs/test_attempt_cancellation_cause_model.py` → **34 passed**; bootstrap
+`-k agent_loop` → **40 passed** (200 deselected); hive design service
+suites (`test_design_{service_startup,scope,renderers,preview,consistency_route,packs_route,systems_route}`)
+→ **96 passed**; `packages/maistro-design/tests` → **572 passed / 1
+skipped**.
+
+**Verdict: BLOCKED** — dependency-blocking (128th consecutive round). The
+only prior-round failure was the driver's provider timeout; no stale or
+failing deterministic check exists at this head. All 13 acceptance criteria
+remain UNVERIFIED against reachable production behavior: #804/#805/#806
+Goal reconciliation, #774 CreativeBrief contract owner, #776 per-Workspace
+working graph, #53 front door and #93/#95 production path are open, and the
+issue's stop condition forbids a Design-Studio-private substitute.
+Inventory delta **+0** (this record only). (Refs #777)
