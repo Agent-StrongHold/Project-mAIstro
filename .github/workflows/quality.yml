@@ -121,6 +121,27 @@ jobs:
           # diff gate measures execution paths nothing ran.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
+      # The sandbox suites measured here (core's tools/sandbox, evolve's
+      # swebench/sandbox_exec) really run `docker run python:3.12-slim`.
+      # On a cold runner the first such test pays the registry pull inside its
+      # own 30s pytest-timeout budget, and when the registry stalls the test
+      # dies as a timeout that has nothing to do with the code under test
+      # (#965 repair: `coverage (no services)` red at 538676f7 with the event
+      # loop parked in selector.poll behind an unbounded `docker run`). This
+      # is the #204 pattern — fetch the external image once, with retries, so
+      # per-test budgets measure code, not registry latency.
+      - name: Pre-pull sandbox image (retry transient registry faults)
+        run: |
+          for attempt in 1 2 3; do
+            if docker pull python:3.12-slim; then
+              exit 0
+            fi
+            echo "::warning::docker pull python:3.12-slim failed (attempt $attempt/3); retrying" >&2
+            sleep $((attempt * 5))
+          done
+          echo "::error::could not pull python:3.12-slim after 3 attempts" >&2
+          exit 1
+
       # ----- Pillar 1: coverage (line + branch ≥95% on touched files) -----
       # C2/#287: measured over the PyPI publish set (core, canvas, evolve, rsi,
       # bootstrap — the PyPI publish set),
@@ -164,7 +185,7 @@ jobs:
           uv run coverage run --append --branch --source=packages/maistro-bootstrap/src/maistro_bootstrap \
             -m pytest packages/maistro-bootstrap/tests --timeout=30 -q
       - name: upload coverage data
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-unit
           # `.coverage` is a dotfile and upload-artifact@v4 skips hidden files
@@ -286,7 +307,7 @@ jobs:
           uv run coverage run --branch --source=packages/maistro-core/src/maistro \
             -m pytest packages/maistro-core/tests/archive -v --tb=short
       - name: upload coverage data
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-archive
           include-hidden-files: true
@@ -454,7 +475,7 @@ jobs:
             --source=packages/maistro-canvas/src/maistro_canvas \
             -m pytest packages/maistro-canvas/tests --timeout=30 -q
       - name: upload coverage data
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-postgres
           include-hidden-files: true
