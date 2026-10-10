@@ -2,7 +2,7 @@
 
 The durable twin of `sqlite_store.py` and of `InMemoryGoalStore`, run against
 the same conformance suite. For a managed deployment the tables come from
-Alembic migration ``062_canonical_goals``; ``ensure_goal_schema`` mirrors that
+Alembic migration ``063_canonical_goals``; ``ensure_goal_schema`` mirrors that
 DDL for tests and single-command dev runs the way ``ensure_event_schema``
 mirrors migration 004 — a database that never ran the chain still gets the
 real durable tables, never a substitute schema nobody migrates. The two DDL
@@ -57,7 +57,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
     import asyncpg.pool
 
-#: Tables the PostgreSQL Goal store answers through. Migration 062 owns their
+#: Tables the PostgreSQL Goal store answers through. Migration 063 owns their
 #: DDL for managed deployments; ``_PG_SCHEMA`` below mirrors it.
 GOAL_PG_TABLES: Final = (
     "canonical_goals",
@@ -65,7 +65,7 @@ GOAL_PG_TABLES: Final = (
     "canonical_goal_transitions",
 )
 
-#: The Goal tables' DDL, mirroring ``alembic/versions/062_canonical_goals.py``
+#: The Goal tables' DDL, mirroring ``alembic/versions/063_canonical_goals.py``
 #: statement for statement. Written out rather than imported on purpose — a
 #: migration must keep creating what it created on the day it ran, so it cannot
 #: import live application code — which is exactly why the agreement test
@@ -125,7 +125,7 @@ async def ensure_goal_schema(pool: asyncpg.Pool) -> None:
     clean no-op. A transaction-scoped advisory lock serialises them and is
     released when the transaction ends, including by crash.
 
-    Migration 062 remains the real path for a managed deployment; this is what
+    Migration 063 remains the real path for a managed deployment; this is what
     lets the Container come up — with Goals on the same durable PostgreSQL the
     deployment already selected — in tests and single-command dev runs that
     never ran the chain, instead of refusing startup over tables one statement

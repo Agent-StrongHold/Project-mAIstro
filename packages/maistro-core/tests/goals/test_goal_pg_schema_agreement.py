@@ -1,7 +1,7 @@
-"""Migration 062 and `pg_store._PG_SCHEMA` must describe the same three tables.
+"""Migration 063 and `pg_store._PG_SCHEMA` must describe the same three tables.
 
 The Goal tables ship twice. A managed deployment gets them from Alembic
-revision 062; tests and single-command dev runs get them from
+revision 063; tests and single-command dev runs get them from
 `ensure_goal_schema` — the same dual-ship, and the same drift risk, the event
 stores carry (compared by `tests/migrations/test_event_schema_agreement.py`).
 The DDL is written out twice on purpose — a migration has to keep creating
@@ -9,7 +9,7 @@ what it created on the day it ran, so it cannot import live application code —
 and duplicated DDL drifts.
 
 Drift here is not cosmetic. `parent_goal_id`'s foreign key with ON DELETE
-CASCADE *is* the Subgoal lineage contract (#1572): if migration 062 ever grew
+CASCADE *is* the Subgoal lineage contract (#1572): if migration 063 ever grew
 a RESTRICT while `_PG_SCHEMA` kept the CASCADE, every conformance test would
 pass against the store's own schema and a managed deployment would delete
 Goals differently than every test environment. So this compares the two
@@ -37,7 +37,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[4]
 DATABASE_URL = os.environ.get("MAISTRO_TEST_DATABASE_URL", "")
 
-#: The tables migration 062 creates. Spelled out rather than derived from the
+#: The tables migration 063 creates. Spelled out rather than derived from the
 #: catalogue: a comparison of "the tables that exist" passes vacuously when
 #: neither side creates anything.
 GOAL_TABLES = (
@@ -47,10 +47,10 @@ GOAL_TABLES = (
 )
 
 #: Each side rendered/applied on its own: `alembic upgrade a:b --sql` renders
-#: the revisions strictly between the two, so rendering `062:head` would drag
+#: the revisions strictly between the two, so rendering `063:head` would drag
 #: every later revision into the comparison — and there must not be one that
 #: recreates these tables.
-GOAL_REVISION_RANGE = "061:062"
+GOAL_REVISION_RANGE = "062:063"
 
 
 def _require_postgres() -> str:
@@ -72,12 +72,12 @@ def _require_postgres() -> str:
 
 
 def _migration_ddl() -> str:
-    """Render revision 062 with `alembic --sql`, which does not connect.
+    """Render revision 063 with `alembic --sql`, which does not connect.
 
     Offline mode still builds a URL through `DatabaseSettings`, so the DB_* vars
     below only have to parse — nothing dials them. Rendering the real migration
     rather than re-typing its DDL is the point: a change to
-    `alembic/versions/062_canonical_goals.py` reaches this test.
+    `alembic/versions/063_canonical_goals.py` reaches this test.
     """
     env = {
         **os.environ,
@@ -102,7 +102,7 @@ def _migration_ddl() -> str:
 def _executable_statements(ddl: str) -> list[str]:
     """Strip comments and transaction/bookkeeping noise from rendered DDL.
 
-    What survives is only the CREATE TABLE / CREATE INDEX revision 062 emits.
+    What survives is only the CREATE TABLE / CREATE INDEX revision 063 emits.
     `alembic_version` is dropped because it is alembic's own bookkeeping, not
     part of the schema under comparison.
     """
@@ -118,7 +118,7 @@ def _executable_statements(ddl: str) -> list[str]:
             continue
         statements.append(statement)
     if not statements:  # pragma: no cover - a silent empty render would pass everything
-        msg = "alembic rendered no DDL for revision 062; the comparison would be vacuous"
+        msg = "alembic rendered no DDL for revision 063; the comparison would be vacuous"
         raise AssertionError(msg)
     return statements
 
@@ -231,7 +231,7 @@ async def built_schemas():
         await conn.close()
 
 
-class TestMigration062MatchesEnsureSchema:
+class TestMigration063MatchesEnsureSchema:
     def test_both_sides_create_all_three_tables(self, built_schemas):
         """Guards the comparison itself: equal-and-empty is not agreement."""
         migration, ensure = built_schemas

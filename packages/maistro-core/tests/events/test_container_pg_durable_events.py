@@ -155,7 +155,7 @@ class TestTheOtherTwoBackendsAreUnchanged:
 
     async def test_wiring_a_bare_pool_also_creates_the_goal_schema(self, pg_pool, wire):
         """The Container composes Goals on the pool too (#1572), and a Goal
-        store that refused a database without migration 062 used to kill the
+        store that refused a database without migration 063 used to kill the
         whole Container before the event schema existed — every test in this
         file went red on a bare service. The contract is the same one the
         event stores ship: wiring creates the schema it needs, and Goals stay

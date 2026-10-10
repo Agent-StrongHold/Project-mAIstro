@@ -8,7 +8,7 @@ a library, not composition. So this file proves three claims:
 * **Backend selection** — `wire_goal_store` picks the durable twin over the
   SQLite pool the deployment already has, and the PostgreSQL store over a pool
   whose database has not run `alembic upgrade head` yet: the missing
-  migration-062 tables are created at wiring (`ensure_goal_schema`, the event
+  migration-063 tables are created at wiring (`ensure_goal_schema`, the event
   stores' "wiring creates the schema it needs" contract) so the Container comes
   up with Goals on the durable backend it selected — never answered with an
   in-process store that merely looks the same, the split-backend defect the
@@ -136,7 +136,7 @@ async def test_wire_goal_store_creates_the_schema_an_unmigrated_pg_pool_needs(
 ) -> None:
     """A pool that never ran `alembic upgrade head` gets its Goal tables here.
 
-    The Container must come up on a database without the migration-062 tables —
+    The Container must come up on a database without the migration-063 tables —
     the durable-events contract the refusal broke — and Goals must stay on the
     durable PostgreSQL the deployment selected, never fall back to SQLite or
     memory. So wiring creates the schema (advisory-locked, like every

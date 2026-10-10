@@ -6,7 +6,7 @@ loudly instead of silently losing canonical Goals on restart. A PostgreSQL
 pool always selects the durable ``PgGoalStore`` — never an in-process store
 that only looks the same, which is the split-backend defect
 ``workspaces/wiring.py`` documents. When the pool's database has not run
-`alembic upgrade head` yet, the missing migration-062 tables are created here
+`alembic upgrade head` yet, the missing migration-063 tables are created here
 (``ensure_goal_schema``, the same contract the event stores ship: wiring
 creates the schema it needs) rather than refusing a Container startup over
 tables one idempotent statement away; managed deployments keep getting the

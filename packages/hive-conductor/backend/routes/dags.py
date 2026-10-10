@@ -180,7 +180,7 @@ class CreateDAGBody(BaseModel):
 
 
 @router.post("", status_code=201)
-def create_dag(body: CreateDAGBody) -> dict:
+def create_dag(body: CreateDAGBody, request: Request) -> dict:
     t = _now()
     entry_id = str(uuid4())
     worker_id = str(uuid4())
@@ -203,7 +203,15 @@ def create_dag(body: CreateDAGBody) -> dict:
         updated_at=t,
     )
     stores.dags[dag_id] = dag.model_dump(mode="json")
-    log_audit("dag_create", "system", target=dag_id, detail={"name": body.name})
+    # Attribute the write to the initiating principal, not "system": the
+    # non-admin audit scope only retains entries naming the principal, so a
+    # "system" actor would hide the user's own create from their audit page.
+    log_audit(
+        "dag_create",
+        _actor(request),
+        target=dag_id,
+        detail={"name": body.name},
+    )
     return dag.model_dump(mode="json")
 
 
@@ -259,13 +267,13 @@ def delete_dag(dag_id: str) -> None:
 
 
 @router.post("/{dag_id}/activate")
-def activate_dag(dag_id: str) -> dict:
+def activate_dag(dag_id: str, request: Request) -> dict:
     if dag_id not in stores.dags:
         raise HTTPException(status_code=404, detail="dag not found")
     dag = DAGFile(**stores.dags[dag_id])
     dag = dag.model_copy(update={"status": "active", "updated_at": _now()})
     stores.dags[dag_id] = dag.model_dump(mode="json")
-    log_audit("dag_activate", "system", target=dag_id)
+    log_audit("dag_activate", _actor(request), target=dag_id)
     return dag.model_dump(mode="json")
 
 

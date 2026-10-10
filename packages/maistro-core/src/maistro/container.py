@@ -2355,7 +2355,7 @@ async def create_container(
     campaign_store: CampaignStore | None = await _wire_campaign_backend(db_pool)
     # The canonical Goal store rides the same backend decision, upgraded where
     # the deployment offers it: a PostgreSQL pool always selects the durable
-    # PgGoalStore, creating the migration-062 tables when the database has not
+    # PgGoalStore, creating the migration-063 tables when the database has not
     # run `alembic upgrade head` yet — the event stores' "wiring creates the
     # schema it needs" contract, never a second (in-process) backend (#1572).
     # Without a PG pool, SQLite selects its twin and no database selects memory

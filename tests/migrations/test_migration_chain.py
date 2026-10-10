@@ -105,7 +105,7 @@ EXPECTED_TABLES = frozenset(
         # score names the Run, NodeRun and Attempt it scored, so it is
         # execution evidence, not a sidecar lifecycle.
         "canonical_run_eval_scores",
-        # The canonical Goal store (#1572, 062): identity + Subgoal lineage,
+        # The canonical Goal store (#1572, 063): identity + Subgoal lineage,
         # the append-only desired-state revision chain, and the recorded,
         # attributed transition ledger. Desired state and accountability, not
         # execution state — they are NOT children of canonical_runs.
@@ -297,6 +297,77 @@ def empty_database():
     yield
     _alembic("downgrade", "base")
     _drop_all_tables()
+
+
+class TestAuditCursorIndexes:
+    def test_indexes_upgrade_and_reverse_without_losing_audit_rows(self, empty_database) -> None:
+        """The shipping chain installs every seek and rolls back only its indexes."""
+        assert _alembic("upgrade", "061").returncode == 0
+        _execute("INSERT INTO audit_log (boundary, user_id) VALUES ('login', 'alice')")
+
+        result = _alembic("upgrade", "head")
+        assert result.returncode == 0, result.stderr
+        indexes = dict(
+            _query(
+                "SELECT indexname, indexdef FROM pg_indexes "
+                "WHERE schemaname = 'public' AND tablename = 'audit_log' "
+                "AND indexname LIKE %s",
+                ("ix_audit_page_%",),
+            )
+        )
+        assert set(indexes) == {f"ix_audit_page_{index}" for index in range(8)}
+        assert all("org_id" in definition for definition in indexes.values())
+        assert all('"timestamp" DESC, id DESC' in definition for definition in indexes.values())
+
+        result = _alembic("downgrade", "061")
+        assert result.returncode == 0, result.stderr
+        assert not _query(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' "
+            "AND tablename = 'audit_log' AND indexname LIKE %s",
+            ("ix_audit_page_%",),
+        )
+        assert _query("SELECT boundary, user_id FROM audit_log") == [("login", "alice")]
+        # Rolling back audit indexes must not undo develop's preceding revision.
+        assert _query("SELECT version_num FROM alembic_version") == [("061",)]
+        assert _query(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'graph_continuations' "
+            "AND column_name = 'has_hitl_pause'"
+        ) == [("has_hitl_pause",)]
+        assert _query(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' "
+            "AND tablename = 'graph_continuations' "
+            "AND indexname = 'ix_graph_continuations_hitl_paused'"
+        ) == [("ix_graph_continuations_hitl_paused",)]
+        assert _query(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' "
+            "AND tablename = 'canonical_runs' "
+            "AND indexname = 'ix_canonical_runs_status_created'"
+        ) == [("ix_canonical_runs_status_created",)]
+        assert {
+            "backlog_items",
+            "backlog_events",
+            "backlog_documents",
+            "backlog_claims",
+            "backlog_authority",
+            "user_model_facts",
+            "user_model_statement_keys",
+            "invocation_quota_allocations",
+            "invocation_quota_budgets",
+            "invocation_quota_evidence",
+            "invocation_quota_reservations",
+        } <= _tables()
+        assert _query(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'task_idempotency' "
+            "AND column_name = 'generation_id'"
+        ) == [("generation_id",)]
+        # The preceding learning-lifecycle migration must still be present.
+        assert _query(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'learnings' "
+            "AND column_name = 'confidence'"
+        ) == [("confidence",)]
 
 
 class TestTheChainApplies:

@@ -39,9 +39,10 @@ written, re-parented onto each tip in the earlier collisions — follows the
 revision continues that chain as ``058_learning_validation_provenance``;
 the backlog pair (#98/#102) claims the next two slots as ``059``/``060``;
 and #1109's pause-kind projection — ``059`` when written on that same
-``058`` tip — landed on develop as ``061_hitl_pause_kind_index``.
-The unmerged canonical Goal store appends as ``062`` without reassigning
-any of those merged identities.
+``058`` tip — landed on develop as ``061_hitl_pause_kind_index``. Develop's
+#358 audit cursor indexes then appended past it as ``062``, and the
+canonical Goal store appends as ``063`` without reassigning any of those
+merged identities.
 """
 
 from __future__ import annotations
@@ -203,10 +204,11 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     # 046 directly. #1109's pause-kind projection (M1-B8) — `059` when
     # written on that same `058` tip — renumbers past the backlog pair (a
     # landed trunk migration never moves; 046 records the convention),
-    # re-parenting onto develop's `060` as `061_hitl_pause_kind_index`.
-    # The unmerged Goal migration follows as `062`; installed-base upgrade
+    # re-parenting onto develop's `060` as `061_hitl_pause_kind_index`, and
+    # develop's #358 audit cursor indexes follow that landed revision as
+    # `062`. The Goal migration appends as `063`; installed-base upgrade
     # tests cover the preserved 056/057/061 identities and forward upgrade.
-    assert directory.get_heads() == ["062"]
+    assert directory.get_heads() == ["063"]
     walked = {item.revision for item in directory.walk_revisions("base", "062")}
     assert {
         "034_canonical_run_effect_claim",
@@ -233,6 +235,24 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
         "061",
         "062",
     } <= walked
+    assert directory.get_revision("055").down_revision == "054"
+    assert directory.get_revision("043_invocation_quota_door").down_revision == "055"
+    assert directory.get_revision("056").down_revision == "043_invocation_quota_door"
+    assert directory.get_revision("057").down_revision == "056"
+    assert directory.get_revision("058").down_revision == "057"
+    assert directory.get_revision("059").down_revision == "058"
+    assert directory.get_revision("060").down_revision == "059"
+    assert directory.get_revision("061").down_revision == "060"
+    assert directory.get_revision("062").down_revision == "061"
+    assert Path(directory.get_revision("056").path).name == "056_user_model_facts.py"
+    assert Path(directory.get_revision("057").path).name == "057_run_store_planner_stability.py"
+    assert Path(directory.get_revision("058").path).name == "058_learning_validation_provenance.py"
+    assert Path(directory.get_revision("059").path).name == "059_backlog_work_source.py"
+    assert Path(directory.get_revision("060").path).name == "060_backlog_authority_cutover.py"
+    assert Path(directory.get_revision("061").path).name == "061_hitl_pause_kind_index.py"
+    assert Path(directory.get_revision("062").path).name == "062_audit_cursor_indexes.py"
+    assert directory.get_revision("063").down_revision == "062"
+    assert Path(directory.get_revision("063").path).name == "063_canonical_goals.py"
     # The superseded standalone revisions must stay gone: resurrecting either
     # re-forks the chain (a second head) or re-applies DDL no store declares —
     # the exact collision the 55be1459 resolution removed them for. Develop's

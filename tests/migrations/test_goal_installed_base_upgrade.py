@@ -13,9 +13,9 @@ clarification on #1572 forbids exactly that: merged identities keep their
 meaning and ancestry, and the new revision appends after the integrated
 develop head under an unused id. The integrated tree claims ``058`` for
 learning-validation provenance and ``059``/``060`` for backlog work-source
-and authority cutover; HITL pause-kind projection landed as ``061``.
-Goals append as ``062_canonical_goals`` rather than reusing those installed
-identities.
+and authority cutover; HITL pause-kind projection landed as ``061`` and
+develop's audit cursor indexes as ``062``. Goals append as
+``063_canonical_goals`` rather than reusing those installed identities.
 
 So this suite proves the three things the clarification asks for:
 
@@ -62,8 +62,8 @@ HITL_FILE = "alembic/versions/061_hitl_pause_kind_index.py"
 USER_MODEL_FILE = "alembic/versions/056_user_model_facts.py"
 PLANNER_FILE = "alembic/versions/057_run_store_planner_stability.py"
 
-#: The single linear head after HITL ``061`` and the Goal store.
-GOAL_REVISION = "062"
+#: The single linear head after HITL ``061``, audit ``062`` and the Goal store.
+GOAL_REVISION = "063"
 
 GOAL_TABLES = ("canonical_goals", "canonical_goal_revisions", "canonical_goal_transitions")
 USER_MODEL_TABLES = ("user_model_facts", "user_model_statement_keys")
@@ -406,7 +406,7 @@ class TestTheMergedIdentities:
         assert revisions["059"].down_revision == "058"
         assert revisions["060"].down_revision == "059"
         assert revisions["061"].down_revision == "060"
-        assert revisions[GOAL_REVISION].down_revision == "061"
+        assert revisions[GOAL_REVISION].down_revision == "062"
         assert script_directory.get_heads() == [GOAL_REVISION]
         # The filenames carry the merged identities too — a renamed file
         # and a moved id are the same silent reassignment in two clothes.
@@ -416,7 +416,7 @@ class TestTheMergedIdentities:
         assert (VERSIONS / "059_backlog_work_source.py").is_file()
         assert (VERSIONS / "060_backlog_authority_cutover.py").is_file()
         assert (VERSIONS / HITL_FILE.rsplit("/", 1)[-1]).is_file()
-        assert (VERSIONS / "062_canonical_goals.py").is_file()
+        assert (VERSIONS / "063_canonical_goals.py").is_file()
 
     def test_restored_files_are_byte_identical_to_the_merged_snapshots(self) -> None:
         """The merged revisions' content is what develop shipped, byte for byte.

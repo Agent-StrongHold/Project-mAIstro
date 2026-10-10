@@ -587,14 +587,12 @@ class TestTheDowngrade:
 
         assert result.returncode != 0, "the downgrade discarded live v2 identity"
         assert "format_version" in result.stderr + result.stdout
-        # A multi-revision `alembic downgrade` is one transaction: the refusal
-        # partway through rolls the whole attempt back, so the stamp never
-        # moves off whatever head it started from -- not a fixed literal,
-        # which is only ever an artifact of whatever was the chain tip when
-        # this test was last synced (develop asserted its quota-door tip here,
-        # then its planner-stability tip; the branch's own integration keeps
-        # landing a new tip on top).
-        assert _stamped_version() == head
+        # A multi-revision downgrade is transactional: even revisions preceding
+        # the refusal roll back, preserving the original head. Read that head
+        # from the same version files the upgrade used, so subsequent migrations
+        # (including backlog authority, audit indexes and the Goal store) cannot
+        # stale a literal.
+        assert _stamped_version() == _chain_head()
         assert _query("select * from task_idempotency order by scope_key") == before
         assert "generation_id" in _v2_columns()
 
