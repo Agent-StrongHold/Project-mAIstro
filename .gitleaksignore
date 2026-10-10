@@ -80,3 +80,15 @@ b5c22a358a8b0a0fb064e89eb6b4eba6855b58c2:.gitleaksignore:generic-api-key:54
 # Both findings are Python names and an enum qualifier, not credential values.
 77c17b9b89d92a209e5f5081cf31112b93ac7e45:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:462
 77c17b9b89d92a209e5f5081cf31112b93ac7e45:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:476
+
+# ---- #860 historical soak fixtures on the unmerged auto-860 lane ----
+# Protected-branch scans use --all, which includes fetched unmerged branches.
+# These exact fingerprints are already documented in auto-860's ignore file.
+# The first is a deterministic fixture supplied only to the harness's own
+# throwaway stack; the current lane replaced its credential-shaped spelling.
+# The second is a task-deduplication correlation ID in immutable probe evidence,
+# not authentication material. Preserve the recorded observation unchanged.
+# Scope each exemption to its original commit, path, rule and line. New values
+# or commits remain scanned; no source path or rule is excluded wholesale.
+8185c1d076e3471e41fd948ac2bc43c6c2d110b8:scripts/soak/run_soak.py:generic-api-key:51
+88edcc7ea03baf4257a9edfb47e56a5493d6d329:docs/testing/soak/evidence/m3a-round7-prodstack-quick-probes.json:generic-api-key:13
