@@ -28,18 +28,21 @@ This package carries the extension surface of epic #938, in four layers:
   identity, package digest/signature metadata, manifest snapshots, catalog
   provenance and durable trust evidence; the append-only
   :class:`ExtensionInstallStore` protocol with its in-memory reference and
-  SQLite durable twin. The inspect→authorize→install flow (#953) and the
-  pin/upgrade/rollback lifecycle (#954) build on these records.
-
+  SQLite durable twin.
 - **M9-B2 activation (issue #953)**: the governed install state machine —
   the pure evaluation modules (manifest, compatibility, trust, authority),
   the activation store seam, and :class:`ExtensionInstallService`. Nothing in
   this package ever imports extension code; activation runs only through the
   host-supplied :class:`ExtensionCodeLoader`, and only after explicit
-  authorization. The post-install lifecycle (#954) lives on the same
-  service: disable/re-enable, rollback to a previously authorized version,
-  terminal removal, and operator pins that fence version moves — every step
-  audited, none ever re-running the loader or widening a grant.
+  authorization.
+- **M9-B3 post-install lifecycle (issue #954)**: pin, resume, rollback,
+  disable and remove on the same records and the same audit trail. A
+  displaced version becomes ``SUPERSEDED`` (rollback-eligible, grant frozen);
+  disable clears the active pointer so new use stops structurally; remove
+  runs the host's :class:`OwnedResourceJanitor` before any transition and
+  leaves the record as evidence. Rollback refuses any target whose frozen
+  grant broadens authority — broader authority requires the fresh
+  inspect → authorize pass, never a rollback side door.
 - **M9-C1 policy (issue #955, ``maistro.extensions.compat``)**: decides
   whether an extension's declared contract, features, and deprecation posture
   are compatible with this host — from metadata alone, before any code
@@ -376,6 +379,8 @@ from maistro.extensions.service import (
     ExtensionCodeLoader,
     ExtensionInstallService,
     LoadedExtension,
+    OwnedResourceJanitor,
+    RetainAllJanitor,
     UnwiredExtensionLoader,
 )
 from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
@@ -397,6 +402,7 @@ from maistro.extensions.trust import TrustPolicy, TrustReport, evaluate_trust
 # which is how its in-tree consumers already import it.
 from maistro.extensions.types import (
     DIGEST_ALGORITHM,
+    REMOVABLE_STATES,
     TERMINAL_STATES,
     TRANSITIONS,
     ArtifactMismatch,
@@ -406,6 +412,7 @@ from maistro.extensions.types import (
     ExtensionLifecycleError,
     ExtensionManifest,
     ExtensionPackage,
+    ExtensionPinned,
     ExtensionRegistryError,
     ExtensionScope,
     ExtensionState,
@@ -422,11 +429,11 @@ from maistro.extensions.types import (
     PublisherIdentity,
     PublisherKeyConflict,
     RegistryProvenance,
+    RollbackRefused,
     TrustClaim,
     TrustEvidence,
     UnknownInstall,
     UnknownPublisher,
-    VersionPinned,
     canonical_install_payload,
     identity_key,
     manifest_snapshot,
@@ -481,6 +488,7 @@ __all__ = [
     "PUBLICATION_PROFILE",
     "PUBLIC_IMPORTS_CHECK_ID",
     "REAL_ISOLATION_TIERS",
+    "REMOVABLE_STATES",
     "ROOT_REQUEST_ORIGIN",
     "SEAL_FORMAT",
     "SECURITY_SCAN_CHECK_ID",
@@ -581,6 +589,7 @@ __all__ = [
     "ExtensionOperatorAction",
     "ExtensionOperatorState",
     "ExtensionPackage",
+    "ExtensionPinned",
     "ExtensionProgress",
     "ExtensionQuotaBalance",
     "ExtensionQuotaConflict",
@@ -638,6 +647,7 @@ __all__ = [
     "MissingLockArtifacts",
     "ObservationOutcome",
     "OperatorDecision",
+    "OwnedResourceJanitor",
     "PackAsset",
     "PackAssetKind",
     "PackAssetUnknown",
@@ -673,6 +683,8 @@ __all__ = [
     "RenderedComponent",
     "ResolutionConflict",
     "ResolutionError",
+    "RetainAllJanitor",
+    "RollbackRefused",
     "RootRequest",
     "RouteParam",
     "SandboxPolicy",
@@ -709,7 +721,6 @@ __all__ = [
     "UnwiredExtensionLoader",
     "UsageTotals",
     "Verdict",
-    "VersionPinned",
     "VersionRange",
     "ViolationKind",
     "WorkspaceExtensionPolicy",

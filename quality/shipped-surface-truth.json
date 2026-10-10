@@ -2014,6 +2014,66 @@
       "effect_owner": "extension health store (operator decisions) + health projections"
     },
     {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/pin",
+      "handler": "pin_extension_version",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "pins the active version so activation of another version is refused until the pin is explicitly lifted (#954); both decisions land on the audit trail",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/unpin",
+      "handler": "unpin_extension_version",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "lifts the pin with an audited, reason-carrying decision before any version change can follow (#954)",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/disable",
+      "handler": "disable_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "suspends the extension: clears the active pointer so the resolution seam stops serving it immediately, while records and transitions stay queryable (#954)",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/resume",
+      "handler": "resume_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "returns a disabled extension to service by re-running its activation loader with the same digest-bound artifact; the grant is not re-decided (#954)",
+      "effect_owner": "extension install store + extension loader (activation) + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/rollback",
+      "handler": "rollback_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "restores a superseded version through the loader only when its frozen grant declares no broadened authority and it still evaluates compatible; otherwise 409 with the current version untouched (#954)",
+      "effect_owner": "extension install store + extension loader (activation) + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/remove",
+      "handler": "remove_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "uninstalls the record (terminal for authority) while preserving every historical record and transition as queryable evidence; owned-resource cleanup runs before the transition (#954)",
+      "effect_owner": "extension install store + owned-resource janitor + transition audit trail"
+    },
+    {
       "source": "packages/maistro-server/src/maistro_server/api/projects.py",
       "method": "DELETE",
       "route": "/{project_id}",
