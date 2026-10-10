@@ -4282,3 +4282,68 @@ any in-lane resolution and none exists (details below).
 Round-58 verdict: all leaf acceptance criteria proven at `9276c1085` —
 implementation/test readiness handoff with the external merge blocker
 explicit; not an integration approval.
+
+## Round 59 (2026-10-10, repair job 65f4414c at `553123c2a5e0`, base `bb4257f0960f`)
+
+Re-verification round; no code or ledger changes. The immediately prior job
+(`bfda0fc0be15`) was a provider timeout after all five driver checks had
+finished green at this same head, so this round re-proves the material claims
+firsthand and adds two structural proofs round 58 did not record.
+
+- Driver battery re-confirmed at `553123c2` (check-0..4 logs, all rc=0) and
+  re-run firsthand: focused suite 79/79; repo-wide `ruff check .` rc=0;
+  `ruff format --check .` rc=0 (3,270 files); full `check-suite-inventory.py`
+  rc=0 (17 suites match the recorded inventory).
+- Pillar-4 step proven at CI-exact scope for the first time in these notes:
+  after `uv sync --locked --all-extras`, `mypy --strict
+  packages/maistro-core/src` rc=0 (781 source files) — the quality-gate's own
+  command, not the seven-tree variant.
+- Structural proof of the two-merge wall (why no candidate-side edit can turn
+  either CI job green):
+  `scripts/ratchet_provenance.py:478-518` (`load_authorizations`) resolves
+  `quality/ratchet-authorizations.json` **from the base revision**
+  (`resolve_baseline(path, base=base_sha)`), and its docstring states "a new
+  grant does not take effect in the change that introduces it";
+  `scripts/check-vulture-baseline.py:368-376` exits 1 whenever `unauthorized`
+  is non-empty, where `unauthorized = trusted_added −
+  load_authorizations(base=trusted_ref.base_sha)`. The base grant file at
+  `bb4257f09` was walked across all 11 ratchet keys: zero grants name
+  `maistro.runs.admission_identity` (the 7 'admission' substring hits are
+  reasons on unrelated identities in vulture/radon rows).
+- Lane-brief repair instruction executed as written: the CI-argv vulture run
+  (rc=1, captured firsthand) lists exactly the five already-banked
+  `AdmissionAssessment` identities as trusted-base-unauthorized and zero
+  unbanked candidate-side identities (no "Candidate ledger bookkeeping still
+  needs attention" section printed — the candidate ledger is scan-exact at
+  1323→1328). Nothing is genuinely dead (the five are issue-fixed enum
+  contract members), so there is nothing to fix and the permitted amendment
+  is a structural no-op.
+- All candidate-side gates re-verified rc=0 with `RATCHET_BASE_REV=origin/develop`:
+  `check-reachability.py` (170/170 unreachable modules baselined),
+  `check-reachability-dispositions.py` (50 groups, 21 LIBRARY incl. the
+  staged `runs-admission-identity-contract` row),
+  `check-convergence-matrix.py` (52 subsystems), `check-promotion-surface.py`
+  (ok), `check-wiring-reads.py`, `check-contract-markers.py`,
+  `check_enumerations.py`, `check-shipped-surface-truth.py`.
+- Both merge-queue failures re-reproduced with CI argv and true exit codes:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=1 (5 unauthorized identities);
+  `check-ratchet-provenance.py` rc=1 solely via
+  `check-reachability-provenance.py` and
+  `check-reachability-dispositions-provenance.py` rc=1, each naming
+  `maistro.runs.admission_identity` as NEW/not-previously-authorized against
+  trusted base `bb4257f09`. Dispatch context carries the newest merge-queue
+  runs at this exact head (38061737026 quality, 38061737159 exact-debt-ledger:
+  both failure), superseding the older run IDs in the prior findings.
+- #1841 anchors and scope isolation re-proven in-tree:
+  `store_boundary.py:56`, `store.py:537`, `store.py:507/563`,
+  `model.py:300/320` unchanged; zero production importers of
+  `admission_identity`; no `maistro.runs.__init__` export; branch diff vs
+  develop remains exactly the seven manifest surfaces.
+- Unblock remains owner-side only: land the reviewed base grant on develop
+  (two-merge wall), or land the parent #1845 integration supplying the real
+  runtime consumer, which must pass the unchanged gates at its own head.
+
+Round-59 verdict: unchanged — all leaf acceptance criteria proven at
+`553123c2`; merge blocked by the external authorization wall only; not an
+integration approval and not repairable in-lane.
