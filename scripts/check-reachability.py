@@ -9,6 +9,7 @@ Reachability is a floor, not proof that an advertised capability is active.
 from __future__ import annotations
 
 import ast
+import functools
 import json
 import sys
 from collections.abc import Callable
@@ -692,6 +693,40 @@ def _reachability(
     static_roots: tuple[str, ...] = STATIC_ROOTS,
     dynamic_roots: tuple[str, ...] = DYNAMIC_ROOTS,
 ) -> tuple[dict[str, Path], set[str]]:
+    mods, seen = _reachability_walk(root, flat_apps, static_roots, dynamic_roots)
+    # Copies, never the cached objects. Every caller today treats the pair as
+    # read-only, and copying ~1,300 entries costs microseconds next to the
+    # multi-second walk — but a cache hands the same mutable dict and set to
+    # every caller, and one future mutating consumer would silently corrupt
+    # every other consumer's answer. Copy at the boundary instead of trusting
+    # each caller to know the value is shared.
+    return dict(mods), set(seen)
+
+
+@functools.cache
+def _reachability_walk(
+    root: Path,
+    flat_apps: tuple[FlatApp, ...],
+    static_roots: tuple[str, ...],
+    dynamic_roots: tuple[str, ...],
+) -> tuple[dict[str, Path], set[str]]:
+    """The one full walk, cached per argument tuple.
+
+    The walk parses every production module, so its cost scales with the
+    repository while its result is a pure function of its four immutable
+    arguments — same inputs, same graph, every time. Nothing here reads the
+    baseline or any other per-call state; `main()` reads BASELINE *after*
+    walking, and the tests that vary it monkeypatch that module attribute, not
+    the tree. Within one process the repository is not mutated between two
+    same-argument calls (the tests that need a different tree pass a different
+    `root`, which is a different cache entry), so caching cannot serve a stale
+    graph — it only stops identical recomputation. That matters now because
+    every consumer of this module paid the walk again per call: `main()` plus
+    the public helpers, the credential-authority and provenance gates, and the
+    root-suite self-checks, which each run two walks and were timing out on CI
+    runners under `--source=scripts` tracing once the tree grew past the 30s
+    per-test bound (quality.yml run 37522612054).
+    """
     mods = _collect_modules(root, flat_apps)
     tooling = {key: path for key, path in mods.items() if key.startswith(_TOOL_PREFIX)}
     edges: dict[str, set[str]] = {}
