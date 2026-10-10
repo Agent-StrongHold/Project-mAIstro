@@ -84,6 +84,11 @@ or placeholder-only section.
 
 ### Changed
 
+- **Vulture scans have one owner per existing event profile (#1357).** The
+  required Vulture Ratchet job owns PR, merge-queue and protected-push scans;
+  Quality keeps only its unique topic-push fallback. Scan scope, locked analyzer,
+  trusted-base semantics, required status names and debt ledgers are unchanged.
+
 - **Evolve model effects require declared, execution-scoped authority (#1087).**
   Manual/request-scoped Evolve work now resolves an operator-declared `model.chat`
   Binding in its canonical Run's Workspace/Project/Node scope and records the real
