@@ -4558,3 +4558,89 @@ design at scripts/ratchet_provenance.py:478-509). No in-scope repair exists:
 removing the five enum identities would violate the issue's fixed
 representation, and grants/dummy callers/waivers are explicitly forbidden.
 Note-only commit; no gate, ledger, or source change.
+
+## Round 63 — CI-repair round at fac0f42fd9a4 (job 0ae4c75a8be74353bc11c552acad84a5, 2026-10-10)
+
+Dispatched as a repair round after the merge-queue evaluation returned
+Quality-gate + exact-debt-ledger failures and "independent review: BLOCKED".
+Driver checks at this head: 5/5 green (`uv sync --locked --extra dev`;
+`ruff check .`; `ruff format --check .` 3275 files; focused pytest 79/79;
+`check-suite-inventory.py --suite packages/maistro-core/tests` 16341 ids ok).
+Everything below re-proven firsthand at fac0f42fd9a4 (tree clean, no source
+change this round):
+
+- **Independent-review P2s dispositioned against the issue contract.** The PR
+  carries three Codex connector P2 comments; each was probed by execution, not
+  assumed:
+  1. *Excessive nesting escaping as `RecursionError`* — already fixed in this
+     tree: `admission_identity.py:182` catches
+     `(RecursionError, UnicodeEncodeError, ValueError)` and re-raises
+     `ValueError`; probed with a 20,000-deep object → `ValueError`. Pinned by
+     `test_canonical_json_normalizes_excessive_nesting_to_value_error`
+     (test file line 254). No residual defect.
+  2. *Lone-surrogate retention* (`{"x":"\ud800"}`) — probed: accepted and
+     preserved verbatim in `text`, per the issue's closed rejection list
+     ("Reject a non-object root, invalid JSON, duplicate object keys at any
+     nesting depth, non-finite numeric values, and non-string constructor
+     input" — nothing else) and "normalization … does not alter string
+     values". Deliberately pinned by
+     `test_canonical_json_preserves_valid_escaped_lone_surrogates` (line 240).
+     UTF-8 persistence of `text` is a future storage boundary, outside this
+     leaf by the issue's own staging constraint. Reviewed-retained design, not
+     a defect.
+  3. *`receipt_snapshot` ↔ `envelope.receipt_id` agreement* — out of contract:
+     the issue requires exactly one cross-check per type, all implemented
+     (`binding.receipt_id == envelope.receipt_id` at admission_identity.py:295;
+     `RootAdmissionResult` run_snapshot/run-id agreement at :384-385) and
+     states "Constructing snapshots does not authorize or validate a
+     TaskResponse, Principal, scope, or Run … Those checks remain in their
+     existing adapters/stores" and "Full canonical Run/provenance validation
+     remains the store's obligation". Adding receipt-identity decoding here
+     would contradict the leaf's own spec.
+- **Both merge-queue failures re-reproduced with CI's exact argv** at
+  RATCHET_BASE_REV=435dc1937: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → rc=1, solely the five
+  banked `AdmissionAssessment` identities (MISMATCH/REPLAYED/TAKEOVER/
+  REPLACE_EXPIRED/LEGACY_UNRESOLVED), "land a reviewed grant first";
+  `check-ratchet-provenance.py` → rc=1, solely via
+  check-reachability-dispositions-provenance.py (169→170) and
+  check-reachability-provenance.py (170/1395), each naming only
+  `maistro.runs.admission_identity` as NEW/not-previously-authorized; every
+  other sub-ratchet OK.
+- **The lane-brief ledger amendment is a proven no-op, and no debt is
+  removable.** Candidate `quality/vulture-baseline.json` re-walked: 1328 rows
+  = base 1323 + exactly the five flagged identities (scan-exact; nothing
+  unbanked, nothing to remove). The five identities are the issue's mandated
+  `AdmissionAssessment` members ("exactly these member/value pairs"), so they
+  are not genuinely dead code and eliminating them would breach the fixed
+  representation. Base grant file walked across all 11 ratchet keys: zero
+  `admission_identity` grants; `load_authorizations`
+  (scripts/ratchet_provenance.py:478-519) reads grants from the base revision
+  by design, so the branch cannot authorize its own rows — the two-merge wall.
+- **Quality-gate candidate-side steps green firsthand this round:**
+  check-reachability.py rc=0 (170 unreachable of 1395),
+  check-reachability-dispositions.py rc=0 (50 groups cover all 170: 147
+  CONNECT, 21 LIBRARY, 2 RETIRE), check-promotion-surface.py rc=0,
+  check-shipped-surface-truth.py rc=0, check-convergence-matrix.py rc=0 (52
+  subsystems), check-contract-markers.py rc=0, check-backlog-consistency.py
+  rc=0. Full `check-suite-inventory.py`: rc=0, 17 suites / 31208 unique ids
+  match the recorded baseline.
+- **Scope isolation and #1841 anchors re-proven at this head:** diff vs base
+  435dc1937 is exactly the 7 leaf surfaces; store.py, model.py, idempotency.py,
+  store_boundary.py, runs/__init__.py byte-identical to base (`cmp` proven);
+  zero production importers of `admission_identity` (grep rc=1 outside the
+  module); no `maistro.runs.__init__` export; `require_admitted_actor`
+  (store_boundary.py:56), `get_run(..., principal_id=...)` (store.py:537),
+  admitted-actor guard applied (store.py:921, 1323).
+- **No develop advance:** `origin/develop` re-fetched, still 435dc1937.
+
+Round-63 verdict: no in-scope repair exists. Every leaf acceptance criterion
+is satisfied and re-proven at fac0f42fd9a4; both merge-queue failures are the
+same external authorization wall, which the issue itself predicts and forbids
+repairing from this branch ("A candidate baseline update cannot grant itself
+permission"; "No fake callers, baseline additions, grants, disabled gates or
+quality waivers are permitted"; "If that integration is unavailable, report
+implementation/test readiness plus the explicit merge blocker and leave the
+stack unmerged"). Unblocking requires an owner-landed grant on develop (or
+the #1845 integration head providing the reviewed runtime consumer). Note-only
+commit; no gate, ledger, or source change.
