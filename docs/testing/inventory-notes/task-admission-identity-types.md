@@ -4225,3 +4225,60 @@ issue's staging contract forbids in-leaf workarounds (fake callers, grants,
 suppressions, gate changes) and directs reporting readiness plus the explicit
 merge blocker while leaving the stack unmerged. Tree changes this round: this
 note only, plus the clean develop merge commit.
+
+## Round 58 (2026-10-10, repair job d26d3f22 at `9276c10850cb`, base `bb4257f0960f`)
+
+Re-verification round; no code changes. Every material claim re-proven
+firsthand at this exact head; the previous round's BLOCKED was re-examined for
+any in-lane resolution and none exists (details below).
+
+- `origin/develop` re-fetched: unchanged at `bb4257f09` (the merge base), so
+  there is no sync conflict and no new grant/consumer on develop.
+- Full battery green firsthand: focused suite 79/79; `ruff check .` rc=0;
+  `ruff format --check .` rc=0 (3,270 files); mypy over the seven package
+  trees rc=0 (891 files); `check-suite-inventory.py --suite
+  packages/maistro-core/tests` rc=0 (16,286 unique identities = recorded).
+- Fixed representation re-proven by fresh programmatic probes: 21-name
+  `__all__` exact; `AdmissionAssessment` exact member/value pairs;
+  frozen+slots on all 16 record/result variants; `format_version`
+  `Literal[2]`/`Literal[1]` with `init=False` (resolved via
+  `typing.get_type_hints` because the module's `from __future__ import
+  annotations` stores the annotation as a string — a probe-side artifact,
+  not a module defect); `CanonicalJsonObject` canonicalization plus
+  rejection of duplicate keys, non-finite numbers, non-object roots and
+  non-string input; `owner_token` absent from generated reprs;
+  `owns()` is exactly the scope∧generation∧owner conjunction (three negative
+  cases) and succeeds whether the two role UUIDs are equal or different.
+- #1841 anchors intact at this head: `store_boundary.py:56`
+  `require_admitted_actor(actor_principal_id: str | None) -> str`;
+  `store.py:537` `get_run(..., principal_id: str | None = None) -> Run | None`;
+  `actor_principal_id: str | None = None` retained on create/claim paths and
+  validated on `Run` (`model.py:300,320`).
+- Scope isolation re-proven: zero `admission_identity`/`admission_generation`
+  references in `packages/*/src` outside the module; no `maistro.runs`
+  `__init__` export; branch-side diff vs develop remains exactly the seven
+  manifest surfaces with quality ledgers +1/+9/+5 and zero deletions.
+- Both merge-queue CI failures reproduced with CI's exact argv and TRUE exit
+  codes (captured without pipes): `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` rc=1 on exactly the five
+  banked `AdmissionAssessment` identities (MISMATCH/REPLAYED/TAKEOVER/
+  REPLACE_EXPIRED/LEGACY_UNRESOLVED) — the candidate ledger already contains
+  exactly those 5 rows (verified by key walk), so the lane-brief amendment is
+  a proven no-op and the failure is purely trusted-base authorization ("land
+  a reviewed grant first", per the gate's own message);
+  `check-ratchet-provenance.py` rc=1 solely via the two reachability
+  provenance sub-gates naming `maistro.runs.admission_identity`. All
+  candidate-side gates rc=0: `check-reachability.py`,
+  `check-reachability-dispositions.py`, `check-promotion-surface.py`,
+  `check-shipped-surface-truth.py`.
+- Repair-space conclusion: the issue's staging contract explicitly forbids
+  greening this leaf (no fake callers, grants, suppressions, baseline
+  self-authorization, gate changes) and mandates reporting readiness plus the
+  explicit merge blocker while the stack stays unmerged. The only unblock
+  actions are owner-side: land the reviewed base grant on develop (two-merge
+  wall) or land the parent #1845 integration that supplies the runtime
+  consumer. Nothing in-lane remains; PR #1936 stays open/unmerged.
+
+Round-58 verdict: all leaf acceptance criteria proven at `9276c1085` —
+implementation/test readiness handoff with the external merge blocker
+explicit; not an integration approval.
