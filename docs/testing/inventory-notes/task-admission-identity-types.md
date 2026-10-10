@@ -3327,3 +3327,63 @@ trusted-base wall on vulture + reachability + dispositions. Resolution
 requires reviewed grants landed on the integration base first, or the
 parent #1845 integration consuming the module. Leaf readiness handoff
 stands; stack stays unmerged.
+
+## Round 44 - exact-debt-ledger CI-repair revalidation (job c9fcd6ae)
+
+Dispatched as a repair round for the exact-debt-ledger gate failure
+recorded at 970be855 (PR #1936 head). Starting head f9900a331e8b is
+identical to round 43's committed fixed point, so this round re-proves
+rather than changes the tree.
+
+Fresh evidence this round (driver battery check-0..4 plus issue-named
+gates re-run locally):
+- uv sync --locked --extra dev rc=0; ruff check . "All checks passed!";
+  ruff format --check . clean; pytest
+  packages/maistro-core/tests/runs/test_root_admission_identity.py -q -x
+  79 passed; check-suite-inventory.py --suite packages/maistro-core/tests
+  ok / 16217 matching.
+- uv run mypy packages/maistro-core/src/maistro/runs/admission_identity.py
+  -> "Success: no issues found in 1 source file".
+- uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*' -> rc=1: 1328 findings,
+  0 unclassified, 0 never-allowlist, candidate ledger exact (zero
+  bookkeeping deltas), and exactly five trusted-side AdmissionAssessment
+  identities at admission_identity.py:515-520 (MISMATCH, REPLAYED,
+  TAKEOVER, REPLACE_EXPIRED, LEGACY_UNRESOLVED; PENDING masked by an
+  unrelated in-tree token) NEW vs trusted base 01cf44a5a716, unauthorized
+  -- the script reports "Running --update in this branch cannot authorize
+  it; land a reviewed grant first."
+- check-reachability-provenance.py and check-reachability-dispositions-
+  provenance.py -> rc=1 on the single module maistro.runs.admission_identity
+  (NEW vs base); candidate-tree check-reachability.py /
+  check-reachability-dispositions.py / check-promotion-surface.py all rc=0.
+- quality/ratchet-authorizations.json is byte-identical at base 01cf44a5a
+  and at origin/develop ed5613457 (md5 dbc7f0e7...); and
+  `git show origin/develop:quality/ratchet-authorizations.json | grep
+  admission_identity` -> NONE; the reachability/quality ledgers carry no
+  admission rows at either revision. `git diff origin/develop -- quality/`
+  = +5 vulture / +1 reachability / +9 dispositions, no ratchet-authorizations
+  change -- a develop sync is wall-neutral for the grant surface.
+
+Repair-exhaustion against the lane brief (fix what is genuinely dead, and
+amend the ledger for reviewed retained identities): unbanked-to-add =
+none (the five are already banked exactly at vulture-baseline.json:283-287);
+genuinely-dead = none (all five are issue-mandated AdmissionAssessment
+members -- the issue fixes the exact member set and forbids any runtime
+consumer in this leaf); eliminated by fix = none. The sole residual red is
+the trusted-base authorization wall, which per ratchet_provenance.load_
+authorizations (reads grants from the base revision: a new grant does not
+take effect in the change that introduces it) and the issue's staging
+directive (do not add Grants to make this leaf independently green) cannot
+be satisfied in this leaf without a second, base-landed merge that the
+issue forbids here.
+
+Conclusion: every focused acceptance criterion is green (12 issue-named
+tests present and passing within the 79-case suite; ruff/mypy/format/
+inventory all pass; scope isolation intact -- no importer, no maistro.runs
+export, no grants/keep-alive/reexport/dummy caller), and the exact-debt-
+ledger gate (and its two provenance peers) remain red by the two-merge
+trusted-base wall. This leaf's readiness handoff stands; the gate is
+unmergeable here until the parent #1845 C2 integration wires a real
+consumer (referencing the members) or reviewed grants are landed on the
+integration base first.
