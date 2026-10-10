@@ -592,6 +592,7 @@ __all__ = [
     "ManifestRejected",
     "ManifestSnapshot",
     "MissingLockArtifacts",
+    "OwnedResourceJanitor",
     "PackAsset",
     "PackAssetKind",
     "PackAssetUnknown",
