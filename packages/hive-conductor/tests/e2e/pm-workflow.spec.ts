@@ -320,27 +320,59 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     // not.
     await page.goto("/");
 
-    const refusals: string[] = [];
-    page.on("console", (message) => {
-      if (/Refused to load the script/i.test(message.text())) {
-        refusals.push(message.text());
-      }
-    });
-
-    await page.evaluate(async () => {
-      await new Promise<void>((resolve) => {
-        const script = document.createElement("script");
-        script.src = "https://attacker.example/payload.js";
-        script.onload = () => resolve();
-        script.onerror = () => resolve();
-        document.body.appendChild(script);
-        setTimeout(resolve, 3000);
+    const attackUrl = "https://attacker.example/payload.js";
+    let networkAttempts = 0;
+    // If CSP is absent, fulfill the attack locally so DNS failure cannot make
+    // the no-execution check pass accidentally. CSP must stop it before routing.
+    await page.route(attackUrl, async (route) => {
+      networkAttempts += 1;
+      await route.fulfill({
+        contentType: "application/javascript",
+        body: "window.__csp_external_probe__ = true;",
       });
     });
 
+    const refusal = await page.evaluate(async (url) => {
+      const state = window as unknown as Record<string, unknown>;
+      state.__csp_external_probe__ = false;
+      return await new Promise<{
+        blockedURI: string;
+        effectiveDirective: string;
+        disposition: string;
+      }>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          document.removeEventListener("securitypolicyviolation", onViolation);
+          reject(new Error("No CSP violation event for the cross-origin script"));
+        }, 3000);
+        function onViolation(event: SecurityPolicyViolationEvent) {
+          // Browsers may strip the path from a cross-origin blocked URI.
+          if (event.blockedURI !== new URL(url).origin && event.blockedURI !== url) return;
+          clearTimeout(timeout);
+          document.removeEventListener("securitypolicyviolation", onViolation);
+          resolve({
+            blockedURI: event.blockedURI,
+            effectiveDirective: event.effectiveDirective,
+            disposition: event.disposition,
+          });
+        }
+        document.addEventListener("securitypolicyviolation", onViolation);
+        const script = document.createElement("script");
+        script.src = url;
+        document.body.appendChild(script);
+      });
+    }, attackUrl);
+
+    // Structured browser evidence survives console wording changes. A
+    // report-only policy is not enforcement and must fail this assertion.
+    expect(new URL(refusal.blockedURI).origin).toBe(new URL(attackUrl).origin);
+    expect(refusal.effectiveDirective).toBe("script-src-elem");
+    expect(refusal.disposition).toBe("enforce");
+    expect(networkAttempts, "the blocked script reached the network route").toBe(0);
     expect(
-      refusals.join("\n"),
-      "no CSP refusal for a cross-origin script — the policy is not being enforced",
-    ).toContain("attacker.example");
+      await page.evaluate(() =>
+        (window as unknown as Record<string, unknown>).__csp_external_probe__,
+      ),
+      "a cross-origin script ran despite script-src 'self'",
+    ).toBe(false);
   });
 });
