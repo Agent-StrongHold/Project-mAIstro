@@ -138,3 +138,62 @@ before the substring assert — same node identities, same semantics.
 
 Inventory delta for this round: +0 everywhere (fix + assertion
 hardening only; `check-suite-inventory.py` passes unmodified).
+
+## 3. Third develop-sync round (current `origin/develop` `1f328be96`) — M9-I1 packs
+
+Round 4 (2026-10-10): merged the advanced `origin/develop` (`1f328be96`,
+the lane's declared base for this repair round) into `auto-978`. The merge
+had been started by the previous attempt and preserved in the worktree with
+one unmerged path; it was resolved in place and committed as `b228fbb1f`.
+
+- `packages/maistro-core/src/maistro/extensions/__init__.py` — the only
+  conflict: four `__all__` hunks where the branch's #978 health exports
+  (`ObservationOutcome`, `OperatorDecision`, `evaluate_health`,
+  `latest_decision`, `operator_state_for`) sit alphabetically beside
+  develop's M9-I1 pack exports (`PackAsset`…`PackState`,
+  `evaluate_pack_compatibility`, `instantiate_*_asset`,
+  `pack_extension_view`). Every hunk resolved additively — both name sets
+  kept, grouped sort preserved. The import block had merged cleanly (the
+  branch's `health`/`sqlite_health_store` imports beside develop's
+  `packs` import), and both `health.py` and `packs.py` exist in the merged
+  tree. Post-resolution proof: all 317 exported names resolve
+  (`hasattr` walk over `maistro.extensions`), zero conflict markers.
+
+### Round-4 validation
+
+- `uv run pytest packages/maistro-core/tests -q` — 15201 passed, 1034
+  skipped, 3 xfailed (full core suite, not just extensions).
+- `uv run pytest packages/maistro-server/tests -q` — 548 passed, 8 skipped
+  (12 #978 health-API tests included).
+- `uv run pytest tests/test_check_reachability.py -q` — 25 passed.
+- Diff-coverage gate (CI per-file floors, lines 90 / branch arcs 80):
+  produced coverage from CI's maistro-core and maistro-server producers
+  (branch `--source` over each package's suite), then
+  `uv run python scripts/check-diff-coverage.py coverage-gate.xml
+  --base 1f328be96…` — ok, every measured file this change touches is at
+  or above the floors. Whole-file coverage of the changed production
+  files: `__init__.py` 100%, `health.py` 97%, `service.py` 98%,
+  `sqlite_health_store.py` 99%, `store.py` 99%, `compatibility.py` 92%,
+  `api/extensions.py` 99%.
+- `uv run mypy --strict packages/maistro-core/src` — Success, no issues in
+  782 files (after installing the `maistro-bootstrap` workspace member the
+  worktree venv lacked; the earlier `import-not-found` errors were venv
+  artifacts in files this branch does not touch).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — 1323 reviewed
+  identities == 1323 findings, 0 unclassified (CI exact args).
+- `uv run python scripts/check-radon-baseline.py` — 137 reviewed blocks ==
+  137 findings.
+- `uv run python scripts/check-reachability.py` — 1394 production modules,
+  169 unreachable (unchanged verdict).
+- `uv run python scripts/check-suite-inventory.py` — 17 suites match
+  (this round adds no test nodes: delta +0 everywhere).
+- `uv run python scripts/check-security-inventory.py`,
+  `check-shipped-surface-truth.py`, `check-durable-table-inventory.py`,
+  `check-workflow-inventory.py`, `check-backlog-consistency.py`,
+  `check-extension-imports.py`, `check-api-route-contracts.py`,
+  `check-public-routes.py`, `check-route-permissions.py` — all OK.
+- `uv run ruff check .` / `uv run ruff format --check .` — clean.
+
+Inventory delta for this round: +0 everywhere (merge-conflict resolution
+only; no test nodes added or removed).
