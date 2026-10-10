@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 import logging
 from typing import Any, Self
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -40,21 +40,29 @@ def validate_permission_preset(value: str) -> str:
     return value
 
 
+def _has_http_origin_authority(parsed: SplitResult) -> bool:
+    """Require a plain HTTP authority, without userinfo or URL components."""
+    port = parsed.port  # May raise for malformed/out-of-range ports.
+    return (
+        parsed.scheme == "http"
+        and parsed.username is None
+        and parsed.password is None
+        and not any((parsed.path, parsed.query, parsed.fragment))
+        and (port is None or port > 0)
+    )
+
+
 def _is_http_loopback_origin(origin: str) -> bool:
     """Classify the local HTTP warning exception without trusting URL prefixes."""
     if "\\" in origin or any(ord(char) <= 32 or ord(char) == 127 for char in origin):
         return False
     try:
         parsed = urlsplit(origin)
-        port = parsed.port  # Reject malformed/out-of-range ports as well.
-        return (
-            parsed.scheme == "http"
-            and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
-            and parsed.username is None
-            and parsed.password is None
-            and not (parsed.path or parsed.query or parsed.fragment)
-            and (port is None or port > 0)
-        )
+        return _has_http_origin_authority(parsed) and parsed.hostname in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }
     except ValueError:
         return False
 
