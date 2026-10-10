@@ -3248,3 +3248,82 @@ of both failing CI jobs. Resolution requires the separately scoped C2/
 integration leaf (which references the members and wires the module, emptying
 all three deltas at its own head) or reviewed grants landed on the
 integration base first. Leaf readiness handoff stands; stack stays unmerged.
+
+## Round 43 — 2026-10-10 CI-repair revalidation at the never-verified merge head 970be855
+
+Dispatched for the exact-debt-ledger + Quality-gate failures CI recorded at
+`970be8553621` — the develop-merge commit round 42's evidence predates
+(its battery ran at `1abdea0768`). The merge is the only tree delta since:
+`git diff --stat 1abdea0768..970be855` = round-42's own note commit plus
+depvelop's #2104/#2105 (`mcp_client.py` + tests, `backup.sh` test) — zero
+leaf, `quality/`, or gate-script files, so every round-42 result transfers
+except where re-executed below. All claims re-proven fresh this round.
+
+- exact-debt-ledger job, all three steps at `970be855` with CI-exact
+  arguments: `check-ratchet-provenance.py` rc=1 solely via the two
+  trusted-base reachability sub-gates (`maistro.runs.admission_identity`:
+  "NEW unreachable module absent from trusted base and not previously
+  authorized"; "NEW disposition absent from trusted ledger and not covered
+  by an already-landed reachability authorization"; base `01cf44a5a`);
+  `check-shipped-surface-truth.py` rc=0; `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` rc=1 with
+  1,328 findings, 0 unclassified, 0 never-allowlist, candidate ledger exact
+  (zero bookkeeping deltas) and exactly the five trusted-side
+  `AdmissionAssessment` identities at `admission_identity.py:515-520`
+  (MISMATCH, REPLAYED, TAKEOVER, REPLACE_EXPIRED, LEGACY_UNRESOLVED;
+  `PENDING` masked by the unrelated `JobStatus.PENDING` token) meeting
+  "land a reviewed grant first". Member triage unchanged: all five are
+  issue-mandated contract members — none genuinely dead, none eliminated
+  by any fix this round, so the lane-permitted ledger amendment has zero
+  rows to add or prune.
+- Candidate-tree gates all rc=0 at this head:
+  `check-reachability.py` (1,391 modules, 170 unreachable — baseline equals
+  tree, exit re-measured unpiped), `check-reachability-dispositions.py`
+  (50 groups: 147 CONNECT / 21 LIBRARY / 2 RETIRE),
+  `check-promotion-surface.py`. The Quality gate's only red remains the
+  same single trusted-base wall.
+- Develop movement check: `origin/develop` advanced `01cf44a5a` →
+  `ed5613457` (#2106 settings CORS, #2074 M8-D3 research) after round 42,
+  so PR #1936 is "behind". No sync conflict exists
+  (`git merge-tree` zero conflict markers; no file overlap with this
+  branch), but no sync was performed: the brief's merge remedy is
+  conditional on a sync conflict, and the sync is provably wall-neutral —
+  at `ed5613457` the `vulture` grant section carries 102 grants and the
+  `reachability` section 11, none naming `admission_identity`, and its
+  `vulture-baseline.json` / `reachability-baseline.json` /
+  `reachability-dispositions.json` contain zero admission rows, so the
+  merge base after any sync still lacks both the banked rows and the
+  authorizations. The two-merge wall is unaffected by merging develop
+  today.
+- Ledger row-survival audit (AGENTS.md merge hazard): `git diff --numstat
+  origin/develop -- quality/` = exactly this leaf's additions — 1 row in
+  `reachability-baseline.json`, 9 lines in
+  `reachability-dispositions.json`, 5 sorted rows in
+  `vulture-baseline.json` — nothing silently lost across the two develop
+  merges this branch has absorbed.
+- Leaf acceptance re-proven fresh at `970be855`: focused DTO suite 79
+  passed; focused Ruff check + format clean; module `mypy` clean; 21-name
+  `__all__` set-exact; `AdmissionAssessment` carries exactly the six
+  mandated member/value pairs (asserted programmatically, not by eye);
+  issue-named tests present. Scope isolation: no production module imports
+  `admission_identity`; `maistro/runs/__init__.py` does not export it;
+  `_vulture_whitelist.py` holds no admission reference (the round-12
+  prohibited-suppression removal stands). #1841 anchors re-verified at
+  this head: `store_boundary.py:56`
+  `require_admitted_actor(actor_principal_id: str | None) -> str`,
+  `store.py:537` `get_run(..., *, principal_id: str | None = None)`,
+  `store.py:507/563` `actor_principal_id: str | None = None` on
+  `create_run`/`claim_run_by_effect`.
+- Tree changes this round: this note only. No code, ledger, grant, gate,
+  or workflow edit; no develop sync. The repair brief again terminates at
+  its proven fixed point: the five identities are fixed contract surface
+  already banked exactly, and the sole residual reds are the three
+  trusted-base deltas whose authorizations can only exist on the
+  integration base (or dissolve when C2/parent #1845 integration wires the
+  real consumer and references the members).
+
+Merge blocker (unchanged, re-proven at the CI head): two-merge
+trusted-base wall on vulture + reachability + dispositions. Resolution
+requires reviewed grants landed on the integration base first, or the
+parent #1845 integration consuming the module. Leaf readiness handoff
+stands; stack stays unmerged.
