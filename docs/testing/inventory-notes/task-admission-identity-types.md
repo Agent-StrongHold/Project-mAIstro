@@ -4098,3 +4098,68 @@ vulture identities plus the reachability/disposition rows for
 issue's own staging contract forbids in-leaf workarounds and requires reporting
 implementation/test readiness plus the explicit merge blocker while leaving the
 stack unmerged. Tree changes this round: this note only.
+
+## Round 56 (2026-10-10, verifier+writer at `717475a93081`, base `4aa68edc0b6b`)
+
+Round-55 prior attempt (job `5c0327e6938943db`) died on a provider timeout after
+its five driver checks were green; this round re-ran everything firsthand so no
+claim rests on that run.
+
+- Driver checks (job `cd22e0d68a0147fe819037616f020cf3`, head `717475a93081`):
+  `uv sync --locked --extra dev`, `ruff check .`, `ruff format --check .`,
+  focused pytest, and `check-suite-inventory.py --suite
+  packages/maistro-core/tests` all rc=0 (79 passed; inventory 16276 collected,
+  matches recorded).
+- Focused battery re-run in-session: 79/79; repo-wide `ruff check .` and
+  `ruff format --check .` clean; `mypy
+  packages/maistro-core/src/maistro/runs/admission_identity.py` clean.
+- Both merge-queue CI failures re-proven with CI's exact argv at this head:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=1 trusted-base-authorization-only on the five
+  issue-mandated `AdmissionAssessment` member identities
+  (`admission_identity.py:515-520`); the candidate ledger already carries those
+  five rows (5 in candidate vs 0 at base, scan-exact at 1323→1328), so the
+  lane-prescribed ledger amendment is a proven byte-level no-op.
+  `check-ratchet-provenance.py` rc=1 solely via its two reachability sub-gates
+  (`check-reachability-provenance.py`: "maistro.runs.admission_identity: NEW
+  unreachable module absent from trusted base"; dispositions provenance: "NEW
+  disposition absent from trusted ledger"). Candidate-side
+  `check-reachability.py` (170 unreachable), dispositions (50 groups),
+  promotion-surface, and shipped-surface-truth all rc=0.
+- New-round fact: the base grant ledger at `4aa68edc0b6b` was walked key-by-key
+  this round; it contains seven substring "admission" occurrences, all inside
+  grant *reasons* for unrelated identities (`Container.
+  recover_stranded_chat_admissions`, `create_a2a_task` transport-admission,
+  quota `balance`). Zero of the 102 vulture or 11 reachability grants name
+  `maistro.runs.admission_identity`. The two-merge wall (grants read from the
+  merge base, `scripts/ratchet_provenance.py::load_authorizations`) stands.
+- `origin/develop` re-fetched: unchanged at `4aa68edc0b6b` — no sync conflict;
+  the branch already contains the develop tip (merge commit `404f5a648`).
+- Leaf contract re-proven programmatically at this head: `__all__` set-exact 21
+  names (alphabetically sorted, repo-ruff-canonical); six-member
+  `AdmissionAssessment` with exact values; 16 dataclasses frozen+slots;
+  `owns()` the scope∧generation∧owner conjunction; no `__bool__` override on
+  the six empty mutation variants; `CanonicalJsonObject` normalizes
+  sorted/compact and rejects duplicate keys (incl. nested), non-object roots,
+  NaN/Infinity, and non-string input. All 12 issue-named tests present in the
+  focused file.
+- Scope isolation re-proven: zero production importers of
+  `maistro.runs.admission_identity`; no `maistro.runs.__init__` export;
+  `tasks/idempotency.py` byte-identical to base; branch diff vs base is exactly
+  the module, the focused suite, this note, the three candidate ledger rows,
+  and the convergence-matrix line.
+- #1841 anchors re-checked at this head: `require_admitted_actor` at
+  `runs/store_boundary.py:56`, protocol `get_run(..., principal_id: str | None
+  = None)` at `runs/store.py:537`, `actor_principal_id: str | None = None`
+  retained on `create_run`/`claim_run_by_effect`.
+
+Conclusion (round 56): unchanged from rounds 51–55. Implementation, tests, and
+candidate ledgers are complete and scan-exact; the two CI failures have exactly
+one external cause — the owner-side base grants (five vulture identities plus
+the reachability baseline/disposition rows for
+`maistro.runs.admission_identity`) have not landed on develop, and the parent
+#1845 integration leaf supplying the runtime consumer has not landed. The
+issue's staging contract forbids in-leaf workarounds (fake callers, grants,
+suppressions, gate changes) and directs reporting readiness plus the explicit
+merge blocker while leaving the stack unmerged. Tree changes this round: this
+note only.
