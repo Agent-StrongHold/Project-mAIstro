@@ -2719,6 +2719,7 @@ dependencies = [
     { name = "maistro-core" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "regex" },
 ]
 
 [package.optional-dependencies]
@@ -2741,6 +2742,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3,<10" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.25,<2" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
+    { name = "regex", specifier = ">=2024.5.15,<2027" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9,<1" },
 ]
 provides-extras = ["dev"]
