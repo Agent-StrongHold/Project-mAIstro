@@ -33,11 +33,13 @@ from maistro.extensions import (
     ExtensionInstallService,
     ExtensionLifecycleError,
     ExtensionPackage,
+    ExtensionPinned,
     ExtensionScope,
     ExtensionTransition,
     InspectionConflict,
     InvalidTransition,
     ManifestRejected,
+    RollbackRefused,
     UnknownInstall,
 )
 from maistro.extensions.types import TrustClaim
@@ -127,6 +129,33 @@ class InstallBody(ScopeBody):
     payload_b64: str = Field(min_length=1)
 
 
+class ReasonBody(ScopeBody):
+    """A lifecycle decision that must carry its recorded reason."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1)
+
+
+class ResumeBody(ReasonBody):
+    model_config = ConfigDict(extra="forbid")
+
+    payload_b64: str = Field(min_length=1)
+
+
+class DisableBody(ReasonBody):
+    model_config = ConfigDict(extra="forbid")
+
+    extension_id: str = Field(min_length=1)
+
+
+class RollbackBody(ResumeBody):
+    model_config = ConfigDict(extra="forbid")
+
+    extension_id: str = Field(min_length=1)
+    to_install_id: str | None = None
+
+
 class ManifestView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -165,6 +194,9 @@ class InstallRecordView(BaseModel):
     created_at: str | None
     updated_at: str | None
     expires_at: str | None
+    pinned: bool
+    pinned_by: str | None
+    pinned_at: str | None
     manifest: ManifestView
 
 
@@ -213,6 +245,9 @@ def _record_view(
         created_at=_iso(record.created_at),
         updated_at=_iso(record.updated_at),
         expires_at=_iso(record.expires_at),
+        pinned=record.pinned,
+        pinned_by=record.pinned_by,
+        pinned_at=_iso(record.pinned_at),
         manifest=ManifestView(
             manifest_version=manifest.manifest_version,
             extension_id=manifest.extension_id,
@@ -260,6 +295,10 @@ def _http_error(exc: Exception) -> HTTPException:
         return HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, ManifestRejected):
         return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
+    if isinstance(exc, (ExtensionPinned, RollbackRefused)):
+        # The current state is safe and untouched; the operator must decide
+        # (lift the pin, re-authorize) before the requested move can happen.
+        return HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
     return HTTPException(
         status.HTTP_409_CONFLICT,
         detail=f"{exc}; the install record carries the truthful state and reason",
@@ -380,6 +419,149 @@ async def get_extension_installation(
     return _record_view(record, requested_permissions=displayed)
 
 
+@router.post("/installations/{install_id}/pin", response_model=InstallRecordView)
+async def pin_extension_version(
+    install_id: str,
+    body: ReasonBody,
+    auth: RequireAuth,
+    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
+) -> InstallRecordView:
+    """Pin the active version so no other version can be activated silently.
+
+    While the pin stands, activation of any other version of the extension is
+    refused with 409: lifting the pin is an explicit, separately audited
+    decision, so an update can never move a pinned version by itself.
+    """
+    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
+    await _require_scope_authority(scope, auth)
+    try:
+        record = await service.pin(install_id, actor=_actor(auth), scope=scope, reason=body.reason)
+    except ExtensionLifecycleError as exc:
+        raise _http_error(exc) from exc
+    return _record_view(record)
+
+
+@router.post("/installations/{install_id}/unpin", response_model=InstallRecordView)
+async def unpin_extension_version(
+    install_id: str,
+    body: ReasonBody,
+    auth: RequireAuth,
+    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
+) -> InstallRecordView:
+    """Lift the pin, auditing the lift before any version change follows."""
+    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
+    await _require_scope_authority(scope, auth)
+    try:
+        record = await service.unpin(
+            install_id, actor=_actor(auth), scope=scope, reason=body.reason
+        )
+    except ExtensionLifecycleError as exc:
+        raise _http_error(exc) from exc
+    return _record_view(record)
+
+
+@router.post("/disable", response_model=InstallRecordView)
+async def disable_extension(
+    body: DisableBody,
+    auth: RequireAuth,
+    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
+) -> InstallRecordView:
+    """Suspend an extension: new use stops immediately, history is kept.
+
+    The scope's resolution seam answers nothing from the moment this lands;
+    every record and transition stays queryable. Resume brings the extension
+    back by re-running its activation loader with the same bound artifact.
+    """
+    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
+    await _require_scope_authority(scope, auth)
+    try:
+        record = await service.disable(
+            scope, body.extension_id, actor=_actor(auth), reason=body.reason
+        )
+    except ExtensionLifecycleError as exc:
+        raise _http_error(exc) from exc
+    return _record_view(record)
+
+
+@router.post("/installations/{install_id}/resume", response_model=InstallRecordView)
+async def resume_extension(
+    install_id: str,
+    body: ResumeBody,
+    auth: RequireAuth,
+    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
+) -> InstallRecordView:
+    """Return a disabled extension to service by re-crossing the loader seam.
+
+    The same bound artifact must be presented; the grant is not re-decided —
+    resume is a governed return of exactly the authorization on record.
+    """
+    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
+    await _require_scope_authority(scope, auth)
+    try:
+        record = await service.resume(
+            install_id,
+            actor=_actor(auth),
+            scope=scope,
+            payload=_decode_payload(body.payload_b64),
+            reason=body.reason,
+        )
+    except ExtensionLifecycleError as exc:
+        raise _http_error(exc) from exc
+    return _record_view(record)
+
+
+@router.post("/rollback", response_model=InstallRecordView)
+async def rollback_extension(
+    body: RollbackBody,
+    auth: RequireAuth,
+    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
+) -> InstallRecordView:
+    """Restore a superseded version through the activation loader.
+
+    Refused with 409 — leaving the current version untouched — when the
+    target's frozen grant declares authority the active grant does not hold,
+    when the target no longer evaluates compatible, or when the presented
+    artifact does not digest to the target's bound artifact.
+    """
+    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
+    await _require_scope_authority(scope, auth)
+    try:
+        record = await service.rollback(
+            scope,
+            body.extension_id,
+            actor=_actor(auth),
+            payload=_decode_payload(body.payload_b64),
+            reason=body.reason,
+            to_install_id=body.to_install_id,
+        )
+    except ExtensionLifecycleError as exc:
+        raise _http_error(exc) from exc
+    return _record_view(record)
+
+
+@router.post("/installations/{install_id}/remove", response_model=InstallRecordView)
+async def remove_extension(
+    install_id: str,
+    body: ReasonBody,
+    auth: RequireAuth,
+    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
+) -> InstallRecordView:
+    """Uninstall one record: terminal for authority, preserved as evidence.
+
+    The historical record — manifest snapshot, digest, grant, trust evidence
+    and full transition trail — remains queryable after removal.
+    """
+    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
+    await _require_scope_authority(scope, auth)
+    try:
+        record = await service.remove(
+            install_id, actor=_actor(auth), scope=scope, reason=body.reason
+        )
+    except ExtensionLifecycleError as exc:
+        raise _http_error(exc) from exc
+    return _record_view(record)
+
+
 @router.get(
     "/installations/{install_id}/transitions",
     response_model=list[TransitionView],
@@ -444,12 +626,18 @@ async def get_active_extension(
 # ratchet as unbanked debt.
 __all__ = [
     "decide_extension_authorization",
+    "disable_extension",
     "get_active_extension",
     "get_extension_installation",
     "get_extension_installation_transitions",
     "get_extension_service",
     "inspect_extension",
     "install_extension",
+    "pin_extension_version",
+    "remove_extension",
+    "resume_extension",
+    "rollback_extension",
     "router",
     "sweep_expired_authorizations",
+    "unpin_extension_version",
 ]
