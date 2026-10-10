@@ -110,7 +110,7 @@ jobs:
           --resolved-output release-compliance.json
 
       - name: Preserve validated release claims and immutable evidence links
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: release-compliance
           path: release-compliance.json
@@ -311,7 +311,7 @@ jobs:
       - name: Install + import at the minimum supported dependency floors
         run: python scripts/verify-minimum-dependencies.py --package packages/maistro-core --python 3.12
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v6
         with:
           name: dist
           path: dist/
@@ -646,7 +646,7 @@ jobs:
             -o cyclonedx-json > "sboms/sbom-source-${GITHUB_REF_NAME}.cyclonedx.json"
           ls -1 sboms/
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v6
         with:
           name: sboms
           path: sboms/
