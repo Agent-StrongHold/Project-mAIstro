@@ -249,6 +249,46 @@ def test_a_tagged_count_that_matches_the_code_passes(gate, monkeypatch):
     assert findings.drifted_counts == []
 
 
+def test_recomputing_every_counted_claim_parses_the_core_census_once(gate, monkeypatch):
+    """The counted claims share one parse pass, not one parse pass apiece.
+
+    Each of the five claim sources recomputes its figure from the same census,
+    and `_unpooled_fetch_modules` re-walks those same trees to classify them.
+    Before the census was parsed once and cached (issue #26 repair round, after
+    CI run 37292468211 timed this gate's self-check out at 30s), a single
+    `main()` run parsed all of maistro-core five times over and then re-parsed
+    every census member again — runtime that scaled with the repository and
+    eventually crossed the root suite's per-test timeout.
+
+    Pinned structurally, not by wall clock: counting `ast.parse` calls makes
+    the bound hold on any machine. The four recomputations below are exactly
+    the calls `check_counted_claims` makes, so the count a full document check
+    pays is the count asserted here: at most one parse per core file.
+    """
+    expected_files = len(list(gate._CORE_SRC.rglob("*.py")))
+    assert expected_files > 0  # the census source tree must exist to count at all
+
+    parses = 0
+    real_parse = gate.ast.parse
+
+    def counting_parse(*args: object, **kwargs: object) -> object:
+        nonlocal parses
+        parses += 1
+        return real_parse(*args, **kwargs)  # type: ignore[arg-type]
+
+    gate._core_fetch_census.cache_clear()
+    try:
+        monkeypatch.setattr(gate.ast, "parse", counting_parse)
+        gate._outbound_fetch_modules()
+        gate._guarded_fetch_modules()
+        gate._pooled_fetch_modules()
+        gate._unpooled_fetch_modules()
+    finally:
+        gate._core_fetch_census.cache_clear()
+
+    assert parses <= expected_files
+
+
 def test_deleting_the_marker_fails_rather_than_silently_unchecking(gate):
     """Otherwise the cheapest way to fix a wrong number is to stop checking it,
     which is the failure mode a ratchet exists to prevent.
