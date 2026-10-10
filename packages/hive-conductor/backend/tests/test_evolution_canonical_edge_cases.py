@@ -170,7 +170,7 @@ def test_cycle_route_with_healthy_owner_but_missing_domain_state_is_503_unavaila
     assert caught.value.status_code == 503
     assert caught.value.detail["code"] == "evolution_unavailable"
     assert caught.value.detail["availability"] == "unavailable"
-    assert "population is not initialized" in caught.value.detail["message"]
+    assert caught.value.detail["message"] == "evolution execution unavailable; see server logs"
     # The same projection is what gates the cadence task and the frontend's
     # Run Cycle button, so it must agree with the route's answer.
     projection = service.status()
@@ -196,7 +196,7 @@ def test_cycle_route_when_service_is_not_started_is_explicitly_unavailable(
     assert caught.value.detail == {
         "code": "evolution_unavailable",
         "availability": "unavailable",
-        "message": "EvolutionService not started",
+        "message": "evolution execution unavailable; see server logs",
     }
 
 
@@ -218,7 +218,7 @@ def test_stub_cycle_route_returns_explicit_availability_error(
     assert caught.value.status_code == 503
     assert caught.value.detail["code"] == "evolution_unavailable"
     assert caught.value.detail["availability"] == "degraded"
-    assert "no Container" in caught.value.detail["message"]
+    assert caught.value.detail["message"] == "evolution execution unavailable; see server logs"
 
 
 def test_unavailable_cycle_is_distinguishable_from_execution_failure(
@@ -239,7 +239,7 @@ def test_unavailable_cycle_is_distinguishable_from_execution_failure(
     assert caught.value.detail == {
         "code": "evolution_unavailable",
         "availability": "degraded",
-        "message": "canonical engine Container is unavailable",
+        "message": "evolution execution unavailable; see server logs",
     }
 
 
@@ -278,8 +278,8 @@ def test_canonical_run_failure_projects_identity_status_and_diagnostic(
         "code": "canonical_run_failed",
         "run_id": "canonical-failed-run",
         "status": status,
-        "diagnostic": diagnostic,
-        "message": f"Evolution cycle canonical Run canonical-failed-run did not complete: {diagnostic}",
+        "diagnostic": "evolution cycle failed; see server logs",
+        "message": "evolution cycle failed; see server logs",
     }
 
 

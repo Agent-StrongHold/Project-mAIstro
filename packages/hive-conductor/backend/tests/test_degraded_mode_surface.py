@@ -7,7 +7,7 @@ degraded capability masquerade as a working one. These tests pin the three
 halves the issue names:
 
 - **Reporting** — /health names every degraded capability (`degraded_services`)
-  and exposes the raw optional-router mount outcomes (`optional_routers`);
+  and exposes sanitized optional-router mount outcomes (`optional_routers`);
 - **Auditability** — a degraded router entry lands in the /v1/audit trail as a
   warning, next to the capability changes it resembles, not only in a log;
 - **Recovery** — the same surface that reports degradation reports recovery:
@@ -75,10 +75,12 @@ def test_health_names_degraded_optional_router_with_cause(
 
     data = client.get("/health").json()
 
-    assert data["optional_routers"]["routes.design"] == "ImportError: cannot import name 'engine'"
+    assert (
+        data["optional_routers"]["routes.design"] == "router initialization failed; see server logs"
+    )
     assert {
         "service": "router:routes.design",
-        "reason": "ImportError: cannot import name 'engine'",
+        "reason": "router initialization failed; see server logs",
     } in data["degraded_services"]
     assert data["degraded"] is True
 

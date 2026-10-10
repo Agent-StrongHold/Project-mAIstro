@@ -25,7 +25,7 @@ def _fake_llm_builder(*, fail_prompt: str | None = None):
         async def call(messages: list[dict[str, Any]], **_kwargs: Any) -> str:
             system = str(messages[0]["content"])
             if fail_prompt and fail_prompt in system:
-                raise RuntimeError("intentional node failure")
+                raise RuntimeError(_SECRET)
             return f"ok:{system}"
 
         return call
@@ -115,6 +115,7 @@ def test_ws_runs_in_two_workspaces_are_distinct_canonical_runs_with_projections(
         projection = get_dag_run_store().get_run(run_id)
         assert projection is not None
         assert projection["canonical_run_id"] == run_id
+        assert _SECRET not in str(projection)
         assert projection["workspace_id"] == workspace_id
         assert projection["project_id"] == record.run.project_id
         assert projection["dag_id"] == stored_dag
@@ -218,9 +219,12 @@ def test_ws_failed_node_projects_the_canonical_run_like_http(
     stores.dags[stored_dag] = _stored_dag(stored_dag, prompt="fail-me")
     workspace_id = _create_workspace(admin_client, "Parity failing")
 
-    terminal = _run_over_socket(admin_client, stored_dag, workspace_id)[-1]
+    frames = _run_over_socket(admin_client, stored_dag, workspace_id)
+    terminal = frames[-1]
+    assert _SECRET not in str(frames)
     http = admin_client.post(f"/v1/dags/{stored_dag}/run", json={"workspace_id": workspace_id})
 
+    assert _SECRET not in http.text
     assert terminal["status"] == "failed"
     assert terminal["run_id"]
     assert _canonical_record(terminal["run_id"]).run.status.value == "failed"
@@ -233,6 +237,7 @@ def test_ws_failed_node_projects_the_canonical_run_like_http(
         assert projection is not None
         assert projection["status"] == "failed"
         assert projection["canonical_run_id"] == run_id
+        assert _SECRET not in str(projection)
         assert projection["workspace_id"] == workspace_id
 
 

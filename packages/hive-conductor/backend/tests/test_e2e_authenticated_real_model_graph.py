@@ -21,9 +21,9 @@ Legs proven, per acceptance criterion:
 1. Auth + DAG execution (Conductor HTTP): login -> Workspace admission ->
    canonical Run -> gateway call -> completed with non-stub content, plus
    durable Run/NodeRun/Attempt evidence and actor/scope provenance.
-2. No fake success: with no gateway configured the canonical Run fails and the
-   refusal names ALLOW_STUB_LLM; with the opt-in on, the stub payload is
-   labelled ``"stub": true``.
+2. No fake success: with no gateway configured the canonical Run fails with
+   a safe public error and retained Run identity; with the opt-in on, the stub
+   payload is labelled ``"stub": true``.
 3. Governed Invocation seam (canonical node path): the shipped ``llm.summarize``
    node runs through the same canonical executor, crosses Binding -> governed
    Invocation -> approved Provider, and persists Invocation evidence with
@@ -296,10 +296,20 @@ def test_dag_run_without_a_gateway_refuses_instead_of_fake_success(
     assert run.status_code == 200, run.text
     body = run.json()
     assert body["status"] == "failed", body
-    # The refusal names the opt-in, so an operator can act on it.
-    assert "ALLOW_STUB_LLM" in str(body.get("error")), body
+    # Public transports retain failure and canonical identity, while operator
+    # diagnostics stay in the canonical record rather than the response.
+    assert body["error"] == "DAG execution failed; see server logs"
+    assert "ALLOW_STUB_LLM" not in run.text
+    assert body["run_id"] == body["execution_id"] == body["result"]["run_id"]
     for node in body["result"]["node_results"].values():
         assert node["success"] is False, node
+        assert node["response"] == "DAG node failed; see server logs"
+
+    from services.dag_agents import get_run_store
+
+    record = asyncio.run(get_run_store().get(str(body["run_id"])))
+    assert record is not None
+    assert record.run.status is RunStatus.FAILED
 
 
 def test_stub_opt_in_payloads_are_labelled_so_nothing_mistakes_them_for_results(

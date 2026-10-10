@@ -411,7 +411,7 @@ async def test_cycle_route_projects_real_canonical_failures(
     assert detail["code"] == "canonical_run_failed"
     assert detail["status"] == "failed"
     assert detail["run_id"] == service.last_run_id
-    assert failure_stage in detail["diagnostic"]
+    assert detail["diagnostic"] == "evolution cycle failed; see server logs"
     assert "evolution service not started" not in detail["message"]
     assert service.cycle_count == 0
     status = service.status()

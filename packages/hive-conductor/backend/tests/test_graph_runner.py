@@ -193,7 +193,7 @@ async def test_execute_dag_streaming_fails_when_llm_unconfigured(
     statuses = [ev["status"] for ev in events]
     assert "completed" not in statuses
     assert statuses[-1] == "failed"
-    assert "ALLOW_STUB_LLM" in events[-1]["error"]
+    assert events[-1]["error"] == "DAG execution failed; see server logs"
 
 
 async def test_build_llm_call_real_httpx_posts_and_extracts(
@@ -1197,3 +1197,63 @@ async def test_abandoning_a_live_stream_cancels_the_in_flight_run(
     finally:
         if not consumer.done():
             consumer.cancel()
+
+
+@pytest.mark.parametrize("live", [False, True])
+@pytest.mark.parametrize("status", ["failed", "cancelled", "timed_out"])
+async def test_failed_stream_diagnostics_stay_private(monkeypatch, live, status):
+    import services.graph_runner as gr
+
+    secret = "postgres://operator:private-password@internal-db/private/path"
+    raw = {
+        "run_id": "private-run",
+        "status": status,
+        "error": secret,
+        "node_results": {
+            "failed-node": {"role": "worker", "success": False, "response": secret},
+            "good-node": {"role": "worker", "success": True, "response": "legitimate output"},
+        },
+    }
+    recorded_events, recorded_results = [], []
+
+    async def execute(*args, on_event=None, **kwargs):
+        if on_event:
+            await on_event(
+                {
+                    "kind": "node_failed",
+                    "run_id": "private-run",
+                    "node_id": "failed-node",
+                    "response": secret,
+                }
+            )
+        raise gr.CanonicalDagExecutionError(raw)
+
+    async def record_event(event):
+        recorded_events.append(event)
+        return len(recorded_events)
+
+    async def record_result(result):
+        recorded_results.append(result)
+
+    monkeypatch.setattr(gr, "execute_dag", execute)
+    frames = [
+        frame
+        async for frame in gr.execute_dag_streaming(
+            {"nodes": []},
+            on_result=record_result,
+            on_event=record_event if live else None,
+        )
+    ]
+    assert secret not in str((frames, recorded_events, recorded_results))
+    assert frames[-1] == {
+        "status": status,
+        "run_id": "private-run",
+        "error": "DAG execution failed; see server logs",
+    }
+    assert any(frame.get("response") == "legitimate output" for frame in frames)
+    if live:
+        assert next(frame for frame in frames if frame.get("node_id") == "failed-node")["seq"] == 1
+    assert recorded_results[0]["status"] == status
+    assert recorded_results[0]["run_id"] == "private-run"
+    assert raw["error"] == secret
+    assert raw["node_results"]["failed-node"]["response"] == secret
