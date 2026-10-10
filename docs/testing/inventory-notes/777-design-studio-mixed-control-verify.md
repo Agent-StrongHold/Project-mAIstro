@@ -20879,3 +20879,63 @@ reconciliation, #774 CreativeBrief, #776 workspace graph, #53 front door
 and #93/#95 production path are open, and the issue's stop condition
 forbids a Design-Studio-private substitute. Inventory delta **+0** (this
 record only). (Refs #777)
+
+## Round 122 (job 244cbb43) — re-validation at unchanged head 89654e74d, no driver checks this round
+
+2026-10-10T16:0xZ. Trigger: prior round ended BLOCKED (worker requested
+attention). Sync-conflict resolution path from the lane brief probed and
+ruled out.
+
+**Dispatch capture (this round's own, 16:05Z) — not a develop sync
+conflict:** `git fetch origin` → `origin/develop` = `bb4257f09` ==
+merge-base HEAD `89654e74d`, 0 behind / 474 ahead, nothing to merge;
+HEAD == manifest head, tree clean. `manifest.checks = []` (no driver
+`check-*.log`); all validation re-executed locally.
+
+**Dependency capture from this round's dispatch-context.json (61
+sources): unchanged.** Blocking deps state=open: #53, #93, #95, #773,
+#774, #776, #804, #805, #806. Closed: #39, #458, #775. Native
+blocked_by API empty (dependency relation lives in the issue body).
+PR #1660 open/draft, head `fd1068961` (= branch merge commit),
+mergeable_state=clean, all CI check-runs completed success (skips:
+durable-events, object storage, container scan).
+
+**AC probes independently re-executed at HEAD (all match round 121):**
+0 `class *Reconciler` in hive-conductor backend;
+`AttemptLifecycleReconciler` only in canonical owners
+(maistro-canvas/canvas/canonical_execution.py,
+maistro-core/runs/{reconciliation,execution}.py, maistro-server,
+graph nodes); `workspace_agent.py` 149 lines roster/conflict-only;
+`design_service.py` 376 lines, 0 reconcil/delegat hits;
+`ControlMode`/`ArtifactLockConflict` confined to `packages/maistro-design`
+(versions.py, version_store.py, tests).
+
+**Battery all exit 0:** `ruff check .`; `ruff format --check .` (3277
+files); `check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` (1323 reviewed → 1322 findings, 0
+unbanked); `check-ratchet-provenance.py` (0 violations, 53 consumers);
+`check-shipped-surface-truth.py`; `check-reachability.py` (1392
+modules, 169 unreachable — OK); `check-suite-inventory.py` (17/17);
+`check-backlog-consistency.py` (167).
+
+**Targeted pytest with live PG:** reused existing `maistro_test_777`
+on maistro-postgres (127.0.0.1:5433), alembic rev **062 (head)**
+confirmed via `alembic_version`; `MAISTRO_TEST_PG_DSN` plain
+`postgresql://maistro:test@…` scheme.
+- `uv run pytest packages/maistro-core/tests/runs -q` → **1506 passed,
+  3 skipped** (matches rounds 119–121 exactly).
+- `test_pg_root_preparation.py + test_pg_run_insert_connection.py +
+  test_attempt_cancellation_cause_model.py` → **44 passed** (10 + 34).
+- 11 hive design/workspace/agent suites (test_design_* ×7,
+  test_workspace_agent_identity, test_agent_invocation,
+  test_agent_materialization, test_agent_model_tools) → **198 passed**.
+- `packages/maistro-bootstrap/tests -q -k agent_loop` → **40 passed**.
+- `packages/maistro-design/tests/test_artifact_versions.py` → **39
+  passed** (mixed-control vocabulary coverage).
+
+**Verdict: BLOCKED** — dependency-blocking (122nd consecutive round).
+All 13 acceptance criteria remain UNVERIFIED: #804/#805/#806 Goal
+reconciliation, #774 CreativeBrief, #776 workspace graph, #53 front
+door and #93/#95 production path are open, and the issue's stop
+condition forbids a Design-Studio-private substitute. Inventory delta
+**+0** (this record only). (Refs #777)
