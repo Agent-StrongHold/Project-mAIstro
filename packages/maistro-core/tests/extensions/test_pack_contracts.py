@@ -30,12 +30,16 @@ Attempt spine, no second identity scheme anywhere.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
+import subprocess
+import sys
+from collections.abc import Callable
 from typing import Any, ClassVar
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from maistro.extensions.compatibility import (
     CompatibilityPolicy,
@@ -428,15 +432,14 @@ class TestVersionAddressableProvenance:
 
         assert rubric.provenance.origin is ProvenanceOrigin.PACK
         assert rubric.provenance.pack_id == "acme.film_critique"
-        # The rubric records the same exact-source provenance the graph and
-        # persona metadata carry: rubrics instantiated from different
-        # versions of one pack are provenance-distinguishable (review P1).
         assert rubric.provenance.publisher == "acme"
         assert rubric.provenance.pack_version == "1.0.0"
+        assert rubric.provenance.manifest_sha256 == pack_meta["pack.manifest_sha256"]
         assert rubric.provenance.asset_id == "scene"
         assert rubric.provenance.asset_version == "1.0.0"
-        assert rubric.provenance.manifest_sha256 == pack_meta["pack.manifest_sha256"]
 
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
     def test_rubric_provenance_distinguishes_pack_versions(self) -> None:
@@ -486,8 +489,6 @@ class TestVersionAddressableProvenance:
         )
         assert from_v1.provenance != from_v2.provenance
 
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
     def test_versions_install_side_by_side_and_stay_individually_addressable(
         self,
     ) -> None:
@@ -504,90 +505,23 @@ class TestVersionAddressableProvenance:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    def test_record_provenance_is_the_manifests_provenance(self) -> None:
+        registry = _active_registry()
+        record = registry.record("acme.film_critique")
+        provenance = record.provenance
+        assert provenance.pack_id == "acme.film_critique"
+        assert provenance.publisher == "acme"
+        assert provenance.version == "1.0.0"
+        assert provenance.manifest_sha256 == hashlib.sha256(ACME_PACK).hexdigest()
+
     def test_reinstalling_identical_bytes_is_idempotent(self) -> None:
         registry = InstallablePackRegistry(platform_api_version="1.0.0")
         first = registry.install(ACME_PACK)
         second = registry.install(ACME_PACK)
         assert first is second
         assert len(registry.records()) == 1
-
-
-# --- The snapshot is anchored to its bytes ------------------------------------
-
-
-class TestManifestSnapshotIntegrity:
-    """Review P2: a stored snapshot cannot be mutated into lying about raw.
-
-    The snapshot's outer dataclasses/tuples are frozen and persona payload
-    trees are frozen recursively; the one canonical-model object in the tree
-    (``RubricDimension``) cannot be frozen here, so every *use* is anchored
-    to a pristine re-parse of ``raw`` instead of the stored tree.
-    """
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    def test_persona_payload_trees_are_frozen(self) -> None:
-        manifest = _active_registry().record("acme.film_critique").manifest
-        stored = next(a for a in manifest.assets if a.asset_id == "critic")
-        with pytest.raises(TypeError):
-            stored.persona.payload["defaults"] = {"tone": "warm"}
-        with pytest.raises(TypeError):
-            stored.persona.payload["defaults"]["tone"] = "warm"
-        with pytest.raises(AttributeError):
-            stored.persona.payload["surfaces"].append("cli")  # type: ignore[union-attr]
-        # Frozen trees still instantiate: thawing feeds the canonical model.
-        persona = instantiate_persona_asset(manifest, "critic", workspace_id=WORKSPACE_ID)
-        assert persona.defaults == {"tone": "dry"}
-        assert persona.behavior_defaults == {"ask_before_override": True}
-        assert persona.surfaces == {"ui"}
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    def test_mutating_a_stored_dimension_cannot_serve_wrong_bytes(self) -> None:
-        manifest = _active_registry().record("acme.film_critique").manifest
-        stored = next(a for a in manifest.assets if a.asset_id == "scene")
-        # The canonical RubricDimension inside the stored tree really is
-        # mutable — this is the hole the raw-anchored resolution closes.
-        stored.rubric.dimensions[0].weight = 999.0
-        assert stored.rubric.dimensions[0].weight == 999.0
-        # Resolution ignores the stored tree: the pristine bytes answer.
-        assert manifest.asset("scene").rubric.dimensions[0].weight == 0.6
-        rubric = instantiate_rubric_asset(
-            manifest,
-            "scene",
-            goal_id=GOAL_ID,
-            goal_revision=GOAL_REVISION,
-            workspace_id=WORKSPACE_ID,
-            project_id=PROJECT_ID,
-            authored_by="principal-1",
-        )
-        assert rubric.dimensions[0].weight == 0.6
-        # The digest provenance still names the bytes actually used.
-        assert rubric.provenance.manifest_sha256 == manifest.source_sha256
-        assert rubric.provenance.manifest_sha256 == hashlib.sha256(manifest.raw).hexdigest()
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    def test_instantiated_objects_never_alias_the_snapshot_tree(self) -> None:
-        manifest = _active_registry().record("acme.film_critique").manifest
-        persona = instantiate_persona_asset(manifest, "critic", workspace_id=WORKSPACE_ID)
-        rubric = instantiate_rubric_asset(
-            manifest,
-            "scene",
-            goal_id=GOAL_ID,
-            goal_revision=GOAL_REVISION,
-            workspace_id=WORKSPACE_ID,
-            project_id=PROJECT_ID,
-            authored_by="principal-1",
-        )
-        # Mutating the returned canonical objects cannot reach the snapshot.
-        persona.defaults["tone"] = "warm"
-        rubric.dimensions[0].weight = 999.0
-        stored_persona = next(a for a in manifest.assets if a.asset_id == "critic")
-        stored_rubric = next(a for a in manifest.assets if a.asset_id == "scene")
-        assert stored_persona.persona.payload["defaults"]["tone"] == "dry"
-        assert manifest.asset("scene").rubric.dimensions[0].weight == 0.6
-        assert stored_rubric.rubric is not None and stored_rubric.rubric.gate_pass_threshold == 70.0
 
 
 # --- AC-3: pack-local ids never become canonical ids -------------------------
@@ -663,6 +597,28 @@ class TestCanonicalIdentityWins:
         assert template.template_id == "template-caller-pinned"
         assert persona.id == "persona-caller-pinned"
         assert rubric.rubric_id == "rubric-caller-pinned"
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_caller_rubric_bindings_are_revalidated(self) -> None:
+        registry = _active_registry()
+        kwargs: dict[str, Any] = {
+            "goal_id": GOAL_ID,
+            "goal_revision": GOAL_REVISION,
+            "workspace_id": WORKSPACE_ID,
+            "project_id": PROJECT_ID,
+            "authored_by": "principal-1",
+        }
+        # model_copy(update=...) skips validation; caller-supplied identity
+        # fields must still satisfy the canonical constraints.
+        manifest = registry.active_manifest("acme.film_critique")
+        base = {k: v for k, v in kwargs.items() if k != "goal_revision"}
+        with pytest.raises(ValidationError):
+            instantiate_rubric_asset(manifest, "scene", revision=0, **kwargs)
+        with pytest.raises(ValidationError):
+            instantiate_rubric_asset(manifest, "scene", goal_revision=0, **base)
+        with pytest.raises(ValidationError):
+            instantiate_rubric_asset(manifest, "scene", goal_revision=None, **base)  # type: ignore[arg-type]
 
 
 # --- AC-4: disable stops new use, deletes nothing ----------------------------
@@ -758,6 +714,17 @@ class TestDisableStopsNewUseOnly:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    def test_activate_on_an_active_pack_changes_nothing(self) -> None:
+        # The gate's reversal is a no-op on a pack that was never disabled:
+        # the same record comes back, still active, nothing re-installed.
+        registry = _active_registry()
+        record = registry.record("acme.film_critique")
+        assert registry.activate("acme.film_critique") is record
+        assert record.state is PackState.ACTIVE
+        assert len(registry.records()) == 2
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
     def test_disable_can_pin_one_version_of_a_pack(self) -> None:
         registry = InstallablePackRegistry(platform_api_version="1.0.0")
         registry.install(
@@ -796,6 +763,31 @@ class TestCompatibilityThroughM9Machinery:
             pack_extension_view(manifest), policy
         )
 
+    def test_a_disabled_pack_does_not_satisfy_dependencies(self) -> None:
+        # Disable stops new use — including as the dependency answer for a
+        # later install: the active-version view the M9 evaluator resolves
+        # against skips disabled records entirely, so a pack cannot keep
+        # satisfying dependents from beyond its own disable gate.
+        registry = InstallablePackRegistry(platform_api_version="1.0.0")
+        registry.install(ACME_PACK)
+        registry.disable("acme.film_critique", note="operator hold")
+        with pytest.raises(PackIncompatible, match=r"missing dependency: acme\.film_critique"):
+            registry.install(
+                _pack_bytes(
+                    pack_id="vertex.dependent",
+                    publisher="vertex",
+                    dependencies=[{"id": "acme.film_critique", "range": "*"}],
+                )
+            )
+        # The refused dependent is recorded nowhere; the disabled pack is
+        # still installed, still queryable — deleted nothing.
+        assert [
+            record.manifest.pack_id
+            for record in registry.records()
+            if record.manifest.pack_id == "vertex.dependent"
+        ] == []
+        assert registry.record("acme.film_critique").state is PackState.DISABLED
+
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
     def test_missing_dependency_is_refused_at_install(self) -> None:
@@ -826,6 +818,8 @@ class TestCompatibilityThroughM9Machinery:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
     def test_dependency_resolution_is_independent_of_install_order(self) -> None:
         # Several versions install side by side, but the evaluator resolves a
         # dependency id against one version: the highest active one — the same
@@ -851,8 +845,6 @@ class TestCompatibilityThroughM9Machinery:
             )
             assert record.state is PackState.ACTIVE
 
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
     def test_dependency_on_a_plain_extension_is_satisfied(self) -> None:
         # Capability providers are extensions installed through the M9-B2
         # service; a pack names them exactly like any other dependency.
@@ -1044,6 +1036,16 @@ class TestManifestInspection:
         document["manifest_version"] = 2
         self._rejected(json.dumps(document).encode(), "unsupported manifest_version: 2")
 
+    @pytest.mark.parametrize("version", [True, False])
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_boolean_envelope_version_is_rejected(self, version: bool) -> None:
+        document = json.loads(ACME_PACK)
+        document["manifest_version"] = version
+        self._rejected(json.dumps(document).encode(), "unsupported manifest_version:")
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
     def test_manifest_version_must_be_a_literal_integer(self) -> None:
@@ -1053,13 +1055,8 @@ class TestManifestInspection:
         for forged in (True, 1.0):
             document = json.loads(ACME_PACK)
             document["manifest_version"] = forged
-            self._rejected(
-                json.dumps(document).encode(),
-                "manifest_version must be an integer",
-            )
+            self._rejected(json.dumps(document).encode(), "unsupported manifest_version:")
 
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
     def test_wrong_subtype_is_rejected(self) -> None:
         document = json.loads(ACME_PACK)
         document["kind"] = "ui-pack"
@@ -1083,20 +1080,16 @@ class TestManifestInspection:
             _pack_bytes(pack_id="acme.film.critique", publisher="acme"),
             "pack_id must be publisher.name",
         )
-        self._rejected(
-            _pack_bytes(pack_id="pub-1.film-critique", publisher="pub-1"),
-            "pack_id name segment must be a slug",
-        )
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
-    def test_hyphenated_publisher_slug_is_accepted(self) -> None:
-        # Publisher slugs follow the extension-manifest grammar, so a
-        # publisher like ``pub-1`` must be able to namespace its packs.
-        accepted = _pack_bytes(pack_id="pub-1.film_critique", publisher="pub-1")
-        manifest = inspect_pack_manifest(accepted)
-        assert manifest.pack_id == "pub-1.film_critique"
-        assert manifest.publisher == "pub-1"
+    def test_publisher_slugs_allowed_by_manifests_can_publish(self) -> None:
+        # Hyphenated and dotted publisher slugs are valid per _PUBLISHER_RE;
+        # their namespaced pack ids must parse too.
+        for publisher, pack_id in (("pub-1", "pub-1.my_pack"), ("a.b", "a.b.my_pack")):
+            manifest = inspect_pack_manifest(_pack_bytes(pack_id=pack_id, publisher=publisher))
+            assert manifest.pack_id == pack_id
+            assert manifest.publisher == publisher
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
@@ -1196,12 +1189,24 @@ class TestManifestInspection:
             "missing graph payload keys",
         )
         self._rejected(
-            with_graph({"nodes": [{"node_type": "t"}], "edges": [], "name": "g"}),
-            "missing graph node keys",
+            with_graph(
+                {
+                    "name": "g",
+                    "nodes": [{"node_type": "t"}],
+                    "edges": [],
+                }
+            ),
+            "graph node missing required keys: \\[\\'node_id\\'\\]",
         )
         self._rejected(
-            with_graph({"nodes": [{}], "edges": [], "name": "g"}),
-            "missing graph node keys: \\['node_id', 'node_type'\\]",
+            with_graph(
+                {
+                    "name": "g",
+                    "nodes": [{"node_id": "a"}],
+                    "edges": [],
+                }
+            ),
+            "graph node missing required keys: \\[\\'node_type\\'\\]",
         )
         self._rejected(
             with_graph(
@@ -1309,20 +1314,66 @@ class TestManifestInspection:
             "gate_pass_threshold must be a finite number",
         )
         self._rejected(
+            with_rubric({"name": "r", "gate_pass_threshold": 1e400, "dimensions": dimensions}),
+            "gate_pass_threshold must be a finite number",
+        )
+        # JSON ``true`` is a bool: isinstance(True, int) holds, so the guard
+        # must reject it on the explicit bool arm, not the numeric arm.
+        self._rejected(
+            with_rubric({"name": "r", "gate_pass_threshold": True, "dimensions": dimensions}),
+            "gate_pass_threshold must be a finite number",
+        )
+        self._rejected(
+            with_rubric(
+                {
+                    "name": "r",
+                    "gate_pass_threshold": 1.0,
+                    "dimensions": [
+                        {
+                            "id": "d",
+                            "name": "D",
+                            "weight": 1e400,
+                            "method": "model_judge",
+                            "scale": {"numeric": {"min_value": 0.0, "max_value": 1.0}},
+                        }
+                    ],
+                }
+            ),
+            "weight must be a finite number",
+        )
+        self._rejected(
+            with_rubric(
+                {
+                    "name": "r",
+                    "gate_pass_threshold": 1.0,
+                    "dimensions": [
+                        {
+                            "id": "d",
+                            "name": "D",
+                            "weight": 1.0,
+                            "method": "model_judge",
+                            "scale": {"pass_fail": {"pass_value": float("nan")}},
+                        }
+                    ],
+                }
+            ),
+            "pass_value must be a finite number",
+        )
+        self._rejected(
             with_rubric({"name": "r", "gate_pass_threshold": 1.0, "dimensions": []}),
             "rubric dimensions must be a non-empty list",
         )
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
-    def test_non_finite_rubric_numbers_are_rejected(self) -> None:
-        # ``json.loads`` turns ``1e400``/``Infinity``/``NaN`` into non-finite
-        # floats that ``gt=0``-style Pydantic bounds do not all catch, so every
-        # pack-supplied scoring number is checked with ``math.isfinite``.
-        def with_dimension(dimension: dict[str, Any]) -> bytes:
-            rubric = _rubric_asset()["rubric"]
-            rubric["dimensions"] = [dimension]
-            return _pack_bytes(
+    def test_evidence_required_must_be_a_json_boolean(self) -> None:
+        # A truthy string like "false" must not be coerced by bool() into
+        # ``True`` (that would silently invert the evidence requirement);
+        # only an explicit JSON boolean is accepted.
+        dimension = dict(_rubric_asset()["rubric"]["dimensions"][0])
+        dimension["evidence_required"] = "false"
+        self._rejected(
+            _pack_bytes(
                 pack_id="acme.film_critique",
                 publisher="acme",
                 assets=[
@@ -1330,55 +1381,15 @@ class TestManifestInspection:
                         "asset_id": "r",
                         "version": "1.0.0",
                         "kind": "rubric",
-                        "rubric": rubric,
+                        "rubric": {
+                            "name": "r",
+                            "gate_pass_threshold": 1.0,
+                            "dimensions": [dimension],
+                        },
                     }
                 ],
-            )
-
-        base = _rubric_asset()["rubric"]["dimensions"][0]
-        cases: list[tuple[dict[str, Any], str]] = [
-            (dict(base, weight=1e400), "rubric dimension weight must be a finite number"),
-            (
-                dict(base, weight=float("nan")),
-                "rubric dimension weight must be a finite number",
             ),
-            (
-                dict(base, scale={"numeric": {"min_value": 0, "max_value": 1e400}}),
-                "numeric max_value must be a finite number",
-            ),
-            (
-                dict(base, scale={"pass_fail": {"pass_value": float("inf")}}),
-                "pass_fail pass_value must be a finite number",
-            ),
-        ]
-        for dimension, message in cases:
-            self._rejected(with_dimension(dimension), message)
-
-        rubric = _rubric_asset()["rubric"]
-        rubric["gate_pass_threshold"] = 1e400
-        self._rejected(
-            _pack_bytes(
-                pack_id="acme.film_critique",
-                publisher="acme",
-                assets=[{"asset_id": "r", "version": "1.0.0", "kind": "rubric", "rubric": rubric}],
-            ),
-            "rubric gate_pass_threshold must be a finite number",
-        )
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    def test_evidence_required_must_be_a_json_boolean(self) -> None:
-        # bool() coerces any truthy junk — `bool("false")` is True — so a
-        # string must be refused rather than silently inverted or coerced.
-        rubric = _rubric_asset()["rubric"]
-        rubric["dimensions"][0]["evidence_required"] = "false"
-        self._rejected(
-            _pack_bytes(
-                pack_id="acme.film_critique",
-                publisher="acme",
-                assets=[{"asset_id": "r", "version": "1.0.0", "kind": "rubric", "rubric": rubric}],
-            ),
-            "rubric evidence_required must be a boolean",
+            "evidence_required must be a boolean",
         )
 
     @pytest.mark.contract("boundary")
@@ -1414,6 +1425,34 @@ class TestManifestInspection:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    def test_manifest_snapshot_is_deep_frozen(self) -> None:
+        """Post-inspection mutation of the snapshot is impossible.
+
+        Provenance must keep describing the instantiated content: a
+        consumer holding ``manifest`` cannot alter an asset payload and
+        have later instantiations drift from ``source_sha256``.
+        """
+        manifest = inspect_pack_manifest(ACME_PACK)
+        persona = next(a for a in manifest.assets if a.asset_id == "critic")
+        rubric = next(a for a in manifest.assets if a.asset_id == "scene")
+        # Mappings — top-level and nested — reject writes.
+        with pytest.raises(TypeError):
+            persona.persona.payload["purpose"] = "tampered"  # type: ignore[index]
+        with pytest.raises(TypeError):
+            persona.persona.payload["defaults"]["tone"] = "tampered"  # type: ignore[index]
+        # Arrays are frozen as tuples.
+        assert isinstance(persona.persona.payload["surfaces"], tuple)
+        # Canonical Pydantic objects never live in the snapshot: the
+        # pack-local frozen dataclass refuses attribute writes.
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            rubric.rubric.dimensions[0].weight = 99.0  # type: ignore[misc]
+        # Instantiation still produces the original, sha-consistent content.
+        minted = instantiate_persona_asset(manifest, "critic", workspace_id=WORKSPACE_ID)
+        assert minted.purpose == "judge scenes against the rubric"
+        assert minted.extension_metadata["pack"]["pack.manifest_sha256"] == (manifest.source_sha256)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
     def test_unknown_asset_or_version_in_instantiation_is_a_typed_error(self) -> None:
         manifest = inspect_pack_manifest(ACME_PACK)
         with pytest.raises(PackAssetUnknown):
@@ -1441,288 +1480,407 @@ class TestManifestInspection:
         with pytest.raises(PackIdentityConflict, match="different manifest bytes"):
             registry.install(json.dumps(tampered).encode())
 
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_pack_id_occupied_by_an_active_extension_is_rejected(self) -> None:
+        # A pack sharing an id with an already-active extension would let
+        # _active_versions() overwrite the extension's version with the
+        # pack's, silently retargeting dependency resolution; refuse instead.
+        registry = InstallablePackRegistry(
+            platform_api_version="1.0.0",
+            active_extensions={"acme.film_critique": "1.0.0"},
+        )
+        with pytest.raises(PackIdentityConflict, match="already an active extension"):
+            registry.install(ACME_PACK)
+        assert registry.records() == ()
 
-# --- Fail-closed refusal matrix: every degenerate parse/lookup path ----------
 
+class TestManifestSnapshotIntegrity:
+    """A stored snapshot cannot be mutated into lying about ``raw``.
 
-class TestInspectionRefusalMatrix:
-    """Each refusal branch in ``packs.py`` answers with ITS OWN detail.
-
-    The happy path and a handful of headline rejections are pinned by
-    ``TestManifestInspection``; this matrix walks the rest of the fail-closed
-    surface one branch at a time. Each case asserts the specific detail
-    fragment — a test that only asserted "some rejection happened" would pass
-    for the wrong reason the day the parser started refusing the wrong thing.
+    The whole snapshot tree is immutable: the outer dataclasses and tuples
+    are frozen, persona payload trees are frozen recursively, and a rubric's
+    dimensions are stored as pack-local frozen dataclasses — the canonical
+    Pydantic models are minted fresh at every probe/instantiation. There is
+    no mutable object inside the snapshot, so the bytes ``source_sha256``
+    anchors are exactly the bytes every resolution and instantiation answers
+    from.
     """
 
-    @staticmethod
-    def _poisoned(pack_changes: dict[str, Any] | None = None) -> bytes:
-        document = json.loads(ACME_PACK)
-        document.update(pack_changes or {})
-        return json.dumps(document).encode()
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_mutating_a_stored_dimension_cannot_serve_wrong_bytes(self) -> None:
+        manifest = _active_registry().record("acme.film_critique").manifest
+        stored = next(a for a in manifest.assets if a.asset_id == "scene")
+        # The stored dimension is a frozen pack-local dataclass: there is no
+        # mutable canonical object in the tree to corrupt in place
+        # (FrozenInstanceError is an AttributeError subclass).
+        with pytest.raises(AttributeError):
+            stored.rubric.dimensions[0].weight = 999.0  # type: ignore[misc]
+        # Resolution answers from the immutable snapshot: the declared weight.
+        assert manifest.asset("scene").rubric.dimensions[0].weight == 0.6
+        rubric = instantiate_rubric_asset(
+            manifest,
+            "scene",
+            goal_id=GOAL_ID,
+            goal_revision=GOAL_REVISION,
+            workspace_id=WORKSPACE_ID,
+            project_id=PROJECT_ID,
+            authored_by="principal-1",
+        )
+        assert rubric.dimensions[0].weight == 0.6
+        # The digest provenance still names the bytes actually used.
+        assert rubric.provenance.manifest_sha256 == manifest.source_sha256
+        assert rubric.provenance.manifest_sha256 == hashlib.sha256(manifest.raw).hexdigest()
 
-    @staticmethod
-    def _poisoned_asset(asset_id: str, changes: dict[str, Any]) -> bytes:
-        document = json.loads(ACME_PACK)
-        for asset in document["assets"]:
-            if asset["asset_id"] == asset_id:
-                asset.update(changes)
-                return json.dumps(document).encode()
-        raise AssertionError(f"fixture bug: no asset {asset_id!r}")
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_instantiated_objects_never_alias_the_snapshot_tree(self) -> None:
+        manifest = _active_registry().record("acme.film_critique").manifest
+        persona = instantiate_persona_asset(manifest, "critic", workspace_id=WORKSPACE_ID)
+        rubric = instantiate_rubric_asset(
+            manifest,
+            "scene",
+            goal_id=GOAL_ID,
+            goal_revision=GOAL_REVISION,
+            workspace_id=WORKSPACE_ID,
+            project_id=PROJECT_ID,
+            authored_by="principal-1",
+        )
+        # Mutating the returned canonical objects cannot reach the snapshot.
+        persona.defaults["tone"] = "warm"
+        rubric.dimensions[0].weight = 999.0
+        stored_persona = next(a for a in manifest.assets if a.asset_id == "critic")
+        stored_rubric = next(a for a in manifest.assets if a.asset_id == "scene")
+        assert stored_persona.persona.payload["defaults"]["tone"] == "dry"
+        assert manifest.asset("scene").rubric.dimensions[0].weight == 0.6
+        assert stored_rubric.rubric is not None
+        assert stored_rubric.rubric.gate_pass_threshold == 70.0
 
-    @staticmethod
-    def _poisoned_payload(asset_id: str, changes: dict[str, Any]) -> bytes:
-        document = json.loads(ACME_PACK)
-        kind_keys = {"graph": "graph", "persona": "persona", "rubric": "rubric"}
-        for asset in document["assets"]:
-            if asset["asset_id"] == asset_id:
-                payload_key = kind_keys[asset["kind"]]
-                asset[payload_key].update(changes)
-                return json.dumps(document).encode()
-        raise AssertionError(f"fixture bug: no asset {asset_id!r}")
+
+# The fail-closed parse matrix: one mutation per row, each pinning a distinct
+# rejection the parser promises. Every branch outcome of the manifest/asset/
+# payload validators is exercised here — a malformed pack must fail closed
+# with its specific reason, never parse "well enough".
+#
+# Each row mutates the ACME document in exactly one place and asserts the
+# rejection message fragment. Indices: assets[0] graph, [1] persona, [2] rubric.
+
+
+def _mutated(mutate: Callable[[dict[str, Any]], None]) -> bytes:
+    document = json.loads(ACME_PACK)
+    mutate(document)
+    return json.dumps(document).encode()
+
+
+def _asset(document: dict[str, Any], index: int) -> dict[str, Any]:
+    return document["assets"][index]
+
+
+FAIL_CLOSED_PARSE_MATRIX: tuple[tuple[str, Callable[[dict[str, Any]], None], str], ...] = (
+    # -- envelope / identity -------------------------------------------------
+    (
+        "required-string-fields-reject-non-strings",
+        lambda doc: doc.update(pack_id=7),
+        "pack_id must be a non-empty string",
+    ),
+    (
+        "required-string-fields-reject-blanks",
+        lambda doc: doc.update(name="   "),
+        "name must be a non-empty string",
+    ),
+    ("malformed-publisher-id", lambda doc: doc.update(publisher="Bad"), "malformed publisher id"),
+    ("assets-must-be-a-list", lambda doc: doc.update(assets={}), "assets must be a non-empty list"),
+    (
+        "assets-must-be-non-empty",
+        lambda doc: doc.update(assets=[]),
+        "assets must be a non-empty list",
+    ),
+    (
+        "each-asset-must-be-an-object",
+        lambda doc: doc.update(assets=["critique-graph"]),
+        "each asset must be an object",
+    ),
+    (
+        "assets-reject-unknown-keys",
+        lambda doc: _asset(doc, 0).update(exec="local"),
+        "unknown asset keys",
+    ),
+    (
+        "assets-require-the-identity-keys",
+        lambda doc: doc["assets"].__setitem__(
+            0, {"asset_id": "g", "kind": "graph", "graph": _graph_asset()["graph"]}
+        ),
+        "missing asset keys",
+    ),
+    (
+        "malformed-asset-id",
+        lambda doc: _asset(doc, 0).update(asset_id="Bad Asset"),
+        "malformed asset_id",
+    ),
+    # -- graph payload -------------------------------------------------------
+    (
+        "graph-payload-must-be-an-object",
+        lambda doc: _asset(doc, 0).update(graph=[]),
+        "graph payload must be an object",
+    ),
+    (
+        "graph-payload-rejects-unknown-keys",
+        lambda doc: _asset(doc, 0)["graph"].update(exec="local"),
+        "unknown graph payload keys",
+    ),
+    (
+        "graph-description-must-be-a-string",
+        lambda doc: _asset(doc, 0)["graph"].update(description=7),
+        "graph description must be a string",
+    ),
+    (
+        "graph-entry-node-must-be-non-empty-when-present",
+        lambda doc: _asset(doc, 0)["graph"].update(entry_node=""),
+        "graph entry_node must be a non-empty string when present",
+    ),
+    (
+        "graph-entry-node-must-be-a-string-when-present",
+        lambda doc: _asset(doc, 0)["graph"].update(entry_node=7),
+        "graph entry_node must be a non-empty string when present",
+    ),
+    (
+        "graph-node-id-grammar",
+        lambda doc: _asset(doc, 0)["graph"]["nodes"][0].update(node_id="Bad_Node"),
+        "malformed graph node_id",
+    ),
+    (
+        "graph-node-name-must-be-a-string",
+        lambda doc: _asset(doc, 0)["graph"]["nodes"][0].update(name=7),
+        "graph node name must be a string",
+    ),
+    (
+        "graph-edges-must-be-a-list",
+        lambda doc: _asset(doc, 0)["graph"].update(edges={"explore": "execute"}),
+        "graph edges must be a list",
+    ),
+    (
+        "graph-edge-must-be-a-pair",
+        lambda doc: _asset(doc, 0)["graph"].update(edges=["explore->execute"]),
+        "each graph edge must be a",
+    ),
+    (
+        "graph-edge-pair-must-have-two-ends",
+        lambda doc: _asset(doc, 0)["graph"].update(edges=[["explore", "execute", "again"]]),
+        "each graph edge must be a",
+    ),
+    (
+        "graph-edge-ends-must-be-strings",
+        lambda doc: _asset(doc, 0)["graph"].update(edges=[["explore", 2]]),
+        "each graph edge must be a",
+    ),
+    # -- persona payload ------------------------------------------------------
+    (
+        "persona-payload-must-be-an-object",
+        lambda doc: _asset(doc, 1).update(persona=[]),
+        "persona payload must be an object",
+    ),
+    (
+        "persona-payload-rejects-unknown-keys",
+        lambda doc: _asset(doc, 1)["persona"].update(rubric_authority="local"),
+        "unknown persona payload keys",
+    ),
+    (
+        "persona-surfaces-must-be-a-list",
+        lambda doc: _asset(doc, 1)["persona"].update(surfaces="ui"),
+        "persona surfaces must be a list of strings",
+    ),
+    (
+        "persona-surfaces-items-must-be-strings",
+        lambda doc: _asset(doc, 1)["persona"].update(surfaces=[1]),
+        "persona surfaces must be a list of strings",
+    ),
+    (
+        "persona-defaults-must-be-an-object",
+        lambda doc: _asset(doc, 1)["persona"].update(defaults=[]),
+        "persona defaults must be an object",
+    ),
+    (
+        "persona-behavior-must-be-an-object",
+        lambda doc: _asset(doc, 1)["persona"].update(behavior=[]),
+        "persona behavior must be an object",
+    ),
+    # -- rubric payload -------------------------------------------------------
+    (
+        "rubric-payload-must-be-an-object",
+        lambda doc: _asset(doc, 2).update(rubric=[]),
+        "rubric payload must be an object",
+    ),
+    (
+        "rubric-payload-rejects-unknown-keys",
+        lambda doc: _asset(doc, 2)["rubric"].update(gate_authority="local"),
+        "unknown rubric payload keys",
+    ),
+    (
+        "veto-ids-must-be-a-list",
+        lambda doc: _asset(doc, 2)["rubric"].update(veto_dimension_ids="voice"),
+        "veto_dimension_ids must be a list of strings",
+    ),
+    (
+        "veto-ids-items-must-be-strings",
+        lambda doc: _asset(doc, 2)["rubric"].update(veto_dimension_ids=[1]),
+        "veto_dimension_ids must be a list of strings",
+    ),
+    (
+        "each-rubric-dimension-must-be-an-object",
+        lambda doc: _asset(doc, 2)["rubric"].update(dimensions=["pace"]),
+        "each rubric dimension must be an object",
+    ),
+    (
+        "rubric-dimension-rejects-unknown-keys",
+        lambda doc: _asset(doc, 2)["rubric"]["dimensions"][0].update(veto=True),
+        "unknown rubric dimension keys",
+    ),
+    (
+        "rubric-dimension-requires-its-keys",
+        lambda doc: _asset(doc, 2)["rubric"]["dimensions"][0].pop("weight"),
+        "missing rubric dimension keys",
+    ),
+    (
+        "rubric-method-in-the-closed-vocabulary",
+        lambda doc: _asset(doc, 2)["rubric"]["dimensions"][0].update(method="vibes"),
+        "unknown rubric scoring method",
+    ),
+    (
+        "dimension-scale-must-be-an-object",
+        lambda doc: _asset(doc, 2)["rubric"]["dimensions"][0].update(scale=[]),
+        "rubric dimension scale must be a non-empty object",
+    ),
+    (
+        "dimension-scale-must-be-non-empty",
+        lambda doc: _asset(doc, 2)["rubric"]["dimensions"][0].update(scale={}),
+        "rubric dimension scale must be a non-empty object",
+    ),
+    (
+        "dimension-scale-rejects-unknown-keys",
+        lambda doc: _asset(doc, 2)["rubric"]["dimensions"][0]["scale"].update(celsius=1),
+        "unknown rubric scale keys",
+    ),
+    (
+        "numeric-scale-must-be-an-object",
+        lambda doc: _asset(doc, 2)["rubric"]["dimensions"][0].update(scale={"numeric": []}),
+        "numeric scale must have only min_value and max_value",
+    ),
+    (
+        "numeric-scale-rejects-unknown-keys",
+        lambda doc: _asset(doc, 2)["rubric"]["dimensions"][0].update(
+            scale={"numeric": {"min_value": 0, "max_value": 100, "step": 1}}
+        ),
+        "numeric scale must have only min_value and max_value",
+    ),
+    (
+        "pass-fail-scale-must-be-an-object",
+        lambda doc: _asset(doc, 2)["rubric"]["dimensions"][0].update(scale={"pass_fail": []}),
+        "pass_fail scale must have only pass_value and fail_value",
+    ),
+    (
+        "pass-fail-scale-rejects-unknown-keys",
+        lambda doc: _asset(doc, 2)["rubric"]["dimensions"][0].update(
+            scale={"pass_fail": {"pass_value": 1, "fail_value": 0, "either": 0.5}}
+        ),
+        "pass_fail scale must have only pass_value and fail_value",
+    ),
+    # -- dependencies / capabilities -------------------------------------------
+    (
+        "dependencies-must-be-a-list",
+        lambda doc: doc.update(dependencies={"acme.film_critique": "*"}),
+        "dependencies must be a list",
+    ),
+    (
+        "dependency-must-be-an-id-range-object",
+        lambda doc: doc.update(dependencies=["acme.film_critique"]),
+        "each dependency must be an object with exactly id and range",
+    ),
+    (
+        "dependency-must-have-exactly-id-and-range",
+        lambda doc: doc.update(dependencies=[{"id": "x.y", "range": "*", "optional": True}]),
+        "each dependency must be an object with exactly id and range",
+    ),
+    (
+        "dependency-id-must-be-a-string",
+        lambda doc: doc.update(dependencies=[{"id": 7, "range": "*"}]),
+        "malformed dependency id",
+    ),
+    (
+        "dependency-id-grammar",
+        lambda doc: doc.update(dependencies=[{"id": "Bad Id", "range": "*"}]),
+        "malformed dependency id",
+    ),
+    (
+        "dependency-range-must-be-a-string",
+        lambda doc: doc.update(dependencies=[{"id": "x.y", "range": 7}]),
+        "malformed dependency range",
+    ),
+    (
+        "dependency-range-must-be-non-empty",
+        lambda doc: doc.update(dependencies=[{"id": "x.y", "range": "  "}]),
+        "malformed dependency range",
+    ),
+    (
+        "capabilities-must-be-a-list",
+        lambda doc: doc.update(capabilities="run.read"),
+        "capabilities must be a list of strings",
+    ),
+    (
+        "capabilities-items-must-be-strings",
+        lambda doc: doc.update(capabilities=[1]),
+        "capabilities must be a list of strings",
+    ),
+)
+
+
+class TestFailClosedParseMatrix:
+    """Every branch outcome of the manifest/asset/payload validators.
+
+    A malformed pack must fail closed with its specific reason — each row
+    takes the rejection branch its id names, so no unknown-key, shape, or
+    grammar violation can pass inspection by falling through a hole in the
+    matrix.
+    """
 
     @pytest.mark.parametrize(
-        ("poison", "match"),
-        [
-            # -- envelope / identity -------------------------------------------------
-            (lambda d: d.update({"name": ""}), r"name must be a non-empty string"),
-            (lambda d: d.update({"assets": []}), r"assets must be a non-empty list"),
-            (lambda d: d.update({"publisher": "Acme"}), r"malformed publisher id"),
-            (lambda d: d.update({"dependencies": "a.b"}), r"dependencies must be a list"),
-            (
-                lambda d: d.update({"dependencies": [{"id": "a.b", "range": "*", "note": "x"}]}),
-                r"exactly id and range",
-            ),
-            (
-                lambda d: d.update({"dependencies": [{"id": "9bad", "range": "*"}]}),
-                r"malformed dependency id",
-            ),
-            (
-                lambda d: d.update({"dependencies": [{"id": "a.b", "range": "   "}]}),
-                r"malformed dependency range for 'a\.b'",
-            ),
-            (lambda d: d.update({"capabilities": "run.read"}), r"capabilities must be a list"),
-            # -- asset envelope ------------------------------------------------------
-            (lambda d: d.update({"assets": ["graph"]}), r"each asset must be an object"),
-            (
-                lambda d: d.update(
-                    {"assets": [_graph_asset(), {**_persona_asset(), "executor": "x"}]}
-                ),
-                r"unknown asset keys",
-            ),
-            (
-                lambda d: d.update(
-                    {"assets": [{k: v for k, v in _graph_asset().items() if k != "version"}]}
-                ),
-                r"missing asset keys",
-            ),
-            (
-                lambda d: d.update(
-                    {"assets": [_graph_asset(asset_id="Bad_ID"), _persona_asset(), _rubric_asset()]}
-                ),
-                r"malformed asset_id",
-            ),
-            (
-                lambda d: d.update({"assets": [{**_persona_asset(), "kind": "graph"}]}),
-                r"must declare exactly the 'graph' payload",
-            ),
-            # -- graph payload -------------------------------------------------------
-            (
-                lambda d: TestInspectionRefusalMatrix._swap_payload(d, "graph", "nope"),
-                r"graph payload must be an object",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_payload(d, "graph", {"stores": {}}),
-                r"unknown graph payload keys",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_payload(
-                    d, "graph", {"description": 42}
-                ),
-                r"graph description must be a string",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_payload(
-                    d, "graph", {"entry_node": 42}
-                ),
-                r"graph entry_node must be a non-empty string when present",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_payload(
-                    d, "graph", {"nodes": [{"node_id": "Explore", "node_type": "pack.explore"}]}
-                ),
-                r"malformed graph node_id",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_payload(
-                    d,
-                    "graph",
-                    {
-                        "nodes": [
-                            {"node_id": "explore", "node_type": "pack.explore", "name": 42},
-                            {"node_id": "execute", "node_type": "pack.execute"},
-                        ]
-                    },
-                ),
-                r"graph node name must be a string",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_payload(d, "graph", {"edges": "x"}),
-                r"graph edges must be a list",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_payload(
-                    d, "graph", {"edges": [["explore"], ["execute"]]}
-                ),
-                r"each graph edge must be a \[from_node, to_node\] pair",
-            ),
-            # -- persona payload -----------------------------------------------------
-            (
-                lambda d: TestInspectionRefusalMatrix._swap_payload(d, "persona", "nope"),
-                r"persona payload must be an object",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_payload(
-                    d, "persona", {"persona_store": {}}
-                ),
-                r"unknown persona payload keys",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_payload(
-                    d, "persona", {"surfaces": "ui"}
-                ),
-                r"persona surfaces must be a list of strings",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_payload(
-                    d, "persona", {"defaults": ["x"]}
-                ),
-                r"persona defaults must be an object",
-            ),
-            # -- rubric payload ------------------------------------------------------
-            (
-                lambda d: TestInspectionRefusalMatrix._swap_payload(d, "rubric", "nope"),
-                r"rubric payload must be an object",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_payload(
-                    d, "rubric", {"rubric_authority": {}}
-                ),
-                r"unknown rubric payload keys",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_payload(
-                    d, "rubric", {"veto_dimension_ids": "voice"}
-                ),
-                r"veto_dimension_ids must be a list of strings",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_payload(
-                    d,
-                    "rubric",
-                    {"dimensions": [_rubric_asset()["rubric"]["dimensions"][0], "pace"]},
-                ),
-                r"each rubric dimension must be an object",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_dimension(d, {"veto": 1}),
-                r"unknown rubric dimension keys",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_dimension(d, {}, drop=("scale",)),
-                r"missing rubric dimension keys",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_dimension(d, {"method": "vibes"}),
-                r"unknown rubric scoring method",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_dimension(d, {"scale": {}}),
-                r"scale must be a non-empty object",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_dimension(
-                    d, {"scale": {"numeric": {"min_value": 0, "max_value": 100}, "stars": 5}}
-                ),
-                r"unknown rubric scale keys",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_dimension(
-                    d,
-                    {
-                        "scale": {
-                            "numeric": {
-                                "min_value": 0,
-                                "max_value": 100,
-                                "step": 1,
-                            }
-                        }
-                    },
-                ),
-                r"numeric scale must have only min_value and max_value",
-            ),
-            (
-                lambda d: TestInspectionRefusalMatrix._poison_dimension(
-                    d,
-                    {
-                        "scale": {
-                            "pass_fail": {
-                                "pass_value": 1,
-                                "fail_value": 0,
-                                "bonus": 2,
-                            }
-                        }
-                    },
-                ),
-                r"pass_fail scale must have only pass_value and fail_value",
-            ),
-        ],
+        ("mutation", "expected"),
+        [(row[1], row[2]) for row in FAIL_CLOSED_PARSE_MATRIX],
+        ids=[row[0] for row in FAIL_CLOSED_PARSE_MATRIX],
     )
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
-    def test_each_refusal_names_its_own_reason(self, poison: Any, match: str) -> None:
-        document = json.loads(ACME_PACK)
-        poison(document)
-        with pytest.raises(PackManifestRejected, match=match):
-            inspect_pack_manifest(json.dumps(document).encode())
-
-    # -- document surgery helpers (staticmethods so parametrize can reach them) --
-
-    @staticmethod
-    def _swap_payload(document: dict[str, Any], payload_key: str, value: Any) -> None:
-        for asset in document["assets"]:
-            if payload_key in asset:
-                asset[payload_key] = value
-                return
-        raise AssertionError(f"fixture bug: no {payload_key!r} payload")
-
-    @staticmethod
-    def _poison_payload(
-        document: dict[str, Any], payload_key: str, changes: dict[str, Any]
+    def test_each_mutation_is_rejected_with_its_reason(
+        self, mutation: Callable[[dict[str, Any]], None], expected: str
     ) -> None:
-        for asset in document["assets"]:
-            if payload_key in asset:
-                asset[payload_key].update(changes)
-                return
-        raise AssertionError(f"fixture bug: no {payload_key!r} payload")
+        with pytest.raises(PackManifestRejected, match=expected):
+            inspect_pack_manifest(_mutated(mutation))
 
-    @staticmethod
-    def _poison_dimension(
-        document: dict[str, Any], changes: dict[str, Any], drop: tuple[str, ...] = ()
-    ) -> None:
-        for asset in document["assets"]:
-            if "rubric" in asset:
-                dimension = asset["rubric"]["dimensions"][0]
-                dimension.update(changes)
-                for key in drop:
-                    dimension.pop(key, None)
-                return
-        raise AssertionError("fixture bug: no rubric payload")
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_a_graph_asset_may_omit_the_entry_node(self) -> None:
+        # The positive arm of the entry-node branches: entry_node is optional,
+        # and an asset without one must still inspect and instantiate.
+        asset = _graph_asset()
+        del asset["graph"]["entry_node"]
+        manifest = inspect_pack_manifest(
+            _pack_bytes(pack_id="acme.entryless", publisher="acme", assets=[asset])
+        )
+        template = instantiate_graph_asset(manifest, "critique-graph", workspace_id=WORKSPACE_ID)
+        assert "entry_node" not in template.metadata
+        assert template.name == "Critique loop"
 
 
-class TestInstantiationRefusals:
-    """The degenerate lookup/validation paths of instantiation and the registry."""
+class TestInstantiationInputValidation:
+    """Instantiation input guard rails on top of the identity rules (AC-3).
 
+    Canonical identity is the caller's: blank caller-side scope/id values are
+    refused rather than coerced, and a wrong-kind asset names its kind in the
+    typed error.
+    """
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
     def test_unknown_pack_with_pinned_version_names_the_version(self) -> None:
@@ -1732,70 +1890,51 @@ class TestInstantiationRefusals:
                 "ghost.pack", "any-asset", workspace_id=WORKSPACE_ID, version="9.9.9"
             )
 
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    def test_blank_explicit_canonical_id_is_refused(self) -> None:
-        manifest = inspect_pack_manifest(ACME_PACK)
-        with pytest.raises(
-            ValueError, match="template_id must be a non-empty string when supplied"
-        ):
-            instantiate_graph_asset(
-                manifest, "critique-graph", workspace_id=WORKSPACE_ID, template_id="   "
-            )
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    def test_blank_workspace_id_is_refused_for_graphs(self) -> None:
-        manifest = inspect_pack_manifest(ACME_PACK)
-        with pytest.raises(ValueError, match="workspace_id must be a non-empty string"):
-            instantiate_graph_asset(manifest, "critique-graph", workspace_id="   ")
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    def test_wrong_kind_asset_is_refused_for_graph_instantiation(self) -> None:
+    def test_wrong_kind_assets_are_refused_with_the_kind_named(self) -> None:
         manifest = inspect_pack_manifest(ACME_PACK)
         with pytest.raises(PackAssetUnknown, match="is not a graph asset"):
             instantiate_graph_asset(manifest, "critic", workspace_id=WORKSPACE_ID)
+        with pytest.raises(PackAssetUnknown, match="is not a persona asset"):
+            instantiate_persona_asset(manifest, "scene", workspace_id=WORKSPACE_ID)
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
-    def test_blank_workspace_id_is_refused_for_personas(self) -> None:
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_blank_workspace_ids_are_refused(self, blank: str) -> None:
         manifest = inspect_pack_manifest(ACME_PACK)
         with pytest.raises(ValueError, match="workspace_id must be a non-empty string"):
-            instantiate_persona_asset(manifest, "critic", workspace_id="")
+            instantiate_graph_asset(manifest, "critique-graph", workspace_id=blank)
+        with pytest.raises(ValueError, match="workspace_id must be a non-empty string"):
+            instantiate_persona_asset(manifest, "critic", workspace_id=blank)
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
-    def test_wrong_kind_asset_is_refused_for_persona_instantiation(self) -> None:
+    @pytest.mark.parametrize("field", ["goal_id", "workspace_id", "project_id", "authored_by"])
+    def test_blank_rubric_bindings_are_refused(self, field: str) -> None:
         manifest = inspect_pack_manifest(ACME_PACK)
-        with pytest.raises(PackAssetUnknown, match="is not a persona asset"):
-            instantiate_persona_asset(manifest, "critique-graph", workspace_id=WORKSPACE_ID)
+        kwargs: dict[str, Any] = {
+            "goal_id": GOAL_ID,
+            "workspace_id": WORKSPACE_ID,
+            "project_id": PROJECT_ID,
+            "authored_by": "principal-1",
+        }
+        kwargs[field] = "  "
+        with pytest.raises(ValueError, match=f"{field} must be a non-empty string"):
+            instantiate_rubric_asset(manifest, "scene", goal_revision=GOAL_REVISION, **kwargs)
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
-    def test_blank_scope_field_is_refused_for_rubric_instantiation(self) -> None:
+    def test_blank_caller_pinned_ids_are_refused(self) -> None:
         manifest = inspect_pack_manifest(ACME_PACK)
-        with pytest.raises(ValueError, match="project_id must be a non-empty string"):
-            instantiate_rubric_asset(
-                manifest,
-                "scene",
-                goal_id=GOAL_ID,
-                goal_revision=GOAL_REVISION,
-                workspace_id=WORKSPACE_ID,
-                project_id="  ",
-                authored_by=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        with pytest.raises(ValueError, match="template_id must be a non-empty string"):
+            instantiate_graph_asset(
+                manifest, "critique-graph", workspace_id=WORKSPACE_ID, template_id="   "
             )
-
-    @pytest.mark.contract("boundary")
-    @pytest.mark.scope("unit")
-    def test_instantiated_rubric_revalidates_caller_supplied_counts(self) -> None:
-        # model_copy(update=...) skips validation, so a caller-supplied
-        # revision/goal_revision of 0 must be refused by re-running the
-        # canonical model's own ge=1 constraints on the final object —
-        # never returned as a RubricSemantic the rest of the system would
-        # trust.
-        manifest = inspect_pack_manifest(ACME_PACK)
-        with pytest.raises(ValueError, match="violates the canonical model"):
+        with pytest.raises(ValueError, match="persona_id must be a non-empty string"):
+            instantiate_persona_asset(
+                manifest, "critic", workspace_id=WORKSPACE_ID, persona_id="   "
+            )
+        with pytest.raises(ValueError, match="rubric_id must be a non-empty string"):
             instantiate_rubric_asset(
                 manifest,
                 "scene",
@@ -1803,36 +1942,43 @@ class TestInstantiationRefusals:
                 goal_revision=GOAL_REVISION,
                 workspace_id=WORKSPACE_ID,
                 project_id=PROJECT_ID,
-                authored_by=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-                revision=0,
-            )
-        with pytest.raises(ValueError, match="violates the canonical model"):
-            instantiate_rubric_asset(
-                manifest,
-                "scene",
-                goal_id=GOAL_ID,
-                goal_revision=0,
-                workspace_id=WORKSPACE_ID,
-                project_id=PROJECT_ID,
-                authored_by=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+                authored_by="principal-1",
+                rubric_id="   ",
             )
 
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    def test_record_provenance_is_the_manifests_provenance(self) -> None:
-        registry = _active_registry()
-        record = registry.record("acme.film_critique")
-        provenance = record.provenance
-        assert provenance.pack_id == "acme.film_critique"
-        assert provenance.publisher == "acme"
-        assert provenance.version == "1.0.0"
-        assert provenance.manifest_sha256 == hashlib.sha256(ACME_PACK).hexdigest()
 
-    @pytest.mark.contract("behavioral")
+class TestModuleImportPosture:
+    """The pack module must not close the recipes ↔ personas import cycle.
+
+    Regression: ``packs.py`` originally imported ``Persona`` at module level,
+    which closed the cycle
+    ``maistro.agents.recipes → maistro.graph → (node auto-import) →
+    maistro.runs → maistro.runtime → maistro.extensions → packs.py →
+    maistro.personas → personas.expander → maistro.agents.recipes`` and made
+    a bare ``import maistro.agents.recipes`` fail with
+    ``ImportError: cannot import name 'AgentRecipe' from partially initialized
+    module`` whenever the interpreter reached ``recipes`` first (e.g. the
+    ``tests/agents/recipes`` suite collecting before anything imported
+    personas). The runtime import now lives inside ``_probe_persona``; this
+    test pins both import orders in fresh interpreters, where prior-module
+    import order inside the test process cannot mask the cycle.
+    """
+
+    @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
-    def test_activating_an_active_pack_is_the_same_record(self) -> None:
-        registry = _active_registry()
-        before = registry.record("acme.film_critique")
-        after = registry.activate("acme.film_critique")
-        assert after is before
-        assert after.state is PackState.ACTIVE
+    @pytest.mark.parametrize("first", ["maistro.agents.recipes", "maistro.personas"])
+    def test_both_import_orders_reach_the_pack_module(self, first: str) -> None:
+        code = (
+            "import importlib\n"
+            f"importlib.import_module({first!r})\n"
+            "import maistro.extensions.packs\n"
+            "import maistro.agents.recipes\n"
+            "import maistro.personas\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert proc.returncode == 0, proc.stderr

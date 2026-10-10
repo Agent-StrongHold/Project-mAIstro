@@ -143,17 +143,19 @@ class RubricGate(BaseModel):
 
 
 class RubricProvenance(BaseModel):
-    """Who authored a revision and which pack supplied its defaults.
+    """Who authored a revision and which pack snapshot supplied its defaults.
 
-    The five detail fields (``publisher`` … ``manifest_sha256``) are the
-    exact source-manifest identity for pack-instantiated revisions (#966):
-    several versions of one pack can be installed side by side, so a
-    persisted revision that recorded only ``pack_id`` could not say which
-    registry snapshot supplied it. They are all-or-nothing — either the
-    full snapshot identity rides along or none of it does — because every
-    one of them comes from the same immutable manifest snapshot, and a
-    half-stamped provenance would be a third state that names no real
-    install.
+    ``pack_id`` names the supplier; the optional ``publisher`` /
+    ``pack_version`` / ``manifest_sha256`` / ``asset_id`` / ``asset_version``
+    fields pin the exact registry snapshot and asset the revision was minted
+    from, so rubrics instantiated from different versions of one pack stay
+    provenance-distinguishable (the version-addressable contract). Catalog
+    adoption — which carries no manifest snapshot — records ``pack_id`` only.
+
+    The five detail fields are all-or-nothing — either the full snapshot
+    identity rides along or none of it does — because every one of them
+    comes from the same immutable manifest snapshot, and a half-stamped
+    provenance would be a third state that names no real install.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -161,11 +163,14 @@ class RubricProvenance(BaseModel):
     authored_by: str = Field(min_length=1)
     origin: ProvenanceOrigin = ProvenanceOrigin.AUTHORED
     pack_id: str | None = None
+    #: The exact pack snapshot the revision was instantiated from (all set
+    #: together by ``instantiate_rubric_asset``; absent for catalog adoption).
+    #: Blank strings name nothing, so the fields are non-empty when present.
     publisher: str | None = Field(default=None, min_length=1)
     pack_version: str | None = Field(default=None, min_length=1)
+    manifest_sha256: str | None = Field(default=None, min_length=1)
     asset_id: str | None = Field(default=None, min_length=1)
     asset_version: str | None = Field(default=None, min_length=1)
-    manifest_sha256: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def _pack_shape(self) -> RubricProvenance:
