@@ -64,17 +64,23 @@ class CompatibilityReport:
     failures: tuple[str, ...] = ()
 
 
-def evaluate_compatibility(
-    manifest: ExtensionManifest, policy: CompatibilityPolicy
+def evaluate_platform_compatibility(
+    manifest: ExtensionManifest, platform_api_version: str
 ) -> CompatibilityReport:
-    """Check platform API compatibility and resolve declared dependencies."""
-    failures: list[str] = []
+    """The platform-API half of the evaluation, standalone.
 
-    platform = _parse_semver(policy.platform_api_version)
+    Install-time evaluation and runtime health projections (#978) must agree
+    on what "incompatible" means, so both call this one check: the platform's
+    API major version against the manifest's declared one. Dependency
+    resolution is deliberately NOT part of it — runtime dependency state has
+    its own readiness gate and its own, transient, summary state.
+    """
+    failures: list[str] = []
+    platform = _parse_semver(platform_api_version)
     candidate = _parse_semver(manifest.api_version)
     if platform is None or candidate is None:
         failures.append(
-            f"api_version comparison failed: platform={policy.platform_api_version!r} "
+            f"api_version comparison failed: platform={platform_api_version!r} "
             f"candidate={manifest.api_version!r}"
         )
     elif candidate[0] != platform[0]:
@@ -82,6 +88,16 @@ def evaluate_compatibility(
             f"api_version major mismatch: platform is {platform[0]}, "
             f"{manifest.extension_id} {manifest.version} requires {manifest.api_version}"
         )
+    return CompatibilityReport(compatible=not failures, failures=tuple(failures))
+
+
+def evaluate_compatibility(
+    manifest: ExtensionManifest, policy: CompatibilityPolicy
+) -> CompatibilityReport:
+    """Check platform API compatibility and resolve declared dependencies."""
+    failures: list[str] = [
+        *evaluate_platform_compatibility(manifest, policy.platform_api_version).failures
+    ]
 
     for dependency in manifest.dependencies:
         installed_version = policy.installed_versions.get(dependency.extension_id)

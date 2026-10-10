@@ -54,6 +54,11 @@ from maistro.extensions.compat import (
 )
 from maistro.extensions.context import ExtensionCancellation, ExtensionConfigView, ExtensionContext
 from maistro.extensions.effective_authority import EffectiveAuthority
+from maistro.extensions.health import (
+    ExtensionHealthService,
+    ExtensionHealthStore,
+    InMemoryExtensionHealthStore,
+)
 from maistro.extensions.host import ExtensionHost
 from maistro.extensions.isolation import SandboxViolationLog
 from maistro.extensions.metering import (
@@ -63,6 +68,7 @@ from maistro.extensions.metering import (
 )
 from maistro.extensions.packs import InstallablePackRegistry
 from maistro.extensions.resolution import LockState
+from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
     ExtensionInstallStore,
@@ -456,6 +462,19 @@ _VULTURE_WHITELIST = (
     extensions_lock,
     extensions_explain,
     LockState.identity_keys,
+    # Extension operational evidence (M9-I3, #978). `record_observation` is
+    # the HOST's invocation seam — health evidence is canonical precisely
+    # because extensions cannot reach it; the invocation hosts that call it
+    # land with the M9-E connector/adapter and M9-G sandbox runs. The store
+    # twins' `append_error` records standalone classified failures (loader,
+    # policy, platform) that are not tied to one invocation; its in-tree
+    # consumers are the conformance suite
+    # (packages/maistro-core/tests/extensions/). Same
+    # contract-ships-first posture as the M9-B1/M9-C2 seams above.
+    ExtensionHealthService.record_observation,
+    ExtensionHealthStore.append_error,
+    InMemoryExtensionHealthStore.append_error,
+    SqliteExtensionHealthStore.append_error,
     # Third-party tool/Skill contracts (M9-E3, #964): the host catalog's
     # exposure and Binding seams are consumed by the products that embed
     # maistro-core (model-facing tool surface, workspace binding flows), not
