@@ -21703,3 +21703,40 @@ dependency-driven. Independently re-derived at HEAD `3040f7892`:
 
 **Verdict: BLOCKED** — dependency-blocking (134th round); nothing repairable
 in-tree. Inventory delta **+0** (this record only). (Refs #777)
+
+## Round 135 — repair round at unchanged head fe7859fd4 (job 8abaa1bc)
+
+Job `8abaa1bc204a49e59a75b7b306b286c6`: manifest `checks: []`, no
+`check-*.log` in the job dir — no deterministic check ran or failed; nothing
+to repair from the driver side. Prior round-134 BLOCKED (job `eed7d9de`) was
+dependency-driven. Independently re-derived at HEAD `fe7859fd4`:
+
+- **Sync-conflict ruled out** (fresh fetch): `origin/develop` `435dc1937` ==
+  merge-base == manifest base, HEAD 0 behind / 488 ahead; `origin/auto-777`
+  `460ad5802` (PR #1660 head) is an ancestor of HEAD.
+- **23:22Z dispatch capture** (61 sources): #777 open, 13/13 acceptance
+  boxes unchecked, blocked_by API empty; blockers #53/#93/#95/#774/#776/
+  #783/#804/#805/#806 all OPEN (#775/#39/#458 closed); PR #1660 open draft,
+  head `460ad5802`, mergeable; #777 comment tail automation-only through
+  23:04:53Z.
+- **Battery re-executed, all exit 0**: ruff check; ruff format 3282 files;
+  vulture CI-exact `packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` 1323→1322, 0 unbanked; ratchet 0/53; shipped-surface;
+  reachability 1394/169; suite-inventory 17/17; backlog 167; radon 137→137;
+  `mypy --strict` on `runs/model.py` Success.
+- **Targeted pytest with live PG** `maistro_test_777` @ 127.0.0.1:5433
+  (`maistro-postgres`): cancellation-cause model 34 passed; bootstrap
+  `-k agent_loop` 40 passed; hive `-k "design or workspace or agent"`
+  554 passed / 5 skipped.
+- **Diff claims audited**: branch diff vs base = 4 code/test files (+30/−6)
+  plus sanctioned vulture row −1, unchanged from round 134.
+  `system_prompt` reader real at `maistro_rsi/local_loop.py:817`;
+  `tool_definitions` 0 consumers in `packages/*/src`; schema-pin regression
+  test present and passing.
+- **Negative invariants re-probed**: 0 `class GoalReconcil*|ReconciliationLoop`
+  in `packages/*/src` + hive backend; `workspace_agent.py` 149 lines;
+  `permission_source.py` defers governed tool-use to #804;
+  `GoalRevisionCatalog` still a `Protocol` (rubric_store.py:71).
+
+**Verdict: BLOCKED** — dependency-blocking (135th round); nothing repairable
+in-tree. Inventory delta **+0** (this record only). (Refs #777)
