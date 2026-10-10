@@ -3387,3 +3387,68 @@ trusted-base wall. This leaf's readiness handoff stands; the gate is
 unmergeable here until the parent #1845 C2 integration wires a real
 consumer (referencing the members) or reviewed grants are landed on the
 integration base first.
+
+## Round-45 revalidation and the executed grant-stacked simulation (2026-10-10)
+
+Independent re-execution at exact head `93bb23fa850098267fd70b35d25eb0c36a60a6ca`
+(base `ed5613457d6fa54e99d0b968b72870cb96938573`, merge-base with origin/develop
+`01cf44a5a716`), trusting none of the earlier rounds' claims:
+
+- Focused leaf evidence, all re-executed fresh: 79/79 pass (`pytest ... -q`,
+  rc=0); `ruff check` + `ruff format --check` on both leaf files pass; `mypy
+  packages/maistro-core/src/maistro/runs/admission_identity.py` clean;
+  `check-suite-inventory.py` full run rc=0 (17/17 suites match);
+  `__all__` set-equal to the issue's 21 names (sorted for RUF022, no missing,
+  no extra); `AdmissionAssessment` exactly the six mandated member/value pairs;
+  scope isolation re-scanned: zero production references to the module outside
+  itself and no `maistro.runs` export; #1841 anchors intact at this head
+  (`store_boundary.py:56 require_admitted_actor`, `store.py:507/563/894
+  actor_principal_id params`, `store.py:921 guard`, `model.py:300 field`).
+- Exact-debt-ledger steps at the plain head (no env overrides):
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=1 — the five AdmissionAssessment identities
+  (`admission_identity.py:515-520`) are banked exactly in the candidate ledger
+  and rejected solely as "not authorized by the trusted base"; the two
+  trusted-base sub-gates (`check-reachability-provenance.py`,
+  `check-reachability-dispositions-provenance.py`) rc=1 on the same single
+  module; `check-ratchet-provenance.py` rc=1 via exactly those two;
+  `check-reachability.py` / `check-reachability-dispositions.py` /
+  `check-shipped-surface-truth.py` / `check-promotion-surface.py` all rc=0.
+  Develop-movement neutrality re-verified: `git diff 01cf44a5..origin/develop
+  -- quality/` is empty (byte-identical ledgers and authorizations at
+  ed5613457), so a develop sync cannot move the wall.
+
+New execution evidence — the wall's uniqueness is now proven by experiment,
+not only by reading `ratchet_provenance.py:478-522`. In a throwaway detached
+worktree at this head (never pushed, removed after the run), two commits were
+stacked: step 1 added ONLY the grants (five `vulture` keys
+`packages/maistro-core/src/maistro/runs/admission_identity.py::unused variable
+'{MISMATCH,REPLAYED,TAKEOVER,REPLACE_EXPIRED,LEGACY_UNRESOLVED}'` plus
+`reachability` key `maistro.runs.admission_identity`, each with owner/issue/
+reason) to `quality/ratchet-authorizations.json`, with the three candidate
+ledger edits reverted; step 2 restored the leaf's ledger rows, yielding the
+leaf's exact tree plus the landed grant. With `RATCHET_BASE_REV` pointed at the
+grant commit (simulating a PR stacked on an integration base that already
+landed the reviewed grant — the anti-self-comparison guard forbids pointing it
+at HEAD itself), every gate went green: `check-vulture-baseline.py` (CI's exact
+arguments) rc=0, `check-reachability-provenance.py` rc=0,
+`check-reachability-dispositions-provenance.py` rc=0, and the full
+`check-ratchet-provenance.py` inventory rc=0 ("OK: 53 quality JSON consumer(s)
+have explicit provenance").
+
+Conclusion (round 45): the exact-debt-ledger red has exactly one cause — the
+reviewed grant does not yet exist on any integration base, and by the two-merge
+rule (`ratchet_provenance.load_authorizations` reads grants from the base
+revision: "a new grant does not take effect in the change that introduces it")
+no branch-side edit can substitute for it. The in-lane remedy space is empty:
+the five identities are issue-mandated API (nothing genuinely dead to delete;
+no runtime consumer is permitted in this leaf to use them), a branch-side grant
+is proven inert, and the issue's staging directive forbids grants/callers
+anyway. Unblocking is an owner action outside worker authority, in either
+order-safe form: (a) land the six grants above on the integration base as a
+standalone reviewed merge, after which this leaf's banked rows authorize as
+step 2 (the simulation is the exact preview of that state), or (b) land the
+parent #1845 C2 integration leaf whose real consumer references the members and
+wires the module, re-passing the unchanged gates at its own final head. Until
+one of those lands, this leaf remains implementation/test-ready and explicitly
+unmergeable, exactly as the issue's staging directive requires.
