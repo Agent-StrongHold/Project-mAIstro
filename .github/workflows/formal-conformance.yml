@@ -160,7 +160,7 @@ jobs:
         run: python scripts/extension_lifecycle_proof.py --out lifecycle-proof
       - name: Upload lifecycle proof lineage
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: extension-lifecycle-proof-${{ github.sha }}
           path: lifecycle-proof/

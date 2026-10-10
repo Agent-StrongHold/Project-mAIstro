@@ -182,6 +182,34 @@ def test_pack_provenance_requires_pack_id() -> None:
     assert proven.pack_id == "pack-9"
 
 
+def test_pack_provenance_details_are_all_or_nothing() -> None:
+    """#966: pack detail fields name one manifest snapshot together or not at all."""
+    details = {
+        "publisher": "acme",
+        "pack_version": "1.0.0",
+        "asset_id": "scene",
+        "asset_version": "1.0.0",
+        "manifest_sha256": "ab" * 32,
+    }
+    proven = RubricProvenance(
+        authored_by="user-1", origin="pack", pack_id="acme.film_critique", **details
+    )
+    assert proven.asset_id == "scene"
+    assert proven.manifest_sha256 == "ab" * 32
+    # The minimal shapes stay valid: authored revisions, and pack adoption
+    # that records only the supplier (the in-repo catalog path).
+    assert RubricProvenance(authored_by="user-1").publisher is None
+    assert RubricProvenance(authored_by="user-1", origin="pack", pack_id="pack-9").asset_id is None
+    partial = dict(details)
+    del partial["asset_id"]
+    with pytest.raises(ValidationError, match="all-or-nothing"):
+        RubricProvenance(
+            authored_by="user-1", origin="pack", pack_id="acme.film_critique", **partial
+        )
+    with pytest.raises(ValidationError, match=r"require origin='pack'"):
+        RubricProvenance(authored_by="user-1", origin="authored", **details)
+
+
 def test_extra_fields_are_forbidden() -> None:
     payload = semantic().model_dump()
     payload["score"] = 42  # a Rubric records the acceptance contract; it is never a score

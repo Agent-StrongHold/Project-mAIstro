@@ -66,6 +66,7 @@ from maistro.extensions.metering import (
     ExtensionQuotaLedger,
     ExtensionUsageEvent,
 )
+from maistro.extensions.packs import InstallablePackRegistry
 from maistro.extensions.resolution import LockState
 from maistro.extensions.service import ExtensionInstallService
 from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
@@ -98,12 +99,16 @@ from maistro.ontology.rubric import (
     RubricScale,
     RubricSemantic,
 )
+from maistro.persistence.pg_audit import PgAuditLog
+from maistro.persistence.sqlite_audit import SqliteAuditLog
 from maistro.projects.rubric_store import RubricStore
+from maistro.protocols.memory import AuditLog
 from maistro.runs.model import EvalJudge, EvalMethod, RunEvalScore
 from maistro.runs.pg_store import PgRunStore
 from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.store import InMemoryRunStore, RunStore
+from maistro.security.sentinel.audit import InMemoryAuditLog
 from maistro.state import PersistedStore
 from maistro.workspaces.campaigns.model import (
     Actor,
@@ -165,6 +170,14 @@ _VULTURE_WHITELIST = (
     # this `packages/*/src` scan does not walk.
     Container.run_reader,
     ScopedRunReader.get_runs,
+    # Audit cursor reads (#358) are called through AuditLog by Hive's
+    # backend/services/audit_bridge.py::page_core_audit_entries. That real
+    # consumer lies outside the packages/*/src scan. Preserve the protocol
+    # and all three Container-bound adapters, not a list-and-slice fallback.
+    AuditLog.get_page,
+    PgAuditLog.get_page,
+    SqliteAuditLog.get_page,
+    InMemoryAuditLog.get_page,
     # --- #102 backlog work-source (maistro.backlog) -----------------------
     # Pydantic invokes these field/model validators at runtime; static import
     # scanning cannot see decorator-based dispatch (same shape as
@@ -557,6 +570,21 @@ _VULTURE_WHITELIST = (
     # (packages/maistro-core/tests/extensions/test_effective_authority.py) — the
     # same contract-ships-first posture as the seams above.
     EffectiveAuthority.with_execution_context,
+    # Installable domain-pack contracts (M9-F1, #966). The pack contract
+    # ships first by design, the same posture as the M9-B1 store seams and
+    # the M9-D1 registry above: its in-tree consumers are the conformance
+    # suite (packages/maistro-core/tests/extensions/test_pack_contracts.py),
+    # and the Workspace-scoped activation/configuration lifecycle that drives
+    # these verbs in production is M9-F3 (#968). `activate` is the disable
+    # gate's reversal (new use only — nothing was deleted; named activate,
+    # not enable, so the scanner's name-level matching cannot un-bank the
+    # unrelated security-store `enable` rows); the three `instantiate_*`
+    # methods are the gated instantiation entrypoints that compose the
+    # module-level pure functions behind the registry's active check.
+    InstallablePackRegistry.activate,
+    InstallablePackRegistry.instantiate_graph,
+    InstallablePackRegistry.instantiate_persona,
+    InstallablePackRegistry.instantiate_rubric,
     # Extension post-install lifecycle decisions (M9, #954). The operator
     # decisions — re-enabling a disabled version and pinning/unpinning the
     # active version — are enforced by the service state machine and exercised

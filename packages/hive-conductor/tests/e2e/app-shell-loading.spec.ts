@@ -19,6 +19,13 @@ test("setup-status and whoami are requested together, not one after the other", 
 }) => {
   await setupIfNeeded(page);
 
+  // Cold script loading must not be mistaken for serialized auth probes.
+  // This exceeds the old 300ms sleep even on a fast local machine.
+  await page.route("**/*.js", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await route.continue();
+  });
+
   // A fast local backend answers both probes in a few milliseconds either
   // way, so timing a normal run cannot tell serial from parallel apart.
   // Holding setup-status open makes the question deterministic: whoami's
@@ -28,32 +35,24 @@ test("setup-status and whoami are requested together, not one after the other", 
   const setupStatusHeld = new Promise<void>((resolve) => {
     releaseSetupStatus = resolve;
   });
-  let whoamiRequestedWhileSetupStatusPending = false;
-  page.on("request", (r) => {
-    if (r.url().includes("/v1/auth/whoami")) {
-      // This listener only ever fires before releaseSetupStatus runs, since
-      // the route handler below awaits setupStatusHeld before letting
-      // setup-status resolve -- so seeing it at all is the proof.
-      whoamiRequestedWhileSetupStatusPending = true;
-    }
-  });
   await page.route("**/v1/setup/status", async (route) => {
     await setupStatusHeld;
     await route.continue();
   });
 
-  const navigation = page.goto("/", { waitUntil: "commit" });
-  // Give the serial code a real window to have started whoami in, if it
-  // were going to: it never does, because it awaits setup-status first. The
-  // request listener above is what proves it, not a response wait -- a
-  // fast whoami can resolve inside this same window, and waiting for its
-  // response afterwards would then wait for an event that already fired.
-  await new Promise((r) => setTimeout(r, 300));
-  expect(whoamiRequestedWhileSetupStatusPending).toBe(true);
-
-  releaseSetupStatus();
-  await navigation;
-  await page.unroute("**/v1/setup/status");
+  try {
+    // Register before navigation so even an immediate whoami is observed.
+    // Setup remains held until BOTH requests arrive: serial code still fails,
+    // regardless of how long the browser takes to load and execute the app.
+    await Promise.all([
+      page.waitForRequest("**/v1/setup/status", { timeout: 5000 }),
+      page.waitForRequest("**/v1/auth/whoami", { timeout: 5000 }),
+      page.goto("/", { waitUntil: "commit" }),
+    ]);
+  } finally {
+    releaseSetupStatus();
+    await page.unroute("**/v1/setup/status");
+  }
 });
 
 async function firstPaintText(page: Page): Promise<string> {

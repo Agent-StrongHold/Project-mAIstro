@@ -36,6 +36,7 @@ from models.schemas import (
     Skill,
 )
 from models.workspace import Workspace
+from services.audit_query import IndexedAuditStore
 from services.model_store import JsonStore, ModelStore
 
 logger = logging.getLogger(__name__)
@@ -111,7 +112,7 @@ brief_interviews: JsonStore = JsonStore("brief_interviews")
 work_item_drafts: JsonStore = JsonStore("work_item_drafts")
 dags: JsonStore = JsonStore("dags")
 messages: JsonStore = JsonStore("messages")
-audit_log: JsonStore = JsonStore("audit_log")
+audit_log: JsonStore = IndexedAuditStore("audit_log")
 # Phase 5 Signal #3 — eval-judge verdicts keyed by run_id.
 eval_verdicts: JsonStore = JsonStore("eval_verdicts")
 # Phase 6 — optimizer proposals keyed by proposal_id.
@@ -215,7 +216,11 @@ def purge_all_sessions() -> int:
 
 
 def initialize_stores() -> None:
-    """Load persisted data, then seed if empty."""
+    """Migrate before serving requests, load persisted data, then seed if empty."""
+    if _persisted is not None:
+        from services.audit_query import ensure_audit_index
+
+        ensure_audit_index(_persisted)
     for store in _all_model_stores:
         store.initialize()
     for store in _all_json_stores:
@@ -485,7 +490,10 @@ def _seed_mcp_servers() -> None:
             id="mcp-1",
             name="Filesystem",
             description="Local workspace tools",
-            url="http://127.0.0.1:9999/mcp",
+            # Loopback is the truthful origin for a fabricated "Local workspace
+            # tools" row; the health check that may dial it goes through the
+            # outbound guard and records the connection failure harmlessly.
+            url="http://127.0.0.1:9999/mcp",  # devskim: ignore DS162092 until 2027-12-31 -- fabricated demo seed row, never a production origin
             status="connected",
             tools_count=6,
             last_ping=t,
