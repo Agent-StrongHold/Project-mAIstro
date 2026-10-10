@@ -20589,3 +20589,98 @@ Goal reconciliation), #53 (front door), #774 (CreativeBrief), #776
 issue's own stop condition forbids a Design-Studio-private
 reconciler/Goal owner, so implementing ahead of the producers would violate
 the issue. Inventory delta **+0** (this record only). (Refs #777)
+
+## Round 118 — 2026-10-10, job 4b2a5843, re-validation at merge head fd1068961
+
+Documentation-only re-validation record; no production or test code changed.
+
+**Sync resolution (previous block resolved):** the round-115 "develop sync
+conflict" block is resolved at this head. The driver merged `origin/develop`
+into `auto-777`: HEAD `fd1068961` is the merge of `bb4257f09` ("WIP: [M1][#1845]
+Reuse PG Run insertion inside caller transaction (#2114)", with #2115) —
+`git merge-base HEAD origin/develop` == `origin/develop` == `bb4257f09`
+(0 behind, 470 ahead); working tree clean. The merge is exactly the develop
+delta: `packages/maistro-core/src/maistro/runs/pg_store.py` (+130/−28,
+`insert_prepared_run` seam) plus two new PG proof files
+(`test_pg_root_preparation.py` 380 lines, `test_pg_run_insert_connection.py`
+292 lines) and their spec ADRs — **no dependency, gate, or lane-surface file
+changed** (`git diff 422bc805a fd1068961 -- pyproject.toml uv.lock
+'**/pyproject.toml'` is empty). PR #1660 head == this HEAD (`fd1068961ca6`),
+`mergeable: true`, `mergeable_state: blocked` (checks running); 30 check-runs
+on the head at capture: `exact-debt-ledger success`, `hive-conductor-e2e
+success`, `postgres (pg17)/(pg18) success`, `strike-ladder/success`,
+`devskim/success`, `docker-build`/`coverage`/`integration-scope` still
+`in_progress`.
+
+**Trigger triage:** this job's `manifest.checks` is `[]` — no driver
+check-*.log exists for round 118. The carried ref (job `53d5e08bf`
+`check-2.log`: ruff-format would reformat `agent_loop.py` at stale head
+`a99c6bd7`) was re-executed file-scoped in round 117 at the then-HEAD and does
+not reproduce; re-checked indirectly this round via the full-tree
+`ruff format --check` below (3277 files clean, `agent_loop.py` among them).
+
+**Dependency capture (this round's own dispatch-context.json, captured
+2026-10-10T13:46:44–13:47:15Z):** #53 OPEN, #93 OPEN, #95 OPEN, #774 OPEN,
+#776 OPEN, #804 OPEN, #805 OPEN, #806 OPEN; #39/#458/#775 closed; #773 (parent)
+open. GitHub `blocked_by` API empty — Depends-on set is body-textual. No new
+producer landed since round 117's capture (12:37Z).
+
+**AC probes re-executed at HEAD fd1068961 (independent of prior rounds):**
+case-insensitive `reconcil` grep over
+`packages/hive-conductor/backend/services/` matches only generic recovery/
+idempotency/ADR-093 text (dag_recovery, evolution_*, scheduler first-call
+reconcile, username_registry, graph_runner `_reconciled_frames`, legacy_dag_node
+registration check, rsi_container_dispatch ADR-093 note) — **0
+Design-Studio-private Goal reconciler**; the canonical
+`AttemptLifecycleReconciler` lives in
+`packages/maistro-canvas/src/maistro_canvas/canvas/canonical_execution.py`;
+`design_service.py` — 376 lines, 0 goal/delegation/brief/persona matches;
+`workspace_agent.py` — 149 lines, roster-only surface
+(`resolve_workspace_agent`, `set_workspace_agent_persona`); mixed-control
+appears only as docstring forward-references at
+`packages/maistro-design/src/maistro_design/versions.py:22,1048`. The issue's
+stop condition remains honored: no private Agent runtime, Goal owner,
+reconciliation loop, memory system, Persona variant, Graph engine, or artifact
+authority was created.
+
+**Battery re-executed:** `uv run ruff check .` exit 0 (All checks passed!);
+`uv run ruff format --check .` exit 0 (3277 files — +2 from the merge's new
+test files); `uv run python scripts/check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` exit 0 (1323→1322, 0
+unbanked); `uv run python scripts/check-ratchet-provenance.py` exit 0 (0
+lifecycle violations, 0/53 candidate-approved expansion, 53 consumers with
+provenance); `uv run python scripts/check-shipped-surface-truth.py` exit 0;
+`uv run python scripts/check-reachability.py` exit 0 (1392 production modules,
+169 unreachable — gate OK); `uv run python scripts/check-backlog-consistency.py`
+exit 0 (167 items); `uv run python scripts/check-suite-inventory.py` exit 0
+(17/17 suites match the recorded inventory, 0 duplicate evidence).
+
+**Targeted pytest re-executed:**
+- Merge-introduced PG proofs against a **real migrated PostgreSQL 18**
+  (dedicated DB `maistro_test_777` in the local `maistro-postgres` container,
+  `uv run alembic upgrade head` → rev 062, `MAISTRO_TEST_PG_DSN` set):
+  `uv run pytest packages/maistro-core/tests/runs/test_pg_root_preparation.py
+  packages/maistro-core/tests/runs/test_pg_run_insert_connection.py -q` →
+  **10 passed in 3.66s** (without the DSN they skip: 10 skipped — a skipped
+  case is not durability proof, so the DSN run is the evidence).
+- `uv run pytest packages/maistro-core/tests/runs -q` → **1219 passed,
+  290 skipped** (skip count 280+10: the merge's new PG tests skip bare).
+- 11 hive design/workspace/brief suites (test_design_consistency_route,
+  test_design_packs_route, test_design_preview, test_design_renderers,
+  test_design_scope, test_design_service_startup, test_design_systems_route,
+  test_workspace_agent_identity, test_workspace_mode, test_chat_brief_interview,
+  test_program_brief_routes) → **139 passed**.
+- `uv run pytest packages/maistro-bootstrap/tests/test_agent_loop_run_tests_args.py
+  packages/maistro-bootstrap/tests/test_agent_loop_turns.py -q` → **40 passed**.
+- `uv run pytest
+  packages/maistro-core/tests/runs/test_attempt_cancellation_cause_model.py -q`
+  → **34 passed**.
+
+**Verdict: BLOCKED** — dependency-blocking (118th consecutive round). The
+sync-conflict block is resolved (branch fully merged with `origin/develop` at
+`bb4257f09`), but no implementable #777 work exists while #804/#805/#806
+(persistent Agent + Goal reconciliation), #53 (front door), #774
+(CreativeBrief), #776 (workspace graph), #93/#95 (Canvas/Design Studio cutover)
+stay open; the issue's stop condition forbids a Design-Studio-private
+reconciler/Goal owner, so implementing ahead of the producers would violate
+the issue. Inventory delta **+0** (this record only). (Refs #777)
