@@ -587,9 +587,13 @@ class TestDefaultNoteSlug:
         )
         assert gate.default_note_slug() == gate.default_note_slug()
 
-    @pytest.mark.ac("CI devskim DS126858")
     def test_the_slug_digest_is_derived_from_sha256_not_a_broken_hash(self, gate, monkeypatch):
         """The digest must stay on sha256; sha1 reintroduces a DevSkim finding.
+
+        (No @pytest.mark.ac claim: this pins a scanner constraint, not a
+        declared acceptance criterion. A free-form marker here names no
+        **AC-N** id and the acceptance-state ratchet counts that as debt
+        (markers_without_criterion); the docstring below carries the provenance.)
 
         The four-hex suffix is a non-cryptographic discriminator, but this
         script sits in the DevSkim-scanned tree and DS126858 flags sha1
