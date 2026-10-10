@@ -19917,3 +19917,46 @@ workspace or brief'` -> **387 passed, 5 skipped** (3203 deselected);
 acceptance criteria still consume producer APIs from OPEN issues
 (#804/#805/#806 primary; #53/#774/#776/#93/#95 supporting). Inventory delta
 **+0** (this record only). (Refs #777)
+
+## Round 289 — re-validation at unchanged head 2fcb66c6c; dependency block persists (job 8ec71ffd2)
+
+**Capture:** dispatch-context.json 2026-10-10T05:05Z, 61 sources,
+`complete_for_scope: true` (freshest, postdates round 288's 04:41Z capture).
+Dependency states in that capture: **#53, #93, #95, #774, #776, #804, #805,
+#806 all `state=open`** (#39/#458/#775 closed, consumed where applicable); PR
+#1660 open draft at head `31a0e5bffaa1`, base develop. The prior attempt
+(job d62d2d78) died on a provider timeout before executing any command —
+zero delta to salvage; this round starts from round 288's head.
+
+**Previous block resolution:** the round-288 directive was develop sync —
+verified complete: `git fetch origin develop` returns origin/develop still at
+`ed5613457d6f`, already merged as `31a0e5bffaa1` (this branch's merge head);
+no new upstream commits, nothing to re-merge. The stale Oct 4 check-2.log
+finding (`agent_loop.py` would be reformatted) does not reproduce at this head
+— `ruff format --check` passes (below).
+
+**AC probes at HEAD `2fcb66c6c` (grep over `packages/*/src`):** 0 hits for
+`GoalReconciler|reconcile_goal|goal_reconcil|ReconciliationLoop`;
+`design_service.py` 0 goal/canvas mentions; `workspace_agent.py` 149 lines,
+0 reconcil/Goal mentions — AC1–AC13 producer APIs still absent from the tree,
+consistent with the stop condition's prohibition on Design-Studio-private
+substitutes.
+
+**Validation battery (all exit 0 at `2fcb66c6c`, CI-exact args):**
+`ruff check .` (All checks passed); `ruff format --check .` (**3269** files
+already formatted); `check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'`: 1323 reviewed -> 1322
+findings, 0 unbanked, no ledger amendment (base `ed5613457d6f` = merge base);
+`check-ratchet-provenance.py` (0 violations, 53 consumers);
+`check-shipped-surface-truth.py` (complete); `check-suite-inventory.py`
+(**17** suites match); `check-backlog-consistency.py` (167 items). Targeted
+pytest: `packages/maistro-core/tests/runs` + `tests/config` -> **1384 passed,
+280 skipped**; hive-conductor `backend/tests -k 'design or workspace or
+brief'` -> **387 passed, 5 skipped** (3203 deselected);
+`packages/maistro-bootstrap/tests -k 'agent_loop or builders'` -> **77
+passed, 1 skipped**.
+
+**Verdict: BLOCKED** — dependency-blocking (106th consecutive round). All 13
+acceptance criteria still consume producer APIs from OPEN issues
+(#804/#805/#806 primary; #53/#774/#776/#93/#95 supporting). Inventory delta
+**+0** (this record only). (Refs #777)
