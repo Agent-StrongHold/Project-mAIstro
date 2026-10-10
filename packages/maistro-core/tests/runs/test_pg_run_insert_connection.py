@@ -38,7 +38,12 @@ import pytest
 from maistro.projects.pg_scope_store import PgProjectScopeStore
 from maistro.runs.admission import direct_work_graph
 from maistro.runs.concurrency import RunConcurrencyExceeded, RunConcurrencyLimits
-from maistro.runs.pg_store import PgRunStore
+from maistro.runs.pg_store import (
+    _PRINCIPAL_ADMISSION_LOCK,
+    _WORKSPACE_ADMISSION_LOCK,
+    PgRunStore,
+    _admission_lock_key,
+)
 
 #: The explicit principal every positive case admits under. The issue's oracle
 #: requires an explicitly authorized, scoped Run — never an anonymous one — so
@@ -66,17 +71,25 @@ class _RecordingConnection:
 
     def __init__(self, conn: Any) -> None:
         self._conn = conn
-        self.statements: list[tuple[str, str]] = []
+        self.statements: list[tuple[str, str, tuple[Any, ...]]] = []
+        # A helper-owned ``transaction()`` would only nest a savepoint inside
+        # the caller's transaction: every statement still lands on this one
+        # connection and the outer rollback still cleans up, so the statement
+        # record alone cannot see it. The calls are therefore recorded and the
+        # instrumented test asserts zero — the helper must run inside the
+        # transaction the caller already holds, never one of its own.
+        self.transactions: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
     async def execute(self, query: str, *args: Any) -> Any:
-        self.statements.append(("execute", query))
+        self.statements.append(("execute", query, args))
         return await self._conn.execute(query, *args)
 
     async def fetchrow(self, query: str, *args: Any) -> Any:
-        self.statements.append(("fetchrow", query))
+        self.statements.append(("fetchrow", query, args))
         return await self._conn.fetchrow(query, *args)
 
     def transaction(self, *args: Any, **kwargs: Any) -> Any:
+        self.transactions.append((args, kwargs))
         return self._conn.transaction(*args, **kwargs)
 
     def is_in_transaction(self) -> bool:
@@ -200,21 +213,35 @@ async def test_helper_counts_and_locks_on_supplied_connection(pg_pool: Any) -> N
         async with raw_conn.transaction():
             await runs.insert_prepared_run(recording, run)
 
-        kinds = [statement for statement, _ in recording.statements]
-        sqls = [sql for _, sql in recording.statements]
-        # All on the supplied connection: the workspace lock, the principal
-        # lock, the canonical INSERT, the ceiling count — in that order.
+        kinds = [statement for statement, _, _ in recording.statements]
+        sqls = [sql for _, sql, _ in recording.statements]
+        args = [arguments for _, _, arguments in recording.statements]
+        # Positional, not merely counted: the workspace lock, then the
+        # principal lock, then the canonical INSERT, then the ceiling count —
+        # exactly those, exactly there. Counting alone would stay green if a
+        # regression moved the INSERT ahead of both locks or swapped the lock
+        # namespaces, so each statement's index is pinned and the lock
+        # arguments prove which namespace each lock actually took.
         assert kinds == ["execute", "execute", "execute", "fetchrow"]
-        assert sum("pg_advisory_xact_lock" in sql for sql in sqls) == 2
-        assert any(
-            statement == "execute" and "INSERT INTO canonical_runs" in sql
-            for statement, sql in recording.statements
+        assert "pg_advisory_xact_lock" in sqls[0]
+        assert args[0] == (_WORKSPACE_ADMISSION_LOCK, _admission_lock_key(workspace))
+        assert "pg_advisory_xact_lock" in sqls[1]
+        assert args[1] == (
+            _PRINCIPAL_ADMISSION_LOCK,
+            _admission_lock_key(run.actor_principal_id),
         )
-        assert "COUNT(*) FILTER (WHERE workspace_id = $1)" in sqls[-1]
+        assert "INSERT INTO canonical_runs" in sqls[2]
+        assert args[2][0] == run.run_id
+        assert "COUNT(*) FILTER (WHERE workspace_id = $1)" in sqls[3]
+        assert args[3] == (workspace, run.actor_principal_id)
         # ...and nowhere else: no acquisition through the pool while the
         # helper ran. (The test's own acquire above is the one this store
         # never sees; it is released before the measured window closes.)
         assert recording_pool.acquired == 0
+        # ...and no transaction of its own: the helper must enter no
+        # savepoint on the supplied connection — the caller's transaction is
+        # the only one (see _RecordingConnection.transactions).
+        assert recording.transactions == []
 
     assert await _run_count(pg_pool, run.run_id) == 1  # committed with the caller
 

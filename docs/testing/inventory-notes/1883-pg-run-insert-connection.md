@@ -55,6 +55,37 @@ fixture, DSN `postgresql://maistro:maistro@127.0.0.1:55933/maistro_test`):
   after asserting — through the same connection — that the inserted row is
   visible in-transaction (guards against a vacuous rollback pass). No sleeps;
   single-writer, so no barrier races.
+- Instrumentation depth (strengthened after first handoff): the recording
+  connection keeps each statement's positional arguments, so the instrumented
+  node pins the four statements by index and proves the lock namespaces from
+  their actual arguments (`_WORKSPACE_ADMISSION_LOCK`/`_PRINCIPAL_ADMISSION_LOCK`
+  with `_admission_lock_key(workspace)`/`_admission_lock_key(principal)`), the
+  INSERT's first bound argument is the candidate run_id, and the ceiling count
+  is bound to `(workspace, principal)` — a reordering that keeps the statement
+  multiset can no longer pass. The wrapper also records `transaction()` calls,
+  and the node asserts the helper entered none: a helper-owned `transaction()`
+  would only nest a savepoint on the same connection, which the statement
+  record and pool counter cannot see.
+- Independent re-verification (verify lane, PG at `127.0.0.1:55933` migrated to
+  062): both mutation classes re-executed and both source mutants reverted
+  byte-identical (sha256-checked). (A) a second-connection/implicit-commit
+  mutant fails `test_outer_rollback_removes_inserted_run` and
+  `test_helper_counts_and_locks_on_supplied_connection` (2 failed, 1 passed);
+  (B) a helper-owned-savepoint mutant — invisible to the statement record and
+  the pool counter — fails only the strengthened `transactions == []`
+  assertion (1 failed, 2 passed). CI's exact inventory invocation
+  (`python scripts/check-suite-inventory.py`, whole tree) reports 17 suites
+  matching, and the focused command re-run on this verify lane: 67 passed.
+- Review-followup (recorder owns the transaction boundary too):
+  `_RecordingConnection.transaction()` now records calls and the instrumented
+  test asserts `recording.transactions == []` — a helper-owned
+  `async with conn.transaction()` would only nest a savepoint, leaving
+  statements on the supplied connection, pool acquisitions at zero and the
+  outer rollback still cleaning up, so the pre-fix recorder passed it silently.
+  Proven by mutant: a wrapper opening `conn.transaction()` around the real
+  helper passes all three nodes on the pre-fix recorder and fails
+  `test_helper_counts_and_locks_on_supplied_connection` on the fixed one
+  (`assert [((), {})] == []`); `pg_store.py` reverted byte-identical after.
 - SQL row/identity counts: rollback case — in-transaction count 1 for the
   candidate run_id, 0 on a second connection after the rollback; capacity case —
   helper refuses with `RunConcurrencyExceeded` at a saturated ceiling (limits
