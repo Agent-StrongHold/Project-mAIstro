@@ -1,0 +1,5 @@
+# Shipped policy for maistro-engine / maistro-server Compose stacks.
+# Connection strings, API keys, and model routing come from environment;
+# this file states Sentinel tool authority only (ADR-072726-0d6b, #66).
+security:
+  permission_preset: dangerous_tools_admin

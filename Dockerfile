@@ -93,6 +93,7 @@ COPY packages/maistro-core   packages/maistro-core
 COPY packages/maistro-server packages/maistro-server
 COPY alembic/ alembic/
 COPY alembic.ini .
+COPY config/ config/
 COPY pyproject.toml uv.lock README.md ./
 # Static docker CLI (talks to a mounted /var/run/docker.sock) — a single static
 # binary, no daemon. 29-cli ships a binary built with go1.26.8; older 27-cli

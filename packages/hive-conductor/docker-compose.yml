@@ -12,3 +12,6 @@ services:
       # - MAISTRO_LLM_BASE_URL=http://litellm:4000/v1
       # - MAISTRO_LLM_API_KEY=sk-your-key
       # - MAISTRO_MODEL=gpt-4o
+      # Sentinel tool authority for the standalone Conductor image (#66): the
+      # preset matching dispatch_tool's executable registry, not the engine's.
+      - MAISTRO_PERMISSION_PRESET=hive_conductor_tools
