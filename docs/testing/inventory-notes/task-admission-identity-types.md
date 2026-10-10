@@ -3452,3 +3452,73 @@ parent #1845 C2 integration leaf whose real consumer references the members and
 wires the module, re-passing the unchanged gates at its own final head. Until
 one of those lands, this leaf remains implementation/test-ready and explicitly
 unmergeable, exactly as the issue's staging directive requires.
+
+## Round 46 — 2026-10-10 CI-repair round 2: every prior claim independently re-executed at 5c6a3be330bd, wall stands, remedy space re-confirmed empty
+
+Dispatch brief: "fix what is genuinely dead, and amend quality/vulture-baseline.json
+for reviewed retained identities. Ledger amendment is permitted and required in
+CI-repair rounds." Both halves were executed fresh at head `5c6a3be330bd`
+(merge base with `origin/develop` = `1f328be96a5e` resolved to `01cf44a5a716`),
+trusting nothing from rounds 38-45 without re-running it:
+
+- The prescribed ledger amendment is already in place and exact:
+  `quality/vulture-baseline.json` contains exactly the five
+  `packages/maistro-core/src/maistro/runs/admission_identity.py::unused
+  variable '{MISMATCH,REPLAYED,TAKEOVER,REPLACE_EXPIRED,LEGACY_UNRESOLVED}'`
+  rows under `pydantic-declarative-field`, and the fresh CI-exact scan
+  produces **zero** "Candidate ledger bookkeeping" deltas (no `candidate_added`,
+  no `candidate_removed`, no unbanked rules). Re-amending is a verified no-op.
+- Nothing is genuinely dead: the scan's entire delta vs the trusted base is the
+  five issue-mandated `AdmissionAssessment` members (1323 -> 1328 findings;
+  `unclassified: 0`, `never_allowlist: 0`). `PENDING` alone escapes because
+  `JobStatus.PENDING` is used in production elsewhere
+  (`packages/maistro-canvas/src/maistro_canvas/canvas/canonical_execution.py:314`
+  et al.) — a name coincidence, re-confirmed.
+- Trusted-base authorization re-verified at the source:
+  `quality/ratchet-authorizations.json` at base `01cf44a5a716` carries 102
+  `vulture` grants, **none** for `admission_identity` (identical at
+  `origin/develop` = `1f328be96a5e`; develop has not moved). Since
+  `load_authorizations` reads from the merge base, a branch-side grant is
+  provably inert (round 45's stacked-grant experiment), so the lane brief's
+  remedy — bank the retained identities — is complete and cannot by itself turn
+  the gate green. The gate's own message states the required next action:
+  "land a reviewed grant first."
+- Exact-debt-ledger job re-run step by step with CI's exact argv at this head:
+  `check-shipped-surface-truth.py` rc=0; `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` rc=1 (five
+  identities, unauthorized-at-base only); `check-ratchet-provenance.py` rc=1
+  via exactly its two sub-gates, `check-reachability-provenance.py` rc=1 and
+  `check-reachability-dispositions-provenance.py` rc=1, each naming the single
+  module `maistro.runs.admission_identity` as a NEW unreachable/dispositioned
+  module "absent from trusted base and not previously authorized" (169 -> 170).
+- Candidate-side gates all rc=0: `check-reachability.py` (170 unreachable, all
+  dispositioned), `check-reachability-dispositions.py` (50 groups, 147 CONNECT /
+  21 LIBRARY / 2 RETIRE), `check-promotion-surface.py`. The Quality gate
+  (Pillars 1-4, 7, 8) failure shares the same single root: quality.yml:1077 runs
+  the identical vulture step and quality.yml:1089 runs `check-reachability.py`
+  inside the same job's trusted-base context.
+- Leaf acceptance re-proven at this exact head: focused suite 79/79 (rc=0);
+  full `packages/maistro-core/tests` 15,184 passed / 1,030 skipped / 3 xfailed;
+  `ruff check` + `ruff format --check` clean on both leaf files and repo-wide;
+  `mypy packages/maistro-core/src/maistro/runs/admission_identity.py` clean;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` rc=0 (1 suite
+  matches the recorded inventory). This round changed no code and no tests, so
+  the front-matter `inventory-delta` is unchanged at `+79`.
+
+Conclusion (round 46): unchanged and now triple-verified. The two named CI
+failures have one cause — the reviewed grants for the leaf's five issue-mandated
+identities and its intentionally-unwired module do not exist on any integration
+base, and the two-merge rule (`scripts/ratchet_provenance.py:478-522`) makes
+every branch-side substitute inert. The in-lane remedy space is empty: nothing
+genuinely dead to delete, the lane-prescribed ledger amendment is already exact,
+a branch-side grant is experimentally proven not to authorize, and the issue's
+staging directive forbids whitelist/suppression workarounds and any runtime
+consumer in this leaf. Unblocking is an owner action outside worker authority:
+(a) land the six grants (five `vulture` identity keys plus the `reachability`
+key `maistro.runs.admission_identity`) as a standalone reviewed merge on the
+integration base, after which this leaf's banked rows authorize as step two —
+round 45's simulation is the exact green preview of that state — or (b) land
+the parent #1845 integration leaf whose real consumer references the members and
+wires the module, re-passing the unchanged gates at its own final head. This
+leaf remains implementation/test-ready and explicitly unmergeable, exactly as
+the issue's staging directive requires.
