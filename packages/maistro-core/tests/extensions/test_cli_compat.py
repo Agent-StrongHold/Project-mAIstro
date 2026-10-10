@@ -165,4 +165,6 @@ def test_compat_preflight_rejects_unreadable_input(tmp_path: Path) -> None:
     not_json.write_text("{not json", encoding="utf-8")
     result = runner.invoke(app, ["compat", str(not_json)])
     assert result.exit_code == 1
-    assert "not valid JSON" in result.output
+    # The console word-wraps long errors at the terminal width, so assert on
+    # the whitespace-normalized message: the wrap may split any phrase.
+    assert "not valid JSON" in " ".join(result.output.split())
