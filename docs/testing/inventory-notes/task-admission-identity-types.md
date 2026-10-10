@@ -3918,3 +3918,68 @@ Unblocking remains an owner action: (a) a standalone reviewed
 identity keys + `reachability` key `maistro.runs.admission_identity`, then
 sync), or (b) the parent #1845 integration leaf providing the real runtime
 consumer. Tree changes this round: this note only.
+
+## Round 53 (repair job 446794fb) — block re-proven firsthand at 7ac16c615257; grant absence on develop enumerated; repair space re-verified empty
+
+Independent re-execution at this round's starting head `7ac16c615257`
+(merge-base == origin/develop == `4aa68edc0b6b`, so the branch is develop-current):
+
+- CI failure 1, reproduced with CI's exact argv (`RATCHET_BASE_REV=origin/develop
+  uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`) → rc=1, solely "New Vulture
+  debt is not authorized by the trusted base. Running --update in this branch
+  cannot authorize it; land a reviewed grant first." The only delta is the five
+  `AdmissionAssessment` StrEnum members (MISMATCH, REPLAYED, TAKEOVER,
+  REPLACE_EXPIRED, LEGACY_UNRESOLVED at `admission_identity.py:515-520`), which
+  the issue mandates verbatim ("exactly these member/value pairs") — contract
+  surface for the future C2 classifier, not genuinely dead, therefore not
+  removable. The candidate ledger already banks all five rows
+  (`quality/vulture-baseline.json`, ledger exact at 1323→1328 with zero
+  bookkeeping deltas), so the lane-prescribed amendment is again a proven no-op.
+- CI failure 2, reproduced (`RATCHET_BASE_REV=origin/develop uv run python
+  scripts/check-ratchet-provenance.py`) → rc=1, solely via its two reachability
+  sub-gates naming `maistro.runs.admission_identity`: "NEW disposition absent
+  from trusted ledger and not covered by an already-landed reachability
+  authorization" and "NEW unreachable module absent from trusted base and not
+  previously authorized". Candidate-side gates all rc=0: check-shipped-surface-truth,
+  check-reachability (170 unreachable, module banked),
+  check-reachability-dispositions (147 CONNECT / 21 LIBRARY / 2 RETIRE),
+  check-promotion-surface, check-convergence-matrix.
+- Grant absence on develop enumerated, not assumed: `git fetch origin` →
+  develop unchanged at `4aa68edc0b6b`;
+  `git show origin/develop:quality/ratchet-authorizations.json` → 102 vulture
+  grants, none matching any admission identity (only the unrelated
+  `container.py::recover_stranded_chat_admissions`), and 0 reachability grants
+  for this module. `scripts/ratchet_provenance.py:477-489` (`load_authorizations`)
+  reads grants from the base revision: "a new grant does not take effect in the
+  change that introduces it" — the two-merge wall, re-derived firsthand.
+- Leaf acceptance re-proven firsthand: 79/79 focused
+  (`pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q`);
+  `ruff check .` and `ruff format --check .` clean repo-wide; mypy clean on the
+  module; programmatic contract re-checks — 21-name `__all__` set-exact,
+  `AdmissionAssessment(StrEnum)` exact six member/value pairs, 15 records
+  frozen+slots, all declared field orders, `format_version` defaults 2/1 with
+  `init=False`, `owner_token` `repr=False` and absent from generated repr while
+  generation_id prints, `owns()` = scope AND generation AND owner-token
+  conjunction (each leg falsifies), binding-receipt/acknowledgement/UUID-strict/
+  bool-created/snapshot-run-id invariants all raise ValueError, empty result
+  variants define no truthiness override, `CanonicalJsonObject` canonicalizes
+  key order and rejects non-object roots, invalid JSON, duplicate keys, and
+  non-finite values; all 12 issue-named test functions present (19 `def test_`
+  total, 79 collected cases); zero production references to the module outside
+  itself and no `maistro.runs.__init__` re-export (scope isolation intact);
+  #1841 anchors intact (`store_boundary.py:56`, `store.py:537`, guard applied
+  at `store.py:921`).
+
+Conclusion (round 53): unchanged from rounds 51–52 and now re-proven at the
+current head with the develop grant ledger directly enumerated. The two CI
+failures have exactly one external cause — the reviewed grants do not exist on
+the integration base and cannot be created in-leaf without violating the issue
+("A candidate baseline update cannot grant itself permission"; "No fake callers,
+baseline additions, grants, disabled gates or quality waivers are permitted")
+and the two-merge protocol. Unblocking is an owner action: (a) merge a
+standalone reviewed `quality/ratchet-authorizations.json` grant on develop
+(five `vulture` identity keys + `reachability` key `maistro.runs.admission_identity`),
+then sync this branch, or (b) land the parent #1845 integration leaf with the
+real reviewed runtime consumer, which must pass the unchanged gates at its own
+final head. Tree changes this round: this note only.
