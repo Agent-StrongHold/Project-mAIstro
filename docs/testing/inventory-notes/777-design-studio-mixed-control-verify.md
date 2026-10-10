@@ -21379,3 +21379,74 @@ Goal reconciliation, #774 CreativeBrief contract owner, #776 per-Workspace
 working graph, #53 front door and #93/#95 production path are open, and the
 issue's stop condition forbids a Design-Studio-private substitute.
 Inventory delta **+0** (this record only). (Refs #777)
+
+## Round 129 — repair round at unchanged head `61858aea1` (job `976061d52d76`)
+
+Trigger: prior job `a38ed365658b4` (`result.json` inspected directly) failed
+on **provider error only** — `error: "provider error (llama-cpp-gemma/…):
+Request timed out."`, `agent_exit 0`, `checks: []`. No deterministic check
+ran and none failed; there is no code finding to repair. This job's
+directory contains **no `check-*.log`**, so the full battery was re-executed
+locally at `61858aea1` (working tree clean, HEAD == dispatch head — the
+exact starting head for this round).
+
+Sync-conflict path ruled out again: fresh `git fetch origin` →
+`origin/develop` = `435dc1937` = merge-base, **0 behind / 482 ahead** —
+nothing to merge.
+
+Dependency re-capture (this job's dispatch-context, **20:16–20:17Z**
+snapshot): #777 open, body unchanged (13 unchecked acceptance boxes, stop
+condition intact); `blocked_by` native relation API returns `[]`; blockers
+**#773/#774/#776/#804/#805/#806/#53/#93/#95 all still OPEN** (#779/#780/
+#783/#787/#788/#794/#986/#1823 also open); #775/#39/#458 closed; PR #1660
+draft open, head `460ad5802`, `mergeable_state: clean`.
+
+Branch production diff vs develop re-verified directly from git: **4 code
+files +30/−5** (`design_service.py` comment-only ±1, `agent_loop.py` +6/−2
+restoring `system_prompt` + dropping dead `tool_definitions`,
+`runs/model.py` +8/−2 unannotated wrap serializer, cancellation-cause test
++15) plus the earlier sanctioned vulture row removal (−1 row). Diff claims
+audited directly this round: (a) removed
+`AgentLoopConfig.tool_definitions` has **0 remaining consumers** (residual
+`tool_definitions` hits are unrelated hive chat-completion locals at
+`chat_completion.py:2587-2594` and a hive test of that endpoint); (b) the
+documented `system_prompt` reader is real at
+`packages/maistro-rsi/src/maistro_rsi/local_loop.py:817`
+(`system_content = system_prompt or config.system_prompt`); (c) the
+schema-pin regression test
+`test_the_serialization_mode_schema_keeps_every_declared_field` is present
+(collected) and passing within the 34-test suite.
+
+Battery at `61858aea1`, all exit 0: `ruff check .` → All checks passed;
+`ruff format --check .` → **3282 files already formatted**; vulture
+**CI-exact args** (`packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'`) → **1323 reviewed → 1322 findings, 0 unbanked**;
+`check-ratchet-provenance.py` → 0 lifecycle violations, 53 consumers;
+`check-shipped-surface-truth.py` → complete; `check-reachability.py` →
+1394 modules, 169 unreachable; `check-suite-inventory.py` → **17/17**;
+`check-backlog-consistency.py` → 167 items; `check-radon-baseline.py` →
+**137 → 137**; `mypy --strict` on touched `runs/model.py` → **Success**.
+
+Targeted pytest (live PG `maistro-postgres` @ 127.0.0.1:5433, db
+`maistro_test_777`, alembic rev **062** confirmed via `alembic_version`,
+DSN `postgresql://maistro:test@…`): branch-touched
+`runs/test_attempt_cancellation_cause_model.py` → **34 passed**; bootstrap
+`-k agent_loop` → **40 passed** (200 deselected); hive design+workspace
+sweep over 10 suites (`test_design_{service_startup,scope,renderers,preview,consistency_route,packs_route,systems_route}`,
+`test_workspace_{agent_identity,authority,mode}`) → **130 passed**;
+`packages/maistro-design/tests` → **572 passed / 1 skipped**.
+
+Negative invariants re-probed directly: **no `GoalReconcil*` /
+`ReconciliationLoop` class anywhere in `packages/*/src` or `*/backend`**
+(grep, 0 files); `hive-conductor/backend/services/workspace_agent.py` is
+149 lines with **0** `reconcil|Goal|delegat` hits — roster-only, no
+Design-Studio-private reconciler was fabricated.
+
+**Verdict: BLOCKED** — dependency-blocking (129th consecutive round). The
+only prior-round failure was the driver's provider timeout; no stale or
+failing deterministic check exists at this head. All 13 acceptance criteria
+remain UNVERIFIED against reachable production behavior: #804/#805/#806
+Goal reconciliation, #774 CreativeBrief contract owner, #776 per-Workspace
+working graph, #53 front door and #93/#95 production path are open, and the
+issue's stop condition forbids a Design-Studio-private substitute.
+Inventory delta **+0** (this record only). (Refs #777)
