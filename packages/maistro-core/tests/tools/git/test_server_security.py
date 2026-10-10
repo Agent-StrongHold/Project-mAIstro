@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from maistro.tools.git import server as git_server
 from maistro.tools.git.server import (
+    _CLONE_CONFIG_HARDENING,
+    _TRANSPORT_PIN,
     _TRUSTED_SIGNERS_ENV,
+    _git,
     _trusted_signature_fprs,
     git_clone,
-    git_remote_tip,
     git_status,
 )
 
@@ -70,319 +70,203 @@ async def test_git_clone_rejects_disallowed_dest_before_git(
 
     monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fail_exec)
 
+    # github.com: on the default host allowlist, so the URL passes the
+    # source policy and the test exercises the dest gate it exists for.
     result = await git_clone("https://github.com/repo.git", dest)
 
     assert result["success"] is False
     assert result["error_code"] == "blocked_workspace"
 
 
-# --- Unauthenticated git:// transport is rejected (#404) ---------------------
-#
-# `git://` provides neither transport encryption nor server authentication, so
-# an on-path attacker can substitute repository content that the RSI cycle
-# then branches, patches, builds, and tests. The gate is an allowlist
-# (`https://`, `ssh://`); these tests pin that the unauthenticated protocol is
-# rejected *by name* — its own error code, not a generic scheme verdict — and
-# that no git subprocess is ever spawned for it.
+# --- candidate source policy (issue #404) -------------------------------
 
 
-@pytest.mark.parametrize(
-    "url",
-    [
-        "git://example.com/repo.git",
-        "git://127.0.0.1:9418/repo",
-        "git://github.com/python/cpython",
-    ],
-)
-async def test_git_clone_rejects_git_protocol_before_git(
-    monkeypatch: pytest.MonkeyPatch, url: str
-) -> None:
-    async def fail_exec(
-        *args: object, **kwargs: object
-    ) -> object:  # pragma: no cover - must not run
-        raise AssertionError("git clone should never spawn for the git:// protocol")
+class _ScriptedProc:
+    def __init__(self, stdout: bytes, returncode: int) -> None:
+        self._stdout = stdout
+        self.returncode = returncode
 
-    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fail_exec)
-
-    result = await git_clone(url, "/tmp/maistro-workspace/git-protocol-test")
-
-    assert result["success"] is False
-    assert result["error_code"] == "blocked_unauthenticated_transport"
-    assert "git://" in result["stdout"]
+    async def communicate(self) -> tuple[bytes, None]:
+        return self._stdout, None
 
 
-@pytest.mark.parametrize("url", ["GIT://example.com/repo.git", "Git://example.com/repo"])
-async def test_git_clone_rejects_git_protocol_case_insensitively(
-    monkeypatch: pytest.MonkeyPatch, url: str
-) -> None:
-    """git parses remote schemes case-insensitively (RFC 3986), so a cased
-    variant names the same unauthenticated transport and must not sneak past a
-    case-sensitive comparison into the generic allowlist verdict."""
+class _ScriptedGit:
+    """Fake create_subprocess_exec driven by a step list: the first step whose
+    match fragments all appear (as exact argv elements) is popped and served.
+    An argv matching no remaining step fails the test immediately — so the
+    verification sequence itself is under test, not just its outcome."""
 
-    async def fail_exec(
-        *args: object, **kwargs: object
-    ) -> object:  # pragma: no cover - must not run
-        raise AssertionError("cased git:// must never reach a git subprocess")
+    def __init__(self, steps: list[tuple[tuple[str, ...], bytes, int]]) -> None:
+        self._steps = list(steps)
+        self.calls: list[tuple[str, ...]] = []
 
-    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fail_exec)
+    async def __call__(self, *args: object, **kwargs: object) -> _ScriptedProc:
+        argv = tuple(str(a) for a in args)
+        self.calls.append(argv)
+        for index, (match, stdout, code) in enumerate(self._steps):
+            if all(fragment in argv for fragment in match):
+                del self._steps[index]
+                return _ScriptedProc(stdout, code)
+        raise AssertionError(f"unexpected subprocess argv: {argv}")
 
-    result = await git_clone(url, "/tmp/maistro-workspace/git-protocol-test")
+    def argv_of(self, fragment: str) -> tuple[str, ...]:
+        for argv in self.calls:
+            if fragment in argv:
+                return argv
+        raise AssertionError(f"no call with {fragment!r} in {self.calls}")
 
-    assert result["success"] is False
-    assert result["error_code"] == "blocked_unauthenticated_transport"
+
+_DIGEST = "b" * 40
+_ATTACKER_DIGEST = "a" * 40
 
 
-@pytest.mark.parametrize(
-    "url", ["https://github.com/example/repo.git", "ssh://git@gitlab.com/example/repo"]
-)
-async def test_git_clone_allows_authenticated_transports(
-    monkeypatch: pytest.MonkeyPatch, url: str
-) -> None:
-    """The policy targets the unauthenticated protocol and unknown hosts:
-    authenticated transports to allowlisted hosts still pass the gate and
-    reach git."""
+def _pin_steps() -> list[tuple[tuple[str, ...], bytes, int]]:
+    """Post-clone transport-pin persistence: one `git config` write per
+    whitelist key, into the destination repo's local config."""
+    return [(("config", key), b"", 0) for key, _ in _TRANSPORT_PIN]
 
-    digest = "a" * 40
 
-    class _Proc:
-        returncode = 0
+def _resolve_step() -> tuple[tuple[str, ...], bytes, int]:
+    """Tip resolution: an un-pinned clone first resolves the vetted remote's
+    HEAD via `git ls-remote` (the same transport pins ride along); the
+    returned digest becomes the pin the clone is verified against."""
+    return (("ls-remote",), f"{_DIGEST}\tHEAD\n".encode(), 0)
 
-        async def communicate(self) -> tuple[bytes, None]:
-            return f"{digest}\n".encode(), None
 
-    seen: list[tuple[object, ...]] = []
-
-    async def fake_exec(*args: object, **kwargs: object) -> _Proc:
-        seen.append(args)
-        return _Proc()
-
-    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fake_exec)
-
-    result = await git_clone(url, "/tmp/maistro-workspace/git-transport-test", commit=digest)
-
-    assert result["success"] is True
-    clone_argv = next(call for call in seen if "clone" in call)
-    assert clone_argv[0] == "git"
-    # Executable #404 enforcement rides in the argv as `-c` pins: git itself
-    # refuses the git:// transport (protocol.git.allow=never) and refuses to
-    # follow redirects (http.followRedirects=false), whatever a URL, a
-    # redirect response, or a .gitmodules entry asks for. These assertions
-    # turn the comment-level argument into a pinned contract.
-    argv = list(clone_argv)
-    assert argv[1:5] == [
-        "-c",
-        "protocol.git.allow=never",
-        "-c",
-        "http.followRedirects=false",
+def _success_steps() -> list[tuple[tuple[str, ...], bytes, int]]:
+    """Minimal happy-path script: clone succeeds, the destination config is
+    pinned to the transport whitelist, and HEAD resolves to a digest. No
+    .gitmodules step: the default destination does not exist, so the tool
+    skips the submodule scan."""
+    return [
+        (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
+        (("rev-parse", "HEAD"), f"{_DIGEST}\n".encode(), 0),
     ]
-    assert argv[5] == "clone"
-    assert "submodule" not in argv[5:]
-    # The URL is passed after `--`, so no scheme can be reinterpreted as a
-    # git flag on the way into the subprocess.
-    assert argv[-3] == "--"
-    assert argv[-2] == url
-    assert argv[-1] == "/tmp/maistro-workspace/git-transport-test"
 
 
-# --- Explicit host/repository source policy (#404 AC2) -----------------------
-#
-# The scheme gate alone accepts every https host on earth; AC2 requires the
-# source itself to be explicit. https/ssh URLs must name a host on the module
-# allowlist (env-overridable per deployment); the repository half of the
-# source identity is the commit-digest pin tested further below.
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "https://example.com/repo.git",
-        "https://github.com.evil.com/repo.git",
-        "https://github.com@evil.com/repo.git",  # userinfo ≠ host: evil.com wins
-    ],
-)
-async def test_git_clone_rejects_hosts_off_the_allowlist(
-    monkeypatch: pytest.MonkeyPatch, url: str
-) -> None:
-    async def fail_exec(
-        *args: object, **kwargs: object
-    ) -> object:  # pragma: no cover - must not run
-        raise AssertionError("git clone should never spawn for a non-allowlisted host")
-
-    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fail_exec)
-
-    result = await git_clone(url, "/tmp/maistro-workspace/host-policy-test")
-
-    assert result["success"] is False
-    assert result["error_code"] == "blocked_clone_host"
-    assert "MAISTRO_GIT_CLONE_ALLOWED_HOSTS" in result["suggested_action"]
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "https://GITHUB.COM/example/repo.git",  # hosts compare case-insensitively
-        "https://git@github.com/example/repo.git",  # user-info does not change the host
-        "https://github.com:8443/example/repo.git",  # a port is not a different host
-    ],
-)
-async def test_git_clone_host_policy_is_not_overstrict(
-    monkeypatch: pytest.MonkeyPatch, url: str
-) -> None:
-    digest = "b" * 40
-
-    class _Proc:
-        returncode = 0
-
-        async def communicate(self) -> tuple[bytes, None]:
-            return f"{digest}\n".encode(), None
-
-    async def fake_exec(*args: object, **kwargs: object) -> _Proc:
-        return _Proc()
-
-    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fake_exec)
-
-    result = await git_clone(url, "/tmp/maistro-workspace/host-policy-test", commit=digest)
-
-    assert result["success"] is True, result
-
-
-async def test_git_clone_host_allowlist_is_env_overridable_per_deployment(
+async def _run_scripted_clone(
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A deployment points the allowlist at its own forges via env, without a
-    code change — the same policy, a different source list."""
-
-    digest = "c" * 40
-
-    class _Proc:
-        returncode = 0
-
-        async def communicate(self) -> tuple[bytes, None]:
-            return f"{digest}\n".encode(), None
-
-    async def fake_exec(*args: object, **kwargs: object) -> _Proc:
-        return _Proc()
-
-    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fake_exec)
-    monkeypatch.setenv("MAISTRO_GIT_CLONE_ALLOWED_HOSTS", "example.com, internal-git.corp")
-
-    result = await git_clone(
-        "https://example.com/repo.git", "/tmp/maistro-workspace/host-env", commit=digest
-    )
-
-    assert result["success"] is True, result
+    steps: list[tuple[tuple[str, ...], bytes, int]],
+    url: str = "https://github.com/org/repo.git",
+    **kwargs: object,
+) -> tuple[dict[str, object], _ScriptedGit]:
+    monkeypatch.delenv("MAISTRO_GIT_CLONE_HOSTS", raising=False)
+    scripted = _ScriptedGit([_resolve_step(), *steps])
+    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", scripted)
+    result = await git_clone(url, "/repos/dest", **kwargs)  # type: ignore[arg-type]
+    return result, scripted
 
 
 @pytest.mark.parametrize(
     "url",
     [
-        "git@github.com:example/repo.git",  # scp-style: git reads it as ssh://
-        "SSH://git@github.com/example/repo.git",  # uppercase scheme: refuse, don't parse
-        "git+ssh://git@github.com/example/repo.git",
-        "%67it://github.com/example/repo.git",  # percent-encoding is not a scheme
+        "git://example.com/repo.git",  # unauthenticated daemon transport
+        "GIT://example.com/repo.git",  # case variance
+        "Git://example.com/repo.git",  # mixed case
+        "git:%2F%2Fexample.com/repo.git",  # encoded separator, same scheme
+        "%67it://example.com/repo.git",  # percent-encoded scheme spelling
+        "git+ssh://example.com/repo.git",  # scheme lookalike
+        "/etc",  # bare local path
+        "git@example.com:org/repo.git",  # scp-like syntax
+        "https:///no-host",  # allowed scheme but no host
+        "http://example.com/repo.git",  # plaintext HTTP
     ],
 )
-async def test_git_clone_rejects_scheme_syntax_games(
+async def test_git_clone_rejects_nonpolicy_source_urls(
     monkeypatch: pytest.MonkeyPatch, url: str
 ) -> None:
-    """Alternative spellings that git could resolve to an authenticated or
-    unauthenticated transport are refused on spelling: the gate names exact
-    schemes, and fail-closed beats a permissive parser."""
-
     async def fail_exec(
         *args: object, **kwargs: object
     ) -> object:  # pragma: no cover - must not run
-        raise AssertionError(f"git clone should never spawn for {url!r}")
+        raise AssertionError(f"git clone should not run for {url!r}")
 
     monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fail_exec)
 
-    result = await git_clone(url, "/tmp/maistro-workspace/scheme-games")
+    result = await git_clone(url, "/repos/dest")
 
     assert result["success"] is False
     assert result["error_code"] == "blocked_url_scheme"
 
 
-async def test_git_clone_percent_encoded_host_cannot_resurrect_git_protocol(
+async def test_git_clone_rejects_git_protocol_even_when_allowlist_widened(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Encoding games inside the unauthenticated transport change nothing: the
-    git:// verdict is a prefix match on the scheme, which percent-encoding in
-    the host portion cannot alter."""
+    """The production invariant: git:// stays rejected even if some caller or
+    test widens the scheme tuple — the hard deny is checked first."""
+    monkeypatch.setattr(
+        "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES",
+        ("https://", "git://", "ssh://", "file://"),
+    )
 
     async def fail_exec(
         *args: object, **kwargs: object
     ) -> object:  # pragma: no cover - must not run
-        raise AssertionError("encoded git:// must never reach a git subprocess")
+        raise AssertionError("git:// must never reach a subprocess")
 
     monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fail_exec)
 
-    result = await git_clone("git://%67ithub.com/example/repo.git", "/tmp/maistro-workspace/enc")
+    result = await git_clone("git://example.com/repo.git", "/repos/dest")
 
     assert result["success"] is False
-    assert result["error_code"] == "blocked_unauthenticated_transport"
+    assert result["error_code"] == "blocked_url_scheme"
 
 
-# --- Verified local sources (#404 AC2) ----------------------------------------
-
-
-async def test_git_clone_allows_a_workspace_local_path_source(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """AC2's 'verified local sources': a bare path is accepted only when it
-    passes the same workspace-root validation the destination undergoes."""
-
-    root = tmp_path / "workspaces"
-    origin = root / "origin"
-    origin.mkdir(parents=True)
-    monkeypatch.setattr("maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS", (root,))
-
-    digest = "d" * 40
-
-    class _Proc:
-        returncode = 0
-
-        async def communicate(self) -> tuple[bytes, None]:
-            return f"{digest}\n".encode(), None
-
-    seen: list[tuple[object, ...]] = []
-
-    async def fake_exec(*args: object, **kwargs: object) -> _Proc:
-        seen.append(args)
-        return _Proc()
-
-    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fake_exec)
-
-    result = await git_clone(str(origin), str(root / "dest"), commit=digest)
-
-    assert result["success"] is True, result
-    argv = list(next(call for call in seen if "clone" in call))
-    assert argv[-3] == "--"
-    assert argv[-2] == str(origin)
-
-
-async def test_git_clone_rejects_paths_outside_verified_roots(
+async def test_git_clone_enforces_configured_host_allowlist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("MAISTRO_GIT_CLONE_HOSTS", "github.com")
+
     async def fail_exec(
         *args: object, **kwargs: object
     ) -> object:  # pragma: no cover - must not run
-        raise AssertionError("git clone should never spawn for an unverified local source")
+        raise AssertionError("clone of a non-policy host should not run")
 
     monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fail_exec)
 
-    for source in ("/etc", "-oProxyCommand=echo"):
-        result = await git_clone(source, "/tmp/maistro-workspace/local-source-test")
-        assert result["success"] is False
-        assert result["error_code"] in {"blocked_url_scheme", "blocked_workspace"}
+    result = await git_clone("https://gitlab.com/org/repo.git", "/repos/dest")
+
+    assert result["success"] is False
+    assert result["error_code"] == "blocked_clone_host"
 
 
-# --- Redirect/protocol-downgrade enforcement is executable (#404 AC4) --------
-#
-# The claim "redirects cannot smuggle the scheme back" used to be comment-only.
-# It is now two `-c` pins in the argv (asserted above) plus functional proof:
-# git itself refuses a 302 under http.followRedirects=false, and refuses the
-# git:// transport under protocol.git.allow=never — including when a
-# .gitmodules entry asks for it.
+async def test_git_clone_host_allowlist_is_case_insensitive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MAISTRO_GIT_CLONE_HOSTS", "GitHub.COM")
+
+    result, _ = await _run_scripted_clone(
+        monkeypatch, _success_steps(), url="https://GitHub.com/org/repo.git"
+    )
+
+    assert result["success"] is True
+
+
+async def test_git_clone_passes_transport_hardening_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Redirects (and with them any protocol-downgrade hop) are refused, TLS
+    verification is pinned on, and the git transport whitelist is deny-by-
+    default — and the `--` separator still lands before url/dest so neither
+    can smuggle flags."""
+    result, scripted = await _run_scripted_clone(monkeypatch, _success_steps())
+
+    assert result["success"] is True
+    clone_argv = scripted.argv_of("clone")
+    for config in (
+        "protocol.allow=never",
+        "protocol.https.allow=always",
+        "protocol.ssh.allow=always",
+        "protocol.file.allow=user",
+        "http.followRedirects=false",
+        "http.sslVerify=true",
+    ):
+        assert config in clone_argv, f"missing hardening flag {config}"
+    assert clone_argv[clone_argv.index("--") + 1 :] == (
+        "https://github.com/org/repo.git",
+        "/repos/dest",
+    )
+    assert clone_argv.index("http.followRedirects=false") < clone_argv.index("clone")
 
 
 @pytest.fixture
@@ -411,15 +295,32 @@ def _redirecting_http_server():
 async def test_git_clone_functionally_refuses_redirects(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _redirecting_http_server: str
 ) -> None:
-    """Real git, real HTTP: the redirect is refused ('302' in git's output),
+    """Real git, real HTTP: the redirect is refused (git quotes the 302),
     the destination is never populated — a server response cannot move the
-    fetch to a URL the host/scheme policy never vetted."""
+    fetch to a URL the host/scheme policy never vetted. The merged policy is
+    stricter than the develop-side original this test restores: plain http://
+    is refused outright by the protocol whitelist, so the proof widens the
+    whitelist the way a (hypothetical, hostile-config) deployment would and
+    pins the resulting argv — even then `http.followRedirects=false` refuses
+    the redirect. (Restored from the develop-side #404 suite the develop-sync
+    merge had dropped.)"""
 
     root = tmp_path / "workspaces"
     dest = root / "dest"
     monkeypatch.setattr("maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS", (root,))
     monkeypatch.setattr(
         "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES", ("https://", "ssh://", "http://")
+    )
+    # The merged policy host-gates every remote scheme (develop only gated
+    # https/ssh), so the local server's host must be allowlisted for the
+    # request to reach git at all — otherwise the URL gate refuses it before
+    # any subprocess, which is the even-earlier refusal the policy prefers.
+    monkeypatch.setenv("MAISTRO_GIT_CLONE_HOSTS", "127.0.0.1")
+    # Let http connect at all (the whitelist forbids it by default), keeping
+    # the rest of the pin — above all http.followRedirects=false — intact.
+    monkeypatch.setattr(
+        "maistro.tools.git.server._CLONE_CONFIG_HARDENING",
+        (*_CLONE_CONFIG_HARDENING, "-c", "protocol.http.allow=always"),
     )
 
     result = await git_clone(_redirecting_http_server, str(dest), timeout=60)
@@ -432,512 +333,190 @@ async def test_git_clone_functionally_refuses_redirects(
     assert not dest.exists() or not any(dest.iterdir())
 
 
-def _git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *args], cwd=cwd, check=False, capture_output=True, text=True, timeout=120
-    )
-
-
-@pytest.fixture
-def _origin_with_git_submodule(tmp_path: Path) -> Path:
-    """A repo whose tree carries a gitlink + a .gitmodules URL over git://.
-
-    A plain `git clone` of this repo fetches the parent only — the submodule
-    URL is metadata, not fetched content — which is exactly why the clone gate
-    can allow it and why the *fetch* must still be dead if anything ever
-    tries `git submodule update`.
-    """
-    origin = tmp_path / "origin"
-    origin.mkdir()
-    assert _git("init", "-q", "-b", "main", str(origin)).returncode == 0
-    # Repo-local identity: identity-less CI runners refuse to commit
-    # (exit 128), and this fixture must not lean on ambient global config.
-    assert _git("-C", str(origin), "config", "user.email", "t@t").returncode == 0
-    assert _git("-C", str(origin), "config", "user.name", "t").returncode == 0
-    (origin / ".gitmodules").write_text(
-        '[submodule "evil"]\n\tpath = evil\n\turl = git://127.0.0.1:9418/evil.git\n',
-        encoding="utf-8",
-    )
-    assert _git("-C", str(origin), "add", ".gitmodules").returncode == 0
-    assert _git("-C", str(origin), "commit", "-qm", "submodule").returncode == 0
-    gitlink = _git("-C", str(origin), "rev-parse", "HEAD").stdout.strip()
-    # A gitlink entry without an actual submodule checkout: mode 160000.
-    index = _git(
-        "-C", str(origin), "update-index", "--add", "--cacheinfo", f"160000,{gitlink},evil"
-    )
-    assert index.returncode == 0, index.stderr
-    assert _git("-C", str(origin), "commit", "-qm", "gitlink").returncode == 0
-    return origin
-
-
-def test_git_protocol_submodule_fetch_is_dead_under_the_policy_pin(
-    tmp_path: Path, _origin_with_git_submodule: Path
+async def test_git_clone_reports_resolved_head_commit(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AC4's submodule clause, proven against real git: with the same
-    `protocol.git.allow=never` pin the clone argv carries, `git submodule
-    update` refuses the git:// URL in transport selection — before any
-    connection — so a .gitmodules entry cannot re-introduce the
-    unauthenticated transport even if a future surface runs submodule
-    updates."""
-    dest = tmp_path / "clone"
-    clone = _git("clone", "-q", "--", str(_origin_with_git_submodule), str(dest))
-    if clone.returncode != 0:
-        pytest.fail(f"fixture clone failed: {clone.stderr}")
+    result, _ = await _run_scripted_clone(monkeypatch, _success_steps())
 
-    update = _git(
-        "-C",
-        str(dest),
-        "-c",
-        "protocol.git.allow=never",
-        "submodule",
-        "update",
-        "--init",
-        "--depth=1",
-    )
-
-    assert update.returncode != 0
-    assert "transport 'git' not allowed" in (update.stderr + update.stdout)
+    assert result["success"] is True
+    assert result["head_commit"] == _DIGEST
 
 
-def test_git_protocol_transport_refusal_comes_from_git_itself() -> None:
-    """The pin delegates the verdict to git's own protocol layer: `ls-remote`
-    over git:// dies in transport selection (no server, no connection), which
-    is what makes the enforcement hold for redirects and submodules alike —
-    any fetch path through git's protocol layer gets the same answer."""
-    probe = _git("-c", "protocol.git.allow=never", "ls-remote", "git://127.0.0.1:9418/x")
-
-    assert probe.returncode != 0
-    assert "transport 'git' not allowed" in (probe.stderr + probe.stdout)
-
-
-# --- Commit-digest pinning and TOCTOU (#404 AC3, AC5) ------------------------
-#
-# A pin is only a pin if it names an object: full hex digests only, fetched
-# directly, and the final `rev-parse HEAD` verdict runs after all fetching —
-# so a ref that moves mid-clone cannot change what the caller receives.
-
-
-@pytest.mark.parametrize("pin", ["main", "HEAD", "abc123", "z" * 40, "a" * 39, "a" * 41])
-async def test_git_clone_rejects_non_digest_pins_before_git(
-    monkeypatch: pytest.MonkeyPatch, pin: str
+async def test_git_clone_pinned_commit_survives_branch_ref_moving(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A ref name or short sha can be repointed by the remote; only a full
-    digest is immutable. Anything else is refused before git spawns."""
+    """TOCTOU: the branch tip moved to attacker content between resolution and
+    fetch. The pin flow must fetch the pinned digest itself, detach, and land
+    exactly on it — the attacker commit never becomes the checkout."""
+    steps: list[tuple[tuple[str, ...], bytes, int]] = [
+        (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
+        (("rev-parse", "HEAD"), f"{_ATTACKER_DIGEST}\n".encode(), 0),
+        (("fetch", _DIGEST), b"", 0),
+        (("checkout",), b"", 0),
+        (("rev-parse", "HEAD"), f"{_DIGEST}\n".encode(), 0),
+    ]
 
+    result, scripted = await _run_scripted_clone(monkeypatch, steps, commit=_DIGEST)
+
+    assert result["success"] is True
+    assert result["head_commit"] == _DIGEST
+    fetch_argv = scripted.argv_of("fetch")
+    assert _DIGEST in fetch_argv and "origin" in fetch_argv
+    checkout_argv = scripted.argv_of("checkout")
+    assert "--detach" in checkout_argv and _DIGEST in checkout_argv
+
+
+async def test_git_clone_rejects_when_head_still_mismatches_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If even after fetch+checkout HEAD is not the pinned digest, the
+    workspace is rejected outright — identity must equal the pin or nothing
+    ships."""
+    steps: list[tuple[tuple[str, ...], bytes, int]] = [
+        (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
+        (("rev-parse", "HEAD"), f"{_ATTACKER_DIGEST}\n".encode(), 0),
+        (("fetch", _DIGEST), b"", 0),
+        (("checkout",), b"", 0),
+        (("rev-parse", "HEAD"), f"{_ATTACKER_DIGEST}\n".encode(), 0),
+    ]
+
+    result, _ = await _run_scripted_clone(monkeypatch, steps, commit=_DIGEST)
+
+    assert result["success"] is False
+    assert result["error_code"] == "commit_pin_mismatch"
+
+
+async def test_git_clone_pin_fetch_failure_is_pin_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    steps: list[tuple[tuple[str, ...], bytes, int]] = [
+        (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
+        (("rev-parse", "HEAD"), f"{_ATTACKER_DIGEST}\n".encode(), 0),
+        (("fetch", _DIGEST), b"fatal: could not fetch\n", 128),
+    ]
+
+    result, _ = await _run_scripted_clone(monkeypatch, steps, commit=_DIGEST)
+
+    assert result["success"] is False
+    assert result["error_code"] == "commit_pin_mismatch"
+
+
+@pytest.mark.parametrize("pin", ["main", "abc123", "z" * 40])
+async def test_git_clone_rejects_non_digest_pins(monkeypatch: pytest.MonkeyPatch, pin: str) -> None:
     async def fail_exec(
         *args: object, **kwargs: object
     ) -> object:  # pragma: no cover - must not run
-        raise AssertionError("git clone should never spawn for a malformed pin")
+        raise AssertionError("non-digest pins must not reach a subprocess")
 
     monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fail_exec)
 
-    result = await git_clone(
-        "https://github.com/example/repo.git", "/tmp/maistro-workspace/pin-test", commit=pin
-    )
+    result = await git_clone("https://github.com/org/repo.git", "/repos/dest", commit=pin)
 
     assert result["success"] is False
-    assert result["error_code"] == "blocked_commit_digest"
+    assert result["error_code"] == "invalid_commit_pin"
 
 
-async def _cloned_head(dest: Path) -> str:
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        "-C",
-        str(dest),
-        "rev-parse",
-        "HEAD",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
-    return stdout.decode().strip()
-
-
-class TestCommitPinning:
-    @pytest.fixture(autouse=True)
-    def _hermetic_origins(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-
-        self.root = tmp_path / "workspaces"
-        self.origin = tmp_path / "origins" / "origin"
-        self.origin.mkdir(parents=True)
-        monkeypatch.setattr("maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS", (self.root,))
-        monkeypatch.setattr(
-            "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES",
-            ("https://", "ssh://", "file://"),
-        )
-        assert _git("init", "-q", "-b", "main", str(self.origin)).returncode == 0
-        _git("-C", str(self.origin), "config", "user.email", "t@t")
-        _git("-C", str(self.origin), "config", "user.name", "t")
-        (self.origin / "f.txt").write_text("one\n", encoding="utf-8")
-        assert _git("-C", str(self.origin), "add", "-A").returncode == 0
-        assert _git("-C", str(self.origin), "commit", "-qm", "one").returncode == 0
-        (self.origin / "f.txt").write_text("two\n", encoding="utf-8")
-        assert _git("-C", str(self.origin), "commit", "-qam", "two").returncode == 0
-        self.first = _git("-C", str(self.origin), "rev-parse", "HEAD~1").stdout.strip()
-        self.tip = _git("-C", str(self.origin), "rev-parse", "HEAD").stdout.strip()
-
-    async def test_pin_to_non_tip_digest_fetches_and_verifies_it(self) -> None:
-        dest = self.root / "dest1"
-        result = await git_clone(f"file://{self.origin}", str(dest), commit=self.first)
-
-        assert result["success"] is True, result
-        assert result["pinned_commit"] == self.first
-        assert await _cloned_head(dest) == self.first
-
-    async def test_pin_to_tip_digest_verifies_without_refetch(self) -> None:
-        dest = self.root / "dest2"
-        result = await git_clone(f"file://{self.origin}", str(dest), commit=self.tip)
-
-        assert result["success"] is True, result
-        assert result["pinned_commit"] == self.tip
-        assert await _cloned_head(dest) == self.tip
-
-    async def test_pin_is_case_insensitive_and_normalized(self) -> None:
-        dest = self.root / "dest3"
-        result = await git_clone(f"file://{self.origin}", str(dest), commit=self.first.upper())
-
-        assert result["success"] is True, result
-        assert result["pinned_commit"] == self.first
-
-    async def test_unknown_digest_fails_closed(self) -> None:
-        dest = self.root / "dest4"
-        result = await git_clone(
-            f"file://{self.origin}",
-            str(dest),
-            commit="0" * 40,
-        )
-
-        assert result["success"] is False
-        assert result["error_code"] == "commit_fetch_failed"
-        assert "do not use the workspace" in result["suggested_action"].lower()
-
-    async def test_default_pin_defeats_toctou_ref_movement(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """AC5 end to end: an omitted caller pin is resolved to digest D, then
-        the remote ref moves before clone. The default path must still land D,
-        proving it is not an unpinned convenience path beside explicit pins."""
-        original_resolve = git_server.git_remote_tip
-
-        async def resolve_then_move(url: str, timeout: int = 60) -> dict[str, object]:
-            resolved = await original_resolve(url, timeout)
-            (self.origin / "f.txt").write_text("attacker\n", encoding="utf-8")
-            assert _git("-C", str(self.origin), "commit", "-qam", "moved").returncode == 0
-            return resolved
-
-        monkeypatch.setattr(git_server, "git_remote_tip", resolve_then_move)
-        dest = self.root / "default-pin"
-        result = await git_clone(f"file://{self.origin}", str(dest))
-
-        assert result["success"] is True, result
-        assert result["pinned_commit"] == self.tip
-        assert await _cloned_head(dest) == self.tip
-
-    async def test_pinned_fetch_argv_carries_the_enforcement_pins(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The digest-pin fetch is a second network operation against the
-        remote; it carries the same `-c` protocol/redirect pins as the clone
-        in its own argv, so the enforcement does not depend on the config the
-        clone happened to persist into the new repository."""
-        calls: list[tuple[str, ...]] = []
-
-        class _Proc:
-            returncode = 0
-
-            def __init__(self, out: bytes = b"") -> None:
-                self._out = out
-
-            async def communicate(self) -> tuple[bytes, None]:
-                return self._out, None
-
-        landed_otherwise = "e" * 40  # clone HEAD != pin, forcing the fetch path
-
-        async def fake_exec(*args: object, **kwargs: object) -> _Proc:
-            argv = tuple(str(a) for a in args)
-            calls.append(argv)
-            if "rev-parse" in argv:
-                # First verdict: what the clone landed on. Second verdict:
-                # after fetch+checkout, the pinned digest itself.
-                out = self.first if any("fetch" in call for call in calls) else landed_otherwise
-                return _Proc(out=f"{out}\n".encode())
-            return _Proc()
-
-        monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fake_exec)
-
-        dest = str(self.root / "fetch-argv")
-        result = await git_clone("https://github.com/example/repo.git", dest, commit=self.first)
-
-        assert result["success"] is True, result
-        fetch_calls = [call for call in calls if "fetch" in call]
-        assert len(fetch_calls) == 1
-        fetch_argv = fetch_calls[0]
-        assert fetch_argv[1:5] == (
-            "-c",
-            "protocol.git.allow=never",
-            "-c",
-            "http.followRedirects=false",
-        )
-        assert list(fetch_argv[-4:]) == ["fetch", "--depth=1", "origin", self.first]
-
-    async def test_pinned_clone_argv_verifies_before_returning(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The pin verdict is a rev-parse of what actually landed in the
-        checkout, run before the call reports success — and the clone itself
-        carries the protocol/redirect enforcement pins."""
-        calls: list[tuple[str, ...]] = []
-
-        class _Proc:
-            returncode = 0
-
-            def __init__(self, out: bytes = b"") -> None:
-                self._out = out
-
-            async def communicate(self) -> tuple[bytes, None]:
-                return self._out, None
-
-        async def fake_exec(*args: object, **kwargs: object) -> _Proc:
-            argv = tuple(str(a) for a in args)
-            calls.append(argv)
-            if "rev-parse" in argv:
-                return _Proc(out=f"{self.first}\n".encode())
-            return _Proc()
-
-        monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fake_exec)
-
-        dest = str(self.root / "pin-argv")
-        result = await git_clone("https://github.com/example/repo.git", dest, commit=self.first)
-
-        assert result["success"] is True, result
-        verbs = [
-            next((a for a in call[1:] if a in {"clone", "fetch", "rev-parse"}), "")
-            for call in calls
-        ]
-        # Fast path: the pinned digest is the clone's own HEAD, so verifying
-        # it needs no refetch — one clone, one rev-parse verdict.
-        assert verbs == ["clone", "rev-parse"]
-        clone_calls = [call for call in calls if "clone" in call]
-        assert clone_calls[0][1:5] == (
-            "-c",
-            "protocol.git.allow=never",
-            "-c",
-            "http.followRedirects=false",
-        )
-        assert list(clone_calls[0][-3:]) == [
-            "--",
-            "https://github.com/example/repo.git",
-            dest,
-        ]
-
-
-# --- Resolving the remote tip (#404 AC3) -------------------------------------
-#
-# "Pin candidate source to a commit digest" needs a digest to pin. When a
-# caller has none of its own, `git_remote_tip` is the one network read that
-# produces one — policy-gated, pin-enforced, digest-validated — so the
-# RSI cycle's default path is a verified pin, never "whatever the ref
-# points at when the fetch happens".
-
-
-class TestRemoteTipResolution:
-    @staticmethod
-    def _fake_exec(calls: list[tuple[str, ...]], out: bytes, returncode: int = 0):
-        class _Proc:
-            def __init__(self) -> None:
-                self.returncode = returncode
-
-            async def communicate(self) -> tuple[bytes, None]:
-                return out, None
-
-        async def fake_exec(*args: object, **kwargs: object) -> _Proc:
-            calls.append(tuple(str(a) for a in args))
-            return _Proc()
-
-        return fake_exec
-
-    async def test_resolution_argv_carries_pins_and_parses_the_digest(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        calls: list[tuple[str, ...]] = []
-        digest = "a" * 40
-        monkeypatch.setattr(
-            "maistro.tools.git.server.asyncio.create_subprocess_exec",
-            self._fake_exec(calls, f"{digest}\tHEAD\n".encode()),
-        )
-
-        result = await git_remote_tip("https://github.com/example/repo.git")
-
-        assert result["success"] is True, result
-        assert result["commit"] == digest
-        argv = calls[0]
-        assert argv[1:5] == (
-            "-c",
-            "protocol.git.allow=never",
-            "-c",
-            "http.followRedirects=false",
-        )
-        assert list(argv[-4:]) == ["ls-remote", "--", "https://github.com/example/repo.git", "HEAD"]
-
-    @pytest.mark.parametrize("url", ["git://github.com/example/repo.git", "--upload-pack=x.git"])
-    async def test_refused_sources_spawn_nothing(
-        self, monkeypatch: pytest.MonkeyPatch, url: str
-    ) -> None:
-        async def fail_exec(*args: object, **kwargs: object) -> object:  # pragma: no cover
-            raise AssertionError(f"{url!r} must never reach the ls-remote subprocess")
-
-        monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fail_exec)
-
-        result = await git_remote_tip(url)
-
-        assert result["success"] is False
-        assert result["error_code"] in {"blocked_unauthenticated_transport", "blocked_url_scheme"}
-
-    async def test_a_non_digest_resolution_is_refused(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A resolution that names a ref, not an object, is not a pin — the
-        resolver must never hand `commit=` a repointable name."""
-        calls: list[tuple[str, ...]] = []
-        monkeypatch.setattr(
-            "maistro.tools.git.server.asyncio.create_subprocess_exec",
-            self._fake_exec(calls, b"refs/heads/main\tmain\n"),
-        )
-
-        result = await git_remote_tip("https://github.com/example/repo.git")
-
-        assert result["success"] is False
-        assert result["error_code"] == "remote_tip_unresolved"
-
-    async def test_a_failing_ls_remote_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        calls: list[tuple[str, ...]] = []
-        monkeypatch.setattr(
-            "maistro.tools.git.server.asyncio.create_subprocess_exec",
-            self._fake_exec(calls, b"fatal: could not read remote", returncode=128),
-        )
-
-        result = await git_remote_tip("https://github.com/example/repo.git")
-
-        assert result["success"] is False
-        assert result["error_code"] == "remote_tip_unresolved"
-
-    async def test_live_ls_remote_names_the_origin_head_digest(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        origin = tmp_path / "origin"
-        origin.mkdir()
-        assert _git("init", "-q", "-b", "main", str(origin)).returncode == 0
-        _git("-C", str(origin), "config", "user.email", "t@t")
-        _git("-C", str(origin), "config", "user.name", "t")
-        (origin / "f.txt").write_text("one\n", encoding="utf-8")
-        assert _git("-C", str(origin), "add", "-A").returncode == 0
-        assert _git("-C", str(origin), "commit", "-qm", "one").returncode == 0
-        tip = _git("-C", str(origin), "rev-parse", "HEAD").stdout.strip()
-        monkeypatch.setattr(
-            "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES",
-            ("https://", "ssh://", "file://"),
-        )
-
-        result = await git_remote_tip(f"file://{origin}")
-
-        assert result["success"] is True, result
-        assert result["commit"] == tip
-
-
-# --- Signature trust anchor (#404 AC3) ---------------------------------------
-#
-# AC3's clause is "verify fetched object identity/signature policy". Identity
-# is the digest pin (above). The signature half needs a trust anchor to
-# verify against; `MAISTRO_GIT_CLONE_TRUSTED_SIGNERS` is that anchor: with it
-# set, a clone only succeeds when HEAD carries a cryptographically good
-# signature by one of the named keys. Without it, the documented default is
-# digest identity over authenticated transport — the off-state is asserted
-# so it stays a choice, not an oversight.
-
-_SIG_FPR = "a" * 40
-_OTHER_FPR = "b" * 40
-
-
-def _scripted_git(outputs: dict[str, str]) -> object:
-    """A fake `server._git` answering scripted stdout keyed by a format
-    marker in the argv (`%G?`, `%GF`), so signature verdicts can be unit
-    tested without gpg."""
-
-    async def fake_git(workspace: str, *args: str, timeout: int = 60) -> dict[str, object]:
-        if args[:2] == ("rev-parse", "HEAD"):
-            return {"success": True, "stdout": _SIG_FPR, "exit_code": 0}
-        for marker, out in outputs.items():
-            if any(marker in arg for arg in args):
-                return {"success": True, "stdout": out, "exit_code": 0}
-        raise AssertionError(f"unexpected git call: {args}")
-
-    return fake_git
-
-
-class _CloneProc:
-    returncode = 0
-
-    def __init__(self, output: bytes = b"Cloned") -> None:
-        self.output = output
-
-    async def communicate(self) -> tuple[bytes, None]:
-        return self.output, None
-
-
-async def _fake_clone_exec(*args: object, **kwargs: object) -> _CloneProc:
-    if "rev-parse" in args:
-        return _CloneProc(f"{_SIG_FPR}\n".encode())
-    return _CloneProc()
-
-
-async def test_signature_policy_is_off_without_the_trust_anchor(
+async def test_git_clone_accepts_uppercase_digest_pin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No anchor configured -> no signature subprocess is spawned at all:
-    the default policy (digest identity over authenticated transport) is the
-    documented off-state, and an unset knob must not add latency or a second
-    failure mode."""
-    monkeypatch.delenv(_TRUSTED_SIGNERS_ENV, raising=False)
-    calls: list[tuple[str, ...]] = []
+    result, _ = await _run_scripted_clone(monkeypatch, _success_steps(), commit=_DIGEST.upper())
 
-    async def fake_exec(*args: object, **kwargs: object) -> _CloneProc:
-        calls.append(tuple(str(a) for a in args))
-        if "rev-parse" in args:
-            return _CloneProc(f"{_SIG_FPR}\n".encode())
-        return _CloneProc()
+    assert result["success"] is True
+    assert result["head_commit"] == _DIGEST
 
-    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fake_exec)
 
-    result = await git_clone(
-        "https://github.com/example/repo.git", "/tmp/maistro-workspace/sig-off", commit=_SIG_FPR
-    )
+async def test_git_clone_require_signed_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    steps: list[tuple[tuple[str, ...], bytes, int]] = [
+        (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
+        (("rev-parse", "HEAD"), f"{_DIGEST}\n".encode(), 0),
+        (("verify-commit",), b"error: no signature\n", 1),
+    ]
 
-    assert result["success"] is True, result
-    assert all("log" not in call for call in calls[1:])  # clone argv only
-    assert "signature_verified" not in result
+    result, _ = await _run_scripted_clone(monkeypatch, steps, commit=_DIGEST, require_signed=True)
+
+    assert result["success"] is False
+    assert result["error_code"] == "commit_signature_unverified"
+
+
+async def test_git_clone_require_signed_passes_when_signature_verifies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    steps: list[tuple[tuple[str, ...], bytes, int]] = [
+        (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
+        (("rev-parse", "HEAD"), f"{_DIGEST}\n".encode(), 0),
+        (("verify-commit",), b"gpg: Good signature\n", 0),
+    ]
+
+    result, _ = await _run_scripted_clone(monkeypatch, steps, commit=_DIGEST, require_signed=True)
+
+    assert result["success"] is True
+    assert result["head_commit"] == _DIGEST
+
+
+# --- deployment-wide signature trust anchor (#404 AC3) ------------------
+# MAISTRO_GIT_CLONE_TRUSTED_SIGNERS — the develop-side API the develop-sync
+# merge had dropped, restored by the repair round. A configured anchor makes
+# EVERY successful clone prove its landed HEAD: a cryptographically good
+# signature (%G? G or U) by a key whose fingerprint (%GP/%GF) is on the
+# allowlist. Without the anchor no signature read is spawned at all.
+
+_SIGNER_FPR = "c" * 40
+_OTHER_SIGNER_FPR = "d" * 40
 
 
 def test_trusted_fprs_normalize_entries_and_drop_empties(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    grouped = f"{_OTHER_FPR[0:8]} {_OTHER_FPR[8:]}"  # spaced like gpg prints them
-    monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, f"  {_SIG_FPR.upper()} , {grouped.upper()} ,,")
+    grouped = f"{_OTHER_SIGNER_FPR[0:8]} {_OTHER_SIGNER_FPR[8:]}"  # spaced like gpg prints them
+    monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, f"  {_SIGNER_FPR.upper()} , {grouped.upper()} ,,")
 
-    assert _trusted_signature_fprs() == frozenset({_SIG_FPR, _OTHER_FPR})
+    assert _trusted_signature_fprs() == frozenset({_SIGNER_FPR, _OTHER_SIGNER_FPR})
+
+
+def _anchor_steps(
+    verdict: str, fprs: str | None = None
+) -> list[tuple[tuple[str, ...], bytes, int]]:
+    """Happy-path clone script plus the `git log` reads the trust anchor runs
+    after the pin verdict: the %G? signature verdict, then the %GF/%GP signer
+    fingerprints."""
+    steps: list[tuple[tuple[str, ...], bytes, int]] = [
+        (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
+        (("rev-parse", "HEAD"), f"{_DIGEST}\n".encode(), 0),
+        (("--pretty=format:%G?",), f"{verdict}\n".encode(), 0),
+    ]
+    if fprs is not None:
+        steps.append((("--pretty=format:%GF%n%GP",), fprs.encode(), 0))
+    return steps
+
+
+async def test_signature_policy_is_off_without_the_trust_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No anchor configured -> no signature read is spawned at all: the
+    default policy (digest identity over authenticated transport) is the
+    documented off-state, and an unset knob must not add latency or a second
+    failure mode."""
+    monkeypatch.delenv(_TRUSTED_SIGNERS_ENV, raising=False)
+    result, scripted = await _run_scripted_clone(monkeypatch, _success_steps(), commit=_DIGEST)
+
+    assert result["success"] is True, result
+    assert not any("%G?" in fragment for argv in scripted.calls for fragment in argv)
+    assert "signature_verified" not in result
 
 
 async def test_signature_policy_when_git_status_is_unreadable_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _SIG_FPR)
-    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", _fake_clone_exec)
-    monkeypatch.setattr("maistro.tools.git.server._git", _scripted_git({"%G?": ""}))
-
-    result = await git_clone(
-        "https://github.com/example/repo.git",
-        "/tmp/maistro-workspace/sig-unreadable",
-        commit=_SIG_FPR,
-    )
+    monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _SIGNER_FPR)
+    result, _ = await _run_scripted_clone(monkeypatch, _anchor_steps(""), commit=_DIGEST)
 
     assert result["success"] is False
     assert result["error_code"] == "commit_signature_missing"
@@ -950,15 +529,8 @@ async def test_signature_policy_rejects_not_good_verdicts(
     """N (unsigned), B (bad), X (expired), E (cannot check) each name a real
     failure mode; only G/U — cryptographic goodness — can proceed to the
     fingerprint check."""
-    monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _SIG_FPR)
-    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", _fake_clone_exec)
-    monkeypatch.setattr("maistro.tools.git.server._git", _scripted_git({"%G?": verdict}))
-
-    result = await git_clone(
-        "https://github.com/example/repo.git",
-        "/tmp/maistro-workspace/sig-verdict",
-        commit=_SIG_FPR,
-    )
+    monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _SIGNER_FPR)
+    result, _ = await _run_scripted_clone(monkeypatch, _anchor_steps(verdict), commit=_DIGEST)
 
     assert result["success"] is False
     if verdict == "N":
@@ -970,18 +542,9 @@ async def test_signature_policy_rejects_not_good_verdicts(
 async def test_signature_policy_rejects_good_signature_by_untrusted_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _SIG_FPR)
-    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", _fake_clone_exec)
-    monkeypatch.setattr(
-        "maistro.tools.git.server._git",
-        _scripted_git({"%G?": "G", "%GF": f"{_OTHER_FPR}\n{_OTHER_FPR}"}),
-    )
-
-    result = await git_clone(
-        "https://github.com/example/repo.git",
-        "/tmp/maistro-workspace/sig-foreign",
-        commit=_SIG_FPR,
-    )
+    monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _SIGNER_FPR)
+    fprs = f"{_OTHER_SIGNER_FPR}\n{_OTHER_SIGNER_FPR}\n"  # %GF then %GP, both foreign
+    result, _ = await _run_scripted_clone(monkeypatch, _anchor_steps("G", fprs), commit=_DIGEST)
 
     assert result["success"] is False
     assert result["error_code"] == "commit_signature_untrusted"
@@ -989,31 +552,365 @@ async def test_signature_policy_rejects_good_signature_by_untrusted_key(
 
 
 @pytest.mark.parametrize(
-    "fprs", [f"{_SIG_FPR}\n{_SIG_FPR}", f"{_OTHER_FPR}\n{_SIG_FPR}"], ids=["primary", "subkey"]
+    "fprs",
+    [f"{_SIGNER_FPR}\n{_SIGNER_FPR}", f"{_OTHER_SIGNER_FPR}\n{_SIGNER_FPR}"],
+    ids=["primary", "subkey"],
 )
 async def test_signature_policy_accepts_trusted_signer(
     monkeypatch: pytest.MonkeyPatch, fprs: str
 ) -> None:
     """A good signature by a trusted key — named as primary (%GP) or as the
     signing subkey (%GF) — passes and the result attests it."""
-    monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _SIG_FPR)
-    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", _fake_clone_exec)
-    monkeypatch.setattr("maistro.tools.git.server._git", _scripted_git({"%G?": "G", "%GF": fprs}))
-
-    result = await git_clone(
-        "https://github.com/example/repo.git",
-        "/tmp/maistro-workspace/sig-trusted",
-        commit=_SIG_FPR,
-    )
+    monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _SIGNER_FPR)
+    result, _ = await _run_scripted_clone(monkeypatch, _anchor_steps("G", fprs), commit=_DIGEST)
 
     assert result["success"] is True, result
     assert result["signature_verified"] is True
 
 
+async def test_git_clone_trust_anchor_composes_with_require_signed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both signature policies run when both apply: the per-call
+    `require_signed` verify-commit first, then the deployment anchor's
+    %G?/%GF reads — the result may only land once each policy has had its
+    verdict."""
+    monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _SIGNER_FPR)
+    steps: list[tuple[tuple[str, ...], bytes, int]] = [
+        (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
+        (("rev-parse", "HEAD"), f"{_DIGEST}\n".encode(), 0),
+        (("verify-commit",), b"gpg: Good signature\n", 0),
+        (("--pretty=format:%G?",), b"G\n", 0),
+        (("--pretty=format:%GF%n%GP",), f"{_SIGNER_FPR}\n{_SIGNER_FPR}\n".encode(), 0),
+    ]
+    result, _ = await _run_scripted_clone(monkeypatch, steps, commit=_DIGEST, require_signed=True)
+
+    assert result["success"] is True, result
+    assert result["signature_verified"] is True
+
+
+async def _run_clone_in_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    dest: Path,
+    steps: list[tuple[tuple[str, ...], bytes, int]],
+) -> tuple[dict[str, object], _ScriptedGit]:
+    monkeypatch.delenv("MAISTRO_GIT_CLONE_HOSTS", raising=False)
+    # The git server imports validate_workspace_path directly, so relax the
+    # roots inside the sandbox workspace module (same shape the RSI hermetic
+    # tests use).
+    monkeypatch.setattr("maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS", (dest,))
+    scripted = _ScriptedGit([_resolve_step(), *steps])
+    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", scripted)
+    result = await git_clone("https://github.com/org/repo.git", str(dest))
+    return result, scripted
+
+
+async def test_git_clone_accepts_policy_compliant_submodule_urls(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dest = tmp_path / "ws"
+    dest.mkdir()
+    (dest / ".gitmodules").write_text(
+        '[submodule "lib"]\n\tpath = lib\n\turl = https://github.com/org/lib.git\n'
+    )
+    steps: list[tuple[tuple[str, ...], bytes, int]] = [
+        (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
+        (("rev-parse", "HEAD"), f"{_DIGEST}\n".encode(), 0),
+        (("--get-regexp",), b"submodule.lib.url https://github.com/org/lib.git\n", 0),
+    ]
+
+    result, _ = await _run_clone_in_workspace(monkeypatch, dest, steps)
+
+    assert result["success"] is True
+    assert result["head_commit"] == _DIGEST
+
+
+@pytest.mark.parametrize(
+    "submodule_url",
+    [
+        "git://evil.example/lib.git",  # unauthenticated transport via submodule
+        "../lib",  # relative URL: no explicit host/repository policy
+        "http://github.com/org/lib.git",  # plaintext downgrade
+        "file:///tmp/maistro-workspace/lib",  # local source outside verified roots
+    ],
+)
+async def test_git_clone_rejects_nonpolicy_submodule_urls(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, submodule_url: str
+) -> None:
+    dest = tmp_path / "ws"
+    dest.mkdir()
+    (dest / ".gitmodules").write_text(f'[submodule "lib"]\n\tpath = lib\n\turl = {submodule_url}\n')
+    steps: list[tuple[tuple[str, ...], bytes, int]] = [
+        (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
+        (("rev-parse", "HEAD"), f"{_DIGEST}\n".encode(), 0),
+        (("--get-regexp",), f"submodule.lib.url {submodule_url}\n".encode(), 0),
+    ]
+
+    result, _ = await _run_clone_in_workspace(monkeypatch, dest, steps)
+
+    assert result["success"] is False
+    assert result["error_code"] == "blocked_submodule_url"
+
+
+async def test_git_clone_rejects_malformed_gitmodules(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dest = tmp_path / "ws"
+    dest.mkdir()
+    (dest / ".gitmodules").write_text("this is not a valid config file\n")
+    steps: list[tuple[tuple[str, ...], bytes, int]] = [
+        (("clone",), b"Cloned\n", 0),
+        *_pin_steps(),
+        (("rev-parse", "HEAD"), f"{_DIGEST}\n".encode(), 0),
+        (("--get-regexp",), b"fatal: bad config line\n", 128),
+    ]
+
+    result, _ = await _run_clone_in_workspace(monkeypatch, dest, steps)
+
+    assert result["success"] is False
+    assert result["error_code"] == "submodule_policy_error"
+
+
+async def test_git_clone_rejects_file_source_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_exec(
+        *args: object, **kwargs: object
+    ) -> object:  # pragma: no cover - must not run
+        raise AssertionError("file:// sources must not reach a subprocess by default")
+
+    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fail_exec)
+
+    result = await git_clone("file:///tmp/maistro-workspace/src", "/repos/dest")
+
+    assert result["success"] is False
+    assert result["error_code"] == "blocked_url_scheme"
+
+
+async def test_git_clone_file_source_requires_verified_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Even with file:// explicitly opted into, a source outside the verified
+    local roots is refused — "local" is not automatically "trusted"."""
+    monkeypatch.setattr(
+        "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES",
+        ("https://", "ssh://", "file://"),
+    )
+    monkeypatch.setattr(
+        "maistro.tools.git.server._ALLOWED_LOCAL_SOURCE_ROOTS",
+        (str(tmp_path / "vendor"),),
+    )
+    origin = tmp_path / "elsewhere" / "repo"
+    origin.mkdir(parents=True)
+
+    async def fail_exec(
+        *args: object, **kwargs: object
+    ) -> object:  # pragma: no cover - must not run
+        raise AssertionError("unverified local source must not reach a subprocess")
+
+    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fail_exec)
+
+    result = await git_clone(f"file://{origin}", "/repos/dest")
+
+    assert result["success"] is False
+    assert result["error_code"] == "blocked_local_source"
+
+
+async def test_git_clone_allows_file_source_under_verified_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES",
+        ("https://", "ssh://", "file://"),
+    )
+    monkeypatch.setattr("maistro.tools.git.server._ALLOWED_LOCAL_SOURCE_ROOTS", (str(tmp_path),))
+    origin = tmp_path / "origin"
+    origin.mkdir()
+
+    result, scripted = await _run_scripted_clone(
+        monkeypatch, _success_steps(), url=f"file://{origin}"
+    )
+
+    assert result["success"] is True
+    assert scripted.argv_of("clone")[-2:] == (f"file://{origin}", "/repos/dest")
+
+
+async def test_git_clone_persists_transport_pin_into_destination_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The clone destination's local config receives the full transport
+    whitelist. `-c` flags are invocation-scoped and `git clone` ignores the
+    enclosing repo's local config, so this persisted copy is what later
+    in-repo fetch/pull/push run under."""
+    result, scripted = await _run_scripted_clone(monkeypatch, _success_steps())
+
+    assert result["success"] is True
+    rev_parse_argv = scripted.argv_of("rev-parse")
+    for key, value in _TRANSPORT_PIN:
+        argv = scripted.argv_of(key)
+        assert argv[argv.index("config") :] == ("config", key, value)
+        # the pin writes themselves run through the same pinned chokepoint
+        assert argv[:3] == ("git", "-C", "/repos/dest")
+        assert "-c" in argv and "protocol.allow=never" in argv
+        # the whitelist is on disk before any content of the tree is inspected
+        assert scripted.calls.index(argv) < scripted.calls.index(rev_parse_argv)
+
+
+async def test_git_clone_fails_closed_when_destination_pin_write_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A destination whose config cannot be pinned never becomes a candidate
+    source — the clone is rejected outright, before any tree inspection."""
+    steps: list[tuple[tuple[str, ...], bytes, int]] = [
+        (("clone",), b"Cloned\n", 0),
+        (("config", "protocol.allow"), b"error: could not write config\n", 1),
+    ]
+
+    result, scripted = await _run_scripted_clone(monkeypatch, steps)
+
+    assert result["success"] is False
+    assert result["error_code"] == "transport_pin_failed"
+    assert all("rev-parse" not in argv for argv in scripted.calls)
+
+
+async def test_git_commands_in_workspace_carry_transport_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every git command the server issues in a workspace re-applies the
+    whitelist ahead of the subcommand — GIT_CONFIG_PARAMETERS carries it into
+    child git processes, which is how a server-issued `git submodule update`
+    pins the submodule's internal clone."""
+    captured: list[tuple[object, ...]] = []
+
+    async def fake_exec(*args: object, **kwargs: object) -> _ScriptedProc:
+        captured.append(tuple(args))
+        return _ScriptedProc(b"", 0)
+
+    monkeypatch.setattr("maistro.tools.git.server.asyncio.create_subprocess_exec", fake_exec)
+
+    result = await _git("/repos/ws", "submodule", "update", "--init")
+
+    assert result["success"] is True
+    argv = captured[0]
+    assert argv[:3] == ("git", "-C", "/repos/ws")
+    pin_flags = tuple(str(a) for a in _CLONE_CONFIG_HARDENING)
+    assert argv[3 : 3 + len(pin_flags)] == pin_flags
+    assert argv[3 + len(pin_flags) :] == ("submodule", "update", "--init")
+
+
+async def test_pinned_workspace_refuses_submodule_update_over_git_protocol(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Real git, end to end: a policy clone of a repo whose HEAD declares a
+    compliant submodule, then the .gitmodules URL flipped to git:// (what a
+    hostile ref checkout would produce — the URL policy ran at clone time on
+    the *original* file). A server-issued `git submodule update --init`
+    re-applies the whitelist and GIT_CONFIG_PARAMETERS reaches the submodule's
+    internal clone, so git refuses the unauthenticated transport before any
+    network I/O (previously this invocation ran unpinned)."""
+
+    def git(*args: str, cwd: Path) -> None:
+        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+    libsrc = tmp_path / "libsrc"
+    libsrc.mkdir()
+    git("init", "-q", "-b", "main", cwd=libsrc)
+    git(
+        "-c",
+        "user.email=t@example.com",
+        "-c",
+        "user.name=t",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "lib",
+        cwd=libsrc,
+    )
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    git("init", "-q", "-b", "main", cwd=origin)
+    git(
+        "-c",
+        "user.email=t@example.com",
+        "-c",
+        "user.name=t",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "init",
+        cwd=origin,
+    )
+    git(
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        f"file://{libsrc}",
+        "lib",
+        cwd=origin,
+    )
+    git(
+        "-c",
+        "user.email=t@example.com",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-qm",
+        "add submodule",
+        cwd=origin,
+    )
+
+    monkeypatch.setattr("maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS", (tmp_path,))
+    monkeypatch.setattr(
+        "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES",
+        ("https://", "ssh://", "file://"),
+    )
+    monkeypatch.setattr(
+        "maistro.tools.git.server._ALLOWED_LOCAL_SOURCE_ROOTS",
+        (str(tmp_path),),
+    )
+
+    dest = tmp_path / "ws" / "dest"
+    clone = await git_clone(f"file://{origin}", str(dest))
+    assert clone["success"] is True, clone
+
+    # the persisted whitelist is really in the destination's local config
+    persisted = subprocess.run(
+        ["git", "-C", str(dest), "config", "protocol.allow"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert persisted.stdout.strip() == "never"
+
+    # attacker flips the declared submodule URL after the clone
+    (dest / ".gitmodules").write_text(
+        '[submodule "lib"]\n\tpath = lib\n\turl = git://127.0.0.1:9418/evil.git\n'
+    )
+
+    result = await _git(str(dest), "submodule", "update", "--init", timeout=20)
+
+    assert result["success"] is False
+    assert "clone of 'git://127.0.0.1:9418/evil.git'" in result["stdout"]
+    assert result["error_code"] != "git_timeout"
+
+
 # The live proofs below run real gpg: a throwaway keyring (GNUPGHOME), an
 # Ed25519 key, a signed origin commit, and the same `git log %G?`/`%GF` path
 # production runs. Skipped when gpg is absent rather than silently weakening
-# the policy under test.
+# the policy under test. (Restored with the trust anchor from the
+# develop-side #404 suite the develop-sync merge had dropped.)
+
+
+def _raw_git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=False, capture_output=True, text=True, timeout=120
+    )
 
 
 def _gpg(*args: str) -> subprocess.CompletedProcess[str]:
@@ -1051,9 +948,16 @@ class TestLiveSignaturePolicy:
     def _hermetic(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         self.root = tmp_path / "workspaces"
         monkeypatch.setattr("maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS", (self.root,))
+        # file:// is refused by default; the live proofs opt in exactly the
+        # way the source policy requires: the widened scheme tuple AND an
+        # origin under a verified local root.
         monkeypatch.setattr(
             "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES",
             ("https://", "ssh://", "file://"),
+        )
+        monkeypatch.setattr(
+            "maistro.tools.git.server._ALLOWED_LOCAL_SOURCE_ROOTS",
+            (str(tmp_path / "origins"),),
         )
 
     async def test_signed_clone_passes_when_signer_is_trusted(
@@ -1061,12 +965,12 @@ class TestLiveSignaturePolicy:
     ) -> None:
         origin = tmp_path / "origins" / "signed"
         origin.mkdir(parents=True)
-        assert _git("init", "-q", "-b", "main", str(origin)).returncode == 0
-        _git("-C", str(origin), "config", "user.email", "s@s")
-        _git("-C", str(origin), "config", "user.name", "s")
+        assert _raw_git("init", "-q", "-b", "main", str(origin)).returncode == 0
+        _raw_git("-C", str(origin), "config", "user.email", "s@s")
+        _raw_git("-C", str(origin), "config", "user.name", "s")
         (origin / "f.txt").write_text("signed\n", encoding="utf-8")
-        assert _git("-C", str(origin), "add", "-A").returncode == 0
-        sign = _git(
+        assert _raw_git("-C", str(origin), "add", "-A").returncode == 0
+        sign = _raw_git(
             "-C",
             str(origin),
             "-c",
@@ -1077,7 +981,7 @@ class TestLiveSignaturePolicy:
             "s",
         )
         assert sign.returncode == 0, sign.stderr
-        tip = _git("-C", str(origin), "rev-parse", "HEAD").stdout.strip()
+        tip = _raw_git("-C", str(origin), "rev-parse", "HEAD").stdout.strip()
 
         monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _gpg_signer_fpr)
         dest = self.root / "signed-dest"
@@ -1092,12 +996,12 @@ class TestLiveSignaturePolicy:
     ) -> None:
         origin = tmp_path / "origins" / "foreign"
         origin.mkdir(parents=True)
-        assert _git("init", "-q", "-b", "main", str(origin)).returncode == 0
-        _git("-C", str(origin), "config", "user.email", "s@s")
-        _git("-C", str(origin), "config", "user.name", "s")
+        assert _raw_git("init", "-q", "-b", "main", str(origin)).returncode == 0
+        _raw_git("-C", str(origin), "config", "user.email", "s@s")
+        _raw_git("-C", str(origin), "config", "user.name", "s")
         (origin / "f.txt").write_text("signed\n", encoding="utf-8")
-        assert _git("-C", str(origin), "add", "-A").returncode == 0
-        sign = _git(
+        assert _raw_git("-C", str(origin), "add", "-A").returncode == 0
+        sign = _raw_git(
             "-C",
             str(origin),
             "-c",
@@ -1109,7 +1013,7 @@ class TestLiveSignaturePolicy:
         )
         assert sign.returncode == 0, sign.stderr
 
-        monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _OTHER_FPR)  # a different, valid anchor
+        monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _OTHER_SIGNER_FPR)  # a different, valid anchor
         result = await git_clone(f"file://{origin}", str(self.root / "foreign-dest"))
 
         assert result["success"] is False
@@ -1124,14 +1028,14 @@ class TestLiveSignaturePolicy:
         fail-closed default holds even on gpg-less runners."""
         origin = tmp_path / "origins" / "unsigned"
         origin.mkdir(parents=True)
-        assert _git("init", "-q", "-b", "main", str(origin)).returncode == 0
-        _git("-C", str(origin), "config", "user.email", "s@s")
-        _git("-C", str(origin), "config", "user.name", "s")
+        assert _raw_git("init", "-q", "-b", "main", str(origin)).returncode == 0
+        _raw_git("-C", str(origin), "config", "user.email", "s@s")
+        _raw_git("-C", str(origin), "config", "user.name", "s")
         (origin / "f.txt").write_text("unsigned\n", encoding="utf-8")
-        assert _git("-C", str(origin), "add", "-A").returncode == 0
-        assert _git("-C", str(origin), "commit", "-qm", "u").returncode == 0
+        assert _raw_git("-C", str(origin), "add", "-A").returncode == 0
+        assert _raw_git("-C", str(origin), "commit", "-qm", "u").returncode == 0
 
-        monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _SIG_FPR)
+        monkeypatch.setenv(_TRUSTED_SIGNERS_ENV, _SIGNER_FPR)
         result = await git_clone(f"file://{origin}", str(self.root / "unsigned-dest"))
 
         assert result["success"] is False
