@@ -220,6 +220,16 @@ class ExtensionInstallService:
         self._locks: dict[str, asyncio.Lock] = {}
         self._extension_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
 
+    @property
+    def store(self) -> ExtensionStore:
+        """The canonical lifecycle store this service was built over.
+
+        Read-only by design: composition roots that need to share the store
+        (e.g. the health projection facade) must take it from the service,
+        never hold a second reference that could drift from it.
+        """
+        return self._store
+
     # -- reads ------------------------------------------------------------
 
     async def get(self, install_id: str, *, scope: ExtensionScope) -> ExtensionInstallRecord:

@@ -1368,6 +1368,30 @@
       "deletion_path": null,
       "issue": "#1047",
       "notes": "Owner-bound statement key to lineage id. Kept forever on purpose: after a tombstone purges the lineage's content revisions, these rows are what still block re-promotion of every wording the lineage ever held, including one replayed from a stale Ladybug working graph. Identifiers only, never statement content."
+    },
+    {
+      "table": "extension_health_events",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/extensions/sqlite_health_store.py",
+      "data_class": "accounting",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#978",
+      "notes": "Host-recorded extension invocation observations and classified error records (M9-I3): one append-only row per event, version stored verbatim from the record so a superseded or removed version stays attributable. Kept forever on purpose: the M9-I epic requires historical telemetry to remain interpretable after upgrades and removals, and the SLO/error/latency ranking views read the same rows the operator dashboards do. The scope's active pointer decides what reports active, never the row."
+    },
+    {
+      "table": "extension_operator_states",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/extensions/sqlite_health_store.py",
+      "data_class": "configuration",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#978",
+      "notes": "Append-only operator decisions (enable/disable/quarantine/release) with actor and reason (M9-I3); the newest row per extension is the durable state that makes quarantines and disables survive restarts. Kept forever on purpose: 'who held this extension, when, and why' is audit evidence the health views and exports surface, and rewriting it would defeat the hold's provenance."
     }
   ]
 }
