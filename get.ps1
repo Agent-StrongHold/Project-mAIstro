@@ -72,7 +72,11 @@
   Policy takes precedence; elevation alone does not remove that restriction.
   If execution is disallowed, stop and ask your administrator for approved
   setup instructions, including any signing requirements. Do not work around
-  the restriction. These examples do not change execution policy.
+  the restriction. Elevation and post-reboot resume use normal policy
+  resolution without selecting a process execution policy. Resume requires
+  an approved policy that remains effective after logon; a session-only
+  permission is not sufficient. If a relaunch is blocked, obtain approved
+  setup instructions and re-run manually; do not weaken the policy.
 
 .EXAMPLE
   Get-ExecutionPolicy -List
@@ -388,7 +392,7 @@ function Invoke-Elevated {
     $scriptPath = Save-StableCopy
     $passthrough = Get-PassthroughArgs
     $quoted = $passthrough | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
-    $fullArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$scriptPath`"") + $quoted
+    $fullArgs = @('-NoProfile', '-File', "`"$scriptPath`"") + $quoted
     Write-InfoMsg "Elevation is required to enable WSL2. Requesting an admin prompt..."
     Start-Process -FilePath 'powershell.exe' -ArgumentList $fullArgs -Verb RunAs
 }
@@ -401,7 +405,7 @@ function Register-Resume {
     $passthrough = Get-PassthroughArgs -IncludeResume
     $quoted = $passthrough | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
     $argStr = ($quoted -join ' ')
-    $cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" $argStr"
+    $cmd = "powershell.exe -NoProfile -File `"$ScriptPath`" $argStr"
     New-Item -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' -Force | Out-Null
     New-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' `
         -Name 'MaistroInstallResume' -Value $cmd -PropertyType String -Force | Out-Null

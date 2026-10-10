@@ -141,6 +141,7 @@ def test_download_example_requires_approved_execution_policy() -> None:
     assert "Group\n  Policy takes precedence" in help_text
     assert "signing requirements" in help_text
     assert "not a zero-setup guarantee" in help_text
+    assert "a session-only\n  permission is not sufficient" in help_text
     for forbidden in (
         "set-executionpolicy",
         " -executionpolicy",
@@ -150,3 +151,39 @@ def test_download_example_requires_approved_execution_policy() -> None:
         "invoke-expression",
     ):
         assert forbidden not in help_text.lower()
+
+
+def test_relaunch_functions_do_not_override_execution_policy() -> None:
+    """Guard both production command builders, not only their help text."""
+    source = GET_PS1.read_text(encoding="utf-8")
+    for name in ("Invoke-Elevated", "Register-Resume"):
+        body = source.split(f"function {name} {{", 1)[1].split("\n}", 1)[0]
+        assert "-executionpolicy" not in body.lower()
+        assert "bypass" not in body.lower()
+        assert "-encodedcommand" not in body.lower()
+        assert "-File" in body
+
+
+def test_relaunch_argument_construction() -> None:
+    """Run real command builders with process and registry writes mocked."""
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is not installed")
+    result = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(ROOT / "tests" / "installer" / "relaunch_policy_harness.ps1"),
+            "-GetPs1",
+            str(GET_PS1),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert "RESULT relaunch-policy ok" in result.stdout
