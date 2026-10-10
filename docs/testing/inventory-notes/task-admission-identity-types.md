@@ -4347,3 +4347,60 @@ firsthand and adds two structural proofs round 58 did not record.
 Round-59 verdict: unchanged — all leaf acceptance criteria proven at
 `553123c2`; merge blocked by the external authorization wall only; not an
 integration approval and not repairable in-lane.
+
+## Round 60 — independent writer re-verification at `9f39320b603d` (2026-10-10)
+
+Round-59's dispatch job never produced a result artifact (provider timeout
+after green driver checks); this round re-proves every claim firsthand rather
+than trusting either side. Driver checks in the job directory are all green:
+repo-wide `ruff check` ("All checks passed!"), `ruff format --check` (3270
+files), focused pytest 79/79, suite inventory ok (16286).
+
+- `origin/develop` re-fetched: unchanged at `bb4257f09` (the merge base) — no
+  sync conflict, and no new grant landed on develop that would dissolve the
+  authorization wall.
+- Leaf acceptance re-proven: module read in full against the issue's fixed
+  representation (21 `__all__` names, exact field order, frozen+slots,
+  `CanonicalJsonObject` canonicalization/validation, fencing `owns`
+  conjunction, `AdmissionAssessment` exact member set) — matches; all 12
+  issue-named tests present; `uv run pytest
+  packages/maistro-core/tests/runs/test_root_admission_identity.py -q` → 79
+  passed; `ruff check` + `ruff format --check` on both leaf files pass; `uv
+  run mypy packages/maistro-core/src/maistro/runs/admission_identity.py` → no
+  issues; `check-suite-inventory.py` → ok, 17 suites / 31141 node IDs.
+- Scope isolation re-proven: `grep -r admission_identity packages/*/src`
+  (excluding the module itself) → zero production importers; `maistro.runs
+  __init__` exports nothing; `tasks/idempotency.py` has empty diff vs
+  develop and keeps live `_AssessmentKind` values; #1841 anchors in-tree at
+  `store_boundary.py:56`, `store.py:537`, `store.py:507/563`.
+- Both merge-queue failures re-reproduced with CI argv and true exit codes
+  (pipelines masked earlier rounds' `$?`; this round captured them bare):
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → rc=1, solely the five already-banked
+  `AdmissionAssessment` identities (admission_identity.py:515-520;
+  MISMATCH/REPLAYED/TAKEOVER/REPLACE_EXPIRED/LEGACY_UNRESOLVED; PENDING
+  masked by an unrelated in-tree token) flagged "not authorized by the
+  trusted base"; `check-ratchet-provenance.py` → rc=1, FAIL solely via
+  `check-reachability-provenance.py` and
+  `check-reachability-dispositions-provenance.py` (trusted-base rc=1 each,
+  both naming `maistro.runs.admission_identity` as NEW and not covered by an
+  already-landed authorization). All candidate-side gates rc=0 firsthand:
+  `check-reachability.py` (170/170), `check-reachability-dispositions.py`
+  (50 groups), `check-promotion-surface.py` (ok).
+- The wall is structural, re-verified in code this round:
+  `scripts/ratchet_provenance.py:478-519` — `load_authorizations` resolves
+  the grant file at the base revision (docstring states the two-merge
+  consequence verbatim); the base `bb4257f09`
+  `quality/ratchet-authorizations.json` walked across all 11 ratchet keys →
+  zero grants name `maistro.runs.admission_identity` (7 'admission'
+  substring hits are reasons on unrelated container/a2a/quota/scheduling/
+  canvas identities). Candidate ledgers already carry the rows
+  (`git diff --numstat origin/develop HEAD -- quality/`: vulture +5,
+  reachability-baseline +1, dispositions +9), so the lane-brief amendment
+  remains a proven no-op and nothing in the leaf is genuinely dead.
+
+Round-60 verdict: unchanged — all leaf acceptance criteria proven at
+`9f39320b6`; merge blocked solely by the external authorization wall
+(owner grant on develop, or the #1845 parent integration supplying the real
+runtime consumer, which must pass the unchanged gates at its own head).
+Note-only commit; no gate, ledger, or source change.
