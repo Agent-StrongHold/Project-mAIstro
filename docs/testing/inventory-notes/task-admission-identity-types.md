@@ -3592,3 +3592,47 @@ reviewed merge landing the six grants (five `vulture` identity keys plus the
 the members and wires the module, re-passing the unchanged gates at its own
 final head. This leaf remains implementation/test-ready and explicitly
 unmergeable by itself, exactly as the issue's staging directive requires.
+
+## Round 48 — wall reconfirmed at 6d01ed273 after driver re-dispatch (2026-10-10)
+
+The driver re-dispatched the same CI-repair lane after the round-47 BLOCKED
+report. The prior attempt (job 3fc4cf82) aborted on a provider timeout *after*
+its own deterministic checks had all passed (its check-0..4 logs: uv sync,
+`ruff check .` rc=0, `ruff format --check .` rc=0, focused suite 79 passed,
+`check-suite-inventory.py --suite packages/maistro-core/tests` rc=0) — so the
+BLOCKED was never contradicted by a failing check. This round re-derived the
+wall again from primary evidence at `6d01ed273`, running every gate firsthand:
+
+- develop tip is unchanged at `1f328be96` (`git fetch` then `git rev-parse
+  origin/develop`); merge base with HEAD is still `01cf44a5`; no sync conflict
+  and no develop movement to integrate. Deliberately skipped a develop merge:
+  round 47 proved it is gate-neutral churn (authorization-identical
+  ratchet-authorizations.json at both refs).
+- Grant census firsthand: `git show origin/develop:quality/ratchet-authorizations.json
+  | grep -c admission_identity` = 0 and the same count at HEAD = 0; the
+  two-merge rule (`ratchet_provenance.load_authorizations` reads the merge
+  base only) therefore leaves no branch-side authorization substitute.
+- Consumer census firsthand: `git grep 'admission_identity|AdmissionAssessment'
+  origin/develop -- packages` returns zero matches, so no merge path can
+  eliminate the findings.
+- All three exact-debt-ledger steps re-executed with CI's exact argv:
+  `check-shipped-surface-truth.py` rc=0; `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` rc=1 listing exactly the five
+  `admission_identity.py:515-520` identities as unauthorized-at-base (1323 ->
+  1328, zero candidate-side bookkeeping deltas — the lane-prescribed ledger
+  amendment is re-verified a no-op, and no fix this round eliminated any
+  identity, so no row is pruned); `check-ratchet-provenance.py` rc=1 via only
+  its two reachability sub-gates naming `maistro.runs.admission_identity`.
+- Leaf acceptance re-proven firsthand: 79/79 focused tests rc=0; `mypy
+  packages/maistro-core/src/maistro/runs/admission_identity.py` clean;
+  `ruff check .` clean; suite inventory matches (+79 front-matter delta
+  unchanged); `__all__` re-counted at exactly the 21 mandated names; the six
+  `AdmissionAssessment` members match the issue's exact member/value list.
+
+Conclusion (round 48): nothing changed. The repair protocol's actionable steps
+(fix genuinely dead identities, amend the ledger for retained ones, prune
+eliminated rows) each resolve to a verified no-op because all five listed
+identities are issue-mandated contract members. The exact-debt-ledger failure
+is the issue-anticipated staging wall; unblocking still requires the owner-side
+grant merge onto the integration base or the parent #1845 integration leaf.
+The stack stays implementation/test-ready and unmerged per the issue.
