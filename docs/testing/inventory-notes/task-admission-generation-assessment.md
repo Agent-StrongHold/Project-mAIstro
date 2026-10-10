@@ -2767,3 +2767,103 @@ exists.
   sanctioned unwired two-module reachability delta whose fix belongs to the
   future #1845 integration head. The stack stays unmerged by design; this
   lane takes no merge/PR action.
+
+## Round 35 — repair round at merged head `26d5df6aa46b` (2026-10-10): first
+## hosted-log attribution of all four merge-queue reds; no lawful in-lane fix
+
+Dispatch job `e4c2ff23` arrived at the round-34 tree plus a fresh develop
+merge (`26d5df6aa46b` = merge of develop tip `435dc1937e04`) with the same
+four hosted reds and the standing deep-review block. This round is the
+first with direct access to the hosted job logs (GitHub Actions API,
+jobs 114263182796 / 114263182822 / 114263183422 / 114265700418, runs
+38069271437 / 38069271470 / 38069271583), so the per-step attribution
+below is read from CI's own output rather than re-derived by simulation;
+every step was then re-executed locally at CI argv at this head.
+
+- **Hosted failing steps, read first-hand from the logs**:
+  - `exact-debt-ledger` (run 38069271437/job 114263182796): the failing
+    step is `Require enforced ratchet provenance policy`; the two vulture
+    steps after it are `skipped`. The exact-debt-ledger red is therefore
+    NOT a vulture-identity red — the lane brief's
+    `check-vulture-baseline.py` amendment path is empty, as in rounds
+    27–34 (below).
+  - `Quality gate` (run 38069271470/job 114263182822): failing step is
+    `reachability ratchet (built-but-never-wired modules)` — CI prints
+    "1396 production modules, 171 unreachable … 2 module(s) are NEWLY
+    UNREACHABLE: maistro.runs.admission_identity,
+    maistro.tasks.admission_generation" (baseline 169 -> 171 at CI's
+    `RATCHET_BASE_REV: origin/develop`).
+  - `test` (run 38069271583/job 114263183422): `pytest tests/
+    --ignore=tests/tools/registry` fails on exactly the three sanctioned
+    reachability meta-tests (`test_baseline_matches_the_tree`,
+    `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+    `test_the_baseline_is_exactly_the_unreachable_set`); the
+    `RuntimeError('Event loop is closed')` traces in the same log are
+    aiosqlite teardown noise from the passing wsgidav wing, with no
+    FAILED line of their own.
+  - `Coverage gate` (run 38069271470/job 114265700418): failing step is
+    `combine`; its root-suite coverage producer reports "3 failed, 5072
+    passed, 129 skipped" — the same three meta-tests (the log's diff
+    names `- maistro.runs.admission_identity` /
+    `- maistro.tasks.admission_generation`). Publish-set floor and
+    diff-coverage were never reached.
+- **Local re-execution at CI argv, head `26d5df6aa46b`, base `435dc1937e04`**:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` exit 0 (1323 -> 1323, unclassified 0 — the 35th
+  consecutive empty amendment); `check-shipped-surface-truth.py` exit 0;
+  `check-ratchet-provenance.py` exit 0 overall with its
+  `check-reachability-provenance.py` trusted-base gate returning 1 —
+  reproduced directly: "169 unreachable modules -> 171 … FAIL …
+  maistro.runs.admission_identity: NEW unreachable module absent from
+  trusted base and not previously authorized" + the same for
+  `maistro.tasks.admission_generation`, plus both "missing from candidate
+  baseline" rows; `check-reachability.py` exit 1 (same two modules);
+  `check-reachability-dispositions.py` exit 0 (49 groups / 169 baseline
+  modules — the two new modules are outside the baseline it guards);
+  `check-promotion-surface.py` exit 0; the three root meta-tests
+  re-run and fail locally exactly as hosted.
+- **The two-merge rule is what makes every mechanical fix null, re-proven
+  at the source**: `scripts/ratchet_provenance.py::load_authorizations`
+  reads `quality/ratchet-authorizations.json` from the merge base
+  (docstring: "a new grant does not take effect in the change that
+  introduces it"), and base `435dc1937e04` contains no grant for either
+  module, so even an in-branch baseline+grant edit leaves the trusted-base
+  gate red while violating #1852's explicit prohibition ("No fake callers,
+  baseline additions, grants, disabled gates or quality waivers are
+  permitted"). Wiring the modules is equally out of contract: production
+  activation is "outside this leaf", dummy/keep-alive callers are named
+  forbidden, and `git diff --name-only 435dc1937e04..HEAD` still touches
+  none of `tasks/idempotency.py`, `tasks/queue.py`, either package
+  `__init__.py`, or any store/backend file. `origin/develop` re-fetched
+  this round: still exactly `435dc1937e04`, no integration consumer
+  upstream, no sync conflict (PR 1941 `mergeable_state: blocked` is the
+  failing required checks, not a textual conflict).
+- **Leaf acceptance re-proven at this head**: focused suite
+  `test_admission_generation_assessment.py` 132 passed; C1 + unchanged
+  live flow 140 passed; all 10 issue-named tests present by exact name
+  (`test_admission_generation_assessment.py:589,775,785,810,830,847,868,
+  886,900,935`); `ruff check` + `ruff format --check` clean on both leaf
+  files; `mypy packages/maistro-core/src/maistro/tasks/admission_generation.py`
+  clean; driver battery at this head: sync, ruff check/format, 315
+  focused tests, `check-suite-inventory.py --suite
+  packages/maistro-core/tests` ok (16468 == recorded).
+- **All four issue-named mutations re-executed first-hand at this head**
+  (backup -> mutate -> focused pytest -> restore; canonical file
+  sha256 `578c1f1747920f4716822aaaa2a1c9ca415f76064bdf1a5ececaee22d7e7a063`
+  before and after, worktree clean): (M1) TAKEOVER/REPLACE_EXPIRED
+  outcomes swapped -> 50 failed; (M2) lease row hoisted above binding ->
+  4 failed (both bound v2 and bound legacy rows at/after lease expiry
+  misread as TAKEOVER); (M3) LEGACY_UNRESOLVED row deleted -> 10 failed;
+  (M4) mismatch row hoisted above expiry -> 22 failed, matching round 34.
+  A first M4 attempt mis-applied the hoist (re-inserted expiry ahead of
+  mismatch — a no-op) and was caught by its own precondition assertion
+  before any verdict was drawn; the recorded 22F is from the verified
+  mismatch-before-expiry tree.
+- **Verdict-relevant statement**: unchanged from rounds 27–34 and now
+  backed by hosted logs — every leaf acceptance criterion is proven at
+  `26d5df6aa46b`; all four merge-queue reds reduce to the single
+  sanctioned unwired two-module reachability delta whose lawful retirement
+  is the separately reviewed #1845 integration consumer (or a
+  maintainer-landed two-merge reachability grant), both outside this
+  lane's authority. The stack stays unmerged by design; this lane takes no
+  merge/PR action and amends no ledger.
