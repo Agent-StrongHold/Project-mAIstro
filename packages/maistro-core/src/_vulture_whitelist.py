@@ -68,7 +68,6 @@ from maistro.extensions.metering import (
 )
 from maistro.extensions.packs import InstallablePackRegistry
 from maistro.extensions.resolution import LockState
-from maistro.extensions.service import ExtensionInstallService
 from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
