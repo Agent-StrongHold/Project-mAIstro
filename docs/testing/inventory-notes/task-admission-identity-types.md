@@ -3772,3 +3772,107 @@ ready; merge blocker owner-side (land the six grants on the integration base
 as a standalone reviewed merge, or land the parent #1845 integration leaf
 whose real consumer references the members and wires the module); the stack
 stays unmerged per the issue. Tree changes this round: this note only.
+
+## Round 51 — 2026-10-10 independent verifier+writer round at 75616cd12a: both CI failures pulled from the run logs and re-proven firsthand; wall stands; repair space verified empty (2026-10-10)
+
+Prior job `759848d4` died on a provider timeout *after* all five driver checks
+passed (its `result.json`: uv sync, `ruff check .`, `ruff format --check .`,
+focused pytest 79 passed, suite inventory ok — rc=0 across the board). This
+round re-executed everything independently at head `75616cd12a0` (base
+`1f328be96a5e`), trusting no prior round's claims, and additionally pulled the
+actual CI job logs for the two failing checks instead of inferring from step
+lists:
+
+- CI evidence (read from run 38039194703 job 114175879584 and run 38039194738
+  job 114175879744): the exact-debt-ledger job fails at its **first** step,
+  `check-ratchet-provenance.py` (rc=1), via exactly its two reachability
+  sub-gates — "reachability dispositions moved away from trusted state" and
+  "reachability ratchet moved away from trusted state", each naming only
+  `maistro.runs.admission_identity` ("NEW disposition absent from trusted
+  ledger and not covered by an already-landed reachability authorization";
+  "NEW unreachable module absent from trusted base and not previously
+  authorized"); the Quality gate (Pillars 1–4, 7, 8) job fails at its vulture
+  ledger step with exactly five NEW trusted-side identities
+  (`admission_identity.py:515-520`: MISMATCH, REPLAYED, TAKEOVER,
+  REPLACE_EXPIRED, LEGACY_UNRESOLVED, 60% confidence, classified under the
+  trusted `pydantic-declarative-field` rule) and the gate's own verdict "New
+  Vulture debt is not authorized by the trusted base. Running --update in this
+  branch cannot authorize it; land a reviewed grant first." Both jobs show
+  `RATCHET_BASE_REV: origin/develop`.
+- Both failures re-reproduced locally with CI's exact argv at this head:
+  `RATCHET_BASE_REV=origin/develop uv run python
+  scripts/check-ratchet-provenance.py` rc=1 (identical two sub-gate FAILs, all
+  eight other ratchets OK with zero candidate-approved expansion);
+  `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` rc=1 with 1,328 findings,
+  0 unclassified, 0 never-allowlist, **zero candidate-side bookkeeping deltas**
+  (the lane-prescribed ledger amendment re-verified a byte-level no-op: the
+  five rows are already banked exactly in `quality/vulture-baseline.json`).
+- Gate mechanics re-read at the source: `scripts/ratchet_provenance.py:478-506`
+  (`load_authorizations`) reads `quality/ratchet-authorizations.json` from the
+  base revision — "a new grant does not take effect in the change that
+  introduces it" — and `check-vulture-baseline.py:_enforce_trusted` computes
+  `unauthorized` purely from trusted-state deltas, so no candidate-tree edit
+  can clear either red.
+- Base census re-derived firsthand: `git fetch`; `origin/develop` still exactly
+  `1f328be96` (the branch already merged it in `7aff5a047`); the
+  `ratchet-authorizations.json` `vulture` (102 grants) and `reachability`
+  (11 grants) sections at base contain zero `admission_identity` entries — the
+  only grant text containing "admission" is the unrelated
+  `container.py::recover_stranded_chat_admissions`. No sync conflict exists and
+  no grant has landed upstream; a develop sync is therefore wall-neutral.
+- Consumer census: zero references to `admission_identity`/`AdmissionAssessment`
+  in any production module at HEAD or at `origin/develop`; `maistro/runs/
+  __init__.py` does not export the module;
+  `packages/maistro-core/src/_vulture_whitelist.py` holds zero admission
+  references. The five findings are the issue-mandated exact
+  `AdmissionAssessment` members (`PENDING` alone escapes via the unrelated
+  in-tree `JobStatus.PENDING` token), so nothing is genuinely dead to remove
+  and no consumer may be added in this leaf by the issue's own scope
+  constraint. The in-lane remedy space is empty.
+- Leaf acceptance re-proven fresh by direct execution at this head: focused
+  suite 79/79 rc=0; `ruff check .` + `ruff format --check .` clean;
+  `mypy packages/maistro-core/src/maistro/runs/admission_identity.py` clean and
+  the canonical seven-package mypy command clean over 891 files; full
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok (16,262
+  matching; front-matter `inventory-delta: +79` unchanged — no code or test
+  changed this round); candidate-side `check-reachability.py` rc=0 (1,393
+  modules, 170 unreachable, all dispositioned), `check-reachability-
+  dispositions.py` rc=0 (50 groups: 147 CONNECT / 21 LIBRARY / 2 RETIRE),
+  `check-shipped-surface-truth.py` rc=0. Contract re-proven programmatically
+  (AST/introspection, not by eye): `__all__` set-exact to the 21 mandated
+  names; `AdmissionAssessment` a `StrEnum` with exactly the six mandated
+  member/value pairs; all 17 record/result classes `@dataclass(frozen=True,
+  slots=True)` with the issue's exact field orders; empty variants fieldless;
+  `owner_token` `repr=False`; `format_version` `init=False` defaults 2/1;
+  `admitted` properties and `owns(ticket)` present; `CanonicalJsonObject`
+  canonical form `{"a":2,"b":1}` (sort_keys + `separators=(",",":")`) with
+  ValueError on duplicate keys, non-object roots, NaN/1e999, dict input, and
+  trailing content, and `FrozenInstanceError` on mutation;
+  `RootAdmissionResult` run_id cross-check and bool-created rejection;
+  envelope hex/UUID-non-nil/non-string/trimming/`_us`-int-not-bool/expiry-
+  ordering/v2-lease-window/binding-consistency/acknowledgement invariants;
+  legacy lease relaxation; and all claim-result constructor rules
+  (Claimed unbound+owns, Replayed bound, Pending v2-unbound,
+  LegacyUnresolved legacy-unbound). Isolation re-proven: `git diff
+  origin/develop...HEAD -- packages/` is exactly the module (520 lines) + test
+  (660 lines) files. #1841 anchors intact at this head: `store_boundary.py:56`
+  `require_admitted_actor(actor_principal_id: str | None) -> str`,
+  `store.py:537` `get_run(..., *, principal_id: str | None = None)`,
+  `store.py:507/563/894` `actor_principal_id: str | None = None`.
+- Tree changes this round: this note only. No code, ledger, gate, or workflow
+  edit.
+
+Conclusion (round 51): unchanged and now quadruple-verified with the CI logs
+themselves as primary evidence. The two named CI failures have one cause — the
+reviewed grants for the leaf's five issue-mandated identities and its
+intentionally-unwired module do not exist on any integration base, and the
+two-merge rule makes every branch-side substitute inert. Unblocking is an
+owner action outside worker authority: (a) land the six grants (five `vulture`
+identity keys plus the `reachability` key `maistro.runs.admission_identity`)
+as a standalone reviewed merge on the integration base, after which this
+leaf's already-banked rows authorize as step two, or (b) land the parent
+#1845 integration leaf whose real consumer references the members and wires
+the module, re-passing the unchanged gates at its own final head. This leaf
+remains implementation/test-ready and explicitly unmergeable by itself,
+exactly as the issue's staging directive requires.
