@@ -21557,3 +21557,61 @@ in-tree. All 13 acceptance criteria require APIs owned by open issues
 (#804/#805/#806/#774/#776/#53/#93/#95), and the issue text forbids duplicating
 them Design-Studio-privately. Inventory delta **+0** (this record only).
 (Refs #777)
+
+## Round 132 (2026-10-10, job 1c121d92ea8d4c658545e7d2b7631403)
+
+Repair round at **unchanged head `bf911c6a5`** (base `435dc1937`, tree clean).
+The driver supplied `checks: []` and **no `check-*.log` exists in this job
+directory**, so no deterministic check failed in this round; the round-131
+BLOCKED handoff was dependency-driven, not a check failure.
+
+Sync-conflict path ruled out again: fresh `git fetch` → `origin/develop`
+`435dc1937` == merge-base == manifest base, HEAD 485 ahead / 0 behind —
+nothing to merge. `origin/auto-777` == `460ad5802` (PR #1660 head) is an
+ancestor of HEAD.
+
+Fresh dispatch capture in this job's `dispatch-context.json`
+(2026-10-10T21:53Z, 61 sources, 76 API calls) confirms: #777 **open**, 13/13
+acceptance boxes unchecked, `blocked_by` API empty (dependency list is body
+prose), blockers **#773/#774/#776/#804/#805/#806/#53/#93/#95 all OPEN** plus
+#783/#787/#788/#794/#779/#780/#1823/#986 also open (#775/#39/#458 closed);
+PR #1660 open draft, head `460ad5802` == `origin/auto-777`,
+`mergeable_state: clean`, 0 reviews.
+
+Battery re-executed locally, all exit 0: `ruff check .`; `ruff format --check .`
+→ 3282 files; vulture CI-exact (`packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'`) → **1323 reviewed identities → 1322 findings, 0 unbanked**;
+`check-ratchet-provenance.py` → 0/53; `check-shipped-surface-truth.py` →
+complete; `check-reachability.py` → **1394/169**; `check-suite-inventory.py` →
+**17/17**; `check-backlog-consistency.py` → 167; `check-radon-baseline.py` →
+**137 → 137**; `mypy --strict packages/maistro-core/src/maistro/runs/model.py`
+→ **Success**.
+
+Targeted pytest WITH live PG (`maistro_test_777` @ 127.0.0.1:5433, alembic
+rev 062): branch-touched `runs/test_attempt_cancellation_cause_model.py` →
+**34 passed**; bootstrap `-k agent_loop` → **40 passed**; hive
+`backend/tests/*{design,workspace,agent}*` sweep now resolves **26 files** →
+**448 passed / 0 skipped** (with `MAISTRO_TEST_PG_DSN` set, the 5
+previously-skipped durable tests executed — strictly stronger than round
+131's 443 passed / 5 skipped).
+
+Diff claims audited at this head (not trusted from prior rounds): production
+diff vs base is 4 files (design_service.py, agent_loop.py, runs/model.py,
++15-line regression test) plus the sanctioned vulture-baseline row −1;
+restored `system_prompt` has a real reader (`maistro-rsi local_loop.py:817`,
+`system_prompt or config.system_prompt`); removed `tool_definitions` has **0**
+remaining consumers in `packages/*/src`; the serialization-schema-pin
+regression test is present and passing (34/34).
+
+Negative invariants re-probed: **0** `class GoalReconcil*|ReconciliationLoop`
+in `packages/*/src` + `hive-conductor/backend`;
+`workspace_agent.py` 149 lines, 0 reconcil/delegat hits (roster-only);
+`permission_source.py:79` still explicitly defers binding-scoped tool
+authorization to #804; `GoalRevisionCatalog` still a `Protocol`
+(rubric_store.py:71), not a Goal store.
+
+**Verdict: BLOCKED** — dependency-blocking (132nd round); nothing repairable
+in-tree. All 13 acceptance criteria require APIs owned by open issues
+(#804/#805/#806/#774/#776/#53/#93/#95), and the issue text forbids duplicating
+them Design-Studio-privately. Inventory delta **+0** (this record only).
+(Refs #777)
