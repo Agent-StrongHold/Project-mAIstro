@@ -2592,3 +2592,73 @@ first-hand this round.
   branch's extension salvage files and will need a conflict-aware merge in
   a future round. The stack stays unmerged by design; this lane takes no
   merge/PR action.
+
+## Round 33 — independent repair-round re-verification at dispatched head `e5a8bb523d25` (2026-10-10)
+
+Dispatch job `c0fcc1cd` arrived with the round-32-predicted develop `4aa68edc0`
+(#2094 extension registry) merge already committed as `e5a8bb523d25` — the
+exact PR #1941 head — and the four hosted CI reds re-listed. This round
+re-derived every red first-hand at that head and re-proved leaf acceptance;
+no repairable in-lane defect exists.
+
+- **Classifier byte-identical across the develop merge**: md5
+  `257a6e45c382349dd12f559099663fbc`, the rounds 22–32 fingerprint; the test
+  file is likewise unchanged, so all recorded mutation profiles carry over —
+  and were re-executed first-hand anyway (below).
+- **All four hosted reds re-derived locally as the single sanctioned
+  two-module delta**: `check-ratchet-provenance.py` exit 1 whose ONLY FAIL is
+  the reachability trusted-base gate — `maistro.runs.admission_identity` +
+  `maistro.tasks.admission_generation` NEW unreachable (169 -> 171 of 1394),
+  every other sub-ratchet OK. `check-reachability.py` exit 1 naming exactly
+  those two modules; the three reachability meta-tests
+  (`tests/test_reachability_baseline_identity.py` x2,
+  `tests/test_check_reachability.py::test_baseline_matches_the_tree`) fail on
+  the same pair, which is what reds the hosted `test`, `Quality gate`, and
+  `Coverage gate` jobs (their pytest/combine steps run those meta-tests).
+  `exact-debt-ledger`'s other legs stay green at CI argv:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` exit 0 (1323 -> 1323, amendment empty for the 33rd
+  consecutive round), `check-shipped-surface-truth.py` exit 0,
+  `check-reachability-dispositions.py` exit 0, `check-promotion-surface.py`
+  exit 0. `git diff --numstat 4aa68edc0..HEAD -- quality/` is EMPTY: no
+  ledger row added, removed, or replaced by this branch.
+- **No in-lane repair is lawful**: #1852 forbids baseline rows, grants,
+  dummy callers, keep-alive imports, and edits to the live flow, and
+  AGENTS.md's two-merge rule makes a same-branch grant self-authorizing
+  (null). The red is the issue's own predicted state for the unwired leaf
+  ("check-reachability.py would classify the new module as newly
+  unreachable"); its lawful retirement remains the separately reviewed
+  #1845 integration consumer.
+- **Leaf acceptance re-proven at this head**: focused suite
+  `test_admission_generation_assessment.py` 132 passed; C1 + unchanged live
+  flow (`test_root_admission_identity.py` + `test_idempotency.py`) 140
+  passed; full leaf battery 272 passed; whole `packages/maistro-core/tests/
+  tasks` 631 passed / 17 skipped; `ruff check` + `ruff format --check` clean
+  on both leaf files; `mypy` clean on the classifier module;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok (16403
+  collected = recorded inventory, salvage delta +1 covered by
+  `auto-1852-4bd6.md`).
+- **All four issue-named mutations re-executed first-hand this round**
+  (backup -> mutate -> focused pytest -> restore, sha256-verified
+  byte-identical restoration, worktree clean after each): (M1)
+  TAKEOVER/REPLACE_EXPIRED outcomes swapped -> killed
+  (`test_accepts_signed_int64_boundary_now_us[_v2]`); (M2) lease row hoisted
+  above binding -> killed (`test_legacy_bound_replays_inside_window`, plus
+  the binding-wins table); (M3) LEGACY_UNRESOLVED row deleted (legacy
+  pending treated as v2) -> killed
+  (`test_accepts_signed_int64_boundary_now_us[_legacy]`); (M4) mismatch row
+  hoisted above expiry -> killed
+  (`test_expiry_is_inclusive_and_wins_over_everything[v2-bound-ack-
+  at-deadline-...]`). Restored control: 132 passed.
+- **Forbidden-surface hygiene re-verified**: `git diff 4aa68edc0..HEAD --
+  tasks/idempotency.py tasks/__init__.py runs/__init__.py` is empty; no
+  production importer of `maistro.tasks.admission_generation` exists under
+  `packages/*/`; the import-spy test
+  (`test_existing_live_claim_flow_does_not_import_v2_classifier`) passes in
+  suite; PR #1941 body carries "Refs #1852" only.
+- **Verdict-relevant statement**: every #1852 leaf acceptance criterion is
+  proven at `e5a8bb523d25` with the exact-debt-ledger vulture leg green and
+  an empty amendment; the remaining hosted reds are one structural cause
+  (the sanctioned unwired two-module reachability delta) whose fix belongs
+  to the future #1845 integration head. The stack stays unmerged by design;
+  this lane takes no merge/PR action.
