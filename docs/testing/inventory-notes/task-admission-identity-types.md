@@ -6156,3 +6156,55 @@ auto-1851); no tree changes beyond this note.
   the explicit merge blocker and leave the stack unmerged.
 - Verdict: writer handoff MERGE-READY (handoff only, never integration
   approval). Note-only commit; no inventory delta (front-matter stays +79).
+
+## Round-85 re-verification (job 9e834ecadcc3454280882a1815e80a2a, head
+## 32d06d3c800c)
+
+Resolves the carried NEEDS-DEEP-REVIEW block by fresh firsthand
+re-derivation at the identical head; no tree changes beyond this note.
+
+- Driver checks 5/5 green (check-0..4.log in the job directory): sync,
+  repo ruff, repo format, focused suite 79 passed, suite inventory ok
+  (16341 ids, scoped).
+- Leaf acceptance re-proven by execution at this head: 79/79 focused;
+  all 12 issue-named tests present, one definition each; leaf ruff check /
+  ruff format --check clean; mypy `Success: no issues found in 1 source
+  file`; `scripts/check-suite-inventory.py --suite
+  packages/maistro-core/tests` ok re-run directly.
+- Contract re-read in full: `__all__` = exactly 21 names (AST count); every
+  record/result is `@dataclass(frozen=True, slots=True)`; empty result
+  variants carry no `__bool__`/`__len__` override (grep = none);
+  `CanonicalJsonObject` rejects non-string/invalid/duplicate-key/non-finite
+  (incl. `1e999` overflow) non-object input and canonicalizes with
+  sort_keys/compact separators/ensure_ascii=False/allow_nan=False; `owns`
+  compares generation and owner against their ticket fields and never to
+  each other; legacy records omit the lease<=expiry clamp.
+- Isolation re-verified: zero production importers of `admission_identity`
+  outside the module and its test; no `maistro.runs` export; diff vs merge
+  base 3c761d14d = exactly the 4 manifest surfaces; idempotency.py diff = 0
+  lines; security signature intact (`store_boundary.py:55
+  require_admitted_actor(actor_principal_id: str | None) -> str`,
+  `store.py:537 get_run(..., principal_id: str | None = None)`,
+  `model.py:300 Run.actor_principal_id`).
+- Ledger multiset proof redone rigorously (Counter over per-identity rows,
+  never `set()`): base 3c761d14d = 1323, head = 1328, delta = exactly the 5
+  mandated `AdmissionAssessment` identities one row each, 0 removed —
+  scan-exact, so no ledger amendment is needed or possible; nothing
+  "genuinely dead" exists to delete.
+- All four merge-queue failures reproduced firsthand with CI exact argv:
+  vulture rc=1 solely on those 5 identities ("land a reviewed grant first");
+  `check-reachability.py` rc=1 naming exactly `maistro.runs.admission_identity`;
+  `check-ratchet-provenance.py` rc=1 solely via the reachability sub-gate;
+  dispositions rc=0 and promotion-surface rc=0. Root-suite failure set
+  re-pinned: 3 failed / 36 passed in
+  `tests/test_check_reachability.py` + `tests/test_reachability_baseline_identity.py`,
+  set-diff exactly `maistro.runs.admission_identity`; the Coverage gate
+  aborts mechanically because the root producer (quality.yml:712) runs that
+  same exit-1 suite under `set -e` before any coverage arithmetic.
+- Develop wall re-confirmed live: `git fetch origin develop` then
+  `origin/develop` = 3c761d14d = the branch merge base (zero drift, not a
+  sync conflict), and `origin/develop:quality/ratchet-authorizations.json`
+  contains zero `admission_identity` grants — the two-merge wall binds
+  unchanged; no develop merge is warranted.
+- Verdict: writer handoff MERGE-READY (handoff only, never integration
+  approval). Note-only commit; no inventory delta (front-matter stays +79).
