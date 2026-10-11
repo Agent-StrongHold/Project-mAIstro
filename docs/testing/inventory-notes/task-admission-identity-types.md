@@ -5633,3 +5633,64 @@ action (a reviewed grant landed on develop, or the #1845 integration head
 wiring the real consumer); the stack stays unmerged per the staging
 constraint. Writer handoff MERGE-READY (handoff only, never integration
 approval).
+
+## 2026-10-11 round-77 independent deep review (second round)
+
+Adversarial re-verification of the round-76 terminal state at head `bceb2424`
+(base `435dc1937`), executed independently; every gate rerun firsthand, none
+taken from prior round claims.
+
+- Vulture gate, CI exact argv
+  (`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`): rc=1 **solely** on trusted-base
+  authorization ("New Vulture debt is not authorized by the trusted base …
+  land a reviewed grant first") for exactly the five
+  `AdmissionAssessment` identities; `unclassified: 0`,
+  `never_allowlist: 0`, and no candidate-bookkeeping section (ledger matches
+  the scan; banking is inert — the gate reads the trusted base, so the
+  candidate rows cannot and do not move its exit).
+- `check-reachability.py` rc=1 with exactly one NEWLY UNREACHABLE module,
+  `maistro.runs.admission_identity` (issue-predicted); `quality/reachability-baseline.json`,
+  `quality/reachability-dispositions.json`, and
+  `quality/ratchet-authorizations.json` carry no entry/grant for it at this
+  head (grep-verified). `check-reachability-dispositions.py` rc=0;
+  `check-reachability-provenance.py` rc=1 (two-merge wall);
+  `check-promotion-surface.py` rc=0; `check-suite-inventory.py` rc=0
+  (17 suites).
+- The merge-queue `test`-job red is now reproduced firsthand and fully
+  attributed: in the gate-adjacent root tests, exactly three fail —
+  `tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `tests/test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`
+  — each on the single extra unreachable-set item
+  `maistro.runs.admission_identity` versus the committed baseline the issue
+  forbids extending (64 other tests in the same files pass; 168 further
+  gate-adjacent root tests — convergence matrix, ratchet provenance,
+  no-placeholder, merge-policy inputs, suite partition — pass;
+  `tests/test_check_vulture_baseline.py` 10/10 green). Curable only by
+  issue-forbidden baseline additions or by the #1845 integration consumer.
+- Prior deep-review finding adjudicated: CONFIRMED with mechanism
+  refinement. The CI gate failures are the issue-designed blocked state; the
+  vulture failure is the two-merge trusted-base authorization wall (not a
+  classification/bookkeeping defect), and the reachability failure is the
+  single issue-predicted unwired module. No new defect found; no in-leaf
+  repair exists or is permitted.
+- Contract audit: module is stdlib-only, reads no clock, generates no IDs,
+  serializes no `.hex`; exact field order/types per issue (frozen+slots,
+  `owner_token` `field(repr=False)` in ticket and record, `format_version`
+  `init=False` literals, `owns` = exact three-way conjunction, empty result
+  variants without truthiness overrides); `__all__` = exactly the 21 names
+  and `AdmissionAssessment` = exactly the six member/value pairs
+  (test-enforced); zero production importers; `maistro.runs.__init__`
+  exports nothing new; `maistro.tasks.idempotency._AssessmentKind` untouched;
+  #1841 signature revalidation spot-checked against this tree
+  (`store_boundary.py::require_admitted_actor`, `store.py::get_run(..., principal_id=...)`).
+- Scope vs base remains exactly the four leaf files. No inventory delta;
+  front-matter `+79` reconfirmed by a fresh focused run (79 passed) and the
+  full-suite inventory match.
+
+Conclusion: round-76 terminal state re-verified and stands. Writer handoff
+MERGE-READY (handoff only, never integration approval); the single merge
+blocker remains the trusted-base authorization wall requiring external owner
+action (reviewed grant on develop, or the #1845 integration head wiring the
+real consumer); the stack stays unmerged per the staging constraint.
