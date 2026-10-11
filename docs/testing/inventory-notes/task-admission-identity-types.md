@@ -6645,3 +6645,60 @@ identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`
   effective repair exists — writer handoff MERGE-READY (handoff only,
   never integration approval). Note-only commit; no inventory delta
   (front-matter stays +79).
+
+## Round-93 re-verification at unchanged `96879cacc19b` (job
+14b938c36c654b3193cadbabc92b7e5b)
+
+Fresh firsthand re-derivation at the assigned head; nothing edited but this
+note.
+
+- Driver checks in this job's logs: 5/5 green (sync, ruff check, ruff format
+  --check, 79/79 focused pytest, suite-inventory ok).
+- Leaf acceptance re-executed firsthand: 79/79 focused pytest; leaf ruff
+  check and format --check clean; `mypy
+  packages/maistro-core/src/maistro/runs/admission_identity.py` = Success;
+  `check-suite-inventory.py` ok (17 suites).
+- Contract re-read line-by-line and conformant: 21-name `__all__`,
+  frozen+slots on every record/result, exact field orders, CanonicalJsonObject
+  duplicate-key/non-finite (incl. 1e999 overflow hook)/non-object/non-string
+  rejection with canonical-only retention, exact three-way `owns`, legacy
+  lease-clamp omission, no truthiness overrides on empty variants, 6-member
+  `AdmissionAssessment`. All 12 issue-named tests present (19 defs total).
+- "test" job reproduced END-TO-END firsthand at this exact tree
+  (`uv run pytest tests/ --ignore=tests/tools/registry -q`): 3 failed / 4968
+  passed / 129 skipped; failure set exactly the 3 baseline-equals-tree
+  self-checks, each demanding the issue-forbidden
+  `maistro.runs.admission_identity` reachability-baseline entry (pytest error
+  summary literally "New unreachable modules::maistro.runs.admission_identity";
+  set-diff at tests/test_check_reachability.py:216). Coverage gate runs the
+  same `tests/` suite (quality.yml:713), so its failure is mechanically
+  downstream.
+- exact-debt-ledger reproduced with CI exact argv (quality.yml:1078-1081):
+  rc=1, scan 1328 findings, unclassified 0, candidate ledger scan-exact
+  (1328 banked rows, of which the 5 branch-added `admission_identity` rows)
+  — the lane-brief amendment instruction is a verified no-op; failure is
+  purely trusted-base authorization ("land a reviewed grant first"; zero
+  `admission_identity` rows at base `3c761d14d`).
+- New mechanics evidence: the whole-repo scan flags only 5 of the 6 enum
+  members because `PENDING` (admission_identity.py:517) is banked by a
+  favorable symbol-name collision — vulture matches names repo-wide and
+  `JobStatus.PENDING` is used in production
+  (packages/maistro-canvas/src/maistro_canvas/canvas/canonical_execution.py:314);
+  a single-file scan does flag admission_identity.py:517. This is exactly the
+  shape the issue warns about ("neither test-only reachability nor a favorable
+  symbol-name collision is a runtime consumer"); it is not a runtime consumer
+  and authorizes nothing.
+- Quality gate: both failing sub-steps reproduced firsthand — vulture step
+  (exact argv above) rc=1 and reachability step rc=1 naming exactly
+  `maistro.runs.admission_identity` (the single newly-unreachable module,
+  issue-predicted); `check-reachability-dispositions.py` rc=0,
+  `check-promotion-surface.py` rc=0.
+- Two-merge wall re-confirmed live: `origin/develop` fetched this round =
+  `3c761d14d` = merge base, zero drift.
+- Issue body re-read verbatim from dispatch context: baseline additions,
+  grants, waivers, fake callers, keep-alive imports, re-exports and gate
+  changes all forbidden; integration unavailable ⇒ "report implementation/test
+  readiness plus the explicit merge blocker and leave the stack unmerged."
+  No in-scope, issue-legal, mechanically-effective repair exists — writer
+  handoff MERGE-READY (handoff only, never integration approval). Note-only
+  commit; no inventory delta (front-matter stays +79).
