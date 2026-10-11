@@ -22091,3 +22091,45 @@ in-tree. Inventory delta **+0** (this record only). (Refs #777)
 
 **Verdict: BLOCKED** — dependency-blocking (143rd round); nothing repairable
 in-tree. Inventory delta **+0** (this record only). (Refs #777)
+
+## Round 144 (job a6e9d6985bae4de9, repair phase)
+
+- **Driver evidence**: job manifest `checks: []` and no `check-*.log` in the
+  job directory — no deterministic check ran or failed this round. The
+  immediately prior jobs were not validation failures either: `23ea88ce9497…`
+  provider 404, `d84e713fbdb3…` provider 429, `5c295fa575b0…` provider
+  timeout, `54968912a32b…` worker_error (final message lacked the
+  MAISTRO_RESULT line; its report content was consistent with round 143).
+- **Sync-conflict ruled out**: fresh fetch; `origin/develop` `435dc1937e04` ==
+  merge-base == manifest base (0 behind / 497 ahead); PR #1660 head
+  `460ad58027ac` is an ancestor of HEAD (open draft, mergeable clean).
+- **Dispatch capture** (2026-10-11T05:10:45Z, 61 sources, receipt sha256
+  `9c4a6287…`): #777 open (updated 05:04:26Z), 13/13 acceptance boxes
+  unchecked, API `blocked_by: []` (dependencies are the body "Depends on:"
+  list); blockers #804/#805/#806/#53/#774/#776/#93/#95/#783 all OPEN
+  (#39/#458/#775 closed); PR #1660 open draft mergeable clean.
+- **Battery re-executed, all exit 0**: `ruff check .`; `ruff format --check .`
+  (3282 files); vulture CI-exact `packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → 1323→1322, 0 unbanked; ratchet-provenance 0/53;
+  shipped-surface-truth; promotion-surface; reachability 1394/169;
+  suite-inventory 17/17; backlog 167.
+- **Targeted pytest WITH live PG** `maistro_test_777 @ 127.0.0.1:5433`
+  (`maistro-postgres` healthy, `alembic_version` == 062 == repo head;
+  correct DSN password `test` — a first pass with a guessed password
+  produced 5 spurious `InvalidPasswordError` failures in
+  `test_workspace_authority_durable.py[postgres]`, all green once corrected):
+  cancellation-cause model 34 passed; bootstrap `-k agent_loop` 40
+  passed/200 deselected; hive backend `-k 'design or workspace or agent'`
+  559 passed/0 skipped — matches rounds 137–143 exactly.
+- **Negative invariants re-verified live**: `grep -rE "class (GoalReconcil|
+  ReconciliationLoop|GoalOwner)"` under `packages/*/src` → exit 1 (zero
+  matches); `workspace_agent.py` 149 lines, roster/materialization only;
+  `permission_source.py:79` defers binding-scoped tool-use to #804 verbatim;
+  `system_prompt` reader live at `maistro_rsi/local_loop.py:817`; production
+  diff vs base unchanged (4 code/test files +30/−6 + one vulture row removed).
+- **Acceptance mapping**: unchanged — all 13 boxes require the unlanded
+  canonical owners; the stop condition forbids a Design-Studio-private
+  substitute, and the tree correctly does not have one.
+
+**Verdict: BLOCKED** — dependency-blocking (144th round); nothing repairable
+in-tree. Inventory delta **+0** (this record only). (Refs #777)
