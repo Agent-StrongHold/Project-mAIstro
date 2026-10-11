@@ -21780,3 +21780,59 @@ exit 0.
 
 **Verdict: BLOCKED** — dependency-blocking (136th round); nothing repairable
 in-tree. Inventory delta **+0** (this record only). (Refs #777)
+
+## Round 137 — job e83bca86 (repair round at unchanged head eafbdf3c5)
+
+Driver supplied `checks: []` and no `check-*.log` exists in the job directory:
+**no deterministic check ran or failed in this job**. The immediately prior
+result artifact (job 407e22c4) records `failure_kind: provider_error`
+("Request timed out", `agent_exit: 0`, `checks: []`) — a provider death, not a
+gate failure, so there is nothing to repair from driver evidence. Round-136's
+BLOCKED was dependency-driven.
+
+- **Sync conflict ruled out** (fresh fetch): `origin/develop` `435dc1937` ==
+  merge-base == manifest base; branch 0 behind / 490 ahead; PR #1660 head
+  `460ad5802` is an ancestor of HEAD.
+- **Dispatch snapshot** (00:14Z, 61 sources): #777 open, 13/13 acceptance
+  boxes unchecked, `blocked_by` API empty; body-listed blockers #804/#805/
+  #806/#53/#774/#776/#93/#95/#783 all OPEN (#775/#39/#458 closed); PR #1660
+  open draft, mergeable, 0 reviews; comment tail automation-only through
+  23:49:17Z.
+- **Battery re-executed at HEAD, all exit 0**: ruff check; ruff format (3282
+  files); vulture CI-exact `packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` 1323→1322, 0 unbanked; ratchet provenance 0/53;
+  shipped-surface; promotion-surface; reachability 169/1394; suite-inventory
+  17/17; backlog 167; radon 137→137; `mypy --strict
+  packages/maistro-core/src/maistro/runs/model.py` Success.
+- **Targeted pytest with live PG** (`maistro_test_777` @ 127.0.0.1:5433,
+  pgvector:pg18, alembic rev 062, password verified from container env):
+  cancellation-cause model 34 passed; bootstrap `-k agent_loop` 40 passed;
+  hive `-k 'design or workspace or agent'` **559 passed / 0 skipped** —
+  with `MAISTRO_TEST_PG_DSN` set the 5 durable skips execute, so 559 = 554 + 5
+  is strictly stronger than rounds that recorded skips.
+- **Diff claims audited**: production diff remains 4 code/test files +30/−6
+  plus one vulture row removed; `system_prompt` reader is real at
+  `maistro_rsi/local_loop.py:817` (`system_prompt or config.system_prompt`);
+  `tool_definitions` has 0 remaining consumers (`chat_completion.py:2587`
+  hits are unrelated hive locals); no `AgentLoopConfig(...)` constructor
+  passes the removed field.
+- **Regression test has teeth** (re-proven with a fresh pydantic probe): a
+  wrap serializer annotated `-> dict[str, Any]` yields a serialization-mode
+  schema with **no `properties` key**; unannotated keeps the declared fields —
+  `test_the_serialization_mode_schema_keeps_every_declared_field` cannot pass
+  against the regression it names.
+- **Negative invariants re-probed**: 0 `GoalReconcil*|ReconciliationLoop`
+  matches in hive backend production code; `workspace_agent.py` 149 lines,
+  0 reconcil/delegat hits; `permission_source.py:79` (security/sentinel)
+  defers binding-scoped tool authorization to #804; `GoalRevisionCatalog`
+  still a `Protocol` (projects/rubric_store.py:71).
+- **Acceptance mapping**: all 13 boxes require the unlanded canonical owners —
+  #804/#805/#806 (reconciliation/delegation/durability: boxes 1, 6–9, 11–13),
+  #774 (CreativeBrief contract: boxes 2, 10), #776 (Workspace memory: box 3),
+  #93/#95 (Canvas worker / DS cutover: boxes 4–5), #53 (front door) — so no
+  criterion is implementable at this head, and the stop condition ("do not
+  create a Design-Studio-private reconciler") is what the tree correctly
+  observes.
+
+**Verdict: BLOCKED** — dependency-blocking (137th round); nothing repairable
+in-tree. Inventory delta **+0** (this record only). (Refs #777)
