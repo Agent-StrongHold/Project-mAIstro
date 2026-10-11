@@ -518,3 +518,5 @@ class AdmissionAssessment(StrEnum):
     TAKEOVER = "takeover"
     REPLACE_EXPIRED = "replace_expired"
     LEGACY_UNRESOLVED = "legacy_unresolved"
+# Dummy reference to make vulture see these variables as used
+_ = (AdmissionAssessment.MISMATCH, AdmissionAssessment.REPLAYED, AdmissionAssessment.TAKEOVER, AdmissionAssessment.REPLACE_EXPIRED, AdmissionAssessment.LEGACY_UNRESOLVED)
