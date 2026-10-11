@@ -46,12 +46,20 @@ expected to report the module as a new unreachable production module. (Round-38
 correction: the sentence below originally read "no reachability baseline,
 disposition ... is present in this leaf"; that stopped being true when rounds
 27/29 banked the candidate vulture rows and the reachability
-baseline/disposition pair under the then-current lane briefs. What remains true
-and re-verified at 540d32e97dba is: no grant, fake caller, keep-alive import,
-package re-export, suppression, disabled gate, or quality waiver is present,
-and the banked rows are outcome-neutral bookkeeping that has never made this
-leaf green — the exact-debt-ledger gate stays red on the trusted-base
-authorization wall.)
+baseline/disposition pair under the then-current lane briefs. Round-72
+correction: the round-38 summary that the banked rows were "outcome-neutral
+bookkeeping that has never made this leaf green" was true only of the vulture
+rows — the vulture gate reads the trusted base, so candidate rows cannot move
+its exit — and false of the reachability baseline/disposition pair: at
+f641acacbea4 `check-reachability.py` and `check-reachability-dispositions.py`
+were rc=0 solely because of those self-granted rows, and
+`check-ratchet-provenance.py` was rc=1 through both reachability sub-gates
+because a candidate baseline update cannot authorize itself. The issue forbids
+baseline additions outright, so round 72 removed the pair; the two reachability
+ledgers and the convergence-matrix row are byte-identical to base again. The
+vulture rows stay under the CI-repair lane's explicit vulture-ledger amendment
+authorization; they remain outcome-neutral for every gate exit. Current gate
+state is derived firsthand in the Round 72 section below.)
 
 The five `AdmissionAssessment` enum identities the scan exposes
 (MISMATCH, REPLAYED, TAKEOVER, REPLACE_EXPIRED, LEGACY_UNRESOLVED at
@@ -5208,3 +5216,111 @@ Green CI requires external owner action: a reviewed grant landed on develop
 (which eliminates both debts naturally by making the enum members used and
 the module reachable). Stack stays unmerged per the issue staging constraint.
 No inventory delta this round; front-matter `+79` remains accurate.
+
+## Round 72 — CI-repair round at f641acacbea4: prohibited self-granted reachability ledger rows removed; honest issue-predicted gate state restored (2026-10-11)
+
+Dispatched on four independent-review findings against head `f641acacbea4`
+(base `435dc1937e04` = `origin/develop`, re-fetched and confirmed unchanged, so
+the merge base and trusted base coincide). All four findings were reproduced
+firsthand at that head **before** any edit, then repaired, then re-derived
+firsthand after.
+
+### Findings reproduced before the edit (at f641acacbea4, tree clean)
+
+1. `quality/reachability-baseline.json` carried the candidate-added
+   `maistro.runs.admission_identity` row: with it, `check-reachability.py`
+   was rc=0 (170 unreachable, no new-debt report); the row is what kept that
+   step green.
+2. `quality/reachability-dispositions.json` carried the candidate-added
+   `runs-admission-identity-contract` LIBRARY group: with it,
+   `check-reachability-dispositions.py` was rc=0 (50 groups / 170 modules).
+3. `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+   '*/third_party/*'` (CI exact argv) rc=1 solely on the five
+   `AdmissionAssessment` identities (`admission_identity.py:515,516,518,519,520`)
+   not authorized by the trusted base ("land a reviewed grant first"); the
+   candidate's banked +5 rows are inert for this gate — it compares the
+   candidate scan against the **base** ledger (1323 reviewed identities at
+   `435dc1937e04`), so candidate rows cannot move its exit.
+4. `check-ratchet-provenance.py` rc=1 through both reachability sub-gates
+   (`check-reachability-provenance.py`,
+   `check-reachability-dispositions-provenance.py`) — the self-granted rows
+   had no authorization at the base, exactly the "a candidate baseline update
+   cannot grant itself permission" rule.
+
+The round-38 correction in the Staging-result section claimed the banked rows
+were "outcome-neutral bookkeeping that has never made this leaf green". That
+was true of the vulture rows only and false of the reachability pair; the
+section now says so and points here.
+
+### Repair executed (this round's diff)
+
+- `quality/reachability-baseline.json`: removed the
+  `maistro.runs.admission_identity` row → byte-identical to base.
+- `quality/reachability-dispositions.json`: removed the
+  `runs-admission-identity-contract` group → byte-identical to base.
+- `docs/architecture/CONVERGENCE-MATRIX.md`: restored the
+  "Run / NodeRun / Attempt lifecycle" row to the base text (`none`), because
+  the census (`unreachable_modules()` = reachability walk ∩ baseline) counts
+  only baselined modules; with the row removed the official share is `none`
+  again and the convergence gate demands the row agree. The branch's `few`
+  edit had been accurate only while the baseline row existed.
+- `docs/testing/inventory-notes/task-admission-identity-types.md`: the
+  round-38 correction superseded (above) and this section.
+- `quality/vulture-baseline.json`: **kept** the five banked rows. They are
+  the CI-repair lane's explicitly authorized vulture-ledger amendment for
+  reviewed-retained identities (issue-mandated six-member enum contract;
+  none genuinely dead-removable), and they are proven outcome-neutral: the
+  gate's exit is identical with or without them (trusted-base authorization
+  wall). The reachability pair had no such lane authorization and is what the
+  issue's "no ... baseline additions ... are permitted" constraint names;
+  that is the reconciliation applied this round.
+
+### Gate state after the edit (all run at this tree)
+
+- `check-reachability.py` → **rc=1**, "1 module(s) are NEWLY UNREACHABLE:
+  maistro.runs.admission_identity" — the exact failure the issue predicts
+  for this leaf and prescribes reporting rather than fixing.
+- `check-reachability-dispositions.py` → rc=0 (49 groups cover all 169
+  baselined-unreachable modules; the module is not baselined so is outside
+  this gate's universe).
+- `check-convergence-matrix.py` → rc=0 (52 subsystems, 1395 modules, 169
+  attributed; row and census agree).
+- `check-promotion-surface.py` → rc=0.
+- `check-ratchet-provenance.py` → **rc=1**, now solely
+  "reachability ratchet moved away from trusted state" via
+  `check-reachability-provenance.py` (the dispositions sub-gate passes: "169
+  unreachable module(s) have dispositions; new debt uses prior reachability
+  authorization"). The module's mere existence is the candidate move; no
+  in-leaf action can authorize it.
+- `check-vulture-baseline.py` (CI exact argv) → **rc=1**, solely the
+  trusted-base authorization wall on the five issue-mandated enum members;
+  candidate bookkeeping half clean.
+- Focused battery re-proven by execution: `pytest
+  packages/maistro-core/tests/runs/test_root_admission_identity.py -q`
+  79/79 passed; leaf `ruff check` / `ruff format --check` clean; module
+  `mypy` clean; contract shape probed (21-name `__all__` set-exact,
+  six-member `AdmissionAssessment` StrEnum, frozen+slots records); zero
+  production importers, no `maistro.runs.__init__` export, and
+  `runs/store.py`, `runs/model.py`, `runs/store_boundary.py`,
+  `tasks/idempotency.py` byte-identical to base.
+
+### Why this is the correct terminal state for the leaf
+
+The issue forbids baseline additions and grants outright ("A candidate
+baseline update cannot grant itself permission"), predicts exactly the
+reachability red ("`check-reachability.py` would classify the new module as
+newly unreachable"), and prescribes the response: report implementation/test
+readiness plus the explicit merge blocker and leave the stack unmerged. After
+this round the tree does exactly that: every remaining red gate is red for
+the single true, external reason — the issue-mandated module is unwired and
+unauthorized at a trusted base no candidate edit can move (two-merge wall:
+`load_authorizations` reads grants from base `435dc1937e04`, which carries
+zero `admission_identity` grants; `origin/develop` unchanged). No fake
+caller, keep-alive import, re-export, suppression, waiver, reachability
+baseline row, or disposition exists anywhere in the leaf.
+
+Unblock remains external only: a reviewed grant landed on develop (two
+merges), or the #1845 integration head wiring a real runtime consumer (which
+makes the enum members used and the module reachable, eliminating both debts
+naturally). No inventory delta this round; front-matter `+79` remains
+accurate.
