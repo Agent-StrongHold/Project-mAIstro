@@ -417,3 +417,94 @@ Only this report changed; no test/inventory, source, ledger, grant or gate
 changed. No inventory delta is needed. Progress: checked 1, done 0 repairs,
 skipped 0, errors 1 unresolved provenance blocker. Next: owner resolution and
 the exact failing CI traceback. Local commit is an evidence handoff only.
+
+## Repair job 4f181543 — independent validation at 8c7334ef
+
+Frozen scope: issue #1893 only, assigned `auto-1893` worktree. Starting HEAD
+`8c7334ef1b8ce91e4d268de67bc60a19bf22249b` was clean; trusted develop base
+`435dc1937e0407ab4de198ffcced49860bb14ad2` resolves locally. No remote mutation,
+merge, production activation, source/test repair or ledger/grant edit was
+performed. This report is the only changed file; test inventory delta is zero.
+
+Read repository instructions, the frozen dispatch issue/PR evidence, prior
+result, driver `check-0.log` through `check-4.log`, adjacent codec/DTO tests,
+production codec/DTO implementations, migration 055, and accepted ADR-018,
+ADR-056, ADR-097 and ADR-082526-7f02. Reconciliation: immutable admission
+facts do not become execution identity or authorization. No change to
+`Goal -> Graph -> Run -> NodeRun -> Attempt` or any admission authority is
+permitted by this staged leaf. Passing DTO tests is not production activation.
+
+All following logs are under
+`/home/dev/maistro/jobs/4f181543d440481089d341fdacb06774/` and were generated
+in this round, not inherited from previous verification claims:
+
+| Executed command | Result / log |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | Passed: 1323 findings, 1323 reviewed identities, zero unclassified; `worker-vulture.log` |
+| `RATCHET_BASE_REV=435dc1937e0407ab4de198ffcced49860bb14ad2 uv run python scripts/check-ratchet-provenance.py` | **Exit 1**; `worker-provenance.log:20-29` rejects both new admission modules and dispositions against the trusted base |
+| `uv run ruff check .` | Passed; `worker-ruff.log` |
+| `uv run ruff format --check .` | Passed, 3277 files; `worker-format.log` |
+| `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py` | Passed, two files; `worker-mypy.log` |
+| `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q` | 201 passed, 3 PG skips without DSNs; `worker-focused.log` |
+| `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest packages/maistro-core/tests/tasks packages/maistro-core/tests/runs -x -q` | 1918 passed, 310 skipped, 6 aiosqlite closed-event-loop thread warnings; `worker-adjacent.log` |
+| `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests` | Passed: 16466 nodes, zero duplicate evidence; `worker-inventory.log` |
+| `uv run python scripts/check-shipped-surface-truth.py` | Passed; `worker-surface.log` |
+
+### Live database acceptance
+
+Preflight confirmed PostgreSQL 18.6 and absence of the dedicated database.
+Created `maistro_1893_job4f181543` with
+`createdb -h /var/run/postgresql -U dev maistro_1893_job4f181543`.
+Set `DATABASE_URL`, `MAISTRO_TEST_PG_DSN` and `MAISTRO_TEST_DATABASE_URL`
+to `postgresql://dev@/maistro_1893_job4f181543?host=/var/run/postgresql`
+in separate shell assignments. `uv run alembic upgrade head` applied the
+real migration chain to **062** (`worker-migrations.log`). No destructive
+downgrade tests ran; downgrade behavior is not claimed.
+
+With `MAISTRO_REQUIRE_PG_LEGS=1`, reran the focused command above with
+`-o junit_family=legacy --junitxml=<job-directory>/worker-pg.xml`:
+**204 passed, zero skipped** (`worker-pg.log`). All ten prospective named
+codec contracts executed, including all three raw/production pool states.
+JUnit records production/raw backend PID pairs **1039426/1039427**,
+**1039428/1039429**, **1039430/1039431**, each on this same socket/database,
+with one persisted admission row per state (`worker-sessions.log`). SQL
+independently confirmed migration **062** and zero final rows in
+`task_idempotency`, `tasks`, `canonical_runs`, `canonical_node_runs` and
+`canonical_attempts` (`worker-db-final.log`). The scratch database is retained.
+
+Acceptance boundaries:
+
+- Immutable DTOs, matching scalar headers, signed timestamps, strict UUID hex,
+  fresh named-column SQL mappings, bound/unbound/acknowledged v2 state,
+  legacy partial/receipt-only rejection, and safe typed errors: **proven by
+  the 204 executed tests**. The binding tests independently assert migration
+  055's task/receipt identity shape, not merely encode/decode agreement.
+- Header expiry/fingerprint survives corrupt snapshot or partial binding;
+  unknown formats fail closed; invalid/duplicate/nonobject/nonfinite JSON
+  fails; valid tags/nested evidence and stored fingerprints survive:
+  **proven at the codec boundary**. Corrupt surrogate TEXT was also injected
+  into all snapshot columns and rejected through both real pools.
+- New evidence-json encoding, model materialization via `model_of` or
+  `model_of_json`, original-model fingerprinting, Run JSONB object insertion,
+  authorized principals/Workspace/Project/registered Graphs and consumer
+  expiry/409 ordering: **UNVERIFIED** by these fixture-based codec tests.
+- Production reachability: source search (`worker-consumers.log`) finds only
+  the codec importing its DTO module and a Vulture whitelist import; no
+  runtime codec caller. No reachable admission claim is made.
+- Full required CI, coordination approval, activation-policy resolution and
+  a current-head reproduction of dispatched `test: failure`: **UNVERIFIED**.
+  No failing-test traceback was supplied; scoped executions do not reproduce
+  that status. No new pre-fix/mutation claim is made in this report-only round.
+
+### Unresolved handoff
+
+**BLOCKED**, not merge-ready. The reproducible failure is trusted-base
+reachability provenance (`quality/reachability-baseline.json:131,147` and
+`quality/reachability-dispositions.json:606-614`), not Vulture debt. Vulture
+passes, so the special Vulture amendment permission provides no repair.
+Do not invent a runtime caller, add a local grant, or change a gate to make
+this inactive leaf green. Owner-authorized resolution must precede another
+integration attempt; the two-merge rule cannot be satisfied in this branch
+alone. Also request the exact failing CI test traceback before assigning a
+source repair. Progress: checked 1 issue, done 0 repairs, skipped 0, errors 1
+provenance blocker; validation complete and locally committed as a handoff.
