@@ -5068,3 +5068,74 @@ owner action: a reviewed grant landed on develop (two merges) or the #1845
 integration head wiring a real runtime consumer. Stack stays unmerged per
 the issue staging constraint. No inventory delta this round; front-matter
 `+79` remains accurate.
+
+## Round 70 (this head e9156f9bfa0e, 2026-10-11)
+
+Dispatched to resolve the round-69 BLOCKED; prior job 985c0767544e was a
+provider timeout after five green driver checks (result.json: all rc=0,
+failure_kind=provider_error). All evidence re-proven firsthand at this exact
+head; nothing assumed from earlier rounds:
+
+- **Driver 5/5 from job logs** (check-0..4: uv sync, full-tree ruff check,
+  full-tree ruff format --check, focused pytest, suite inventory) — all rc=0
+  at e9156f9bfa0e. Re-run in this session: focused pytest 79/79, leaf ruff
+  check + format clean, mypy clean on admission_identity.py, suite inventory
+  ok (16341 ids, +79 front-matter accurate), full-tree ruff check/format
+  clean.
+- **All 12 issue-named tests present** (AST-walked); `__all__` 21 names
+  set-exact; `AdmissionAssessment` exactly the six mandated member/value
+  pairs (AST-exact order and values).
+- **Independent runtime probe green by execution** (not via the test file):
+  frozen+slots on all 16 record/result classes; CanonicalJsonObject rejects
+  duplicate keys (top-level and nested), non-finite numbers, non-object
+  roots, and non-string constructor input, and normalizes key order and
+  whitespace to one canonical string; fencing conjunction asserted on all
+  four variants plus the equal-role triple (generation_id text stays
+  printable when roles are equal, owner_token field absent from repr);
+  empty variants carry no `__bool__`; `created` must be a real bool and the
+  snapshot run_id must match; frozen mutation raises FrozenInstanceError;
+  acknowledgement requires a binding.
+- **Scope isolation re-verified:** 7-file net diff vs 435dc1937 (module,
+  tests, inventory note, CONVERGENCE-MATRIX line, +1 reachability,
+  +9 dispositions, +5 vulture rows); zero production importers; no
+  `maistro.runs.__init__` export; store.py/store_boundary.py/model.py/
+  tasks idempotency untouched; #1841 anchors confirmed at this head
+  (store_boundary.py:56 `require_admitted_actor(actor_principal_id: str |
+  None) -> str`; store.py:537 `get_run(..., principal_id: str | None =
+  None)`; store.py:886/554 create/claim retain `actor_principal_id`).
+- **Vulture gate re-run at CI exact argv** (packages/*/src --min-confidence
+  60 --exclude '*/third_party/*'): rc=1 with scan-exact 1328 = base 1323 +
+  the five issue-mandated AdmissionAssessment identities at :515/516/518/
+  519/520 (PENDING not flagged). The "5 NEW" block appears under "Vulture
+  debt changed against the TRUSTED baseline"; there is no "Candidate ledger
+  bookkeeping still needs attention" block — candidate banking is clean
+  (+5/−0, pydantic-declarative-field 392→397, walked in the JSON).
+  unclassified 0, never_allowlist 0.
+- **exact-debt-ledger re-walked in CI order** (vulture-ratchet.yml:64-85):
+  provenance rc=1 solely via the two reachability sub-gates naming
+  `maistro.runs.admission_identity` (7 sub-ratchets OK); shipped-surface
+  rc=0. Quality gate root is its vulture step at quality.yml:1078 (same
+  argv). Candidate-side gates re-run green: reachability rc=0 (170/1395),
+  dispositions rc=0 (50 groups 147/21/2).
+- **Two-merge wall re-verified in code and data:** load_authorizations
+  reads grants from the base revision (scripts/ratchet_provenance.py:479,
+  docstring states the two-merge consequence deliberately); zero
+  `admission_identity` occurrences in quality/ratchet-authorizations.json
+  at base 435dc1937 and at this head; origin/develop re-fetched, still
+  435dc1937 = merge-base, so no grant landed and no sync merge applies.
+- **Lane-brief repair actions re-audited against the scan output:** the
+  five listed identities are the issue-mandated enum members, none
+  genuinely dead-removable without breaking the issue-fixed six-member
+  contract; the ledger amendment for reviewed retained identities is
+  already present (+5/−0); no candidate-side action can clear the
+  trusted-base authorization requirement, and the issue forbids every
+  remaining candidate (grants, fake callers, suppressions, waivers).
+
+Round-70 verdict: writer handoff unchanged (MERGE-READY as handoff only,
+never an integration approval). All leaf acceptance criteria proven at this
+exact head; both merge-queue failures are the trusted-base authorization
+wall the issue itself predicts and prescribes reporting rather than fixing.
+Green CI requires external owner action: a reviewed grant landed on develop
+(two merges) or the #1845 integration head wiring a real runtime consumer.
+Stack stays unmerged per the issue staging constraint. No inventory delta
+this round; front-matter `+79` remains accurate.
