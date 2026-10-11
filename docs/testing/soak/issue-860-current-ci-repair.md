@@ -1,6 +1,80 @@
 # Issue #860 — current CI repair
 
-## Latest checkpoint — job `7d8dc6e818e340e6b08c9f1df256168a`
+## Latest checkpoint — job `51397097a6bc4dce85f34781778a98cd`
+
+Frozen scope: #860 only, assigned `auto-860` worktree, clean starting HEAD
+`ff589bf4f4cee261478668c05c50e6d9437cf29d`, supplied base
+`3c761d14db944a727fa0744444bc67cfe36d49f7` resolved locally. Candidate edits:
+this existing report; `quality/vulture-baseline.json` only if the requested
+scan demonstrates retained unbanked identities. Read-only inspection: supplied
+dispatch snapshot/prior result/failure log, repository instructions, relevant
+ADRs, soak runner/profile/adjacent tests, schema-fence source/tests, rate-limit
+wiring and CI gates. No other issues/PRs processed. No incoming edits or merge
+conflicts; nothing to salvage. No driver `check-*.log` files present in this
+job directory at initial inspection.
+
+The supplied failure is an older 24-versus-21 schema DDL assertion. It must be
+reproduced before changing tests. Prior BLOCKED concerns deployment evidence,
+not a merge conflict. Assumption: absent a designated immutable RC/config,
+a host preflight cannot substitute for a promotion soak.
+
+Fresh initial validation (1200-second timeout; `worker-*.log` in job directory):
+`uv sync --locked --extra dev` passed. Exact requested Vulture scan passed:
+1323 reviewed identities / findings, zero unclassified/never-allowlist;
+checker-selected base `4aa68edc0b6b`. No ledger amendment is justified.
+`uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py -x -q -rs`
+passed: 37 passed, 6 skipped because `MAISTRO_TEST_PG_DSN` is unset. The old
+schema assertion failure does not reproduce: the independent expected DDL list
+already includes all three audit columns at test lines 173–178, matching the
+production store's `_EPISTEMIC_COLUMNS`. No live database proof claimed.
+
+Additional fresh validation (1200-second timeouts):
+
+- `uv run ruff check .`: PASS; `uv run ruff format --check .`: PASS, 3270 files.
+- `uv run pytest tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py -x -q`: **74 passed**.
+- `uv run python scripts/check-suite-inventory.py`: PASS, 17 suites, 31128 unique identities, no duplicate evidence.
+- `uv run python scripts/check-deployment-claims.py`: PASS.
+- Inline `uv run python` imported the current runner and reevaluated the fixed historical `m3a-round6-shakedown.json`: 90.43 seconds, source `b31c5fdaa63b40506335bbb288889e87bdb9ba0c`, failed `sustain_duration` and `exact_rc_artifact`. Assertions passed. This is not a new soak.
+- `git diff --check`: PASS.
+
+Read accepted ADR-081226-69ee, ADR-081626-f383, ADR-082526-b36a and ADR-085.
+Preserve Goal -> Graph -> Run -> NodeRun -> Attempt and canonical lease/fence
+ownership. The later lease-renewal ADR extends the earlier deferral of recovery;
+that old deferral cannot waive #860's recovery requirement. Principal-keyed limits
+do not imply shared replica state; no architectural waiver of #860's stronger
+non-bypass requirement was found or introduced.
+
+| Acceptance | Fresh evidence / disposition |
+| --- | --- |
+| Representative RC load profile | **UNVERIFIED**: `m3a-load-profile.md:152-169` names absent users/Workspaces, Graph fan-out, successful tool/model calls, Design/Canvas and Goal/background workloads. RC applicability is not designated. |
+| Two deployed application replicas | Boot-contract tests pass; deployed exact-RC replicas **UNVERIFIED**. |
+| Sustained saturation, growth, lease reclaim, retries and leaks | **UNVERIFIED**: sampler regressions pass, but no long RC run executed. The reevaluated historical pack lasts only 90.43 seconds. |
+| No duplicate physical work across replicas | **UNVERIFIED**: admission-identity tests do not prove physical execution. The schedule probe cancels its queued Run without executing it (`run_soak.py:1079`). |
+| Rate/security/degraded non-bypass | Independent allowances reproduced by `test_replica_selection_has_an_independent_production_allowance` (`tests/test_soak_promotion_gates.py:439`): same identity gets `[200,200,429]` on each instance. Production installs this middleware at `maistro_server/main.py:648`; `api/rate_limit.py:93` creates independent memory. Cluster non-bypass unmet; full deployed security/degraded behavior **UNVERIFIED**. |
+| Complete telemetry and explicit thresholds | **UNVERIFIED**: profile defines thresholds and sampler tests pass; `run_soak.py:1410` measures driver rather than application-loop latency. No fresh deployed telemetry series. |
+| Active-work kill/restart with drain/fencing/recovery | **UNVERIFIED**: gate/cleanup tests are not an active-work deployment experiment. |
+| Long exact-RC artifact/configuration soak | **UNVERIFIED / blocked**: no immutable RC/config designated. `run_soak.py:730` rejects host topology, and synthetic four-hour CLI tests prove refusal, not sustained traffic. |
+| Findings filed/reclassified | This local disposition records gaps; external filing/reclassification **UNVERIFIED**. GitHub mutations prohibited and not performed. |
+| Machine/human evidence tied to exact hashes | Historical pack reevaluated; qualifying current RC evidence **UNVERIFIED**. |
+
+**BLOCKED, not merge-ready.** No current scanner debt or schema regression was
+found; neither test weakening nor a speculative ledger amendment is justified.
+Only this existing handoff changes. No source, runtime configuration, tests,
+inventory notes, grants, ledgers or historical raw evidence changed; no inventory
+delta is needed. Logs: job-local `worker-{sync,vulture,schema,ruff-check,ruff-format,soak-tests,inventory,deployment,evidence}.log`.
+
+Next input/action: designate immutable RC artifacts/config and supported workload
+applicability, resolve the replica-rate contract discrepancy, complete physical-work
+and telemetry oracles, then run >=14400 seconds on that unchanged production
+topology with active-work restart/recovery. Docker availability is not a blocker
+claimed here; no production deployment was attempted. Do not redispatch the stale
+24-versus-21 failure as a current regression. Commit this checkpoint locally only.
+Progress: checked 1 issue, done 0 acceptance-complete, skipped 0 issues, errors 0
+validation commands; 6 optional database tests skipped.
+
+---
+
+## Historical checkpoint — job `7d8dc6e818e340e6b08c9f1df256168a`
 
 Frozen scope: issue #860, assigned worktree `/home/dev/Git/wt/auto-860`, branch
 `auto-860`; clean starting HEAD `011688e3a20b72bd68fb3765d24e92f76045a624`,
