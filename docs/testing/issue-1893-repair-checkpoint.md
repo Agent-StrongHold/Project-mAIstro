@@ -1,5 +1,80 @@
 # Issue 1893 repair checkpoint
 
+## Repair recheck: job df08dd8a60534fb2bdb15c22261b1cec
+
+Frozen item: #1893 only, starting HEAD `c5f755480759b142b33543235fbf206f0fd8e0ef`,
+assigned base `435dc1937e0407ab4de198ffcced49860bb14ad2`. Worktree initially
+clean. Both local `origin/develop` and the merge base resolve to that assigned
+base; there is no develop-sync conflict to repair. No remote refresh performed.
+
+Read the supplied dispatch issue body, captured logs `check-0.log` through
+`check-4.log`, prior result, codec and adjacent tests, and accepted ADRs
+081226-a66b, 082526-7f02, and 083126-5e62. Prior passing claims were not treated
+as new execution evidence. The stage restriction and ADRs remain compatible:
+keep this a typed representation, preserve immutable admission provenance and
+Attempt-owned execution, and do not create a fake production caller or alter
+trusted-base authorization to make the inactive slice pass.
+
+Fresh execution at this HEAD (1200-second timeout):
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`:
+  PASS, 1323 reviewed findings, zero unclassified. No Vulture ledger amendment
+  is warranted by the actual scan.
+- `RATCHET_BASE_REV=435dc1937e0407ab4de198ffcced49860bb14ad2 uv run python scripts/check-ratchet-provenance.py`:
+  FAIL. The gate rejects both `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_codec` as new unauthorized unreachable modules and
+  new unauthorized dispositions (169 trusted versus 171 candidate entries).
+- `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q -r s`:
+  204 cases, **201 passed, 3 skipped**, 1.30s. All skips are the real-pool contrast
+  test at `test_admission_codec.py:470`, because both required PG variables are
+  absent. No migrated-database proof, session identities, or residue counts
+  are claimed in this round.
+- `rg -n 'admission_codec|runs.admission_identity' packages/*/src`:
+  only the DTO import within the codec and the Vulture whitelist import; no
+  production consumer. The codec explicitly states that limitation at lines
+  49-52. Test imports are not runtime reachability.
+
+Acceptance review of the current source and freshly passing focused tests:
+
+| Criterion | This round's evidence |
+| --- | --- |
+| Frozen/slotted header, exact interfaces, six error codes | Source review; header/schema/scalar cases PASS |
+| Strict UUID hex and signed timestamps; #1851 constructors | Owner/generation and constructor rejection cases PASS |
+| Named flat mapping and immutable snapshots | Three in-memory round-trip states PASS, including independent task_id/run_id assertions |
+| Legacy bound, unresolved, partial, receipt-only; no invented identity | Legacy shape and whitespace/error cases PASS; absent receipt cannot be fabricated to satisfy canonical binding |
+| Header survives full-decode failure; unknown/mismatched formats fail closed | Header expiry/fingerprint and mismatch cases PASS; no clock or claim decision introduced |
+| Strict TEXT JSON, safe errors, arbitrary tagged evidence and unchanged fingerprint | Duplicate/nonobject/nonfinite, numeric-loss, Unicode, nesting and tag-preservation cases PASS |
+| Model materialization with evidence-json/model_of/model_of_json, original-model fingerprinting | UNVERIFIED end-to-end: fixtures build tags directly; codec does not materialize task/Run models |
+| Raw/production pools against real migrated schema | UNVERIFIED: three PG cases skipped, not durability evidence |
+| Run payload is a JSONB object; explicit authorized principals, Workspace/Project, registered Graph | UNVERIFIED: representation fixtures do not establish these integration properties |
+| Production reachability and full unchanged CI | NOT PROVEN: no consumer, trusted-base gate FAILS; generic supplied `test: failure` has no reproduced failing node |
+| Consumer expiry/409 precedence, transaction/crash/dispatch behavior | UNVERIFIED and reserved for consumer/integration leaves, not implemented by B2 |
+| No SQL mutation, HTTP/queue changes, assessment, scope utility or policy changes | Source review; this round changes this report only |
+
+Additional fresh validation, all PASS (1200-second command timeout):
+
+- `uv run ruff check .`
+- `uv run ruff format --check .` (3277 files)
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py` (two files)
+- `uv run python scripts/check-shipped-surface-truth.py`
+- `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests`
+  (16466 collected nodes, no duplicate evidence)
+- `git diff --check`
+
+Progress: checked 1 item, done 0 code repairs, skipped 0 items, errors 1 required
+gate. Next: owner-controlled trusted-base prerequisite resolution and an actual
+current-head failing test traceback if a separate repair is needed. Remaining
+integration acceptance above stays explicitly unverified. This report is the
+only changed file and is committed locally as a handoff, not merge approval.
+
+Decision: **BLOCKED**, not an evidence-backed code-repair opportunity. The
+Vulture exception cannot authorize edits to reachability dispositions/grants.
+Owner-controlled trusted-base resolution is still required before integration;
+merging the identical base or banking more candidate debt cannot resolve it.
+No new tests, so no suite inventory delta. No pre-fix/mutation failure is claimed
+for unchanged code. No activation, GitHub mutation, or issue closure performed.
+
+
 ## Frozen scope
 
 - Issue: #1893 only; branch `auto-1893`.
