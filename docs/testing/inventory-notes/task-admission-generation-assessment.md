@@ -3582,3 +3582,65 @@ first-hand, not trusted:
   is the future #1845 integration consumer or a maintainer-landed
   base-side grant, both outside this lane. The stack stays unmerged by
   design; this round adds this evidence section only.
+
+## Round 47 (2026-10-11, head `4ddfd0a0789a`) — first-hand re-validation repair round
+
+Driver checks in job `da359ba9` at this head all rc=0 (uv sync, `ruff
+check .`, `ruff format --check .`, the 315-test three-file battery,
+`check-suite-inventory.py --suite packages/maistro-core/tests` ok
+16468); the prior round aborted on a provider timeout with no commit,
+so this round re-executed every claim first-hand and committed the
+evidence. The tree was clean at start; module sha256 after every
+mutation restore equals the round-43–46 record `578c1f1747920f47…`:
+
+- **Focused acceptance re-proven**: leaf suite 132 passed; issue-named
+  pair (`test_root_admission_identity.py` + `test_idempotency.py`)
+  140 passed; `ruff check` and `ruff format --check` clean on both leaf
+  files; `mypy` clean on the module and on all of
+  `packages/maistro-core/src` (784 files); full
+  `check-suite-inventory.py` 17/17 suites match;
+  `check-convergence-matrix.py` rc=0. All 10 issue-named tests present.
+- **All four hosted reds re-attributed first-hand, one root cause**:
+  `check-vulture-baseline.py` at CI's exact argv rc=0 (1323 -> 1323,
+  zero unbanked — the exact-debt-ledger red is NOT the vulture leg);
+  `check-shipped-surface-truth.py` rc=0; `check-ratchet-provenance.py`
+  rc=1 solely via the reachability sub-gate (169 -> 171);
+  `check-reachability-provenance.py` rc=1 naming exactly
+  `maistro.runs.admission_identity` and `maistro.tasks.
+  admission_generation` as "NEW unreachable module absent from trusted
+  base and not previously authorized"; `check-reachability.py` rc=1 on
+  exactly those two; `check-reachability-dispositions.py` rc=0;
+  `check-promotion-surface.py` rc=0. The `test` job's root leg
+  (`pytest tests/ --ignore=tests/tools/registry`) reproduced 4F/4967P:
+  the three reachability baseline-equality meta-tests naming exactly
+  the two leaf modules, plus `test_every_quality_json_state_surface_
+  is_classified_once` proven LOCAL-ONLY (it reads gitignored
+  `quality/ac-state.json`; passes with the file moved aside; file
+  restored sha256-identical `feabea593698be4b…`). The Coverage gate's
+  producer leg runs the same root suite under `set -euo pipefail`, so
+  it aborts on the same three meta-tests.
+- **origin/develop re-fetched: still `435dc1937e04`** — no base-side
+  grant for the two-module reachability raise has landed, so the
+  two-merge rule keeps every head of this branch red on the
+  reachability sub-gate. The only in-branch "fixes" (baseline rows,
+  grants, waivers, dummy callers, wiring) are each explicitly forbidden
+  by the issue. The blocker stands; this leaf cannot lawfully clear it.
+- **All four issue-named mutations re-killed in place** (clean tree;
+  pre-capture `cp` to `/tmp`; byte-exact restore; sha256 verified
+  after every restore): pristine control 132 passed;
+  TAKEOVER<->REPLACE_EXPIRED swap 50F/82P; lease row moved above the
+  binding row (lease, legacy, binding order) 16F/116P;
+  `LEGACY_UNRESOLVED` row deleted 10F/122P; mismatch row moved above
+  the expiry row 22F/110P.
+- **Forbidden surfaces verified untouched vs base `435dc1937e04`**:
+  `tasks/idempotency.py`, `tasks/__init__.py`, `runs/__init__.py`,
+  `quality/` — zero diff lines; no production module imports
+  `admission_generation` (grep over `packages/*/src`; the only hit is
+  the module's own `__pycache__` bytecode); no initializer re-exports.
+- **Verdict-relevant statement (unchanged from rounds 35–46)**: leaf
+  acceptance fully proven first-hand at `4ddfd0a0789a`; all four hosted
+  reds are the one sanctioned unwired two-module reachability delta the
+  issue itself predicts and forbids this leaf to repair. The lawful fix
+  is the future #1845 integration consumer or a maintainer-landed
+  base-side grant, both outside this lane. The stack stays unmerged by
+  design; this round adds this evidence section only.
