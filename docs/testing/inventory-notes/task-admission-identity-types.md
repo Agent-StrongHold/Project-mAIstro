@@ -5770,3 +5770,74 @@ owner action (reviewed grant on develop, or the #1845 integration head wiring
 the real consumer). Writer handoff MERGE-READY (handoff only, never
 integration approval); the stack stays unmerged per the staging constraint.
 No inventory delta this round; front-matter `+79` reconfirmed.
+
+## 2026-10-11 round 79 independent re-verification at 60ac08d86c3f (job 51177f7594be40c7940bd9336d40153b)
+
+Fresh verifier round after the round-78 re-verification commit; every claim
+below re-derived firsthand at this exact head, none taken from any prior
+round's report. No tree edit other than this entry.
+
+- Driver checks 5/5 green (check-0..4.log): `uv sync --locked --extra dev`,
+  repository-wide `ruff check .` / `ruff format --check .`, focused pytest 79
+  passed, scoped suite inventory ok (16,341 core IDs).
+- Leaf acceptance re-proven by execution at this head: focused suite 79/79
+  (rc=0); leaf `ruff check` + `ruff format --check` clean; module `mypy`
+  clean; full `check-suite-inventory.py` rc=0 (17 suites, 31,208 unique IDs,
+  zero duplicates).
+- All four merge-queue failures reproduced with CI's exact argv:
+  - `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+    '*/third_party/*'` rc=1 on exactly the five issue-mandated
+    `AdmissionAssessment` identities (admission_identity.py:515/516/518/519/520:
+    MISMATCH, REPLAYED, TAKEOVER, REPLACE_EXPIRED, LEGACY_UNRESOLVED; PENDING
+    not flagged — the name occurs elsewhere in scanned src), sole reason "New
+    Vulture debt is not authorized by the trusted base … land a reviewed grant
+    first"; candidate ledger scan-exact (1,328 = 1,323 base + 5), banking
+    inert. This is the two-merge wall, not a bookkeeping defect.
+  - `check-reachability.py` rc=1 naming exactly one NEWLY UNREACHABLE module,
+    `maistro.runs.admission_identity` (issue-predicted);
+    `check-reachability-dispositions.py` rc=0; `check-promotion-surface.py`
+    rc=0; `check-shipped-surface-truth.py` rc=0.
+  - `check-ratchet-provenance.py` rc=1 solely via the reachability sub-gate
+    (`NEW unreachable module absent from trusted base and not previously
+    authorized` + `missing from candidate baseline`); all eight other
+    sub-ratchets OK.
+  - `test`-job red reproduced by running the job's FULL suite set
+    (`RATCHET_BASE_REV=origin/develop`, `pytest tests/ packages/
+    hive-conductor/backend/tests packages/maistro-design/tests -q
+    --timeout=60`): 3 failed / 9,258 passed / 150 skipped, the three failures
+    being exactly the committed-reachability-baseline-equals-tree self-checks
+    (`test_baseline_matches_the_tree`,
+    `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+    `test_the_baseline_is_exactly_the_unreachable_set`).
+  - Coverage-gate mechanism confirmed from quality.yml: its combine step runs
+    the same root `tests/` suite under `set -euo pipefail` as the
+    `--source=scripts` producer, so the same three self-checks abort that step
+    before coverage.xml exists. The only other failure path, the per-file diff
+    gate, was closed out by direct measurement: `coverage run --branch` over
+    the focused suite reports the module at 100% lines and branches (245
+    stmts, 82 branches, 0 missed), far above the 90/80 floors, so no
+    in-leaf-fixable coverage defect exists.
+- Two-merge wall re-verified structurally (`load_authorizations` reads
+  `quality/ratchet-authorizations.json` from the base revision —
+  scripts/ratchet_provenance.py:478, docstring: "a new grant does not take
+  effect in the change that introduces it") and in data (zero
+  `admission_identity` grants at head and at `origin/develop`; origin/develop
+  still 435dc1937 = merge base, so no sync conflict and no owner grant has
+  landed).
+- Scope vs base re-measured: exactly the four leaf files; `quality/` diff vs
+  develop is `vulture-baseline.json +5/-0`; no reachability baseline,
+  disposition, or grant row for the module at this head; zero production
+  importers; `maistro.runs.__init__` exports nothing new; #1841 anchors
+  re-checked on this tree (`require_admitted_actor` store_boundary.py:56,
+  `get_run(..., principal_id=...)` store.py:537, `actor_principal_id: str |
+  None = None` retained on store.py:507/563).
+
+Conclusion: terminal state identical to rounds 64–78 — leaf acceptance fully
+proven; the four merge-queue reds are the single issue-predicted trusted-base
+authorization wall (five banked-but-unauthorizable enum identities + one
+unwired module), curable only by external owner action (reviewed grant landed
+on develop, or the #1845 integration head wiring the real consumer). No new
+defect; no in-scope repair exists or is permitted. Writer handoff MERGE-READY
+(handoff only, never integration approval); the stack stays unmerged per the
+staging constraint. No inventory delta this round; front-matter `+79`
+reconfirmed by the fresh focused run.
