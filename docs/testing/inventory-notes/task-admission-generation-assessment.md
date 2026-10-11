@@ -3898,3 +3898,57 @@ is the only edit.
   change) or a maintainer-landed base-side grant. Implementation/test
   readiness is proven; stack stays unmerged by design. This round appends
   this evidence section only.
+
+- **Round-53 repair-round re-validation at `9d2666909`** (fresh job
+  `cb0b9318`; prior attempt aborted on a provider timeout with its driver
+  battery already 5/5 rc=0 — check-0..4.log re-read, all green: sync, ruff
+  check, ruff format --check, trio 315P, per-suite inventory ok). All
+  claims re-executed first-hand with no tree edits beyond this evidence
+  section. Leaf acceptance re-proven: focused trio
+  (`test_admission_generation_assessment` + `test_root_admission_identity`
+  + unchanged `test_idempotency`) 272P; all 10 issue-named tests re-run by
+  name, 27 parametrized nodes passed / 105 deselected; ruff check + format
+  clean on classifier and suite (issue argv and repo-wide); mypy clean on
+  the classifier. Hosted reds re-attributed at CI's exact argv:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=0, 1323→1323, zero unbanked (exact-debt-ledger's
+  vulture leg GREEN — no ledger amendment due);
+  `check-shipped-surface-truth.py` rc=0;
+  `check-reachability-dispositions.py` rc=0 (its ledger audit covers the
+  169-module baseline file, not a fresh scan, so rc=0 is correct with the
+  two new modules lawfully absent from baseline);
+  `check-promotion-surface.py` rc=0; `check-ratchet-provenance.py` rc=1
+  solely via the reachability sub-gate (169→171 of 1396, naming exactly
+  `maistro.runs.admission_identity` and `maistro.tasks.admission_generation`,
+  contract-markers/enumerations/lifecycle sub-ratchets OK);
+  `check-reachability.py` rc=1 naming only those two modules. Full root
+  suite first-hand this round: **4F/5060P/129 skipped** — the three
+  previously named meta-tests plus
+  `test_branch_independence_repository.py::test_every_quality_json_state_surface_is_classified_once`,
+  all four failing only on the same two-module reachability delta
+  (assertion diffs name exactly `maistro.runs.admission_identity` /
+  `maistro.tasks.admission_generation`); this also covers the `test` job
+  (ci.yml) and, via coverage-gate's `combine` step re-running the root
+  suite as the `--source=scripts` producer, the Coverage gate; the
+  Quality gate (Pillars 1–4, 7, 8) reds at its `check-reachability.py`
+  step (quality.yml:1089), with its locally runnable sibling steps
+  re-verified green this round (radon rc=0 137→137, enumerations rc=0,
+  workspace-retirement rc=0, principal-identity rc=0,
+  frontend-typed-client rc=0, version/release/doc-links unexecuted here,
+  unchanged from base except this leaf's sanctioned files). Four
+  issue-named mutation kills re-executed first-hand with sha256-verified
+  byte-exact restores (classifier sha256 `578c1f17…a063` unchanged, final
+  tree clean): TAKEOVER/REPLACE_EXPIRED swapped 50F/82P; lease row before
+  binding row 21F/111P; LEGACY_UNRESOLVED row deleted (legacy classified
+  as v2) 10F/122P; mismatch row above expiry row 22F/110P.
+  `quality/` zero-diff vs base; `tasks/__init__.py`, `tasks/idempotency.py`,
+  `runs/__init__.py` zero-diff vs base; no production importer of the new
+  module (grep over `packages/*/src`). origin/develop still `3c761d14d`,
+  already an ancestor of HEAD (no develop sync conflict). Two-merge rule
+  re-read first-hand at `scripts/ratchet_provenance.py::load_authorizations`
+  (grants resolved from the base revision): no base-side grant has landed,
+  the issue forbids baseline rows/grants/dummy callers/waivers in this
+  leaf, so the reachability red has no in-lane repair — lawful fixes
+  remain the #1845 integration consumer or a maintainer-landed base-side
+  grant. Implementation/test readiness proven; stack stays unmerged by
+  design. This round appends this evidence section only.
