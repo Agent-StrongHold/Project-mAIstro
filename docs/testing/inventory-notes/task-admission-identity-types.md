@@ -6208,3 +6208,62 @@ re-derivation at the identical head; no tree changes beyond this note.
   unchanged; no develop merge is warranted.
 - Verdict: writer handoff MERGE-READY (handoff only, never integration
   approval). Note-only commit; no inventory delta (front-matter stays +79).
+
+## Round 86 re-verification (job 8c817740ef994d6483aa010c63d59569)
+
+Resolves the carried "worker requested attention: NEEDS-DEEP-REVIEW" block by
+fresh firsthand re-derivation at the unchanged head
+`029901824b59c8eda59e3cf55368fd7535f40c2b` (branch `auto-1851`, base
+`3c761d14db944a727fa0744444bc67cfe36d49f7`). Driver checks 5/5 green (uv sync,
+ruff check, ruff format --check, focused pytest, suite inventory).
+
+- Leaf acceptance re-proven by execution: focused suite 79/79 passed; all 12
+  issue-named tests pass (68 parametrized cases via `-k`); `ruff check`
+  "All checks passed!", `ruff format --check` clean on both leaf files; module
+  `mypy` "Success: no issues found in 1 source file";
+  `check-suite-inventory.py` ok re-run both full (17 suites, 31,208 unique
+  node IDs) and `--suite packages/maistro-core/tests`.
+- Contract re-read in full: `__all__` = exactly the 21 mandated names (AST
+  set match); all 17 record/result classes AST-verified
+  `@dataclass(frozen=True, slots=True)`; field order matches the issue for
+  every type; `AdmissionAssessment` = exactly the 6 mandated StrEnum
+  members/values; empty variants carry no truthiness override.
+- Isolation re-verified: zero production importers of `admission_identity`
+  (grep over `packages/**/*.py` = module + test only); `maistro/runs/__init__.py`
+  has no admission export; `tasks/idempotency.py` diff vs base = 0 lines;
+  branch diff vs merge base = exactly the 4 manifest surfaces.
+- Ledger proof: candidate `quality/vulture-baseline.json` carries exactly the
+  5 reviewed `AdmissionAssessment` rows; CI-exact vulture scan reports
+  trusted base 1323 -> scan 1328 with the delta exactly those 5 identities —
+  candidate ledger equals the scan, so no amendment is needed; nothing
+  genuinely dead exists to remove (the enum members are issue-mandated
+  contract surface and a runtime consumer is issue-forbidden in this leaf).
+- All four merge-queue failures at this head reproduced with CI exact argv,
+  each structural and in-leaf-uncurable:
+  1. `check-vulture-baseline.py packages/*/src --min-confidence 60
+     --exclude '*/third_party/*'` rc=1 — 5 NEW identities, all
+     `admission_identity.py:515-520` enum members; gate reply: "land a
+     reviewed grant first."
+  2. `check-reachability.py` rc=1 — exactly 1 newly unreachable module:
+     `maistro.runs.admission_identity` (the issue-predicted state of a
+     deliberately unwired leaf; the issue forbids a reachability
+     baseline/disposition addition or fake caller).
+  3. `check-ratchet-provenance.py` rc=1 — solely via
+     `check-reachability-provenance.py: trusted-base gate returned 1`.
+  4. Root `test` job: `pytest tests/test_check_reachability.py
+     tests/test_reachability_baseline_identity.py` = 3 failed / 36 passed,
+     the failures all committed-baseline-equals-tree self-checks with set-diff
+     exactly `maistro.runs.admission_identity`; `tests/test_check_vulture_baseline.py`
+     10 passed (candidate ledger rows do not trip it). The Coverage gate
+     aborts mechanically at the `quality.yml:712` producer, which runs that
+     same failing root suite under `set -e` before any coverage arithmetic.
+- Develop wall re-confirmed live: `git fetch origin develop` ->
+  `origin/develop` = `3c761d14d` = the merge base (zero drift, no sync merge
+  warranted), and `origin/develop:quality/ratchet-authorizations.json`
+  contains zero `admission_identity` grants, so the two-merge authorization
+  wall binds: no edit on this branch can authorize the 5 banked identities.
+- Verdict: writer handoff MERGE-READY (handoff only, never integration
+  approval). Implementation/test readiness is fully proven; the explicit
+  merge blocker is the separately authorized parent #1845 integration (real
+  runtime consumer) plus the prior trusted-base grant, exactly as the issue
+  directs. No inventory delta (front-matter stays +79).
