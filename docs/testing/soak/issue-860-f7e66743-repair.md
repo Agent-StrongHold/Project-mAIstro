@@ -33,9 +33,16 @@ Read repository instructions and the documentation authority map, proposed
 ADR-081, accepted ADR-081426-1f7c (ExecutionRuntime), and accepted
 ADR-081626-f383 (Attempt execution leases/fencing). The physical execution
 identity is Attempt, not Run. Admission deduplication does not prove unique
-physical execution. The accepted lease ADR explicitly defers expiry takeover
-and recovery-driven supersession; do not invent a competing reclaim authority
-to satisfy issue wording. Preserve `Goal -> Graph -> Run -> NodeRun -> Attempt`.
+physical execution. **Correction in job `1b4d23451b0142209942f88abb5acfab`:**
+the original report stopped at the lease ADR's historical deferral. Accepted
+ADR-082526-b36a subsequently defines renewal and expiry reclaim; accepted
+ADR-082826-08f0 defines the shared recovery disposition table. Live leases refuse
+recovery; lapsed leases are reclaimed through the canonical Run store and
+reconciled through `AttemptLifecycleReconciler`. Production
+`Container._reclaim_abandoned_attempts` calls these seams
+(`container.py:1222-1235`) from `recover_abandoned_attempts`.
+Do not invent a competing reclaim authority or treat the older deferral as an
+acceptance waiver. Preserve `Goal -> Graph -> Run -> NodeRun -> Attempt`.
 Proposed deployment ADR text is not an acceptance waiver.
 
 ## Remaining validation results
@@ -87,3 +94,47 @@ rerun the host preflight expecting duration to remove its artifact blocker.
 Progress: `{checked: 1, done: 0, skipped: 0, errors: 0, next: "designate and exercise exact RC production workload"}`.
 The single issue is explicitly blocked; CI triage is complete. Local commit of
 this report is the writer checkpoint, not integration or promotion approval.
+
+## Revalidation checkpoint — job 1b4d23451b0142209942f88abb5acfab
+
+Frozen assignment: #860, `auto-860`, clean start
+`df7cada267b1766ff2195792abf8244dbe114439`, supplied base unchanged. The only
+edited file this round is this report: correct the recovery-ADR interpretation
+above and append fresh evidence rather than add another duplicate handoff.
+No current driver check logs were present in the supplied job directory; the
+explicitly named historical `98a113.../check-3.log` was inspected. Its 21-versus-24
+DDL assertion is already repaired at this head (audit columns at
+`test_pg_learnings.py:175-177`); no test weakening or speculative fix is needed.
+
+Fresh commands (not inherited verification claims):
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`:
+  **PASS**, 1323 reviewed / 1323 findings, zero unclassified or never-allowlist;
+  checker-selected base `4aa68edc0b6b`. Log: `/tmp/860-1b4d-vulture.log`.
+  No identity requires a ledger amendment.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py tests/test_soak_promotion_gates.py -x -q`:
+  **102 passed, 6 skipped**. Log: `/tmp/860-1b4d-tests.log`. Database skips do not
+  prove PostgreSQL concurrency. Included the real middleware replica-allowance
+  regression and CLI rejection of otherwise-passing four-hour preflight data.
+- `uv run ruff check .`: **PASS**.
+- `uv run ruff format --check .`: **PASS**, 3270 files formatted.
+
+Acceptance remains **BLOCKED**, not repaired by a documentation correction.
+The ten-row assessment above remains applicable, with reclaim now explicitly
+mapped to the later accepted ADRs, not deferred as unsupported. Representative
+RC workload, two deployed RC replicas, sustained saturation/retry/leaks,
+physical-work uniqueness, deployment-wide non-bypass/security, complete deployed
+telemetry, active-work restart/recovery, long exact-RC soak, external findings
+disposition, and hash-bound RC evidence are all **UNVERIFIED this round**.
+The executed local middleware test demonstrates independent allowances; it does
+not validate a cluster-wide budget. `preflight_artifact_check` at
+`run_soak.py:730-741` still correctly rejects host uvicorn as exact-RC evidence.
+No designated immutable RC image/configuration was supplied, and no production
+soak was launched. Do not rerun this stale CI failure as though it were the
+remaining acceptance blocker.
+
+No tests added/removed and no inventory delta. No GitHub mutations, deployment
+changes, gate changes or ledger changes. Next: designate the immutable RC and
+representative production workload, exercise existing canonical recovery seams,
+and collect the required long-window evidence. Progress:
+`{checked: 1, done: 0, skipped: 0, errors: 0, next: "exact-RC soak prerequisites"}`.
