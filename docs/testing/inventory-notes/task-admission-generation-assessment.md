@@ -3530,3 +3530,55 @@ first-hand rather than trusted:
   `quality/` diff vs base is empty. Verdict-relevant statement unchanged:
   the stack stays unmerged by design; the repair lane adds this evidence
   section only.
+
+## Round 46 (2026-10-11, head `a4d5bfa3d1ef`) — first-hand re-validation repair round
+
+Driver checks in job `6948d996` at this head all rc=0 (uv sync, `ruff
+check .`, `ruff format --check .`, the 315-test three-file battery,
+`check-suite-inventory.py --suite packages/maistro-core/tests` ok
+16468); the prior round aborted on a provider timeout with no commit.
+The tree was clean at start and every claim below was re-executed
+first-hand, not trusted:
+
+- **Focused acceptance re-proven**: leaf suite 132 passed; live trio
+  (`test_root_admission_identity.py` + `test_idempotency.py`) 140
+  passed; ruff check/format clean on both leaf files; `mypy` clean on
+  the module; full `check-suite-inventory.py` 17/17 suites match. All
+  10 issue-named tests present.
+- **All four hosted reds re-attributed first-hand, one root cause**:
+  `check-vulture-baseline.py` at CI's exact argv rc=0 (1323 -> 1323,
+  zero unbanked); `check-shipped-surface-truth.py` rc=0;
+  `check-radon-baseline.py` rc=0 (137 -> 137); xenon at CI's exact
+  ten-package scope 139 block violations vs baseline 145, zero
+  module-rank and zero average violations, neither new module named;
+  `check-ratchet-provenance.py` rc=1 solely via the reachability
+  sub-gate 169 -> 171 naming exactly the two leaf modules;
+  `check-reachability.py` rc=1 on exactly `maistro.runs.
+  admission_identity` and `maistro.tasks.admission_generation`;
+  `check-reachability-dispositions.py` rc=0; `check-promotion-surface
+  .py` rc=0; root reachability meta-tests 3 failed / 64 passed over the
+  five reachability test files — the same delta that fails the `test`
+  job and aborts the Coverage gate's scripts-source producer leg
+  (`pytest tests/ ...` under `set -euo pipefail`). The `exact-debt-
+  ledger` red is the same reachability sub-gate, not the vulture leg.
+- **All four issue-named mutations re-killed in place** (clean tree;
+  pre-capture `cp` to `/tmp`; byte-exact restore; module sha256
+  `578c1f1747920f47...` verified identical to the round-43/44/45
+  record after every mutation): pristine control 132 passed;
+  TAKEOVER<->REPLACE_EXPIRED swap 50F/82P; lease row moved above the
+  binding row 14F/118P; `LEGACY_UNRESOLVED` row deleted 10F/122P;
+  mismatch row moved above the expiry row 22F/110P.
+- **Forbidden surfaces verified untouched vs base `435dc1937e04`**:
+  `tasks/idempotency.py`, `tasks/queue.py`, `tasks/__init__.py`,
+  `runs/__init__.py`, `runs/store.py`, `runs/store_boundary.py`,
+  `runs/model.py` — zero diff lines; `grep` for
+  `admission_generation|admission_identity` in `idempotency.py` and
+  `queue.py` returns zero hits; `quality/` diff vs base is empty.
+- **Verdict-relevant statement (unchanged from rounds 35–45)**: leaf
+  acceptance fully proven first-hand at `a4d5bfa3d1ef`; all four hosted
+  reds are the one sanctioned unwired two-module reachability delta the
+  issue itself predicts and forbids this leaf to repair (no fake
+  callers, no baseline additions, no grants, no wiring). The lawful fix
+  is the future #1845 integration consumer or a maintainer-landed
+  base-side grant, both outside this lane. The stack stays unmerged by
+  design; this round adds this evidence section only.
