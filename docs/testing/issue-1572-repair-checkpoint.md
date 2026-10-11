@@ -1,5 +1,90 @@
 # Issue #1572 CI repair checkpoint
 
+## Round 36 (2026-10-11, head ac9d155f182f, develop base 7d3b8ae6918 -> merged origin/develop 0dcbc91c24fc)
+
+Prior rounds' claims were not trusted; every leg below was re-executed
+first-hand on fresh round-36 databases (r36g18 on pgvector:pg18, r36g17 on
+pgvector:pg17) after merging the five new develop dependency commits
+(semgrep/typer/fastmcp/hypothesis/boto3; zero file overlap with this branch,
+clean ort merge, `uv sync --locked --extra dev` green).
+
+Acceptance re-executed:
+
+- pg18: `alembic upgrade head` empty -> 063, `canonical_goals`,
+  `canonical_goal_revisions`, `canonical_goal_transitions` catalog-verified,
+  `alembic heads` = single head `063`; goals suite 70/70 passed with
+  `MAISTRO_REQUIRE_PG_LEGS=1` and both DSNs set.
+- pg17: identical — empty -> 063, three tables, single head, goals 70/70.
+- `tests/migrations` 168/168 passed per major (`MAISTRO_TEST_DATABASE_URL` set):
+  includes installed-base forward upgrades from the real develop snapshots
+  `c560d4c` (user-model 056), `4675101` (planner 057) and `66f3cea` (HITL 061)
+  with no stamp edit, merged-identity preservation, single-head/unique-ID,
+  downgrade-refusal and reapplication coverage, and
+  `_drive_and_reopen_the_durable_composition` — Goals, revisions and immutable
+  bound Run provenance written, pool closed, reopened fresh, read back.
+- `test_goal_restart_readback.py` durable leg PASSED (not skipped) with the
+  PostgreSQL DSN set.
+- `check-m1-convergence-freeze.py --base 7d3b8ae69...` and `--base
+  origin/develop`: exit 0 (no GoalRun/OrchestratorRun/second executor).
+- `ruff check .`, `ruff format --check .`: green. `mypy` (7 packages, 899
+  files): clean. `check-suite-inventory.py --suite packages/maistro-core/tests`:
+  matches the recorded inventory; no inventory delta (merge added no tests).
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI argv): exit 0, 1323 = 1323 — no ledger amendment
+  applies in this lane.
+- Merge-queue red re-confirmed as the single external gap against the UPDATED
+  develop: `check-execution-lifecycles.py` exit 1, sole delta
+  `maistro.goals.model::GoalStatus: NEW work-state vocabulary ... no
+  already-landed authorization` (base 0dcbc91c24fc);
+  `tests/test_check_execution_lifecycles.py` = 28 passed / 1 failed with the
+  identical delta. `quality/ratchet-authorizations.json` is byte-identical to
+  `origin/develop` (sha256 2f7b95dc5f09f8e6...) and carries zero GoalStatus
+  grants; `scripts/ratchet_provenance.py` `load_authorizations` provably reads
+  the grant file from the base revision (two-merge rule), so no on-branch
+  repair exists. Disposition unchanged: grant-only develop landing of the
+  GoalStatus execution-lifecycles authorization is the sole remaining action
+  for this issue.
+
+New finding — pre-existing on develop, OUT OF #1572 SCOPE, recorded not
+repaired (candidate-edit scope for this lane excludes approval-store files,
+and both sides of the mismatch are byte-identical to origin/develop):
+
+- On any alembic-migrated PostgreSQL database,
+  `PgApprovalStore.create` fails with `asyncpg
+  InvalidColumnReferenceError: there is no unique or exclusion constraint
+  matching the ON CONFLICT specification`.
+- Evidence: `packages/maistro-core/src/maistro/capabilities/approval_store.py`
+  inserts `ON CONFLICT (run_id, effect_scope, binding_id, effect_key)`
+  (:414 area; its own bootstrap DDL at :274-276 declares
+  `UNIQUE(run_id, effect_scope, binding_id, effect_key)`), but migration
+  `alembic/versions/043_invocation_quota_door.py` ships
+  `uq_capability_approval_effect UNIQUE (run_id, node_run_id, binding_id,
+  effect_key)` — a migrated table therefore lacks the constraint the runtime
+  SQL targets. Reproduced first-hand on a pristine migrated pg18 database:
+  `packages/maistro-core/tests/conformance/test_approval_store_conformance.py`
+  = 6 failed / 17 passed (postgres legs only; memory/SQLite legs pass). The
+  full `packages/maistro-core/tests` run (16205 passed, 137 skipped, 3
+  xfailed) shows these 6 as the ONLY failures; the same file passes its
+  non-postgres parametrizations, so suites without a DSN never see it.
+- Attribution: `approval_store.py`, `tests/conformance/` and 043's DDL are
+  byte-identical between this branch and `origin/develop` (this branch's 043
+  delta is docstring-only), so develop inherits the defect; no migration ever
+  adds an effect_scope-keyed unique constraint on `capability_approvals`
+  (035's effect_scope work is on `capability_invocations`). It surfaced now
+  because this round ran the conformance directory with a migrated PG DSN;
+  CI's failing merge-queue jobs do not collect it.
+- Owner: the capability/approval-store lane (#1196/#55 effect path), not this
+  issue. No edit made here by scope discipline.
+
+Round-36 verdict: all #1572 acceptance criteria proven first-hand on both
+supported majors; no Goal-scoped defect found; the branch is merged current
+with develop and left with this note as the only delta.
+
+---
+
+Earlier checkpoint (round of head 24c20e0d13, base 8fbbbfb91d8) retained
+below for provenance.
+
 Frozen scope: issue #1572 only; branch auto-1572; starting head
 24c20e0d13fead743b32c8af02a4421e085793b3; supplied develop base
 8fbbbfb91d78d30d756cf675b7b1a4c1ccff06e5. No GitHub mutations.
