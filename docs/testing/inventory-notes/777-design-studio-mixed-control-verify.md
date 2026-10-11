@@ -22290,3 +22290,50 @@ in-tree. All 13 acceptance boxes require APIs owned by the open issues
 above and the issue's stop condition forbids a Design-Studio-private
 substitute, which the tree correctly does not contain. Inventory delta
 **+0** (this record only). (Refs #777)
+
+## Round 148 — repair round at unchanged head 399a838ca (job ac97bde1, 2026-10-11)
+
+Job manifest `checks: []` and **no `check-*.log` in the job directory** — no
+deterministic check ran or failed in this job; the prompt's "Validation
+failed" pointer again resolves to historical job `53d5e08b` (ruff-format
+failure on `agent_loop.py`, fixed by `b154ad0f9`). Prior result artifact
+(job `25c35cede`, round 147) is a completed BLOCKED verdict at exactly this
+head — no sync conflict (fresh fetch: merge-base == `origin/develop`
+`435dc1937` == manifest base; worktree clean at manifest head).
+
+Dispatch capture re-read at 07:30:20Z (61 sources, receipt sha256
+`25306b66…`): #777 **open**, updated 06:58:33Z, **13/13 acceptance boxes
+unchecked**; blockers **#804/#805/#806/#53/#774/#776/#93/#95/#783 all OPEN**
+(#39/#458/#775 closed); PR #1660 open draft, head `460ad5802`, mergeable;
+comment tail automation-only through 06:58:33Z (round-147 blocked marker).
+
+Battery re-executed live at this head, all exit 0: `ruff check .`;
+`ruff format --check .` (3282 files already formatted); vulture CI-exact
+gate with the workflow's exact arguments (quality.yml:1078,
+unquoted `packages/*/src`) → 1323 reviewed → 1322 findings, **0 unbanked**;
+`check-ratchet-provenance.py` 0 violations / 53 consumers OK;
+`check-shipped-surface-truth.py`; `check-promotion-surface.py` ok;
+`check-reachability.py` 1394 production / 169 unreachable;
+`check-suite-inventory.py` 17/17; `check-backlog-consistency.py` 167 items;
+`mypy --strict packages/maistro-core/src/maistro/runs/model.py` Success.
+
+Targeted pytest WITH live PG (`maistro_test_777` @ 127.0.0.1:5433,
+`alembic heads` == 062 (head) == repo head `062_audit_cursor_indexes.py`,
+both `DATABASE_URL` and `MAISTRO_TEST_PG_DSN` set): cancellation-cause model
+**34 passed**; bootstrap `-k agent_loop` **40 passed / 200 deselected**;
+hive backend `-k 'design or workspace or agent'` **559 passed / 0 skipped**
+(3086 deselected) — matches rounds 137–147 exactly.
+
+Negative invariants re-verified live: `grep -rEn "class (GoalReconcil|
+ReconciliationLoop|GoalOwner)"` under `packages/*/src` → exit 1 (zero
+matches); `workspace_agent.py` **149 lines**, roster-only;
+`permission_source.py` (security/sentinel) defers binding-scoped tool-use
+to #804 verbatim; `system_prompt` reader live at
+`maistro_rsi/local_loop.py:817`; production diff vs base unchanged
+(4 code/test files +30/−6 + sanctioned vulture row −1).
+
+**Verdict: BLOCKED** — dependency-blocking (148th round); nothing repairable
+in-tree. All 13 acceptance boxes require APIs owned by the open issues
+above and the issue's stop condition forbids a Design-Studio-private
+substitute, which the tree correctly does not contain. Inventory delta
+**+0** (this record only). (Refs #777)
