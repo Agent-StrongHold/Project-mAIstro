@@ -5537,3 +5537,99 @@ merge blocker + the stack left unmerged pending an owner-landed grant on
 develop or the #1845 integration-head consumer. Writer handoff
 MERGE-READY (handoff only, never integration approval). Note-only commit;
 no inventory delta; front-matter `+79` remains accurate.
+
+## Round 76 — CI-repair round: salvaged ledger edits reviewed, mis-banked vulture rows re-banked, prohibited reachability additions removed again (2026-10-11, job 8d6b8f5dd66b40ad8144d09cfe63eb56)
+
+Dispatched at salvage head `ac3b21315` (driver commit of worker
+93c7a0a1dd7a412483a38999a756a93d's uncommitted modifications on top of
+`b3f27f6ee`; that worker's own verdict was NEEDS-DEEP-REVIEW naming the
+vulture rows and the reachability report). Driver checks 5/5 green at that
+head (sync, ruff check, ruff format --check, focused 79/79, suite-inventory
+ok). The salvage diff vs `b3f27f6ee` touched four files; each hunk was
+reproduced and evaluated against the issue text (reread from the dispatch
+capture this round) before any edit:
+
+1. `quality/reachability-baseline.json` re-added the
+   `maistro.runs.admission_identity` row (2-space indented); 
+   `quality/reachability-dispositions.json` re-added a `runs-unwired`
+   CONNECT group; `docs/architecture/CONVERGENCE-MATRIX.md` flipped the
+   Run/NodeRun/Attempt lifecycle row `none`->`few`. Effect proven by
+   execution: `check-reachability.py` rc=0 and
+   `check-reachability-dispositions.py` rc=0 at the salvage head — i.e. the
+   additions made this leaf "independently green", which the issue forbids
+   outright ("No fake callers, baseline additions, grants, disabled gates or
+   quality waivers are permitted"; "A candidate baseline update cannot grant
+   itself permission"; "Do not add ... allowlist/baseline entries ... to make
+   this leaf independently green") and which round 72 already removed as
+   prohibited self-grants. The CI-repair lane's ledger exception covers only
+   `quality/vulture-baseline.json`. The trusted-base wall is unaffected
+   either way: `check-reachability-provenance.py` rc=1 at the salvage head
+   with "NEW unreachable module absent from trusted base and not previously
+   authorized", because `load_authorizations` reads grants from base
+   `435dc1937`, which carries none.
+2. `quality/vulture-baseline.json` moved the five banked
+   `AdmissionAssessment` identities from `pydantic-declarative-field` to the
+   later `schema-enum-member` rule and dropped the EOF newline. This broke
+   two things, both reproduced firsthand at `ac3b21315`: (a) the vulture
+   gate's candidate bookkeeping — "pydantic-declarative-field: 5 NEW
+   identit(y/ies) not in the ledger" plus "schema-enum-member: 5 recorded
+   identit(y/ies) no longer found — prune them" — because `_classify` gives
+   each finding to the FIRST matching rule and the module source contains
+   `StrEnum`, so the findings classify into `pydantic-declarative-field`
+   wherever they are recorded; (b) the root-suite self-check
+   `tests/test_check_vulture_baseline.py::test_committed_baseline_has_explicit_identities`
+   FAILED (1 failed, 48 passed) on the unsorted `schema-enum-member` list —
+   a NEW `test`-job red relative to `b3f27f6ee`, i.e. the salvage regressed
+   the very CI job this lane repairs.
+
+Repair (all edits this round, no git history operations): the three
+reachability/matrix files restored **byte-identical to base `435dc1937`**
+(`git diff 435dc1937 -- <files>` empty); `quality/vulture-baseline.json`
+restored **byte-identical to the verified round-75 state `b3f27f6ee`** (= base
+plus the five sorted rows in `pydantic-declarative-field`, EOF newline
+restored; `git diff b3f27f6ee -- quality/vulture-baseline.json` empty). The
+five rows stay banked under the lane brief's explicit vulture-ledger
+amendment authorization (reviewed-retained issue-mandated enum contract; none
+genuinely dead — pinned by the focused suite).
+
+Post-repair battery, all executed at the repaired tree:
+- vulture (CI exact argv) rc=1, scan-exact 1328 = 1323 base + 5, solely
+  "not authorized by the trusted base ... land a reviewed grant first";
+  candidate bookkeeping clean (pydantic-declarative-field 397 = 397,
+  schema-enum-member 1 = 1, unclassified 0, no prune/unbank lines).
+- `check-reachability.py` rc=1 with exactly "1 module(s) are NEWLY
+  UNREACHABLE: maistro.runs.admission_identity" (the issue-predicted honest
+  state); `check-reachability-dispositions.py` rc=0 (49 groups / 169
+  modules, 147 CONNECT / 20 LIBRARY / 2 RETIRE).
+- `check-reachability-provenance.py` rc=1 (unauthorized + unbanked, the
+  two-merge wall); `check-reachability-dispositions-provenance.py` rc=0;
+  `check-ratchet-provenance.py` rc=1 solely via check-reachability-provenance;
+  `check-convergence-matrix.py` rc=0 (52 subsystems, 169 attributed, census
+  agrees with `none`); `check-promotion-surface.py` rc=0;
+  `check-shipped-surface-truth.py` rc=0.
+- Root-suite self-checks: vulture baseline self-check GREEN again; the three
+  committed-baseline-equals-tree reachability self-checks
+  (`test_baseline_matches_the_tree`,
+  `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set`) remain red — the
+  structural, issue-predicted state documented since the 2026-10-06 entry,
+  curable only by issue-forbidden additions or the #1845 consumer.
+- Full `ruff check .` rc=0; `ruff format --check .` rc=0 (3275 files);
+  focused pytest 79/79 rc=0; mypy leaf rc=0; `check-suite-inventory.py` rc=0
+  (17 suites); zero production importers of the module (git grep over
+  packages/*/src).
+
+Scope vs base after repair: exactly the four leaf files (module +520, tests
++660, this note, vulture ledger +5). No inventory delta this round; the
+front-matter `+79` remains accurate.
+
+Conclusion: the salvage was directionally the round-72/73 regression
+repeated (prohibited self-grants plus a mis-banked vulture move); the
+repair restores the verified round-75 terminal state, strictly improving
+the root suite and the vulture gate's candidate side while leaving the
+single trusted-base authorization wall exactly as the issue predicts and
+prescribes reporting. Green merge-queue CI still requires external owner
+action (a reviewed grant landed on develop, or the #1845 integration head
+wiring the real consumer); the stack stays unmerged per the staging
+constraint. Writer handoff MERGE-READY (handoff only, never integration
+approval).
