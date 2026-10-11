@@ -3146,3 +3146,94 @@ this note.
   and explicitly forbidden to this leaf by the issue (no fake callers, no
   baseline additions, no grants, no wiring). The stack stays unmerged by
   design; no ledger was amended and no merge/PR/GitHub action was taken.
+
+## Round 40 — repair-round re-verification at head `689aeb6cdb9c` (2026-10-11)
+
+Prior round (job `518648f19`) ended `success: false` on a **provider timeout**
+after all five driver checks returned 0 at this exact head (`689aeb6cdb9c`,
+round 39's evidence commit); nothing was uncommitted and no salvage was
+needed. This round re-executed the acceptance battery first-hand instead of
+trusting round 39. No source, test, or ledger file was edited; the only tree
+change is this note.
+
+- **Driver checks at this head all green (5/5 rc=0)**: `uv sync --locked
+  --extra dev`; `ruff check .` ("All checks passed!"); `ruff format --check .`
+  (3277 files); driver focused trio 315 passed;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok (16468).
+- **Leaf focused runs re-proven**: 132 passed
+  (`tasks/test_admission_generation_assessment.py`), 140 passed
+  (`runs/test_root_admission_identity.py` + `tasks/test_idempotency.py`);
+  ruff check/format clean on both leaf files; mypy clean on the module.
+  Decision order and input validation re-read from source: expiry-inclusive
+  row first, then mismatch, binding, legacy-unresolved, lease, `PENDING`
+  fallback; exact-class gate by `type(record)` identity; fingerprint
+  `[0-9a-f]{64}` fullmatch; `now_us` int-not-bool in signed 64-bit range.
+- **Forbidden surface re-proven**: `grep -rn admission_generation
+  packages/*/src` hits only the module itself; `tasks/idempotency.py` imports
+  none of it and has an empty diff vs base `435dc1937e04`; the full base..head
+  diff is exactly the 11 manifest surfaces (no `quality/*.json`, no
+  initializers, no queue). The subprocess import-spy test passes inside the
+  132.
+- **All four issue-named mutations re-killed** (in-place mutation with
+  byte-exact restore, original sha256
+  `578c1f1747920f4716822aaaa2a1c9ca415f76064bdf1a5ececaee22d7e7a063`
+  re-verified after each mutation and at battery end; `git status` clean):
+  swap TAKEOVER/REPLACE_EXPIRED -> 1F/23P (with `-x`); lease row above
+  binding row -> 1F/35P; `LEGACY_UNRESOLVED` row deleted -> 1F/24P; mismatch
+  row above expiry row -> 1F/55P. Every mutation drives at least one focused
+  failure.
+- **exact-debt-ledger red re-attributed first-hand**: CI-argv vulture
+  (`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`) exit 0, 1323 -> 1323, zero unbanked identities,
+  nothing to amend (40th consecutive empty amendment). The red is
+  `check-ratchet-provenance.py` exit 1 **solely** via its reachability
+  sub-gate: `check-reachability-provenance.py` exit 1 naming exactly
+  `maistro.runs.admission_identity` and `maistro.tasks.admission_generation`
+  as NEW unreachable modules absent from the trusted base (169 -> 171); all
+  other provenance sub-gates OK. Two-merge rule re-read at source
+  (`scripts/ratchet_provenance.py::load_authorizations`, lines 486–502):
+  grants are read **from the base revision** — "a new grant does not take
+  effect in the change that introduces it. Authorizing a floor-raise is now
+  two merges" — so no in-branch ledger or grant edit can clear this, and the
+  issue forbids them for this leaf anyway.
+- **Quality gate red re-proven first-hand**: `check-reachability.py` exit 1
+  naming exactly the two leaf modules as NEWLY UNREACHABLE (171 of 1396);
+  `check-reachability-dispositions.py` exit 0 (169 dispositioned);
+  `check-promotion-surface.py` exit 0.
+- **`test` job red re-proven at the meta-test layer**: the six
+  reachability-related root test files
+  (`test_check_reachability.py`, `test_reachability_baseline_identity.py`,
+  `test_reachability_scanner.py`, `test_reachability_source_universe.py`,
+  `test_check_reachability_dispositions.py`,
+  `test_ratchet_provenance_integration_base.py`) -> **3 failed / 79 passed**,
+  the same three sanctioned meta-tests as round 39
+  (`test_baseline_matches_the_tree`,
+  `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set`), each failing only on
+  the two-module delta ("Extra items in the left set:
+  'maistro.tasks.admission_generation',
+  'maistro.runs.admission_identity'"). The round-39 fourth local failure
+  (gitignored `quality/ac-state.json` artifact) was not re-triggered because
+  this narrower selection does not include
+  `test_branch_independence_repository.py`.
+- **Coverage-gate attribution**: the scripts-source producer leg runs
+  `pytest tests/ ...` under `coverage run --source=scripts`
+  (`quality.yml:691-694`), so its red cause is the same three meta-test
+  failures proven directly above under plain pytest; the `combine` step dies
+  before `coverage xml` under `set -euo pipefail` (round-38/39 first-hand
+  evidence stands). This round re-proved the **core-suite producer leg
+  green**: `coverage-unit`'s exact maistro-core invocation -> **15421
+  passed, 1044 skipped, 3 xfailed, 0 failed**.
+- **Full inventory fold re-proven**: `check-suite-inventory.py` exit 0 —
+  17 suites, 31335 collected = 31335 unique identities, 0 duplicates; the
+  front-matter `inventory-delta` (+132 for `packages/maistro-core/tests`)
+  still matches this suite's collection exactly.
+- **Verdict-relevant statement (unchanged from rounds 35–39)**: leaf
+  acceptance fully proven first-hand at `689aeb6cdb9c`; all four hosted reds
+  are the one sanctioned unwired two-module reachability delta the issue
+  itself predicts ("check-reachability.py would classify the new module as
+  newly unreachable"); the lawful fix is the future #1845 integration
+  consumer or a maintainer-landed base-side grant — both outside this lane's
+  authority and explicitly forbidden to this leaf (no fake callers, no
+  baseline additions, no grants, no wiring). The stack stays unmerged by
+  design; no ledger was amended and no merge/PR/GitHub action was taken.
