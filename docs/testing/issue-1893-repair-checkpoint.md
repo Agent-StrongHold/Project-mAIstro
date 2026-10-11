@@ -1,5 +1,82 @@
 # Issue 1893 repair checkpoint
 
+## Repair recheck: job 57b5d1880e88480487e08abd5148d462
+
+Frozen item: #1893 only; clean starting HEAD
+`5eae17c95659ad4db841a7b76ff8bde5771162a2`, assigned trusted base
+`435dc1937e0407ab4de198ffcced49860bb14ad2`. Reviewed the supplied frozen
+issue body/check records, driver `check-0.log` through `check-4.log`, repository
+instructions, both implementation and test files, migration 055's mapping and
+constraint, and accepted ADRs 081226-a66b, 082526-7f02 and 083126-5e62.
+No previous execution claim was counted as fresh proof.
+
+Fresh commands (1200-second timeouts):
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`:
+  PASS, 1323 findings, zero unclassified, zero never-allowlist findings. No
+  retained unbanked or eliminated identity warrants a Vulture ledger amendment.
+- `RATCHET_BASE_REV=435dc1937e0407ab4de198ffcced49860bb14ad2 uv run python scripts/check-ratchet-provenance.py`:
+  FAIL, exit 1. Both admission modules are NEW unauthorized unreachable
+  modules and NEW unauthorized dispositions (169 trusted, 171 candidate).
+  All other sub-ratchets pass. Logs: `worker-vulture.log` and
+  `worker-provenance.log` in the assigned job directory.
+- `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q -r s`:
+  **201 passed, 3 skipped**, 204 collected cases, 1.34s. All three skips are
+  the real-pool test at `test_admission_codec.py:470`: both required PG
+  variables are absent. Log: `worker-focused.log` in the job directory.
+- `uv run ruff check .`: PASS.
+- `uv run ruff format --check .`: PASS, 3277 files already formatted.
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py`:
+  PASS, two source files.
+- `uv run python scripts/check-shipped-surface-truth.py`: PASS.
+- `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests`:
+  PASS, 16466 nodes, no duplicate test evidence.
+- `rg -n 'admission_codec|runs.admission_identity' packages/*/src`: only the
+  codec's DTO import and Vulture whitelist import, not a production consumer.
+
+Acceptance rechecked against source and this execution:
+
+- Frozen/slotted header, required signatures/six codes, strict UUID hex,
+  signed timestamps, named flat mappings and #1851 constructor validation:
+  source review and focused cases PASS.
+- Immutable snapshot round trips, paired binding columns consistent with
+  migration 055, legacy bound/unresolved/partial/receipt-only handling,
+  header/full-decode separation and unknown/mismatched format rejection:
+  focused cases PASS. Missing receipt evidence stays partial rather than
+  inventing identity to satisfy `AdmissionBinding`.
+- Strict TEXT JSON, duplicate/nonobject/nonfinite rejection, safe diagnostics,
+  tagged program_context preservation and unchanged stored fingerprints:
+  focused JSON, Unicode, numeric-loss, nesting and tag cases PASS.
+- Evidence-json/model materialization and original-model fingerprinting:
+  UNVERIFIED end-to-end; these fixtures construct tags directly.
+- Real migrated PostgreSQL, pool/session identities, SQL residue counts,
+  Run JSONB object persistence, authorized principals/Workspace/Project and
+  registered Graph kinds: UNVERIFIED this round. Skips and DTO fixtures are
+  not durability or authorization proof.
+- Production reachability and unchanged full CI: NOT PROVEN. No consumer;
+  provenance gate fails. Consumer expiry/409 precedence and crash/dispatch
+  invariants remain UNVERIFIED and outside B2's representation-only scope.
+- No clock, assessment/claim decision, SQL mutation, HTTP/queue/scope utility
+  or policy change introduced. ADR reconciliation preserves the canonical
+  lifecycle, immutable admission provenance and trusted-base authority.
+
+The frozen dispatch's failed `test` check names
+`3f2c79a70d9e1b0b6b6ffc99562cb35db5326828`, not this head; its summary/text are
+null. The captured `test` check on `9922f395daa39249991f18210a6d4da68a3a76cb`
+succeeded while `exact-debt-ledger` failed. These records do not identify a
+current-head failing test to repair. That signal remains UNRESOLVED; no
+speculative code or cosmetic scanner repair is justified.
+
+Decision: **BLOCKED**. Only this checkpoint changes; no new tests or inventory
+delta, no code/ledger/grant edits, no fake caller or activation, no GitHub
+mutation. This is an evidence handoff, not merge approval. No pre-fix/mutation
+experiment is claimed for unchanged code. Next: owner-controlled trusted-base
+prerequisite resolution and a current-head test traceback if a separate repair
+is needed. Do not redispatch the same source as unbanked Vulture debt.
+Progress: checked 1 issue, done 0 code repairs, skipped 0 issues, errors 1
+required gate. Commit this checkpoint locally; remaining acceptance is explicit
+above.
+
 ## Repair recheck: job df08dd8a60534fb2bdb15c22261b1cec
 
 Frozen item: #1893 only, starting HEAD `c5f755480759b142b33543235fbf206f0fd8e0ef`,
