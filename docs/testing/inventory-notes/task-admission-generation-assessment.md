@@ -3073,3 +3073,76 @@ instead of trusting rounds 34–37:
   #1845 integration consumer (or a maintainer-landed base-side grant).
   The stack stays unmerged by design; no ledger was amended (vulture had
   nothing to amend) and no merge/PR/GitHub action was taken.
+
+## Round 39 — repair-round re-verification at head `ca66bac8363e` (2026-10-11)
+
+Prior round (job `d14162928`) ended `success: false` on a **provider timeout**
+after all five driver checks returned 0; nothing was uncommitted. This round
+re-executed every claim first-hand at `ca66bac8363e` instead of trusting
+rounds 34–38. No source or ledger file was edited; the only tree change is
+this note.
+
+- **Leaf focused runs re-proven**: 132 passed
+  (`tasks/test_admission_generation_assessment.py`), 140 passed
+  (`runs/test_root_admission_identity.py` + `tasks/test_idempotency.py`),
+  driver trio 315 passed, ruff check/format clean on both leaf files, mypy
+  clean on the module; all 10 issue-named tests present exactly once,
+  0 skipped. `tasks/idempotency.py` and `tasks/queue.py` have empty diffs vs
+  base `435dc1937e04` (import boundary untouched);
+  `git diff --numstat` over `quality/` is empty (no self-granted baseline).
+- **All four issue-named mutations re-killed under verified shadow
+  precedence** (fresh `/tmp/mut39` full-`maistro` shadow; `-o
+  pythonpath=/tmp/mut39` ini override plus an in-session
+  `pytest_runtest_call` probe asserting both the imported module's
+  `__file__` and a `MUTMARK` in its source — round-37 trap note followed):
+  swap TAKEOVER/REPLACE_EXPIRED -> 50F/82P; lease row above binding row ->
+  14F/118P; `LEGACY_UNRESOLVED` row deleted -> 10F/122P; mismatch row above
+  expiry row -> 22F/110P. sha256-verified pristine restore after each
+  mutation and at battery end (132P; `git status` clean).
+- **exact-debt-ledger red re-attributed first-hand**: CI-argv vulture
+  (`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`) exit 0, 1323 -> 1323, zero unbanked, nothing to amend
+  (39th consecutive empty amendment). The red is
+  `check-ratchet-provenance.py` exit 1 **solely** via its reachability
+  sub-gate (169 -> 171; the two sanctioned leaf modules; all other
+  sub-gates OK). Two-merge rule re-read at source
+  (`scripts/ratchet_provenance.py::load_authorizations`, lines 486–502):
+  grants are read **from the base revision** — "a new grant does not take
+  effect in the change that introduces it" — so no in-branch ledger or
+  grant edit can clear it, and the issue forbids them anyway.
+- **Quality gate red re-proven first-hand**: `check-reachability.py` exit 1
+  naming exactly `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_generation` as NEWLY UNREACHABLE (171 of 1396);
+  `check-reachability-dispositions.py` exit 0 (169 unchanged);
+  `check-promotion-surface.py` exit 0.
+- **`test` job red re-proven first-hand**: full root tree
+  (`pytest tests/ --ignore=tests/tools/registry --timeout=60 -q`) -> 4
+  failed / 4967 passed: the three sanctioned reachability meta-tests
+  (`test_check_reachability.py::test_baseline_matches_the_tree`,
+  `test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`)
+  plus
+  `test_branch_independence_repository.py::test_every_quality_json_state_surface_is_classified_once`,
+  which fails only against the **gitignored local runner artifact**
+  `quality/ac-state.json` (`.gitignore:81`, present locally, untracked, so
+  absent on hosted runners — same attribution as round 38).
+- **Coverage-gate red re-proven at the exact producer leg**:
+  `coverage run --append --branch --source=scripts -m pytest tests/
+  tests/test_model_check_consumer_claim.py
+  packages/maistro-core/tests/extensions/test_lifecycle_proof.py
+  --timeout=30 -q` -> exit 1 in ~511s with the same four failures, so the
+  `combine` step dies before `coverage xml` under `set -euo pipefail`
+  (`quality.yml:554`). The publish-set producer leg is green: the full
+  maistro-core suite under the job's exact coverage invocation -> 15421
+  passed, 1044 skipped, 3 xfailed, **0 failed** (16468 collected, matching
+  the recorded inventory).
+- **Full inventory fold re-proven**: `check-suite-inventory.py` exit 0 —
+  17 suites, 31335 collected = 31335 unique identities, 0 duplicates.
+- **Verdict-relevant statement (unchanged from rounds 35–38)**: leaf
+  acceptance fully proven first-hand at `ca66bac8363e`; all four hosted
+  reds are the one sanctioned unwired two-module reachability delta; the
+  lawful fix is the future #1845 integration consumer or a
+  maintainer-landed base-side grant — both outside this lane's authority
+  and explicitly forbidden to this leaf by the issue (no fake callers, no
+  baseline additions, no grants, no wiring). The stack stays unmerged by
+  design; no ledger was amended and no merge/PR/GitHub action was taken.
