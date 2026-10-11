@@ -585,3 +585,82 @@ inventory counts are unchanged, so no inventory note is required.
 Progress: checked 1 issue, done 0 repairs, skipped 0, errors 1 provenance blocker.
 Next: integration-owner resolution and exact CI failure evidence, not another
 unqualified green-run claim. This local commit is a blocked handoff only.
+
+## Repair job 2fbeda4b — validation at 47df7782
+
+
+- Assigned issue: #1893 only; branch `auto-1893`.
+- Starting HEAD: `47df778298fefc285ed416ba5005c2055b7561a6` (verified); supplied develop base: `435dc1937e0407ab4de198ffcced49860bb14ad2`.
+- Initial worktree clean; no incoming edits to salvage.
+- Inputs: supplied dispatch-context.json, check-0.log through check-4.log, prior result if present.
+- Files under review: admission codec, admission identity types, adjacent admission tests, existing atomic-admission inventory notes, relevant CI configuration and quality gates. Edits limited to evidence-backed #1893 repairs and this validation report; vulture ledger only if the assigned scan proves a need. No reachability/grant/gate edits or production activation.
+- Ambiguity: dispatch reports `test: failure` without a failing test. Proceed by inspecting saved logs and running focused validation; do not invent a repair.
+
+## Progress
+
+- Confirmed assigned HEAD and clean worktree; read repository instructions and issue acceptance body from saved dispatch evidence.
+- Inspected saved driver logs (all pass, focused tests skip three PG cases),
+  prior result, codec/identity source, adjacent tests, binding inventory note,
+  and exact-debt-ledger workflow. Read accepted ADR-081226-a66b and
+  ADR-082526-7f02: immutable admission provenance must not become an alternate
+  execution or authorization authority. No activation is justified by this leaf.
+
+### Fresh executed validation
+
+All commands ran at the starting source SHA, with 1000–1200 second timeouts.
+Logs for lint, format, mypy, focused tests, inventory and consumer search are
+`worker-*.log` in the assigned job directory.
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`: passed, 1323 findings,
+  zero unclassified. No evidence warrants a Vulture ledger amendment.
+- `RATCHET_BASE_REV=435dc1937e0407ab4de198ffcced49860bb14ad2 uv run python
+  scripts/check-ratchet-provenance.py`: **exit 1**. Both admission modules
+  have unauthorized NEW reachability dispositions and unreachable-module
+  rows. This is the exact-debt-ledger workflow's gate against the resolved
+  supplied develop base. The local `origin/develop` resolves to the same SHA.
+- `uv run ruff check .`: passed.
+- `uv run ruff format --check .`: passed, 3277 files already formatted.
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py
+  packages/maistro-core/src/maistro/runs/admission_identity.py`: two files passed.
+- `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py
+  packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q`:
+  **201 passed, 3 skipped**, 204 collected nodes. The skips are PostgreSQL
+  parametrizations, not durability evidence.
+- `uv run python scripts/check-suite-inventory.py --suite
+  packages/maistro-core/tests`: passed, 16466 nodes, zero duplicate evidence.
+- `rg -n 'admission_codec|decode_admission_record' packages/*/src`: only the
+  codec's export and definition; no reachable production consumer established.
+
+### Acceptance and blocked handoff
+
+The focused run executes the first nine named prospective contracts: immutable
+snapshot round trips; storage-only owner UUID hex; explicit unbound/bound/partial
+legacy evidence; expired-header identity preservation; header expiry and
+fingerprint preserved despite full-decode failure; unknown-format rejection;
+tagged nonfinite evidence and unchanged stored fingerprint; invalid/duplicate
+JSON rejection. Additional cases cover scalar/header mismatch, signed timestamps,
+strict UUIDs, safe error chains, corrupt numeric/Unicode TEXT, receipt-only
+legacy failures, fresh SQL mappings, and v2 task/receipt binding consistency.
+These are codec-boundary tests, not production admission or authorization proof.
+
+The tenth contract (real raw/production PostgreSQL pools), actual model-based
+encoding/materialization, original-model fingerprinting, Run JSONB object
+insertion, authorized Workspace/Project/Graph admission, consumer expiry/409
+precedence, full unchanged required CI, and coordination/activation approval
+are **UNVERIFIED in this round**. No database was provisioned and no new mutation
+or pre-fix failure is claimed. Previous PostgreSQL claims above are historical,
+not substituted for current execution.
+
+**BLOCKED.** The dispatched `test: failure` remains **UNRESOLVED** without a
+current-head failing traceback; focused tests do not reproduce it. The proven
+provenance blocker requires integration-owner resolution outside the permitted
+Vulture-only ledger exception. Do not invent a caller, self-authorize a grant,
+or change gates to bypass it. Obtain that resolution and the exact failing CI
+traceback before assigning another speculative repair.
+
+Only this report was appended; all earlier report content is preserved. No
+source, tests, ledgers, grants or gates changed. Inventory delta is zero, so no
+new inventory note is needed. Progress: checked 1, done 0 repairs, skipped 0,
+errors 1 unresolved provenance blocker. The local commit is a blocked evidence
+handoff, not integration approval.
