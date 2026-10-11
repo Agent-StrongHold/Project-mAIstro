@@ -6453,3 +6453,80 @@ carried "worker requested attention: NEEDS-DEEP-REVIEW" block):
   #1845 integration head plus a prior trusted-base grant). Writer handoff
   MERGE-READY (handoff only, never integration approval). Note-only commit;
   no inventory delta (front-matter stays +79).
+
+## Round-90 CI-repair re-verification (job 3c2e3201bfd44fdea94e08f56633f2c0)
+
+Assigned head unchanged: `429ea91f8cc419b360e7240687f0820e7a98e114`; base
+`3c761d14db944a727fa0744444bc67cfe36d49f7`; worktree clean at start and end.
+All evidence re-derived firsthand this round; nothing taken from prior claims.
+
+- Driver 5/5 green (check-0..4.log) and re-executed locally: `uv sync --locked
+  --extra dev`; full-tree `ruff check .` ("All checks passed!"), `ruff format
+  --check .` (3275 files already formatted), focused
+  `pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q`
+  = 79 passed in 1.12s, `check-suite-inventory.py --suite
+  packages/maistro-core/tests` ok.
+- Contract re-read from source at this head: `__all__` exactly 21 names; all
+  records `@dataclass(frozen=True, slots=True)`; `CanonicalJsonObject`
+  rejects duplicate keys (nested via `object_pairs_hook`), non-finite
+  constants and overflow floats, non-object roots and non-string input, and
+  retains only the canonical `sort_keys` string; `owns` is the pure 3-way
+  fencing conjunction; legacy record omits the lease clamp; empty variants
+  have no truthiness override; `AdmissionAssessment` = exactly 6 StrEnum
+  member/value pairs; `RootAdmissionResult` enforces `created: bool` and
+  snapshot/run-id agreement. All 12 issue-named tests present (1 each).
+- Leaf acceptance re-executed: focused pytest 79/79; leaf `ruff check` +
+  `ruff format --check` clean; `mypy packages/maistro-core/src/maistro/runs/
+  admission_identity.py` = "Success: no issues found in 1 source file".
+- #1841 security signature re-verified in-tree: `require_admitted_actor
+  (actor_principal_id: str | None)` at `store_boundary.py:56`;
+  `get_run(..., principal_id: str | None = None)` at `store.py:537`;
+  `actor_principal_id` params at `store.py:507/563` (8 occurrences) with the
+  admitted-actor guard; `Run.actor_principal_id` validated at
+  `model.py:300/320-321`. Accepted #1841 head recorded in this note.
+- exact-debt-ledger repaired-investigated per lane brief, with CI exact argv
+  (`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`): rc=1; scan total 1328 = candidate ledger total 1328,
+  `unclassified: 0` — the instructed ledger amendment is a verified no-op
+  (no unbanked identity to add, none eliminated to remove); Counter multiset
+  diff vs merge base = exactly +5/-0, all five being the issue-mandated
+  `AdmissionAssessment` member identities at
+  `admission_identity.py:515-520` (`MISMATCH`, `REPLAYED`, `TAKEOVER`,
+  `REPLACE_EXPIRED`, `LEGACY_UNRESOLVED`; `PENDING` is not new at base).
+  Failure is purely trusted-base authorization ("land a reviewed grant
+  first"): zero `admission_identity` grants at merge base
+  `3c761d14d`; `ratchet-authorizations.json` and `reachability-baseline.json`
+  byte-unchanged vs base. Nothing genuinely dead: the five identities are
+  fixed contract surface (removal would breach the issue's 6-member enum and
+  21-name `__all__`).
+- Remaining merge-queue failures reproduced: `check-reachability.py` rc=1
+  naming exactly `maistro.runs.admission_identity` as NEWLY UNREACHABLE
+  (issue-predicted); `check-reachability-dispositions.py`,
+  `check-promotion-surface.py`, `check-shipped-surface-truth.py` all rc=0;
+  `check-ratchet-provenance.py` rc=1 solely via the delegated reachability
+  sub-gate (lifecycle 0->0). Full CI-scoped root suite re-run end-to-end
+  (`pytest tests/ --ignore=tests/tools/registry -q --timeout=60`): 3 failed /
+  4968 passed / 129 skipped — the failure set is exactly the three
+  committed-baseline-equals-tree self-checks
+  (`test_check_reachability.py::test_baseline_matches_the_tree`,
+  `test_reachability_baseline_identity.py::test_the_committed_baseline_passes_
+  the_gate_it_now_carries` and `::test_the_baseline_is_exactly_the_
+  unreachable_set`); the Coverage gate producer aborts mechanically on the
+  same exit-1 suite.
+- Two-merge wall re-confirmed live: `origin/develop` fetched this round =
+  `3c761d14d` = merge base (zero drift; no sync merge warranted).
+- Isolation re-verified: zero production importers of
+  `maistro.runs.admission_identity`; no `runs/__init__` export; branch diff
+  vs base = exactly the 4 declared surfaces; strict closure-keyword scan
+  (fixes/closes/resolves + #1845/#1851/#1936) across all branch commit
+  subjects+bodies = zero hits; latest 3 issue comments are automated
+  progress markers with no new instructions.
+- Verdict: no in-scope, issue-legal, mechanically-effective repair exists —
+  every green-CI path is forbidden by the issue (baseline entries, grants,
+  waivers, fake callers, keep-alive imports, re-exports) or would breach the
+  issue-fixed contract (removing mandated enum members), and a candidate
+  ledger edit cannot self-authorize against the merge base. The red gates
+  are the issue-prescribed merge blocker (parent #1845 integration head
+  plus a prior owner-landed trusted-base grant). Writer handoff MERGE-READY
+  (handoff only, never integration approval). Note-only commit; no
+  inventory delta (front-matter stays +79).
