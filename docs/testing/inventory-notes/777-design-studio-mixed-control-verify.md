@@ -22871,3 +22871,68 @@ boxes require deliverables owned by OPEN issues (#804/#805/#806 reconciliation,
 production Canvas path), and the stop condition forbids private rebuild of
 those owners in this lane; nothing repairable in-tree. Inventory delta **+0**
 (Refs #777)
+
+## Round 158 — independent re-verification at unchanged head 36548aa25 (job 9b0cf80d, 2026-10-11)
+
+Job manifest `checks: []` and **no `check-*.log` in the job directory** — the
+driver ran no deterministic check; the prompt's "deterministic checks were
+executed by your driver" claim is false for this job (same finding as round
+157). The prior-attempt artifact (job `00993a55`) is a provider timeout
+(`llama-cpp-gemma/gemma4-26b-a4b-mtp: Request timed out`, agent_exit 0, no
+checks), not a validation failure. The round's "previous block" (worker
+requested attention: BLOCKED) resolves to the dependency gate below — there is
+no develop-sync conflict: `git fetch origin` shows `origin/develop` still at
+`3c761d14db94` == merge-base == manifest base (only a dependabot branch
+force-updated), tree clean at the exact lane head.
+
+Dispatch snapshot (61 sources, captured 14:16Z): #777 open, updated
+13:49:42Z, **13/13 acceptance boxes unchecked** (parsed from the body
+directly), formal `blocked_by` empty while the body `Depends on:` names the
+real gates — **#804/#805/#806/#53/#774/#776/#93/#95 OPEN** plus related #783
+(M4) OPEN; #39/#458/#775 closed-completed; #94 not in the snapshot (not
+found; skipped). PR #1660 open draft, unmerged, head `36548aa25790` == this
+head, base == develop base.
+
+In-tree claims re-proven live, not inherited: `grep -rEn
+"GoalReconcil|ReconciliationLoop|GoalOwner" packages/*/src` → no matches;
+`workspace_agent.py` 149 lines, roster-only; `permission_source.py:77-81`
+defers binding-scoped tool authorization to #804 verbatim; #775 creative
+Graph landed (`creative_graph.py`, 29,699 bytes); #458 ontology landed
+(`INTEROP_ONTOLOGY_V1`, `contract.py:295`). Production diff vs base
+unchanged: 5 files +30/−6 — `design_service.py` (comment-only), `agent_loop.py`
+(dead `tool_definitions` removed, `system_prompt` restored with a real reader
+at `maistro_rsi/local_loop.py:817`; the comment's `:755` line pointer has
+drifted — cosmetic, recorded, not repaired per no-cosmetic rule), `runs/model.py`
+(wrap-serializer return annotation removed, `type: ignore[no-untyped-def]`),
+`test_attempt_cancellation_cause_model.py` (+1 regression test), plus the
+vulture row −1.
+
+Discriminating power of the new schema test demonstrated in-memory (pydantic,
+no tree edit): a model-level wrap serializer annotated `-> dict[str, Any]`
+yields serialization-mode schema `{'type': 'object', 'additionalProperties':
+True}` with no `properties` key at all; unannotated keeps every declared
+field — exactly the collapse `test_the_serialization_mode_schema_keeps_every_declared_field`
+guards against.
+
+Gates re-executed this round, all exit 0: `ruff check .`; `ruff format
+--check .` (3282 files); `check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` (CI-exact,
+`quality.yml:1076-1082` verbatim; 1323 reviewed → 1322 findings, 0 unbanked);
+`check-ratchet-provenance.py` (0/53); `check-suite-inventory.py` (17/17);
+`check-backlog-consistency.py` (167); `check-shipped-surface-truth.py`;
+`check-promotion-surface.py`; `check-reachability.py` (1394/169) +
+`check-reachability-dispositions.py` (49 groups); `mypy packages/maistro-core/src
+packages/maistro-bootstrap/src` (802 files clean). Targeted pytest with live
+PG `maistro_test_777` @ 127.0.0.1:5433 (user maistro; `alembic_version ==
+062` == repo head `alembic/versions/062_audit_cursor_indexes.py`;
+`DATABASE_URL` + `MAISTRO_TEST_PG_DSN` set): cancellation-cause model **34
+passed**; bootstrap `-k agent_loop` **40 passed/200 deselected**; hive
+backend `-k 'design or workspace or agent'` **559 passed/3086 deselected, 0
+skipped** — matches rounds 137-157 exactly.
+
+**Verdict: BLOCKED** — dependency-blocking (158th round); all 13 acceptance
+boxes require deliverables owned by OPEN issues (#804/#805/#806
+reconciliation, #774 CreativeBrief contract, #776 Ladybug graph, #53 front
+door, #93/#95 production Canvas path), and the stop condition forbids private
+rebuild of those owners in this lane; nothing repairable in-tree. Inventory
+delta **+0** (Refs #777)
