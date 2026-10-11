@@ -5409,3 +5409,65 @@ waiver, reachability baseline row, or disposition exists anywhere in the
 leaf. Unblock remains external: an owner-landed grant on develop, or the
 #1845 integration head supplying the real runtime consumer. No inventory
 delta; front-matter `+79` remains accurate.
+
+### Round 74 (job a7b01d97) — all four merge-queue failures reduced to one
+
+The prior repair attempt at this same head died on a provider timeout after
+five green driver checks; this round re-derived everything firsthand and
+closed the one open diagnosis gap. The merge queue reports four failing
+checks at `36372888dee9`: exact-debt-ledger, test, Quality gate, Coverage
+gate. All four share the single trusted-base root cause above:
+
+- exact-debt-ledger and the Quality gate root in their shared vulture step
+  and the reachability ratchet (both re-run this round at CI's exact argv,
+  same rc=1 output as round 73 — five enum identities unauthorized,
+  `maistro.runs.admission_identity` newly unreachable).
+- **test** (ci.yml): reproduced locally under the job's exact env
+  (`REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 pytest tests/
+  --ignore=tests/tools/registry`) — 3 failed / 4968 passed, all three being
+  committed-baseline-equals-live-tree self-checks that the newly unreachable
+  module breaks: `tests/test_check_reachability.py::test_baseline_matches_the_tree`
+  (asserts `baseline == unreachable`, :79),
+  `tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`
+  (asserts `check.main() == 0`, :179),
+  `tests/test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`
+  (:216). Every remedy is prohibited or out of scope: adding the module to
+  `quality/reachability-baseline.json` is an issue-forbidden baseline
+  addition *and* a candidate-side self-grant the provenance ratchet reads
+  straight past (round 72 proved this empirically); wiring a caller is the
+  integration leaf's job; editing the self-checks is gate-weakening.
+- **Coverage gate** (quality.yml): its scripts producer runs the same root
+  `tests/` suite under `set -euo pipefail` in the combine step's run block,
+  so those same 3 failures red the job before diff coverage is even
+  evaluated. The new module itself is not the failing side: measured under
+  the coverage-unit producer's exact flags (`coverage run --branch
+  --source=packages/maistro-core/src/maistro -m pytest
+  packages/maistro-core/tests --timeout=30 -q`, full core suite 15294
+  passed), `admission_identity.py` scores 245/245 statements and 82/82
+  branches (100%), far above the 90/80 per-file diff floors, and the
+  publish-set floor moves up, not down.
+
+Everything else re-proven at this head, nothing taken on trust: origin
+re-fetched, `origin/develop` still `435dc1937e04` = merge-base (no sync
+conflict, no grant landed); diff vs base is exactly the four leaf files; AST
+check re-confirmed `__all__` set-exact (21 names, sorted) and the six
+`AdmissionAssessment` member/value pairs; all 12 issue-named tests present
+and 79/79 green; ruff check/format and mypy clean on both leaf files;
+suite-inventory gate green (16341 = base + the recorded +79); zero
+production importers, no `maistro.runs.__init__` export, zero suppression
+comments in the module; #1841 anchors intact (`store_boundary.py:56`,
+`store.py:537/507/563/894/1282`, `model.py:300-321`); the five
+vulture-baseline rows are the only ledger change and no
+`admission_identity` row exists in `quality/reachability-baseline.json`,
+`quality/reachability-dispositions.json`, or
+`quality/ratchet-authorizations.json` at either base or head.
+
+Conclusion (round 74): no in-scope repair exists — every candidate remedy
+is named-and-forbidden by the issue text ("No fake callers, baseline
+additions, grants, disabled gates or quality waivers are permitted") or is
+production activation, which the issue places outside this leaf. The
+issue-prescribed response is exactly what this leaf ships: implementation
+plus focused-test readiness, the explicit merge blocker, and the stack left
+unmerged pending the owner-landed grant on develop or the #1845 integration
+head. Writer handoff MERGE-READY (handoff only, never integration
+approval). No inventory delta; front-matter `+79` remains accurate.
