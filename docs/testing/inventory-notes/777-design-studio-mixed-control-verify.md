@@ -22466,3 +22466,57 @@ resolved; all 13 acceptance boxes still require APIs owned by the open
 issues above and the issue's stop condition forbids a
 Design-Studio-private substitute, which the tree correctly does not
 contain. Inventory delta **+0** (this record only). (Refs #777)
+
+## Round 151 (job 44e2d1e4) — independent re-verification at head c103195a8
+
+Fresh repair round re-derived every claim live instead of trusting round-150
+notes. Job dir `checks: []`, no `check-*.log` — the driver ran no deterministic
+check; the "Validation failed" pointer still resolves to historical job
+`53d5e08b` `check-2.log` (`ruff format` wanted to reformat
+`agent_loop.py`), fixed by commit `39090a4f` and **re-proven live**: `ruff
+format --check .` → 3282 files already formatted, exit 0.
+
+Sync: fresh `git fetch origin develop` → `origin/develop` still `435dc1937`
+== manifest base == merge-base; no conflict to resolve. Dispatch snapshot
+(61 sources, receipt `338fcb9b`, captured 2026-10-11T10:04:45Z): #777 open
+updated 09:48:37Z, **13/13 boxes unchecked** (parsed from body directly),
+blockers #804/#805/#806/#53/#774/#776/#93/#95/#783 **OPEN** (#39/#458/#775
+closed); PR #1660 open draft, head `460ad5802`, mergeable, all check-runs
+success; comment tail automation-only through 09:48:37Z.
+
+Battery re-executed, all exit 0: `ruff check .`; `ruff format --check .`
+(3282 files); `check-vulture-baseline.py` with CI-exact args
+(quality.yml:1078, `packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'`) → 1323 reviewed → 1322 findings, 0 unbanked;
+`check-ratchet-provenance.py` → 0 lifecycle violations, 0/53 expansions;
+`check-shipped-surface-truth.py`; `check-promotion-surface.py`;
+`check-reachability.py` → 1394 production / 169 unreachable;
+`check-suite-inventory.py` → 17/17; `check-backlog-consistency.py` → 167.
+
+Targeted pytest WITH live PG (`maistro_test_777` @ 127.0.0.1:5433,
+`alembic_version` == 062 == repo head `062_audit_cursor_indexes.py`, both
+DSN vars set): cancellation-cause model **34 passed**; bootstrap
+`-k agent_loop` **40 passed / 200 deselected**; hive backend
+`-k 'design or workspace or agent'` **559 passed / 0 skipped** — matches
+rounds 137–150 exactly.
+
+New this round — **mutation check** on the round-146 schema guard:
+temporarily re-annotating the wrap serializer
+(`_serialize_attempt_without_unknown_cause` `-> dict`) makes
+`test_the_serialization_mode_schema_keeps_every_declared_field` **FAIL**
+(KeyError: serialization-mode schema collapses to an opaque object), then
+the precise revert restores 34/34 passing and a byte-identical tree
+(`git status` clean). The test guards its regression rather than passing
+vacuously.
+
+Negative invariants re-verified live: zero matches for
+`class GoalReconcil|class ReconciliationLoop|class GoalOwner` under
+`packages/*/src`; `workspace_agent.py` still 149 lines roster-only;
+`permission_source.py` defers binding-scoped tool-use to #804 verbatim;
+`system_prompt` reader live at `local_loop.py:817`.
+
+**Verdict: BLOCKED** — dependency-blocking (151st round); nothing
+repairable in-tree. All 13 acceptance boxes still require APIs owned by
+the open blockers and the issue's stop condition forbids a
+Design-Studio-private substitute, which the tree correctly does not
+contain. Inventory delta **+0** (this record only). (Refs #777)
