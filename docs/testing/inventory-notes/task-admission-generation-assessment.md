@@ -3481,7 +3481,7 @@ note.
   above the expiry row 22F/110P. (The lease-before-binding kill count varies
   across rounds — 16F/14F/12F — because the rounds permute the rows
   differently; every variant is killed.)
-- **Verdict-relevant statement (unchanged from rounds 35–43)**: leaf
+- **Verdict-relevant statement (unchanged from rounds 35–44)**: leaf
   acceptance fully proven first-hand at `5ac49651dede`; all four hosted reds
   are the one sanctioned unwired two-module reachability delta the issue
   itself predicts and forbids this leaf to repair (no fake callers, no
@@ -3489,3 +3489,44 @@ note.
   #1845 integration consumer or a maintainer-landed base-side grant, both
   outside this lane. The stack stays unmerged by design; no ledger was
   amended and no merge/PR/GitHub action was taken.
+
+## Round 45 (2026-10-11, head `fd3c0ab9af65`) — driver-green repair round
+
+Driver checks at this head all rc=0 (uv sync, `ruff check .`,
+`ruff format --check .`, the 315-test three-file battery,
+`check-suite-inventory.py --suite packages/maistro-core/tests` ok 16468);
+the tree was clean at start and every prior claim was re-executed
+first-hand rather than trusted:
+
+- **Focused acceptance re-proven**: leaf suite 132 passed; live trio
+  (`test_root_admission_identity.py` + `test_idempotency.py`) 140 passed;
+  ruff check/format clean on both leaf files; `mypy` clean on the module.
+  All 10 issue-named tests present (incl.
+  `test_assessment_matrix` and
+  `test_existing_live_claim_flow_does_not_import_v2_classifier`).
+- **All four hosted reds re-attributed first-hand**:
+  `check-vulture-baseline.py` at CI's exact argv rc=0 (1323 -> 1323,
+  zero unbanked); `check-shipped-surface-truth.py` rc=0;
+  `check-ratchet-provenance.py` rc=1 solely via the
+  `check-reachability-provenance.py` sub-gate 169 -> 171 naming exactly
+  the two leaf modules (newly unreachable, absent from trusted base, not
+  previously authorized — the two-merge rule; this leaf may not add the
+  baseline row); `check-reachability.py` rc=1 on exactly those two;
+  `check-reachability-dispositions.py` rc=0; `check-promotion-surface.py`
+  rc=0; root reachability meta-tests 3 failed / 49 passed
+  (`test_check_reachability.py` + `test_reachability_baseline_identity.py`
+  + `test_check_reachability_dispositions.py`) — the same delta feeding
+  the test and Coverage-gate producer legs.
+- **All four issue-named mutations re-killed in place** (clean tree;
+  pre-capture `cp` to `/tmp`; byte-exact restore; module sha256
+  `578c1f1747920f47...` verified identical to the round-43/44 record):
+  pristine control 132 passed; TAKEOVER<->REPLACE_EXPIRED swap 50F/82P;
+  lease row moved above the binding row 14F/118P; `LEGACY_UNRESOLVED` row
+  deleted 10F/122P; mismatch row moved above the expiry row 22F/110P.
+- **Forbidden surfaces verified untouched vs base `435dc1937e04`**:
+  `tasks/idempotency.py`, `tasks/__init__.py`, `runs/__init__.py`,
+  `runs/store.py`, `runs/store_boundary.py`, `runs/model.py` — zero diff
+  lines; no production reference to `admission_generation` exists;
+  `quality/` diff vs base is empty. Verdict-relevant statement unchanged:
+  the stack stays unmerged by design; the repair lane adds this evidence
+  section only.
