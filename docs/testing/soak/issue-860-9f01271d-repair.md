@@ -102,3 +102,78 @@ claimed here; six database tests were skipped.
 
 Progress: checked 1, done 0 (acceptance blocked), skipped 0 items, validation
 errors 0; next: release prerequisites and production soak.
+
+## Independent revalidation — job 0463f353
+
+This follow-up preserves the original checkpoint rather than adding another
+near-identical handoff. Frozen item: #860 only, branch `auto-860`, clean starting
+HEAD `5c65f3c9fc10e358722ee27be332e0dac86d25ee`, assigned base
+`435dc1937e0407ab4de198ffcced49860bb14ad2`. Read the supplied issue acceptance,
+prior result, actual historical `98a11313/check-3.log`, repository instructions,
+and the five accepted ADRs listed above. The current job supplied no
+`check-*.log` files. No conflict or uncommitted work required salvage or merging.
+
+Fresh commands (1200-second timeouts), not inherited verification claims:
+
+| Command | Result |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1323 findings / 1323 reviewed identities; zero unclassified or forbidden; selected baseline `4aa68edc0b6b` |
+| `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py -x -q` | 37 passed, 6 skipped in 1.73s |
+| `uv run pytest packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py -x -q` | 66 passed in 2.37s |
+| `uv run ruff check .` | PASS |
+| `uv run ruff format --check .` | PASS |
+| `uv run python scripts/check-deployment-claims.py` | PASS |
+| `uv run python scripts/check-execution-lifecycles.py` | PASS |
+
+Raw command output is in
+`/home/dev/maistro/jobs/0463f353cac5497ab18e1f3aab5cf432/worker-*.log`.
+The old 24-versus-21 schema assertion is already repaired: the current test
+independently includes the three audit columns at lines 174–176, and production
+still acquires its transaction-scoped advisory lock before the upgrades at
+`packages/maistro-core/src/maistro/persistence/pg_learnings.py:215–216`.
+No actual vulture finding warrants amending the ledger. This is a documentation
+checkpoint only: no source/test/ledger changes and no inventory delta.
+
+Acceptance was checked against the reachable harness and production middleware,
+not inferred from passing gates:
+
+1. Representative profile: **UNVERIFIED**. `m3a-load-profile.md:152` explicitly
+   identifies missing users/Workspaces, Graph fan-out, successful model/tool,
+   Design/Canvas and Goal/background workloads.
+2. Two deployed RC replicas: **UNVERIFIED**; ASGI middleware instances are not
+   deployed artifact evidence.
+3. Sustained saturation/reclaim/retry/leak observations: **UNVERIFIED**; no
+   sustained live run was executed in this round.
+4. No duplicate physical work: **UNVERIFIED**; admission/receipt and schema
+   tests do not prove physical Attempt fencing across deployed replicas.
+5. Concurrent security/degraded behavior and replica non-bypass: local limiting
+   and backpressure tests pass, but the executed regression at
+   `tests/test_soak_promotion_gates.py:439` demonstrates fresh allowance on the
+   second replica for the same identity. Cluster-wide non-bypass remains
+   **UNVERIFIED**, and is falsified if interpreted as one shared allowance.
+6. Complete telemetry with thresholds: **UNVERIFIED** at RC grade; sampler
+   tests cannot establish application-loop health or sustained pool contention.
+7. Active-work kill/restart, drain/fencing/recovery: **UNVERIFIED**; boot-cleanup
+   tests do not prove recovery of physical work.
+8. Long exact-RC soak: **BLOCKED / UNVERIFIED**. No immutable RC/configuration
+   was designated in the assignment. Do not guess it from the source HEAD.
+   `scripts/soak/run_soak.py:730` returns `ok: False` for its host-process
+   artifact; executed promotion tests enforce this boundary.
+9. Findings filed/reclassified: local classification remains security-contract
+   scope and execution-correctness evidence prerequisites; external filing is
+   **UNVERIFIED** and prohibited in this lane.
+10. Hash-bound machine/human RC evidence: **UNVERIFIED**. The logs and this
+    report bind focused validation to a source HEAD, not a promoted artifact.
+
+ADR reconciliation remains unchanged: final artifacts must be the soaked RC
+(ADR-073126-c4e1); execution mechanics cannot become domain authority
+(ADR-081426-1f7c); the Run store owns fencing, with renewal/reclaim governed by
+ADR-081626-f383 and ADR-082526-b36a. ADR-085 specifies principal identity, not a
+shared limiter backend. Do not silently weaken #860's acceptance or introduce a
+new authorization authority to reconcile the rate-budget ambiguity.
+
+**Disposition: BLOCKED, not another CI defect.** Release-owner input must
+establish the RC/configuration and replica-budget contract; representative
+production workload/telemetry and a fresh long soak remain necessary. No live
+DB or deployed RC acceptance is claimed. Checked 1 item; done 0 acceptance
+items; skipped 0 items; validation errors 0. Only this checkpoint is committed.
