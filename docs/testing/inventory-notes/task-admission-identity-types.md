@@ -6099,3 +6099,60 @@ this note.
   explicit merge blocker and leave the stack unmerged.
 - Verdict: writer handoff MERGE-READY (handoff only, never integration
   approval). Note-only commit; no inventory delta (front-matter stays +79).
+
+## Round-84 re-verification (job ae5c8ece60744722bdabf2aa08680153, head a1dd504c6f8e)
+
+Independent firsthand re-derivation after the develop merge (26f86b4634 into
+auto-1851); no tree changes beyond this note.
+
+- Driver checks 5/5 green (check-0..4.log): sync, repo ruff, repo format,
+  focused suite 79 passed, suite inventory ok (16341 ids, scoped).
+- Leaf acceptance re-proven by fresh execution at this head: 79/79 focused;
+  all 12 issue-named tests present (`grep -c 'def <name>('` = 1 each, 68
+  nodes with parameterization); leaf ruff/format clean; mypy `Success: no
+  issues found in 1 source file`; module measures 100% lines + branches
+  (245 stmts, 82 branches, 0 miss) via `coverage run --branch` under the
+  focused suite.
+- Isolation re-verified: zero production importers of `admission_identity`
+  outside the module; no `maistro.runs` export; diff vs merge base
+  26f86b4634 = exactly the 4 manifest surfaces; all other quality ledgers
+  byte-identical to base.
+- Ledger multiset proof at this head: whole-ledger Counter delta vs base =
+  exactly the 5 mandated `AdmissionAssessment` identities, one row each,
+  0 removed (1328 = 1323 + 5) — scan-exact, so no ledger amendment is needed
+  or possible this round; nothing "genuinely dead" exists to delete (the 5
+  are issue-mandated enum members, unusable only because the leaf is
+  deliberately unwired).
+- All four merge-queue failures reproduced firsthand with CI exact argv at
+  this head: `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` rc=1 solely on those 5 identities ("land a
+  reviewed grant first" — candidate bookkeeping itself clean);
+  `check-reachability.py` rc=1 naming exactly `maistro.runs.admission_identity`;
+  `check-ratchet-provenance.py` rc=1 solely via
+  `check-reachability-provenance.py: trusted-base gate returned 1`;
+  dispositions/shipped-surface/promotion-surface rc=0.
+- Root-suite test job failure set re-pinned by direct execution: the 3
+  committed-baseline-equals-tree self-checks
+  (`tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::
+  test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `::test_the_baseline_is_exactly_the_unreachable_set`) fail with set-diff
+  exactly `maistro.runs.admission_identity`; the Coverage gate aborts in its
+  combine step because the root `tests/` producer (quality.yml:712) dies on
+  the same 3 under `set -euo pipefail` before any coverage arithmetic.
+- Two-merge wall re-confirmed at the new base: gate source loads
+  authorizations from the trusted base
+  (`load_authorizations(RATCHET, base=trusted_ref.base_sha)` in
+  scripts/check-vulture-baseline.py / check-reachability-provenance.py), and
+  `origin/develop:quality/ratchet-authorizations.json` contains zero
+  `admission_identity` grants (develop tip 3c761d14d, six dependency-bump
+  commits ahead — not a sync conflict, so no develop merge is warranted and
+  none would move the wall).
+- No in-scope repair exists: every green-CI path (delete the mandated enum
+  members, wire a caller, add a reachability baseline entry or vulture grant,
+  suppress) is individually forbidden by the issue's staging constraint and
+  non-goals, and candidate-side ledger edits cannot self-authorize. The issue
+  prescribes exactly this state: report implementation/test readiness plus
+  the explicit merge blocker and leave the stack unmerged.
+- Verdict: writer handoff MERGE-READY (handoff only, never integration
+  approval). Note-only commit; no inventory delta (front-matter stays +79).
