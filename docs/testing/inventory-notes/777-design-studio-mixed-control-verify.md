@@ -22686,3 +22686,64 @@ reconciliation, #774 CreativeBrief, #776 Workspace graph, #53 front
 door, #93/#95 Canvas cutover); the issue's stop condition forbids
 building them privately in this lane; nothing repairable in-tree.
 Inventory delta **+0** (Refs #777)
+
+## Round 155 — independent re-verification at unchanged head da49531456 (job 90c2e7ca, 2026-10-11T12:09Z dispatch)
+
+**Driver checks: none.** `manifest.json` has `"checks": []` and the job
+directory contains **no `check-*.log`** — no deterministic check ran, so
+none failed. The prompt's `Validation failed` pointer again resolves to
+historical job `53d5e08b` (`check-2.log`, ruff-format on
+`agent_loop.py`), fixed by `39090a4f` (ancestor of HEAD, re-verified
+below). The prior result artifact (`b10dd90d`) is a **provider timeout**
+(`llama-cpp-gemma` request timed out, `checks: []`, agent_exit 0), not a
+validation result.
+
+**Sync clean:** fresh fetch; `git merge-base HEAD origin/develop` ==
+`435dc1937e04` == manifest base; working tree clean.
+
+**Dispatch snapshot** (61 sources, receipt `472a7d15`, captured
+12:09:24Z): #777 open updated 11:32:30Z, **13/13 acceptance boxes
+unchecked** parsed from the body directly; formal `blocked_by` API list
+empty while the body `Depends on:` header names the gates — #804/#805/
+#806/#53/#774/#776/#93/#95/#783 **OPEN**, PR #1660 open **draft** head
+`460ad5802`, mergeable_state clean, still unmerged.
+
+**Gates re-executed, all exit 0:** `ruff check .`; `ruff format --check .`
+(3282 files); vulture CI-exact verbatim from `quality.yml:1076-1082`
+(`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`)
+1323->1322, 0 unbanked; `check-ratchet-provenance.py` (0 violations, 53
+consumers); `check-suite-inventory.py` (17/17); `check-backlog-consistency.py`
+(167 items); `check-shipped-surface-truth.py`; `check-promotion-surface.py`;
+`check-reachability.py` (1394 modules / 169 unreachable).
+
+**Targeted pytest WITH live PG** `maistro_test_777 @ 127.0.0.1:5433`
+(user `maistro`, password from container env; `alembic_version` == `062`
+== repo head `alembic/versions/062_audit_cursor_indexes.py`):
+cancellation-cause model 34 passed; bootstrap `-k agent_loop` 40 passed/
+200 deselected; hive backend `-k 'design or workspace or agent'` **559
+passed / 3086 deselected / 0 skipped** with `MAISTRO_TEST_PG_DSN` set —
+matches rounds 137-154 exactly.
+
+**Closed-unlanded re-proven this round (not inherited):**
+`grep -rli canonical_goal|CanonicalGoal packages/maistro-core/src` ->
+**no matches** (#458 ontology absent); creative-graph grep hits only a
+passing string in `services/dag_run_inspection.py` (#775 absent). #39's
+canonical Persona **is partially landed**
+(`packages/maistro-core/src/maistro/personas/model.py`, `store.py`), a
+refinement of the blanket "closed-unlanded" label — but acceptance box 2
+still requires the versioned CreativeBrief of **OPEN** #774, so the box
+remains gated. #777 implementation PR #1660 remains an unmerged draft.
+
+**Negative invariants re-verified live:** no
+`GoalReconcil*`/`ReconciliationLoop`/`GoalOwner` classes under
+`packages/*/src`; `workspace_agent.py` 149 lines roster-only;
+`permission_source.py:79` defers binding-scoped tool-use to #804;
+production diff vs base unchanged (4 code/test files +30/-6 + vulture
+row -1).
+
+**Verdict: BLOCKED** — dependency-blocking (155th round); all 13 boxes
+consume APIs owned by OPEN issues (#804/#805/#806 reconciliation, #774
+CreativeBrief, #776 Workspace graph, #53 front door, #93/#95 Canvas
+cutover) or by the absent #458/#775 landings; the stop condition forbids
+building them privately in this lane; nothing repairable in-tree.
+Inventory delta **+0** (Refs #777)
