@@ -22337,3 +22337,58 @@ in-tree. All 13 acceptance boxes require APIs owned by the open issues
 above and the issue's stop condition forbids a Design-Studio-private
 substitute, which the tree correctly does not contain. Inventory delta
 **+0** (this record only). (Refs #777)
+
+## Round 149 — repair round at unchanged head 5887b4033 (job c594a996e303, 2026-10-11)
+
+Job manifest `checks: []` and **no `check-*.log` in the job directory** — no
+deterministic check ran or failed in this job. The prompt's "Validation
+failed" pointer still resolves to historical job `53d5e08b` (ruff-format
+failure on `agent_loop.py`, fixed by `b154ad0f9`, re-verified live this
+round). The prior result artifact (job `e3c860ee25a1`, round 148's retry)
+is a **provider 429 rate-limit error** (`failure_kind: rate_limited`,
+`checks: []`, `agent_exit: 0`) — not a validation failure and not a
+completed round. No sync conflict: merge-base HEAD↔base ==
+`origin/develop` `435dc1937` == manifest base; worktree clean at manifest
+head `5887b403322d`.
+
+Dispatch capture re-read from the supplied snapshot (61 sources, captured
+2026-10-11T07:51:15Z): #777 **open**, updated 07:35:49Z, **13/13 acceptance
+boxes unchecked**; blockers **#804/#805/#806/#53/#774/#776/#93/#95/#783 all
+OPEN** (#39/#458/#775 closed); PR #1660 open draft, head `460ad5802`,
+mergeable.
+
+Battery re-executed live at this head, all exit 0: `ruff check .`;
+`ruff format --check .` (3282 files already formatted); vulture CI-exact
+gate with the workflow's exact arguments (quality.yml:1078 and
+vulture-ratchet.yml:82, unquoted `packages/*/src --min-confidence 60
+--exclude '*/third_party/*'`) → 1323 reviewed → 1322 findings, **0
+unbanked**; `check-ratchet-provenance.py` 0 violations / 53 consumers OK;
+`check-shipped-surface-truth.py`; `check-promotion-surface.py` ok;
+`check-reachability.py` 1394 production / 169 unreachable;
+`check-suite-inventory.py` 17/17; `check-backlog-consistency.py` 167 items;
+`mypy packages/maistro-core/src/maistro/runs/model.py` Success.
+
+Targeted pytest WITH live PG (`maistro_test_777` @ 127.0.0.1:5433, DB
+existed; `alembic current` == `alembic heads` == 062 == repo head
+`062_audit_cursor_indexes.py`, both `DATABASE_URL` and
+`MAISTRO_TEST_PG_DSN` set): cancellation-cause model **34 passed**;
+bootstrap `-k agent_loop` **40 passed / 200 deselected**; hive backend
+`-k 'design or workspace or agent'` **559 passed / 0 skipped** (3086
+deselected) — matches rounds 137–148 exactly.
+
+Negative invariants re-verified live (not from notes): `grep -rn "class
+GoalReconcil|class ReconciliationLoop|class GoalOwner"` under
+`packages/*/src` → exit 1 (zero matches); `workspace_agent.py` **149
+lines**, roster-only, zero reconcile/Goal refs;
+`packages/maistro-core/src/maistro/security/sentinel/permission_source.py`
+defers binding-scoped tool-use to #804 verbatim (docstring lines 78–82);
+`system_prompt` reader live at `maistro_rsi/local_loop.py:817`
+(`system_content = system_prompt or config.system_prompt`); production
+diff vs base unchanged (4 code/test files +30/−6 + sanctioned vulture row
+−1).
+
+**Verdict: BLOCKED** — dependency-blocking (149th round); nothing
+repairable in-tree. All 13 acceptance boxes require APIs owned by the open
+issues above and the issue's stop condition forbids a
+Design-Studio-private substitute, which the tree correctly does not
+contain. Inventory delta **+0** (this record only). (Refs #777)
