@@ -6702,3 +6702,60 @@ note.
   No in-scope, issue-legal, mechanically-effective repair exists — writer
   handoff MERGE-READY (handoff only, never integration approval). Note-only
   commit; no inventory delta (front-matter stays +79).
+
+## Round-94 re-verification at unchanged `2f898435369d` (job
+75ff3bcae5b240c083b89759c10ba425)
+
+Fresh firsthand re-derivation at the assigned head; nothing edited but this
+note. Prior verify job 688edaf7 at the same head: 5/5 green.
+
+- Driver checks in this job's logs: 5/5 green (sync, ruff check, ruff format
+  --check, 79/79 focused pytest, suite-inventory ok).
+- Leaf acceptance re-executed firsthand: 79/79 focused pytest; leaf ruff check
+  and format --check clean; `mypy
+  packages/maistro-core/src/maistro/runs/admission_identity.py` = Success;
+  `check-suite-inventory.py` ok (17 suites, 31,208 node IDs, 0 duplicates).
+- Contract spot-checks conformant: 21-name `__all__`
+  (admission_identity.py:53-75), `frozen=True, slots=True` on all 17
+  dataclass decls, 6-member `AdmissionAssessment` with exact values
+  (:508-520), pure three-way `owns` (:308-314), `CanonicalJsonObject`
+  (:151-186) rejecting duplicate keys at any depth (`object_pairs_hook`),
+  non-finite constants and `1e999` overflow (`parse_constant` +
+  `parse_float`), non-object roots and non-string input, retaining only the
+  canonical `sort_keys`/`,`/`:`/`ensure_ascii=False`/`allow_nan=False`
+  string. All 12 issue-named tests present.
+- Isolation re-verified: zero production importers, no `maistro.runs.__init__`
+  export; branch diff vs `3c761d14d` = exactly the 4 assigned surfaces
+  (module 520 lines, tests 660 lines, inventory note, vulture ledger +5).
+- "test" job reproduced END-TO-END (`uv run pytest tests/
+  --ignore=tests/tools/registry -q`): 3 failed / 4968 passed / 129 skipped;
+  failure set exactly `tests/test_check_reachability.py::
+  test_baseline_matches_the_tree`, `tests/test_reachability_baseline_identity.py::
+  test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `tests/test_reachability_baseline_identity.py::
+  test_the_baseline_is_exactly_the_unreachable_set` — each demanding the
+  issue-forbidden `maistro.runs.admission_identity` reachability-baseline
+  entry. Coverage gate runs the same suite (quality.yml:713) and is
+  mechanically downstream.
+- exact-debt-ledger reproduced with CI exact argv: rc=1; scan 1328 findings,
+  unclassified 0 ⇒ candidate ledger scan-exact ⇒ the lane-brief amendment
+  instruction is a verified no-op; delta vs trusted base = exactly the 5
+  branch-added `admission_identity` rows (the `AdmissionAssessment` members
+  at :515-520); gate message "New Vulture debt is not authorized by the
+  trusted base … land a reviewed grant first"; base
+  `quality/ratchet-authorizations.json` contains 0 `admission_identity`
+  grants and the file is byte-unchanged vs base — purely trusted-base
+  authorization.
+- Quality gate sub-steps: vulture step rc=1 (above) + reachability step rc=1
+  naming exactly `maistro.runs.admission_identity`;
+  `check-reachability-dispositions.py` rc=0 (169 modules dispositioned),
+  `check-promotion-surface.py` rc=0.
+- Two-merge wall re-confirmed live: `origin/develop` fetched this round =
+  `3c761d14d` = merge base, zero drift — no sync conflict to resolve.
+- Issue body re-read verbatim from dispatch context (captured 2026-10-11T23:19Z):
+  "No fake callers, baseline additions, grants, disabled gates or quality
+  waivers are permitted"; "If that integration is unavailable, report
+  implementation/test readiness plus the explicit merge blocker and leave the
+  stack unmerged." No in-scope, issue-legal, mechanically-effective repair
+  exists — writer handoff MERGE-READY (handoff only, never integration
+  approval). Note-only commit; no inventory delta (front-matter stays +79).
