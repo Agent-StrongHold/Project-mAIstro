@@ -6331,3 +6331,72 @@ inventory ok).
 - Verdict: no in-scope repair exists or is permitted; writer handoff
   MERGE-READY (handoff only, never integration approval). Note-only commit;
   no inventory delta (front-matter stays +79).
+
+## Round 88 CI-repair re-verification (job e77c5ea9d8e2488f82f02c85bc210c66)
+
+Fresh firsthand re-derivation at the unchanged assigned head `de9dc26aa7b0`
+(branch `auto-1851`, base `3c761d14d`), re-executing every gate rather than
+trusting prior rounds. Driver checks 5/5 green (uv sync, ruff check, ruff
+format --check, focused pytest 79 passed, scoped suite inventory ok).
+
+- exact-debt-ledger reproduced with CI exact argv
+  (`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`, per `.github/workflows/vulture-ratchet.yml`): true rc=1
+  with total 1328, `unclassified: 0`, `never_allowlist: 0` — the candidate
+  ledger is scan-exact, so the round's instructed ledger amendment remains a
+  verified no-op; the failure text is "pydantic-declarative-field: 5 NEW
+  identit(y/ies) not in the ledger ... New Vulture debt is not authorized by
+  the trusted base. Running --update in this branch cannot authorize it; land
+  a reviewed grant first." The `git diff base..HEAD` ledger delta is exactly
+  +5/-0 rows: the five issue-mandated `AdmissionAssessment` members
+  (MISMATCH, REPLAYED, TAKEOVER, REPLACE_EXPIRED, LEGACY_UNRESOLVED — none
+  genuinely dead; a runtime consumer is issue-forbidden in this leaf).
+- Other two exact-debt-ledger steps: `check-ratchet-provenance.py` rc=1
+  solely via "check-reachability-provenance.py: trusted-base gate returned
+  1"; `check-shipped-surface-truth.py` rc=0 ("Shipped-surface truth matrix is
+  complete.").
+- `check-reachability.py` rc=1 naming exactly `maistro.runs.admission_identity`
+  (the issue body itself predicts: "`check-reachability.py` would classify the
+  new module as newly unreachable").
+  `check-reachability-dispositions.py` rc=0 (49 groups / 169 modules) and
+  `check-promotion-surface.py` rc=0.
+- Root-suite mechanism behind the CI test and coverage jobs re-executed:
+  `pytest tests/test_reachability_baseline_identity.py
+  tests/test_check_reachability.py -q` = 3 failed / 36 passed, failing only
+  the committed-baseline-equals-tree self-checks
+  (`test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set`,
+  `test_baseline_matches_the_tree`) on "::error title=New unreachable
+  modules::maistro.runs.admission_identity". The Coverage gate's producer
+  (`.github/workflows/quality.yml:712`, `coverage run ... -m pytest tests/
+  ...`) runs the same suite under `set -e` and aborts before coverage
+  arithmetic.
+- Two-merge wall re-confirmed live: `git fetch origin develop` ->
+  `origin/develop` = `3c761d14d` = the merge base (zero drift; no sync merge
+  warranted). At the merge base: zero `admission_identity` grants in
+  `quality/ratchet-authorizations.json` (the "admission" string hits are
+  unrelated identities), zero `admission_identity` rows in
+  `quality/vulture-baseline.json` and `quality/reachability-baseline.json`.
+  Both gates load authorizations from the base
+  (`ratchet_provenance.load_authorizations`), so no commit on this branch can
+  authorize the debt; AGENTS.md: "A floor raise takes two merges."
+- Issue body (dispatch-context capture) read verbatim this round; it forbids
+  the only candidate repairs: "No fake callers, baseline additions, grants,
+  disabled gates or quality waivers are permitted"; "Do not add ...
+  suppressions, allowlist/baseline entries, or grants to make this leaf
+  independently green"; "A candidate baseline update cannot grant itself
+  permission"; and prescribes exactly this state: "If that integration is
+  unavailable, report implementation/test readiness plus the explicit merge
+  blocker and leave the stack unmerged."
+- Leaf acceptance re-proven by execution: 79/79 focused pytest; all 12
+  issue-named test names present (grep count 1 each); `ruff check .` "All
+  checks passed!"; `ruff format --check .` 3275 files already formatted;
+  module mypy "Success: no issues found in 1 source file"; full
+  `check-suite-inventory.py` ok (17 suites match). Isolation re-verified:
+  zero production importers of the module and no `maistro/runs/__init__`
+  export; branch diff vs base = exactly the 4 manifest surfaces.
+- Verdict: no in-scope, issue-legal, mechanically-effective repair exists;
+  the four red gates are the issue-prescribed merge blocker (parent #1845
+  integration plus a prior trusted-base grant). Writer handoff MERGE-READY
+  (handoff only, never integration approval). Note-only commit; no inventory
+  delta (front-matter stays +79).
