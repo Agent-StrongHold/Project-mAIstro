@@ -22615,3 +22615,74 @@ reconciliation, #774 CreativeBrief, #776 Workspace graph, #53 front
 door, #93/#95 Canvas cutover); the issue's own stop condition forbids
 building them privately in this lane; nothing repairable in-tree.
 Inventory delta **+0** (Refs #777)
+
+## Round 154 — independent re-verification at unchanged head 5ac176601 (job 28dbc82d, 2026-10-11)
+
+Branch `auto-777` HEAD `5ac176601c80` == lane manifest head; base
+`435dc1937e04` == manifest base == `git merge-base HEAD origin/develop`
+(fresh fetch; working tree clean) — no develop-sync conflict exists.
+
+**Driver checks:** job dir manifest `checks: []` and **no `check-*.log`
+files present** — the driver ran no deterministic check this round. The
+lane's standing "Validation failed" pointer again resolves to historical
+job `53d5e08b` `check-2.log`: ruff-format failure on
+`packages/maistro-bootstrap/src/maistro_bootstrap/builders/agent_loop.py`
+("1 file would be reformatted, 2863 files already formatted"), fixed in
+history by `39090a4f` and re-proven live below (check-0/check-1 of the
+same job are ruff-check passes).
+
+**Dispatch snapshot (61 sources, receipt efd48914, captured
+11:24:06Z):** issue #777 open, updated 11:08:21Z, **13/13 acceptance
+boxes unchecked** (parsed from the body verbatim). Blocker states from
+the same snapshot: #804/#805/#806/#53/#774/#776/#93/#95/**#783** OPEN;
+#39/#458/#775 closed (unlanded per rounds 1–153 audits); linked PR
+#1660 open **draft**, head `460ad58027a`.
+
+**Gates, all exit 0 live:** `ruff check .` ("All checks passed!");
+`ruff format --check .` (3282 files); vulture CI-exact
+(quality.yml:1076-1082 args verbatim) 1323 -> 1322, **0 unbanked**;
+ratchet-provenance; suite-inventory (**17/17**); backlog-consistency
+(167); shipped-surface-truth; promotion-surface; reachability — all OK.
+
+**Targeted pytest with live PG** `maistro_test_777` @ 127.0.0.1:5433
+(`maistro-postgres` container, user/password recovered from container
+env; `alembic_version` == **062** == repo head
+`062_audit_cursor_indexes.py`):
+- cancellation-cause model **34 passed**;
+- bootstrap `-k agent_loop` **40 passed** / 200 deselected;
+- hive backend `-k 'design or workspace or agent'` **559 passed** /
+  3086 deselected / 0 skipped **with `MAISTRO_TEST_PG_DSN` set**;
+  without the DSN the same selection is 554 passed / **5 skipped** —
+  pinning the 5 DSN-gated tests that skip bare (a skipped case is not
+  durability proof, per this note's own standing warning), and
+  reconciling the 559/0 figure with the fresh-shell DSN requirement.
+  Matches rounds 137–153 exactly.
+
+**Non-vacuity status:** shipped `Attempt.model_json_schema(mode=
+"serialization")` keeps **16 properties** live (pydantic 2.13.5), the
+assertion `test_the_serialization_mode_schema_keeps_every_declared_field`
+pins. A classmethod-rebind probe of the collapse was **not equivalent**
+to round 151's in-tree mutation (re-binding changes the decoration
+shape; recorded as methodology artifact, not contradiction) — the
+34/34 suite plus round 151's real mutation check remain the
+non-vacuity evidence for the unannotated return at `runs/model.py:51`.
+
+**Negative invariants re-verified live:** grep
+`class (GoalReconcil|ReconciliationLoop|GoalOwner)` under
+`packages/*/src` -> **no matches**; `workspace_agent.py` 149 lines,
+roster-only; Sentinel binding-scoped tool-use deferral to #804
+verbatim at
+`packages/maistro-core/src/maistro/security/sentinel/permission_source.py:77-80`
+(prior rounds cited this path loosely as `services/permission_source.py`);
+production diff vs base unchanged (4 code/test files +30/-6 + vulture
+row -1: `design_service.py` comment-only, `agent_loop.py` dead
+`tool_definitions` removal + `system_prompt` restoration with
+provenance, `runs/model.py` unannotated wrap serializer + guard test,
+vulture row for the removed identity).
+
+**Verdict: BLOCKED** — dependency-blocking (154th round); every
+acceptance criterion consumes APIs owned by OPEN issues (#804/#805/#806
+reconciliation, #774 CreativeBrief, #776 Workspace graph, #53 front
+door, #93/#95 Canvas cutover); the issue's stop condition forbids
+building them privately in this lane; nothing repairable in-tree.
+Inventory delta **+0** (Refs #777)
