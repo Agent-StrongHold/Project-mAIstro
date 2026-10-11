@@ -4160,3 +4160,74 @@ focused trio 315 passed, per-suite inventory ok.
   branch also carries salvaged worker commit `732b3c55b` (packs.py
   active-extension identity guard + its test) — attributed in
   `auto-1852-4bd6.md`, tested, zero-diff against no #1852 surface.
+
+## Round 57 — repair-round first-hand revalidation at 50c7e6a64 (2026-10-12)
+
+Dispatched head `50c7e6a648f1` (base `3c761d14d`) after the round-56 verify
+job returned MERGE-READY with exact-head CI still red; this round re-executes
+every claim first-hand with **zero production/test tree edits** — this section
+appends evidence only, `inventory-delta` unchanged (+132). Driver deterministic
+checks in the round-57 job: sync/ruff/format rc=0, focused trio 315 passed,
+per-suite inventory ok.
+
+- Focused (issue's exact commands, re-run): assessment suite **132 passed**;
+  `test_root_admission_identity.py` + `test_idempotency.py` **140 passed**;
+  driver trio (pack-contracts + identity + assessment) **315 passed**; 10/10
+  issue-named tests present (27 nodes inside the 132). Ruff check + format
+  clean full-tree (`3277 files already formatted`); mypy clean on
+  `admission_generation.py`; full `check-suite-inventory.py` rc=0, 17 suites,
+  31335 unique IDs, 0 duplicates — note delta +132 matches measured
+  collection.
+- exact-debt-ledger at CI's exact steps and argv
+  (`RATCHET_BASE_REV=origin/develop`): `check-shipped-surface-truth.py` rc=0;
+  the lane-brief repair command `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` **rc=0 (1323 -> 1323,
+  unclassified=0, never_allowlist=0)** — 57th consecutive empty amendment:
+  no unbanked identity, nothing genuinely dead, no vulture-baseline row to
+  remove or add; `check-ratchet-provenance.py` rc=1 SOLELY via the
+  reachability sub-ratchet ("check-reachability-provenance.py: trusted-base
+  gate returned 1"), enumerations/lifecycle sub-ratchets OK at base.
+- Quality-gate step `check-reachability.py` rc=1 on **exactly**
+  `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`
+  (1396 modules scanned, 169 -> 171 newly unreachable);
+  `check-reachability-dispositions.py` rc=0 (49 groups);
+  `check-promotion-surface.py` rc=0.
+- Test-job meta-tests re-derived first-hand:
+  `tests/test_check_reachability.py::test_baseline_matches_the_tree` and
+  `tests/test_reachability_baseline_identity.py` (2F/12P) fail naming **only**
+  the two sanctioned modules;
+  `tests/test_branch_independence_repository.py::
+  test_every_quality_json_state_surface_is_classified_once` fails **locally
+  only** on gitignored `quality/ac-state.json` (`git check-ignore` rc=0,
+  `.gitignore:81`, generated local artifact absent on hosted CI; tracked
+  surfaces all classified). Coverage-gate red is the combine step's root
+  scripts producer running the same meta-test set.
+- All four issue-named regression mutations re-killed **in-memory, zero tree
+  writes** (`git status` clean after the battery; classifier sha `578c1f17`
+  unchanged), with a **liveness probe** proving the tests bound the mutated
+  function: control 132 passed; swap TAKEOVER/REPLACE_EXPIRED **50F/82P**;
+  lease-before-binding **14F/118P**; legacy-pending-as-v2 **10F/122P**;
+  mismatch-before-expiry **22F/110P**. Harness trap recorded for integration
+  reviewers: registering a mutated module in `sys.modules` alone
+  **false-passes all four mutations** because the suite's
+  `from maistro.tasks import admission_generation` resolves the parent-package
+  attribute via `_handle_fromlist` (second binding), bypassing `sys.modules`;
+  the runner must patch both bindings, then assert
+  `mod._assess is not original._assess` before collecting.
+- Scope containment re-checked in tree: zero-diff vs base for `quality/`,
+  `tasks/idempotency.py`, `tasks/queue.py`, and every package `__init__.py`;
+  no production module imports `maistro.tasks.admission_generation`;
+  `_vulture_whitelist.py` adds only C1 vocabulary
+  (`from maistro.runs.admission_identity import AdmissionAssessment`), no
+  `admission_generation`/`_assess` reference; zero closure keywords across
+  all 121 branch commit messages.
+- Blocker standing, unchanged and sanctioned: `origin/develop` re-fetched is
+  still `3c761d14d` (no base-side grant landed); the two-merge rule
+  (`ratchet_provenance.load_authorizations` reads grants from the base,
+  docstring: "read the ledger as of the merge base") makes every in-lane
+  authorization null, and the issue explicitly forbids baseline rows, grants,
+  keep-alive imports, dummy callers and waivers for this leaf. The four
+  hosted reds at this exact head are therefore the single sanctioned
+  unwired two-module reachability delta. Implementation/test readiness is
+  proven; the stack stays unmerged pending the separately-scoped #1845
+  integration consumer.
