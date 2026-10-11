@@ -3952,3 +3952,83 @@ is the only edit.
   remain the #1845 integration consumer or a maintainer-landed base-side
   grant. Implementation/test readiness proven; stack stays unmerged by
   design. This round appends this evidence section only.
+
+## Round 54 (2026-10-12) — independent first-hand revalidation at `b096b74f5295`
+
+Fresh verify/repair round; every claim below re-executed first-hand in this
+round, none inherited. Classifier sha256 before and after:
+`578c1f1747920f4716822aaaa2a1c9ca415f76064bdf1a5ececaee22d7e7a063`
+(byte-identical; the mutation harness never wrote the tree — it seeds
+`sys.modules` with an in-memory build instead, purging cached test modules
+between runs; a naive in-process harness without that purge silently
+re-runs the control's already-imported `_assess` and every mutation
+"survives" — the fatal-probe check is what exposed it).
+
+Leaf validation: focused trio (`test_pack_contracts.py`,
+`test_root_admission_identity.py`,
+`test_admission_generation_assessment.py`) **315P**; the issue's ten named
+tests collect **27 nodes, all pass**; `ruff check .` and
+`ruff format --check .` clean; `mypy` clean on both leaf modules;
+`check-suite-inventory.py --suite packages/maistro-core/tests` ok
+(16468 collected = recorded, delta +132 unchanged). All four issue-named
+mutation kills re-proven first-hand, in-memory, no tree writes:
+TAKEOVER/REPLACE_EXPIRED swapped **50F/82P**; lease row before binding row
+**14F/118P**; LEGACY_UNRESOLVED row deleted (legacy classified as v2)
+**10F/122P**; mismatch row above expiry row **22F/110P**; unmutated control
+132P. A deliberate always-mutating probe (PENDING→TAKEOVER) fails 1F+23P
+under the same harness, proving interception rather than a vacuous pass.
+
+Four hosted reds re-attributed at CI's exact argv/env:
+
+- Quality gate: `check-reachability.py` (quality.yml:1089) **rc=1** naming
+  exactly `maistro.runs.admission_identity` +
+  `maistro.tasks.admission_generation` (169→171 of 1396); every sibling
+  provenance sub-ratchet OK (adr-status-language, citation-status,
+  promotion-surface 270 modules, reachability-dispositions 169, shell
+  executions 3, contract-markers 358, enumerations 1, lifecycle 0).
+- `test` (ci.yml "one process" step, exact argv + env): **4F/9257P/150
+  skipped**. Three failures are the reachability meta-tests
+  (`test_check_reachability.py::test_baseline_matches_the_tree`,
+  `test_reachability_baseline_identity.py` x2), whose assertion diffs name
+  only the two sanctioned modules — CI's own check-run annotations for this
+  job show the same `New unreachable modules: maistro.runs.admission_identity,
+  maistro.tasks.admission_generation` error plus exit 1.
+  **Correction to round 53's wording:** the fourth failure
+  (`test_branch_independence_repository.py::
+  test_every_quality_json_state_surface_is_classified_once`) fails LOCALLY
+  on `unclassified quality state: quality/ac-state.json` — a
+  **gitignored** (`.gitignore:81`) untracked local worktree file from other
+  lanes, absent from this branch's diff and impossible on a CI checkout;
+  `check_repository` returns exactly that one error, proving every tracked
+  quality state surface (including everything this branch tracks) is
+  classified, so this test passes on CI and prior "all four name the two
+  modules" attribution was imprecise for it locally. The file was left in
+  place (not this lane's artifact; deletion is destructive).
+- exact-debt-ledger: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` **rc=0** (1323→1323,
+  zero unbanked — **no vulture-baseline amendment is due**, and none is
+  permitted for this leaf); `check-shipped-surface-truth.py` rc=0;
+  `check-reachability-dispositions.py` rc=0; `check-promotion-surface.py`
+  rc=0; `check-ratchet-provenance.py` rc=1 **solely** via the reachability
+  sub-gate — "NEW unreachable module absent from trusted base and not
+  previously authorized" for exactly the two leaf modules.
+- Coverage gate: the `combine` step's root `--source=scripts` producer
+  reproduced at its exact argv: **rc=1, 4F/5071P/129 skipped** (same
+  failure set; on CI only the three reachability meta-tests fail) —
+  `set -euo pipefail` aborts the step there; the publish-set floor is
+  upstream of it and unaffected (the three coverage producer jobs are green
+  on CI at this head; the new module is exercised by its focused suite).
+
+Structural blocker re-confirmed, not repaired: `origin/develop` re-fetched
+this round, still `3c761d14db944a727fa0744444bc67cfe36d49f7`, already an
+ancestor of HEAD (no sync conflict); `scripts/ratchet_provenance.py`
+resolves authorizations from the base revision (two-merge rule), the issue
+forbids baseline rows/grants/dummy callers/waivers in this leaf, and the
+vulture leg needs no amendment — so the reachability red has no in-lane
+repair. Lawful paths remain the separately-scoped #1845 integration
+consumer, or a maintainer-landed base-side authorization.
+`quality/`, `tasks/__init__.py`, `runs/__init__.py`,
+`tasks/idempotency.py` all zero-diff vs base; no strict closure keyword
+(`closes|fixes|resolves #1852/#1845/#1841/#1851`) in any commit message
+3c761d14..HEAD. Implementation/test readiness proven first-hand; stack
+stays unmerged by design. This round appends this evidence section only.
