@@ -5139,3 +5139,72 @@ Green CI requires external owner action: a reviewed grant landed on develop
 (two merges) or the #1845 integration head wiring a real runtime consumer.
 Stack stays unmerged per the issue staging constraint. No inventory delta
 this round; front-matter `+79` remains accurate.
+
+## Round-71 re-verification at 04545e7184bee0640661da0f233f8c457bc54b16
+
+Round 71 was dispatched after the round-70 head re-failed the merge queue on
+the same two gates. All evidence below was re-derived firsthand at this exact
+head; nothing was taken from prior rounds on trust.
+
+- **Issue body reread from the dispatch capture** (not from prior summaries):
+  the staging constraint forbids fake callers, baseline additions, grants,
+  disabled gates and quality waivers; the issue predicts both failures
+  verbatim ("`check-reachability.py` would classify the new module as newly
+  unreachable... A candidate baseline update cannot grant itself permission")
+  and prescribes the current state exactly: "If that integration is
+  unavailable, report implementation/test readiness plus the explicit merge
+  blocker and leave the stack unmerged."
+- **Scope re-proven:** `git diff --name-status 435dc1937..HEAD` = the exact
+  7-file manifest (module, test, inventory note, convergence-matrix row,
+  reachability-baseline row, disposition group, five vulture rows). No
+  `quality/ratchet-authorizations.json` change; store.py / store_boundary.py /
+  model.py / tasks-idempotency absent from the diff. #1841 anchors intact:
+  `store_boundary.py:56` `require_admitted_actor(actor_principal_id: str | None) -> str`,
+  store.py `actor_principal_id: str | None = None` at 507/563/894/1282,
+  model.py 300-321. Zero production importers; no `maistro.runs.__init__`
+  export.
+- **Contract re-proven by AST:** `__all__` exactly 21 names, set-equal to the
+  issue list and sorted; `AdmissionAssessment` exactly the six mandated
+  member/value pairs; all 12 issue-named tests present (one def each).
+- **Focused acceptance re-run green:** focused pytest 79 passed; leaf ruff
+  check and format clean; mypy clean; `check-suite-inventory.py` ok (17
+  suites); full-tree ruff check/format clean (3275 files).
+- **Vulture gate re-run at CI exact argv rc=1** (true exit code captured with
+  pipefail; `tail` masking corrected this round): scan-exact 1328 = trusted
+  base 1323 + the five issue-mandated enum members at admission_identity.py
+  515/516/518/519/520 (pydantic-declarative-field 397); failure is solely
+  "New Vulture debt is not authorized by the trusted base... land a reviewed
+  grant first" — no ledger-sync complaint, so candidate banking (+5/−0) is
+  consistent and is not the failing side.
+- **exact-debt-ledger re-walked in CI order:** provenance rc=1 solely via the
+  two reachability sub-gates naming `maistro.runs.admission_identity` as NEW
+  and unauthorized from base (the trailing "inventory is incomplete" line is
+  the aggregate naming exactly those two sub-gates); shipped-surface rc=0;
+  candidate-side gates green: reachability rc=0 (170/1395), dispositions rc=0
+  (50 groups 147/21/2), promotion rc=0.
+- **Two-merge wall re-verified:** `load_authorizations`
+  (scripts/ratchet_provenance.py:478) reads grants from the base revision by
+  design; zero `admission_identity` occurrences in the grant file at base and
+  head; origin/develop re-fetched and still 435dc1937 = merge-base, so no
+  owner grant landed and no develop sync merge applies.
+- **Inventory bookkeeping consistency:** baseline.json is byte-unchanged from
+  base (packages/maistro-core/tests 11524 at both ends — correctly outside
+  the leaf diff); the suite-inventory gate passing at this head with the
+  unchanged baseline plus the 79-case focused file confirms the front-matter
+  `+79` delta remains the accurate per-change delta.
+- **No in-scope repair exists:** the five flagged identities are the
+  issue-fixed six-member enum contract; removing them breaks the issue,
+  and every candidate-side green-forcing alternative (fake caller, grant,
+  suppression, allowlist, keep-alive import) is forbidden by the issue's
+  staging constraint. The lane brief's amend-ledger action is already
+  satisfied by the banked +5/−0 and is provably not the failing side.
+
+Round-71 verdict: writer handoff unchanged (MERGE-READY as handoff only,
+never an integration approval). Leaf acceptance fully proven by execution at
+this exact head; both merge-queue failures are the trusted-base authorization
+wall the issue itself predicts and prescribes reporting rather than fixing.
+Green CI requires external owner action: a reviewed grant landed on develop
+(two merges) or the #1845 integration head wiring a real runtime consumer
+(which eliminates both debts naturally by making the enum members used and
+the module reachable). Stack stays unmerged per the issue staging constraint.
+No inventory delta this round; front-matter `+79` remains accurate.
