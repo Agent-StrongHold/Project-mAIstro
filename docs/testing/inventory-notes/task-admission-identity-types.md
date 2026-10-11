@@ -5899,3 +5899,66 @@ consumer). No new defect; no in-scope repair exists or is permitted. Writer
 handoff MERGE-READY (handoff only, never integration approval); the stack
 stays unmerged per the staging constraint. No inventory delta this round;
 front-matter `+79` reconfirmed.
+
+## Round 81 — CI-repair-round re-verification at 6d116a187a69 (2026-10-11)
+
+Dispatched as an explicit CI-repair round for exact-debt-ledger with the
+named four merge-queue failures. Re-derived everything firsthand at this
+exact head; nothing taken from earlier claims. Result: the failures reproduce
+exactly and reduce to the two issue-predicted mechanisms; no in-scope repair
+exists or is permitted, so the round records evidence only (note-only commit,
+no code change, no inventory delta).
+
+- Tree state: clean at 6d116a187a69; diff vs merge base 435dc1937 is exactly
+  the four leaf files (module, test, this note, +5 vulture rows).
+  `git diff --numstat origin/develop -- quality/` after fetch: exactly
+  `5 0 vulture-baseline.json` — no silently lost ledger rows. origin/develop
+  = 435dc1937 = merge base: no sync conflict, no owner grant landed, the
+  two-merge wall still binds.
+- Leaf acceptance re-proven by execution: focused suite 79 passed; all 12
+  issue-named tests present by name; leaf ruff check + format --check clean;
+  leaf mypy clean; full `check-suite-inventory.py` ok (17 suites / 31,208
+  unique IDs).
+- Independent 30-assertion contract probe (not the test file) re-derived the
+  sharp invariants: 21-name `__all__` exact; canonicalization to
+  sorted/compact text with frozen `text`; rejection of duplicate keys,
+  non-object roots, scalars, NaN/Infinity literals, `1e999` overflow, invalid
+  JSON, non-string input; exact 6-member StrEnum value map; fencing
+  conjunction rejecting same-owner/different-generation,
+  same-generation/different-owner, and different-scope tickets while never
+  comparing generation to owner; `owner_token` omitted from `repr` while
+  `generation_id` prints; `RootAdmissionResult` snapshot/run-id agreement and
+  real-bool `created`; `AlreadyBound` binding type check. All passed.
+- Four merge-queue failures reproduced with CI exact argv:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=1 on exactly the five issue-mandated enum identities
+  (admission_identity.py:515–520, classified pydantic-declarative-field;
+  candidate ledger scan-exact at 1328 = 1323 + 5; the gate's own message:
+  "New Vulture debt is not authorized by the trusted base … land a reviewed
+  grant first"); `check-reachability.py` rc=1 naming exactly
+  `maistro.runs.admission_identity` (dispositions rc=0, promotion surface
+  rc=0 — correctly untouched); `check-ratchet-provenance.py` rc=1 solely via
+  the check-reachability-provenance sub-gate with every other sub-ratchet OK;
+  `tests/test_check_reachability.py` + `tests/test_reachability_baseline_identity.py`
+  re-run: 3 failed / 36 passed, the failures being exactly the
+  committed-baseline-equals-tree structural checks with set-diff =
+  `maistro.runs.admission_identity`.
+- Failure-to-job mapping re-confirmed from the workflow sources:
+  `exact-debt-ledger` runs provenance + shipped-surface (rc=0) + vulture →
+  red on both root mechanisms; the `Quality gate` job runs the same vulture
+  step and `check-reachability.py` → red on both; the `test` job runs
+  `tests/` → red on the 3 structural self-checks; the `Coverage gate`'s
+  combine step re-runs `tests/` under `set -euo pipefail` → aborts on the
+  same 3 self-checks before any coverage arithmetic (the module itself is at
+  100% lines+branches, so the diff leg has no independent failure path).
+- Repair assessment: the 5 vulture identities are issue-mandated enum
+  members; removing or using them would violate the issue's exact enum spec
+  or its prohibition on fake callers, and the candidate ledger already banks
+  them scan-exactly — the remaining block is the trusted-base grant, which
+  only an owner-side develop merge can supply. The 3 self-checks plus
+  reachability red can only clear via a reachability baseline entry
+  (issue-forbidden: "A candidate baseline update cannot grant itself
+  permission") or a real runtime consumer (parent #1845 integration).
+  Exactly as the issue prescribes, the leaf reports implementation/test
+  readiness plus the explicit merge blocker and the stack stays unmerged.
+  Writer handoff MERGE-READY (handoff only, never integration approval).
