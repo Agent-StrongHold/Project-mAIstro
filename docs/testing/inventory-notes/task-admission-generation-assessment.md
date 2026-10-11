@@ -3805,3 +3805,43 @@ is the only edit.
   clean). Forbidden surfaces (`tasks/idempotency.py`,
   `tasks/__init__.py`, `runs/__init__.py`, queue) zero-diff vs develop.
   No in-lane repair exists; stack stays unmerged by design.
+- **Round-51 independent re-validation at `fbe91c5bb`** (fresh job, all claims
+  re-executed first-hand, tree never edited — no mutations re-run this round;
+  classifier sha256 re-measured `578c1f1747920f4716822aaaa2a1c9ca415f76064bdf1a5ececaee22d7e7a063`,
+  byte-identical to the content rounds 43–50 mutation-killed, so those kills
+  carry over). Leaf acceptance re-proven: focused suite 132P in ~2.0s; sibling
+  trio (`test_root_admission_identity` + unchanged `test_idempotency`) 140P;
+  driver trio 315P (job check-3.log); all 10 issue-named tests present exactly
+  once (grep count 1 each); ruff check + `ruff format --check` + mypy clean on
+  classifier and suite; full `check-suite-inventory.py` ok — 17 suites match.
+  Implementation re-read against the issue text: exact-class gate (type
+  identity, not isinstance), `[0-9a-f]{64}` fullmatch, bool-rejecting signed
+  64-bit `now_us`, decision order expiry(inclusive)→mismatch→binding→
+  legacy→lease→PENDING fallthrough, no clock/store/mutation/logging/HTTP —
+  matches the specified contract exactly. Hosted reds re-attributed at CI's
+  exact argv (`vulture-ratchet.yml` job `exact-debt-ledger` steps 1–3;
+  `quality.yml` vulture/reachability steps): `check-ratchet-provenance.py`
+  with `RATCHET_BASE_REV=origin/develop` rc=1 **solely** via the reachability
+  sub-gate — `169→171 of 1396`, naming exactly `maistro.runs.admission_identity`
+  and `maistro.tasks.admission_generation`, all eight other sub-ratchets OK;
+  the vulture leg itself rc=0 at 1323→1323 (zero unbanked, no amendment due —
+  the lane-brief vulture repair loop has an empty worklist);
+  `check-shipped-surface-truth.py` rc=0; `check-reachability.py` rc=1 naming
+  only those two modules; `check-reachability-dispositions.py` rc=0 (169);
+  `check-promotion-surface.py` rc=0; the root meta-test reds reproduce as
+  exactly 3F/36P (`test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set`,
+  `test_baseline_matches_the_tree`), all naming the same two modules.
+  Two-merge rule re-read at source (`scripts/ratchet_provenance.py:478
+  load_authorizations` — grants resolved **from the base revision** via
+  `resolve_baseline(path, base=base, ...)`): origin/develop re-fetched, still
+  `3c761d14d` (six dep-bump commits at most, none quality-side), already
+  merged into this head at `90727972d`; `git diff --numstat origin/develop --
+  quality/` empty. No base-side grant landed ⇒ no in-lane repair exists: the
+  issue forbids baseline rows/grants/keep-alive imports/dummy callers/waivers
+  in this leaf, and the only tree-wide importer of `admission_generation` is
+  its test file (grep over `packages/`, only pycache besides). The lawful fix
+  remains the #1845 integration consumer (which makes both modules reachable,
+  green with zero ledger change) or a maintainer-landed base-side grant.
+  This round appends this evidence section only; stack stays unmerged by
+  design.
