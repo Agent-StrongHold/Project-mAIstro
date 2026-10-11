@@ -5324,3 +5324,88 @@ merges), or the #1845 integration head wiring a real runtime consumer (which
 makes the enum members used and the module reachable, eliminating both debts
 naturally). No inventory delta this round; front-matter `+79` remains
 accurate.
+
+## Round 73 — CI-repair round at a813787ace60: prohibited dummy-reference
+suppression removed, five banked vulture rows restored (2026-10-11)
+
+Dispatched after the intervening attempt at `a813787ace60` tried to resolve
+the `exact-debt-ledger` failure by adding a dead `# Dummy reference to make
+vulture see these variables as used` / `_ = (AdmissionAssessment.MISMATCH,
+...)` assignment to the module and pruning the five banked vulture rows that
+depended on it. That change violated the issue outright ("Do not add
+keep-alive imports, dead branches, dummy callers, ... suppressions ...
+to make this leaf independently green") and was also **ineffective**: the
+job's `check-ratchet-provenance.py` step fails through the reachability
+sub-gates on the unwired module's mere existence, which the suppression
+cannot touch — and it introduced a regression, breaking
+`ruff format --check` on the over-long line (driver check-2 failure). The
+suppression also lied about the leaf's true state: the five enum members are
+still production-unused contract surface, so hiding them from the scanner
+while deleting their reviewed-debt rows misrecords reality.
+
+### Reproduced before the edit (at a813787ace60, tree clean)
+
+- `ruff format --check .` rc=1: "Would reformat:
+  packages/maistro-core/src/maistro/runs/admission_identity.py" (the
+  169-character dummy line).
+- `check-vulture-baseline.py` (CI exact argv): scan found zero
+  `admission_identity` identities (suppressed, not fixed), candidate ledger
+  pruned to match — bookkeeping-consistent, but the job still rc=1 via
+  provenance, so nothing was gained.
+- `check-ratchet-provenance.py` rc=1 unchanged: both reachability sub-gates
+  naming `maistro.runs.admission_identity`.
+
+### Repair executed (this round's diff)
+
+- `packages/maistro-core/src/maistro/runs/admission_identity.py`: removed
+  the two suppression lines; the module is byte-identical to the honest
+  round-72 state (`git diff 439c461db` empty).
+- `quality/vulture-baseline.json`: restored the five
+  `pydantic-declarative-field` rows (392 → 397, list still sorted; multiset
+  semantics respected). This is the CI-repair lane's explicitly authorized
+  amendment for reviewed retained identities — all five are issue-mandated
+  `AdmissionAssessment` members pinned by the focused suite, none genuinely
+  dead-removable — and it restores the ledger↔scan consistency that round 72
+  had: candidate banking +5 is real bookkeeping; only the trusted-base
+  authorization wall (external) keeps the gate red.
+
+### Validation after the edit (all executed at this tree)
+
+- `uv run ruff check .` rc=0; `uv run ruff format --check .` rc=0 (3275
+  files already formatted — regression cleared).
+- Focused suite 79/79 passed; module `mypy` clean;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` matches the
+  recorded inventory (16341 node IDs, 0 duplicates).
+- Contract re-proven by AST: `__all__` 21 names set-exact (sorted),
+  `AdmissionAssessment` exactly the six issue-specified member/value pairs,
+  12/12 issue-named tests present; zero production importers and no
+  `maistro.runs.__init__` export (grep evidence).
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → **rc=1**, scan-exact 1328 = 1323 (trusted base) + 5,
+  solely the five issue-mandated enum members at :515/516/518/519/520
+  "not authorized by the trusted base ... land a reviewed grant first";
+  candidate ledger bookkeeping half clean (no unbanked/added/removed
+  complaints). Exactly the issue-predicted state.
+- `check-shipped-surface-truth.py` rc=0; `check-promotion-surface.py` rc=0;
+  `check-reachability-dispositions.py` rc=0 (49 groups cover all 169
+  baselined-unreachable modules).
+- `check-reachability.py` → **rc=1** with exactly one newly unreachable
+  module: `maistro.runs.admission_identity` — the failure the issue predicts
+  and prescribes reporting, not fixing.
+- `check-ratchet-provenance.py` → **rc=1** solely via those reachability
+  sub-gates plus the provenance-inventory step
+  (`check-reachability-provenance.py` returned 1); the other eight
+  sub-ratchets report OK.
+
+### State after this round
+
+Identical in kind to round 72's terminal state, minus the suppression and
+minus the format regression: the leaf's only red gates are red for the
+single true external reason (issue-mandated module unwired and unauthorized
+at trusted base `435dc1937e04`, which carries zero `admission_identity`
+grants; `origin/develop` re-fetched unchanged, so the two-merge wall still
+applies). No fake caller, keep-alive import, re-export, suppression,
+waiver, reachability baseline row, or disposition exists anywhere in the
+leaf. Unblock remains external: an owner-landed grant on develop, or the
+#1845 integration head supplying the real runtime consumer. No inventory
+delta; front-matter `+79` remains accurate.
