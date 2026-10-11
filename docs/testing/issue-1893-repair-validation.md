@@ -508,3 +508,80 @@ integration attempt; the two-merge rule cannot be satisfied in this branch
 alone. Also request the exact failing CI test traceback before assigning a
 source repair. Progress: checked 1 issue, done 0 repairs, skipped 0, errors 1
 provenance blocker; validation complete and locally committed as a handoff.
+
+## Repair job 95ffb825 — current evidence at 0bc1e234
+
+Frozen scope: #1893 only; clean assigned `auto-1893` worktree at
+`0bc1e2347c72a1508dce4694298f7aefb2e944f2`. Local `origin/develop` resolves
+to the supplied base `435dc1937e0407ab4de198ffcced49860bb14ad2`; no merge
+conflict or unresolved ref exists. Inspected the supplied dispatch, previous
+result and all five driver logs, repository instructions, codec/DTO source
+and adjacent tests. Read accepted ADR-081226-a66b, ADR-081226-69ee,
+ADR-081426-1f7c and ADR-082526-7f02. Reconciliation: this inactive typed leaf
+cannot invent a production caller or admission authority to evade reachability.
+The canonical execution hierarchy and immutable admission provenance remain
+unchanged. No GitHub mutation or ref refresh was performed.
+
+### Fresh executed checks
+
+Logs are under `/home/dev/maistro/jobs/95ffb82571f240d7a77dd0be9d2e38bf/`.
+Prior results were not substituted for these executions.
+
+| Command | Current result |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | Passed: 1323 findings / reviewed identities, zero unclassified (`worker-vulture.log`) |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-ratchet-provenance.py` | **Exit 1**: both admission modules and dispositions absent from trusted base/authorization (`worker-provenance.log:20-29`) |
+| `uv run ruff check .` | Passed (`worker-ruff.log`) |
+| `uv run ruff format --check .` | Passed: 3277 files (`worker-format.log`) |
+| `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py` | Passed: two source files (`worker-mypy.log`) |
+| `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q` | 201 passed, 3 PG skips without DSNs (`worker-focused.log`) |
+| Same focused command with live DB environment below and `-o junit_family=legacy --junitxml=<job-directory>/worker-pg.xml` | **204 passed, zero skipped** (`worker-pg.log`) |
+| `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest packages/maistro-core/tests/tasks packages/maistro-core/tests/runs -x -q` | 1918 passed, 310 skipped, 6 aiosqlite closed-event-loop warnings; no DSNs (`worker-adjacent.log`) |
+| `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests` | Passed: 16466 nodes, zero duplicate evidence (`worker-inventory.log`) |
+| `uv run python scripts/check-shipped-surface-truth.py` | Passed (`worker-surface.log`) |
+
+Preflight confirmed PostgreSQL 18.6 and absence of `maistro_1893_job95ffb825`.
+Created it with `createdb -h /var/run/postgresql -U dev maistro_1893_job95ffb825`.
+Set `DATABASE_URL`, `MAISTRO_TEST_PG_DSN`, and `MAISTRO_TEST_DATABASE_URL`
+to `postgresql://dev@/maistro_1893_job95ffb825?host=/var/run/postgresql`.
+`uv run alembic upgrade head` applied the real empty-schema chain through
+062 (`worker-migrations.log`); focused pytest used `MAISTRO_REQUIRE_PG_LEGS=1`.
+No downgrade test ran. Production/raw session PID pairs were
+1118716/1118717 (unbound), 1118718/1118719 (bound), and 1118721/1118722
+(acknowledged), on the same socket/database, one persisted admission row per
+case (`worker-sessions.log`, full node IDs in `worker-pg.xml`). Final SQL
+confirmed migration 062 and zero rows in task_idempotency, tasks,
+canonical_runs, canonical_node_runs and canonical_attempts (`worker-db-final.log`).
+The disposable database is retained.
+
+### Acceptance and unresolved handoff
+
+All ten named prospective codec tests executed in the 204-node run. They
+prove immutable snapshot/mapping round trips, strict storage UUIDs and signed
+timestamps, matching scalar headers, no inferred legacy binding, expiry and
+fingerprint evidence surviving full-decode failures, unknown-format rejection,
+tag preservation without fingerprint recomputation, safe corrupt JSON errors,
+and identical TEXT reads through raw and production-codec pools. Corrupt
+surrogate TEXT was injected into every snapshot column through real PostgreSQL;
+the decoder rejected it safely without altering header evidence.
+
+These tests do not establish production admission: their principals are fixture
+strings and source search finds no codec caller outside its defining module.
+New model-based evidence encoding/materialization, original-model fingerprinting,
+Run JSONB object insertion, authorized Workspace/Project/Graph admission,
+consumer expiry/409 precedence, full unchanged CI, and coordination/activation
+approval remain **UNVERIFIED**. No pre-fix/mutation evidence is claimed because
+no production code or test was changed.
+
+**BLOCKED.** The actual failed command is trusted-base provenance, not Vulture.
+The Vulture-only ledger exception cannot authorize reachability changes; no
+ledger, grant, gate, whitelist or runtime consumer was altered. The dispatched
+`test: failure` remains **UNRESOLVED** without its exact current-head traceback;
+neither focused nor adjacent execution reproduced it. Do not assign another
+speculative codec repair before obtaining that traceback and an owner-authorized
+resolution of the reachability blocker. Only this report changed; tests and
+inventory counts are unchanged, so no inventory note is required.
+
+Progress: checked 1 issue, done 0 repairs, skipped 0, errors 1 provenance blocker.
+Next: integration-owner resolution and exact CI failure evidence, not another
+unqualified green-run claim. This local commit is a blocked handoff only.
