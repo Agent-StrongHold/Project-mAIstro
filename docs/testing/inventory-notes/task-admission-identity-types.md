@@ -5017,3 +5017,54 @@ trusted-base authorization wall, crossable only by an owner-landed grant on
 develop or the #1845 integration head that wires a real runtime consumer.
 No inventory delta this round (no tests added or moved; front-matter `+79`
 remains accurate).
+
+## Round 69 (this head 3868191344d4, 2026-10-10)
+
+Dispatched to resolve the round-68 BLOCKED; prior job a249b5f9 was a provider
+timeout after five green driver checks (result.json: all rc=0,
+failure_kind=provider_error). All evidence re-proven firsthand at this exact
+head; nothing assumed from earlier rounds.
+
+- **Driver checks 5/5 green from job logs** (check-0..4.log): sync, ruff,
+  format, focused pytest 79/79, maistro-core suite inventory 16341 ok.
+- **Focused acceptance re-executed:** pytest 79 passed; ruff check + format
+  --check on module and tests clean; mypy clean; full
+  `check-suite-inventory.py` ok (17 suites / 31208 ids, rc=0).
+- **Scope re-verified:** diff vs develop is exactly the 7 manifest surfaces
+  (module + tests + inventory note + CONVERGENCE-MATRIX + 3 quality ledgers);
+  zero production importers of `maistro.runs.admission_identity`; no
+  `maistro.runs.__init__` export; all 12 issue-named tests present;
+  `test_module_exports_exact_contract_and_assessment_values` pins the exact
+  21-name `__all__` and all six enum member/value pairs in order.
+- **Vulture gate re-run with CI exact argv**: rc=1, scan-exact 1328 =
+  base 1323 + the same five flagged identities (admission_identity.py:515,
+  516, 518, 519, 520; PENDING not flagged). Candidate ledger re-walked:
+  1328 total = base 1323 (+5/−0), the five already banked under
+  pydantic-declarative-field 392→397. Fails solely on authorization from
+  the trusted base.
+- **exact-debt-ledger re-walked in CI order** (vulture-ratchet.yml:64-85):
+  provenance rc=1 solely via the two reachability sub-gates naming
+  `maistro.runs.admission_identity` (7 sub-ratchets OK); shipped-surface
+  rc=0; vulture as above. Quality gate root is the same vulture step at
+  quality.yml:1078 (identical argv). Both failures match the recorded
+  check-runs at ce40d86b8f36.
+- **Candidate-side gates re-run green:** reachability rc=0 (170/1395),
+  dispositions rc=0 (50 groups 147/21/2), promotion rc=0.
+- **Two-merge wall re-verified:** grants read from base revision
+  (ratchet_provenance.py:478); zero `admission_identity` occurrences in
+  `quality/ratchet-authorizations.json` at base and head.
+- **Lane-brief repair actions re-audited:** nothing genuinely dead — all
+  five flagged identities are issue-mandated `AdmissionAssessment` members
+  pinned by tests (test_root_admission_identity.py:152-161); amendment
+  already present (+5/−0); no candidate-side fix is permitted by the issue.
+- **No external advance:** origin/develop re-fetched, still 435dc1937 =
+  merge-base; no grant landed, no sync merge applies.
+
+Round-69 verdict: writer handoff (MERGE-READY as handoff only, never an
+integration approval). All leaf acceptance criteria proven at this head;
+both CI failures are the trusted-base authorization wall the issue itself
+predicts and forbids resolving from this leaf. Green CI requires external
+owner action: a reviewed grant landed on develop (two merges) or the #1845
+integration head wiring a real runtime consumer. Stack stays unmerged per
+the issue staging constraint. No inventory delta this round; front-matter
+`+79` remains accurate.
