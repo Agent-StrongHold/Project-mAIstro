@@ -112,3 +112,72 @@ blocker. Stop redispatching this unchanged scope until that input changes.
 
 Progress: checked 1 issue; done 0 code repairs; skipped 0 issues; errors 1
 required gate. Next: external prerequisite decision and CI failure evidence.
+
+## Repair revalidation — job dd2cf245
+
+Frozen item: #1893 only, assigned worktree `auto-1893`, clean starting HEAD
+`fd3eaf9f9b43caf8cb5f8c9ae1bdfe3fb713e20d`, unchanged dispatch base
+`3c761d14db944a727fa0744444bc67cfe36d49f7`. This appended handoff is the
+only repository edit. No source, tests, inventory counts, grants, ledgers or
+workflow changes are justified by the reproduced evidence.
+
+Read the repository instructions, documentation authority map, quality-gate
+policy, accepted lifecycle/fencing/storage ADRs named above, both source
+modules, both adjacent test files, CI definitions, supplied prior result and
+all five driver logs. Reconciliation remains unchanged: admission identity
+comparisons grant no execution authority; Goal -> Graph -> Run -> NodeRun ->
+Attempt is preserved. A legacy pair without receipt evidence remains a typed
+partial binding because the DTO requires receipt identity, not an invented ID.
+
+### Fresh commands and results
+
+The commands in the preceding **Executed commands** block were rerun against
+this starting HEAD, except `git diff --check` is run after this report edit.
+
+- Focused pytest: **201 passed, 3 skipped**, 204 cases exercised/collected.
+  All skips are the real PostgreSQL contrast cases at
+  `packages/maistro-core/tests/tasks/test_admission_codec.py:470`, because both
+  database environment variables are unset. No database was touched; there
+  are no fresh session identities, migration results or SQL residue counts.
+- Ruff check and format: pass, 3277 files formatted; targeted mypy: pass,
+  two source files.
+- Exact Vulture: pass, 1323 reviewed identities, zero unclassified. The
+  vulture-ledger exception therefore supplies no evidenced repair to make.
+- Suite inventory: pass, 16466 core nodes, no duplicate test evidence.
+- Shipped surface, candidate reachability (1396 modules / 171 unreachable),
+  dispositions (50 groups), promotion (74 tolerated modules): pass.
+- Trusted-base provenance: **exit 1**, two new unreachable modules and two
+  new dispositions not authorized by the trusted base. Exact locations:
+  `quality/reachability-baseline.json:131,147` and
+  `quality/reachability-dispositions.json:612-613`.
+
+Fresh logs are in
+`/home/dev/maistro/jobs/dd2cf245df0e42be8cec6c4b93cfaea6/worker-{focused,vulture,provenance,inventory}.log`.
+No pre-fix or mutation failure is claimed; no test was added, so no inventory
+note delta is needed. Source import search finds only the codec importing the
+identity module and a Vulture whitelist reference, not a production consumer.
+
+### New dispatch evidence and acceptance limits
+
+The frozen dispatch's check-runs data for
+`fcc8b437f209a35aa68a61d6f0a5387414938355` records `test: success`
+(check 114501824961) and `exact-debt-ledger: failure` (114501824966).
+Neither has diagnostic output text in that snapshot. This contradicts the
+unqualified `test: failure` repair label, but does **not** establish full CI
+success at the current HEAD. The actual failing test step/node/traceback is
+**UNRESOLVED**; no guessed test repair or unrelated suite changes were made.
+
+The acceptance table above applies to these fresh focused results: shared
+interfaces, strict scalar/UUID/JSON handling, binding rejection, header/full
+separation, flat mapping and fixture snapshot fidelity pass. Real-model
+fingerprinting/materialization, migrated PostgreSQL round trips, Run JSONB
+object persistence, authorized production admission and full required CI
+remain **UNVERIFIED** this round. Low-level fixtures do not prove those
+claims. Production reachability is absent, not established by unit tests.
+
+**BLOCKED**, not merge-ready. No merge conflict was present. A previously
+landed authorization prerequisite or separately authorized genuine consumer
+integration is required; neither can be fabricated by this repair. Do not
+repeat this unchanged dispatch without that prerequisite or the actual failed
+CI diagnostic. Progress: checked 1, done 0 code repairs, skipped 0 issues,
+errors 1 required gate; next: external prerequisite and failure evidence.
