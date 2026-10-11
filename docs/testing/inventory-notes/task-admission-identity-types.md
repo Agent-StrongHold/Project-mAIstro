@@ -5841,3 +5841,61 @@ defect; no in-scope repair exists or is permitted. Writer handoff MERGE-READY
 (handoff only, never integration approval); the stack stays unmerged per the
 staging constraint. No inventory delta this round; front-matter `+79`
 reconfirmed by the fresh focused run.
+
+## Round 80 — independent re-verification at bf27ce6639a6 (2026-10-11)
+
+Re-derived acceptance from the #1851 issue text and re-proved every leaf
+criterion by fresh execution at this exact head; driver checks 0–4 (uv sync,
+repo ruff check, repo ruff format, focused pytest, suite inventory) green.
+
+- Focused suite re-run firsthand: 79 passed (`pytest
+  packages/maistro-core/tests/runs/test_root_admission_identity.py -q`).
+  All 12 issue-named tests present, including both parameterized tables
+  (58 parameterized cases across canonical-JSON rejection and
+  invalid-ID/variant rejection). Fencing, repr-omission, freeze, and
+  truthiness tests re-read: they assert the issue's exact semantics
+  (four ownership combinations; field omission, not blanket UUID-text
+  absence; empty variants keep default truthiness).
+- Contract conformance re-read against the issue: 21-name `__all__`, exact
+  field order and annotations, frozen+slots, CanonicalJsonObject duplicate-key /
+  non-finite (parse_constant + overflow parse_float) / non-object-root /
+  non-string rejection with canonical re-dump and no mutable retention,
+  AdmissionAssessment's six members, all constructor invariants.
+  Isolation re-verified: zero production importers, no `maistro.runs.__init__`
+  export, diff vs develop exactly the four leaf files.
+- Leaf commands re-run: ruff check + format --check (leaf and repo) clean;
+  `mypy packages/maistro-core/src/maistro/runs/admission_identity.py` clean;
+  `mypy --strict packages/maistro-core/src` clean (rc=0, 783 files) under
+  CI's `uv sync --locked --all-extras` environment; full
+  `check-suite-inventory.py` ok (17 suites / 31,208 unique IDs); doc links,
+  convergence matrix, backlog consistency, dispositions, promotion surface,
+  shipped-surface truth all rc=0.
+- Module coverage re-measured directly: 100% lines and branches (245 stmts,
+  82 branches, 0 missed) under the focused suite.
+- Four merge-queue failures reproduced at this head with CI exact argv:
+  check-vulture-baseline.py (packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*') rc=1 on exactly the five issue-mandated enum identities
+  (admission_identity.py:515–520; candidate ledger scan-exact 1328 = 1323+5,
+  blocked by the trusted-base authorization wall); check-reachability.py rc=1
+  naming exactly maistro.runs.admission_identity; check-ratchet-provenance.py
+  rc=1 solely via the reachability provenance sub-gate; and the `test`-job
+  self-checks re-run (tests/test_check_reachability.py +
+  tests/test_reachability_baseline_identity.py): 3 failed / 36 passed, the
+  failures being exactly the committed-baseline-equals-tree structural checks
+  with set-diff = maistro.runs.admission_identity. The coverage-gate combine
+  step aborts on those same three self-checks; its diff leg has no
+  independent failure path (module at 100%).
+- Closure-keyword audit: no `fixes/closes/resolves #N` pattern in any commit
+  message (`fix(#1851):` is a conventional-commit scope, not GitHub closure
+  syntax) and the PR body says "Refs #1851" only.
+- origin/develop re-confirmed at 435dc1937 = merge base: no sync conflict, no
+  owner grant has landed, so the two-merge wall still binds.
+
+Conclusion: unchanged from rounds 64–79 — leaf acceptance fully proven by
+execution; the four merge-queue reds are the single issue-predicted
+trusted-base authorization wall, curable only by external owner action
+(reviewed grant on develop, or the #1845 integration head wiring the real
+consumer). No new defect; no in-scope repair exists or is permitted. Writer
+handoff MERGE-READY (handoff only, never integration approval); the stack
+stays unmerged per the staging constraint. No inventory delta this round;
+front-matter `+79` reconfirmed.
