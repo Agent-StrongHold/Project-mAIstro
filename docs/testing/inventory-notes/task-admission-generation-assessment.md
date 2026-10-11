@@ -3301,3 +3301,63 @@ acceptance claim first-hand instead of trusting rounds 34–40.
   maintainer-landed base-side grant, both outside this lane. The stack
   stays unmerged by design; no ledger was amended and no merge/PR/GitHub
   action was taken.
+
+## Round 42 — repair-round re-verification at head `182a8de7c010` (2026-10-11)
+
+Prior lane round aborted on a provider timeout after all five driver checks
+returned rc=0 (`uv sync --locked --extra dev`; `ruff check .`; `ruff format
+--check .`; the leaf trio `test_pack_contracts.py` +
+`test_root_admission_identity.py` + `test_admission_generation_assessment.py`
+= 315 passed; `check-suite-inventory.py --suite packages/maistro-core/tests`
+ok, 16468 node IDs). This round re-executed every claim first-hand at the
+same head; nothing in the tree needed repair, and none was made.
+
+- **Leaf acceptance re-proven**: focused suite 132 passed;
+  `test_root_admission_identity.py` + live `test_idempotency.py` 140 passed;
+  scoped `ruff check` / `ruff format --check` clean; `mypy
+  packages/maistro-core/src/maistro/tasks/admission_generation.py` clean.
+  All ten issue-named tests present in the file. Full inventory fold:
+  `check-suite-inventory.py` ok — 17 suites / 31335 unique node IDs, zero
+  duplicates.
+- **exact-debt-ledger (CI argv, first-hand)**: `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` rc=0,
+  1323 -> 1323 reviewed identities — the repair brief's amendment mandate
+  again has nothing to act on (42nd consecutive empty amendment);
+  `check-shipped-surface-truth.py` rc=0. The job's red is solely
+  `check-ratchet-provenance.py` rc=1, whose only failing sub-ratchet is
+  reachability 169 -> 171 with exactly
+  `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`
+  NEW-unreachable/missing-from-baseline (merge base `435dc1937e04`); all
+  eight other sub-ratchets OK.
+- **Other hosted reds re-attributed first-hand**: `check-reachability.py`
+  rc=1 listing exactly the two sanctioned modules (the Quality-gate step at
+  `quality.yml:1089`); the six root reachability meta-test files give
+  3 failed / 64 passed, each failure's set diff exactly the two modules
+  (the `test` job's `pytest tests/ --ignore=tests/tools/registry` red); the
+  Coverage gate's scripts-source producer leg (`coverage run --append
+  --branch --source=scripts -m pytest tests/
+  tests/test_model_check_consumer_claim.py
+  packages/maistro-core/tests/extensions/test_lifecycle_proof.py
+  --timeout=30 -q`) reproduced 4 failed / 5071 passed / 129 skipped — three
+  are the same reachability meta-tests, and the fourth
+  (`test_branch_independence_repository.py::test_every_quality_json_state_surface_is_classified_once`)
+  fails only on the gitignored local artifact `quality/ac-state.json`
+  (`.gitignore:81`), absent on hosted runners.
+- **All four issue-named mutations re-killed in a fresh `/tmp` shadow**
+  (`git archive HEAD` copy; worktree untouched, module sha256 identical
+  before/after; import probe asserted the shadow module wins over the ini
+  `pythonpath` — bare `PYTHONPATH` shadowing silently no-ops): pristine
+  control 132P; TAKEOVER<->REPLACE_EXPIRED swap 50F/82P; lease row swapped
+  directly above the binding row 16F/116P; `LEGACY_UNRESOLVED` row deleted
+  10F/122P; mismatch row swapped above expiry 22F/110P. One battery
+  scripting note recorded: a failed in-place edit must abort before
+  rewriting the file, or the run reports 132P against the pristine module
+  and looks like a false green.
+- **Verdict-relevant statement (unchanged)**: leaf acceptance fully proven
+  first-hand at `182a8de7c010`; all four hosted reds are the one sanctioned
+  unwired two-module reachability delta the issue itself predicts and
+  forbids this leaf to repair (no fake callers, no baseline additions, no
+  grants, no wiring). The lawful fix is the future #1845 integration
+  consumer or a maintainer-landed base-side grant, both outside this lane.
+  The stack stays unmerged by design; no ledger was amended and no
+  merge/PR/GitHub action was taken.
