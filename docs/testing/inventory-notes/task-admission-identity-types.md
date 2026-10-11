@@ -5471,3 +5471,69 @@ plus focused-test readiness, the explicit merge blocker, and the stack left
 unmerged pending the owner-landed grant on develop or the #1845 integration
 head. Writer handoff MERGE-READY (handoff only, never integration
 approval). No inventory delta; front-matter `+79` remains accurate.
+
+## Round 75 re-verification at 64ad7c4dfdc9 (job de9604bfb9dc4cebb0e72c7704c57033)
+
+Dispatched to repair the four merge-queue failures recorded at this exact
+head (`test`, `exact-debt-ledger`, Quality gate, Coverage gate). Prior job
+029dff612d07 died of a provider timeout after all five driver checks were
+green (result.json rc=0 x5, `failure_kind=provider_error`); this round
+re-derived every mechanism firsthand at the same head rather than trusting
+round 74's notes, and independently re-ran the driver battery (all five
+green again: sync, ruff check, ruff format --check, focused 79/79,
+suite-inventory ok 16341).
+
+- `origin` re-fetched: `origin/develop` still `435dc1937e04` = merge-base.
+  No grant landed; no sync merge applies. Diff vs base re-walked: exactly
+  the four leaf files (module +520, tests +660, this note, vulture ledger
+  +5 sorted rows in the pydantic-declarative-field bucket).
+- **Vulture gate** re-run at CI exact argv (`packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`): rc=1, scan-exact 1328
+  findings = 1323 base + 5, failing solely on the five issue-mandated
+  `AdmissionAssessment` identities at `admission_identity.py:515/516/518/
+  519/520` — "not authorized by the trusted base … land a reviewed grant
+  first". Banking half clean (all five banked in the candidate ledger); no
+  unbanked identities, so the lane-brief "fix unbanked / remove dead"
+  actions are no-ops, and none of the five is genuinely dead (issue-fixed
+  contract surface, pinned by tests).
+- **check-ratchet-provenance** rc=1 solely via the two reachability
+  sub-gates naming `maistro.runs.admission_identity` (all other sub-ratchets
+  OK); **check-shipped-surface-truth** rc=0; **check-reachability** rc=1
+  with exactly one newly unreachable module.
+- **test job** reproduced under its exact env (`RATCHET_BASE_REV=<merge
+  base>`, REQUIRE_AUTH=false, MAISTRO_DRY_RUN=1): the same three
+  committed-baseline-equals-tree self-checks fail
+  (`tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::`
+  `test_the_committed_baseline_passes_the_gate_it_now_carries` :179 and
+  `test_the_baseline_is_exactly_the_unreachable_set` :216) — 3 failed.
+  Remedies remain issue-forbidden (baseline row = self-grant, proven
+  round 72), out-of-leaf (wiring a consumer), or gate-weakening (editing
+  the self-checks).
+- **Coverage gate** mechanism re-read in quality.yml: the scripts producer
+  runs the same root `tests/` suite inside a `run: |` block, so those same
+  3 failures red the step before diff coverage evaluates; re-measured the
+  module under `coverage run --branch --source=maistro.runs.
+  admission_identity` with the focused suite: 245/245 statements, 82/82
+  branches (100%), above the 90/80 per-file floors — the module is not the
+  failing side.
+- Two-merge wall re-verified in data: zero `admission_identity`
+  occurrences in `quality/ratchet-authorizations.json` at base 435dc1937
+  and at head, and zero in `quality/reachability-baseline.json` at head;
+  `load_authorizations` (scripts/ratchet_provenance.py:478) reads grants
+  from the base revision by design.
+- Leaf acceptance re-proven: `__all__` 21 names set-exact vs the issue's
+  listing (AST, sorted per RUF022 — reconciled round 68), six
+  `AdmissionAssessment` member/value pairs exact, 12/12 issue-named tests
+  present, 79/79 green, mypy leaf clean, zero production importers, no
+  `maistro.runs.__init__` export, zero suppression markers in the module,
+  #1841 anchor `require_admitted_actor` intact at `store_boundary.py:56`.
+
+Conclusion (round 75): unchanged from rounds 61–74 — no in-scope repair
+exists; all four merge-queue failures reduce to the single trusted-base
+authorization wall the issue itself predicts and forbids repairing from
+this branch. Issue-prescribed response shipped: readiness + the explicit
+merge blocker + the stack left unmerged pending an owner-landed grant on
+develop or the #1845 integration-head consumer. Writer handoff
+MERGE-READY (handoff only, never integration approval). Note-only commit;
+no inventory delta; front-matter `+79` remains accurate.
