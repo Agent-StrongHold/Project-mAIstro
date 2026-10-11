@@ -3237,3 +3237,67 @@ change is this note.
   authority and explicitly forbidden to this leaf (no fake callers, no
   baseline additions, no grants, no wiring). The stack stays unmerged by
   design; no ledger was amended and no merge/PR/GitHub action was taken.
+
+## Round 41 — repair-round re-verification at head `18e884ebe3ce` (2026-10-10)
+
+The prior verify driver returned `success` at this exact head (job
+`18b15110bb7e`, all five checks rc=0); this repair round re-executed every
+acceptance claim first-hand instead of trusting rounds 34–40.
+
+- **Leaf focused runs re-proven**: 132 passed
+  (`tasks/test_admission_generation_assessment.py`), 140 passed
+  (`runs/test_root_admission_identity.py` + `tasks/test_idempotency.py`),
+  driver trio 315 passed; ruff check/format clean on both leaf files; mypy
+  clean on the module; full `check-suite-inventory.py` fold 17 suites rc=0;
+  all 10 issue-named tests present exactly once, no skips.
+- **Hosted reds re-attributed first-hand at this head** (dispatch-captured
+  check-runs at `18e884e`: exactly `exact-debt-ledger`, `Quality gate
+  (Pillars 1–4, 7, 8)`, `test`, `Coverage gate` failing; `coverage (no
+  services)`, `lint-and-type-check` and the rest success/skipped):
+  - *exact-debt-ledger*: the vulture leg is GREEN at CI argv (`
+    check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+    '*/third_party/*'` rc=0, 1323 -> 1323 reviewed identities; 41st
+    consecutive empty amendment — no unbanked identities, so the repair
+    brief's amendment mandate has nothing to act on); shipped-surface leg
+    rc=0; the job reds solely in `check-ratchet-provenance.py` whose
+    `check-reachability-provenance.py` sub-gate returned 1 (reachability
+    169 -> 171, the two NEW unreachable modules "absent from trusted base
+    and not previously authorized"; the trusted base resolves to merge base
+    `435dc1937e04`, so an in-branch baseline edit cannot authorize itself —
+    the two-merge rule).
+  - *Quality gate*: `check-reachability.py` rc=1 with exactly
+    `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`
+    newly unreachable (the job's step at `quality.yml:1089`).
+  - *test*: 3 failed / 80 passed over the six reachability root meta-test
+    files (`tests/test_check_reachability.py`,
+    `tests/test_check_reachability_dispositions.py`,
+    `tests/test_reachability_baseline_identity.py`,
+    `tests/test_reachability_scanner.py`,
+    `tests/test_reachability_source_universe.py`,
+    `tests/test_m1_542_policy_coverage.py`); each failure's set diff is
+    exactly the two modules.
+  - *Coverage gate*: the scripts-source producer leg is that same root
+    suite, so its red cause is the three meta-test failures proven above;
+    the core-suite producer leg is green on hosted CI at this exact head
+    (check-run `coverage (no services)` = success) and the driver trio
+    re-proved the leaf suites locally.
+- **All four issue-named mutations re-killed in a fresh `/tmp` shadow copy**
+  (worktree untouched; `sha256sum -c` of the module identical after the
+  battery; binding probe asserted both leaf modules resolve to the shadow
+  in `pytest_configure` and at `pytest_sessionfinish`, so the documented
+  pythonpath-ini shadowing trap was avoided via `-o pythonpath=<shadow>`):
+  pristine-shadow control 132P; TAKEOVER<->REPLACE_EXPIRED swap 50F/82P;
+  TAKEOVER row moved above the binding row (and therefore also ahead of the
+  legacy row — the stronger placement) 27F/105P; `LEGACY_UNRESOLVED` row
+  deleted so an unbound legacy row falls through to the v2 lease comparison
+  10F/122P; mismatch row moved above the expiry row 22F/110P.
+- **Verdict-relevant statement (unchanged from rounds 35–40)**: leaf
+  acceptance fully proven first-hand at `18e884ebe3ce`; all four hosted
+  reds are the one sanctioned unwired two-module reachability delta the
+  issue itself predicts ("check-reachability.py would classify the new
+  module as newly unreachable") and forbids this leaf to repair (no fake
+  callers, no baseline additions, no grants, no wiring, no keep-alive
+  imports); the lawful fix is the future #1845 integration consumer or a
+  maintainer-landed base-side grant, both outside this lane. The stack
+  stays unmerged by design; no ledger was amended and no merge/PR/GitHub
+  action was taken.
