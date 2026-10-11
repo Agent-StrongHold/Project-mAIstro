@@ -6531,6 +6531,68 @@ All evidence re-derived firsthand this round; nothing taken from prior claims.
   (handoff only, never integration approval). Note-only commit; no
   inventory delta (front-matter stays +79).
 
+## Round-92 re-verification at unchanged `5b65d62a4dfc` (job
+## d6a200e6e27a40fc8d916dae793bf973, after prior round's provider timeout)
+
+Fresh firsthand re-derivation at the assigned head
+`5b65d62a4dfc2766e7a0c4fd8b32e21d0a11d132` (tree clean; the immediately
+prior job `446a855c…` again died to a provider timeout after a 5/5-green
+driver run, so nothing was trusted from it):
+
+- Driver 5/5 green in this job's logs (sync / `ruff check .` / `ruff format
+  --check .` / 79-pytest / `check-suite-inventory.py --suite
+  packages/maistro-core/tests` ok at 16341 identities, 0 duplicates).
+- Contract re-read line-by-line and conformant: 21-name `__all__` exact;
+  every DTO `@dataclass(frozen=True, slots=True)` with the issue-fixed field
+  order; `CanonicalJsonObject` rejects non-string/non-object-root/invalid
+  JSON/duplicate keys at any depth (`object_pairs_hook`)/non-finite
+  (`parse_constant` + overflow-via-`parse_float`) before canonicalizing, then
+  retains only the canonical string with no parsed-object accessor;
+  `owns` is exactly the three-way conjunction (never generation==owner);
+  legacy omits the lease<=expiry clamp; empty variants carry no truthiness
+  override; `AdmissionAssessment` has exactly the 6 mandated members.
+- Leaf acceptance re-executed: focused pytest 79/79; leaf ruff check +
+  format --check clean; module mypy Success; full `check-suite-inventory.py`
+  ok (17 suites); all 12 issue-named tests present (19 test functions, 79
+  collected cases).
+- Isolation re-verified: zero production importers outside the module; no
+  `runs/__init__` export; branch diff vs base = exactly the 4 declared
+  surfaces; tests import the module directly, not via the package root.
+- #1841 anchors verified in-tree: `store_boundary.py:56`
+  `require_admitted_actor(actor_principal_id: str | None) -> str`;
+  `store.py:537` `get_run(..., principal_id: str | None = None)`;
+  `create_run`/`claim_run_by_effect` retain `actor_principal_id` and enforce
+  the guard (`store.py:921`, `:1323`); `model.py:300/320-321` unchanged.
+- exact-debt-ledger reproduced with CI exact argv: rc=1; scan total 1328 =
+  candidate ledger 1328, unclassified 0 (ledger already scan-exact — the
+  lane-brief amendment instruction is again a verified no-op); candidate
+  vs base multiset delta = exactly +5/-0, the issue-mandated
+  `AdmissionAssessment` identities at `admission_identity.py:515-520`;
+  failure purely trusted-base authorization (gate reads the merge base,
+  which carries zero `admission_identity` rows).
+- Remaining gates reproduced: `check-reachability.py` rc=1 naming exactly
+  `maistro.runs.admission_identity`; `check-ratchet-provenance.py` rc=1
+  solely via the delegated reachability sub-gate ("trusted-base gate
+  returned 1") with dispositions/promotion-surface/shipped-surface-truth
+  all rc=0; CI-scoped root suite re-run end-to-end = 3 failed/4968
+  passed/129 skipped, failure set exactly the 3 baseline-equals-tree
+  self-checks (`test_check_reachability.py::test_baseline_matches_the_tree`,
+  `test_reachability_baseline_identity.py::
+  test_the_committed_baseline_passes_the_gate_it_now_carries` and
+  `::test_the_baseline_is_exactly_the_unreachable_set`); reachability
+  ledgers byte-identical to base (round-72 restoration holds); coverage
+  producer runs the same root suite and aborts mechanically on it.
+- Two-merge wall re-confirmed live: `origin/develop` fetched this round =
+  `3c761d14d` = merge base, zero drift; quality diff vs develop = exactly
+  +5/-0 vulture rows, nothing else.
+- Issue body re-read verbatim: baseline additions, grants, waivers, fake
+  callers all forbidden; "A candidate baseline update cannot grant itself
+  permission"; integration unavailable ⇒ "report implementation/test
+  readiness plus the explicit merge blocker and leave the stack unmerged."
+  No in-scope, issue-legal, mechanically-effective repair exists — writer
+  handoff MERGE-READY (handoff only, never integration approval). Note-only
+  commit; no inventory delta (front-matter stays +79).
+
 ## Round-91 re-verification at unchanged `423e92441c29` (job
 ## da8a7f492ad54506b454a1b958482c7b, after prior round's provider timeout)
 
