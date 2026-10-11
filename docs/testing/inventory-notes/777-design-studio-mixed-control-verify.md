@@ -22747,3 +22747,68 @@ CreativeBrief, #776 Workspace graph, #53 front door, #93/#95 Canvas
 cutover) or by the absent #458/#775 landings; the stop condition forbids
 building them privately in this lane; nothing repairable in-tree.
 Inventory delta **+0** (Refs #777)
+
+## Round 156 — independent re-verification at unchanged head `cc3cdf64c` (job 87409bbc)
+
+Re-verified everything live; two **corrections** to the standing dependency
+record, neither of which flips an acceptance box.
+
+**Dispatch state (fresh 12:41:42Z snapshot, 61 sources, receipt
+`1cdb8e00…`):** #777 open, updated 12:15:11Z, **0/13 acceptance boxes
+checked** (parsed from the body directly). Depends-on gates by state:
+**OPEN** — #804/#805/#806 (persistent Agent + Goal reconciliation), #53
+(front door), #774 (CreativeBrief), #776 (Workspace graph), #93/#95
+(Canvas/Design Studio cutover), #783 (M4 related); **closed** — #39
+(2026-09-02), #458 (2026-09-02), #775 (2026-10-03). PR #1660 open draft,
+unmerged, head `460ad5802`, mergeable_state clean.
+
+**Correction 1 — #775 creative Graph IS landed at the base.**
+`packages/maistro-design/src/maistro_design/creative_graph.py`,
+`creative_nodes.py` and `tests/test_creative_graph.py` are present in
+`435dc1937` (origin/develop == merge-base): merged via #1668
+(`8bb0f1f01`), complexity trimmed by #1831 (`8f19acc1f`, "remove ungranted
+creative graph complexity" — preserving "canonical execution, artifact
+provenance and invalidation semantics"). Prior rounds' "#775 absent /
+mention-only" probes were scoped too narrowly (maistro-core/hive
+services) and missed the `maistro-design` package. Correction 2 — #458
+shared ontology is **partially landed**:
+`packages/maistro-core/src/maistro/interop/contract.py:295` defines
+`INTEROP_ONTOLOGY_V1`, consumed by `maistro_design/packs/rubric.py`,
+`maistro_design/brief.py` and
+`maistro-core/src/maistro/workspaces/backlog_history/model.py`; prior
+rounds grepped only `canonical_goal|CanonicalGoal` under maistro-core and
+missed the `interop` naming.
+
+**Why the verdict still holds:** readiness is governed by issue state
+("references are not readiness or ownership release"), and every one of
+the 13 boxes names or consumes at least one still-OPEN gate — boxes 1, 7,
+9, 11, 12 explicitly require #804/#805/#806 reconciliation; box 2 the
+#774 CreativeBrief contract; box 3 the #776 Workspace graph; box 4 the
+#53 front door; boxes 5, 6, 8, 13 the #93/#95 Canvas/product cutover;
+box 10 #774 + #804 state separation. Landed #775/#458 fragments do not
+satisfy any box on their own.
+
+**Negative invariants re-proven with wider greps than prior rounds:**
+`class (GoalReconcil|ReconciliationLoop|GoalOwner)` → 0 matches under
+`packages/*/src`; `workspace_agent.py` 149 lines roster-only;
+`permission_source.py:77-81` defers binding-scoped tool authorization to
+#804 verbatim. Production diff vs base unchanged: 4 code/test files
+(+30/−6) + vulture row −1.
+
+**Battery re-executed, all exit 0:** `ruff check .`; `ruff format --check .`
+(3282 files); vulture CI-exact verbatim (`quality.yml` ~1076-1082:
+`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) →
+1323 reviewed → 1322 findings, 0 unbanked; `check-ratchet-provenance.py`;
+`check-suite-inventory.py` (17/17); `check-backlog-consistency.py` (167);
+`check-shipped-surface-truth.py`; `check-promotion-surface.py`;
+`check-reachability.py` (1394 production / 169 unreachable). Targeted
+pytest with live PG `maistro_test_777` @ 127.0.0.1:5433 (user maistro,
+`alembic_version == 062` == repo head `alembic/versions/062_audit_cursor_indexes.py`;
+`DATABASE_URL` + `MAISTRO_TEST_PG_DSN` both set): cancellation-cause model
+**34 passed**; bootstrap `-k agent_loop` **40 passed/200 deselected**;
+hive backend `-k 'design or workspace or agent'` **559 passed/3086
+deselected, 0 skipped** — matches rounds 137-155 exactly.
+
+**Verdict: BLOCKED** — dependency-blocking (156th round); the stop
+condition forbids private rebuild of the OPEN owners in this lane;
+nothing repairable in-tree. Inventory delta **+0** (Refs #777)
