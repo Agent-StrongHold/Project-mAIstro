@@ -6530,3 +6530,56 @@ All evidence re-derived firsthand this round; nothing taken from prior claims.
   plus a prior owner-landed trusted-base grant). Writer handoff MERGE-READY
   (handoff only, never integration approval). Note-only commit; no
   inventory delta (front-matter stays +79).
+
+## Round-91 re-verification at unchanged `423e92441c29` (job
+## da8a7f492ad54506b454a1b958482c7b, after prior round's provider timeout)
+
+Fresh firsthand re-derivation at the unchanged assigned head
+`423e92441c291eb97e288c68ecea9ff6e6e12b07` (tree clean); the prior round
+(`c9d03b6d…`) had its agent killed by a provider timeout after a 5/5-green
+driver run, so every claim was re-executed here rather than trusted:
+
+- Driver 5/5 green in this job's logs (sync / `ruff check` / `ruff format
+  --check` / 79-pytest / suite inventory ok 16341 identities, 0 duplicates).
+- Leaf acceptance re-executed firsthand: focused pytest 79/79 in 1.12s;
+  leaf `ruff check` + `ruff format --check` clean; module mypy "Success: no
+  issues found in 1 source file" (issue lines 200-203 verbatim commands).
+- Isolation re-verified: zero production importers of the module outside
+  itself; no `runs/__init__` export; branch diff vs base = exactly the 4
+  declared surfaces (module, tests, this note, vulture-baseline +5).
+- exact-debt-ledger reproduced with CI exact argv
+  (`.github/workflows/vulture-ratchet.yml:84-87`): rc=1; scan 1328 =
+  candidate ledger 1328, multiset-equal via Counter — the lane-brief
+  instructed amendment of `quality/vulture-baseline.json` is again a
+  verified no-op; candidate-vs-base multiset delta = exactly +5/-0, the
+  issue-mandated `AdmissionAssessment` identities at
+  `admission_identity.py:515-520` (`LEGACY_UNRESOLVED`, `MISMATCH`,
+  `REPLACE_EXPIRED`, `REPLAYED`, `TAKEOVER`); base has zero
+  `admission_identity` rows in both vulture and reachability ledgers, so
+  the failure is purely trusted-base authorization ("land a reviewed grant
+  first") — nothing genuinely dead-removable (fixed 6-member enum + 21-name
+  `__all__` contract surface).
+- Remaining gates reproduced: `check-reachability.py` rc=1 naming exactly
+  `maistro.runs.admission_identity`; `check-ratchet-provenance.py` rc=1
+  solely via the delegated reachability sub-gate ("trusted-base gate
+  returned 1") with `check-reachability-dispositions.py` rc=0 and
+  `check-shipped-surface-truth.py` rc=0; the 3 root-suite failures
+  reproduced directly (`tests/test_check_reachability.py::
+test_baseline_matches_the_tree`, `tests/test_reachability_baseline_
+identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`
+  and `::test_the_baseline_is_exactly_the_unreachable_set`; 3 failed/149
+  passed on those five self-check files) with set-diff = exactly
+  `maistro.runs.admission_identity`; coverage producer aborts mechanically
+  on the same exit-1 suite.
+- Two-merge wall re-confirmed live: `origin/develop` fetched this round =
+  `3c761d14d` = merge base, zero drift, zero admission grants at base.
+- Issue body re-read verbatim from dispatch context: "Do not add keep-alive
+  imports, dead branches, dummy callers, package re-exports, artificial
+  framework/CLI registration, suppressions, allowlist/baseline entries, or
+  grants to make this leaf independently green"; "A candidate baseline
+  update cannot grant itself permission"; integration unavailable ⇒
+  "report implementation/test readiness plus the explicit merge blocker and
+  leave the stack unmerged." No in-scope, issue-legal, mechanically-
+  effective repair exists — writer handoff MERGE-READY (handoff only,
+  never integration approval). Note-only commit; no inventory delta
+  (front-matter stays +79).
