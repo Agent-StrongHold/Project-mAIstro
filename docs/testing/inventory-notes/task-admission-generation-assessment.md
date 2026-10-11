@@ -3361,3 +3361,63 @@ same head; nothing in the tree needed repair, and none was made.
   consumer or a maintainer-landed base-side grant, both outside this lane.
   The stack stays unmerged by design; no ledger was amended and no
   merge/PR/GitHub action was taken.
+
+## Round 43 — repair-round re-verification at head `fa06ceda2f3c` (2026-10-11)
+
+Prior round (job `e1675d922`) ended `success: false` on a **provider 429
+rate-limit** after all five driver checks returned rc=0 at this exact head
+(`fa06ceda2f3c`, round 42's evidence commit); nothing was uncommitted and no
+salvage was needed. This round re-executed the acceptance battery first-hand
+instead of trusting round 42. No source, test, or ledger file was edited; the
+only tree change is this note.
+
+- **Driver checks at this head all green (5/5 rc=0)**: `uv sync --locked
+  --extra dev`; `ruff check .` ("All checks passed!"); `ruff format --check .`
+  (3277 files); driver focused trio 315 passed
+  (`test_pack_contracts.py` + `test_root_admission_identity.py` +
+  `test_admission_generation_assessment.py`); `check-suite-inventory.py
+  --suite packages/maistro-core/tests` ok (16468 collected == recorded).
+- **Leaf focused runs re-proven**: 132 passed
+  (`tasks/test_admission_generation_assessment.py`), 140 passed
+  (`runs/test_root_admission_identity.py` + live `test_idempotency.py`);
+  scoped ruff check/format clean on both leaf files; `mypy
+  packages/maistro-core/src/maistro/tasks/admission_generation.py` clean.
+  All ten issue-named tests present exactly once, zero skip/xfail.
+- **Forbidden surface re-proven**: `grep -rn admission_generation
+  packages/*/src` hits only the module itself (plus a `.pyc` artifact);
+  `git diff --name-only 435dc1937e04..HEAD --` over `tasks/idempotency.py`,
+  `tasks/__init__.py`, `runs/__init__.py`, `tasks/queue.py`, `quality/` is
+  EMPTY; the full base..head diff is the 11 sanctioned surfaces (3 inventory
+  notes, `_vulture_whitelist.py` + `extensions/packs.py` from sibling leaves,
+  2 new src modules, 3 new test files).
+- **exact-debt-ledger (CI argv, first-hand)**: `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` rc=0,
+  1323 -> 1323 reviewed identities, zero unbanked — the repair brief's
+  amendment mandate again has nothing to act on (43rd consecutive empty
+  amendment). No ledger file was touched.
+- **Quality-gate red re-attributed first-hand**: `check-reachability.py`
+  rc=1: 1396 production modules, 171 unreachable, "2 module(s) are NEWLY
+  UNREACHABLE" — exactly `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_generation`; `check-reachability-dispositions.py`
+  rc=0 (169 dispositioned, unchanged); `check-promotion-surface.py` rc=0.
+  Same sanctioned unwired delta as rounds 35–42; two-merge rule makes any
+  in-branch baseline/grant edit null, and the issue forbids it anyway.
+- **All four issue-named mutations re-killed in a fresh `/tmp` shadow**
+  (`git archive HEAD` copy; worktree untouched throughout, module sha256
+  `578c1f1747920f47...` identical before/after and equal across
+  pristine/shadow/worktree; `-p` probe asserted the imported module's
+  `__file__` is the shadow and, for mutated runs, that its source carries
+  MUTMARK — the round-37 pythonpath-ini trap documented there applies):
+  pristine control 132P; TAKEOVER<->REPLACE_EXPIRED swap 50F/82P; lease row
+  moved above the binding row 14F/118P; `LEGACY_UNRESOLVED` row deleted
+  10F/122P; mismatch row moved above the expiry row 22F/110P; final control
+  132P. Every mutation applies ≥1 verified replacement before its run and
+  aborts the stage otherwise.
+- **Verdict-relevant statement (unchanged from rounds 35–42)**: leaf
+  acceptance fully proven first-hand at `fa06ceda2f3c`; all four hosted reds
+  are the one sanctioned unwired two-module reachability delta the issue
+  itself predicts and forbids this leaf to repair (no fake callers, no
+  baseline additions, no grants, no wiring). The lawful fix is the future
+  #1845 integration consumer or a maintainer-landed base-side grant, both
+  outside this lane. The stack stays unmerged by design; no ledger was
+  amended and no merge/PR/GitHub action was taken.
