@@ -243,3 +243,94 @@ note is needed. Progress: checked 1, done 0 repairs, skipped 0, errors 1 unresol
 provenance blocker. Next: owner-authorized provenance resolution and exact
 current-head `test` failure evidence. The local documentation commit is an
 evidence handoff, not merge or activation approval.
+
+## Fresh bounded repair round: job 6e7c70c2225d4c2fb82614872a19798c
+
+Frozen item: #1893 only, starting source
+`12183c0278b79db1f3804a66da4c923ca019546d`, clean assigned worktree.
+`origin/develop` resolves to supplied base
+`435dc1937e0407ab4de198ffcced49860bb14ad2`. No ref refresh, conflict,
+remote mutation, production activation, or ledger edit was performed.
+Read the supplied dispatch, prior result, driver `check-0.log` through
+`check-4.log`, repository instructions, accepted ADR-081226-a66b and
+ADR-082526-7f02, codec, DTO constructors, focused tests and pool fixture.
+Preserving immutable provenance and the canonical execution hierarchy rules
+out adding a competing admission authority to bypass the gate.
+
+### Fresh command outcomes
+
+Logs are in `/home/dev/maistro/jobs/6e7c70c2225d4c2fb82614872a19798c/`.
+All Python validation used `uv run`; commands had 1200-second timeouts.
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`: **passed**, 1323 findings
+  and reviewed identities, zero unclassified (`worker-vulture.log`). No
+  evidence warrants the permitted Vulture ledger amendment.
+- `RATCHET_BASE_REV=origin/develop uv run python
+  scripts/check-ratchet-provenance.py`: **exit 1**. Lines 20–31 of
+  `worker-provenance.log` reject both `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_codec`: NEW unauthorized dispositions and NEW
+  unauthorized unreachable modules. This reproduces the exact-debt-ledger
+  workflow blocker; no candidate-side grant can authorize it.
+- `uv run ruff check .` and `uv run ruff format --check .`: **passed**.
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py
+  packages/maistro-core/src/maistro/runs/admission_identity.py`: **passed**.
+- `uv run pytest packages/maistro-core/tests/tasks
+  packages/maistro-core/tests/runs -x -q`: **1918 passed, 310 skipped,
+  4 warnings**, without a database DSN (`worker-adjacent.log`). Warnings
+  are aiosqlite worker-thread closed-event-loop reports, not codec failures.
+- `uv run python scripts/check-suite-inventory.py --suite
+  packages/maistro-core/tests`: **passed**, 16466 nodes, zero duplicates.
+
+### Fresh PostgreSQL acceptance evidence
+
+Preflight confirmed PostgreSQL 18.6 and absence of the proposed disposable
+DB; `createdb -h /var/run/postgresql -U dev maistro_1893_job6e7c70c2`
+created it. With `DATABASE_URL` set to
+`postgresql://dev@/maistro_1893_job6e7c70c2?host=/var/run/postgresql`,
+`uv run alembic upgrade head` applied the real empty-schema chain through
+**062**. Both `MAISTRO_TEST_PG_DSN` and `MAISTRO_TEST_DATABASE_URL` then used
+that URL, with `MAISTRO_REQUIRE_PG_LEGS=1`, for:
+
+```text
+uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q -o junit_family=legacy --junitxml=<job-directory>/worker-pg.xml
+```
+
+Result: **204 collected/executed, 204 passed, zero skipped**. All ten named
+prospective contracts in the acceptance table above executed. The cases prove
+immutable DTOs, header/full-decode separation, strict UUID/timestamp decoding,
+explicit legacy partial dispositions, safe invalid/duplicate JSON rejection,
+unchanged stored fingerprint and tagged evidence, and fresh flat SQL mappings.
+Storage injection covers malformed surrogate TEXT through both pools as well
+as unbound, bound and acknowledged round trips satisfying migration 055.
+
+JUnit production/raw PID pairs: **754644/754645**, **754647/754654**,
+**754705/754730**, respectively. Each pair identifies the same disposable DB
+and distinct backend sessions; each reads exactly one persisted admission row.
+Independent final SQL confirms migration **062** and **zero** rows in
+`task_idempotency`, `tasks`, `canonical_runs`, `canonical_node_runs`, and
+`canonical_attempts`. The empty disposable DB is retained. Logs:
+`worker-migrate.log`, `worker-pg.log`, `worker-pg.xml`, `worker-db-final.log`.
+
+### Disposition
+
+**BLOCKED.** The dispatched `test: failure` is **UNRESOLVED**: no failing
+current-head traceback was supplied, and fresh focused/adjacent tests pass.
+No implementation defect or new Vulture debt was reproduced. Reachability
+provenance is an actual failure outside this lane's ledger exception. Obtain
+owner-authorized resolution consistent with the two-merge rule and the exact
+current-head failing CI traceback, rather than repeating speculative repairs.
+
+A production-source search (`worker-consumers.log`) finds no consumer of
+`admission_codec`/`decode_admission_record` outside the defining module.
+These tests use string fixture identities, not authorized admission actors.
+Reachable authorized admission, actual evidence-json model materialization,
+original-model fingerprinting, registered Graph admission, Run JSONB insertion,
+consumer expiry/409 precedence, full required CI and coordination approval
+remain **UNVERIFIED**. Consumer behavior belongs to C/F2, not this B2 repair.
+No mutation/pre-fix failure is claimed because no code or tests were changed.
+
+Only this report changed. No test addition or count change means no inventory
+note delta is needed. Progress: checked 1, done 0 repairs, skipped 0, errors 1
+unresolved provenance blocker. This local documentation commit is a handoff,
+not integration or activation approval.
