@@ -6267,3 +6267,67 @@ ruff check, ruff format --check, focused pytest, suite inventory).
   merge blocker is the separately authorized parent #1845 integration (real
   runtime consumer) plus the prior trusted-base grant, exactly as the issue
   directs. No inventory delta (front-matter stays +79).
+
+## Round 87 CI-repair re-verification (job b8d33b474c594647ae5cc06ade505784)
+
+Resolves the carried repair dispatch at the unchanged head `bc4896990e2e`
+(branch `auto-1851`, base `3c761d14d`). Driver checks 5/5 green (uv sync,
+ruff check, ruff format --check, focused pytest 79 passed, scoped suite
+inventory ok).
+
+- The round's instructed repair ("amend quality/vulture-baseline.json for
+  reviewed retained identities") is a verified no-op: the CI-exact scan
+  reports total 1328 with `unclassified: 0` and `never_allowlist: 0`, and an
+  independent Counter-based multiset diff of the ledger against the merge
+  base shows exactly +5/-0 rows — the five issue-mandated
+  `AdmissionAssessment` members banked under the existing reviewed
+  `pydantic-declarative-field` rule. Nothing unbanked, nothing genuinely dead
+  to remove (a runtime consumer is issue-forbidden in this leaf).
+- Decisive grounding read verbatim from the issue body (dispatch-context
+  capture 2026-10-11T16:28Z): "No fake callers, **baseline additions, grants,
+  disabled gates or quality waivers are permitted**"; "Do not add ...
+  suppressions, **allowlist/baseline entries, or grants** to make this leaf
+  independently green"; "`check-reachability.py` would classify the new
+  module as newly unreachable ... **A candidate baseline update cannot grant
+  itself permission**"; and "If that integration is unavailable, **report
+  implementation/test readiness plus the explicit merge blocker and leave the
+  stack unmerged**." The four red gates are that prescribed merge blocker,
+  not a leaf defect.
+- Leaf acceptance re-proven by execution: 79/79 focused (all 12 issue-named
+  test names grep-verified present), leaf ruff/format clean, module mypy
+  Success, full `check-suite-inventory.py` ok (17 suites).
+- All four merge-queue failures reproduced with CI exact argv: vulture rc=1
+  ("New Vulture debt is not authorized by the trusted base ... land a
+  reviewed grant first"); `check-reachability.py` rc=1 naming exactly
+  `maistro.runs.admission_identity` (170 vs 169 unreachable);
+  `check-ratchet-provenance.py` rc=1 solely via the delegated
+  `check-reachability-provenance.py: trusted-base gate returned 1`, while
+  `check-shipped-surface-truth.py` rc=0 and
+  `check-reachability-dispositions.py` rc=0 (49 groups / 169 modules); root
+  suite 3 failed / 12 passed on
+  `test_baseline_matches_the_tree`,
+  `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set` — the Coverage gate's
+  producer (`quality.yml:712`) runs that suite under `set -e` and aborts
+  before any coverage arithmetic.
+- Wall re-confirmed live this round: `git fetch origin` ->
+  `origin/develop` = `3c761d14d` = the merge base (zero drift; no sync merge
+  warranted), and `origin/develop:quality/ratchet-authorizations.json` has
+  zero `admission_identity` grants in either the `vulture` (102 grants) or
+  `reachability` (11 grants) sections — the 7 case-insensitive "admission"
+  hits are unrelated identities
+  (`recover_stranded_chat_admissions`, `cancel_hitl`,
+  `scheduling/admission.py`, canvas `_reconcile_admission`, an a2a
+  transport-admission route). Both gates read grants from the merge base
+  (`ratchet_provenance.load_authorizations`), so no commit on this branch can
+  authorize the debt; the grant must land in develop first (integrator
+  action, outside writer authority).
+- Isolation and hygiene re-verified: zero production importers, no
+  `maistro/runs/__init__` export, accepted #1841 signature intact
+  (`store_boundary.py:56 require_admitted_actor(actor_principal_id: str |
+  None) -> str`), branch diff vs base = exactly the 4 manifest surfaces,
+  `quality/ratchet-authorizations.json` untouched, and zero closure keywords
+  (`fixes|closes|resolves #N`) in branch commit messages.
+- Verdict: no in-scope repair exists or is permitted; writer handoff
+  MERGE-READY (handoff only, never integration approval). Note-only commit;
+  no inventory delta (front-matter stays +79).
