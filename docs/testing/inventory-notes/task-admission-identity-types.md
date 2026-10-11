@@ -5694,3 +5694,79 @@ MERGE-READY (handoff only, never integration approval); the single merge
 blocker remains the trusted-base authorization wall requiring external owner
 action (reviewed grant on develop, or the #1845 integration head wiring the
 real consumer); the stack stays unmerged per the staging constraint.
+
+## 2026-10-11 CI-repair round 78: deep-review block resolved by firsthand re-verification at b7b68e186391
+
+Dispatched to resolve the prior round's `NEEDS-DEEP-REVIEW` escalation after a
+provider-timeout job (result.json: five green driver checks, failure_kind=
+`provider_error`). Every claim below re-derived firsthand at this exact head;
+nothing taken on trust.
+
+- Driver checks 5/5 green (check-0..4.log): `uv sync --locked --extra dev`,
+  repository-wide `ruff check` / `ruff format --check`, focused pytest 79/79,
+  scoped suite inventory ok (16,341 core IDs).
+- Leaf acceptance re-proven by execution: focused suite 79/79; leaf and
+  repository-wide Ruff check/format clean (3,275 files); module mypy clean;
+  `check-suite-inventory.py` rc=0 both scoped and full (17 suites, 31,208
+  unique IDs); all 12 issue-named tests present by name; front-matter `+79`
+  unchanged and load-bearing for the inventory match.
+- Independent 56-assertion import-level contract probe (run from /tmp, no tree
+  edit): 21-name `__all__` set-exact; `AdmissionAssessment` exact six
+  member/value pairs; 16 DTOs frozen+slots; canonical-JSON normalization
+  (`sort_keys`/compact separators) with rejection matrix (non-object root,
+  invalid JSON, non-string input, non-finite, duplicate keys at top/nested/
+  deep nesting) and escaped-lone-surrogate retention; `owns()` exact
+  three-way conjunction including the equal-role triple and independent-role
+  negatives; repr omits the `owner_token` FIELD while the generation id stays
+  printable when roles coincide; binding-receipt identity, ack-requires-
+  binding, ack>=creation, v2 lease clamp, legacy unclamped lease,
+  `created` strict bool, snapshot `run_id` cross-check, variant constructor
+  rules (Claimed/Replayed/Pending/LegacyUnresolved), hex64/strip/nil-UUID/
+  bool-timestamp/dict-snapshot rejections, `format_version` `init=False`,
+  no `maistro.runs.__init__` export. One probe assertion was authored wrong
+  (`Released()` expected falsy): the issue mandates empty variants with NO
+  truthiness override, so default-truthy is the required behavior; the
+  no-`__bool__` checks pass for all five empty variants. Module defect count: 0.
+- All four merge-queue failures at this head reproduced with CI's exact argv:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=1 on exactly the five issue-mandated
+  `AdmissionAssessment` identities (admission_identity.py:515/516/518/519/520)
+  with the candidate ledger scan-exact +5/-0 vs base 435dc1937 (banking is not
+  authorizing); `check-ratchet-provenance.py` rc=1 solely via the reachability
+  sub-gate naming `maistro.runs.admission_identity` twice (NEW unreachable
+  absent from trusted base + missing from candidate baseline; all eight other
+  sub-ratchets OK); `check-shipped-surface-truth.py` rc=0;
+  `check-reachability.py` rc=1 with exactly one newly unreachable module;
+  `check-reachability-dispositions.py` rc=0 (49 groups / 169 modules).
+- `test`-job red reproduced under CI env (`RATCHET_BASE_REV=<merge base>`,
+  REQUIRE_AUTH=false, MAISTRO_DRY_RUN=1):
+  `tests/test_check_reachability.py::test_baseline_matches_the_tree` +
+  `tests/test_reachability_baseline_identity.py::{test_the_committed_baseline_passes_the_gate_it_now_carries,test_the_baseline_is_exactly_the_unreachable_set}`
+  = 3 failed / 36 passed, each diff naming the single extra unreachable item
+  `maistro.runs.admission_identity`. Coverage-gate mechanism re-read from
+  quality.yml: its combine step re-runs the same root `tests/` suite as the
+  `scripts` producer, so the same three self-checks red that job.
+- Two-merge wall re-verified structurally (`load_authorizations` reads
+  `quality/ratchet-authorizations.json` from the base revision —
+  scripts/ratchet_provenance.py:478-485, "banking and authorizing have to be
+  separate acts") and in data (zero `admission_identity` grants at base
+  435dc1937 and at head across the grant file; origin/develop re-fetched,
+  still 435dc1937 = merge base, so no owner grant has landed and no sync
+  merge applies).
+- No in-scope repair exists: the issue forbids fake callers, baseline
+  additions, grants, suppressions, waivers, keep-alive imports and re-exports;
+  it predicts both failure signatures verbatim; none of the five vulture
+  identities is genuinely dead (issue-fixed enum contract pinned by probe and
+  tests); the round-72 removal of the prohibited reachability baseline row,
+  disposition and matrix cell remains removed (quality/ diff vs develop is
+  exactly vulture-baseline.json +5/-0). #1841 anchors re-checked on this tree
+  (`require_admitted_actor` store_boundary.py:56); zero production importers.
+
+Conclusion: the deep-review escalation is resolved — no new defect, and no
+in-leaf repair exists or is permitted. Terminal state identical to rounds
+64–77: leaf acceptance fully proven, the four merge-queue reds are the
+issue-predicted trusted-base authorization wall, curable only by external
+owner action (reviewed grant on develop, or the #1845 integration head wiring
+the real consumer). Writer handoff MERGE-READY (handoff only, never
+integration approval); the stack stays unmerged per the staging constraint.
+No inventory delta this round; front-matter `+79` reconfirmed.
