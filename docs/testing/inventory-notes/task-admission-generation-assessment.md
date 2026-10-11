@@ -3644,3 +3644,77 @@ mutation restore equals the round-43–46 record `578c1f1747920f47…`:
   is the future #1845 integration consumer or a maintainer-landed
   base-side grant, both outside this lane. The stack stays unmerged by
   design; this round adds this evidence section only.
+
+## Round 48 (2026-10-11, head `6ad41d4ce524`) — verifier+writer round; prior abort was again a provider timeout
+
+Driver checks in job `051e92538bb6` at this head all rc=0 (uv sync,
+`ruff check .`, `ruff format --check .`, the 315-test three-file
+battery, `check-suite-inventory.py --suite packages/maistro-core/tests`
+ok 16468); the tree was clean at start and module sha256
+`578c1f1747920f47…` still equals the round-43–47 record. Every claim
+below was re-executed first-hand at this head; no tree edit was needed
+or made outside this note:
+
+- **Focused acceptance re-proven**: leaf suite 132 passed; issue-named
+  trio (`test_admission_generation_assessment.py` +
+  `test_root_admission_identity.py` + `test_idempotency.py`) 272
+  passed; `ruff check` and `ruff format --check` clean on both leaf
+  files; `mypy` clean on the module, and the canonical all-package
+  typecheck (AGENTS.md command) clean on 894 files. A narrowed
+  `mypy packages/maistro-core/src` shows 5 `import-not-found` errors
+  for `maistro_bootstrap.*` in `cli/_install.py` and
+  `cli/_builders_tui.py` — both untouched by this branch, resolved by
+  the canonical multi-path invocation, not branch regressions. All 10
+  issue-named tests present, including
+  `test_existing_live_claim_flow_does_not_import_v2_classifier`.
+- **exact-debt-ledger attribution re-proven at CI's exact steps**
+  (`RATCHET_BASE_REV=origin/develop`, base `435dc1937e04`):
+  `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` rc=0, 1323 -> 1323, **zero unbanked
+  identities — the named vulture-ledger repair loop has an empty
+  worklist; there is nothing to fix and no ledger row to amend**;
+  `check-shipped-surface-truth.py` rc=0; `check-ratchet-provenance.py`
+  rc=1 solely via the reachability sub-gate, whose only named causes
+  are the two sanctioned leaf modules as "NEW unreachable module absent
+  from trusted base and not previously authorized" (every other
+  sub-ratchet green: shell-execution 3->3, contract-markers 358->358,
+  enumerations 1->1, lifecycle 0->0). `check-reachability.py` rc=1 on
+  exactly those two (171 unreachable vs trusted 169);
+  `check-reachability-dispositions.py` rc=0; `check-promotion-surface.py`
+  rc=0. The two-merge rule re-read at source (`scripts/ratchet_
+  provenance.py::load_authorizations`): grants load **from the base
+  revision**, so no in-branch edit can authorize this floor raise — and
+  the issue forbids the attempt. origin/develop still `435dc1937e04`:
+  no base-side grant has landed. The blocker stands.
+- **All four issue-named mutations re-killed in a `/tmp/shadow-1852-r48`
+  copy** (worktree never touched; pytest-resolved module path probed to
+  start with the shadow — the round-37 ini-`pythonpath` shadowing trap
+  is real for bare `python -c`, which resolves the venv editable
+  install; the probe test asserts both leaf modules resolve inside the
+  shadow). Pristine control 132 passed, shadow classifier byte-identical
+  to the worktree (sha256 `578c1f17…`), byte-exact restore verified
+  after every mutation: TAKEOVER<->REPLACE_EXPIRED swap 50F/82P; lease
+  row moved above the binding row (order lease, legacy, binding)
+  12F/120P; `LEGACY_UNRESOLVED` answered as `TAKEOVER` (legacy pending
+  treated as v2) 10F/122P; mismatch row moved above an expiry row
+  demoted to never-firing (no expiry exception) 44F/88P. Round-47's
+  16F/22F differ only because those rounds built the lease-permutation
+  and expiry-demotion differently; every construction kills.
+- **Forbidden surfaces re-verified untouched vs base `435dc1937e04`**:
+  the full branch diff is 11 files (leaf modules/tests/notes, the
+  scanner-input `_vulture_whitelist.py` additions following the repo's
+  contract-ships-first posture, the committed packs salvage with its
+  own `auto-1852-4bd6` note, and the doc-only convergence-matrix
+  annotation); `tasks/idempotency.py`, `tasks/queue.py`, both package
+  `__init__.py`, and `quality/` carry zero diff lines; grep over
+  `packages/*/src` finds no production importer of
+  `admission_generation`.
+- **Verdict-relevant statement (unchanged from rounds 35–47)**: leaf
+  acceptance fully proven first-hand at `6ad41d4ce524`; the
+  exact-debt-ledger red is the sanctioned unwired two-module
+  reachability delta, not the vulture ledger, and every in-lane "fix"
+  for it is forbidden by the issue and structurally futile under the
+  two-merge rule. The lawful fix is the future #1845 integration
+  consumer or a maintainer-landed base-side grant, both outside this
+  lane. The stack stays unmerged by design; this round adds this
+  evidence section only.
