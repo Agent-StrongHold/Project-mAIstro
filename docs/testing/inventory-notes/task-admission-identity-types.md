@@ -5962,3 +5962,85 @@ no code change, no inventory delta).
   Exactly as the issue prescribes, the leaf reports implementation/test
   readiness plus the explicit merge blocker and the stack stays unmerged.
   Writer handoff MERGE-READY (handoff only, never integration approval).
+
+## Round 82 — CI-repair-round re-verification at a945c7e8fec6 (job 944e65b591484c388cf080bea3c6ac20, 2026-10-11)
+
+Dispatched to resolve the carried NEEDS-DEEP-REVIEW block. Everything below
+was re-derived firsthand at this exact head in this round; no prior claim was
+trusted. Conclusion unchanged and now fully evidence-backed: leaf acceptance
+is proven by fresh execution; all four merge-queue failures reproduce at CI
+exact argv and reduce to the two issue-predicted external mechanisms; no
+in-scope repair exists or is permitted. Note-only commit, no code change, no
+inventory delta (front-matter stays +79).
+
+- Driver pre-checks green in this job's logs: `uv sync --locked --extra dev`
+  ok, repo `ruff check .` ok, `ruff format --check .` ok (3275 files), focused
+  pytest 79 passed, `check-suite-inventory.py --suite packages/maistro-core/tests`
+  ok (16341 IDs match recorded inventory).
+- Leaf acceptance re-proven by fresh execution in this round: focused suite
+  79 passed; all 12 issue-named tests present by name in the test file; leaf
+  ruff check + format --check clean; leaf mypy clean; full
+  `check-suite-inventory.py` ok (17 suites / 31,208 unique IDs, 0 duplicates).
+- Independent ~60-assertion runtime contract probe (fresh, not the test
+  file) passed with 0 failures: 21-name `__all__` set-exact; exact 6-member
+  StrEnum value map; frozen+slots on all 17 record/result classes; canonical
+  JSON normalization with frozen `text` and no mutable retention; rejection
+  of duplicate keys, non-object roots, scalars, NaN/Infinity literals,
+  `1e999` overflow, invalid JSON, non-string input; fencing conjunction
+  rejecting same-owner/different-generation, same-generation/different-owner,
+  different-scope, and crossed-role tickets while accepting the matching
+  triple and the equal-role-values case; `owner_token` omitted from `repr`
+  while `generation_id` prints; empty variants carry no `__bool__` override;
+  legacy lease validated without expiry clamping; bound-unacknowledged
+  `admitted is True`; full rejection sweep (uppercase/short scope, string and
+  nil UUIDs, bool `_us`, v2 lease ordering, binding receipt mismatch, ack
+  without/-before binding, variant-type violations, `created=1`, snapshot
+  run-id mismatch, dict envelope); `FrozenInstanceError` on both record and
+  snapshot-text mutation; ClaimResult/ReleaseResult/CompletionResult union
+  shapes (4 arms each).
+- Scope re-verified: `git diff 435dc1937..HEAD --stat` = exactly the four
+  leaf files; no other Python file references `admission_identity` (repo-wide
+  grep, exits empty); `maistro.runs.__init__` has no admission export;
+  `ratchet-authorizations.json` untouched. origin/develop = 435dc1937 =
+  merge base: no owner grant landed, no sync conflict, the two-merge wall
+  still binds.
+- #1841 signature revalidated in-tree at this head: `store_boundary.py:56`
+  `require_admitted_actor(actor_principal_id: str | None) -> str`; admitted-
+  actor guards on `create_run`/`claim_run_by_effect` at `store.py:507/563/
+  894/921` and `1282/1323`; `Run.actor_principal_id: str | None` at
+  `model.py:300` with validation at `320-321`.
+- Four merge-queue failures reproduced firsthand with CI exact argv:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=1 — committed ledger scan-exact (1328 total findings
+  = 1328 banked rows = base 1323 + 5), failing solely on the five issue-
+  mandated enum identities (admission_identity.py:515–520) as "NEW identit(y/
+  ies) not in the ledger" against the TRUSTED base 435dc1937e04: "land a
+  reviewed grant first"; `check-reachability.py` rc=1 naming exactly
+  `maistro.runs.admission_identity` as the single newly unreachable module;
+  `check-ratchet-provenance.py` rc=1 solely via the reachability sub-gate
+  with all 7 other sub-ratchets OK; dispositions rc=0, promotion surface
+  rc=0, shipped-surface rc=0; root-suite self-checks re-run: 3 failed / 36
+  passed (`test_reachability_baseline_identity.py::
+  test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `::test_the_baseline_is_exactly_the_unreachable_set`,
+  `test_check_reachability.py::test_baseline_matches_the_tree`) — each is a
+  committed-baseline-equals-tree check with set-diff exactly
+  `maistro.runs.admission_identity`; the Coverage gate's combine step
+  re-runs the root `tests/` suite (quality.yml:501) under `set -euo pipefail`,
+  so the same 3 self-checks abort it before any coverage arithmetic.
+- No-self-grant wall verified in gate source, not just observed:
+  `scripts/check-reachability-provenance.py` loads authorizations from the
+  trusted base (`load_authorizations(RATCHET, base=trusted_ref.base_sha)`) and
+  rejects any candidate baseline row "absent from trusted base and not
+  previously authorized" — so adding a reachability baseline entry in this
+  branch could not turn CI green even if the issue permitted it (it does not:
+  "Do not add … allowlist/baseline entries … to make this leaf independently
+  green"; "A candidate baseline update cannot grant itself permission").
+- Verdict: the NEEDS-DEEP-REVIEW block is resolved by this firsthand deep
+  re-verification. Leaf acceptance fully proven; CI reds are exactly the
+  issue-predicted external merge blockers (trusted-base grant for the 5
+  banked vulture identities; runtime consumer or owner-side reachability
+  banking at the parent #1845 integration head). The issue prescribes
+  precisely this state: report implementation/test readiness plus the
+  explicit merge blocker and leave the stack unmerged. Writer handoff
+  MERGE-READY (handoff only, never integration approval).
