@@ -6044,3 +6044,58 @@ inventory delta (front-matter stays +79).
   precisely this state: report implementation/test readiness plus the
   explicit merge blocker and leave the stack unmerged. Writer handoff
   MERGE-READY (handoff only, never integration approval).
+
+## Round-83 re-verification (job 54b15cf895b44591b270f3c34cfbb352, head 910f00d1e28c)
+
+Independent firsthand re-derivation at the same head; no tree changes beyond
+this note.
+
+- Driver checks 5/5 green (check-0..4.log): sync, repo ruff, repo format,
+  focused suite 79 passed, suite inventory ok (16341 ids, scoped).
+- Leaf acceptance re-proven by fresh execution: 79/79 focused; all 12
+  issue-named tests present (`grep -c 'def <name>'` = 1 each); leaf mypy
+  `Success: no issues found in 1 source file`; module measures 100% lines +
+  branches (245 stmts, 82 branches, 0 miss) under the focused suite via
+  `coverage run --branch --source=packages/maistro-core/src`.
+- Spec conformance re-read: `__all__` = exactly the 21 mandated names;
+  every DTO `@dataclass(frozen=True, slots=True)`; `AdmissionAssessment(StrEnum)`
+  with exactly the 6 mandated member/value pairs (admission_identity.py:508-520);
+  `owns` = scope AND generation AND owner_token conjunction only
+  (admission_identity.py:308-314).
+- Isolation re-verified: zero production importers of `admission_identity`
+  outside the module itself; no `maistro.runs` export; diff vs merge base
+  435dc1937 = exactly the 4 manifest files; `quality/ratchet-authorizations.json`,
+  `quality/reachability-baseline.json`, `quality/reachability-dispositions.json`
+  byte-identical to base (empty diff); zero `admission_identity` grants.
+- Ledger multiset proof: candidate ledger 1328 findings = base 1323 + exactly
+  the 5 mandated identities, one row each, no other rule moved
+  (whole-ledger Counter delta = 5) — scan-exact, so the ledger needs no
+  amendment this round; nothing "genuinely dead" exists to delete (the 5 are
+  issue-mandated enum members).
+- All four merge-queue failures reproduced with CI exact argv at this head:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=1 solely on those 5 identities with the gate's own
+  "land a reviewed grant first" trusted-base wall; `check-reachability.py`
+  rc=1 naming exactly `maistro.runs.admission_identity`;
+  `check-ratchet-provenance.py` rc=1 solely via
+  `check-reachability-provenance.py: trusted-base gate returned 1`.
+- Root-suite test job failure set pinned by name (fresh full run of
+  `pytest tests/ -q`): 3 failed / 5061 passed / 129 skipped —
+  `tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `tests/test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`
+  — all three committed-baseline-equals-tree self-checks failing on the same
+  unwired-module condition. Coverage gate red for the same root cause: its
+  combine step re-runs the root suite under `set -euo pipefail`
+  (quality.yml:712-713), so it aborts before coverage arithmetic; the leaf
+  module itself is at 100%.
+- Two-merge wall re-confirmed in data: `origin/develop` fetched live = still
+  435dc1937 (the merge base); no grant landed; gate source reads authorizations
+  from the trusted base, so no on-branch edit can turn CI green.
+- No in-scope repair exists: every green-CI path (delete the enum, add a
+  grant, add a reachability baseline entry, wire a caller) is individually
+  forbidden by the issue's staging constraint and non-goals. The issue
+  prescribes exactly this state: report implementation/test readiness plus the
+  explicit merge blocker and leave the stack unmerged.
+- Verdict: writer handoff MERGE-READY (handoff only, never integration
+  approval). Note-only commit; no inventory delta (front-matter stays +79).
