@@ -3718,3 +3718,66 @@ or made outside this note:
   consumer or a maintainer-landed base-side grant, both outside this
   lane. The stack stays unmerged by design; this round adds this
   evidence section only.
+
+## Round 49 — repair-round re-validation at `2c86c240e0e7` (base `3c761d14d`)
+
+Prior repair job aborted on a provider timeout after its driver checks had
+already gone green; per protocol every claim below was re-executed
+first-hand at this exact head. No code was changed this round; this section
+is the only edit.
+
+- **Driver battery green in this job's own logs (5/5 rc=0 at `2c86c240e`)**:
+  `uv sync --locked --extra dev`; `ruff check .`; `ruff format --check .`
+  (3277 files); issue-named trio 315 passed in 2.26s;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok 16468.
+- **The four hosted reds re-derived, all one sanctioned delta.**
+  `check-reachability.py` rc=1: newly unreachable = exactly
+  `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`
+  (171 vs trusted 169). Root meta-suite: exactly the 3 known meta-tests
+  fail (`test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set`,
+  `test_baseline_matches_the_tree`), 36 passed — this is the `test` and
+  Coverage-gate producer red. `check-vulture-baseline.py` at CI's exact
+  argv (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`)
+  rc=0, 1323 reviewed identities -> 1323 findings, zero unbanked: the
+  vulture repair worklist is empty and no ledger amendment is due.
+  `check-shipped-surface-truth.py` rc=0.
+  `check-ratchet-provenance.py` rc=1 **solely** via the reachability
+  sub-gate ("not previously authorized"); every other sub-ratchet OK
+  (promotion 270, dispositions 169->169, shell 3->3, contract-markers
+  358->358, enumerations 1->1, lifecycle 0->0), base rev = merge base
+  `26f86b4634bc` of HEAD vs current origin/develop.
+- **origin/develop re-fetched: `3c761d14d`** — six new commits past
+  `435dc1937e04`, all dep bumps touching only `uv.lock` /
+  `requirements-dev-tools.txt`; no gate, grant, or baseline change landed
+  base-side. The two-merge rule therefore still keeps every head of this
+  branch red on the reachability floor raise, exactly as documented since
+  round 34. The blocker stands.
+- **Forbidden surfaces zero-diff**: `git diff --numstat` vs merge base
+  `26f86b463` empty for `quality/`, `tasks/idempotency.py`,
+  `tasks/__init__.py`, `runs/__init__.py`, `tasks/queue.py`;
+  `quality/` also zero-diff vs `origin/develop` directly.
+- **All 10 issue-named tests present (grep 10/10)**; trio re-run by this
+  round's worker: 315 passed. `mypy` clean on both leaf modules.
+- **All four issue-named mutations re-killed in a fresh
+  `/tmp/shadow1852` root-dir shadow** (repo-root `pyproject.toml` copied
+  so the ini `pythonpath` resolves inside the shadow — the only
+  precedence-correct construction per the round-34 trap note; worktree
+  untouched throughout, classifier sha256 `578c1f17…` before and after,
+  byte-exact restore from backup between runs). Control 132 passed.
+  TAKEOVER<->REPLACE_EXPIRED swap 50F/82P; lease row moved above the
+  binding row 14F/118P; legacy row predicate flipped to
+  `AdmissionRecordV2` (legacy pending classified through the v2 lease
+  rows *and* v2 pending answered LEGACY_UNRESOLVED — both wrong
+  directions killed) 20F/112P; mismatch row moved above the expiry row
+  (no expiry exception) 22F/110P. All four constructions kill.
+- **Round-49 verdict-relevant statement (unchanged from rounds 35–48)**:
+  leaf acceptance fully proven first-hand at `2c86c240e`; the
+  exact-debt-ledger, Quality-gate, `test`, and Coverage-gate reds are the
+  sanctioned unwired two-module reachability delta, not the vulture
+  ledger; every in-lane "fix" for it is forbidden by the issue
+  (no baseline rows, grants, waivers, keep-alive imports, or dummy
+  callers) and structurally futile under the two-merge rule. The lawful
+  fix is the future #1845 integration consumer or a maintainer-landed
+  base-side grant, both outside this lane. The stack stays unmerged by
+  design; this round adds this evidence section only.
