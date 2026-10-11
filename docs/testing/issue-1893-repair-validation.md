@@ -143,3 +143,103 @@ Progress: checked 1 issue; done 0 repairs; skipped 0 issues; errors 1 unresolved
 provenance blocker. Next: owner-authorized reachability resolution and exact
 current-head CI failure evidence. Local PostgreSQL evidence remains in the
 named disposable database and JUnit file above.
+
+## Fresh bounded repair round: job 840837ee22644323bac40aa96e17de9e
+
+Source SHA: `76acfdf718e6bde644d7dbc928eb7610f12722d7`; resolved develop
+base and merge base: `435dc1937e0407ab4de198ffcced49860bb14ad2`. Worktree
+started clean. Only #1893 was processed, with no remote mutations or ref refresh.
+The supplied driver `check-0.log` through `check-4.log` were inspected; they
+show successful dependency setup, lint, format, 201 passed / 3 skipped focused
+tests, and 16466 inventory nodes. None proves current live PostgreSQL behavior.
+
+Correction to the earlier report's tree-equality claim: the explicit range
+`git diff --stat 435dc1937e0407ab4de198ffcced49860bb14ad2..HEAD` at this
+round's starting SHA reports **65 changed files**, including the codec, DTOs,
+tests, and reachability ledgers. The earlier unqualified no-files claim is
+not accepted as evidence.
+
+### Executed validation
+
+Logs and JUnit are retained in
+`/home/dev/maistro/jobs/840837ee22644323bac40aa96e17de9e/` as `worker-*.log`
+and `worker-pg.xml`. No previous execution result is substituted for these:
+
+- `uv run ruff check .`: passed (`worker-ruff.log`).
+- `uv run ruff format --check .`: 3277 files already formatted.
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py
+  packages/maistro-core/src/maistro/runs/admission_identity.py`: two files passed.
+- `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py
+  packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q`:
+  201 passed / 3 skipped without a DSN.
+- The same command with both PostgreSQL DSN variables below and
+  `MAISTRO_REQUIRE_PG_LEGS=1` in the environment, adding pytest arguments
+  `-o junit_family=legacy --junitxml=<job-directory>/worker-pg.xml`: **204 passed,
+  zero skipped**, including all ten named prospective contracts in the table
+  above. It tests corrupt storage injection as well as valid round trips.
+- `uv run pytest packages/maistro-core/tests/tasks packages/maistro-core/tests/runs
+  -x -q`: **1918 passed, 310 skipped, 6 warnings**, without database variables.
+  Warnings report aiosqlite worker threads encountering closed event loops;
+  these are not a reproduced admission codec failure.
+- `uv run python scripts/check-suite-inventory.py --suite
+  packages/maistro-core/tests`: 16466 nodes, zero duplicate identities, passed.
+- `uv run python scripts/check-shipped-surface-truth.py`: passed.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`: passed, 1323 reviewed
+  identities / 1323 findings, zero unclassified. No amendment justified.
+- `RATCHET_BASE_REV=origin/develop uv run python
+  scripts/check-ratchet-provenance.py`: **exit 1**, rejecting NEW unreachable
+  modules and NEW dispositions for `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_codec` absent from the trusted base/authorization.
+  This is the workflow's exact-debt-ledger provenance command, not a guessed
+  scanner finding. See `worker-provenance.log:20-31`.
+
+### Independent PostgreSQL evidence
+
+Peer authentication confirmed PostgreSQL 18.6 and absence of the proposed DB
+before `createdb -h /var/run/postgresql -U dev maistro_1893_job840837ee`.
+`DATABASE_URL='postgresql://dev@/maistro_1893_job840837ee?host=/var/run/postgresql'
+uv run alembic upgrade head` applied the real empty-schema chain through 062.
+Both `MAISTRO_TEST_PG_DSN` and `MAISTRO_TEST_DATABASE_URL` used that same URL.
+No downgrade or destructive migration test was run on an existing database.
+
+JUnit records production/raw backend PID pairs **674054/674056** (unbound),
+**674057/674058** (bound), and **674059/674060** (acknowledged). Each pair
+shares the named DB, with NULL server address/port for the Unix socket, and
+reads one persisted admission row. The independent final query confirms
+migration **062** and **zero** rows in task_idempotency, tasks, canonical_runs,
+canonical_node_runs, and canonical_attempts. The empty disposable DB is retained.
+
+### Acceptance boundary and handoff
+
+Re-read accepted ADR-081226-a66b and ADR-082526-7f02, codec implementation,
+its tests, adjacent immutable DTO tests, and production-pool fixture. Source
+search of `packages/*/src` finds no consumer of `admission_codec` or
+`decode_admission_record` outside the defining module. This is consistent
+with the inactive B2 scope, but not proof of reachable production admission.
+No new scheduler, lifecycle, identity, authorization path or activation is
+introduced to bypass the gate.
+
+The executed tests establish typed DTO/header separation, strict storage UUIDs
+and timestamps, explicit legacy partial failures, safe corrupt JSON rejection,
+unchanged stored fingerprints, fresh SQL mappings, and raw/production TEXT
+pool equivalence. Fixture principals are strings, not authorized admission
+actors. Actual model materialization using evidence-json helpers, original-model
+fingerprinting, registered Graph admission, Run JSONB insertion, consumer
+expiry/409 precedence, full unchanged required CI, and coordination/activation
+approval remain **UNVERIFIED** by this round. No pre-fix or mutation failure is
+claimed because no implementation or regression test was changed.
+
+The dispatched `test: failure` remains **UNRESOLVED** without a current-head
+failing traceback; focused and adjacent tests do not reproduce it. The measured
+provenance failure is outside the permitted vulture-ledger exception. Resolving
+it requires an integration-owner decision consistent with the two-merge rule
+and the issue's no-activation/no-gate-change constraints, not a speculative
+codec patch or candidate self-authorization.
+
+**BLOCKED.** Only this validation report changed; no tests, inventory counts,
+implementation, ledger, grant or gate changed. Therefore no inventory delta
+note is needed. Progress: checked 1, done 0 repairs, skipped 0, errors 1 unresolved
+provenance blocker. Next: owner-authorized provenance resolution and exact
+current-head `test` failure evidence. The local documentation commit is an
+evidence handoff, not merge or activation approval.
