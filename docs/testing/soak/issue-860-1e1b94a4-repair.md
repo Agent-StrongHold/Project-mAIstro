@@ -62,3 +62,59 @@ by rerunning the unchanged preflight. Existing work is preserved in place.
 Validation commands used 600-second timeouts. Commit this report locally, then
 verify a clean worktree. Progress: `{checked: 1, done: 0, skipped: 0, errors: 0,
 next: "RC prerequisites and exact-artifact promotion evidence"}`.
+
+## Independent follow-up — job 9a33ce72
+
+Starting HEAD `458a19a02dd8094ce777ac3a87f524d1f41b26ed`, clean assigned
+worktree. Scope frozen to #860 and its existing evidence/gates. No current
+`check-*.log` files were supplied. Read the supplied historical
+`98a11313167b41a98a420abfda80c292/check-3.log`: the actual failure was the
+learnings schema test's 24 observed versus 21 expected DDL statements, not
+unbanked vulture identities. That test passes on this HEAD; no speculative
+schema or ledger change is warranted.
+
+Fresh commands (1,800-second timeouts), not inherited verification claims:
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: exit 0; 1,323 reviewed identities and findings, zero unclassified/never-allowlist. Log: job directory `worker-vulture.log`.
+- `uv run ruff check .`: exit 0.
+- `uv run ruff format --check .`: exit 0; 3,270 files formatted.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py tests/test_soak_promotion_gates.py packages/maistro-server/tests/api/test_rate_limit.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py -x -q`: exit 0; **129 passed, 6 skipped**. Skips are not acceptance evidence.
+- `uv run python scripts/check-suite-inventory.py`: exit 0; 17 suites, 31,128 unique identities, no duplicates.
+- `uv run python scripts/check-backlog-consistency.py`: exit 0; 168 items.
+- `uv run python` importing the current soak module and replaying only the
+  frozen round-43 JSON: `failed_promotion_checks` returns
+  `['sustain_duration', 'exact_rc_artifact']`; observed 420.09 seconds versus
+  14,400 required. Calling `preflight_artifact_check()` returns `ok: false`,
+  topology `host-uvicorn-preflight`. This is a historical-evidence evaluation,
+  **not a newly executed soak**.
+
+Re-read accepted ADR-085, ADR-081426-1f7c, ADR-082426-82c7 and
+ADR-082426-e3ff, the profile, gate implementation and production middleware.
+Reconciliation remains: occurrence admission is not physical Attempt execution;
+principal-keyed rate limiting does not establish replica-shared state. No ADR
+waives the exact-RC requirement. No competing execution/authorization path was
+introduced.
+
+All ten acceptance rows above remain unproven for promotion after this check:
+representative workload, two exact-RC replicas, sustained resource/reclaim
+behavior, physical-work uniqueness, replica-selection non-bypass, complete
+metrics/thresholds, physical recovery, long exact-RC soak, external finding
+classification, and hash-tied RC publication. In particular, the executed
+`test_replica_selection_has_an_independent_production_allowance` covers both
+authenticated and pre-auth identities: each middleware instance independently
+returns `[200, 200, 429]`. Production `RateLimitMiddleware.__init__` allocates
+its own `InMemoryRateLimiter`; this is an actual acceptance mismatch, not a
+scanner guess. The other passing probe tests cannot convert it into proof of
+a cluster-wide allowance.
+
+**BLOCKED**, not merge-ready. No new shakedown was launched: the existing runner
+cannot satisfy artifact identity at any duration. Next requires a release-owner
+RC image/configuration selection, a decision resolving the supported limiter
+contract against #860, and representative production-path workloads with
+physical Attempt/recovery observations. Preserve the fail-closed gates and run
+the resulting exact artifact for at least four hours. External finding filing
+requires an authorized actor; no GitHub mutations were performed.
+
+Only this existing handoff was appended. No tests added, inventory delta zero;
+no ledger, grant, gate or runtime edits. Progress:
+`{checked: 1, done: 0, skipped: 0, errors: 0, next: "resolve RC and rate-limit prerequisites"}`.
