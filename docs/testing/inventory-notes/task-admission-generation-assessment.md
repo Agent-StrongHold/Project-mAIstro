@@ -4108,3 +4108,55 @@ re-executed every remaining acceptance item first-hand at
   base-side authorization. Implementation/test readiness is proven;
   the stack stays unmerged by design. This round appends this section only;
   `inventory-delta` unchanged (+132).
+
+## Round 56 — independent verifier re-execution at f2813eee (2026-10-12)
+
+All prior-round claims re-executed first-hand at head `f2813eee3578` (base
+`3c761d14d`); this section appends evidence only, `inventory-delta` unchanged
+(+132). Driver deterministic checks at this head: sync/ruff/format rc=0,
+focused trio 315 passed, per-suite inventory ok.
+
+- Focused: assessment suite 132 passed; `test_root_admission_identity.py` +
+  `test_idempotency.py` 140 passed; `test_pack_contracts.py` 110 passed;
+  10/10 issue-named tests = 27 nodes passed. Ruff check/format clean on both
+  leaf files; mypy clean on `admission_generation.py`. Full
+  `check-suite-inventory.py`: 17 suites ok, 31335 node IDs, 0 duplicates.
+- exact-debt-ledger at CI argv/`RATCHET_BASE_REV=origin/develop`:
+  `check-shipped-surface-truth.py` rc=0; `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` rc=0
+  (1323 -> 1323, unclassified=0, never_allowlist=0);
+  `check-ratchet-provenance.py` rc=1 SOLELY via the reachability sub-ratchet
+  (169 -> 171: `maistro.runs.admission_identity`,
+  `maistro.tasks.admission_generation`, "NEW unreachable ... not previously
+  authorized"); all eight sibling sub-ratchets OK.
+- Quality gate step (`check-reachability.py`, quality.yml:1089): rc=1 naming
+  exactly those two modules; `check-reachability-dispositions.py` rc=0;
+  `check-promotion-surface.py` rc=0. Test-job attribution re-proven:
+  `tests/test_check_reachability.py` + `tests/test_reachability_baseline_
+  identity.py` = 3 failed / 36 passed, every failure naming the same two
+  modules and nothing else. Coverage gate diff leg proven GREEN first-hand:
+  focused branch coverage over the three suites, `check-diff-coverage.py
+  coverage.xml --base 3c761d14d` rc=0 ("every measured file this change
+  touches is at or above 90% lines / 80% branch arcs"); the gate's red is the
+  combine step's root `--source=scripts` producer running the same meta-tests.
+- All four issue-named regression mutations re-killed in-memory (mutated
+  source exec'd into `sys.modules`, zero tree writes; classifier sha
+  `578c1f17` unchanged, `git status` clean): control 132 passed; swap
+  TAKEOVER/REPLACE_EXPIRED 66F; lease-before-binding 14F; legacy-pending-as-v2
+  10F; mismatch-before-expiry 22F.
+- Boundaries re-checked in tree: no production module imports
+  `maistro.tasks.admission_generation`; `_vulture_whitelist.py` carries no
+  admission_generation/`_assess` reference; `quality/`, `tasks/idempotency.py`,
+  queue, and every package `__init__.py` are zero-diff vs base; no closure
+  keywords in any commit message or in PR #1941's body ("Refs #1852" only);
+  live PR head equals this SHA.
+- Blocker standing, unchanged and sanctioned: the two-merge rule
+  (`ratchet_provenance.load_authorizations` resolves grants from the base) and
+  the leaf's own prohibition on baseline rows/grants/waivers leave no in-lane
+  repair; `origin/develop` is still `3c761d14d`. Implementation/test readiness
+  is proven; the four hosted reds are the sanctioned two-module reachability
+  delta; the stack stays unmerged pending the separately-scoped #1845
+  integration consumer. Recorded observation for integration review: the
+  branch also carries salvaged worker commit `732b3c55b` (packs.py
+  active-extension identity guard + its test) — attributed in
+  `auto-1852-4bd6.md`, tested, zero-diff against no #1852 surface.
