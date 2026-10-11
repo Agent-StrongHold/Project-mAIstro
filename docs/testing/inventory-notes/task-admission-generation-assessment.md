@@ -3781,3 +3781,27 @@ is the only edit.
   fix is the future #1845 integration consumer or a maintainer-landed
   base-side grant, both outside this lane. The stack stays unmerged by
   design; this round adds this evidence section only.
+- **Round-50 first-hand re-validation at `90727972d`**: prior abort was a
+  provider timeout (driver 5/5 rc=0); every claim re-executed first-hand.
+  Leaf acceptance: 132P focused + 140P (`test_root_admission_identity` +
+  unchanged `test_idempotency`) + driver trio 315P, ruff/format clean,
+  mypy clean on the classifier, all 10 issue-named tests present, full
+  suite inventory 17 suites ok. Hosted reds re-attributed first-hand at
+  CI env/argv: vulture rc=0 at 1323→1323 (zero unbanked — the
+  exact-debt-ledger red is *not* the vulture leg and no amendment is
+  due), shipped-surface rc=0, dispositions rc=0 (169), promotion
+  rc=0, ratchet-provenance rc=1 solely via the reachability sub-gate
+  naming exactly `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_generation` (check-reachability rc=1,
+  169→171); root meta-tests 3F/40P naming the same two modules (the
+  `test` and Coverage-gate producer leg). origin/develop re-fetched:
+  still `3c761d14d`, already merged into this head, `quality/`
+  zero-diff — no base-side grant has landed, so the two-merge rule
+  keeps the blocker standing. All four issue-named mutations re-killed
+  in place with sha256-verified restores: expiry→TAKEOVER swap 44F/88P;
+  lease row above binding row 4F/128P; LEGACY_UNRESOLVED row removed
+  10F/122P; mismatch row above expiry row 22F/110P (classifier sha
+  `578c1f17…` before and after, byte-exact restore between runs, tree
+  clean). Forbidden surfaces (`tasks/idempotency.py`,
+  `tasks/__init__.py`, `runs/__init__.py`, queue) zero-diff vs develop.
+  No in-lane repair exists; stack stays unmerged by design.
