@@ -6400,3 +6400,56 @@ format --check, focused pytest 79 passed, scoped suite inventory ok).
   integration plus a prior trusted-base grant). Writer handoff MERGE-READY
   (handoff only, never integration approval). Note-only commit; no inventory
   delta (front-matter stays +79).
+
+## Round-89 re-verification at `5f3454f9a89f` (job `101bf9359bec4b4e989103bdfa539d59`)
+
+Fresh firsthand deep review at the unchanged assigned head (resolves the
+carried "worker requested attention: NEEDS-DEEP-REVIEW" block):
+
+- Driver checks 5/5 green this round (check-0..4 logs): `uv sync --locked
+  --extra dev`, `ruff check .` "All checks passed!", `ruff format --check .`
+  3275 files already formatted, 79/79 focused pytest, suite inventory ok.
+- Contract re-read in full: 21-name `__all__` (sorted), every class
+  `frozen=True, slots=True`, exact issue field order (envelope
+  scope/generation/fingerprint/workspace/project/origin/actor/action/created/
+  expires/receipt + three snapshots; ticket `owner_token` `field(repr=False)`;
+  v2 `format_version: Literal[2] = field(default=2, init=False)`; legacy
+  `Literal[1]`), `CanonicalJsonObject` rejects non-object roots, invalid JSON,
+  duplicate keys at any depth, non-finite constants and overflow floats, and
+  non-string input, then retains only the canonical dumps string;
+  `owns` is the pure three-way conjunction; legacy records omit the
+  lease<=expiry clamp; empty result variants define no truthiness override;
+  `AdmissionAssessment` has exactly the 6 mandated members.
+- Leaf acceptance re-executed: 79/79 focused, both leaf ruff commands clean,
+  module mypy Success, full `check-suite-inventory.py` ok (17 suites).
+- CI-exact gate reproduction: vulture
+  (`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`) rc=1 — candidate ledger scan-exact; Counter multiset
+  diff vs merge base = exactly +5/-0 `AdmissionAssessment` rows (1323->1328);
+  failure is purely trusted-base authorization ("land a reviewed grant
+  first"). `check-reachability.py` rc=1 naming exactly
+  `maistro.runs.admission_identity` (issue-predicted). `check-ratchet-provenance.py`
+  rc=1 solely via the delegated reachability sub-gate (lifecycle 0->0);
+  dispositions, promotion-surface and shipped-surface-truth all rc=0.
+- CI `test` job reproduced: `pytest tests/test_reachability_baseline_identity.py
+  tests/test_check_reachability.py` = 3 failed/36 passed, the failure set
+  being the baseline-equals-tree self-checks with set-diff exactly
+  `maistro.runs.admission_identity`; the Coverage gate producer
+  (`quality.yml:712`) aborts mechanically on the same suite.
+- Two-merge wall re-confirmed live: `origin/develop` fetched = `3c761d14d` =
+  merge base (zero drift, no sync merge warranted); zero `admission_identity`
+  grants/rows at base in `ratchet-authorizations.json`,
+  `vulture-baseline.json`, `reachability-baseline.json`.
+- Isolation re-verified: zero production importers of
+  `maistro.runs.admission_identity`; no `runs/__init__` export; branch diff vs
+  base = exactly the 4 declared surfaces; zero hits for closure keywords
+  across all 131 non-merge branch commit subjects.
+- Issue body re-read verbatim from this round's dispatch capture: baseline
+  additions, grants, waivers, fake callers and gate changes are forbidden;
+  "If that integration is unavailable, report implementation/test readiness
+  plus the explicit merge blocker and leave the stack unmerged."
+- Verdict unchanged: no in-scope, issue-legal, mechanically-effective repair
+  exists — the red gates are the issue-prescribed merge blocker (parent
+  #1845 integration head plus a prior trusted-base grant). Writer handoff
+  MERGE-READY (handoff only, never integration approval). Note-only commit;
+  no inventory delta (front-matter stays +79).
