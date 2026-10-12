@@ -7420,3 +7420,69 @@ already formatted", focused pytest 79 passed, suite inventory ok).
   #1845 integration head wiring a real reviewed runtime consumer. Writer
   handoff MERGE-READY (handoff only, never integration approval); stack left
   unmerged. Note-only commit; front-matter delta stays +79.
+
+## Round 105 — repair-round re-verification at unchanged d5aa2f76ba19 (job c92b20e055244cd09cdff31103d61e3b, 2026-10-12)
+
+Fresh firsthand re-derivation of every acceptance criterion and all four CI
+failures; nothing assumed from rounds 100–104.
+
+- Starting head verified: `d5aa2f76ba1924e6ab8e6845b5b4d6d6bc201ef5`, tree
+  clean; base `3c761d14db944a727fa0744444bc67cfe36d49f7`.
+- Driver checks 5/5 rc=0 (this job's logs): sync, `ruff check .`,
+  `ruff format --check .`, focused pytest 79/79,
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok (16341
+  nodes; recorded delta +79 unchanged, no inventory update).
+- Leaf acceptance re-executed: focused pytest 79 passed; module mypy Success;
+  ~50-assertion live contract probe all conformant (`__all__` set-exact 21;
+  CanonicalJsonObject canonical-dumps-only retention with duplicate-key at
+  depth / NaN / 1e999 / non-object / non-string / dict rejection; exact field
+  orders; `owns()` exact 3-way conjunction incl. equal-role-value case;
+  v2 lease clamp vs legacy no-clamp; created-is-bool; snapshot run_id
+  agreement; all claim/mutation variant guards; empty variants truthy without
+  `__bool__`; owner_token repr-omitted). One probe-authoring correction
+  in-round (wrong envelope generation in the probe, module correct). All 12
+  issue-named tests present.
+- Full issue body re-read (17,353 chars) plus a keyword scan of all 609
+  captured comments: zero comments touch baseline/grant/suppression/allowlist/
+  reachability mechanics — the issue's authorization boundary is unchanged and
+  explicit: "No fake callers, baseline additions, grants, disabled gates or
+  quality waivers are permitted."
+- exact-debt-ledger rc=1 reproduced with CI's exact argv
+  (vulture-ratchet.yml:80-84, quality.yml:1078-1081): scan 1328 findings,
+  unclassified 0 => ledger scan-exact; the 5 NEW-vs-trusted-base identities
+  are `admission_identity.py:515,516,518,519,520` (AdmissionAssessment
+  members MISMATCH/REPLAYED/TAKEOVER/REPLACE_EXPIRED/LEGACY_UNRESOLVED; the
+  issue-mandated 6-member set is test-pinned, so nothing is genuinely dead and
+  no elimination exists). Two-merge wall re-proven in code
+  (check-vulture-baseline.py:274 loads authorizations from the base) and in
+  data: `ratchet-authorizations.json` contains zero `admission_identity`
+  grants at head and at base; `vulture-baseline.json` diff vs base is +5/-0
+  banking only. The gate's own output: "land a reviewed grant first."
+- check-reachability rc=1 naming exactly `maistro.runs.admission_identity`;
+  its suggested fix (reachability-baseline entry) is issue-forbidden;
+  dispositions rc=0, promotion rc=0. Live check-runs at this head confirm:
+  exact-debt-ledger = failure, test = failure, Quality gate = failure,
+  Coverage gate = failure — the issue-predicted blocker profile.
+- Test-job failure set re-derived firsthand: `pytest
+  tests/test_check_reachability.py tests/test_reachability_baseline_identity.py`
+  => 3 failed / 36 passed, set-diff exactly `maistro.runs.admission_identity`;
+  Coverage gate mechanically downstream (quality.yml:499 needs-chain, 712-713
+  root producer re-running tests/).
+- Isolation re-verified: diff base..head = exactly 4 files (module, test,
+  note, ledger); zero `admission_identity` references in `packages/*/src`
+  outside the module; no `maistro.runs.__init__` export; production module
+  contains no suppressions (only standard mypy `type: ignore[arg-type/misc]`
+  marks inside negative tests). #1841 anchors in-tree (store_boundary.py:56,
+  store.py:507/537/563, model.py:300/320-321).
+- Sync state: `git fetch origin develop` => origin/develop ==
+  3c761d14db944a727fa0744444bc67cfe36d49f7 == merge base; no drift, no
+  conflict to resolve.
+- Evidence hygiene: live `gh` refresh — issue #1851 OPEN, PR #1936 OPEN at
+  exactly d5aa2f76ba19, body has zero closure keywords; no closure actions.
+- Conclusion: unchanged after fresh deep review — no in-scope, issue-legal,
+  mechanically-effective repair exists for the four reds; they are the
+  issue-documented merge blocker, resolvable only by an owner-landed reviewed
+  vulture grant on develop (two-merge order) or the #1845 integration head
+  wiring a real reviewed runtime consumer. Writer handoff MERGE-READY (handoff
+  only, never integration approval); stack left unmerged. Note-only commit;
+  front-matter delta stays +79.
