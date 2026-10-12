@@ -7486,3 +7486,71 @@ failures; nothing assumed from rounds 100–104.
   wiring a real reviewed runtime consumer. Writer handoff MERGE-READY (handoff
   only, never integration approval); stack left unmerged. Note-only commit;
   front-matter delta stays +79.
+
+## Round-106 repair-round independent deep review (job 25723f4f853441c2a1f0061ab6feea37)
+
+Resolves the carried NEEDS-DEEP-REVIEW block by fresh firsthand re-derivation
+of every load-bearing claim at unchanged head 45883489b71d (base 3c761d14d);
+nothing taken from prior rounds on trust:
+
+- Worktree clean at the exact manifest head; `git diff --stat base..head` =
+  exactly the 4 manifest surfaces; `vulture-baseline.json` numstat +5/-0.
+- Driver checks 5/5 rc=0 in this job's check-0..4.log (sync, ruff check,
+  ruff format, 79/79 focused pytest, suite inventory ok 16341 => recorded
+  +79 delta matches; no inventory update needed).
+- Leaf acceptance re-executed firsthand: focused pytest 79/79; module ruff
+  check + format clean; `mypy packages/maistro-core/src/maistro/runs/admission_identity.py`
+  Success; ~60-assertion live contract probe all conformant (`__all__`
+  set-exact 21; 6-member AdmissionAssessment; frozen+slots; CanonicalJsonObject
+  duplicate-key/NaN/1e999/Infinity/non-object/non-string rejection with
+  canonical-dumps-only retention and no parsed-object accessor; owns() exact
+  3-way conjunction with 3 negatives; owner_token omitted from reprs; empty
+  variants truthy-neutral; FrozenInstanceError on mutation). One probe-authoring
+  quoting correction in-round — the module correctly rejected the malformed
+  input; module correct.
+- All 12 issue-named tests present (one per name, grep-verified).
+- exact-debt-ledger rc=1 reproduced with CI's exact argv (quality.yml:1078-1081;
+  real exit code captured unpiped): scan 1328 findings, unclassified 0 =>
+  ledger scan-exact (vulture-baseline.json:283-287 bank exactly the 5 flagged
+  identities); rc=1 solely from the 5 NEW-vs-trusted-base AdmissionAssessment
+  identities at admission_identity.py:515-520 — all six members are
+  issue-mandated verbatim ("Define AdmissionAssessment(StrEnum) with exactly
+  these member/value pairs"), PENDING is consumed in-module, nothing genuinely
+  dead. Two-merge wall re-proven in code (scripts/check-vulture-baseline.py:274
+  `prov.load_authorizations(RATCHET, base=trusted_ref.base_sha)`) and data
+  (zero `admission_identity` grants at head and at base; the file is
+  byte-identical to base). Gate output verbatim: "land a reviewed grant first."
+- check-reachability rc=1 naming exactly `maistro.runs.admission_identity`
+  (suggested fix = issue-forbidden baseline entry); dispositions rc=0,
+  promotion rc=0.
+- Test-job failure set re-derived firsthand: pytest
+  tests/test_check_vulture_baseline.py tests/test_check_reachability.py
+  tests/test_reachability_baseline_identity.py tests/test_no_placeholder_modules.py
+  => 3 failed / 50 passed, set-diff exactly `maistro.runs.admission_identity`
+  (baseline-equals-tree self-checks demanding the issue-forbidden
+  reachability-baseline entry); Coverage gate mechanically downstream
+  (quality.yml:499 needs-chain; 712-713 root producer re-running tests/).
+- Isolation re-verified: zero `admission_identity` references in `packages/`,
+  `tests/`, `agents/` outside the module+its test; no `maistro.runs.__init__`
+  export; zero suppressions in the module. #1841 anchors in-tree
+  (store_boundary.py:56; store.py:507/563; model.py:300/320-321).
+- Issue body re-read in full (17,353 chars, dispatch-context.json): staging
+  constraint and authorization boundary confirmed verbatim ("No fake callers,
+  baseline additions, grants, disabled gates or quality waivers are
+  permitted"; "A candidate baseline update cannot grant itself permission";
+  terminal state: "If that integration is unavailable, report
+  implementation/test readiness plus the explicit merge blocker and leave the
+  stack unmerged").
+- Sync: `git fetch origin develop` => origin/develop == 3c761d14db94 == merge
+  base; no drift, no conflict to resolve. Issue #1851 and PR #1936 OPEN per
+  the 2026-10-12T08:21Z dispatch capture; no closure actions.
+- Conclusion (unchanged, now re-derived end to end this round): the four red
+  CI jobs are the issue-documented merge blocker, mechanically rooted in the
+  issue-mandated unwired state; the only mechanical fixes (grants, baseline
+  entries, fake callers, suppressions) are issue-forbidden, and the
+  authorization path requires an owner-landed reviewed vulture grant on
+  develop before this branch (two-merge order) or the #1845 integration head
+  wiring a real reviewed runtime consumer. No in-scope, issue-legal,
+  mechanically-effective repair exists. Writer handoff MERGE-READY (handoff
+  only, never integration approval); stack left unmerged. Note-only commit;
+  front-matter delta stays +79.
