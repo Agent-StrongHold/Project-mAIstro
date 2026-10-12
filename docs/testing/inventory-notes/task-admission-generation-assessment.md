@@ -59,6 +59,10 @@ invocations (`uv sync --locked --all-extras` first, as `quality.yml` does):
   '*/third_party/*'` exits 0: 1342 reviewed identities -> 1342 findings, no
   new identity (the name-based scanner sees `_assess` used by the live flow's
   identically named function).
+  (Round 76 corrects the counts: at head 1bcc1d8a6be6 against base
+  3c761d14db94 the same command reports **1323** reviewed identities ->
+  **1323** findings — develop pruned 19 ledger rows after this section was
+  written. The gate's verdict is unchanged: rc=0, no new identity.)
 - `check-radon-baseline.py` exits 1 with exactly one new identity,
   `admission_generation.py:62 _assess -> C (13)` — unauthorizable in-leaf
   (a grant cannot approve the change that introduces it), so it is left
@@ -5485,3 +5489,86 @@ this round.
   unwired-leaf blocker. No sanctioned in-lane repair exists. Verdict
   unchanged: writer handoff MERGE-READY on leaf acceptance; stack stays
   unmerged pending the separately-scoped #1845 integration consumer.
+
+## Verify+repair round at 1bcc1d8a6be6 (2026-10-12, round 76)
+
+Fresh CI-repair dispatch at the same head; driver battery 5/5 rc=0
+(ruff/format clean, focused trio 315P, inventory 16468 IDs ok). Acceptance
+battery re-executed first-hand — nothing taken from earlier rounds on trust:
+
+- **Leaf suites**: classifier 132P; identity+idempotency 140P; scoped
+  ruff check/format clean; repo-wide `ruff check .` +
+  `ruff format --check .` clean; mypy on both leaf modules Success and
+  canonical seven-package mypy Success (894 files).
+- **Named acceptance**: all 10 issue-named tests present in
+  `test_admission_generation_assessment.py`; `test_assessment_matrix`
+  parameterizes rows r1–r10 mapping 1:1 to the issue's table with boundary
+  instants; `test_existing_live_claim_flow_does_not_import_v2_classifier`
+  runs a fresh-interpreter import spy plus an in-process namespace check.
+- **Full inventory gate**: `scripts/check-suite-inventory.py` rc=0
+  (17 suites / 31335 IDs, 0 duplicates); `inventory-delta: +132` still
+  matches the collected count exactly (no delta update due).
+- **exact-debt-ledger reproduced leg-by-leg at CI exact argv**
+  (`RATCHET_BASE_REV=origin/develop` per `vulture-ratchet.yml:52`; base
+  3c761d14db94 re-fetched, still = merge-base): the lane-brief vulture
+  repair loop is EMPTY — `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` rc=0, 1323 -> 1323,
+  unclassified=0, never_allowlist=0; nothing genuinely dead, no amendment
+  due (76th consecutive empty round). `check-shipped-surface-truth.py`
+  rc=0. `check-ratchet-provenance.py` fails SOLELY via the reachability
+  sub-ratchet (trusted-base gate rc=1, 169->171, naming exactly
+  `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`);
+  shell-execution (3->3), contract-markers (358->358), enumerations (1->1),
+  lifecycle (0->0) all OK.
+- **Quality gate pillars re-measured**: `check-reachability.py` rc=1 with
+  exactly the two NEWLY UNREACHABLE leaf modules; `check-radon-baseline.py`
+  rc=0 (137->137; `radon cc` puts `_assess` at B (10) — the decision-table
+  formulation eliminated the historical C (13), and the base ledger holds no
+  admission row); xenon at CI's exact argv 139 block violations vs
+  XENON_BASELINE=145, 0 module-rank, 0 average violations;
+  `check-convergence-matrix.py` rc=0.
+- **test job reproduced from the FULL root suite first-hand**
+  (`pytest tests/ --ignore=tests/tools/registry`, 294s): 4967P / 129S /
+  **4F** — the three CI-visible reachability meta-tests
+  (`test_reachability_baseline_identity.py` x2,
+  `test_check_reachability.py::test_baseline_matches_the_tree`), each naming
+  only the two leaf modules, plus one local-only failure
+  (`test_branch_independence_repository::
+  test_every_quality_json_state_surface_is_classified_once`) whose sole
+  assertion residue is `unclassified quality state: quality/ac-state.json`
+  — a gitignored file (`.gitignore:81`, `git status --ignored` shows `!!`)
+  that exists only in this worktree and is absent from any CI checkout, so
+  the CI-visible red is exactly the 3 meta-tests.
+- **Coverage gate re-attributed at source** (`quality.yml:712-713`): the
+  combine step runs `pytest tests/ ...` after the package producers, so the
+  producer leg dies on the same 3 meta-tests. The diff-coverage leg measured
+  GREEN first-hand: `coverage run --branch --source=packages/maistro-core/
+  src/maistro` over the focused trio (315P), then
+  `check-diff-coverage.py coverage.xml --base 3c761d14db94` rc=0 — 3 changed
+  source files measured, every one at or above the 90% lines / 80% branch
+  floors; `_vulture_whitelist.py` is outside every MEASURED_ROOT and the
+  three test files are exempt by declaration.
+- **All four issue-named mutation classes KILLED first-hand** via a
+  fresh-subprocess `-p` plugin under /tmp (zero tree writes) that execs the
+  mutated source into BOTH `sys.modules['maistro.tasks.admission_generation']`
+  and the parent package attribute: swap TAKEOVER/REPLACE_EXPIRED **66F**,
+  lease-before-binding **14F**, legacy-as-v2 **10F**, mismatch-before-expiry
+  **22F**; the identical-source control through the same plugin **132P**,
+  proving the harness does not perturb the suite.
+- **Integrity re-checks**: `git diff --numstat origin/develop -- quality/`
+  empty; `tasks/idempotency.py`, `tasks/__init__.py`, `runs/__init__.py`,
+  `scripts/` zero-diff vs base; zero production importers of
+  `admission_generation` under `packages/*/src`; no issue-closure keyword in
+  any branch commit since develop (the single case-insensitive grep hit is
+  the prose phrase "deep-review block closed" in a docs-only commit, no
+  issue referenced).
+- **Operative correction in this note**: the merge-blocker section's vulture
+  bullet carried the stale count 1342 from an earlier develop state; it now
+  carries a round-76 annotation with the measured 1323 (verdict unchanged).
+- All four CI reds at this head reduce to the single issue-sanctioned
+  unwired-leaf blocker. The issue forbids in-lane callers, baseline rows,
+  grants, waivers and suppressions for exactly this state, and the one
+  permitted amendment lane (vulture) has an empty fix-list, so no sanctioned
+  in-lane repair exists. Verdict unchanged: writer handoff MERGE-READY on
+  leaf acceptance; the stack stays unmerged pending the separately-scoped
+  #1845 integration consumer.
