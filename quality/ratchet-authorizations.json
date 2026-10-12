@@ -1082,7 +1082,8 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1136",
       "reason": "Pre-existing code, not new: `DelegationStatus = Literal[\"completed\", \"failed\", \"rejected\", \"timed_out\"]` is the outcome vocabulary a remote/in-process delegate answers `agent.delegate_remote` with, immediately translated onto the canonical child Run's RunStatus via the module's `_CHILD_OUTCOME` map -- it is an input shape, not a second execution authority. #1136 widens check-execution-lifecycles.py to discover Literal-backed status vocabularies (previously Enum-only), which makes this pre-existing vocabulary visible to the ratchet for the first time rather than introducing it. This grant authorizes exactly that one newly-visible, pre-existing entry; the follow-up PR that lands the widened scanner also classifies it in quality/execution-lifecycles.json (expected DOMAIN, since it maps onto canonical RunStatus rather than competing with it) rather than banking it as CANONICAL. It does not authorize any other new execution-lifecycle debt."
-    },
+    }
+  },
   "promotion-surface": {
     "packages/maistro-core/src/maistro/agents/__init__.py": {
       "owner": "@BlakeMatthews-dev",
