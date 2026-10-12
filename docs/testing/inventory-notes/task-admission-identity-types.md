@@ -7712,3 +7712,75 @@ owner-landed reviewed vulture grant on develop (two-merge order) or the #1845
 integration head's real reviewed runtime consumer. Writer handoff MERGE-READY
 (handoff only, never integration approval); stack left unmerged. Note-only
 commit; no inventory delta.
+
+## Round 110 (job 52d31d382b0c42eaac0b0fc526e90243, head 20f20041df26) — deep-review block resolved; every load-bearing claim re-derived firsthand, none trusted
+
+Scope re-verified: worktree clean at the exact manifest head; diff
+`3c761d14db94..20f20041df26` is exactly the 4 in-scope files, all insertions
+(8899 lines; quality/ changes only `vulture-baseline.json` +5/-0).
+`origin/develop` re-fetched this round == merge base `3c761d14db94` (no drift,
+no conflict, no owner grant landed upstream).
+
+Leaf acceptance re-executed by this round (all green): focused pytest 79/79;
+module ruff check + format --check clean; `mypy` on the module: Success;
+`check-suite-inventory.py --suite packages/maistro-core/tests` ok 16,341 =>
+front-matter delta stays +79, no update. Live probe re-proved `__all__`
+set-exact 21, `AdmissionAssessment` exactly the 6 mandated member/value pairs,
+frozen+slots on the record types; all 12 issue-named tests present
+(test_root_admission_identity.py:167/209/303/343/356/399/410/424/441/592/603/641);
+`owns()` is the exact 3-way conjunction, generation and owner never compared to
+each other; `owner_token` omitted via `field(repr=False)`; zero suppressions;
+zero imports of the module outside the two new files; no `maistro.runs.__init__`
+export; #1841 anchors in-tree (`store_boundary.py:56`,
+`store.py:507/563/921`). Driver checks for this job: 5/5 rc=0.
+
+Four red gates re-reproduced firsthand with CI's exact argv, and all four trace
+to exactly two root causes the issue documents and forbids fixing:
+
+1. exact-debt-ledger + Quality gate (Pillars) — same command
+   (`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+   '*/third_party/*'`): rc=1 with 1328 findings, unclassified 0, never-allowlist
+   0 => the candidate ledger is scan-exact with the +5 banking rows already
+   in-tree (`vulture-baseline.json:283-287`). rc=1 comes solely from the 5
+   issue-mandated `AdmissionAssessment` members (`admission_identity.py:515`
+   516, 518, 519, 520) being NEW against the TRUSTED base ledger. Nothing is
+   genuinely dead (all six members fixed verbatim by the issue and pinned by
+   `test_module_exports_exact_contract_and_assessment_values`); the lane-brief
+   ledger amendment is already complete in-tree, so there are no rows to add or
+   remove. Authorization is impossible from this branch: `load_authorizations`
+   (`ratchet_provenance.py:481-508`) reads grants from the base revision ("a
+   new grant does not take effect in the change that introduces it ... two
+   merges"), `ratchet-authorizations.json` is byte-identical to the base with
+   zero admission_identity grants (its 5 "admission" string matches are
+   unrelated pre-existing entries), and a same-branch grant is the
+   self-authorization the issue forbids.
+
+2. test + Coverage + reachability — `check-reachability.py` rc=1 names exactly
+   `maistro.runs.admission_identity` as the only NEWLY UNREACHABLE module
+   (dispositions rc=0, promotion rc=0). The 3 baseline-equals-tree self-checks
+   fail with a set-diff of exactly that module — reproduced firsthand:
+   `tests/test_reachability_baseline_identity.py` (2 tests) +
+   `tests/test_check_reachability.py::test_baseline_matches_the_tree`, 3
+   failed / 36 passed. The only mechanical fix is the issue-forbidden
+   `reachability-baseline.json` entry (or a fake caller / `__init__` export,
+   equally forbidden). Coverage correction to round 109's mechanism note: the
+   Coverage gate reds via its OWN `--source=scripts` producer step, which runs
+   `pytest tests/` (`quality.yml:711-712`) and therefore those same 3
+   self-checks — `coverage-unit` (quality.yml:167-176) runs only package
+   suites, so the red is in-gate, not a needs-chain through it. Same root
+   cause either way.
+
+Isolation, staging constraint, and terminal state re-confirmed against the
+issue body: "No fake callers, baseline additions, grants, disabled gates or
+quality waivers are permitted"; "report implementation/test readiness plus the
+explicit merge blocker and leave the stack unmerged". PR #1936 open at exactly
+this head against develop; issue #1851 open; zero closure keywords in any
+commit message base..head.
+
+Conclusion (fifth independent round, re-derived firsthand): no in-scope,
+issue-legal, mechanically-effective repair exists. The four reds ARE the
+issue-documented merge blocker for this unwired leaf; resolution requires the
+owner-landed reviewed vulture grant on develop (two-merge order) or the #1845
+integration head's real reviewed runtime consumer. Writer handoff MERGE-READY
+(handoff only, never integration approval); stack left unmerged. Note-only
+commit; no inventory delta.
