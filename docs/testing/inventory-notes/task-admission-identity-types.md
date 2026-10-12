@@ -7910,3 +7910,64 @@ reviewed vulture grant on develop (two-merge order) or the #1845 integration
 head's real reviewed runtime consumer. Writer handoff MERGE-READY (handoff
 only, never integration approval); stack left unmerged. Note-only commit; no
 inventory delta (stays +79).
+
+## Round-113 CI-repair verification (unchanged head 4f43f0e9506c, job f31f7d2e)
+
+Prior job f45702a2's worker died on a provider timeout after its driver checks
+all passed (5/5 rc=0), leaving the NEEDS-DEEP-REVIEW block unresolved. This
+round re-derives every load-bearing claim firsthand, trusting nothing:
+
+- Worktree clean at exact manifest head 4f43f0e9506c; diff base 3c761d14d..HEAD
+  is exactly the four manifest surfaces (+9097: module 520, tests 660, note,
+  vulture-baseline +5). Fresh `git fetch origin develop`: origin/develop is
+  STILL 3c761d14d == merge base, so no upstream grant landed.
+- Driver logs read directly (check-0..4): sync, ruff check, ruff format, 79/79
+  pytest, inventory ok 16341 => delta stays +79. Leaf acceptance re-executed
+  this round: 79/79 pytest, ruff check/format clean on both leaf files, mypy
+  Success on the module, inventory ok.
+- Contract re-proven programmatically at this head: `__all__` set-exact 21;
+  AdmissionAssessment exactly the six issue-verbatim member/value pairs; all 17
+  record/result classes frozen+slots; `owns()` contains exactly the 3-way
+  conjunction (scope AND generation AND owner, never generation==owner);
+  `field(repr=False)` on both owner tokens. All 12 issue-named tests present.
+- Scope isolation: `admission_identity` is referenced by exactly one file (its
+  test); `maistro/runs/__init__.py` has no admission export. #1841 anchors
+  re-verified in production: `require_admitted_actor`
+  (store_boundary.py:56), `get_run(..., principal_id=...)` (store.py:537),
+  `actor_principal_id` params and the admitted-actor guard
+  (store.py:507/563/894/921).
+- exact-debt-ledger re-reproduced with CI exact argv: rc=1, 1328 findings,
+  unclassified 0, never_allowlist 0 => candidate ledger scan-exact; sole delta
+  vs the TRUSTED base is the five issue-mandated enum identities
+  (admission_identity.py:515-520; PENDING at :517 is not flagged by the scan,
+  consistent with the +5 rows banked at vulture-baseline.json:283-287). The
+  mandated repair procedure resolves to a verified no-op: none of the five is
+  genuinely dead (issue-fixed vocabulary, test-pinned), retained rows are
+  already amended, nothing to remove. Gate verdict verbatim: "land a reviewed
+  grant first"; `load_authorizations` (ratchet_provenance.py:478-519) reads
+  grants from the base revision (two-merge rule in the docstring), and
+  `ratchet-authorizations.json` is byte-identical to origin/develop with no
+  admission_identity grant (its five "admission" hits are unrelated
+  pre-existing grants), and the issue forbids grants in this leaf anyway.
+- Quality gate re-reproduced: `check-reachability.py` rc=1 naming exactly
+  `maistro.runs.admission_identity`; the gate's only suggested fix (a
+  reachability-baseline entry) is issue-forbidden.
+- test job failure mechanism re-reproduced locally:
+  `tests/test_reachability_baseline_identity.py` fails
+  test_the_committed_baseline_passes_the_gate_it_now_carries /
+  test_the_baseline_is_exactly_the_unreachable_set on
+  `set(unreachable) == baseline` with exactly one extra item,
+  `maistro.runs.admission_identity` (2 failed, 12 passed on the focused file) —
+  same forbidden-baseline root cause.
+- Coverage gate: `coverage-gate` (quality.yml:499) needs
+  [coverage-unit, coverage-archive, coverage-postgres]; the failing self-checks
+  live in the root suite its producer runs — downstream, no independent defect.
+
+Conclusion unchanged (eighth independent round): no in-scope, issue-legal,
+mechanically-effective repair exists. The four reds ARE the issue-documented
+merge blocker for this unwired leaf ("report implementation/test readiness plus
+the explicit merge blocker and leave the stack unmerged"); resolution requires
+the owner-landed reviewed vulture grant on develop (two-merge order) or the
+#1845 integration head's real reviewed runtime consumer. Writer handoff
+MERGE-READY (handoff only, never integration approval); stack left unmerged.
+Note-only commit; no inventory delta (stays +79).
