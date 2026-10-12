@@ -82,3 +82,98 @@ MAISTRO_REQUIRE_PG_LEGS=1 uv run pytest \
 Only `docs/testing/issue-1893-repair-56c51282.md` changed. No tests added/removed, so inventory deltas are unchanged and no new inventory note is required. No production/ledger/grant/gate edits, GitHub mutations, fetch or merge. Commit this evidence-only handoff locally; it is neither a successful code repair nor integration approval.
 
 Progress: checked=1, done=0, skipped=0, errors=1. Next: resolve the trusted-base blocker with the owner and supply the actual failing CI test traceback before redispatching repair of unchanged source.
+
+## Bounded rerun — job 82afb913
+
+Frozen issue/worktree/base unchanged; source SHA
+`52d8880e0a6d0b112cbbf18562dfe9cc1728bac8`, initially clean. This rerun
+updates this existing checkpoint rather than adding another duplicate report.
+Inspected repository instructions, codec/identity source and both full test
+files, existing inventory note, CI definitions, and accepted ADR-081226-a66b
+(lifecycle authority) and ADR-083126-5e62 (trusted-base authority). No new
+scheduler, authorization path, production activation or candidate grant is
+permitted. The Vulture exception does not authorize reachability changes.
+
+Fresh commands and results (logs under
+`/home/dev/maistro/jobs/82afb913533043e9a793e90827858ad7/repair-*.log`):
+
+| Command | Result |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1323 reviewed identities/findings, zero unclassified; no ledger amendment warranted |
+| `RATCHET_BASE_REV=3c761d14db944a727fa0744444bc67cfe36d49f7 uv run python scripts/check-ratchet-provenance.py` | FAIL: admission_identity and admission_codec lack trusted-base reachability/disposition authorization, 169 -> 171; other sub-gates pass |
+| `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q` | 201 passed, 3 skipped without DSNs |
+| `uv run pytest packages/maistro-core/tests/tasks packages/maistro-core/tests/runs -x -q` | 1918 passed, 310 skipped, 6 aiosqlite closed-event-loop warnings; skips are not durability evidence |
+| `uv run ruff check .` / `uv run ruff format --check .` | PASS / PASS, 3277 files |
+| `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py` | PASS, 2 files |
+| `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests` | PASS, 16466 nodes, no duplicate evidence |
+| `uv run python scripts/check-shipped-surface-truth.py` | PASS |
+
+### Fresh PostgreSQL proof and regression sensitivity
+
+After verifying the database absent, ran `createdb maistro_1893_82afb913` and
+`DATABASE_URL=postgresql:///maistro_1893_82afb913 uv run alembic upgrade head`.
+PostgreSQL 18.6, real chain 001 -> 062 (including 055), no stamping or recreated
+SQLite schema. Then executed:
+
+```sh
+MAISTRO_TEST_PG_DSN=postgresql:///maistro_1893_82afb913 \
+MAISTRO_TEST_DATABASE_URL=postgresql:///maistro_1893_82afb913 \
+MAISTRO_REQUIRE_PG_LEGS=1 uv run pytest \
+  packages/maistro-core/tests/tasks/test_admission_codec.py \
+  packages/maistro-core/tests/runs/test_root_admission_identity.py \
+  -x -q -o junit_family=legacy \
+  --junitxml=/home/dev/maistro/jobs/82afb913533043e9a793e90827858ad7/repair-live.xml
+```
+
+**204 passed, zero skipped.** JUnit records every collected node and database
+session evidence. Required DSNs name the same disposable DB; pg_pool is non-None
+and uses production JSON codecs. Raw/production session pairs (production first):
+unbound 277746/277747, bound 277748/277749, acknowledged 277750/277751. All report
+`maistro_1893_82afb913` on Unix sockets, with one persisted admission row per
+case. Both pools reject each injected lone-surrogate snapshot while preserving
+header evidence. Final SQL: revision 062; admissions, distinct generations,
+bound Run identities, canonical Runs, NodeRuns and Attempts each **0**.
+Disposable DB retained.
+
+Process-only mutation via `uv run python` wrapped the encoder to set
+`task_id=None`, then called pytest with `-q -x -k
+test_v2_round_trip_preserves_all_snapshot_bytes`. Expected exit 1: 1 failed,
+1 passed, 128 deselected; independent assertion at
+`test_admission_codec.py:134` catches the bound regression. No file was mutated.
+
+### Acceptance and remaining blocker
+
+- Exact frozen/slotted header and signatures, enums, named scalar mapping,
+  signed timestamps, strict storage UUIDs, immutable DTOs and fresh flat
+  encoding: source inspection plus focused tests/mypy pass.
+- Legacy unbound/bound/partial/receipt-only and missing receipt evidence,
+  unsupported schema/format, header mismatch, expiry/fingerprint preservation:
+  focused tests pass. No invented identity or clock/claim/HTTP decision.
+- Snapshot duplicate/nonobject/nonfinite rejection, Unicode/numeric safety,
+  sanitized diagnostics, tagged evidence preservation without fingerprint
+  recomputation or double decoding: focused tests pass.
+- TEXT snapshots under raw and production codecs: all three live cases pass
+  through the actual migrated schema; mutation proves the binding assertion
+  does not merely encode agreement with the current implementation.
+- Model materialization with `model_of`/`model_of_json`, Run JSONB object INSERT,
+  and authorized Workspace/Project/principal/registered-Graph admission:
+  **UNVERIFIED**. These tests use synthetic DTO identity strings, not admission.
+- Runtime reachability: production import search finds no codec consumer;
+  codec imports identity and the Vulture whitelist imports identity. Test
+  imports/exports do not establish production behavior.
+- Full integration CI and the supplied generic `test: failure`: **UNVERIFIED /
+  UNRESOLVED**. No failing traceback was found in the supplied driver logs or
+  extracted captured check-run outputs. `.github/workflows/ci.yml:496-612`
+  delegates core to coverage and runs other suites in `test`; core passing is
+  not proof that this different CI job passes. No unrelated test changes made.
+- Required provenance remains **FAIL**, specifically
+  `quality/reachability-baseline.json:131,147` and
+  `quality/reachability-dispositions.json:606-613`. Do not use ledger banking,
+  fake consumers or activation to hide the missing trusted authorization.
+
+**BLOCKED**, not a repaired source slice or integration approval. Only this
+checkpoint changed; zero test additions/removals, so inventory deltas remain
+unchanged. No ledger/grant/gate edits, GitHub mutations, fetch/merge or discarded
+work. Commit this evidence locally. Checked=1, done=0, skipped=0, errors=1.
+Next: owner-governed trusted-base resolution and actual failing CI test evidence;
+do not redispatch unchanged-source validation as though it can grant authority.
