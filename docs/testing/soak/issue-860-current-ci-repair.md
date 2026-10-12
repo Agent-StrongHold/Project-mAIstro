@@ -1,6 +1,93 @@
 # Issue #860 — current CI repair
 
-## Latest checkpoint — job `51397097a6bc4dce85f34781778a98cd`
+## Latest checkpoint — job `27b7f154657b40dfa0a812d7ec490fd5`
+
+Frozen scope: #860 only, `auto-860`, clean starting HEAD
+`eb78ed089d8dd14f639d143cad4d5a428ca84a0d`; supplied base
+`3c761d14db944a727fa0744444bc67cfe36d49f7` resolves locally. No salvage or
+merge conflict. Candidate edits: this existing checkpoint and, only for actual
+retained scanner findings, `quality/vulture-baseline.json`. Read-only scope:
+supplied dispatch/prior result/failure log, repository instructions and relevant
+ADRs, existing soak runner/profile/tests, schema fence, production rate-limit
+wiring and relevant CI gates. No other issues or PRs processed.
+
+No current-job driver `check-*.log` files supplied. The named historical
+`98a113.../check-3.log` fails on 24 actual versus 21 expected schema statements.
+That failure must reproduce before any repair. The prior BLOCKED report concerns
+missing exact-RC production evidence, not a sync conflict. Assumption: no
+immutable RC/config designation means host preflight cannot certify promotion.
+No speculative ledger amendment is justified by the fresh results below.
+
+### Fresh validation
+
+Commands used 1200-second timeouts; logs are in the supplied job directory.
+
+- `uv sync --locked --extra dev`: PASS (214 installed packages checked).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: PASS, 1323 reviewed identities / 1323 findings, zero unclassified or never-allowlist findings (`worker-vulture.log`). Matches the workflow arguments. Checker-selected comparison base is `4aa68edc0b6b`, not the supplied develop base. No retained unbanked identity exists to amend.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py -x -q -rs`: **111 passed, 6 skipped** in 2.57 seconds (`worker-pytest.log`). Skips require `MAISTRO_TEST_PG_DSN`; no live PostgreSQL evidence claimed.
+- `uv run ruff check .`: PASS (`worker-ruff-check.log`).
+- `uv run ruff format --check .`: PASS, 3270 files (`worker-ruff-format.log`).
+- `uv run python scripts/check-suite-inventory.py`: PASS, 17 suites, 31128 unique test identities and no duplicate evidence (`worker-inventory.log`).
+- `uv run python scripts/check-deployment-claims.py`: PASS (`worker-deployment.log`). This checks documented component existence, not deployment health.
+
+The historical schema assertion is already repaired: the independent expected
+list at `packages/maistro-core/tests/persistence/test_pg_learnings.py:175`
+includes the three Gauntlet audit columns present in production
+`pg_learnings.py:116`; `ensure_schema` fences its DDL at line 215. Fresh tests
+exercise that ordered transaction assertion. No test weakening is warranted.
+
+### Architecture and acceptance evidence
+
+Read repository instructions, documentation authority map, accepted ADR-085,
+ADR-081626-f383 and ADR-082526-b36a. Preserve
+`Goal -> Graph -> Run -> NodeRun -> Attempt`. The later lease-renewal ADR
+extends the earlier deferral of reclaim; that old deferral does not waive
+recovery proof. Principal-keyed rate limits do not establish shared state.
+No competing execution, store, scheduler or authorization authority introduced.
+
+Production installs `RateLimitMiddleware` at
+`packages/maistro-server/src/maistro_server/main.py:648`; its constructor creates
+an independent in-memory limiter at `api/rate_limit.py:93`. The executed test
+`tests/test_soak_promotion_gates.py:439` exercises that middleware with the same
+identity on two instances: each permits `[200, 200, 429]`, for authenticated and
+pre-auth clients. The documented N-times-limit policy at `api/rate_limit.py:32`
+does not prove #860's stronger replica-selection non-bypass criterion. Contract
+reconciliation remains UNRESOLVED; this CI lane does not invent a shared limiter.
+
+| #860 acceptance criterion | Current evidence and disposition |
+| --- | --- |
+| Representative RC workload | **UNVERIFIED**. Profile `m3a-load-profile.md:152` explicitly lacks users/Workspaces, Graph fan-out, successful tool/model calls, Design/Canvas and Goal/background workloads. No designated RC justifies those omissions. |
+| At least two application replicas | Boot-contract tests pass, but deployed exact-RC replicas **UNVERIFIED**; ASGI instances are not a deployment. |
+| Sustained saturation, queue growth, reclaim, retries and leaks | **UNVERIFIED**. Sampler/probe regressions pass, not a sustained production experiment. |
+| Physical-work uniqueness across replicas | **UNVERIFIED**. `run_soak.py:1044` cancels the schedule probe's queued Run without execution; admission counts do not prove physical Attempt fencing or Goal reconciliation. |
+| Rate/security/degraded non-bypass | Independent replica allowances reproduced above. Full deployed security/degraded behavior **UNVERIFIED**; the stronger aggregate non-bypass requirement is not established. |
+| Complete telemetry and thresholds | **UNVERIFIED**. Profile defines thresholds, but `run_soak.py:1410` observes driver-loop lag rather than application-loop lag; no fresh RC telemetry series. |
+| Kill/restart during active work proves drain/fencing/recovery | **UNVERIFIED**. Cleanup and gate tests do not perform deployed active-work recovery. |
+| Long-running exact RC/configuration soak | **UNVERIFIED / blocked**. No immutable RC/config designated; `deploy/docker-compose.prod.yml:11` is a reference requiring image pinning. `run_soak.py:730` rejects its host-preflight topology. Executed four-hour CLI fixtures prove fail-closed evaluation, not four hours of load. |
+| Findings filed/reclassified before promotion | Local blockers recorded here; external disposition **UNVERIFIED**. No GitHub mutations permitted or performed. |
+| Machine/human evidence tied to exact artifact/config hashes | **UNVERIFIED** for the RC. This report and local logs identify source validation, not a new hash-bound deployed soak. |
+
+### Handoff
+
+**BLOCKED, not integration approval.** No current deterministic gate failure
+was reproduced. Only this existing report changes; no source, runtime config,
+tests, inventory, ledger, grant or historical raw-evidence changes. No test
+addition means no inventory delta. Existing work preserved; no conflict to merge.
+
+Next: designate immutable RC artifacts and authorized configuration/workload
+applicability, reconcile the replica-rate contract, complete production workload
+and physical-effect/application-telemetry oracles, then execute >=14400 seconds
+on the unchanged RC including active-work recovery. Docker availability is not
+claimed as a blocker; no deployed soak was attempted. Re-running the already-fixed
+24-versus-21 assertion cannot resolve these release-evidence prerequisites.
+
+Progress: checked 1 issue, done 0 acceptance-complete issues, skipped 0 issues,
+errors 0 validation commands; 6 optional DB tests skipped. Local checkpoint commit
+completes this bounded investigation, not issue #860.
+
+---
+
+## Historical checkpoint — job `51397097a6bc4dce85f34781778a98cd`
 
 Frozen scope: #860 only, assigned `auto-860` worktree, clean starting HEAD
 `ff589bf4f4cee261478668c05c50e6d9437cf29d`, supplied base
