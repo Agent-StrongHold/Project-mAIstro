@@ -5812,3 +5812,84 @@ verification pass. Base/merge-base/`origin/develop` all `3c761d14db94`
   Verdict: writer handoff **MERGE-READY on leaf acceptance**; the stack
   stays unmerged pending the separately-scoped #1845 integration
   consumer.
+
+## Round-80 independent re-execution (2026-10-12, head `cc262f2ed8a8`)
+
+Fresh CI-repair dispatch (job 009009c6e767) at head `cc262f2ed8a8bc40efd2
+76f8041abbf47c727d21`; base 3c761d14db94 = merge-base = origin/develop (no
+sync conflict). The prior job (46938a933e85) died on a provider timeout
+AFTER its driver battery completed 5/5 rc=0 — no check failure existed
+there. Every claim below re-executed first-hand this round; nothing taken
+from earlier rounds on trust. No leaf file was edited.
+
+- **Driver battery 5/5 rc=0** (job check-0..4.log): `uv sync --locked
+  --extra dev`; `ruff check .` ("All checks passed!"); `ruff format
+  --check .` (3277 files clean); focused trio **315P** in 2.35s;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok
+  (16468 collected = 16468 unique IDs, 0 duplicates).
+- **Issue focused commands**: assessment suite **132P**;
+  `test_root_admission_identity.py` + `test_idempotency.py` **140P**
+  (unchanged live claim loop unaffected); scoped ruff check + format
+  --check clean on the module and its test file; `mypy
+  packages/maistro-core/src/maistro/tasks/admission_generation.py`
+  Success. All 10 issue-named tests present (one def each).
+- **exact-debt-ledger reproduced leg-by-leg at CI exact argv**
+  (`RATCHET_BASE_REV=origin/develop` per `vulture-ratchet.yml:52`):
+  lane-brief vulture repair loop **EMPTY** — `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` rc=0,
+  1323 reviewed identities -> 1323 findings, unclassified=0,
+  never_allowlist=0: no unbanked identity, nothing genuinely dead, **no
+  quality/vulture-baseline.json amendment due**. `check-shipped-surface-
+  truth.py` rc=0. `check-ratchet-provenance.py` rc=1 **SOLELY** via the
+  reachability sub-ratchet (169 -> 171 of 1396) naming exactly
+  `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`
+  as NEW unreachable modules; contradictions, citations, promotion-surface
+  (270), reachability-dispositions (169->169), shell-execution (3->3),
+  contract-markers (358->358), enumerations (1->1), lifecycle (0->0) all OK.
+- **Two-merge blocker re-proven**: `origin/develop`'s
+  `quality/ratchet-authorizations.json` carries **0** rows naming either
+  admission module, and grants are read from the base revision
+  (`scripts/ratchet_provenance.py`), so an in-branch grant is inert in the
+  change that introduces it — while the issue forbids in-lane grants,
+  baselines, dispositions, fake callers and waivers for exactly this
+  state. No sanctioned in-lane repair exists.
+- **Quality pillars**: `check-reachability.py` rc=1 with exactly "2
+  module(s) are NEWLY UNREACHABLE" (the two admission modules);
+  `check-reachability-dispositions.py` rc=0; `check-promotion-surface.py`
+  rc=0.
+- **test-job red reproduced at the exact nodes**: the five reachability
+  meta-test files give **3F/63P** — `test_baseline_matches_the_tree`,
+  `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set` — each naming only
+  the two leaf modules ("::error title=New unreachable
+  modules::maistro.runs.admission_identity,
+  maistro.tasks.admission_generation").
+- **Coverage gate diff-coverage leg GREEN first-hand via the exact CI
+  producer**: `coverage run --branch --source=packages/maistro-core/src/
+  maistro -m pytest packages/maistro-core/tests --timeout=30 -q` ->
+  **15421 passed / 1044 skipped / 3 xfailed in 349.51s**, `coverage xml`,
+  `check-diff-coverage.py <xml> --base 3c761d14db94` **rc=0**: 3 changed
+  source files measured at or above 90% lines / 80% branch arcs; the three
+  test files and `_vulture_whitelist.py` exempt by the script's own
+  declarations. The producer leg reds on the same 3 meta-tests under
+  `set -euo pipefail` (quality.yml:713).
+- **All four issue-named mutation classes KILLED first-hand** via a /tmp
+  `-p` plugin in fresh subprocesses (zero tree writes, `git status`
+  empty after) that execs mutated source into BOTH `sys.modules['maistro.
+  tasks.admission_generation']` and the parent package attribute before
+  collection: swap TAKEOVER/REPLACE_EXPIRED **50F**, lease-before-binding
+  **14F**, legacy-as-v2 (LEGACY_UNRESOLVED row deleted) **10F",
+  mismatch-before-expiry **22F**; identical-source control through the
+  same harness **132P**, proving the harness does not perturb the suite.
+- **Integrity**: `git diff --numstat origin/develop -- quality/` empty;
+  `tasks/idempotency.py`, `tasks/queue.py`, `tasks/__init__.py`,
+  `runs/__init__.py` zero-diff vs base; zero production importers of
+  `admission_generation` under `packages/*/src`; 0 issue-closure keywords
+  in all 147 branch commits; front-matter `inventory-delta: +132` still
+  equals the collected assessment-suite count exactly (no delta update
+  due).
+- All four CI reds at this head (exact-debt-ledger, Quality gate, test,
+  Coverage gate) reduce to the single issue-sanctioned unwired-leaf
+  blocker. Verdict: writer handoff **MERGE-READY on leaf acceptance**;
+  the stack stays unmerged pending the separately-scoped #1845
+  integration consumer.
