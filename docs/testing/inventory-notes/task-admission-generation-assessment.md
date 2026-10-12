@@ -5211,3 +5211,50 @@ repair.
   one documented, issue-mandated unwired-leaf reachability delta with no
   sanctioned in-lane repair; stack stays unmerged pending the
   separately-scoped #1845 integration consumer.
+
+## Round-72 verify+repair revalidation at head `8eef3a42be84` (base `origin/develop` `3c761d14db94`)
+
+Fresh CI-repair dispatch (job e60f1414cfbc). All evidence first-hand this
+round; prior rounds' claims re-executed, not trusted. No tree edit was
+needed: the driver battery and the lane-brief vulture repair loop both came
+back empty, so this section only records the round's re-executed evidence.
+
+- Driver deterministic battery 5/5 rc=0 at this exact head (check-0..4:
+  `uv sync --locked --extra dev`; `ruff check .` "All checks passed!";
+  `ruff format --check .` 3277 files; focused trio **315P** in 2.60s;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` 16468
+  IDs, 0 duplicates, matches recorded inventory).
+- Acceptance battery re-executed: the two issue-named suites **205P**
+  (`test_root_admission_identity.py` + `test_admission_generation_assessment.py`);
+  canonical mypy (`packages/*/src`, AGENTS.md argv) **Success: no issues
+  found in 894 source files**.
+- Direct behavioral matrix against the shipped function (no test indirection):
+  **36/36** assertions passed in-memory covering all 10 issue matrix rows at
+  exact boundaries (inclusive expiry at `expires_at_us == now_us`, `PENDING`
+  at lease −1 µs, `TAKEOVER` at lease and +1 µs, binding wins over ack,
+  legacy unbound never takeover-eligible, expiry beats mismatch), record
+  purity, exact-class/fingerprint/bool-int64 rejection, and int64-boundary
+  acceptance.
+- exact-debt-ledger reproduced leg-by-leg at CI exact argv
+  (`.github/workflows/vulture-ratchet.yml:59-85`, `RATCHET_BASE_REV=origin/develop`):
+  `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` **rc=0** (1323 -> 1323, unclassified=0,
+  never_allowlist=0 — the lane-brief vulture repair loop is EMPTY for the
+  72nd consecutive round: no unbanked identity, nothing genuinely dead,
+  no vulture-baseline amendment due); `check-shipped-surface-truth.py`
+  rc=0; `check-ratchet-provenance.py` rc=1 **SOLELY** via the reachability
+  sub-ratchet (169 -> 171, naming exactly `maistro.runs.admission_identity`
+  + `maistro.tasks.admission_generation`; contradictions, citations,
+  promotion surface, dispositions, shell, contract markers, enumerations,
+  lifecycle all OK).
+- `check-reachability.py` direct rc=1 (1396 modules, 171 unreachable,
+  "2 NEWLY UNREACHABLE": the two admission modules). Containment re-checked:
+  `git diff --numstat base..HEAD -- quality/` empty; `tasks/idempotency.py`,
+  `tasks/queue.py`, package `__init__.py` files zero-diff; no production
+  importer of `admission_generation` under `packages/*/src` (grep clean).
+- Two-merge blocker stands unchanged (grants read from the merge base per
+  `scripts/ratchet_provenance.py`; issue #1852 forbids in-lane grants,
+  baselines, dispositions, fake callers and waivers): no sanctioned in-lane
+  repair exists. Verdict unchanged: writer handoff MERGE-READY on leaf
+  acceptance; stack stays unmerged pending the separately-scoped #1845
+  integration consumer.
