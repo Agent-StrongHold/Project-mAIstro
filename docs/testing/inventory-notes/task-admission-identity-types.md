@@ -7784,3 +7784,73 @@ owner-landed reviewed vulture grant on develop (two-merge order) or the #1845
 integration head's real reviewed runtime consumer. Writer handoff MERGE-READY
 (handoff only, never integration approval); stack left unmerged. Note-only
 commit; no inventory delta.
+
+## Round 111 (job ca4cb4a4552b4a0a882e37c6ed984fe2, head 5f0f19dda832) — carried NEEDS-DEEP-REVIEW block resolved; all claims re-derived firsthand, none trusted
+
+Snapshot honored: exactly issue #1851 at head 5f0f19dda832bdc5e81a605b1fce6e823f7954b7,
+base 3c761d14db944a727fa0744444bc67cfe36d49f7. Worktree clean at the exact manifest
+head; `git diff --stat base..HEAD` = the 4 manifest surfaces only (module 520 lines,
+tests 660 lines, inventory note, vulture-baseline.json +5). Driver checks 5/5 rc=0 in
+this job's own logs (check-0..4.log).
+
+Leaf acceptance re-executed this round, not trusted from round 110: 79/79 pytest
+(fresh run, 1.15s), ruff check "All checks passed!", ruff format "2 files already
+formatted", mypy "Success: no issues found in 1 source file". Mechanical probe:
+`__all__` set-exact 21 names; AdmissionAssessment six member/value pairs verbatim;
+`owns()` exactly the 3-way scope AND generation AND owner conjunction (3 `==` in
+source); `field(repr=False)` on both owner tokens; `format_version` init=False
+defaults 2/1. All 12 issue-named tests present (19 test functions total, 7 beyond
+the issue minimum). Isolation: zero references to `admission_identity` outside the
+module and its test, no `maistro.runs.__init__` export, zero suppressions.
+
+#1841 anchors verbatim in-tree: `store_boundary.py:56 require_admitted_actor(
+actor_principal_id: str | None) -> str`; `store.py:537 get_run(..., principal_id:
+str | None = None) -> Run | None`; `actor_principal_id: str | None = None` retained
+on create_run/claim_run_by_effect; `model.py:300 Run.actor_principal_id`.
+
+Four red CI gates reproduced with CI exact argv, all root causes re-confirmed:
+
+1. exact-debt-ledger: `uv run python scripts/check-vulture-baseline.py packages/*/src
+   --min-confidence 60 --exclude '*/third_party/*'` rc=1 — 1328 findings, unclassified
+   0, never-allowlist 0 => candidate ledger scan-exact (the +5 in-tree rows match the
+   5 NEW identities one-for-one); rc=1 solely from the issue-mandated
+   AdmissionAssessment members at admission_identity.py:515-520 vs the TRUSTED base
+   ledger. Two-merge wall re-read in code (ratchet_provenance.py load_authorizations
+   docstring: "a new grant does not take effect in the change that introduces it...
+   two merges"); quality/ratchet-authorizations.json byte-identical to base; fresh
+   `git fetch origin develop` => origin/develop still exactly 3c761d14d, so no grant
+   landed upstream and the precondition is unsatisfiable from this branch.
+2. reachability: `scripts/check-reachability.py` rc=1 naming exactly
+   `maistro.runs.admission_identity` as the 1 newly unreachable module — the fix it
+   demands (a reachability-baseline entry or a call path) is issue-forbidden or
+   out-of-leaf respectively. check-reachability-dispositions rc=0 and
+   check-promotion-surface rc=0 (green).
+3. test: the 3 baseline-equals-tree self-checks fail (test_check_reachability.py::
+   test_baseline_matches_the_tree, test_reachability_baseline_identity.py::
+   test_the_committed_baseline_passes_the_gate_it_now_carries, ::test_the_baseline_
+   is_exactly_the_unreachable_set) — they demand the issue-forbidden
+   reachability-baseline entry.
+4. Coverage gate: downstream of the same unwired module via the --source=scripts
+   producer and needs-chain in quality.yml.
+
+Repair avenues closed against the issue text: removing enum members breaks the
+verbatim contract and its pinned tests; wiring/callers/re-exports/keep-alive
+imports/suppressions are explicitly forbidden; a candidate baseline update cannot
+grant itself permission; a grant added here is both forbidden and read from the
+base revision (futile); develop == base so there is nothing to merge; the vulture
+banking amendment is already complete and scan-exact (nothing to add or remove);
+the C2 runtime consumer and backend wiring are explicitly outside this leaf
+("Production activation is outside this leaf").
+
+Issue terminal state re-read verbatim: "If that integration is unavailable, report
+implementation/test readiness plus the explicit merge blocker and leave the stack
+unmerged. Do not claim the feature or parent #1845 is complete." PR #1936 open at
+exactly this head; issue #1851 open; no closure actions taken.
+
+Conclusion (sixth independent round, re-derived firsthand): no in-scope,
+issue-legal, mechanically-effective repair exists. The four reds ARE the
+issue-documented merge blocker for this unwired leaf; resolution requires the
+owner-landed reviewed vulture grant on develop (two-merge order) or the #1845
+integration head's real reviewed runtime consumer. Writer handoff MERGE-READY
+(handoff only, never integration approval); stack left unmerged. Note-only
+commit; no inventory delta (stays +79).
