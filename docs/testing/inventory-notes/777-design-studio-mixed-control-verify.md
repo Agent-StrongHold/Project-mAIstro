@@ -25083,3 +25083,81 @@ deselected, 0 failed** — matches rounds 137–191 exactly.
   #774/#776/#93/#95 + parent #773) and the issue stop condition
   forbids Design-Studio-private rebuild of any of them; nothing
   repairable in-tree this round. Inventory delta **+0** (Refs #777)
+
+## Round 193 (job a473fa5051be4b6c854e5cfcacf770a5, 2026-10-12) — independent re-verification at lane head bb6de5bd; first live mechanism proof of the serializer-schema regression
+
+Independent verifier/writer round at the lane-assigned head `bb6de5bd`
+(round 192's own committed verification), tree clean. Deterministic
+checks from the driver's referenced historical job were re-executed
+live; nothing taken from prior rounds on trust.
+
+Prior-artifact resolution: this job directory contains **no
+check-*.log** files and `manifest.json` records `checks: []` — the
+driver ran no deterministic check here. The lane's "Validation failed"
+pointer re-resolves to historical job `53d5e08b` `check-2.log` =
+`ruff format --check` failure on `agent_loop.py`; the repair commit
+`39090a4f` ("Repair: validated formatting and vulture baseline, tests
+pass") re-proven ancestor of HEAD (`git merge-base --is-ancestor` →
+true) and the live format check passes.
+
+Sync clean: merge-base(HEAD, origin/develop) == `3c761d14` == lane
+base, `rev-list HEAD..origin/develop` = 0 — no develop sync conflict;
+PR #1660 head `36548aa2` remains an ancestor of HEAD (open draft,
+unmerged).
+
+Dispatch snapshot re-extracted from `dispatch-context.json` (61
+sources, complete_for_scope): #777 open with **13/13 acceptance boxes
+unchecked** (13 `- [ ]`, 0 `- [x]`); Depends-on gates by exact source
+path #804/#805/#806 (persistent Workspace Agent + Goal reconciliation)
+OPEN, #53/#774/#776/#93/#95 OPEN, parent #773 OPEN, #39/#458/#775
+closed-completed, #94 not in snapshot (skipped); stop condition forbids
+a Design-Studio-private Agent runtime/Goal owner/reconciliation loop
+verbatim, and the first acceptance box itself requires consuming OPEN
+#804.
+
+In-tree claims re-proven live at HEAD: `grep -rnE "class (GoalReconcil|
+ReconciliationLoop|GoalOwner)" packages/*/src packages/hive-conductor/
+backend` → no match (**no private reconciler**, stop-condition
+compliant); `workspace_agent.py` 149 lines roster-only;
+`creative_graph.py` 731 lines under `packages/maistro-design`;
+`permission_source.py:79` still defers binding-scoped tool-use to #804;
+production diff vs base re-measured = `design_service.py` +1/−1
+(comment only), `agent_loop.py` +6/−2, `runs/model.py` +8/−2, test +15,
+`quality/vulture-baseline.json` −1; `system_prompt` reader re-verified
+live at `maistro_rsi/local_loop.py:817` inside
+`make_builders_apply_patch` (:751); removed `AgentLoopConfig.
+tool_definitions` has **zero remaining readers** in packages/ and
+tests/ (hive `tool_definitions` hits are an unrelated local in
+`chat_completion.py`).
+
+Battery re-executed live, all exit 0: `ruff check .` ("All checks
+passed!"); `ruff format --check .` (3282 files already formatted);
+vulture CI-exact (`packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'`) 1323 reviewed → 1322 findings, 0 unbanked, no
+ledger amendment; suite-inventory 17/17; backlog 167. Targeted pytest
+WITH live PG `maistro_test_777` @ 127.0.0.1:5433 (container
+`maistro-postgres` up ~6h healthy, DB at alembic `062` == repo head
+`062_audit_cursor_indexes`, `DATABASE_URL` + `MAISTRO_TEST_PG_DSN`
+set): cancellation-cause model **34 passed**, bootstrap `-k agent_loop`
+**40 passed/200 deselected**, hive backend `-k 'design or workspace or
+agent'` **559 passed/3086 deselected, 0 failed** — matches rounds
+137–192 exactly.
+
+**New this round** — first live mechanism proof that the round's one
+new test (`test_the_serialization_mode_schema_keeps_every_declared_
+field`) fails against the exact regression it names, per the "show a
+new test fails against the regression it names" rule: an isolated
+pydantic 2.13.5 experiment (no tree edits) shows a wrap serializer
+annotated `-> dict[str, Any]` collapses the serialization-mode JSON
+schema to `{"additionalProperties": true, "type": "object"}` — not
+even a `properties` key — while the unannotated serializer keeps all
+declared fields. The committed `runs/model.py` change (dropping the
+return annotation, `type: ignore[no-untyped-def]` for that one site)
+is therefore load-bearing for schema consumers, and the new test guards
+a real, reproducible collapse.
+
+- **Verdict: BLOCKED** — dependency-blocking (193rd round); all 13
+  acceptance boxes remain gated by OPEN owners (#804/#805/#806/#53/
+  #774/#776/#93/#95 + parent #773) and the issue stop condition
+  forbids Design-Studio-private rebuild of any of them; nothing
+  repairable in-tree this round. Inventory delta **+0** (Refs #777)
