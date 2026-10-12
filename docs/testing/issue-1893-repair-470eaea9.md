@@ -120,3 +120,57 @@ source as a test repair without new evidence or authority. No activation, fake
 imports, grant/gate edits, GitHub mutations or closure actions were performed.
 Progress: checked 1 issue, done 0 repairs, skipped 0 issues, errors 1 required
 gate; local handoff updated for commit.
+
+## Follow-up repair dispatch 8b2f9d3f6dc64bd881525a2d6e251343
+
+Starting HEAD: `5df212baae38ac7d03648fbbc85f055c147f3a65`, clean worktree.
+Verified supplied base and local `origin/develop` both resolve to
+`3c761d14db944a727fa0744444bc67cfe36d49f7`. There is no sync conflict.
+Frozen scope remains #1893 only; no remote issue/PR refresh or mutation.
+Read the current captured issue body, driver check-0 through check-4, prior
+result, complete codec/identity sources and both adjacent test files, workflow,
+and accepted ADRs 081226-a66b, 082526-7f02 and 083126-5e62. Reconciliation:
+immutable admission facts are not execution authority; an inactive B2 contract
+cannot acquire a fake consumer or authorize its own reachability debt.
+
+Independent execution (1200-second validation timeouts; logs `repair-*.log`
+in `/home/dev/maistro/jobs/8b2f9d3f6dc64bd881525a2d6e251343/`):
+
+- `uv sync --locked --extra dev`: PASS.
+- Re-executed all eight commands in the original evidence table above.
+  Vulture PASS: 1323 reviewed identities, zero unclassified. Provenance FAIL:
+  `repair-provenance.log:20-29` rejects the two new admission modules and their
+  dispositions against the verified base. No Vulture amendment is warranted.
+- Focused pytest: **201 passed, 3 skipped in 1.28s**, 204 nodes. The three
+  PostgreSQL cases skip at `test_admission_codec.py:470` for missing DSNs.
+- Ruff check/format, scoped mypy, shipped-surface and suite inventory PASS:
+  3277 formatted files, two typed source files, 16466 unique core test nodes.
+- `rg -n 'admission_codec|admission_identity' packages/maistro-core/src` finds
+  only the defining codec's references and the Vulture whitelist import.
+  The provenance gate independently confirms both modules remain unreachable.
+
+The acceptance audit above remains applicable to this independently executed
+head: strict decoding, immutable representation, header separation and legacy
+fail-closed tests pass, but no reachable production admission is proven.
+Live migrated PostgreSQL/raw-versus-production pools, DB identities/row counts,
+actual-model evidence-json materialization and fingerprinting, Run JSONB object
+insertion, authorized principals/Workspace/Project/Graph, and full integration
+CI are **UNVERIFIED** this round. No mutation experiment or new regression test
+was performed; no tests changed, so there is no inventory delta. Existing work,
+including historical inventory notes and all ledgers, is preserved.
+
+Extracted captured `test` checks once into `repair-supplied-test-checks.json`.
+The only failed check is still for dependency SHA
+`3f2c79a70d9e1b0b6b6ffc99562cb35db5326828`; its output title, summary and text
+are null. No assigned-head traceback was supplied. CI's separate `test` job
+excludes core tests (`.github/workflows/ci.yml:574-589`), so this focused run
+cannot be reported as repairing that job.
+
+**BLOCKED; no source repair justified.** Required next action is unchanged:
+owner-mediated trusted-base authorization or separately scoped consumer
+integration, and an assigned-head failing test step/traceback. The permitted
+Vulture-ledger exception does not extend to reachability policy. Do not repeat
+this unchanged dispatch expecting a different outcome. Only this evidence
+appendix is changed for local commit; no source, test, gate, grant, activation
+or closure changes. Progress: checked 1, done 0 repairs, skipped 0 issues,
+errors 1 mandatory gate; next: owner resolution of the authorization blocker.
