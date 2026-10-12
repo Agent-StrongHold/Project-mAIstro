@@ -7004,3 +7004,68 @@ re-derived firsthand at the exact assigned head, none assumed from notes.
   real reviewed runtime consumer plus trusted-base authorizations. Writer
   handoff MERGE-READY (handoff only, never integration approval). Note-only
   commit; front-matter delta stays +79.
+
+## Round 99 (repair job e68c940db5ce4a9dbd69e9a9f0cd8845, head 547e9fbae1e8) — independent re-verification, zero edits
+
+Everything below was re-derived firsthand in this round; no prior-round claim
+was assumed. Starting head equals the assigned 547e9fbae1e8 (tree clean);
+origin/develop re-fetched = merge base 3c761d14db94 (zero drift); branch diff
+vs base is exactly the 4 declared surfaces, `quality/` delta exactly
+vulture-baseline.json +5/-0, `runs/__init__.py` diff empty.
+
+- Driver deterministic checks in this job's own logs: 5/5 rc=0 (sync; repo
+  ruff check "All checks passed"; repo format --check 3275 files; leaf pytest
+  79/79; suite inventory ok — core suite 16341 node IDs matching the recorded
+  inventory, so the front-matter delta stays +79 with no update).
+- Leaf acceptance re-executed in-round: pytest 79/79; module mypy "Success";
+  live-import contract spot-checks all conformant (`__all__` set-exact 21;
+  `AdmissionAssessment` exact 6 members/values on StrEnum; frozen+slots on
+  CanonicalJsonObject + all 16 record classes; `owns` exact 3-way conjunction
+  incl. the roles-equal case, roles never compared to each other;
+  `owner_token` absent from repr with generation printable; empty variants
+  carry no truthiness override; CanonicalJsonObject canonicalizes sorted/
+  compact with canonical-only retention and rejects duplicate keys at depth,
+  non-finite numbers, non-object roots and non-string input).
+- All 12 issue-named tests present (grep count 12); ownership/roles tests
+  spot-read: real assertions over every degenerate path, not hollow.
+- exact-debt-ledger rc=1 re-produced with CI exact argv
+  (vulture-ratchet.yml:82-85 = quality.yml:1078-1081): scan 1328,
+  unclassified 0 => the branch ledger is scan-exact and the lane-permitted
+  amendment is already applied (the 5 admission_identity rows are in the
+  branch ledger); rc=1 is solely the 5 NEW-vs-trusted-base identities
+  admission_identity.py:515-520, with `load_authorizations` reading the base
+  (check-vulture-baseline.py:274) and zero admission_identity grants at base
+  or branch — the two-merge wall, and the gate's own message says a branch
+  `--update` cannot authorize. Removal of the members is issue-forbidden
+  (fixed 21-name `__all__`, exact 6-member enum).
+- check-reachability rc=1 naming exactly `maistro.runs.admission_identity`
+  (its suggested baseline fix is issue-forbidden); dispositions rc=0 (49
+  groups / 169 modules); promotion-surface rc=0.
+- ci.yml `test` failure set re-derived firsthand at CI-equivalent env
+  (RATCHET_BASE_REV=origin/develop): exactly the 3 baseline-equals-tree
+  self-checks fail (tests/test_reachability_baseline_identity.py x2,
+  tests/test_check_reachability.py::test_baseline_matches_the_tree), each
+  showing `maistro.runs.admission_identity` as the extra/unbaselined module;
+  the coverage gate is mechanically downstream (quality.yml:499 needs
+  coverage-unit; its combine step re-runs `pytest tests/` at 712-713).
+- Isolation + anchors: zero source files reference `admission_identity`
+  outside the module (repo grep rc=1/no match), no `maistro.runs` export;
+  #1841 anchors re-verified at this head (store_boundary.py:56
+  `require_admitted_actor(actor_principal_id: str | None)`; store.py:537
+  `get_run(..., principal_id=...)`, actor guard enforced at store.py:921/1323
+  with signatures at 507/563; model.py:300/320-321).
+- Evidence hygiene: PR #1936 open at this head, body "Refs #1851" only, zero
+  closure keywords; issue comments through the 03:28Z capture are automation
+  markers only; issue body re-read verbatim — fake callers, baseline
+  additions, grants, waivers and gate changes remain forbidden, and the
+  stated terminal state for an unavailable integration is "report
+  implementation/test readiness plus the explicit merge blocker and leave
+  the stack unmerged."
+- Conclusion: unchanged and now independently re-proven — no in-scope,
+  issue-legal, mechanically-effective repair exists. Explicit merge blocker:
+  the leaf is unreachable-by-design until the separately scoped #1845
+  integration lands a real reviewed runtime consumer (which reclassifies both
+  the vulture and reachability identities) plus trusted-base authorizations
+  under the two-merge ratchet. Writer handoff MERGE-READY (handoff only,
+  never integration approval); stack correctly left unmerged. Note-only
+  commit; front-matter delta stays +79.
