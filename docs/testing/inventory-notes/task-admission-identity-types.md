@@ -7146,3 +7146,78 @@ code or ledger edits). Nothing was assumed from prior rounds:
   authorizations under the two-merge ratchet. Writer handoff MERGE-READY
   (handoff only, never integration approval); stack left unmerged.
   Note-only commit; front-matter delta stays +79.
+
+## Round-101 independent re-verification (job 804097703d2242b7a63596cb4d2e3a9f)
+
+Fresh firsthand deep review at the unchanged assigned head `ac9dea492919`
+(branch `auto-1851`, merge base `3c761d14db94`); resolves the carried
+NEEDS-DEEP-REVIEW block. Every claim below was re-derived and executed in this
+round; none assumed.
+
+- Driver checks 5/5 rc=0 in this job's logs (sync, ruff check, ruff format
+  --check, focused pytest, per-suite inventory).
+- Leaf acceptance re-executed: 79/79 focused pytest; ruff check/format clean on
+  module+tests; module mypy `Success`; full `check-suite-inventory.py` ok (17
+  suites, 31208 unique identities; recorded matches tree => front-matter delta
+  stays +79, no update).
+- ~70-assertion live contract probe via import, all conformant: `__all__`
+  set-exact 21; 17/17 dataclasses frozen+slots; exact 6-member
+  `AdmissionAssessment` StrEnum names/values; CanonicalJsonObject canonical
+  sorted/compact retention with duplicate-key (nested), NaN/Infinity, 1e999
+  overflow, non-object root, trailing garbage and non-string input rejected;
+  non-nil-UUID-only with strings rejected; frozen mutation raises
+  FrozenInstanceError; exact 3-way `owns` conjunction incl. cross-role
+  negatives and the roles-coincide case; owner_token field omitted from repr
+  with generation_id printable; binding.receipt_id must equal
+  envelope.receipt_id (mismatch rejected); ack requires binding and >=
+  creation; legacy lease not clamped; Claimed/Replayed/Pending/LegacyUnresolved
+  guards; `created` must be a real bool and snapshot run_id must match; five
+  empty variants default-truthy with no `__bool__`. One probe flag was a
+  probe-authoring error (mislabeled binding-receipt case), corrected in-round;
+  the module is correct.
+- All 12 issue-named tests present; spot-read meaningful (cross-role negatives,
+  roles-coincide, field-omission repr check).
+- exact-debt-ledger rc=1 reproduced with CI exact argv (vulture-ratchet.yml:82
+  -85 = quality.yml:1078-1081): scan 1328, unclassified 0 => branch ledger is
+  scan-exact (+5 rows are banking, not authorization); rc=1 solely from the 5
+  NEW-vs-trusted-base AdmissionAssessment identities
+  admission_identity.py:515-520; two-merge wall confirmed in code
+  (check-vulture-baseline.py:274 loads authorizations from the base) and data
+  (zero admission_identity grants at branch or base). Every mechanical fix is
+  issue-forbidden (grants, member removal, fake callers).
+- check-reachability rc=1 naming exactly `maistro.runs.admission_identity`;
+  dispositions rc=0; promotion rc=0.
+- CI `test` failure set re-derived by executing the two self-check files:
+  3 failed / 36 passed
+  (tests/test_check_reachability.py::test_baseline_matches_the_tree;
+  tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries
+  and ::test_the_baseline_is_exactly_the_unreachable_set), each set-diff
+  exactly the module — the issue-forbidden reachability-baseline entry.
+  Coverage gate mechanically downstream (quality.yml:499 needs coverage-unit;
+  combine re-runs the root suite at quality.yml:712-713). Full root suite not
+  re-run end-to-end this round; code content is unchanged since the round-97
+  end-to-end run except docs commits.
+- Isolation: branch diff = exactly 4 surfaces (module, test file, inventory
+  note, vulture-baseline +5); zero references to admission_identity outside
+  the module and its test; no maistro.runs.__init__ export; tasks/idempotency
+  diff empty.
+- #1841 anchors re-verified in-tree: store_boundary.py:56
+  require_admitted_actor(actor_principal_id: str | None) -> str; store.py:537
+  get_run(self, run_id, *, principal_id=None) -> Run | None with actor params
+  at 507/563 and the admitted-actor guard enforced at 921; model.py:300 stores
+  and 320-321 validates actor_principal_id. The note's recorded accepted #1841
+  head 053f9396 is the develop-side merge commit of PR #1841 (PR head
+  c66c5c8f, merged 2026-10-03T13:37Z) — same accepted change.
+- Evidence hygiene: zero closure keywords across all 195 branch commit
+  messages and the PR #1936 body ("Refs #1851" only); PR #1936 OPEN at this
+  exact head (live refresh); issue #1851 OPEN (live gh); no closure actions.
+  origin/develop read from the local remote-tracking ref = 3c761d14db94 (the
+  merge base; no fetch/pull under the verifier read-only rule; the 04:18Z
+  dispatch capture recorded the same base).
+- Conclusion: re-proven independently — no in-scope, issue-legal,
+  mechanically-effective repair exists. Explicit merge blocker stands: the
+  leaf is unreachable-by-design until the separately scoped #1845 integration
+  lands a real reviewed runtime consumer plus trusted-base authorizations
+  under the two-merge ratchet. Writer handoff MERGE-READY (handoff only,
+  never integration approval); stack left unmerged. Note-only commit;
+  front-matter delta stays +79.
