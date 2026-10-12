@@ -7301,3 +7301,66 @@ claim below was re-derived and executed firsthand in this round; none assumed.
   under the two-merge ratchet. Writer handoff MERGE-READY (handoff only,
   never integration approval); stack left unmerged. Note-only commit;
   front-matter delta stays +79.
+
+## Round 103 — CI-repair re-verification at unchanged f3e55209b8ab (job bdd93fe3499e47b7882992a76cdb9b81)
+
+Repair round dispatched against the four recorded merge-queue failures
+(exact-debt-ledger, test, Quality gate, Coverage gate) with the standard vulture
+lane brief; the carried block was a NEEDS-DEEP-REVIEW escalation. Every claim
+below re-derived firsthand at this exact head; driver checks 5/5 rc=0 in this
+job's own logs (check-0..4: sync, ruff "All checks passed!", format "3275 files
+already formatted", focused pytest 79 passed, suite inventory ok).
+
+- Leaf acceptance re-executed: focused suite 79/79 passed (rerun); module mypy
+  `Success: no issues found in 1 source file`; live contract probe conformant
+  (`__all__` set-exact 21, `AdmissionAssessment` exactly
+  MISMATCH/REPLAYED/PENDING/TAKEOVER/REPLACE_EXPIRED/LEGACY_UNRESOLVED,
+  17/17 frozen+slots); full-inventory `ok: 1 suite(s) match the recorded
+  inventory` (driver check-4) => front-matter delta stays +79, no update.
+- Lane-brief vulture repair executed with CI exact argv
+  (`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`): rc=1, scan total 1328, unclassified 0 =>
+  candidate ledger is scan-exact; the only delta vs the trusted base is exactly
+  the five issue-mandated `AdmissionAssessment` members at
+  admission_identity.py:515-520. Brief action 1 ("fix what is genuinely dead"):
+  nothing is genuinely dead — the issue text fixes the enum to exactly these
+  six member/value pairs and the suite pins them (test lines 155-160); no fix
+  eliminated anything. Brief action 2 (amend the ledger for reviewed retained
+  identities): already applied — `git diff --numstat <base> -- quality/` =
+  exactly vulture-baseline.json +5/-0 with the five rows banked; re-amending is
+  a byte-level no-op and removing them would break scan-exactness. Verified
+  no-op on both prongs.
+- Two-merge wall re-proven in code and data: `check-vulture-baseline.py:274`
+  `load_authorizations(RATCHET, base=trusted_ref.base_sha)`; grep -c
+  "admission_identity" in `quality/ratchet-authorizations.json` = 0 at head and
+  0 at base 3c761d14db94. `origin/develop` fetched = 3c761d14db94 = merge base
+  (zero drift; no sync conflict to resolve).
+- Remaining exact-debt-ledger steps re-run: `check-ratchet-provenance.py` rc=1
+  solely via `check-reachability-provenance.py` (contract-markers 358/358 OK,
+  enumerations OK, lifecycle OK); `check-shipped-surface-truth.py` rc=0;
+  `check-reachability-dispositions.py` rc=0 (49 groups / 169 modules).
+- `check-reachability.py` rc=1 naming exactly `maistro.runs.admission_identity`
+  (NEW unreachable) — the leaf is unwired by issue mandate; the gate's
+  suggested fix (a reachability-baseline entry) is issue-forbidden ("No fake
+  callers, baseline additions, grants, disabled gates or quality waivers are
+  permitted").
+- test-job failure set re-derived on the self-check files
+  (`tests/test_reachability_baseline_identity.py`,
+  `tests/test_check_reachability.py`, CI env): 3 failed / 36 passed — exactly
+  `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set`,
+  `test_baseline_matches_the_tree`, whose set-diff is the module and whose
+  demanded fix is the same forbidden baseline entry; Coverage gate remains
+  mechanically downstream of the same root suite (quality.yml:499/712-713).
+- Isolation re-verified: `git diff --name-status <base>..HEAD` = exactly the
+  four manifest surfaces (module, test, inventory note, vulture-baseline.json).
+- Evidence hygiene: PR #1936 OPEN, body "Refs #1851" only, zero closure
+  keywords; issue #1851 OPEN; no closure actions taken.
+- Conclusion: unchanged after firsthand re-derivation — no in-scope,
+  issue-legal, mechanically-effective repair exists. The explicit merge blocker
+  stands: green CI requires external owner action (an owner-landed reviewed
+  vulture grant on develop — the grant must precede the change under the
+  two-merge ratchet — or the #1845 integration head wiring a real reviewed
+  runtime consumer, which also resolves the reachability reds). Writer handoff
+  MERGE-READY (handoff only, never integration approval); stack left unmerged.
+  Note-only commit; front-matter delta stays +79.
