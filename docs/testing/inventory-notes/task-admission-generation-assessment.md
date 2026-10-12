@@ -5572,3 +5572,116 @@ battery re-executed first-hand — nothing taken from earlier rounds on trust:
   in-lane repair exists. Verdict unchanged: writer handoff MERGE-READY on
   leaf acceptance; the stack stays unmerged pending the separately-scoped
   #1845 integration consumer.
+
+## Round-77 verify+repair revalidation at head c7ba94aae75b (2026-10-12)
+
+Fresh CI-repair dispatch (job 6e8cb828d17949189143e652d9a796e0), head
+unchanged at c7ba94aae75b500b22d177e44be2cc917507f027, base 3c761d14db94
+(origin/develop = merge-base, re-verified with `git rev-parse` and
+`git merge-base`). The previous job 806e6e6e7c75 died on a provider timeout
+AFTER its driver battery completed 5/5 rc=0 — no check failure existed
+there; the round's "worker requested attention: BLOCKED" is resolved here by
+re-establishing, with first-hand evidence, that no sanctioned in-lane repair
+exists.
+
+- **Driver battery 5/5 rc=0** (job check-0..4.log): `uv sync --locked
+  --extra dev`, repo ruff check, repo ruff format --check (3277 files),
+  focused trio 315 passed, suite inventory 16468 IDs ok.
+- **exact-debt-ledger reproduced leg-by-leg at CI exact argv**
+  (`vulture-ratchet.yml` exact-debt-ledger job, `RATCHET_BASE_REV=origin/
+  develop`): lane-brief vulture repair loop **EMPTY for the 77th
+  consecutive round** — `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` rc=0, 1323 reviewed
+  identities -> 1323 findings, unclassified=0, never_allowlist=0: no
+  unbanked identity, nothing genuinely dead, **no
+  quality/vulture-baseline.json amendment due**; shipped-surface leg rc=0
+  ("matrix is complete"); provenance leg rc=1 **SOLELY** via the
+  reachability sub-ratchet (169 -> 171 naming `maistro.runs.
+  admission_identity` + `maistro.tasks.admission_generation` as NEW
+  unreachable), with adr-status-language, citation-status,
+  promotion-surface, reachability-dispositions, shell-execution,
+  contract-markers, enumerations and lifecycle all OK.
+- **Two-merge blocker re-proven at source**: `scripts/ratchet_provenance.py`
+  `load_authorizations` reads grants from the BASE revision ("a new grant
+  does not take effect in the change that introduces it. Authorizing a
+  floor-raise is now two merges"); origin/develop carries 0 reachability
+  grants naming either module, so no in-branch grant could authorize this
+  movement even if the issue permitted one — and the issue explicitly
+  forbids baseline rows, grants, dummy callers and waivers for exactly this
+  leaf state.
+- **Quality-gate pillars re-measured first-hand**: `check-reachability.py`
+  rc=1 naming exactly the two leaf modules (reachability-baseline.json has
+  0 admission rows); `check-reachability-dispositions.py` rc=0;
+  `check-promotion-surface.py` rc=0; `check-radon-baseline.py` rc=0
+  (137 -> 137); xenon at the CI-exact argv (quality.yml:1007-1013, all ten
+  publish-set src trees, `-i third_party`, B/B/A) 139 block violations
+  <= 145 baseline with 0 module-rank and 0 average violations;
+  `check-convergence-matrix.py` rc=0 (1396 modules, 169 attributed).
+- **test-job red reproduced without the full root-suite run**: the three
+  CI-visible failures are exactly `tests/test_check_reachability.py::
+  test_baseline_matches_the_tree`, `tests/test_reachability_baseline_
+  identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  and `::test_the_baseline_is_exactly_the_unreachable_set` (36 others in
+  those two files pass; each failure message names only the two leaf
+  modules). The 4th local-only failure re-confirmed at its exact node:
+  `tests/test_branch_independence_repository.py::
+  test_every_quality_json_state_surface_is_classified_once` fails only on
+  `unclassified quality state: quality/ac-state.json` — gitignored
+  residue (`git check-ignore` -> `.gitignore:81`), absent from CI
+  checkouts; `tests/test_check_ac_state.py` itself passes 112P.
+- **Coverage gate re-attributed**: the producer leg (quality.yml:713,
+  `pytest tests/ ...` after the package producers) dies on the same 3
+  meta-tests; the diff-coverage leg measured GREEN first-hand —
+  `coverage run --branch --source=packages/maistro-core/src/maistro` over
+  the focused trio (315P), `coverage xml`, then
+  `check-diff-coverage.py /tmp/coverage-focused.xml --base 3c761d14db94`
+  rc=0: 3 changed source files measured (`packs.py`,
+  `admission_identity.py`, `admission_generation.py`), every one at or
+  above the 90% lines / 80% branch floors, `_vulture_whitelist.py`
+  exempt by the script's own declaration ("no coverage producer measures
+  this tree") and the three test files exempt as test code.
+- **Acceptance battery re-executed**: identity+idempotency pair 140P
+  (`test_root_admission_identity.py` + `tasks/test_idempotency.py`);
+  `mypy packages/maistro-core/src/maistro/tasks/admission_generation.py`
+  Success; scoped ruff check + format --check clean on the module and its
+  test file; all 10 issue-named tests present in
+  `test_admission_generation_assessment.py` (`test_assessment_matrix`,
+  `test_exact_replay_deadline_replaces_generation_for_same_and_changed_
+  payload`, `test_changed_payload_one_microsecond_before_expiry_remains_
+  mismatch`, `test_lease_takeover_does_not_mean_replay_window_replacement`,
+  `test_bound_unacknowledged_admission_replays_after_lease_expiry`,
+  `test_legacy_pending_never_takes_over_inside_window`,
+  `test_expired_legacy_pending_is_replaceable_without_inventing_old_
+  identity`, `test_assessment_leaves_record_and_all_snapshot_bytes_
+  unchanged`, `test_invalid_assessment_inputs_are_rejected`,
+  `test_existing_live_claim_flow_does_not_import_v2_classifier`).
+- **All four issue-named mutation classes KILLED first-hand** via a /tmp
+  `-p` plugin in fresh subprocesses (zero tree writes) patching BOTH
+  `sys.modules['maistro.tasks.admission_generation']` and the parent
+  package attribute: swap TAKEOVER/REPLACE_EXPIRED **57F**,
+  lease-before-binding **15F**, legacy-as-v2 **17F**,
+  mismatch-before-expiry **29F**; identical-source control through the
+  same plugin **132P**. Two plugin-authoring pitfalls were hit and
+  corrected this round (both recorded for future rounds): the control
+  branch must capture the original `_assess` reference BEFORE the plugin
+  overwrites the module attribute (a post-overwrite delegation recurses
+  into the mutant), and it must delegate BEFORE running the wrapper's own
+  validation, otherwise the production `ValueError` texts are shadowed and
+  7 rejection tests fail spuriously (observed as 102F then 7F control
+  drafts before the corrected 132P).
+- **Integrity re-checks**: `git diff --numstat origin/develop -- quality/`
+  empty; `tasks/idempotency.py`, the touched `__init__.py` files and
+  `scripts/` zero-diff vs base; the only non-leaf importer under
+  `packages/*/src` is `_vulture_whitelist.py:105` (the classification
+  surface, not a runtime consumer — proven by reachability still naming
+  both modules unreachable); no issue-closure keyword in any of the 144
+  branch commits since develop; the `packs.py` delta vs base is the
+  C1-scope M9-B2 extension-identity collision guard, unrelated to the
+  classifier blockers.
+- All four CI reds at this head reduce to the single issue-sanctioned
+  unwired-leaf blocker. The issue forbids in-lane callers, baseline rows,
+  grants, waivers and suppressions for exactly this state, and the one
+  permitted amendment lane (vulture) has an empty fix-list, so no
+  sanctioned in-lane repair exists. Verdict unchanged: writer handoff
+  MERGE-READY on leaf acceptance; the stack stays unmerged pending the
+  separately-scoped #1845 integration consumer.
