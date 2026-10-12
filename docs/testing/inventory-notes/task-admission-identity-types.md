@@ -7364,3 +7364,59 @@ already formatted", focused pytest 79 passed, suite inventory ok).
   runtime consumer, which also resolves the reachability reds). Writer handoff
   MERGE-READY (handoff only, never integration approval); stack left unmerged.
   Note-only commit; front-matter delta stays +79.
+
+### Round 104 — independent re-verification at unchanged cff2f664f066 (job af0d9714143e48bdb36d196b824d07e0)
+
+- Driver checks 5/5 rc=0 in this job's logs (`check-0..4.log`): uv sync, ruff
+  check, ruff format, focused pytest, suite-inventory match.
+- Leaf acceptance re-executed firsthand: 79/79
+  `pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q`;
+  ruff check + `format --check` clean on both surfaces; module mypy `Success`;
+  `check-suite-inventory.py` ok — 17 suites / 31208 node IDs match the recorded
+  baseline, so the front-matter delta stays `+79`; no inventory update.
+- Contract conformance re-derived by source read: `__all__` set-exact 21;
+  `CanonicalJsonObject` rejects duplicate keys (any depth), NaN/Infinity,
+  1e999-overflow, non-object roots and non-string input, stores only the
+  canonical dumps string; all DTO field orders/annotations exact per issue;
+  `owns()` the exact 3-way conjunction; legacy record validates type/range only
+  (no lease<=expiry clamp); empty variants carry no `__bool__`;
+  `AdmissionAssessment` exactly the 6 issue-fixed member/value pairs;
+  `owner_token` `field(repr=False)` on ticket and v2 record. All 12 issue-named
+  tests present and spot-read meaningful (fencing negatives incl. cross-role
+  generation/owner, role coincide/differ, repr field-omission with coincide
+  case, `created` bool rejection of 0/1/"true"/None).
+- exact-debt-ledger rc=1 re-derived with CI exact argv (quality.yml:1078-1081,
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`): scan 1328, unclassified 0 => branch ledger scan-exact;
+  rc=1 solely from the 5 NEW-vs-trusted-base `AdmissionAssessment` identities
+  (admission_identity.py:515-520); two-merge wall re-proven in code
+  (check-vulture-baseline.py:274 loads authorizations from the base SHA);
+  `quality/ratchet-authorizations.json` byte-identical to base 3c761d14d with
+  zero admission_identity grants at head and base; `vulture-baseline.json`
+  +5/-0 is scan-exact banking, not authorization.
+- `check-reachability.py` rc=1 naming exactly `maistro.runs.admission_identity`
+  (suggested baseline entry is issue-forbidden);
+  `check-reachability-dispositions.py` rc=0; `check-promotion-surface.py` rc=0;
+  `check-shipped-surface-truth.py` rc=0; `check-ratchet-provenance.py` rc=1
+  solely via the reachability ratchet (contradictions, citations,
+  promotion-path, dispositions, shell, contract markers all OK).
+- Test-job failure set re-derived firsthand: `pytest
+  tests/test_reachability_baseline_identity.py tests/test_check_reachability.py
+  tests/test_no_placeholder_modules.py -q` => 3 failed / 40 passed — exactly
+  the baseline-equals-tree self-checks whose set-diff is the module and whose
+  demanded fix is the same forbidden baseline entry; Coverage gate remains
+  mechanically downstream (quality.yml:499 needs-chain, 712-713 root producer).
+- Isolation re-verified: `git diff --numstat <base>..HEAD` = exactly the four
+  manifest surfaces; zero `admission_identity` references outside the module
+  and its test; no `maistro.runs.__init__` export; #1841 anchors in-tree
+  (store_boundary.py:56, store.py:507/563/921, model.py:300/320-321).
+- Evidence hygiene: live `gh pr view 1936` refresh — OPEN at cff2f664f066,
+  body "Refs #1851" only; zero `fixes/closes/resolves` keywords across all 198
+  branch commit messages; issue #1851 OPEN; no closure actions taken.
+- Conclusion: unchanged after firsthand re-derivation — no in-scope,
+  issue-legal, mechanically-effective repair exists for the four merge-queue
+  reds; they are the issue-documented merge blocker, resolvable only by an
+  owner-landed reviewed vulture grant on develop (two-merge order) or the
+  #1845 integration head wiring a real reviewed runtime consumer. Writer
+  handoff MERGE-READY (handoff only, never integration approval); stack left
+  unmerged. Note-only commit; front-matter delta stays +79.
