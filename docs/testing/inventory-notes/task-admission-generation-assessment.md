@@ -5063,3 +5063,66 @@ first-hand this round, not inherited from prior rounds.
   issue-sanctioned unwired-leaf blocker with no sanctioned in-lane
   repair; stack stays unmerged pending the separately-scoped #1845
   integration consumer.
+
+## Round-70 independent verify (job fd67d376ffc1434e9579e3c1997f82dc)
+
+Independent verifier re-derivation at head `69411c78f7ae` (base
+`origin/develop` `3c761d14db94`). All evidence below first-hand this round;
+prior rounds' claims were re-executed, not trusted.
+
+- Driver deterministic battery 5/5 rc=0 (check-0..4: `uv sync --locked
+  --extra dev`; `ruff check .`; `ruff format --check .` 3277 files; focused
+  trio **315P**; `check-suite-inventory.py --suite
+  packages/maistro-core/tests` 16468 IDs, 0 duplicates). Prior verify job
+  (c59495b066c5) failed on a provider timeout with all five checks rc=0 —
+  no check failure existed to repair.
+- Acceptance battery re-executed: focused **132P**
+  (`test_admission_generation_assessment.py`), **140P**
+  (`test_root_admission_identity.py` + `test_idempotency.py`),
+  **110P** (`test_pack_contracts.py`); ruff check, ruff format --check and
+  mypy clean on the classifier + suite; all 10 issue-named tests present;
+  full `check-suite-inventory.py` rc=0 (17 suites, 31335 unique IDs,
+  0 duplicates).
+- exact-debt-ledger reproduced leg-by-leg at CI exact argv
+  (`.github/workflows/vulture-ratchet.yml:59-85`) with
+  `RATCHET_BASE_REV=origin/develop`: `check-shipped-surface-truth.py` rc=0;
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=0 (1323 -> 1323, unclassified=0, never_allowlist=0);
+  `check-ratchet-provenance.py` rc=1 **SOLELY** via reachability 169 -> 171
+  naming exactly `maistro.runs.admission_identity` +
+  `maistro.tasks.admission_generation`; all 8 sibling sub-ratchets OK.
+  Direct gates: `check-reachability.py` rc=1 naming exactly the two
+  modules; `check-reachability-dispositions.py` rc=0; 
+  `check-promotion-surface.py` rc=0. The red is the issue-sanctioned
+  unwired-leaf blocker, structurally unfixable in-lane:
+  `quality/ratchet-authorizations.json` carries zero reachability grants
+  for either module on develop (11 entries, 0 admission) and on this
+  branch (identical 11), and `load_authorizations` reads grants **from the
+  base revision** (`scripts/ratchet_provenance.py:478`), so a grant added
+  here is inert — while issue #1852 forbids grants, baselines,
+  dispositions, fake callers and waivers outright.
+- All four issue-named regression mutations killed in-memory (pytest `-p`
+  plugin exec()ing mutated source into
+  `sys.modules['maistro.tasks.admission_generation']` before collection;
+  zero tree writes; byte-identical control through the same harness
+  **132P**): swap TAKEOVER/REPLACE_EXPIRED -> **50F**; lease-before-binding
+  -> **16F**; legacy-treated-as-v2 (LEGACY_UNRESOLVED row short-circuited
+  to False) -> **10F**; mismatch-before-expiry -> **22F**.
+- Scope containment re-proven: `git diff --numstat origin/develop --
+  quality/` empty (the round-65-era baseline tampering at 3b7444774 was
+  reverted at 4b5c5b2cf and `quality/` is byte-identical to develop); no
+  production importer of `admission_generation` or `admission_identity`
+  under `packages/*/src` or `hive-conductor/backend` (grep clean; only the
+  C2 module itself and the C1-scoped `_vulture_whitelist.py` reference
+  them); `tasks/__init__.py`, `tasks/idempotency.py`, `tasks/queue.py`
+  zero-diff; the whitelist/packs.py deltas belong to the C1 leaf (#1851,
+  commit 9a15e6830), not this leaf's three commits.
+- Closure-keyword scan: PR #1941 body ("Refs #1852") and all 137 commit
+  messages on the branch contain no `fixes/closes/resolves #N`; issue
+  #1852 remains open; CONVERGENCE-MATRIX rows honestly mark both modules
+  newly unreachable and not baselined.
+- Verdict: writer handoff MERGE-READY on leaf acceptance — implementation
+  and test readiness proven first-hand; the exact-debt-ledger red is the
+  one documented, issue-mandated unwired-leaf blocker with no sanctioned
+  in-lane repair; stack stays unmerged pending the separately-scoped #1845
+  integration consumer. Head CI status remains UNVERIFIED from this lane.
