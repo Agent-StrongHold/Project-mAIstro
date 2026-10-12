@@ -7971,3 +7971,60 @@ the owner-landed reviewed vulture grant on develop (two-merge order) or the
 #1845 integration head's real reviewed runtime consumer. Writer handoff
 MERGE-READY (handoff only, never integration approval); stack left unmerged.
 Note-only commit; no inventory delta (stays +79).
+
+## Round 114 (job 61113945f5024e5da22c8fc514443112, head 56b9dec24363496d5200f592793bb99200a4cab3, base 3c761d14db944a727fa0744444bc67cfe36d49f7)
+
+Ninth independent verification round; every load-bearing claim re-derived
+firsthand in this job, nothing trusted from prior rounds.
+
+- Worktree clean at the exact manifest head; diff vs base remains exactly the
+  four manifest surfaces (module 520 lines, focused tests 660 lines, this
+  note, vulture-baseline +5 rows).
+- Fresh `git fetch origin`: `origin/develop` STILL == merge base
+  3c761d14db944a727fa0744444bc67cfe36d49f7 — no upstream grant landed, no
+  develop sync conflict exists, and the two-merge wall remains fully closed.
+- Driver checks 5/5 green (this job's check-0..4 logs): uv sync, ruff check,
+  ruff format --check, 79/79 focused pytest, suite inventory ok 16341 =>
+  front-matter delta stays +79.
+- Leaf acceptance re-executed firsthand: 79/79 pytest (re-run), mypy Success
+  on the module, `__all__` set-exact 21 names, AdmissionAssessment verified
+  verbatim 6 member/value pairs, all 16 dataclasses frozen+slots, `owns()`
+  3-way conjunction (admission_identity.py:308-314), field(repr=False) x2
+  with owner token absent from repr while generation id still prints, all 12
+  issue-named tests present, zero production references to
+  `admission_identity` and no `maistro.runs.__init__` export.
+- exact-debt-ledger re-reproduced with CI exact argv: rc=1. Banking re-proven
+  complete at the JSON level: candidate `rules[]` banks 1328 findings
+  (pydantic-declarative-field rule carries the 5 admission rows,
+  vulture-baseline.json:283-287) == 1328 scan findings, unclassified 0,
+  never_allowlist 0; trusted base ledger banks 1323 => the sole residual is
+  exactly the 5 issue-mandated AdmissionAssessment identities failing the
+  AUTHORIZATION check ("land a reviewed grant first" — gate output verbatim).
+  Mandated ledger procedure re-resolves to a verified no-op: none of the five
+  is genuinely dead, all five are retained/already amended, nothing to
+  remove. `load_authorizations` (ratchet_provenance.py:478-503) reads grants
+  from the base revision (two-merge rule verbatim in the docstring);
+  `quality/ratchet-authorizations.json` byte-identical to freshly fetched
+  origin/develop.
+- check-reachability rc=1 naming exactly `maistro.runs.admission_identity`;
+  dispositions and promotion-surface gates rc=0. Its only suggested fix (a
+  reachability-baseline entry) is issue-forbidden.
+- test job mechanism re-reproduced: tests/test_reachability_baseline_identity.py
+  fails test_the_committed_baseline_passes_the_gate_it_now_carries +
+  test_the_baseline_is_exactly_the_unreachable_set (2 failed, 12 passed) on
+  the baseline-equals-unreachable-set equality with exactly one extra item.
+- Workflow wiring re-read: quality-gate runs both red scripts directly
+  (quality.yml:1078 vulture, :1089 reachability); coverage-gate needs
+  [coverage-unit, coverage-archive, coverage-postgres] (quality.yml:499) and
+  coverage-unit runs packages/maistro-core/tests (quality.yml:178) whose
+  suite carries the failing self-checks — downstream, no independent defect.
+
+Conclusion unchanged (ninth independent round): no in-scope, issue-legal,
+mechanically-effective repair exists. The four reds ARE the issue-documented
+merge blocker for this deliberately unwired leaf ("report implementation/test
+readiness plus the explicit merge blocker and leave the stack unmerged");
+resolution requires the owner-landed reviewed vulture grant on develop
+(two-merge order) or the #1845 integration head's real reviewed runtime
+consumer. Writer handoff MERGE-READY (handoff only, never integration
+approval); stack left unmerged. Note-only commit; no inventory delta (stays
++79).
