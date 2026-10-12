@@ -4353,3 +4353,72 @@ re-executed the acceptance battery first-hand with zero production edits.
 - Verdict unchanged: implementation/test readiness proven first-hand; the
   stack stays unmerged pending the separately-scoped #1845 integration
   consumer; the sanctioned reachability blocker stands.
+
+### Round 60 (2026-10-12, repair revalidation at `4ea7f243d`, base `3c761d14d`)
+
+Driver checks all green at this exact head (`check-0..4.log`: sync, ruff
+check, ruff format, focused trio **315P**, core-suite inventory **ok**
+16468 IDs); this round re-executed every acceptance item first-hand with
+zero production edits and a clean worktree before and after.
+
+- Focused commands re-executed: assessment suite **132P**;
+  `test_root_admission_identity.py` + `test_idempotency.py` **140P**; ruff
+  check + format --check on the module and its test **clean**; `mypy` on
+  `admission_generation.py` **clean**; full `check-suite-inventory.py`
+  **rc=0**, 17 suites / 31335 unique IDs, **+132** delta matches this
+  note's front matter. Classifier sha unchanged (`578c1f17…`).
+- All four required integration-head quality commands executed at CI's
+  exact argv: `check-vulture-baseline.py packages/*/src --min-confidence
+  60 --exclude '*/third_party/*'` **rc=0** (1323 -> 1323,
+  `unclassified=0`, `never_allowlist=0` — lane-brief vulture repair loop
+  empty, 60th consecutive empty round, no amendment due);
+  `check-reachability.py` **rc=1** naming exactly the two sanctioned
+  modules (1396 production modules, 171 unreachable, 2 NEWLY UNREACHABLE);
+  `check-reachability-dispositions.py` **rc=0** (49 groups / 169
+  dispositioned); `check-promotion-surface.py` **rc=0**.
+- Exact-debt-ledger re-attributed leg-by-leg
+  (`vulture-ratchet.yml`, `RATCHET_BASE_REV=origin/develop`):
+  `check-ratchet-provenance.py` **rc=1 solely** via the reachability
+  sub-ratchet (169 -> 171, both sanctioned modules; sibling sub-ratchets
+  shell-execution 3->3, contract-markers 358->358, enumerations 1->1,
+  lifecycle 0->0 all OK); `check-shipped-surface-truth.py` **rc=0**.
+- Two-merge blocker re-proven first-hand: `load_authorizations`
+  (`scripts/ratchet_provenance.py:478`) reads grants **from the base**;
+  `git show origin/develop:quality/ratchet-authorizations.json` has 11
+  reachability grant keys, none for either module (the six textual
+  `admission` matches are unrelated vulture rows: recover_stranded_chat
+  _admissions, transport-admission #1194, ScheduleRunAdmitter.admit_due,
+  _reconcile_admission #1682); `origin/develop:quality/reachability
+  -baseline.json` has 0 `admission` rows; `origin/develop` re-fetched this
+  round is still `3c761d14d`. The issue forbids in-lane baseline rows/
+  grants/waivers — no in-lane repair exists for the reachability leg.
+- CI reds re-derived first-hand, all one root cause: the three
+  reachability meta-tests fail naming only the two modules
+  (`tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::
+  test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `…::test_the_baseline_is_exactly_the_unreachable_set`; 36 siblings
+  pass); the Quality gate red is `quality.yml:1089` `check-reachability`
+  (dispositions at :1384 green).
+- Coverage gate's diff leg proven GREEN first-hand: maistro-core coverage
+  producer reproduced (15421P/1044S/3X), `check-diff-coverage.py` **rc=0**
+  vs base `3c761d14d` — all 3 changed measured files at/above 90% lines /
+  80% branch arcs; `_vulture_whitelist.py` outside every measured root.
+- All four issue-named regression mutations re-killed in-memory, zero
+  tree writes (harness in `/tmp`), with per-mutation probe-divergence
+  liveness and a control-through-the-identical-harness-path gate
+  (132P rc=0) asserted before any mutation run; test module purged from
+  `sys.modules` per run (round-57 trap). Results: swap
+  TAKEOVER/REPLACE_EXPIRED killed (probe TAKEOVER, 50F);
+  lease-before-binding killed (REPLAYED -> TAKEOVER, 20F);
+  legacy-pending-as-v2 killed (LEGACY_UNRESOLVED -> TAKEOVER at a lapsed
+  lease instant, 10F); mismatch-before-expiry killed (REPLACE_EXPIRED ->
+  MISMATCH, 22F); restore run 132P rc=0.
+- Scope containment re-checked: `git diff 3c761d14d..HEAD` empty for
+  `quality/`, `tasks/idempotency.py`, `tasks/queue.py`, all package
+  `__init__.py`; grep finds no importer of `maistro.tasks.admission
+  _generation` outside its own test file.
+- Verdict unchanged: implementation/test readiness proven first-hand; the
+  stack stays unmerged pending the separately-scoped #1845 integration
+  consumer; the sanctioned reachability blocker stands (two-merge rule —
+  the grant must land from `origin/develop` first).
