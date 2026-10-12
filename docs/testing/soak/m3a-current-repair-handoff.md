@@ -146,3 +146,71 @@ production workloads and physical-effect/metric oracles, then a new >=4-hour
 exact-artifact run. No GitHub mutations performed.
 
 Progress: `{checked: 1, done: 0, skipped: 0, errors: 0, next: designated RC and qualifying sustained evidence}`.
+
+## Revalidation at `d5d9c1b757ff` — job `5da9a1abcc55423e80290d72d56adc48`
+
+Scope frozen to #860, the supplied failure log, existing soak driver/tests,
+production rate-limit wiring, relevant accepted ADRs, and the requested vulture
+gate. Only this existing handoff is edited. Starting HEAD matches the assignment;
+the worktree was clean. Base `3c761d14db944a727fa0744444bc67cfe36d49f7`
+resolves. No sync conflict exists; no GitHub mutation or integration attempted.
+No `check-*.log` files were present in this job directory at initial inspection.
+
+The supplied prior `98a11313167b41a98a420abfda80c292/check-3.log` is a
+**schema-fence test failure**, not a vulture failure: 24 DDL statements versus
+21 expected. Current `test_pg_learnings.py:174` already includes the three
+validation audit columns, independently of production constants. Fresh execution
+passes that regression; re-editing it would not repair an existing failure.
+
+Fresh validation (1800-second timeouts; logs in the assigned job directory):
+
+- Required exact-CI vulture command: PASS, **1323 findings / 1323 reviewed
+  identities**, zero unclassified / never-allowlist findings (`worker-vulture.log`).
+  No unbanked identity exists to justify a ledger amendment.
+- `uv run pytest tests/test_soak_promotion_gates.py packages/maistro-core/tests/persistence/test_pg_learnings.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py packages/maistro-server/tests/api/test_rate_limit.py -x -q -rs`:
+  **129 passed, 6 skipped** in 3.05s (`worker-pytest.log`). All skips require a
+  migrated `MAISTRO_TEST_PG_DSN`. Fake-connection tests do not prove live PG races.
+
+Production reachability and reconciliation:
+
+- `maistro_server/main.py:648` installs the actual `RateLimitMiddleware`;
+  `api/rate_limit.py:94` constructs a process-local limiter. Executed
+  `test_soak_promotion_gates.py:439` confirms an independent `[200, 200, 429]`
+  allowance on each instance for the same authenticated or pre-auth identity.
+  This proves local enforcement, not cluster-wide non-bypass.
+- `run_soak.py:730` unconditionally rejects host-process preflight as exact-RC
+  evidence. The executed four-hour CLI regressions keep this gate fail-closed.
+- `run_soak.py:1044` cancels the schedule-probe Run without physical execution.
+  Accepted ADR-081426-1f7c identifies physical execution by Attempt;
+  ADR-082426-82c7 only proves occurrence admission uniqueness. ADR-081626-f383
+  does not itself authorize lease-expiry takeover. No replacement scheduler,
+  execution authority, store, or authorization path is introduced to bridge gaps.
+  ADR-085's per-principal policy does not make process-local counters shared.
+
+Acceptance review (no fresh deployment/soak is claimed):
+
+| Criterion | Current evidence / disposition |
+| --- | --- |
+| Representative RC load | UNVERIFIED: inspected profile explicitly omits multi-user/Workspace, fan-out, successful model/tools, Design/Canvas and Goal/background workloads. |
+| Two production RC replicas | UNVERIFIED: middleware instances in regression tests are not deployed RC replicas. |
+| Sustained saturation, reclaim, retries, leaks | UNVERIFIED: focused tests are not sustained production traffic. |
+| Physical-work uniqueness and Goal reconciliation | UNVERIFIED: schedule probe stops at admission and cancels the Run. |
+| Rate/security/degraded non-bypass | Independent per-replica allowances reproduced; aggregate non-bypass is not proven. Complete RC security/degraded behavior UNVERIFIED. |
+| Complete metrics and thresholds | UNVERIFIED: sampler regressions pass, but no complete RC time series; driver loop lag is not application loop lag. |
+| Active-work restart/drain/fencing/recovery | UNVERIFIED: no physical-effect-correlated RC restart executed. |
+| Long unchanged exact-RC soak | BLOCKED: immutable promotion image/configuration not designated in assignment; host preflight explicitly cannot qualify. |
+| Findings filed/reclassified | Local findings preserved; external disposition UNVERIFIED, GitHub mutations prohibited. |
+| Hash-bound machine/human RC evidence | UNVERIFIED: historical preflight artifacts cannot certify the designated promotion artifact. |
+
+**BLOCKED** on acceptance prerequisites, not a reproduced CI failure. Do not
+rerun another host shakedown as a substitute for the missing RC designation and
+production workload/oracles. Next: release owner supplies immutable RC/config,
+resolves aggregate rate-policy expectations, and enables qualifying physical-work
+and resource observation for a new >=4-hour soak. No code/config/tests or quality
+ledger changes are justified by this round; inventory delta is zero.
+
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 0, next: RC designation and production soak}`.
+Final checks: `uv run ruff check .` PASS; `uv run ruff format --check .`
+PASS (3270 files); `git diff --check` PASS. Ruff logs are
+`worker-ruff-check.log` and `worker-ruff-format.log` in the job directory.
+Only this handoff changed; no new tests require an inventory note.
