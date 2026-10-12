@@ -7854,3 +7854,59 @@ owner-landed reviewed vulture grant on develop (two-merge order) or the #1845
 integration head's real reviewed runtime consumer. Writer handoff MERGE-READY
 (handoff only, never integration approval); stack left unmerged. Note-only
 commit; no inventory delta (stays +79).
+
+## Round-112 CI-repair verification (unchanged head 4f0d16327aef, job 50d21782)
+
+Seventh independent round; every load-bearing claim re-derived firsthand, nothing
+trusted. Fresh `git fetch origin develop` at job start: origin/develop is still
+`3c761d14d` — byte-identical to this leaf's merge base, so no upstream grant
+landed and the two-merge precondition remains unsatisfiable from this branch.
+
+Leaf acceptance re-executed green: 79/79 pytest, ruff check + format --check
+clean on both leaf files, mypy Success, `__all__` set-exact 21, all six
+`AdmissionAssessment` member/value pairs verbatim at admission_identity.py:515-520,
+`owns()` the exact three-way conjunction at :308-314, `field(repr=False)` x2,
+`frozen=True, slots=True` x17, all 12 issue-named tests present, zero references
+to `admission_identity` outside the leaf (no importers, no `runs/__init__`
+export), #1841 anchors intact (`require_admitted_actor` store_boundary.py:56,
+`actor_principal_id` model.py:300/320-321, store.py 8 refs), inventory gate ok
+16341 => delta stays +79.
+
+All four red CI gates reproduced with CI exact argv and root causes re-confirmed:
+
+1. exact-debt-ledger: `check-vulture-baseline.py packages/*/src
+   --min-confidence 60 --exclude '*/third_party/*'` rc=1 with 1328 findings,
+   unclassified 0, never_allowlist 0 => candidate ledger scan-exact; the only
+   delta vs the TRUSTED base is the five issue-mandated enum identities
+   (admission_identity.py:515-520, classified pydantic-declarative-field), and
+   the in-tree +5 banking rows are in that exact bucket with byte-matching
+   spelling — banking is complete, nothing to add or remove. Gate's own verdict:
+   "land a reviewed grant first." `load_authorizations` (ratchet_provenance.py:
+   478-519) reads grants from the base revision — docstring lines 494-498 state
+   the two-merge rule verbatim; `ratchet-authorizations.json` is byte-identical
+   to origin/develop (empty diff) and contains no grant for any
+   admission_identity identity (its "admission" hits are unrelated pre-existing
+   grants). The five members are fixed verbatim by the issue and pinned by the
+   focused tests, so none can be eliminated as genuinely dead.
+2. Quality gate: `check-reachability.py` rc=1 naming exactly
+   `maistro.runs.admission_identity` (dispositions rc=0, promotion rc=0). The
+   only mechanical fix is a `quality/reachability-baseline.json` entry, which
+   the issue forbids ("No ... baseline additions ... to make this leaf
+   independently green"; "A candidate baseline update cannot grant itself
+   permission").
+3. test: reproduced 3 failed/36 passed (test_check_reachability.py::
+   test_baseline_matches_the_tree, test_reachability_baseline_identity.py::
+   test_the_committed_baseline_passes_the_gate_it_now_carries and
+   ::test_the_baseline_is_exactly_the_unreachable_set); the failing assertion
+   `set(unreachable) == baseline` shows exactly one extra item,
+   `maistro.runs.admission_identity` — same forbidden-baseline root cause.
+4. Coverage gate: downstream of the test job via the needs-chain (quality.yml
+   coverage-gate needs coverage-unit/archive/postgres); no independent defect.
+
+Conclusion unchanged (seventh independent round): no in-scope, issue-legal,
+mechanically-effective repair exists. The four reds ARE the issue-documented
+merge blocker for this unwired leaf; resolution requires the owner-landed
+reviewed vulture grant on develop (two-merge order) or the #1845 integration
+head's real reviewed runtime consumer. Writer handoff MERGE-READY (handoff
+only, never integration approval); stack left unmerged. Note-only commit; no
+inventory delta (stays +79).
