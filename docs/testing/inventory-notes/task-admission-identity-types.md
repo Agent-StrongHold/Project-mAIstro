@@ -6952,3 +6952,55 @@ inventory ok). Every prior claim re-derived firsthand rather than assumed:
   stay red, and every in-scope "fix" is forbidden by the issue. Writer
   handoff MERGE-READY (handoff only, never integration approval). Note-only
   commit; front-matter delta stays +79.
+
+## Round-98 deep re-verification at unchanged e35c7ca4114b (job b2398e65b9cc42d294011e5edff814a5)
+
+Resolves the prior round's NEEDS-DEEP-REVIEW block: every load-bearing claim
+re-derived firsthand at the exact assigned head, none assumed from notes.
+
+- Driver checks 5/5 green in this job's logs (uv sync, ruff check, ruff
+  format --check, leaf pytest 79/79, suite inventory ok 16341). Tree clean at
+  e35c7ca41; origin/develop = merge base 3c761d14d, zero drift.
+- Leaf acceptance re-executed firsthand: pytest 79/79; focused ruff
+  check/format clean; `mypy admission_identity.py` Success; full
+  `check-suite-inventory.py` ok (17 suites / 31208 node IDs, recorded
+  inventory matches tree — delta stays +79, no note update needed).
+- Contract spot-checked live by import: `__all__` set-exact 21; 17 frozen +
+  slots dataclasses; exact 6-member `AdmissionAssessment` values; `owns` exact
+  3-way conjunction including the roles-equal case; owner_token field omitted
+  from repr while generation stays printable; empty variants field-free with
+  no `__bool__` override (default-truthy, per issue); `CanonicalJsonObject`
+  rejects duplicate keys, non-finite, non-object roots and non-string input,
+  retaining only canonical text. All 12 issue-named tests present.
+- Isolation re-verified: zero production importers, no `maistro.runs.__init__`
+  export, branch diff = exactly 4 surfaces; #1841 anchors present
+  (store_boundary.py:56, store.py:537, model.py:300/320-321).
+- exact-debt-ledger rc=1 with CI exact argv (quality.yml:1078-1081 =
+  vulture-ratchet.yml:82-85). Scan 1328 findings, unclassified 0; no
+  candidate-bookkeeping complaints => the branch ledger is scan-exact and the
+  lane-permitted amendment is already applied (re-running --update is a
+  verified no-op). The rc=1 is solely `unauthorized`: 5 NEW identities vs the
+  trusted base (admission_identity.py:515-520 MISMATCH/REPLAYED/TAKEOVER/
+  REPLACE_EXPIRED/LEGACY_UNRESOLVED), with `load_authorizations` reading
+  grants from `trusted_ref.base_sha` (check-vulture-baseline.py:274) and zero
+  `admission_identity` grants at branch or base. Two-merge wall; a grant added
+  here cannot authorize itself and is issue-forbidden.
+- `check-reachability.py` rc=1 naming exactly `maistro.runs.admission_identity`
+  (suggested fix issue-forbidden); dispositions rc=0; promotion rc=0.
+- Root-suite failure set re-derived: the 3 baseline-equals-tree self-checks
+  (tests/test_reachability_baseline_identity.py x2,
+  tests/test_check_reachability.py::test_baseline_matches_the_tree) fail,
+  each demanding the issue-forbidden `maistro.runs.admission_identity`
+  reachability-baseline entry; ci.yml `test` runs this root tree, and the
+  coverage gate is mechanically downstream (quality.yml:499 needs coverage-unit,
+  which runs the same suite at quality.yml:712-713).
+- Issue comments through the 02:36Z capture re-scanned: automation markers
+  only. Issue body re-read verbatim; the stated terminal state for an
+  unavailable integration is "report implementation/test readiness plus the
+  explicit merge blocker and leave the stack unmerged."
+- Conclusion (deep review, firsthand): no in-scope, issue-legal,
+  mechanically-effective repair exists. Explicit merge blocker: the leaf is
+  unreachable-by-design until the separately scoped #1845 integration lands a
+  real reviewed runtime consumer plus trusted-base authorizations. Writer
+  handoff MERGE-READY (handoff only, never integration approval). Note-only
+  commit; front-matter delta stays +79.
