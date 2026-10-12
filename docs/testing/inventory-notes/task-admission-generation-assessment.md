@@ -4422,3 +4422,88 @@ zero production edits and a clean worktree before and after.
   stack stays unmerged pending the separately-scoped #1845 integration
   consumer; the sanctioned reachability blocker stands (two-merge rule —
   the grant must land from `origin/develop` first).
+
+### Round 61 (2026-10-12, repair revalidation at `e8316b80`, base `3c761d14d`)
+
+Prior job `1bd8cd97` reported BLOCKED with its own driver battery 5/5 green
+(check-0..4.log); this round re-executed every acceptance item first-hand at
+head `e8316b80e8e3` with zero production edits and a clean worktree before
+and after (`git status --porcelain` empty after the full battery).
+
+- Focused commands re-executed: assessment suite **132P**;
+  `test_root_admission_identity.py` + `test_idempotency.py` **140P**; ruff
+  check + format --check **clean** (3277 files already formatted); `mypy`
+  on `admission_generation.py` **clean**; full `check-suite-inventory.py`
+  **rc=0**, 17 suites / 31335 unique IDs — **+132** front-matter delta
+  matches measured collection. Classifier sha256 unchanged:
+  `578c1f1747920f4716822aaaa2a1c9ca415f76064bdf1a5ececaee22d7e7a063`.
+- Implementation re-read against the issue text at this head: sole
+  production function `_assess`, exact signature; exact-class record gate
+  (`type(record) is …`, rejects `None`/dicts/subclasses); lowercase
+  `[0-9a-f]{64}` fullmatch on `fingerprint`; `now_us` int-not-bool in
+  signed 64-bit range; decision order as an ordered predicate table —
+  inclusive expiry → mismatch → binding → legacy → lease → `PENDING`
+  fallthrough; v2 fields via the envelope, legacy top-level,
+  `record.binding is not None` in both cases; no clock, store, logging,
+  mutation, UUID generation, or HTTP mapping. All 10 issue-named tests
+  present; the parameterized `test_assessment_matrix` covers every matrix
+  row at exact boundaries (lease == now → `TAKEOVER`,
+  `expires_at_us == now_us` → `REPLACE_EXPIRED`) and ±1 µs.
+- exact-debt-ledger re-attributed leg-by-leg at CI's exact argv/steps
+  (`vulture-ratchet.yml` job; `RATCHET_BASE_REV=origin/develop`):
+  - `check-vulture-baseline.py packages/*/src --min-confidence 60
+    --exclude '*/third_party/*'` **rc=0**: 1323 reviewed identities →
+    1323 findings, `unclassified: 0`, `never_allowlist: 0` — the
+    lane-brief vulture repair loop is **empty** (61st consecutive empty
+    round): no unbanked identity, nothing genuinely dead, **no
+    `quality/vulture-baseline.json` amendment due**.
+  - `check-shipped-surface-truth.py` **rc=0**.
+  - `check-ratchet-provenance.py` **rc=1 solely** via the reachability
+    sub-ratchet ("check-reachability-provenance.py: trusted-base gate
+    returned 1"); sibling sub-ratchets contract-markers 358→358,
+    enumerations 1→1, lifecycle 0→0 all OK.
+- Required integration-head quality commands re-executed:
+  `check-reachability.py` **rc=1** naming **exactly**
+  `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`
+  (1396 production modules, 171 unreachable, 2 NEWLY UNREACHABLE);
+  `check-reachability-dispositions.py` **rc=0**;
+  `check-promotion-surface.py` **rc=0**.
+- Two-merge blocker re-proven first-hand: `git show
+  origin/develop:quality/ratchet-authorizations.json` reachability
+  section holds **0** grants for either module (the textual `admission`
+  matches are unrelated vulture/radon rows: `container.py::
+  recover_stranded_chat_admissions`, `scheduling/admission.py::
+  ScheduleRunAdmitter.admit_due`, `canvas/canonical_execution.py::
+  _reconcile_admission`); `scripts/ratchet_provenance.py::load_
+  authorizations` resolves grants **from the base revision**
+  (`RATCHET_BASE_REV`, `BASE_REV_ENV`), so a candidate-side grant cannot
+  authorize its own floor raise; `origin/develop` re-fetched this round
+  is still `3c761d14d` — no base-side grant landed. The issue forbids
+  in-lane baseline rows/grants/waivers — no in-lane repair exists.
+- CI test-job red re-derived first-hand: `tests/test_check_reachability.py`
+  + `tests/test_reachability_baseline_identity.py` = **3 failed / 36
+  passed** (`test_baseline_matches_the_tree`,
+  `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set`), every failure
+  naming only the two sanctioned modules — same root cause as the
+  Quality-gate/exact-debt-ledger reds; no separate defect.
+- All four issue-named regression mutations re-killed **in-memory, zero
+  tree writes** (fresh `/tmp` harness: mutated source exec'd into a new
+  module object registered under `maistro.tasks.admission_generation` in
+  `sys.modules` **and** bound onto the parent package before the test
+  module is imported; test module purged from `sys.modules` per run —
+  round-57 trap; one process per mutation): control-through-identical-
+  harness-path **132P rc=0**; swap TAKEOVER/REPLACE_EXPIRED **50F/82P**;
+  lease-before-binding **14F/118P**; legacy-pending-as-v2
+  (LEGACY_UNRESOLVED row dropped) **10F/122P**; mismatch-before-expiry
+  **22F/110P**. Each mutation anchor asserted unique in the source before
+  substitution.
+- Scope containment re-checked: `git diff 3c761d14d..HEAD` empty for
+  `quality/`, `tasks/idempotency.py`, `tasks/queue.py`, all package
+  `__init__.py`; grep over `packages/*/src` finds no importer of
+  `maistro.tasks.admission_generation` outside its own test file.
+- Verdict unchanged: implementation/test readiness proven first-hand; the
+  stack stays unmerged pending the separately-scoped #1845 integration
+  consumer; the sanctioned reachability blocker stands (two-merge rule —
+  the grant must land on `origin/develop` first, or C3 wires a real
+  consumer making both modules reachable with zero ledger change).
