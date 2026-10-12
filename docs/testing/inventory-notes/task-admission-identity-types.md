@@ -7660,3 +7660,55 @@ issue-legal, mechanically-effective repair exists. The four reds are the
 issue-documented merge blocker for this leaf. Writer handoff MERGE-READY
 (handoff only, never integration approval); stack left unmerged. Note-only
 commit; no inventory delta.
+
+## Round-109 CI-repair re-verification (job e8c09c2ef1fc413abba1f945928ebbee)
+
+Fresh repair round re-derived every load-bearing claim firsthand at the
+unchanged manifest head `be36e74bf76c`; nothing trusted from rounds 104–108:
+
+- Tree clean at the exact manifest head; `git diff --numstat` base..head is
+  exactly the four manifest surfaces (module 520, tests 660, note, ledger
+  +5/-0). Driver checks 5/5 rc=0 (this job's check-0..4 logs).
+- Mandated vulture-ledger repair procedure executed with CI's exact argv
+  (`uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`): true rc=1, 1328 findings,
+  unclassified 0, never_allowlist 0 => the candidate ledger is scan-exact and
+  the +5/-0 banking amendment is already complete in-tree. The 5 identities
+  reported NEW against the TRUSTED base ledger are exactly
+  `admission_identity.py:515-520` (MISMATCH/REPLAYED/TAKEOVER/REPLACE_EXPIRED/
+  LEGACY_UNRESOLVED). All are reviewed-retained: the issue fixes the six
+  member/value pairs verbatim and pins them by test, so none is genuinely dead
+  and none can be eliminated — no rows to add or remove; the permitted
+  amendment resolves to a verified no-op.
+- Two-merge wall re-proven in code and data this round: `load_authorizations`
+  (scripts/ratchet_provenance.py:477-537) resolves the grant file **from the
+  base revision** and its docstring states a new grant "does not take effect
+  in the change that introduces it ... two merges". `quality/ratchet-
+  authorizations.json` carries 11 grants, zero for admission_identity, and is
+  byte-identical to freshly fetched `origin/develop` == merge base
+  `3c761d14db94` — no owner-landed grant exists upstream, so the gate's own
+  instruction ("land a reviewed grant first") is unsatisfiable from this
+  branch by design.
+- Remaining reds re-reproduced firsthand: check-reachability rc=1 naming
+  exactly `maistro.runs.admission_identity` (dispositions rc=0, promotion
+  rc=0); the 3 baseline-equals-tree self-checks fail —
+  `test_the_baseline_is_exactly_the_unreachable_set` asserts
+  `set(unreachable) == baseline` (tests/test_reachability_baseline_identity.py
+  :216), so the only mechanical fix is the issue-forbidden
+  reachability-baseline entry; Coverage is downstream (quality.yml:499
+  coverage-gate needs coverage-unit, which runs the root suite carrying those
+  self-checks).
+- Leaf acceptance re-executed: 79/79 focused pytest, mypy Success, module ruff
+  check + format clean, all 12 issue-named tests present, `__all__` set-exact
+  21, enum verbatim, `owns()` exact 3-way conjunction, zero suppressions, zero
+  external src references, no `maistro.runs.__init__` export, #1841 anchors
+  in-tree (store_boundary.py:56, store.py:507/537/563, model.py:300/320-321),
+  inventory ok 16,341 (front-matter delta stays +79).
+
+Conclusion (fourth independent round, re-derived firsthand): no in-scope,
+issue-legal, mechanically-effective repair exists. The four reds are the
+issue-documented merge blocker for this unwired leaf; resolution requires the
+owner-landed reviewed vulture grant on develop (two-merge order) or the #1845
+integration head's real reviewed runtime consumer. Writer handoff MERGE-READY
+(handoff only, never integration approval); stack left unmerged. Note-only
+commit; no inventory delta.
