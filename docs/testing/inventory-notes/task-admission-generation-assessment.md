@@ -4507,3 +4507,81 @@ and after (`git status --porcelain` empty after the full battery).
   consumer; the sanctioned reachability blocker stands (two-merge rule —
   the grant must land on `origin/develop` first, or C3 wires a real
   consumer making both modules reachable with zero ledger change).
+
+## CI-repair round 62 (2026-10-12): re-run of the provider-timed-out
+## round-61 job; four CI reds bound to one sanctioned root cause with the
+## Coverage-gate mechanism read from the workflow source
+
+Re-execution of job `05823b09` (same head `26907e937f`, which passed its
+5/5 driver checks and then died on a provider timeout before reporting).
+Everything below re-executed first-hand at this head; zero production
+edits.
+
+- Driver checks 5/5 rc=0 at this head (uv sync, ruff check, ruff format
+  --check, focused trio 315P, core-suite inventory 16468 IDs).
+- Acceptance battery: focused classifier suite **132P**; C1 + live-flow
+  suite **140P**; ruff check/format clean; mypy clean on the new module;
+  full-tree `check-suite-inventory.py` **rc=0, 17 suites / 31335 IDs**
+  (+132 delta matches the recorded baseline).
+- exact-debt-ledger re-attributed leg-by-leg at CI's exact argv with
+  `RATCHET_BASE_REV=origin/develop`: `check-shipped-surface-truth.py`
+  **rc=0**; `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` **rc=0, 1323 -> 1323, unclassified=0,
+  never_allowlist=0** (lane-brief repair loop empty — 62nd consecutive
+  empty amendment, no vulture-baseline row due, nothing genuinely dead);
+  `check-ratchet-provenance.py` **rc=1 SOLELY via the reachability
+  sub-ratchet 169 -> 171** naming `maistro.runs.admission_identity` +
+  `maistro.tasks.admission_generation`; all 8 sibling sub-ratchets OK
+  (adr-status, citation-status, promotion-surface, dispositions,
+  shell-execution, contract-markers, enumerations, lifecycle).
+- Two-merge rule this round proven **from the gate's own source**, not
+  only its behavior: `scripts/ratchet_provenance.py::load_authorizations`
+  (line 478) resolves grants from the base revision — "a new grant does
+  not take effect in the change that introduces it. Authorizing a
+  floor-raise is now two merges." `origin/develop` re-fetched this round
+  is still `3c761d14d`; its `ratchet-authorizations.json` reachability
+  section enumerates exactly 11 keys, none for either admission module
+  (the only textual `admission` match anywhere in the file is an
+  unrelated vulture grant for
+  `container.py::recover_stranded_chat_admissions`).
+- Coverage gate red bound to its mechanism in `quality.yml` (line ~553):
+  the `combine` step runs `pytest tests/ ...` under `set -euo pipefail`
+  as the `--source=scripts` producer, so the three failing meta-tests
+  (below) fail the whole job — the diff-coverage leg itself was measured
+  green first-hand this round under branch coverage over the focused
+  suites: `admission_generation.py` **100% lines / 100% branches**
+  (25 stmts, 12 arcs, 0 partial), `admission_identity.py` **97% lines /
+  92.5% branches** — both above the per-file 90%/80% floors.
+- CI test-job red re-derived first-hand:
+  `tests/test_check_reachability.py` 1F/24P
+  (`test_baseline_matches_the_tree`) +
+  `tests/test_reachability_baseline_identity.py` 2F
+  (`test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set`) — 3 failures
+  total across the six ledger-adjacent files (186 siblings pass), every
+  failure naming only the two sanctioned modules. Same single root
+  cause; no separate defect.
+- All four issue-named regression mutations re-killed **in-memory, zero
+  tree writes** (fresh `/tmp` harness, same sys.modules + parent-package
+  dual-binding design, one process per mutation, anchors asserted
+  present before substitution): control-through-identical-harness-path
+  **132P rc=0**; swap TAKEOVER/REPLACE_EXPIRED **50F/82P**;
+  lease-before-binding **16F/116P**; legacy-pending-as-v2 **10F/122P**;
+  mismatch-before-expiry **22F/110P**. Classifier module sha256 prefix
+  `578c1f17` unchanged.
+- Scope containment re-checked: `git diff origin/develop...HEAD` empty
+  for `quality/`, `tasks/idempotency.py`, `tasks/queue.py`, every package
+  `__init__.py`; grep over `packages/*/src` finds no importer of
+  `maistro.tasks.admission_generation` outside its own module and test
+  file; the only non-#1852 production delta on the branch
+  (`extensions/packs.py` M9-B2 identity-conflict guard) arrived via the
+  earlier auto-1851 merge chain and predates this lane.
+- Verdict: all four CI reds reduce to the one sanctioned blocker the
+  issue text itself prescribes for an unwired contract leaf. No in-lane
+  repair exists: wiring is out of scope ("No fake callers"), a candidate
+  baseline edit cannot approve itself, and an in-branch grant is
+  invisible to `load_authorizations` (base-revision read). Implementation
+  and test readiness are proven; the stack stays unmerged pending the
+  separately-scoped #1845 integration consumer (which makes both modules
+  reachable with zero ledger change, or is preceded by the grant landing
+  on `origin/develop` first).
