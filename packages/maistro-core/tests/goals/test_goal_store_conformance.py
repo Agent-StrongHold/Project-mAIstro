@@ -112,8 +112,9 @@ class _PostgresBackend:
         self._pool = pool
 
     async def store(self):
-        from maistro.goals.pg_store import PgGoalStore
+        from maistro.goals.pg_store import PgGoalStore, ensure_goal_schema
 
+        await ensure_goal_schema(self._pool)
         return PgGoalStore(self._pool)
 
     async def close(self) -> None:
