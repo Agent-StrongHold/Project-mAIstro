@@ -432,7 +432,7 @@ def _forbidden_clock_and_sleep() -> Iterator[None]:
     body, never at teardown."""
 
     def _raise(name: str):
-        def _boom(*args: object, **kwargs: object) -> None:
+        def _boom(_args: object, **kwargs: object) -> None:
             raise AssertionError(f"_assess must not call time.{name}")
 
         return _boom
