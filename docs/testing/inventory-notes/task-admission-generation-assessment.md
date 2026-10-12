@@ -4836,3 +4836,55 @@ first-hand re-execution only.
   unwired-leaf blocker with no sanctioned in-lane repair; stack
   stays unmerged pending the separately-scoped #1845 integration
   consumer.
+
+## Round-66 repair-round revalidation (job 30fa4c9c015840cca8af1b6f09388ee5, head 4b5c5b2cf)
+
+Fresh first-hand evidence at `4b5c5b2cf3cecf4aec6fe17e65ad877bd92e9030`
+(base `3c761d14db944a727fa0744444bc67cfe36d49f7`; `origin/develop` re-fetched,
+still `3c761d14d` — no sync conflict, nothing to merge):
+
+- Driver checks 5/5 rc=0 at this head (uv sync, ruff check, ruff format
+  --check, focused 315P, suite inventory ok 16468 IDs).
+- Lane-brief vulture repair loop **empty**:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` rc=0 — 1323 reviewed identities → 1323
+  findings, unclassified=0, never_allowlist=0, zero unbanked identities,
+  nothing genuinely dead, **no baseline amendment due**. `quality/` remains
+  zero-diff vs `origin/develop` (the wrong-scope regeneration of 3b7444774
+  was reverted in 4b5c5b2cf).
+- exact-debt-ledger re-attributed leg-by-leg at CI exact argv
+  (`RATCHET_BASE_REV=origin/develop`): shipped-surface rc=0; provenance
+  rc=1 **solely** via the reachability sub-ratchet 169→171 naming
+  `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`;
+  all 8 sibling sub-ratchets OK (adr-status-language, citation-status,
+  promotion-surface, reachability-dispositions, shell-execution,
+  contract-markers, enumerations, lifecycle).
+- Two-merge blocker re-proven from gate source:
+  `scripts/ratchet_provenance.py:478` `load_authorizations` reads grants
+  **from the base revision** ("a new grant does not take effect in the
+  change that introduces it"); `origin/develop`
+  `quality/ratchet-authorizations.json` reachability section holds 0
+  admission rows. The issue forbids in-lane baseline entries, grants, and
+  fake callers; the only mechanisms that could green the leg are therefore
+  out-of-lane (develop-first grant) or forbidden.
+- Direct gates re-run: `check-reachability.py` rc=1 naming exactly the two
+  modules as NEWLY UNREACHABLE (171 of 1396);
+  `check-reachability-dispositions.py` rc=0 (169 dispositioned);
+  `check-promotion-surface.py` rc=0.
+- Acceptance battery re-executed: focused 132P
+  (`test_admission_generation_assessment.py`) + 140P
+  (`test_root_admission_identity.py` + `test_idempotency.py`); ruff check +
+  format --check clean; mypy clean on `admission_generation.py`; all 10
+  issue-named tests present (one `def` each); full
+  `check-suite-inventory.py` rc=0 (17 suites, 31335 unique IDs).
+- All four issue-named mutations re-killed in-memory, zero tree writes,
+  byte-identical restore, control 132P: swap
+  TAKEOVER/REPLACE_EXPIRED → 1F; lease-before-binding → 1F;
+  legacy-treated-as-v2 → 1F; mismatch-before-expiry → 1F.
+- Scope containment: zero-diff vs `origin/develop` for `quality/`,
+  `tasks/idempotency.py`, `tasks/queue.py`, all `__init__.py`; no
+  production importer of `admission_generation` (grep: tests only).
+- Verdict: unchanged and re-proven — implementation/test readiness proven;
+  the exact-debt-ledger red is the issue-sanctioned unwired-leaf blocker
+  with no sanctioned in-lane repair; stack stays unmerged pending the
+  separately-scoped #1845 integration consumer.
