@@ -7069,3 +7069,80 @@ vulture-baseline.json +5/-0, `runs/__init__.py` diff empty.
   under the two-merge ratchet. Writer handoff MERGE-READY (handoff only,
   never integration approval); stack correctly left unmerged. Note-only
   commit; front-matter delta stays +79.
+
+## Round-100 independent verification (job 447a1ac016a141508af344b5cb686706)
+
+Re-verified firsthand at unchanged f13e4f7eb728 (verifier/writer role, no
+code or ledger edits). Nothing was assumed from prior rounds:
+
+- Driver deterministic checks 5/5 rc=0 in this job's logs (uv sync --locked
+  --extra dev; ruff check .; ruff format --check .; leaf pytest -q -x 79
+  passed; check-suite-inventory --suite packages/maistro-core/tests = 16341
+  node IDs, ok).
+- Leaf acceptance re-executed by the verifier: pytest 79/79; focused ruff
+  check + format --check clean; module mypy Success; full
+  check-suite-inventory rc=0 (17 suites / 31208 unique identities, recorded
+  matches tree => front-matter delta stays +79, no inventory update).
+- Live import contract spot-checks, all conformant: `__all__` set-exact 21;
+  frozen+slots on all 17 record/result types; exact 6-member AdmissionAssessment
+  StrEnum; CanonicalJsonObject canonical-only retention (sorted/compact
+  re-dump) with duplicate-key (nested), NaN/Infinity, 1e999-overflow,
+  non-object-root, trailing-garbage and non-string-input rejection; UUID
+  fields require non-nil UUID instances (strings/nil/ints rejected); owns is
+  the exact three-way conjunction (scope/generation/owner each against its
+  own ticket field; roles-coincide ticket still owns; cross-role ticket
+  fails); owner_token field omitted from repr while the printable generation
+  remains; the five empty variants keep default truthiness with no __bool__;
+  timestamp/lease/ack/binding invariants (lease window, bool rejection,
+  int64 range, binding-receipt equality, ack requires binding and >=
+  creation, legacy has no lease<=expiry clamp); Claimed/Replayed/Pending/
+  LegacyUnresolved guards; RootAdmissionResult created-is-bool and
+  snapshot-run_id agreement.
+- All 12 issue-named tests present in the focused file and spot-read
+  meaningful (degenerate paths, roles-equal vs roles-distinct fencing,
+  field-omission-not-blanket-absence repr check).
+- exact-debt-ledger reproduced with CI exact argv (quality.yml:1078-1081 ==
+  vulture-ratchet.yml:82-85): rc=1; scan 1328 findings / 1323 reviewed /
+  unclassified 0 => the branch ledger is scan-exact (the +5 lane-permitted
+  vulture rows are banking, not authorization); rc=1 comes solely from the 5
+  NEW-vs-trusted-base identities at admission_identity.py:515-520
+  (MISMATCH/REPLAYED/TAKEOVER/REPLACE_EXPIRED/LEGACY_UNRESOLVED; PENDING is
+  not a new identity via the whole-repo JobStatus.PENDING name collision);
+  the wall is in code at scripts/check-vulture-baseline.py:274
+  (load_authorizations(base=trusted_ref.base_sha)); zero admission_identity
+  grants at branch; removal is issue-forbidden (fixed contract surface).
+- check-reachability rc=1 naming exactly maistro.runs.admission_identity as
+  the only newly unreachable module (suggested baseline fix issue-forbidden);
+  check-reachability-dispositions rc=0 (49 groups / 169 modules);
+  check-promotion-surface rc=0; quality/reachability-baseline.json,
+  reachability-dispositions.json and ratchet-authorizations.json
+  byte-identical to the merge base.
+- ci.yml `test` failure set re-derived firsthand: exactly the 3
+  baseline-equals-tree self-checks fail
+  (tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries,
+  ::test_the_baseline_is_exactly_the_unreachable_set,
+  tests/test_check_reachability.py::test_baseline_matches_the_tree), each
+  showing `maistro.runs.admission_identity` as the extra module; coverage
+  gate mechanically downstream (quality.yml:499 needs coverage-unit;
+  combine re-runs pytest tests/ at 712-713).
+- Isolation: branch diff vs merge base = exactly 4 surfaces (module, focused
+  tests, inventory note, vulture-baseline +5); zero references to
+  admission_identity outside the module and its test file; no
+  maistro.runs.__init__ export (file unchanged vs base).
+- #1841 anchors re-verified in-tree: store_boundary.py:56
+  require_admitted_actor(actor_principal_id: str | None) -> str; store.py:537
+  get_run(self, run_id, *, principal_id=None) -> Run | None; actor params at
+  store.py:507/563/1282 with the require_admitted_actor guard enforced at
+  921/1323; model.py:300 stores and 320-321 validates actor_principal_id.
+- Evidence hygiene: no closure keywords in any branch commit message or in
+  the PR #1936 body ("Refs #1851" only); issue #1851 open, no closure
+  actions; origin/develop read from the local remote-tracking ref =
+  3c761d14db94 (the merge base; no fetch/pull was run under the verifier
+  read-only rule, and the 03:39Z dispatch capture recorded the same base).
+- Conclusion: re-proven independently — no in-scope, issue-legal,
+  mechanically-effective repair exists. Explicit merge blocker stands: the
+  leaf is unreachable-by-design until the separately scoped #1845
+  integration lands a real reviewed runtime consumer plus trusted-base
+  authorizations under the two-merge ratchet. Writer handoff MERGE-READY
+  (handoff only, never integration approval); stack left unmerged.
+  Note-only commit; front-matter delta stays +79.
