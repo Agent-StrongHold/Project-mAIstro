@@ -4657,3 +4657,91 @@ independently of rounds 54–62, zero production edits.
   dispatched to repair is already exact. Implementation and test
   readiness are proven; the stack stays unmerged pending the
   separately-scoped #1845 integration consumer.
+
+### Round 64 (2026-10-12) — fresh CI-repair dispatch (job
+  11a36e56), lane-brief vulture loop executed and EMPTY
+
+Independent verifier pass at head `899560af4`, base `3c761d14d`
+(`origin/develop` re-fetched, unchanged). Nothing assumed from round 63
+was trusted; every claim below re-derived first-hand this round.
+
+- Driver checks 5/5 rc=0 (job `check-0..4.log`): `uv sync --locked
+  --extra dev`, `ruff check .`, `ruff format --check .`, focused
+  315P (`test_pack_contracts.py` + `test_root_admission_identity.py` +
+  `test_admission_generation_assessment.py`), suite inventory ok
+  (16468 core IDs).
+- Exact-debt-ledger re-attributed leg-by-leg at CI exact argv
+  (`RATCHET_BASE_REV=origin/develop`):
+  - `check-vulture-baseline.py packages/*/src --min-confidence 60
+    --exclude '*/third_party/*'` rc=0, 1323 reviewed identities -> 1323
+    findings, unclassified=0, never_allowlist=0 — the lane brief's
+    repair loop ("fix genuinely dead, amend vulture-baseline.json")
+    has zero unbanked identities to fix and no row to remove: **64th
+    consecutive empty amendment, no ledger edit due**.
+  - `check-shipped-surface-truth.py` rc=0.
+  - `check-ratchet-provenance.py` rc=1 SOLELY via the reachability
+    ratchet (169->171): both modules NEW unreachable, absent from the
+    trusted base and not previously authorized, missing from the
+    candidate baseline; all sibling sub-ratchets OK (shell 3->3,
+    contract 358->358, enumerations 1->1, lifecycle 0->0).
+- Two-merge blocker re-proven this round: `git show origin/develop`
+  `quality/ratchet-authorizations.json` reachability section holds 11
+  keys, none for either module (textual "admission" matches are
+  unrelated vulture/radon grant prose); `origin/develop`
+  `quality/reachability-baseline.json` has 0 admission rows;
+  `scripts/ratchet_provenance.py` reads ledgers as of the merge base.
+  The issue itself forbids the only in-lane workarounds ("No fake
+  callers, baseline additions, grants, disabled gates or quality
+  waivers are permitted"; "A candidate baseline update cannot grant
+  itself permission") and directs: report readiness plus the explicit
+  blocker and leave the stack unmerged.
+- CI reds re-derived first-hand, one root cause:
+  - `check-reachability.py` rc=1 naming exactly
+    `maistro.runs.admission_identity` +
+    `maistro.tasks.admission_generation`.
+  - test job (`ci.yml:612 pytest tests/`): 3F/36P re-run locally —
+    `test_check_reachability.py::test_baseline_matches_the_tree`,
+    `test_reachability_baseline_identity.py::
+    test_the_committed_baseline_passes_the_gate_it_now_carries` and
+    `::test_the_baseline_is_exactly_the_unreachable_set`, every
+    failure naming only the two modules.
+  - Quality gate red bound to `quality.yml:1089 check-reachability`;
+    Coverage gate combine step bound to `ci.yml:657 pytest tests/ ...
+    -q --timeout=60`, inheriting those same 3F (diff-coverage leg
+    measured green over the full core suite in round 63; not re-run —
+    supplementary leg, gate red is fully attributed via the combine
+    step).
+- Acceptance battery re-executed: focused
+  `test_admission_generation_assessment.py` 132P;
+  `test_root_admission_identity.py` + `test_idempotency.py` 140P;
+  ruff check / format / mypy clean on the two issue-named files; full
+  `check-suite-inventory.py` rc=0 (17 suites, 31335 IDs).
+- Implementation re-read against issue text: sole production function
+  `_assess`, exact-class gate (`type(record) is ...`, subclasses
+  rejected), `[0-9a-f]{64}` fullmatch fingerprint, signed-int64
+  not-bool `now_us`, fixed decision order as a data table (inclusive
+  expiry -> mismatch -> binding -> legacy-unresolved -> lease ->
+  PENDING), envelope vs top-level field reads, no clock/store/logging/
+  mutation, no `IdempotencyKeyMismatch`. All 10 issue-named tests
+  present (one `def` each). Classifier bytes unchanged since C2
+  landed: sha256 `578c1f17...` (full
+  `578c1f1747920f4716822aaaa2a1c9ca415f76064bdf1a5ececaee22d7e7a063`).
+- All four issue-named mutations re-killed in-memory, zero tree
+  writes, control-first through the identical sys.modules +
+  parent-attribute dual-binding harness (direct textual decision-table
+  mutants): control **132P**; swap TAKEOVER/REPLACE_EXPIRED **8F**;
+  lease-before-binding **14F**; legacy row removed (legacy-as-v2)
+  **10F**; mismatch-before-expiry **22F**.
+- Scope containment re-checked: zero-diff vs `origin/develop` for
+  `quality/`, `tasks/idempotency.py`, `tasks/queue.py`,
+  `tasks/__init__.py`; production diff is exactly 4 files
+  (`_vulture_whitelist.py` = C1's landed #1851 rows,
+  `extensions/packs.py` = committed stack salvage with its own +1
+  inventory note, the two contract modules); no production importer of
+  `admission_generation` under `packages/*/src`.
+- Verdict: unchanged and re-proven — all four CI reds reduce to the
+  one issue-sanctioned unwired-leaf blocker; the exact-debt-ledger
+  failure is not a vulture-ledger defect (that leg is rc=0 exact), so
+  no sanctioned in-lane repair exists. Implementation and test
+  readiness proven; the stack stays unmerged pending the
+  separately-scoped #1845 integration consumer.
