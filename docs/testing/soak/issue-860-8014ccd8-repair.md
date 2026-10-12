@@ -82,3 +82,81 @@ a short host preflight cannot substitute for those missing inputs and proof.
 Progress: checked 1 issue, done 0 acceptance-complete issues, skipped 0 issues,
 errors 0 validation commands; six database-dependent tests skipped. Local
 commit is a writer handoff only, not integration or promotion approval.
+
+## Revalidation checkpoint — job b08ee82ce6474ec28ad10087f513250f
+
+Frozen item remains #860 only, starting at clean `81a9fdd67d689e792be324fb4ecdd986dcd33efc`
+with supplied base `3c761d14db944a727fa0744444bc67cfe36d49f7`. This checkpoint
+updates the existing report rather than creating another duplicate handoff.
+The current job-directory snapshot contains no driver `check-*.log`. Read the
+supplied historical `98a11313/check-3.log` and `8014ccd8/result.json` directly:
+the former failed on 21 expected versus 24 actual DDL statements; the latter
+was blocked on acceptance, not a develop-sync conflict. No merge was needed.
+
+Fresh executed validation (1200-second command timeouts):
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`:
+  exit 0, 1323 reviewed identities / 1323 findings, zero unclassified. No
+  retained identity needs banking and no ledger amendment is justified.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py -x -q -rs`:
+  **111 passed, 6 skipped**, 2.68 seconds. Skips explicitly require
+  `MAISTRO_TEST_PG_DSN`; no live PostgreSQL result is claimed. The historical
+  schema-fence failure does not reproduce. Expected DDL independently lists
+  the three audit columns at `test_pg_learnings.py:179–181`, matching production.
+- `uv run ruff check .`: exit 0.
+- `uv run ruff format --check .`: exit 0, 3270 files already formatted.
+- `uv run python scripts/check-suite-inventory.py`: exit 0, 17 suites,
+  31128 unique identities, zero duplicate evidence.
+- `uv run python scripts/check-deployment-claims.py`: exit 0; this checks
+  component existence, not a live deployment.
+
+Logs reside in `/home/dev/maistro/jobs/b08ee82ce6474ec28ad10087f513250f/worker-*.log`.
+Read repository instructions, documentation authority hierarchy, accepted
+ADR-085, ADR-081626-f383 and ADR-082526-b36a. Their reconciliation remains:
+canonical Run-store lease authority and executor renewal/reclaim must be
+observed; admission counts cannot substitute for physical execution fencing.
+ADR-085 establishes principal identity, not a waiver of the issue's stronger
+replica-selection requirement. No competing scheduler or authorization path
+was introduced.
+
+All ten acceptance dispositions in the table above remain unchanged after
+fresh code inspection and execution:
+
+1. **Representative RC profile — UNVERIFIED:** the current profile expressly
+   lacks concurrent users/Workspaces, Graph fan-out, successful tools/models,
+   Design/Canvas and Goal/background work (`m3a-load-profile.md:152`).
+2. **Two deployed RC replicas — UNVERIFIED:** middleware instances and boot
+   tests are not an execution of a designated immutable production deployment.
+3. **Sustained saturation/reclaim/retry/leak observation — UNVERIFIED:** these
+   fast focused checks are not sustained traffic.
+4. **Physical-work uniqueness — UNVERIFIED:** `run_soak.py:1044` cancels the
+   admission probe's queued Run without executing it.
+5. **Rate/security/degraded non-bypass — not proven:** executed
+   `test_replica_selection_has_an_independent_production_allowance` for both
+   authenticated and unauthenticated identities observes `[200, 200, 429]`
+   independently on each production middleware instance. Local enforcement is
+   proven, cluster-wide non-bypass is not. `api/rate_limit.py:93` constructs
+   each independent in-memory limiter.
+6. **Complete production telemetry and thresholds — UNVERIFIED:**
+   `run_soak.py:1410` measures the driver's loop lag, not application loop lag;
+   no new production pool/lock/query/worker/queue time series was collected.
+7. **Active-work restart/drain/fencing/recovery — UNVERIFIED:** passing boot
+   and gate tests do not establish recovery of real physical work.
+8. **Long unchanged exact-RC soak — BLOCKED / UNVERIFIED:** no immutable RC
+   identity/configuration supplied; `run_soak.py:730` deliberately rejects its
+   host topology as exact-artifact evidence. No four-hour run was performed.
+9. **Findings disposition — locally recorded; external reclassification
+   UNVERIFIED:** GitHub mutations are prohibited. No new failing static gate
+   was found to repair.
+10. **Hash-bound machine/human RC evidence — UNVERIFIED:** these validation
+    logs and this checkpoint are not a production soak bundle.
+
+Only this existing report changes. No tests added; no inventory delta needed.
+No speculative code, ledger, grant or gate changes. **BLOCKED** remains the
+verdict. Repeating the historical schema/Vulture repair dispatch cannot supply
+missing RC evidence: the next actionable input is a designated immutable RC
+image/configuration plus resolution of the workload and replica-budget contract,
+followed by production physical-effect/recovery oracles and a >=14400-second
+unchanged-artifact soak. Docker availability is not asserted either way.
+Progress: checked 1 issue, done 0 acceptance-complete, skipped 0 issues,
+errors 0 validation commands; 6 database-dependent test cases skipped.
