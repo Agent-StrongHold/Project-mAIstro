@@ -6759,3 +6759,57 @@ note. Prior verify job 688edaf7 at the same head: 5/5 green.
   stack unmerged." No in-scope, issue-legal, mechanically-effective repair
   exists — writer handoff MERGE-READY (handoff only, never integration
   approval). Note-only commit; no inventory delta (front-matter stays +79).
+
+## Round-95 repair-round re-verification at unchanged `cec30ab48b36` (job
+15cce8c0ef7048248766f4aafaaa86cf)
+
+CI-repair round. Every gate re-derived firsthand with CI's exact arguments;
+nothing edited but this note.
+
+- Driver checks in this job's logs: 5/5 green (sync, ruff check, ruff format
+  --check, 79/79 focused pytest, suite-inventory ok).
+- Leaf acceptance re-executed firsthand at `cec30ab48b36`: 79/79 focused
+  pytest; leaf ruff check + format --check clean; module mypy Success.
+- exact-debt-ledger reproduced with CI exact argv
+  (`.github/workflows/vulture-ratchet.yml:82-85` and
+  `quality.yml:1078-1081`:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`, `RATCHET_BASE_REV=origin/develop`): rc=1; scan 1328
+  findings, unclassified 0 ⇒ candidate ledger scan-exact ⇒ the lane-brief
+  ledger-amendment instruction is a verified no-op; 5 NEW identities vs
+  trusted base = exactly the branch-banked `AdmissionAssessment` members at
+  `admission_identity.py:515-520` (MISMATCH/REPLAYED/TAKEOVER/
+  REPLACE_EXPIRED/LEGACY_UNRESOLVED); gate message "New Vulture debt is not
+  authorized by the trusted base … land a reviewed grant first". Those 5 are
+  issue-mandated contract surface (exact 6-member enum, consumed by the
+  leaf's tests and reserved for the C2 classifier) — not genuinely dead, so
+  no identity was removed.
+- Two-merge wall confirmed in code, not just behavior:
+  `scripts/check-vulture-baseline.py:274` calls
+  `prov.load_authorizations(RATCHET, base=trusted_ref.base_sha)`;
+  `scripts/ratchet_provenance.py:478-490` documents base-revision reads.
+  Zero `admission_identity` grants at base `3c761d14d` or on the branch;
+  `quality/` diff vs base = exactly `vulture-baseline.json` +5/-0 (the same
+  5 identities), grants/reachability/promotion byte-unchanged.
+- Quality gate sub-steps: vulture step rc=1 (above) + `check-reachability.py`
+  rc=1 naming exactly 1 newly unreachable module =
+  `maistro.runs.admission_identity`; the gate's own suggested fix (a
+  reachability-baseline entry) is issue-forbidden.
+- `test` job failure reproduced: `pytest
+  tests/test_reachability_baseline_identity.py tests/test_check_reachability.py`
+  = 3 failed (exactly the baseline-equals-tree self-checks; set-diff = the
+  module), rest pass; coverage gate runs the same suite (quality.yml:712-713)
+  and is mechanically downstream.
+- Isolation + scope re-verified: branch diff vs develop = exactly 4 files
+  (module, tests, this note, vulture ledger); zero production importers of
+  `maistro.runs.admission_identity`; no `maistro.runs.__init__` export;
+  `__all__` 21 names set-exact vs the issue; 17/17 `frozen=True, slots=True`
+  dataclasses; all 12 issue-named tests present.
+- origin/develop fetched this round = `3c761d14d` = merge base, zero drift —
+  no sync conflict to resolve. Issue comments through 2026-10-11T23:40Z are
+  automation progress markers only; no new owner instructions.
+- Conclusion unchanged: no in-scope, issue-legal, mechanically-effective
+  repair exists; the issue prescribes "report implementation/test readiness
+  plus the explicit merge blocker and leave the stack unmerged." Writer
+  handoff MERGE-READY (handoff only, never integration approval). Note-only
+  commit; no inventory delta (front-matter stays +79).
