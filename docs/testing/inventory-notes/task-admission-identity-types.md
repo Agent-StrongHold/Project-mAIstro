@@ -7554,3 +7554,55 @@ nothing taken from prior rounds on trust:
   mechanically-effective repair exists. Writer handoff MERGE-READY (handoff
   only, never integration approval); stack left unmerged. Note-only commit;
   front-matter delta stays +79.
+
+## Round-107 CI-repair verification (lane brief: vulture per-identity ledger, job f0fbe4b9ead24274abf2cb4d4eaaaeda)
+
+This round was dispatched as an explicit CI-repair round for the exact-debt-ledger
+gate, with ledger amendment expressly permitted. The lane-brief repair procedure
+was executed end to end and independently resolves to a verified no-op:
+
+- Lane scan run with CI's exact argv
+  (`uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`):
+  1328 findings, 0 unclassified, 0 never-allowlist — the candidate ledger is
+  scan-exact (no "Candidate ledger bookkeeping still needs attention" section).
+- The scan lists exactly 5 unbanked-vs-TRUSTED-base identities, all
+  `AdmissionAssessment` members at `admission_identity.py:515-520`
+  (MISMATCH, REPLAYED, TAKEOVER, REPLACE_EXPIRED, LEGACY_UNRESOLVED). The
+  candidate ledger already banks exactly those 5 rows (+5/-0 vs base, sorted
+  into the matching rule bucket) — the permitted amendment is already complete
+  in the tree, and no review found any of them genuinely dead: all six members
+  are required verbatim by the issue's fixed member/value table and pinned by
+  `test_root_admission_identity.py:153-160`. Nothing was eliminated, so no
+  rows were removed.
+- Residual rc=1 isolated by source read: `_enforce_trusted` computes
+  `unauthorized` from `load_authorizations(ratchet, base=base_sha)`
+  (scripts/ratchet_provenance.py:478-508), which reads grants from the base
+  revision by design ("a new grant does not take effect in the change that
+  introduces it. Authorizing a floor-raise is now two merges").
+  `quality/ratchet-authorizations.json` is byte-identical to base (empty diff),
+  and `git fetch origin develop` re-confirmed origin/develop == 3c761d14db94 ==
+  merge base: no grant has landed; the two-merge precondition remains
+  unsatisfied and is unfixable from this branch.
+- Remaining reds re-reproduced firsthand: `check-reachability.py` rc=1 naming
+  exactly `maistro.runs.admission_identity` (dispositions rc=0, promotion
+  rc=0); the 3 baseline-equals-tree self-checks fail
+  (`tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `::test_the_baseline_is_exactly_the_unreachable_set`), demanding the
+  reachability-baseline entry the issue forbids; the Coverage gate is
+  downstream of that suite (quality.yml:499 `needs:` chain).
+- Leaf acceptance re-executed at unchanged a9eb3ed03913: driver 5/5 rc=0 (this
+  job's check-0..4 logs); 79/79 focused pytest; module ruff check/format clean;
+  mypy Success; all 12 issue-named tests present; inventory ok (16,341 ==
+  recorded; front-matter delta stays +79).
+- Fresh dispatch capture: live CI at a9eb3ed0 = exact-debt-ledger / test /
+  Quality gate / Coverage gate FAILURE (+3 environmental skips), everything
+  else SUCCESS; PR #1936 OPEN, mergeable_state blocked; issue #1851 OPEN.
+
+Conclusion (unchanged, re-derived with the repair mandate executed): no
+in-scope, issue-legal, mechanically-effective repair exists. The four reds are
+the issue-documented merge blocker, resolvable only by an owner-landed reviewed
+vulture grant on develop (two-merge order) or the #1845 integration head's real
+reviewed runtime consumer. Writer handoff MERGE-READY (handoff only, never
+integration approval); stack left unmerged. Note-only commit; no inventory
+delta.
