@@ -4231,3 +4231,67 @@ per-suite inventory ok.
   unwired two-module reachability delta. Implementation/test readiness is
   proven; the stack stays unmerged pending the separately-scoped #1845
   integration consumer.
+
+## Round 58 — repair-round first-hand revalidation at 83cd7f890 (2026-10-12)
+
+Verifier+writer round; driver checks 5/5 green (ruff, format, focused trio
+315P, suite inventory). Every acceptance claim below re-executed first-hand
+at head `83cd7f89025d` (tree clean before and after; zero production edits).
+
+- Focused: leaf `test_admission_generation_assessment.py` **132 passed**;
+  C1 + live-flow siblings `test_root_admission_identity.py` +
+  `test_idempotency.py` **140 passed**; `test_pack_contracts.py` **110
+  passed**. All 10 issue-named tests present (leaf lines 589-935) and green.
+- `ruff check` (both files) "All checks passed!"; `ruff format --check` "2
+  files already formatted"; `mypy` on the module "Success: no issues found in
+  1 source file".
+- `scripts/check-suite-inventory.py` rc=0: 17 suites, 31335 unique node IDs,
+  0 duplicates — the +132 front-matter delta matches.
+- **exact-debt-ledger re-attributed leg-by-leg at CI's exact argv/steps**
+  (`.github/workflows/vulture-ratchet.yml:30`, `RATCHET_BASE_REV=origin/
+  develop`):
+  - `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+    '*/third_party/*'` **rc=0**: 1323 reviewed identities -> 1323 findings,
+    `unclassified=0`, `never_allowlist=0`. The lane-brief repair loop is
+    empty: no unbanked identity, nothing genuinely dead, **no
+    vulture-baseline amendment due** (58th consecutive empty round).
+  - `check-shipped-surface-truth.py` **rc=0**.
+  - `check-ratchet-provenance.py` **rc=1 solely** via the reachability
+    sub-ratchet: 169 -> 171 of 1396 modules, naming **exactly**
+    `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`
+    ("NEW unreachable module absent from trusted base and not previously
+    authorized"); all 8 sibling sub-ratchets OK (adr-status-language,
+    citation-status, promotion-surface 74->74, reachability-dispositions
+    169->169, shell-execution 3->3, contract-markers 358->358, enumerations,
+    lifecycle).
+- Two-merge blocker re-proven: `scripts/ratchet_provenance.py:478`
+  (`load_authorizations`) reads grants **from the base revision**; base
+  `quality/ratchet-authorizations.json` reachability section holds 11 grants
+  and **none** for either module (the 5 textual "admission" matches are
+  unrelated vulture grants: `container.py::recover_stranded_chat_admissions`,
+  the A2A transport-admission route, `scheduling/admission.py`, canvas
+  `_reconcile_admission`); `origin/develop` re-fetched this round is still
+  `3c761d14d` — no base-side grant landed. The issue forbids in-lane
+  baseline rows/grants/waivers, so no in-lane repair exists; the blocker is
+  the sanctioned unwired two-module reachability delta.
+- All four issue-named regression mutations re-killed **in-memory, zero tree
+  writes** (classifier sha `578c1f17` unchanged; `git status` clean after the
+  battery), with per-mutation **probe-divergence liveness** asserted through
+  BOTH resolution paths (sys.modules entry + parent-package attribute) before
+  pytest runs: control **132P rc=0**; swap TAKEOVER/REPLACE_EXPIRED **44F/88P**
+  (probe: expiry-matched row REPLACE_EXPIRED -> TAKEOVER);
+  lease-before-binding **14F/118P** (probe: bound+lapsed-lease REPLAYED ->
+  TAKEOVER); legacy-pending-as-v2 **10F/122P** (probe: LEGACY_UNRESOLVED ->
+  PENDING); mismatch-before-expiry **22F/110P** (probe: expired+changed-
+  payload REPLACE_EXPIRED -> MISMATCH). The round-57 harness trap was
+  reproduced: a probe on a lapsed-lease pending row cannot see the swap
+  mutation (TAKEOVER == TAKEOVER), so each mutation needs its own
+  outcome-divergent probe.
+- Scope containment re-checked in tree: `git diff 3c761d14d..HEAD` empty for
+  `quality/`, `tasks/idempotency.py`, `tasks/queue.py`, and every package
+  `__init__.py`; no production module imports
+  `maistro.tasks.admission_generation` (grep over `packages/*/src`).
+- Verdict unchanged: implementation/test readiness proven first-hand; the
+  stack stays unmerged pending the separately-scoped #1845 integration
+  consumer that supplies the reviewed runtime consumer and passes the
+  unchanged full gates at its exact final head.
