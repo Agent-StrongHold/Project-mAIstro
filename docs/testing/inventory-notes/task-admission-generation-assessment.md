@@ -4888,3 +4888,59 @@ still `3c761d14d` — no sync conflict, nothing to merge):
   the exact-debt-ledger red is the issue-sanctioned unwired-leaf blocker
   with no sanctioned in-lane repair; stack stays unmerged pending the
   separately-scoped #1845 integration consumer.
+
+## Round-67 repair-round revalidation (job 69b3f5227bc9467aa32940d58f583c5e, head 55989ac17)
+
+Fresh first-hand evidence at `55989ac17ff37d0c3408ee0325a0b69e4af6b554`
+(base `3c761d14db944a727fa0744444bc67cfe36d49f7`; `origin/develop` re-fetched,
+still `3c761d14d` — no sync conflict, nothing to merge):
+
+- Driver checks 5/5 rc=0 at this head (uv sync, ruff check "All checks
+  passed!", ruff format --check 3277 files, focused 315P, suite inventory ok
+  16468 IDs in the driver-scoped collection).
+- Lane-brief vulture repair loop **empty** again (67th consecutive):
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=0 — 1323 reviewed identities → 1323 findings,
+  unclassified=0, never_allowlist=0, zero unbanked identities, nothing
+  genuinely dead, **no baseline amendment due**. `quality/` remains zero-diff
+  vs `origin/develop`.
+- exact-debt-ledger re-attributed leg-by-leg at CI exact argv
+  (`RATCHET_BASE_REV=origin/develop`): shipped-surface rc=0; provenance rc=1
+  **solely** via the reachability sub-ratchet 169→171 naming
+  `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`
+  (both "NEW unreachable ... not previously authorized" and "missing from
+  candidate baseline"); all 9 sibling sub-ratchets OK (adr-status-language,
+  citation-status, promotion-surface, reachability-dispositions,
+  shell-execution, contract-markers, enumerations, lifecycle).
+- Two-merge blocker re-proven from gate source:
+  `scripts/ratchet_provenance.py:478` `load_authorizations` resolves the
+  grant file via `resolve_baseline(path, base=...)` — read **from the base
+  revision**; its docstring states "a new grant does not take effect in the
+  change that introduces it ... two merges". `origin/develop`
+  `quality/ratchet-authorizations.json` reachability section (11 entries)
+  mentions neither module. An in-branch grant is therefore inert for this
+  branch, and the issue forbids grants/baselines/fake callers anyway.
+- Direct gates re-run: `check-reachability.py` rc=1 naming exactly the two
+  modules as newly unreachable; `check-reachability-dispositions.py` rc=0
+  (169 dispositioned: 147 CONNECT / 20 LIBRARY / 2 RETIRE);
+  `check-promotion-surface.py` rc=0; `check-shipped-surface-truth.py` rc=0.
+- Acceptance battery re-executed: focused 132P
+  (`test_admission_generation_assessment.py`) + 140P
+  (`test_root_admission_identity.py` + `test_idempotency.py`); all 10
+  issue-named tests present (one `def` each); full
+  `check-suite-inventory.py` rc=0 (17 suites, 31335 unique IDs).
+- All four issue-named mutations re-killed in-memory against the **full**
+  focused suite via a `-p` plugin that exec()s a mutated source into
+  `sys.modules['maistro.tasks.admission_generation']` before collection
+  (zero tree writes; anchors asserted unique; byte-identical control
+  registered the same way → 132P): swap TAKEOVER/REPLACE_EXPIRED → **50F**;
+  lease-before-binding → **8F**; legacy-treated-as-v2 (LEGACY_UNRESOLVED row
+  deleted) → **10F**; mismatch-before-expiry → **23F**.
+- Scope containment: zero-diff vs `origin/develop` for `quality/`,
+  `tasks/idempotency.py`, `tasks/queue.py`, `tasks/__init__.py`; no
+  production importer of `admission_generation` under `packages/*/src`.
+- Verdict: unchanged and re-proven — implementation/test readiness proven;
+  the exact-debt-ledger red is the issue-sanctioned unwired-leaf blocker
+  with no sanctioned in-lane repair (the lane-brief vulture amendment loop
+  is empty and no vulture amendment is due); stack stays unmerged pending
+  the separately-scoped #1845 integration consumer.
