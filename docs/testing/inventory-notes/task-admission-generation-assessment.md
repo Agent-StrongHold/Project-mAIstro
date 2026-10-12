@@ -5755,3 +5755,60 @@ round; nothing taken from earlier rounds on trust.
   Verdict: writer handoff **MERGE-READY on leaf acceptance**; the stack
   stays unmerged pending the separately-scoped #1845 integration
   consumer.
+
+## Round-79 independent re-execution (2026-10-12, head `4b21ee4d673f`)
+
+Nothing in this section edits the leaf; it records a fresh, from-scratch
+verification pass. Base/merge-base/`origin/develop` all `3c761d14db94`
+(no sync conflict). All numbers below are first-hand for this round.
+
+- **Focused commands**: assessment suite **132 passed**; identity +
+  unchanged-live-flow pair **140 passed**; scoped ruff check + format
+  --check clean; `mypy` on `admission_generation.py` Success; full
+  `check-suite-inventory.py` rc=0 (17 suites, 31335 node IDs, 0
+  duplicates — no inventory-note update due; front-matter +132 still
+  equals the collected suite count).
+- **exact-debt-ledger reproduced leg-by-leg at CI exact argv**
+  (`RATCHET_BASE_REV=origin/develop`): vulture repair loop **rc=0**
+  (1323 -> 1323, unclassified=0, never_allowlist=0), shipped-surface
+  **rc=0**, `check-ratchet-provenance.py` **rc=1 solely via the
+  reachability sub-ratchet (169 -> 171)** naming exactly
+  `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`
+  as new unreachable modules absent from the trusted base; all eight
+  sibling sub-ratchets OK. The two-merge rule (grants read from the base)
+  plus the issue's own prohibition on in-lane baselines/grants leave no
+  sanctioned in-lane repair.
+- **Quality pillars**: `check-reachability.py` **rc=1 naming exactly the
+  two leaf modules**; `check-reachability-dispositions.py` **rc=0** (49
+  groups / 169 modules); `check-promotion-surface.py` **rc=0**.
+- **Test-job red reproduced**: the five reachability meta-test files give
+  **3F/64P** — `test_baseline_matches_the_tree`,
+  `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set`, each failing only
+  on the two admission modules' absence from the committed baseline.
+- **Coverage gate diff-coverage leg GREEN first-hand**: the exact CI
+  producer (`coverage run --branch --source=packages/maistro-core/src/
+  maistro -m pytest packages/maistro-core/tests --timeout=30 -q`; run
+  without the job's PYTHONPATH/REQUIRE_AUTH/MAISTRO_DRY_RUN env, counts
+  identical: **15421 passed / 1044 skipped / 3 xfailed in 350s**) ->
+  `coverage xml` -> `check-diff-coverage.py coverage.xml --base
+  3c761d14db94` **rc=0**: 3 changed source files measured at or above
+  90% lines / 80% branch arcs; `_vulture_whitelist.py` not measured by
+  any producer, per the script's own declaration.
+- **All four issue-named mutation classes KILLED first-hand** via a /tmp
+  `-p` plugin that re-execs a mutated copy of the module source into
+  `sys.modules` and the `maistro.tasks` package attribute before
+  collection, zero tree writes: swap TAKEOVER/REPLACE_EXPIRED **50F**,
+  lease-before-binding **16F**, legacy-as-v2 **10F**,
+  mismatch-before-expiry **22F**; identical-source control through the
+  same plugin path **132P**.
+- **Integrity**: `quality/` numstat zero-diff vs `origin/develop`;
+  `tasks/idempotency.py`, `tasks/queue.py` and both package `__init__`
+  files zero-diff vs base; zero production importers of
+  `maistro.tasks.admission_generation` outside the module itself; no
+  closure keyword in any of the 146 branch commits or the PR body.
+- All four CI reds (exact-debt-ledger, Quality gate, test, Coverage
+  gate) reduce to the single issue-sanctioned unwired-leaf blocker.
+  Verdict: writer handoff **MERGE-READY on leaf acceptance**; the stack
+  stays unmerged pending the separately-scoped #1845 integration
+  consumer.
