@@ -82,3 +82,41 @@ repair dispatch cannot resolve that authority boundary.
 Progress: checked 1, done 0 repairs, skipped 0 issues, errors 1 required gate.
 Only this blocked handoff is committed. Residual risks: inactive runtime surface,
 unverified live PostgreSQL and model/auth integration, and unverified full CI.
+
+## Follow-up repair dispatch c086aadcf95d4540a77949ef3ac42921
+
+Independently checked clean starting HEAD
+`f65a237279b114a6eb935792def9640039dc91c3` against the same verified supplied
+base `3c761d14db944a727fa0744444bc67cfe36d49f7`. Read the current issue body,
+supplied driver `check-0.log` through `check-4.log`, both implementation modules,
+codec tests, CI workflows, and accepted ADRs 081226-a66b, 082526-7f02 and
+083126-5e62. No source repair is justified by the supplied `test: failure` label.
+This appendix is the only repository change; no tests or inventory delta.
+
+Re-executed every command in the evidence table above with 1200-second timeouts
+(the Vulture command used 600 seconds). Results: Vulture **PASS**, 1323 reviewed
+identities and zero unclassified; provenance **FAIL**, the same two unauthorized
+modules and two dispositions; focused pytest **201 passed, 3 skipped in 1.31s**;
+ruff check/format, scoped mypy, shipped-surface and suite inventory **PASS**
+(3277 formatted files; 16466 core test nodes). Logs are `repair-*.log` under
+`/home/dev/maistro/jobs/c086aadcf95d4540a77949ef3ac42921/`. The acceptance table
+above remains accurate for this execution, including its explicit UNVERIFIED
+items: the skipped PostgreSQL cases are not durability evidence, fixture tags
+are not production model integration, and no runtime consumer was found.
+
+Locally extracted all supplied `test` check records once into
+`repair-supplied-test-checks.json` in that job directory. The sole failed check
+still names dependency head `3f2c79a70d9e1b0b6b6ffc99562cb35db5326828`, not this
+assigned head, and carries no output title, summary or traceback. Other captured
+heads' successful checks do not validate this head. Full CI is UNVERIFIED;
+focused core tests do not reproduce the separate CI `test` job.
+
+**Still BLOCKED.** No Vulture ledger amendment is needed or justified; that
+exception cannot authorize reachability policy changes. There is no sync
+conflict to resolve. Required next action remains owner-mediated trusted-base
+reachability authorization or separately scoped consumer integration, plus an
+assigned-head failing test step/traceback. Do not redispatch this unchanged
+source as a test repair without new evidence or authority. No activation, fake
+imports, grant/gate edits, GitHub mutations or closure actions were performed.
+Progress: checked 1 issue, done 0 repairs, skipped 0 issues, errors 1 required
+gate; local handoff updated for commit.
