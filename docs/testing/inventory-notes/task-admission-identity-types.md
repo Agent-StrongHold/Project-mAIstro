@@ -6813,3 +6813,69 @@ nothing edited but this note.
   plus the explicit merge blocker and leave the stack unmerged." Writer
   handoff MERGE-READY (handoff only, never integration approval). Note-only
   commit; no inventory delta (front-matter stays +79).
+
+## Round-96 re-verification at unchanged 5d45934a13c0 (job 01169b7d58414a22a45b39f358d57d89)
+
+All prior-round claims re-derived firsthand; nothing taken on trust.
+
+- Driver checks 5/5 green in this job's logs (sync, ruff check, ruff format
+  --check, 79/79 leaf pytest, leaf suite inventory ok at 16341 IDs).
+- Focused acceptance re-executed: leaf pytest 79/79; leaf + repo-wide ruff
+  check / format --check clean; module mypy Success; full
+  check-suite-inventory ok (17 suites, 31208 unique node IDs).
+- Structural contract spot-checked live, not via tests alone: `__all__` 21
+  names set-exact; 17/17 dataclasses frozen+slots; `AdmissionAssessment`
+  exactly mismatch/replayed/pending/takeover/replace_expired/legacy_unresolved;
+  `repr` omits the owner-token text while the printable generation_id may
+  still contain it; `owns` is the exact three-way conjunction (wrong
+  generation, wrong owner, wrong scope each fail); equal and distinct
+  generation/owner role values both fence correctly (roles never compared to
+  each other).
+- exact-debt-ledger rc=1 with CI exact argv (`packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`): scan 1328 findings,
+  unclassified 0, never_allowlist 0; candidate ledger 1328 rows = scan-exact,
+  so the lane-brief "amend the ledger" instruction is a verified no-op (the
+  5 rows are already banked). The rc=1 lists exactly 5 NEW identities vs the
+  TRUSTED base: admission_identity.py:515,516,518,519,520 —
+  MISMATCH/REPLAYED/TAKEOVER/REPLACE_EXPIRED/LEGACY_UNRESOLVED, i.e. the
+  issue-mandated exact-6-member `AdmissionAssessment` surface (PENDING at
+  :517 banks via existing classification). Nothing is genuinely dead:
+  removing any member would violate the issue's fixed enum contract.
+  Authorization is read from the merge base
+  (`check-vulture-baseline.py:274` → `load_authorizations(base=
+  trusted_ref.base_sha)`); zero `admission_identity` grants exist at base
+  `3c761d14d` or on the branch, and `quality/` diff vs base is exactly
+  `vulture-baseline.json` +5/-0 — the documented two-merge wall, not debt
+  to remove.
+- Quality gate sub-steps: `check-reachability.py` rc=1 naming exactly one
+  newly unreachable module, `maistro.runs.admission_identity`, with the
+  gate's own suggested fix (a reachability-baseline entry) issue-forbidden;
+  `check-reachability-dispositions.py` rc=0 (169 modules disposed);
+  `check-promotion-surface.py` rc=0.
+- `test` job reproduced END-TO-END with CI's exact command and env
+  (`REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 pytest tests/ --ignore=
+  tests/tools/registry`): 3 failed / 4968 passed / 129 skipped in 4m38s.
+  Failure set = tests/test_check_reachability.py::test_baseline_matches_the_tree,
+  tests/test_reachability_baseline_identity.py::
+  test_the_committed_baseline_passes_the_gate_it_now_carries, and
+  ::test_the_baseline_is_exactly_the_unreachable_set — all three demand the
+  issue-forbidden baseline entry. The coverage producer runs the same
+  `tests/` suite under coverage (quality.yml:713) and is mechanically
+  downstream.
+- #1841 prerequisite anchors re-verified in-tree:
+  `store_boundary.py:56` `require_admitted_actor(actor_principal_id:
+  str | None) -> str`; `store.py:537` `get_run(..., *, principal_id:
+  str | None = None)`; `create_run` (:499/:507) and `claim_run_by_effect`
+  (:554/:563) retain `actor_principal_id` and enforce the guard via
+  `require_admitted_actor` (:921, :1323); `model.py:300` stores
+  `actor_principal_id: str | None = None` with validation at :320-321.
+- Isolation re-verified: branch diff vs merge base = exactly 4 surfaces
+  (module, leaf tests, this note, the 5 scan-exact ledger rows); zero
+  production importers; no `maistro.runs.__init__` export.
+- PR #1936 re-read from dispatch context: open draft, body says
+  "Refs #1851", zero closure keywords; issue #1851 open.
+- Conclusion unchanged: no in-scope, issue-legal, mechanically-effective
+  repair exists. The issue prescribes reporting implementation/test
+  readiness plus the explicit merge blocker and leaving the stack unmerged.
+  Writer handoff MERGE-READY (handoff only, never integration approval).
+  Note-only commit; front-matter delta stays +79.
