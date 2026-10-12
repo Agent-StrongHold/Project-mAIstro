@@ -5005,3 +5005,61 @@ still `3c761d14d` — no sync conflict, nothing to merge):
   with no sanctioned in-lane repair (the lane-brief vulture amendment loop
   is empty and no vulture amendment is due); stack stays unmerged pending
   the separately-scoped #1845 integration consumer.
+
+## Round-69 repair-round revalidation (job 5bdda79e8d46429b9d7b0cc52dd4ca62)
+
+Fresh CI-repair dispatch at head `ff0424237fb1` (base `origin/develop`
+`3c761d14db94`, re-fetched and re-resolved this round). Evidence below is
+first-hand this round, not inherited from prior rounds.
+
+- Lane-brief vulture loop executed and **EMPTY**:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` rc=0 — 1323 reviewed identities -> 1323
+  findings, `unclassified=0`, `never_allowlist=0`: zero unbanked
+  identities, nothing genuinely dead to fix, no `vulture-baseline.json`
+  amendment due (69th consecutive empty round);
+  `quality/vulture-baseline.json` remains byte-identical to
+  `origin/develop` (`git diff --numstat origin/develop -- quality/`
+  empty).
+- exact-debt-ledger re-attributed leg-by-leg at CI exact argv with
+  `RATCHET_BASE_REV=origin/develop` (`.github/workflows/
+  vulture-ratchet.yml:77-85`): `check-shipped-surface-truth.py` rc=0;
+  `check-ratchet-provenance.py` rc=1 **SOLELY** via the reachability
+  sub-ratchet 169 -> 171 naming exactly `maistro.runs.admission_identity`
+  + `maistro.tasks.admission_generation`; all 8 sibling sub-ratchets OK
+  (adr-status, citation-status, promotion-surface 270/74,
+  reachability-dispositions 169->169, shell-execution 3->3,
+  contract-markers 358->358, enumerations 1->1, lifecycle 0->0).
+  Direct gates re-run: `check-reachability.py` rc=1 naming exactly the
+  two modules; `check-reachability-dispositions.py` rc=0 (147 CONNECT /
+  20 LIBRARY / 2 RETIRE); `check-promotion-surface.py` rc=0.
+- The two-merge blocker stands: grants are read from the base revision
+  (`scripts/ratchet_provenance.py` `load_authorizations`), so a grant
+  added on this branch is inert here, and issue #1852 forbids grants,
+  baseline additions, dispositions-for-this-leaf, suppressions and fake
+  callers outright. No sanctioned in-lane repair exists; the red is the
+  issue-sanctioned unwired-leaf state ("If that integration is
+  unavailable, report implementation/test readiness plus the explicit
+  merge blocker and leave the stack unmerged").
+- Acceptance battery re-executed on real tree mutations (file swapped,
+  sha256-verified byte-identical restore after each kill): focused
+  **132P** (`test_admission_generation_assessment.py`) + **140P**
+  (`test_root_admission_identity.py` + `test_idempotency.py`); all 10
+  issue-named tests present (one `def` each); ruff check, ruff format
+  --check and mypy clean on the classifier + suite; full
+  `check-suite-inventory.py` rc=0 (17 suites match recorded inventory).
+- All four issue-named regression mutations killed against the full
+  focused suite: swap TAKEOVER/REPLACE_EXPIRED -> **50F**;
+  lease-before-binding -> **14F**; legacy-treated-as-v2
+  (LEGACY_UNRESOLVED row deleted) -> **10F**; mismatch-before-expiry ->
+  **22F**. Control (unmutated tree) 132P.
+- Scope containment: zero-diff vs `origin/develop` for `quality/`,
+  `tasks/idempotency.py`, `tasks/queue.py`, `tasks/__init__.py`; no
+  production importer of `admission_generation` or `admission_identity`
+  under `packages/*/src` (grep clean); only the two new modules +
+  C1-scoped whitelist/pack surfaces differ.
+- Verdict: unchanged and re-proven — implementation/test readiness
+  proven (writer handoff); the exact-debt-ledger red is the one
+  issue-sanctioned unwired-leaf blocker with no sanctioned in-lane
+  repair; stack stays unmerged pending the separately-scoped #1845
+  integration consumer.
