@@ -7606,3 +7606,57 @@ vulture grant on develop (two-merge order) or the #1845 integration head's real
 reviewed runtime consumer. Writer handoff MERGE-READY (handoff only, never
 integration approval); stack left unmerged. Note-only commit; no inventory
 delta.
+
+## Round-108 CI-repair deep review (carried NEEDS-DEEP-REVIEW block, job f472fd5803c24bf19ce14cf2b57a5cf2)
+
+Resolves the carried block by re-deriving every load-bearing claim firsthand at
+the unchanged manifest head f02743c56270 (tree clean, diff base 3c761d14db94..
+HEAD = exactly the 4 issue-mandated surfaces). Nothing trusted from prior
+rounds:
+
+- exact-debt-ledger rc=1 re-run with CI exact argv: 1328 findings, 0
+  unclassified, 0 never-allowlist (candidate ledger scan-exact); failure solely
+  from the 5 issue-mandated `AdmissionAssessment` members
+  (admission_identity.py:515-520) vs the TRUSTED base ledger. The +5 banking
+  rows are already in-tree (quality/vulture-baseline.json, verified in diff).
+  Nothing genuinely dead: all six members are fixed verbatim by the issue body;
+  the sixth (PENDING, :517) escapes flagging only via a name collision
+  elsewhere in src, which the issue explicitly disqualifies as a consumer.
+- Repair avenues closed one by one: removing the +5 rows only moves rc=1 to
+  candidate bookkeeping ("blank/unrecorded debt fails", gate docstring);
+  suppressions are issue-forbidden and the module is verified suppression-free;
+  `AdmissionAssessment` is already `__all__`-exported (set-exact 21 names) and
+  classification (first-match rules; pydantic-declarative-field matches before
+  schema-enum-member because the source contains `StrEnum`) never exempts from
+  the ledger requirement; wiring a caller or package export is issue-forbidden
+  exact scope; merging origin/develop is a no-op — freshly fetched
+  origin/develop == 3c761d14db94 == merge base, so no reviewed grant has landed
+  and the two-merge precondition remains unsatisfiable from this branch
+  (ratchet-authorizations.json byte-identical to base, zero admission_identity
+  grants).
+- Remaining reds re-reproduced firsthand: check-reachability rc=1 naming
+  exactly `maistro.runs.admission_identity` (dispositions rc=0, promotion
+  rc=0); 3 failed / 36 passed on the baseline-equals-tree self-checks
+  (`tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`
+  + `::test_the_baseline_is_exactly_the_unreachable_set`), set-diff exactly the
+  module; Coverage gate downstream (quality.yml:499 coverage-gate needs
+  coverage-unit, which runs the root tests/ suite carrying those self-checks).
+- Leaf acceptance re-executed: driver 5/5 rc=0 (this job's check-0..4 logs);
+  79/79 focused pytest and mypy Success re-run this round; module ruff
+  check/format clean; all 12 issue-named tests present; enum verbatim 6
+  member/value pairs; `owns()` exactly the 3-way scope+generation+owner
+  conjunction; zero suppressions; zero external src references; no
+  `maistro.runs.__init__` export; inventory ok 16,341 (front-matter delta
+  stays +79).
+- Full issue body re-read: staging constraint, authorization boundary ("No
+  fake callers, baseline additions, grants, disabled gates or quality waivers
+  are permitted"; "A candidate baseline update cannot grant itself permission")
+  and terminal state ("report implementation/test readiness plus the explicit
+  merge blocker and leave the stack unmerged") confirmed verbatim.
+
+Conclusion (third independent round, re-derived firsthand): no in-scope,
+issue-legal, mechanically-effective repair exists. The four reds are the
+issue-documented merge blocker for this leaf. Writer handoff MERGE-READY
+(handoff only, never integration approval); stack left unmerged. Note-only
+commit; no inventory delta.
