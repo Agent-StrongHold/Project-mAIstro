@@ -4585,3 +4585,75 @@ edits.
   separately-scoped #1845 integration consumer (which makes both modules
   reachable with zero ledger change, or is preceded by the grant landing
   on `origin/develop` first).
+
+### Round 63 (2026-10-12, CI-repair dispatch revalidation at `219ebdac6f9c`, base `3c761d14d`)
+
+Fresh repair-round dispatch (job `5264645c`): lane brief names the
+exact-debt-ledger vulture loop; every claim below re-executed first-hand,
+independently of rounds 54–62, zero production edits.
+
+- Driver checks at this head: 5/5 rc=0 (`check-0..4.log`) — uv sync,
+  ruff, format, focused 315P (pack-contracts salvage test included),
+  core-suite inventory 16468 IDs ok.
+- Issue commands re-run: focused `test_admission_generation_assessment.py`
+  **132P**; `test_root_admission_identity.py` + `test_idempotency.py`
+  **140P**; ruff/format clean on module+tests; `mypy
+  admission_generation.py` clean; full-package `mypy
+  packages/maistro-core/src` clean over 784 files once the optional
+  `bootstrap` extra is synced (the 5 `maistro_bootstrap
+  import-not-found` errors under a dev-only sync are environmental, not
+  branch defects).
+- Full inventory: `scripts/check-suite-inventory.py` rc=0, 17 suites /
+  31335 IDs (+132 delta matches this note).
+- exact-debt-ledger re-attributed leg-by-leg at CI exact argv
+  (`RATCHET_BASE_REV=origin/develop`, develop re-fetched, still
+  `3c761d14d`): shipped-surface **rc=0**; vulture **rc=0** 1323→1323,
+  unclassified=0, never_allowlist=0 — the lane-brief repair loop is
+  **empty: zero unbanked identities, nothing genuinely dead, no
+  `quality/vulture-baseline.json` amendment due** (63rd consecutive
+  empty round); provenance **rc=1 solely via reachability** 169→171
+  naming `maistro.runs.admission_identity` +
+  `maistro.tasks.admission_generation`; all 8 sibling sub-ratchets OK
+  (promotion 270, dispositions 169, shell 3, contract 358, enumerations
+  1, lifecycle 0).
+- Two-merge blocker re-proven from source and base data:
+  `ratchet_provenance.load_authorizations` resolves grants from the base
+  revision ("a new grant does not take effect in the change that
+  introduces it"); `origin/develop` `ratchet-authorizations.json`
+  reachability section holds 11 keys, none for either module;
+  `origin/develop` `reachability-baseline.json` has no admission rows;
+  the textual "admission" grant matches are unrelated vulture/radon rows.
+- CI reds re-derived: `check-reachability.py` rc=1 naming exactly the two
+  modules; meta-tests 3F/36P
+  (`test_check_reachability.py::test_baseline_matches_the_tree` +
+  `test_reachability_baseline_identity.py` 2F), every failure naming only
+  the two sanctioned modules; Coverage-gate red bound to the combine
+  step (`quality.yml` ~713: `pytest tests/ ...` under `set -euo
+  pipefail` as the `--source=scripts` producer, inheriting those 3F);
+  Quality-gate red bound to `quality.yml:1089 check-reachability`.
+- Coverage diff leg measured green first-hand over the **full core
+  suite** under branch coverage (CI producer argv, `--source=
+  packages/maistro-core/src/maistro`): 15421P/1044S/3X in 353s;
+  `admission_generation.py` **100% lines / 100% branches** (25 stmts,
+  12 arcs, 0 partial), `admission_identity.py` **97% lines / 92.5%
+  branches** — both above the per-file 90%/80% floors.
+- All four issue-named regression mutations re-killed **in-memory, zero
+  tree writes** (fresh `/tmp` harness; mutants delegate validation to
+  the real function first, so kills are decision-order kills, not
+  validation artifacts; test module purged from `sys.modules` between
+  in-process runs): control-first **132P**; swap
+  TAKEOVER/REPLACE_EXPIRED **50F**; lease-before-binding **14F**;
+  legacy-pending-as-v2 **10F**; mismatch-before-expiry **22F**;
+  control-last **132P** (no patch leakage).
+- Scope containment re-checked: `git diff origin/develop...HEAD` empty
+  for `quality/`, `tasks/idempotency.py`, `tasks/queue.py`, both package
+  `__init__.py`s; no production importer of
+  `maistro.tasks.admission_generation` under `packages/*/src`; the
+  `_vulture_whitelist.py` rows for this contract arrived with C1's
+  landed #1851 quality commit (`9a15e6830`) as scanner-input
+  classification, not a new suppression (vulture leg rc=0 corroborates).
+- Verdict: unchanged and re-proven — all four CI reds reduce to the one
+  sanctioned unwired-leaf blocker; the vulture ledger this round was
+  dispatched to repair is already exact. Implementation and test
+  readiness are proven; the stack stays unmerged pending the
+  separately-scoped #1845 integration consumer.
