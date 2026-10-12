@@ -5126,3 +5126,88 @@ prior rounds' claims were re-executed, not trusted.
   one documented, issue-mandated unwired-leaf blocker with no sanctioned
   in-lane repair; stack stays unmerged pending the separately-scoped #1845
   integration consumer. Head CI status remains UNVERIFIED from this lane.
+
+## Round-71 repair-round revalidation at head `9138705e9b56` (base `origin/develop` `3c761d14db94`)
+
+Fresh CI-repair dispatch (job 05d40486f40a). All evidence first-hand this
+round; prior rounds' claims re-executed, not trusted. The round-70 verify job
+(a486e2a57a3c) ended in a provider timeout after its five driver checks had
+already returned rc=0 — the "BLOCKED" block carried no check failure to
+repair.
+
+- Driver deterministic battery 5/5 rc=0 at this exact head (check-0..4:
+  `uv sync --locked --extra dev`; `ruff check .`; `ruff format --check .`
+  3277 files; focused trio **315P**; `check-suite-inventory.py --suite
+  packages/maistro-core/tests` 16468 IDs, 0 duplicates).
+- Acceptance battery re-executed: leaf **132P**
+  (`test_admission_generation_assessment.py`), C1+live trio **140P**
+  (`test_root_admission_identity.py` + `test_idempotency.py`); ruff check,
+  `ruff format --check` and mypy clean on classifier + suite; all 10
+  issue-named tests present (1 def each); full `check-suite-inventory.py`
+  rc=0 (17 suites, 31335 unique IDs); inventory-delta `+132` unchanged and
+  accurate.
+- Implementation re-read against the issue contract: exact-class gate
+  (`type(record) is ...`, subclasses rejected), fingerprint
+  `[0-9a-f]{64}` fullmatch, `now_us` int-not-bool int64 range check, v2
+  reads through the envelope / legacy top-level fields, and the fixed
+  decision order as a first-match predicate table (expiry inclusive ->
+  mismatch -> binding -> LEGACY_UNRESOLVED -> lease -> PENDING).
+- exact-debt-ledger reproduced leg-by-leg at CI exact argv
+  (`.github/workflows/vulture-ratchet.yml:59-85`):
+  `check-shipped-surface-truth.py` rc=0; `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` **rc=0**
+  (1323 -> 1323, never_allowlist=0 — the lane-brief vulture repair loop is
+  EMPTY for the 71st consecutive round: no unbanked identity, nothing
+  genuinely dead, no vulture-baseline amendment due);
+  `check-ratchet-provenance.py` rc=1 **SOLELY** via the reachability
+  sub-ratchet 169 -> 171 naming exactly `maistro.runs.admission_identity`
+  + `maistro.tasks.admission_generation` (contract 358->358,
+  enumerations, lifecycle, and the other sibling sub-ratchets all OK).
+- Two-merge blocker re-proven at source: `load_authorizations`
+  (`scripts/ratchet_provenance.py:486-495`) reads grants **from the base
+  revision** — "a new grant does not take effect in the change that
+  introduces it"; origin/develop re-fetched, still `3c761d14db94`, its
+  `quality/ratchet-authorizations.json` reachability section holds 11
+  unrelated keys and **0 admission rows**; branch `quality/` diff vs
+  develop is empty. Issue #1852 forbids in-lane grants, baselines,
+  dispositions, fake callers and waivers — no sanctioned repair exists.
+- Direct gates: `check-reachability.py` rc=1 naming exactly the two
+  modules (1396 modules, 171 unreachable, "2 NEWLY UNREACHABLE");
+  `check-reachability-dispositions.py` rc=0; `check-promotion-surface.py`
+  rc=0.
+- `test` job red re-derived first-hand: over the five reachability root
+  test files, exactly **3 failed / 64 passed** —
+  `test_check_reachability.py::test_baseline_matches_the_tree`,
+  `test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`
+  — every failure's set-diff names only the two sanctioned modules.
+- Coverage gate re-attributed with both legs measured first-hand:
+  producer leg runs the root suite under `set -euo pipefail`
+  (quality.yml:635-677) so it reds on the same 3 meta-tests; the
+  substantive diff-coverage leg is **GREEN**: core producer
+  (`coverage run --branch --source=packages/maistro-core/src/maistro -m
+  pytest packages/maistro-core/tests`) = **15421P/1044S/3X in 347.79s**,
+  `check-diff-coverage.py coverage.xml --base 3c761d14db94` **rc=0**
+  (3 changed files measured, 3 test files exempt, whitelist unmeasured;
+  per-file: `admission_generation.py` 100.0% lines / 6-6 branch arcs
+  full, `admission_identity.py` 98.8% lines / 34-40 arcs = 85% — above
+  the 90/80 floors).
+- All four issue-named regression mutations killed with REAL file swaps
+  (mutant written over the module, focused suite re-run, module restored
+  from a byte backup): swap TAKEOVER/REPLACE_EXPIRED -> **50F**;
+  lease-before-binding -> **14F**; legacy-treated-as-v2 (LEGACY_UNRESOLVED
+  row dropped) -> **10F**; mismatch-before-expiry -> **22F**. Restore
+  sha256-verified byte-identical (`578c1f17…`), control re-run **132P**.
+- Scope containment: no production importer of `admission_generation` or
+  `admission_identity` under `packages/*/src` (grep clean);
+  `tasks/__init__.py`, `tasks/idempotency.py`, `tasks/queue.py`,
+  `runs/__init__.py`, `maistro/__init__.py` and `quality/` all zero-diff
+  vs base; `_vulture_whitelist.py` admission rows are C1 (#1851) scanner
+  vocabulary and name no `_assess`; the `packs.py`/`test_pack_contracts.py`
+  deltas belong to the earlier stack leaf, not this issue.
+- Verdict unchanged: writer handoff MERGE-READY on leaf acceptance —
+  implementation and test readiness proven first-hand; the four CI reds
+  (exact-debt-ledger, Quality gate, test, Coverage gate) all reduce to the
+  one documented, issue-mandated unwired-leaf reachability delta with no
+  sanctioned in-lane repair; stack stays unmerged pending the
+  separately-scoped #1845 integration consumer.
