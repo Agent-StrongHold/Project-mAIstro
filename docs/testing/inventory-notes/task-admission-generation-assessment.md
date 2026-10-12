@@ -5685,3 +5685,73 @@ exists.
   sanctioned in-lane repair exists. Verdict unchanged: writer handoff
   MERGE-READY on leaf acceptance; the stack stays unmerged pending the
   separately-scoped #1845 integration consumer.
+
+## Round-78 verify+repair revalidation at head `bcb141992021` (2026-10-12)
+
+Fresh CI-repair dispatch (job 1f81d1156703481e8d88c0ece12aaaf5), head and
+base unchanged (`base 3c761d14db94 = merge-base = origin/develop`; no
+develop sync conflict). Every claim below re-executed first-hand this
+round; nothing taken from earlier rounds on trust.
+
+- **Driver battery 5/5 rc=0** (check-0..4.log): `uv sync --locked --extra
+  dev`, `ruff check .` ("All checks passed!"), `ruff format --check .`
+  (3277 files clean), focused trio 315P, focused suite inventory ok
+  (16468 unique IDs, 0 duplicates).
+- **exact-debt-ledger reproduced at CI exact argv**
+  (`RATCHET_BASE_REV=origin/develop check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'`):
+  **rc=0, 1323 reviewed identities -> 1323 findings, never_allowlist=0**
+  — the lane-brief vulture repair loop is EMPTY for the 78th consecutive
+  round: no unbanked identity, nothing genuinely dead, **no ledger
+  amendment due**. `check-shipped-surface-truth.py` rc=0.
+- **Provenance gate rc=1 SOLELY via the reachability sub-ratchet**
+  (169 -> 171) naming exactly `maistro.runs.admission_identity` +
+  `maistro.tasks.admission_generation` as NEW unreachable modules; all
+  sibling sub-ratchets OK. `check-reachability.py` rc=1 exactly on the
+  two leaf modules; `check-reachability-dispositions.py` rc=0;
+  `check-promotion-surface.py` rc=0. This is the issue-sanctioned
+  blocker: the leaf is deliberately unwired, the issue forbids in-lane
+  callers/baseline rows/grants/waivers, and the two-merge rule makes an
+  in-branch grant structurally unable to authorize the change it ships
+  with — no sanctioned in-lane repair exists.
+- **Test-job reds reproduced at their exact nodes**: running
+  `tests/test_check_reachability.py` +
+  `tests/test_reachability_baseline_identity.py` +
+  `tests/test_check_reachability_dispositions.py` gives **3F/49P**, the
+  three failures being the reachability meta-tests
+  (`test_baseline_matches_the_tree`,
+  `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set`), each naming only
+  the two admission modules (e.g. "At index 126 diff:
+  'maistro.security.auth_composite' !=
+  'maistro.runs.admission_identity'").
+- **Coverage gate diff-coverage leg GREEN first-hand via the exact CI
+  producer**: `coverage run --branch
+  --source=packages/maistro-core/src/maistro -m pytest
+  packages/maistro-core/tests --timeout=30 -q` (env
+  PYTHONPATH/REQUIRE_AUTH=false/MAISTRO_DRY_RUN=1 per quality.yml) ->
+  **15421 passed / 1044 skipped / 3 xfailed in 349s** (the full core
+  suite, green; skips are service-backed legs), `coverage xml`, then
+  `check-diff-coverage.py coverage.xml --base 3c761d14db94` **rc=0**: 3
+  changed source files measured at or above 90% lines / 80% branch,
+  `_vulture_whitelist.py` exempt by the script's own declaration.
+- **Acceptance battery re-executed**: assessment + identity suites 205P;
+  all 10 issue-named tests present (132 nodes collected in the
+  assessment suite); `mypy` on both modules Success; scoped ruff check +
+  format --check clean; full `check-suite-inventory.py` rc=0 (17 suites
+  match the recorded inventory — no inventory-note update due).
+- **All four issue-named mutation classes KILLED again first-hand** via
+  a /tmp `-p` plugin patching the production module attribute (and the
+  parent package alias) before test collection, delegating to the
+  original captured at plugin import, zero tree writes:
+  swap TAKEOVER/REPLACE_EXPIRED **50F**, lease-before-binding **8F**,
+  legacy-as-v2 **10F**, mismatch-before-expiry **36F**; identical-source
+  control through the same plugin **132P**.
+- **Integrity**: `git diff --numstat origin/develop -- quality/` empty;
+  head `bcb141992021` is the same source head CI evaluated (the round-77
+  commit above it is docs-only, touching only this note).
+- All four CI reds (exact-debt-ledger, Quality pillars, test, Coverage)
+  still reduce to the single issue-sanctioned unwired-leaf blocker.
+  Verdict: writer handoff **MERGE-READY on leaf acceptance**; the stack
+  stays unmerged pending the separately-scoped #1845 integration
+  consumer.
