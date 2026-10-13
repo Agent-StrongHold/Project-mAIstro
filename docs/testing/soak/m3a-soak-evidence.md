@@ -9,7 +9,12 @@ correctness claim in this pack is promotion evidence yet.
 
 - Profile: [m3a-load-profile.md](m3a-load-profile.md) (thresholds H1–H6, S1–S5)
 - Machine evidence: `evidence/m3a-soak-evidence.json`, `evidence/metrics.jsonl`,
-  `evidence/replica-1820{1,2}.log`
+  `evidence/replica-1820{1,2}.log` — **archived out of the tree** by the round-44
+  evidence re-prefixing (commit `e63e820c1`, "Replaces stale un-prefixed evidence
+  copies"); recoverable from git history at `e63e820c1^`. Current hash-tied
+  machine evidence lives in the round-prefixed packs under
+  [evidence/](evidence/) (`m3a-round44-shakedown.json`,
+  `m3a-round100-shakedown.json`, …).
 - Executed: 2026-09-29, `--sustain-seconds 240 --rps 8 --workers 6`,
   nginx LB mirroring `deploy/nginx.conf`, 2× `maistro_server` replicas
   (RC entrypoint path), `pgvector/pgvector:pg18`.
@@ -124,9 +129,10 @@ correctness claim in this pack is promotion evidence yet.
 
 ## RC artifact identity (run 1)
 
-Recorded in `evidence/m3a-soak-evidence.json` under `hashes` (git head,
-diff/status hashes, VERSION, soak env hash, nginx conf hash, PostgreSQL image
-digest, CPython version). Any code or runtime-config change — including the
+Recorded in the run-1 pack `evidence/m3a-soak-evidence.json` under `hashes`
+(archived out of the tree at `e63e820c1`, recoverable at `e63e820c1^`): git
+head, diff/status hashes, VERSION, soak env hash, nginx conf hash, PostgreSQL
+image digest, CPython version. Any code or runtime-config change — including the
 harness fixes above — requires a new soak per the profile.
 
 ---
