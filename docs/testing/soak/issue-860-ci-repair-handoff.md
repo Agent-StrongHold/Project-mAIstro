@@ -1,5 +1,55 @@
 # Issue #860 CI repair handoff
 
+## Current checkpoint — job fc068024
+
+Verified clean assigned HEAD `c3672bd87fea058041e816e9fb2e8fec91433d52`
+and supplied base `2154f845347c9541016288c760f8da3f5cd2e064`. Frozen scope:
+#860, cited schema failure, exact vulture repair and this handoff. No conflict
+or current-job driver logs exist. Read the supplied prior result and historical
+`98a11313167b41a98a420abfda80c292/check-3.log`; neither substitutes for execution.
+
+Fresh validation (600–1,200-second timeouts):
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: PASS, 1,323 reviewed identities / findings, zero unclassified or never-allowlist findings; gate-selected base `3c761d14db94`. Arguments match both CI workflows. No ledger amendment warranted.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py -x -q -rs`: 118 passed, 6 skipped in 2.72 seconds. Skips require `MAISTRO_TEST_PG_DSN`; no database-integration proof claimed.
+- `uv run ruff check .`: PASS; `uv run ruff format --check .`: PASS, 3,277 files.
+- `uv run python scripts/check-doc-links.py`: PASS, 2,704 Markdown files, zero broken links.
+- `uv run python scripts/check-backlog-consistency.py`: PASS, 168 items.
+
+The cited 24-versus-21 failure is already repaired: the independently listed
+DDL at `test_pg_learnings.py:175–177` includes the three production audit columns
+at `pg_learnings.py:117–119`. No evidenced source/test/ledger repair remains.
+Read accepted ADR-085 and ADR-082826-b601: preserve Goal -> Graph -> Run ->
+NodeRun -> Attempt; admission uniqueness cannot substitute for physical-work
+execution proof. Principal keys do not imply shared replica budgets.
+
+| Acceptance | Freshly checked evidence / disposition |
+| --- | --- |
+| Representative RC profile | **UNVERIFIED**: current `m3a-load-profile.md` explicitly lists missing users/Workspaces, fan-out, successful tool/model, Design/Canvas and Goal/background workloads. |
+| Two production replicas | **UNVERIFIED**: middleware instances tested here are not deployed RC applications. |
+| Sustained saturation/reclaim/retry/leak observations | **UNVERIFIED**: no qualifying sustained production experiment executed. |
+| Physical-work deduplication and Goal reconciliation | **UNVERIFIED**: the profile's occurrence probe cancels its queued Run without execution. |
+| Replica-selection non-bypass/security/degraded behavior | **Not proven**: executed `tests/test_soak_promotion_gates.py:439` reproduces independent 200/200/429 allowances for the same identity on each instance. Production `api/rate_limit.py:94` constructs local state; `main.py:648` installs it. Deployment security/degraded behavior **UNVERIFIED**. |
+| Complete telemetry and thresholds | **UNVERIFIED**: profile explicitly lacks qualifying application-loop, saturation, reclaim and long-window observations. |
+| Active-work restart/drain/fencing/recovery | **UNVERIFIED**: no deployed active-work recovery experiment executed. |
+| Long-running exact RC/config soak | **UNVERIFIED**: `run_soak.py:744` rejects host preflight identity regardless of duration; promotion-gate tests passed. |
+| Findings filing/reclassification | Existing backlog consistency PASS; new load findings/remote filing **UNVERIFIED**. No new load experiment or GitHub mutations. |
+| Hash-bound machine/human production evidence | **UNVERIFIED**: source tests are not immutable RC image/configuration evidence. |
+
+**BLOCKED.** Previous acceptance block remains unresolved; no qualifying RC
+image/configuration was supplied. A longer host preflight cannot satisfy the
+artifact gate. Next: select immutable RC/configuration, complete representative
+production workloads and physical-work/recovery/telemetry oracles, resolve
+replica-budget semantics, then execute the qualifying >=4-hour soak. Do not
+redispatch the historical schema assertion as an unfixed CI defect. Only this
+handoff changed; no new tests or inventory delta. No gates, grants, ledger,
+runtime configuration or historical measurements changed. Writer checkpoint,
+not integration approval.
+
+Progress: checked 1, acceptance-complete 0, skipped 0 issues, validation errors 0;
+next: exact-RC prerequisites and qualifying soak. Earlier checkpoints below are
+preserved historical evidence.
+
 ## Current checkpoint — job ddc15ffa
 
 Frozen scope: issue #860 only; exact vulture gate, reported historical schema
