@@ -1,6 +1,97 @@
 # Issue #1893 bounded CI repair
 
-## Current revalidation — job 5e5bd0612b8c423b81f41ca949bbf5fa
+## Current revalidation — job 5e8721073a6a498eaaa797e238052e81
+
+**BLOCKED.** Issue #1893 only; assigned worktree `/home/dev/Git/wt/auto-1893`,
+branch `auto-1893`, clean starting source
+`1cdc1e01453d556ab2f57f708c14ba60d22b9f2b`. Supplied base and resolved local
+`origin/develop`: `2154f845347c9541016288c760f8da3f5cd2e064`. No merge conflict
+or incoming uncommitted work. No remote refresh, GitHub mutation, activation,
+or ledger/grant/gate change. This existing handoff is the only changed file;
+no tests were added, so inventory delta is **0**. Earlier evidence is preserved,
+not assumed true. The requested repair remains unfinished, not merge-approved.
+
+Read repository instructions, frozen dispatch issue body, supplied prior result
+and check-0 through check-4 logs, codec/identity constructors and adjacent tests,
+and the exact-debt-ledger workflow. Accepted ADRs 081426-1f7c, 082526-7f02,
+082826-b601 and 082826-d9f5 preserve Attempt-owned execution mechanics,
+immutable admission provenance, and the canonical consumer/store. Reconciliation:
+a staged DTO codec is not authority to activate a consumer to satisfy a gate.
+The explicit exception permits reviewed Vulture identity changes only, not
+reachability authorization. A guessed ADR filename was not found; the actual
+081426-1f7c execution-runtime-contract file was resolved and read instead.
+
+### Fresh validation
+
+All commands ran in the assigned worktree with long timeouts at the source SHA
+above. Logs and collected node IDs: `/home/dev/maistro/jobs/5e8721073a6a498eaaa797e238052e81/worker-*`.
+Driver logs separately report passing sync/lint/format, 324 passed / 3 skipped,
+and inventory 16543; skipped cases are not used as durability evidence.
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`: **PASS**, 1322 reviewed
+  identities / 1322 findings, zero unclassified. No ledger amendment is justified.
+- `RATCHET_BASE_REV=2154f845347c9541016288c760f8da3f5cd2e064 uv run python
+  scripts/check-ratchet-provenance.py`: **exit 1**, unchanged required gate.
+  `worker-provenance.log:20-29` rejects both new unreachable modules and their
+  dispositions: `maistro.runs.admission_identity`, `maistro.tasks.admission_codec`.
+  Trusted base has 169, candidate 171. Candidate entries remain at
+  `quality/reachability-baseline.json:131,147` and
+  `quality/reachability-dispositions.json:612-613`. This is not Vulture debt.
+- Confirmed fresh DB name absent; `createdb maistro_1893_5e872107`, then
+  `DATABASE_URL=postgresql:///maistro_1893_5e872107 uv run alembic upgrade head`:
+  **PASS**, real migration chain from empty through **063**, PostgreSQL **18.6**.
+- With both `MAISTRO_TEST_PG_DSN` and `MAISTRO_TEST_DATABASE_URL` set to
+  `postgresql:///maistro_1893_5e872107`, plus `MAISTRO_REQUIRE_PG_LEGS=1`:
+  `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py
+  packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q
+  -o junit_family=legacy --junitxml=<job>/worker-focused.xml`:
+  **204 passed, zero skipped**. Separate `--collect-only -q` saved 204 node IDs.
+- `uv run pytest packages/maistro-core/tests/tasks
+  packages/maistro-core/tests/runs -x -q` without PG environment:
+  **1919 passed, 310 skipped, 6 warnings** (aiosqlite callbacks after loop closure).
+  This broader result does not establish skipped PostgreSQL behavior.
+- `uv run ruff check .`: **PASS**; `uv run ruff format --check .`: **PASS**, 3301 files.
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py
+  packages/maistro-core/src/maistro/runs/admission_identity.py`: **PASS**.
+- `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests`:
+  **PASS**, 16543 nodes. `uv run python scripts/check-shipped-surface-truth.py`: **PASS**.
+
+The three real two-pool tests require non-null production `pg_pool`, assert
+matching database/server identity and distinct sessions, and insert one scoped
+row each through the real migration-055 constraint. Production/raw backend PIDs
+from JUnit: unbound **799129/799131**, bound **799132/799133**, acknowledged
+**799134/799136**, all on `maistro_1893_5e872107` over Unix socket. They compare
+named TEXT columns and DTOs, inject escaped-surrogate corruption into each
+snapshot column, require typed errors through both pools, and delete their rows.
+Final direct SQL: revision **063**, **0 rows / 0 generations / 0 Run IDs** in
+`task_idempotency`. Database retained for inspection. No new mutation/pre-fix
+failure is claimed: this round changed no source or tests.
+
+### Acceptance and remaining blockers
+
+| Criterion | Executed evidence / limit |
+| --- | --- |
+| Exact frozen DTO/header interfaces, named columns, fresh flat encoding, strict UUID hex and signed timestamps | Focused 204-case suite and inspected constructors/codec; header mismatches and paired v2 binding columns asserted independently. |
+| Bound/unbound/partial legacy evidence, no invented identity, unsupported formats fail closed | Named legacy and unknown-format tests plus receipt-only, missing-receipt, whitespace and partial-pair cases pass. |
+| Header expiry/fingerprint survives failed full decoding; no assessment/clock | Named header separation tests pass; decoder accepts neither a clock nor incoming fingerprint. Live expiry/409 precedence is a later consumer concern, not proven here. |
+| Canonical snapshot bytes, unchanged fingerprint, strict JSON and safe errors | Named round-trip/nonfinite/invalid JSON tests pass, plus lossy-number, deep-nesting and Unicode rejection. Canonical fixtures do not prove original-model serialization. |
+| Raw and production pool TEXT equivalence on real migrated schema | All three states passed against PostgreSQL 18.6, with actual sessions and row counts above; no skipped/fake DB counted. |
+| No competing execution authority or production activation | Production import search finds codec -> identity and Vulture whitelist -> identity only. Codec has no production caller; no SQL mutation, HTTP/queue or live assessment change made. |
+| Actual evidence-json/model_of materialization, fingerprint-before-tagging, Run JSONB object INSERT, authorized principals/Workspace/Project/registered Graph | **UNVERIFIED**. Synthetic DTO/storage fixtures are not authorized production admission. |
+| Unchanged full required integration CI | **UNVERIFIED**; trusted-base provenance fails. Generic hosted `test: failure` remains **UNATTRIBUTED**; supplied deterministic logs and fresh scoped tests have no failing node. |
+
+All ten prospective test names execute, but this is codec/storage evidence,
+not reachable production acceptance. Owner-coordinated trusted-base resolution
+or separately approved real integration is required; candidate-side banking,
+fake imports, or the Vulture-only exception cannot resolve the proven blocker.
+Request the actual hosted failing step/traceback before assigning another test
+repair. Do not rerun this unchanged source/base expecting authorization to change.
+
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 1, next: coordinated
+reachability prerequisite and concrete hosted test failure evidence}`.
+
+## Previous revalidation — job 5e5bd0612b8c423b81f41ca949bbf5fa
 
 **BLOCKED; no reproduced defect permits a source or ledger repair.** Frozen
 scope: issue #1893 only, assigned `auto-1893` worktree; clean starting HEAD
