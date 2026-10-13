@@ -44,7 +44,6 @@ from maistro.goals.model import (
     GoalRevision,
     GoalRevisionConflict,
     GoalRevisionDraft,
-    GoalStatus,
     GoalTransitionError,
     GoalTransitionKind,
     GoalTransitionRecord,
@@ -206,7 +205,7 @@ class PgGoalStore:
                 goal.project_id,
                 goal.agent_id,
                 goal.parent_goal_id,
-                goal.status.value,
+                goal.status,
                 goal.current_revision,
                 goal.created_at,
                 goal.updated_at,
@@ -258,7 +257,7 @@ class PgGoalStore:
     async def transition_goal(
         self,
         goal_id: str,
-        to_status: GoalStatus,
+        to_status: str,
         *,
         expected_revision: int,
         actor: str,
@@ -268,7 +267,7 @@ class PgGoalStore:
         self._check_revision(goal, expected_revision)
         if not transition_is_legal(goal.status, to_status):
             raise GoalTransitionError(
-                f"{goal_id}: a Goal cannot move from {goal.status.value} to {to_status.value}"
+                f"{goal_id}: a Goal cannot move from {goal.status} to {to_status}"
             )
         moved_at = at or _utcnow()
         updated = goal.model_copy(update={"status": to_status, "updated_at": moved_at})
@@ -285,7 +284,7 @@ class PgGoalStore:
             outcome = await conn.execute(
                 _TRANSITION_SQL,
                 goal_id,
-                to_status.value,
+                to_status,
                 moved_at,
                 json_of(updated),
                 expected_revision,

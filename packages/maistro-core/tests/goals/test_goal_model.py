@@ -88,14 +88,43 @@ def test_goal_identity_fields_are_required() -> None:
             Goal(**fields)  # type: ignore[arg-type]
 
 
-def test_terminal_states_are_exactly_the_four_non_active_states() -> None:
-    all_statuses = frozenset([
+def test_goal_status_is_a_closed_five_state_vocabulary() -> None:
+    """The lifecycle constants are plain strings (deliberately not an enum), so
+    the model validator is the only guard on ``Goal.status`` — it must admit
+    exactly the five named states and reject everything else, including the
+    execution vocabulary a Goal must never carry and case/whitespace
+    near-misses of the real states."""
+    fields: dict[str, object] = {
+        "goal_id": "g",
+        "workspace_id": "ws-1",
+        "project_id": "prj-1",
+        "agent_id": "a",
+    }
+    for status in (
         GoalStatus.ACTIVE,
         GoalStatus.SATISFIED,
         GoalStatus.CANCELLED,
         GoalStatus.FAILED,
-        GoalStatus.SUPERSEDED
-    ])
+        GoalStatus.SUPERSEDED,
+    ):
+        assert Goal(**fields, status=status).status == status  # type: ignore[arg-type]
+        # Defaults land in the one mutable state.
+        assert Goal(**fields).status == GoalStatus.ACTIVE
+    for bogus in ("running", "queued", "completed", "ACTIVE", "", "  ", "satisfied "):
+        with pytest.raises(ValidationError, match="Invalid status"):
+            Goal(**fields, status=bogus)  # type: ignore[arg-type]
+
+
+def test_terminal_states_are_exactly_the_four_non_active_states() -> None:
+    all_statuses = frozenset(
+        [
+            GoalStatus.ACTIVE,
+            GoalStatus.SATISFIED,
+            GoalStatus.CANCELLED,
+            GoalStatus.FAILED,
+            GoalStatus.SUPERSEDED,
+        ]
+    )
     assert all_statuses - {GoalStatus.ACTIVE} == TERMINAL_GOAL_STATUSES
     # And the legality table agrees: only `active` has outgoing moves, and
     # no state may move to itself.
@@ -107,13 +136,15 @@ def test_terminal_states_are_exactly_the_four_non_active_states() -> None:
 
 
 def test_transition_legality_table() -> None:
-    all_statuses = frozenset([
-        GoalStatus.ACTIVE,
-        GoalStatus.SATISFIED,
-        GoalStatus.CANCELLED,
-        GoalStatus.FAILED,
-        GoalStatus.SUPERSEDED
-    ])
+    all_statuses = frozenset(
+        [
+            GoalStatus.ACTIVE,
+            GoalStatus.SATISFIED,
+            GoalStatus.CANCELLED,
+            GoalStatus.FAILED,
+            GoalStatus.SUPERSEDED,
+        ]
+    )
     assert not transition_is_legal(GoalStatus.ACTIVE, GoalStatus.ACTIVE)
     for terminal in TERMINAL_GOAL_STATUSES:
         assert transition_is_legal(GoalStatus.ACTIVE, terminal)

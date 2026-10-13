@@ -29,7 +29,6 @@ from maistro.goals.model import (
     GoalRevision,
     GoalRevisionConflict,
     GoalRevisionDraft,
-    GoalStatus,
     GoalTransitionError,
     GoalTransitionKind,
     GoalTransitionRecord,
@@ -46,8 +45,7 @@ def require_active(goal: Goal) -> None:
     """
     if goal.status in TERMINAL_GOAL_STATUSES:
         raise GoalTransitionError(
-            f"{goal.goal_id} is {goal.status} and cannot be mutated: "
-            "terminal Goal states are final"
+            f"{goal.goal_id} is {goal.status} and cannot be mutated: terminal Goal states are final"
         )
 
 
@@ -222,7 +220,7 @@ class InMemoryGoalStore:
     async def transition_goal(
         self,
         goal_id: str,
-        to_status: GoalStatus,
+        to_status: str,
         *,
         expected_revision: int,
         actor: str,

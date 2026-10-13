@@ -32,7 +32,6 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import UTC, datetime
-from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -155,7 +154,13 @@ class Goal(BaseModel):
             if self.parent_goal_id == self.goal_id:
                 raise ValueError("Goal cannot be its own parent")
         # Validate that status is one of the allowed values
-        if self.status not in {GoalStatus.ACTIVE, GoalStatus.SATISFIED, GoalStatus.CANCELLED, GoalStatus.FAILED, GoalStatus.SUPERSEDED}:
+        if self.status not in {
+            GoalStatus.ACTIVE,
+            GoalStatus.SATISFIED,
+            GoalStatus.CANCELLED,
+            GoalStatus.FAILED,
+            GoalStatus.SUPERSEDED,
+        }:
             raise ValueError(f"Invalid status: {self.status}")
         return self
 
@@ -191,10 +196,10 @@ class GoalTransitionRecord(BaseModel):
     #: The Goal's revision pointer after the recorded mutation — the state the
     #: actor had to hold for the compare-and-set to accept the change.
     revision: int = Field(ge=1)
-    from_status: Optional[str] = None  # noqa: V107
-    to_status: Optional[str] = None  # noqa: V107
-    from_agent_id: Optional[str] = None  # noqa: V107
-    to_agent_id: Optional[str] = None  # noqa: V107
+    from_status: str | None = None  # noqa: V107
+    to_status: str | None = None  # noqa: V107
+    from_agent_id: str | None = None  # noqa: V107
+    to_agent_id: str | None = None  # noqa: V107
 
     @model_validator(mode="after")  # noqa: V105
     def _validate_record(self) -> GoalTransitionRecord:

@@ -254,7 +254,7 @@ async def test_lifecycle_transitions_cas_and_terminal_is_final(backend) -> None:
         GoalStatus.SATISFIED,
         GoalStatus.CANCELLED,
         GoalStatus.FAILED,
-        GoalStatus.SUPERSEDED
+        GoalStatus.SUPERSEDED,
     ]
     for target in all_statuses:
         with pytest.raises(GoalTransitionError):

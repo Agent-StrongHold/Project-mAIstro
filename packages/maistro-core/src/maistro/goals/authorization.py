@@ -22,7 +22,6 @@ from maistro.goals.model import (
     Goal,
     GoalRevision,
     GoalRevisionDraft,
-    GoalStatus,
     GoalTransitionRecord,
 )
 from maistro.goals.store import GoalStore

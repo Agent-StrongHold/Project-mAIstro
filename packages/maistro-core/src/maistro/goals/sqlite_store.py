@@ -36,7 +36,6 @@ from maistro.goals.model import (
     GoalRevision,
     GoalRevisionConflict,
     GoalRevisionDraft,
-    GoalStatus,
     GoalTransitionError,
     GoalTransitionKind,
     GoalTransitionRecord,
@@ -199,7 +198,7 @@ class SqliteGoalStore:
     async def transition_goal(
         self,
         goal_id: str,
-        to_status: GoalStatus,
+        to_status: str,
         *,
         expected_revision: int,
         actor: str,
