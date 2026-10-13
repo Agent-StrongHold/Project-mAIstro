@@ -435,6 +435,7 @@ jobs:
             packages/maistro-core/tests/graph \
             packages/maistro-core/tests/projects \
             packages/maistro-core/tests/workspaces \
+            packages/maistro-core/tests/goals \
             packages/maistro-core/tests/scheduling \
             packages/maistro-core/tests/tasks/test_idempotency_purge_driven.py \
             packages/maistro-core/tests/tasks/test_pg_admission_atomicity_live.py \

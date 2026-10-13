@@ -574,6 +574,11 @@ class TestTheDowngrade:
         change: the stamp, the columns and the row itself all survive the
         failed attempt untouched."""
         assert _alembic("upgrade", "head").returncode == 0
+        # The head this test upgraded to, whatever the integrated chain's tip
+        # is: the assertion below is "the stamp did not move", not a fixed
+        # revision (the tip moves on every collision re-parent).
+        head = _stamped_version()
+        assert head == _chain_head()
         _insert_v2(_valid_v2_row(task_id="receipt-1", run_id="run-1", acknowledged_at=3000))
         _execute(_shipped_row_sql("legacy-claim", complete=True))
         before = _query("select * from task_idempotency order by scope_key")
@@ -585,7 +590,8 @@ class TestTheDowngrade:
         # A multi-revision downgrade is transactional: even revisions preceding
         # the refusal roll back, preserving the original head. Read that head
         # from the same version files the upgrade used, so subsequent migrations
-        # (including backlog authority and audit indexes) cannot stale a literal.
+        # (including backlog authority, audit indexes and the Goal store) cannot
+        # stale a literal.
         assert _stamped_version() == _chain_head()
         assert _query("select * from task_idempotency order by scope_key") == before
         assert "generation_id" in _v2_columns()
