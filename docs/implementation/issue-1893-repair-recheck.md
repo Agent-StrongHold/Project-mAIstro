@@ -1,5 +1,54 @@
 # Issue #1893 repair recheck
 
+## Follow-up at a58125490 (job 83fee0c236684fc69076a68b2d396ae3)
+
+Frozen item: #1893 only, assigned `auto-1893` worktree, clean starting HEAD
+`a58125490aabb7f3bf09a2dac49d5f7076bae56d`, trusted develop base
+`2154f845347c9541016288c760f8da3f5cd2e064` (also the locally resolved
+`origin/develop`). No sync conflict exists. No remote lists were refreshed.
+The historical results below are not fresh acceptance evidence for this round.
+
+Re-read the issue body from the supplied dispatch, repository instructions,
+accepted ADR-081226-a66b, ADR-082526-7f02 and ADR-083126-5e62, codec and adjacent
+contract tests, inventory and exact-debt-ledger workflow. Preserve
+Goal -> Graph -> Run -> NodeRun -> Attempt and immutable admission provenance.
+The Vulture-only exception cannot authorize a reachability grant or production
+consumer activation. No code or ledger change is justified by the fresh results:
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: **PASS**. No unbanked retained identity to amend.
+- `RATCHET_BASE_REV=2154f845347c9541016288c760f8da3f5cd2e064 uv run python scripts/check-ratchet-provenance.py`: **FAIL**, exit 1. Fresh `worker-provenance.log:20-29` rejects both new admission modules and dispositions, 169 trusted versus 171 candidate. The workflow requires this at `.github/workflows/vulture-ratchet.yml:77`.
+- `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q`: **201 passed, 3 skipped**. PostgreSQL legs were skipped, not durability proof. No database mutation or fresh database claim in this round.
+- `uv run ruff check .`: **PASS**; `uv run ruff format --check .`: **PASS**, 3301 files.
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py`: **PASS**, two files.
+- Production-source search still finds only codec -> identity and Vulture whitelist -> identity, not a live codec consumer. `admission_codec.py:50-53` states this boundary explicitly.
+
+Fresh acceptance: the executed pure tests cover shared interfaces, immutable
+DTOs, binding shapes, strict UUID/scalar validation, six error dispositions,
+header/full-decode separation, malformed JSON rejection, tagged snapshot
+preservation and unchanged stored fingerprint. They do **not** prove model
+fingerprinting before tagging, model materialization, authorized production
+admission, Run JSONB insertion or current database durability. Those criteria
+and full required integration CI remain **UNVERIFIED**. No new test or mutation
+claim; inventory delta **0**, existing inventory notes retained. Driver logs
+check-0 through check-4 were inspected (focused driver result 324 passed,
+3 skipped); they do not override the independently reproduced provenance failure.
+
+Additional focused validation:
+
+- `uv run pytest packages/maistro-core/tests/tasks packages/maistro-core/tests/runs packages/maistro-core/tests/extensions -x -q`: **2987 passed, 310 skipped, 5 warnings** in 64.31s. Warnings are aiosqlite callbacks after event-loop closure; they are not attributed to this codec or repaired speculatively.
+- `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests`: **PASS**, 16543 collected identities, no duplicate evidence.
+- `git diff --check`: **PASS**.
+- Extracted supplied check-run evidence once to `worker-ci-summary.log`: the captured #1945 head `90d4c278e6d729d41a3f30d9f17bc65025d6f59d` has test success and exact-debt-ledger failure. The failing test record is at #1855 head `3f2c79a70d9e1b0b6b6ffc99562cb35db5326828`, with no output traceback. Neither is the assigned HEAD. Generic assigned-head `test: failure` remains **UNRESOLVED**; request its exact step and traceback. No additional issue was processed.
+
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 1, next: trusted-base prerequisite and assigned-head CI traceback}`.
+
+Current verdict: **BLOCKED**, not a repaired implementation or merge approval.
+Only this report is changed. Job-local `worker-*.log` files hold executed gate
+and pytest output. Owner-coordinated trusted-base authorization or separately
+approved real consumer work is still required; neither is permitted in this
+repair. Do not repeat speculative codec or ledger edits to conceal that result.
+
+
 ## Frozen scope
 
 - Assigned worktree `/home/dev/Git/wt/auto-1893`, branch `auto-1893`.
