@@ -6148,3 +6148,61 @@ first-hand rather than inheriting either round-82's or that job's claims.
   is empty and no sanctioned in-lane repair exists. Writer handoff
   **MERGE-READY on leaf acceptance**; the stack stays unmerged pending the
   separately-scoped #1845 integration consumer.
+
+## Round-84 independent re-execution (2026-10-13, job 3c7e790e43ff44069393b88a7024f702)
+
+Head `7ff7dfb5cc80c0def350d7c59a596960959077bf` (the assigned exact starting
+head; worktree clean, no uncommitted salvage), base
+`3c761d14db944a727fa0744444bc67cfe36d49f7`; `git merge-base HEAD origin/develop`
+equals the base exactly (no develop sync conflict; branch 151 commits ahead).
+Nothing inherited from round 83: every acceptance criterion below was
+re-executed first-hand this round.
+
+- **Driver battery 5/5 rc=0** (job check-0..4 logs inspected): `uv sync
+  --locked --extra dev`, `ruff check .` ("All checks passed!"),
+  `ruff format --check .` (3277 files already formatted), focused trio
+  **315 passed**, `check-suite-inventory.py --suite
+  packages/maistro-core/tests` ok (16468 IDs).
+- **Issue-focused commands re-executed first-hand**: assessment suite
+  **132 passed**; C1 identity + live idempotency **140 passed**; scoped ruff
+  check clean + 2 files already formatted; `mypy` on the module: Success, no
+  issues found in 1 source file; suite-inventory rc=0. All 10 issue-named
+  tests present (defs at test-file lines 589 and 775–935); module read in
+  full: exact `_assess` signature, exact-class (not isinstance) record gate,
+  `[0-9a-f]{64}` fullmatch, bool-rejecting signed-int64 `now_us`, and the
+  issue's six-branch decision order as an ordered predicate table; purity
+  contract (no clock/store/log/UUID/mutation/HTTP) re-inspected.
+- **CI reds reproduced first-hand at this exact tree**:
+  `scripts/check-reachability.py` rc=1 with exactly 2 NEWLY UNREACHABLE of
+  1396/171 — `maistro.runs.admission_identity` and
+  `maistro.tasks.admission_generation`, by name; reachability meta-tests
+  **3 failed / 36 passed** with each extra set = exactly the two modules;
+  vulture at CI-exact argv (`packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`) **rc=0, 1323 -> 1323** — the lane-brief repair loop is
+  empty, nothing genuinely dead, NO ledger amendment due;
+  `check-ratchet-provenance.py` (RATCHET_BASE_REV=origin/develop) fails
+  SOLELY via the reachability trusted-base leg ("trusted-base gate returned
+  1") with shell-execution / contract-markers / enumerations / lifecycle
+  sub-ratchets all OK — the two-merge rule; an in-lane grant is forbidden by
+  the issue. The Coverage-gate producer (which runs `tests/`) dies on the
+  same 3 meta-tests; its diff-coverage leg was proven green first-hand at
+  rounds 79–83 and is inherited this round.
+- **All four issue-named mutation classes KILLED first-hand via a new,
+  independent /tmp sys.modules plugin** (mutated source exec'd over the real
+  module before collection, installed into `sys.modules` + parent package
+  attribute; zero tree writes): identical-source control **132 passed**;
+  swap TAKEOVER/REPLACE_EXPIRED **50 failed**; lease-before-binding (rows 3/5
+  swapped) **16 failed**; legacy-pending-as-v2 (LEGACY_UNRESOLVED row
+  disabled) **10 failed**; mismatch-before-expiry (rows 1/2 swapped, no
+  expiry exception) **22 failed**.
+- **Integrity**: `git diff --numstat origin/develop -- quality/` empty (0
+  rows); in-src importer scan for both modules matches only the modules
+  themselves and `_vulture_whitelist.py`; `idempotency.py`, `queue.py`, and
+  all `__init__.py` files zero-diff vs base; full diff vs base touches only
+  the 11 manifest surfaces; front-matter `inventory-delta: +132` equals the
+  collected assessment-suite count (no note update due).
+- **Verdict unchanged**: all four CI reds at this head reduce to the single
+  issue-sanctioned unwired-leaf blocker; the lane-brief vulture repair loop
+  is empty and no sanctioned in-lane repair exists. Writer handoff
+  **MERGE-READY on leaf acceptance**; the stack stays unmerged pending the
+  separately-scoped #1845 integration consumer.
