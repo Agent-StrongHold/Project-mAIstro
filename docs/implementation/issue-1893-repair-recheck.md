@@ -1,5 +1,90 @@
 # Issue #1893 repair recheck
 
+## Follow-up at c791ee59e (job 434a08ef9c9f4a668761f281ca59e5f1)
+
+**BLOCKED: the trusted-base prerequisite remains unmet.** One frozen item,
+#1893, clean assigned worktree `/home/dev/Git/wt/auto-1893`, starting SHA
+`c791ee59e5d5dea5a3e93eb11cb767f3907ce519`. Supplied base and resolved local
+`origin/develop` both equal `2154f845347c9541016288c760f8da3f5cd2e064`;
+that is also the merge base. No conflict, remote refresh, or GitHub mutation.
+Only this report changes; no source, tests, inventory counts, grants, ledgers,
+or gates change. Inventory delta **0**; existing inventory notes are retained.
+
+Read repository instructions, the supplied issue body/captured check records,
+prior result, driver check-0 through check-4, codec and identity constructors,
+adjacent codec tests, original inventory note, and exact-debt-ledger workflow.
+Accepted ADR-081226-a66b and ADR-082526-7f02 preserve canonical execution and
+immutable admission provenance. ADR-083126-5e62 preserves protected-base
+quality authority. Reconciliation: the Vulture-only exception cannot authorize
+reachability dispositions, and this typed leaf cannot invent the C consumer.
+
+### Independently executed checks
+
+All logs below are in
+`/home/dev/maistro/jobs/434a08ef9c9f4a668761f281ca59e5f1/`.
+Commands ran against the starting source SHA; historical outcomes were not
+substituted for execution.
+
+| Command | Outcome / log |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1322 findings / reviewed identities, zero unclassified; `worker-vulture.log`. No ledger amendment justified. |
+| `RATCHET_BASE_REV=2154f845347c9541016288c760f8da3f5cd2e064 uv run python scripts/check-ratchet-provenance.py` | **FAIL, exit 1**: two new modules and two dispositions unauthorized; `worker-provenance.log:20-29`. |
+| `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q` | 201 passed, 3 PostgreSQL skips (204 nodes); `worker-focused.log`. |
+| `uv run pytest packages/maistro-core/tests/tasks packages/maistro-core/tests/runs packages/maistro-core/tests/extensions -x -q` | 2987 passed, 310 skipped, 6 warnings (3297 nodes); `worker-adjacent.log`. Warnings are aiosqlite closed-event-loop callbacks, not attributed to this codec. |
+| `uv run ruff check .`; `uv run ruff format --check .` | PASS; `worker-ruff.log`, `worker-format.log`. |
+| `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py` | PASS, 2 source files; `worker-mypy.log`. |
+| `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests` | PASS; `worker-inventory.log`. |
+| `uv run python scripts/check-shipped-surface-truth.py` | PASS; `worker-surface.log`. |
+
+The failing ledger rows remain at `quality/reachability-baseline.json:131,147`
+and `quality/reachability-dispositions.json:612-613`. Production-source search
+(`worker-imports.log`) finds only codec -> identity and the Vulture whitelist
+import. `admission_codec.py:50-53` explicitly declares the missing consumer;
+test imports and exports do not establish runtime reachability.
+
+### Acceptance and evidence limits
+
+- Shared interfaces, frozen/slotted immutable DTOs, fresh flat mapping, named
+  fields, strict UUID hex, signed timestamps, header/row agreement and six
+  safe typed dispositions: source inspection and executed focused cases pass.
+- Legacy bound/unbound/partial/receipt-only distinctions, no fabricated IDs,
+  ignored `completed_at`, preserved expiry/fingerprint header evidence and
+  fail-closed unsupported format: executed prospective contract tests pass.
+  Both legacy IDs without receipt evidence correctly remain partial because
+  the binding DTO requires a receipt. Expiry/409 assessment belongs to C.
+- Canonical snapshot round trips, tags, strict JSON rejection, numeric/string
+  evidence and stored fingerprint preservation: focused tests pass. Actual
+  original-model fingerprint-before-tagging and `model_of`/`model_of_json`
+  materialization remain **UNVERIFIED**, not established by handcrafted tags.
+- Migrated PostgreSQL raw/production-pool durability, session identities,
+  final SQL row/identity counts and Run JSONB object INSERT: **UNVERIFIED in
+  this round**. Three focused PG cases skipped; no DB test ran. Synthetic
+  codec rows do not prove authorized principals/Workspace/Project/Graph admission.
+- No clock, admission/claim decision, SQL mutation, queue/HTTP/scope utility
+  changes or competing execution authority: source inspection supports the
+  inactive typed-only boundary; this round changes documentation only.
+  Reachable production admission remains **UNVERIFIED**, not activated here.
+- Focused checks, lint/format/mypy/inventory pass. Required integration CI is
+  **UNVERIFIED**, and the required provenance gate demonstrably **FAILS**.
+  No new pre-fix/mutation failure is claimed; no regression test was added.
+
+### CI attribution and next action
+
+`worker-dispatch-summary.log` extracts the supplied check records once. The
+captured #1945 head `90d4c278e6d729d41a3f30d9f17bc65025d6f59d` has test success
+and exact-debt-ledger failure. The captured failing test is at #1855 head
+`3f2c79a70d9e1b0b6b6ffc99562cb35db5326828`, with null output text/summary.
+Neither proves an assigned-head test failure. Generic `test: failure` is
+**UNRESOLVED** without its exact failing step/traceback; no speculative repair.
+
+Owner-coordinated trusted-base authorization or separately approved real
+consumer integration is required. Neither is permitted by this lane. Do not
+repeat unchanged-source/base repair rounds as if they could resolve that
+prerequisite. This is a committed evidence-only handoff, not merge approval.
+
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 1, next: coordinated
+reachability prerequisite and assigned-head CI failure traceback}`.
+
 ## Follow-up at b2991bca3 (job 09526c6ec4e44b939d7b203ca165ef35)
 
 **BLOCKED; no evidence-backed source repair identified.** Frozen scope: #1893
