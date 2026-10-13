@@ -6563,3 +6563,64 @@ container, both removed afterwards.
   separately-scoped #1845 integration consumer**, per the issue's own
   "report implementation/test readiness plus the explicit merge blocker and
   leave the stack unmerged" contract.
+
+## CI-repair revalidation round at 20c4208ec (develop base 2154f8453)
+
+Fresh CI-repair dispatch (job 023ef464); every gate re-executed first-hand at
+this head with the tree never edited. The develop base moved (3c761d14d ->
+2154f8453, merged in 8d944e321) and was re-checked for authorization movement:
+
+- **Driver battery 5/5 rc=0** (this job's check logs): `uv sync --locked
+  --extra dev`, `ruff check .` ("All checks passed!"), `ruff format --check .`
+  (3301 files), focused trio 316 passed, `check-suite-inventory.py --suite
+  packages/maistro-core/tests` ok at 16542 collected IDs (16468 develop + 74
+  from the develop sync + the leaf's +132 delta, exact).
+- **exact-debt-ledger reproduced leg-by-leg at CI exact argv**
+  (`RATCHET_BASE_REV=origin/develop` per vulture-ratchet.yml:52): vulture leg
+  GREEN rc=0, 1322 -> 1322, `unclassified: 0`, `never_allowlist: 0`; shipped
+  surface rc=0; provenance rc=1 SOLELY via the reachability sub-ratchet naming
+  `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`
+  (NEW unreachable, absent from trusted base, not previously authorized);
+  shell-execution 3->3, contract-markers 358->358, enumerations 1->1,
+  lifecycle 0->0 all OK.
+- **Lane-brief vulture repair loop EMPTY**: `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` lists zero
+  unbanked identities — nothing genuinely dead, no `vulture-baseline.json`
+  amendment due (79th consecutive empty round).
+- **Two-merge rule re-proven at the new base**: `origin/develop`
+  ratchet-authorizations.json reachability section holds 0 rows (the 5 textual
+  "admission" matches are unrelated vulture/radon rows:
+  `recover_stranded_chat_admissions`, the A2A transport-admission prose,
+  `scheduling/admission.py::admit_due`,
+  `canonical_execution._reconcile_admission`); develop
+  reachability-baseline.json holds 0 admission entries;
+  `ratchet_provenance.load_authorizations` (scripts/ratchet_provenance.py:478)
+  reads grants from the base revision, so a candidate grant cannot authorize
+  itself — and the issue forbids in-lane grants/baselines/waivers anyway.
+- **Direct gates re-run**: `check-reachability.py` rc=1 naming exactly the two
+  leaf modules (169 -> 171); `check-reachability-dispositions.py` rc=0 (49
+  groups, 147 CONNECT/20 LIBRARY/2 RETIRE); `check-promotion-surface.py` rc=0.
+- **Test-job red reproduced at its exact nodes**:
+  `tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `::test_the_baseline_is_exactly_the_unreachable_set`, and
+  `tests/test_check_reachability.py::test_baseline_matches_the_tree` fail (3
+  failed / 36 passed), each naming only the two admission modules via the
+  gate's own `::error` annotation; no `quality/ac-state.json` residue this
+  round.
+- **Acceptance battery re-executed**: leaf+identity suites 205 passed; live
+  idempotency 67 passed; named nodes (matrix, validation, purity, mutation
+  guard, subprocess import spy) 22 passed; mypy Success on both leaf modules;
+  leaf files byte-identical to the round-78 validated head bcb141992
+  (classifier sha 578c1f17), so the prior 4/4 mutation-kill evidence carries
+  over; decision table re-read at admission_generation.py:144-153 (exact issue
+  order, imports only re/Callable/admission_identity).
+- **Integrity**: `git diff --numstat origin/develop...HEAD -- quality/` empty;
+  idempotency/queue/__init__s zero-diff vs base; sole importer of the leaf
+  remains `_vulture_whitelist.py:105` (classification surface, not a runtime
+  consumer); no production importer.
+- **Verdict**: unchanged — leaf acceptance fully proven; all four CI reds
+  reduce to the single issue-sanctioned unwired-leaf blocker. The prior
+  round's BLOCKED attention request is resolved by this evidence: the named
+  vulture repair loop is empty, and no sanctioned in-lane repair exists. The
+  stack stays unmerged pending the separately-scoped #1845 integration
+  consumer.
