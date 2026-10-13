@@ -1,5 +1,59 @@
 # Issue #860 CI repair handoff
 
+## Current checkpoint — job bde1d171
+
+Frozen scope: #860 only; assigned clean `auto-860` worktree at
+`22f0fe1e41200945ab05d8a2ab828a49a8b4f144`, historical schema failure, exact
+vulture gate, current soak acceptance surfaces, and this handoff. No current-job
+`check-*.log` files were supplied. Read dispatch acceptance, prior result,
+repository instructions, accepted ADR-085 and ADR-082826-b601, production
+schema/limiter wiring and adjacent tests. The historical
+`98a11313167b41a98a420abfda80c292/check-3.log` is not current evidence.
+
+Fresh validation (1,200-second command timeouts):
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: PASS; 1,323 reviewed identities/findings, zero unclassified or never-allowlist findings. Arguments match both CI workflows; gate-selected base `3c761d14db94`. No ledger repair warranted.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py -x -q -rs`: **118 passed, 6 skipped**, 3.18 seconds. Skips require `MAISTRO_TEST_PG_DSN`; no live PostgreSQL proof claimed.
+- `uv run ruff check .`: PASS.
+- `uv run ruff format --check .`: PASS, 3,277 files.
+- `uv run python scripts/check-doc-links.py`: PASS, 2,704 Markdown files, zero broken links.
+- `uv run python scripts/check-backlog-consistency.py`: PASS, 168 items; existing finding classifications remain structurally valid, not proof of new load findings.
+- `git diff --check`: PASS. Supplied base `2154f845347c9541016288c760f8da3f5cd2e064` resolves; no merge conflict exists.
+
+The historical 24-versus-21 assertion no longer reproduces. The independent
+expected DDL at `test_pg_learnings.py:175–177` includes the three production
+audit columns at `pg_learnings.py:117–119`. Do not remove valid production DDL
+or amend a matching ledger to manufacture a repair.
+
+| #860 acceptance | Current evidence / disposition |
+| --- | --- |
+| Representative RC load profile | **UNVERIFIED**: `m3a-load-profile.md` explicitly lists missing concurrent users/Workspaces, fan-out, successful tool/model, Design/Canvas and Goal workloads. |
+| Two production replicas | **UNVERIFIED**: tests instantiate middleware, not deployed RC applications. |
+| Sustained saturation, reclaim, retries and leaks | **UNVERIFIED**: no qualifying sustained production experiment executed. |
+| No duplicate physical work / Goal reconciliation | **UNVERIFIED**: documented schedule probe cancels its queued Run without execution; admission uniqueness does not prove physical-work fencing. |
+| Replica-selection non-bypass / security / degraded behavior | **Not proven**: executed `test_soak_promotion_gates.py:439` reproduces independent 200/200/429 allowances on both replicas. Production `api/rate_limit.py:94` creates local state and `main.py:648` installs it. Deployment-level behavior remains **UNVERIFIED**. |
+| Required telemetry and explicit thresholds | **UNVERIFIED**: profile distinguishes driver-loop from application-loop lag and lacks qualifying saturation/reclaim/long-window measurements. |
+| Kill/restart during active work, drain/fencing/recovery | **UNVERIFIED**: no deployed active-work recovery experiment executed. |
+| Long-running exact-RC/configuration soak | **UNVERIFIED**: `run_soak.py:744` rejects the host preflight as exact-RC evidence regardless of duration; regression tests passed. |
+| Findings filed/reclassified before promotion | **UNVERIFIED** for new load findings: no new load experiment or GitHub mutation. |
+| Machine/human evidence bound to artifact/configuration hashes | **UNVERIFIED**: source-level tests cannot supply immutable RC image/configuration evidence. |
+
+**BLOCKED**, not a remaining demonstrated CI defect. Assumption: this repair
+assignment does not authorize inventing a release artifact or waiving acceptance.
+ADR reconciliation: preserve Goal -> Graph -> Run -> NodeRun -> Attempt and the
+canonical consumer; principal-keyed rate limiting does not establish a shared
+replica budget. Do not introduce another execution or authorization authority.
+
+Next prerequisite: select immutable RC/configuration, complete representative
+production workloads and physical-work/recovery/telemetry oracles, resolve the
+replica-budget claim, then execute the qualifying >=4-hour soak. A longer host
+preflight cannot satisfy the artifact gate. Only this handoff changes; no tests
+added, so no inventory delta; no runtime, gate, grant or ledger changes.
+
+Progress: checked 1, acceptance-complete 0, skipped 0 issues, validation errors 0;
+next: production-soak prerequisites. Local writer checkpoint, not integration
+approval. Historical checkpoints below are preserved.
+
 ## Current checkpoint — job fc068024
 
 Verified clean assigned HEAD `c3672bd87fea058041e816e9fb2e8fec91433d52`
