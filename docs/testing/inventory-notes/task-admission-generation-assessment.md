@@ -6790,3 +6790,72 @@ this round proves the red never belonged to the tree:
   issue-sanctioned unwired-leaf blocker. Per the issue's own completion
   contract the stack stays unmerged pending the separately-scoped #1845
   integration consumer.
+
+## Round 82 (job 3c245e02): CI at head completed — all four reds first-hand decomposed from CI logs to the single sanctioned reachability blocker; prescribed vulture repair set proven empty
+
+Round 81 and the verify job (2b26b79f) recorded hosted CI at this head as
+pending/UNVERIFIED. CI has now completed at exact head `933fcf2f4418`
+(base `2154f845347c` = `origin/develop`, unchanged — no develop sync conflict,
+no merge required). This round fetched the four failing jobs' logs and
+decomposed them first-hand, then re-proved every leg locally at CI-exact argv.
+
+**CI facts (from the fetched logs, runs 38443527889 / 38443527779 /
+38443528009):** exactly four checks fail — `exact-debt-ledger` (job
+115455892874), `test` (115455893368), `Quality gate (Pillars 1–4, 7, 8)`
+(115456483887), `Coverage gate` (115462722623). All four reduce to ONE root
+cause:
+
+- `exact-debt-ledger` evaluated GitHub's synthetic merge (baseline
+  `2154f845347c`, candidate `60776b016528`). Its log shows every ratchet leg OK
+  (adr-status 0, citation 0, promotion 270/74, dispositions 169, shell 3→3,
+  contract-markers 358→358, enumerations 1→1, lifecycle 0→0) and fails only on
+  `FAIL: reachability ratchet moved away from trusted state` naming exactly
+  `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`
+  ("current unreachable module missing from candidate baseline"), then
+  `FAIL: ratchet provenance inventory is incomplete`.
+- `Quality gate` fails at its `reachability ratchet (built-but-never-wired
+  modules)` step (`uv run python scripts/check-reachability.py`).
+- `test` fails exactly three root tests:
+  `tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `tests/test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`.
+- `Coverage gate` fails with the identical three FAILED lines inside its
+  `combine` step (3 failed, 5079 passed, 135 skipped).
+
+**Local re-proof at CI-exact argv this round (candidate 933fcf2f4418):**
+`RATCHET_BASE_REV=origin/develop check-ratchet-provenance.py` rc=1 with the
+same two named modules and all sibling legs OK (outputs match the CI log
+value-for-value); `check-reachability.py` rc=1 naming exactly the two modules;
+`check-shipped-surface-truth.py` rc=0; `check-vulture-baseline.py
+packages/*/src --min-confidence 60 --exclude '*/third_party/*'` **rc=0,
+1322 reviewed identities → 1322 findings, unclassified=0, never_allowlist=0**.
+The targeted root-test run reproduces the CI triple (3 failed, 12 passed) with
+the baseline set-delta being exactly the two modules and nothing else.
+
+**The driver-prescribed CI-repair recipe is provably a no-op:** the vulture
+per-identity ledger leg is green at CI argv — there are zero unbanked
+identities, nothing genuinely dead to remove, and no rows to add or strike in
+`quality/vulture-baseline.json`. The failing leg is reachability, whose only
+mechanical fixes are all forbidden for this leaf: a runtime consumer is the
+out-of-scope C3/#1845 integration (the leaf's own boundary test pins the
+unwired invariant); reachability baseline/authorization rows are forbidden by
+the issue ("No fake callers, baseline additions, grants, disabled gates or
+quality waivers") and structurally impossible to self-authorize
+(`load_authorizations` reads grants from the merge base, which has none).
+
+**Focused battery re-proven green at this head:** combined four-file run
+(`test_admission_generation_assessment.py` + `test_root_admission_identity.py`
++ `test_idempotency.py` + `test_pack_contracts.py`) **383 passed**; scoped
+`ruff check` + `ruff format --check` clean on the leaf pair; `mypy` on the
+leaf module: Success; `check-suite-inventory.py --suite
+packages/maistro-core/tests`: ok (matches recorded inventory). Integrity
+re-checked: zero production importers of `admission_generation`;
+`idempotency.py`, `queue.py`, all `__init__.py`, and the entire `quality/`
+tree zero-diff vs `origin/develop`.
+
+**Verdict:** unchanged and now CI-complete — leaf acceptance stands fully
+proven; all four hosted reds are the single issue-sanctioned unwired-leaf
+reachability blocker, exactly as the issue predicted ("check-reachability.py
+would classify the new module as newly unreachable"). Per the issue's own
+completion contract the stack stays unmerged pending the separately-scoped
+#1845 integration consumer.
