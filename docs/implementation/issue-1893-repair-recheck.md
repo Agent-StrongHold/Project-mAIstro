@@ -1,5 +1,74 @@
 # Issue #1893 repair recheck
 
+## Follow-up at 51ca9942b (job f339f77787aa46398e54a68d514110e9)
+
+Frozen scope: #1893 only, assigned clean `auto-1893` worktree, exact starting
+HEAD `51ca9942b32c1da400d085be0e98cf3522e82c73`, supplied trusted base
+`2154f845347c9541016288c760f8da3f5cd2e064`. No conflicting merge or incoming
+uncommitted work. No remote refresh or mutation. Only this report changed.
+Historical validation below is not evidence for this round.
+
+Read repository instructions, the supplied issue body, accepted
+ADR-081226-a66b, ADR-082526-7f02 and ADR-083126-5e62, codec/DTO implementations,
+codec tests and exact-debt-ledger workflow. Preserve canonical
+Goal -> Graph -> Run -> NodeRun -> Attempt and immutable admission provenance.
+The Vulture-only repair exception does not authorize reachability grants or
+consumer activation. Production import search finds only codec -> identity
+and whitelist -> identity; `admission_codec.py:50-53` explicitly documents no
+production consumer. A fake caller would not repair acceptance.
+
+Fresh commands (all logs in the job directory as `worker-*.log`):
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: **PASS**, 1322 reviewed identities/findings, zero unclassified. No ledger amendment justified.
+- `RATCHET_BASE_REV=2154f845347c9541016288c760f8da3f5cd2e064 uv run python scripts/check-ratchet-provenance.py`: **FAIL**, exit 1. `worker-provenance.log:20-29` rejects both admission modules and their dispositions: 169 trusted versus 171 candidate. Required by `.github/workflows/vulture-ratchet.yml:77`.
+- `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q`: **201 passed, 3 skipped**.
+- `uv run pytest packages/maistro-core/tests/tasks packages/maistro-core/tests/runs packages/maistro-core/tests/extensions -x -q`: **2987 passed, 310 skipped, 6 warnings** in 62.51s. Warnings concern aiosqlite callbacks after event-loop closure, not a reproduced codec failure.
+- `uv run ruff check .` and `uv run ruff format --check .`: **PASS**.
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py`: **PASS**.
+- `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests`: **PASS**, 16543 identities, no duplicate evidence.
+- `uv run python scripts/check-shipped-surface-truth.py`: **PASS**.
+
+Driver `check-0.log` through `check-4.log` were inspected: sync, lint, format,
+inventory passed; four-file test run 324 passed, 3 skipped. Independent commands
+above reproduce the blocker rather than relying on earlier reports.
+
+Fresh acceptance audit:
+
+- Shared immutable DTO/header interfaces, flat mapping, strict UUID hex and
+  signed scalars, header/row agreement, six safe typed errors, bound/unbound/
+  partial legacy distinctions, no invented identity, malformed JSON rejection,
+  expiry/fingerprint header separation and unknown-format rejection: covered
+  by the executed 201 pure tests and inspected implementation.
+- Snapshot/tag preservation and unchanged stored fingerprint: fixture-level
+  round trips pass. Actual original-model fingerprint-before-tagging,
+  evidence-json materialization via model_of/model_of_json and arbitrary
+  program_context model pipeline: **UNVERIFIED**, not established by hand-built
+  tags or fixed fingerprint fixtures.
+- Raw/production pools on a real migrated disposable PostgreSQL database:
+  **UNVERIFIED this round**; all three database cases skipped. No database
+  session, migration, durability or final SQL identity-count claim is made.
+- Authorized principals/Workspace/Project/Graph admission and Run JSONB object
+  INSERT: **UNVERIFIED**. No reachable production consumer exists for B2.
+- No SQL/HTTP/queue/clock/assessment/policy or execution-authority change:
+  inspected pure codec remains inactive; no source edits this round.
+- Full required integration CI: **UNVERIFIED**; required provenance gate
+  **FAILS**. Inventory delta **0**; no tests added and existing notes preserved.
+  No new pre-fix or mutation-test evidence is claimed.
+
+Captured CI attribution was extracted to `worker-ci-summary.log` without a
+remote refresh. Captured #1945 head `90d4c278e6d729d41a3f30d9f17bc65025d6f59d`
+has test success and exact-debt-ledger failure. The captured test failure is
+#1855 head `3f2c79a70d9e1b0b6b6ffc99562cb35db5326828`, with null output text;
+neither is this assigned HEAD. The generic `test: failure` is **UNRESOLVED**
+at the assigned HEAD; its exact failing step/traceback is needed. No speculative
+source or ledger edits were made to claim a repair.
+
+**BLOCKED**: coordinated trusted-base authorization or separately approved real
+consumer integration remains required; neither is allowed in this repair.
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 1, next: trusted-base
+prerequisite and assigned-head CI traceback}`. This is a validation handoff,
+not integration approval or issue closeout.
+
 ## Follow-up at a58125490 (job 83fee0c236684fc69076a68b2d396ae3)
 
 Frozen item: #1893 only, assigned `auto-1893` worktree, clean starting HEAD
