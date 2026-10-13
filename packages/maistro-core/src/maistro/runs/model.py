@@ -42,10 +42,16 @@ def _validate_finished_at(
         raise ValueError(f"non-terminal {subject} cannot have finished_at")
 
 
-def _serialize_attempt_without_unknown_cause(
+# Unannotated return, deliberately: pydantic derives the serialization-mode
+# JSON schema for a model with a wrap serializer from that serializer's return
+# annotation, so ``-> dict[str, Any]`` collapses Attempt's serialization schema
+# to ``{"type": "object", "additionalProperties": true}`` and hides every
+# field from schema consumers. Unannotated, pydantic keeps the declared fields;
+# mypy strict's no-untyped-def is suppressed for exactly this one site.
+def _serialize_attempt_without_unknown_cause(  # type: ignore[no-untyped-def]
     self: Attempt,
     handler: SerializerFunctionWrapHandler,
-) -> dict[str, Any]:
+):
     """Omit exactly one serialized key -- the unknown cancellation cause.
 
     Every pre-existing Attempt has ``cancellation_cause`` unknown, and the
