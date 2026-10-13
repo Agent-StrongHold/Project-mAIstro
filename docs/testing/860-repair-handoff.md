@@ -191,3 +191,70 @@ and configuration, complete workload/telemetry/physical-work oracles, reconcile
 the replica-budget requirement, then execute the required production soak.
 Progress: {checked: 1, done: 0, skipped: 0, errors: 0,
 next: exact-RC production acceptance prerequisites}.
+
+## Fresh bounded CI-repair review — job 72a1fe8b
+
+Frozen scope: issue #860, clean `auto-860` at
+`2fb817191711831869e01c32aef707786b049b83`; supplied develop base
+`2154f845347c9541016288c760f8da3f5cd2e064`. No pending merge or incoming
+uncommitted changes. Read repository instructions, the captured primary issue
+body, supplied prior result, and historical `98a11313/check-3.log`. No
+current-job driver `check-*.log` files were supplied. No remote list refreshed
+or GitHub mutation performed. Inherited out-of-scope branch changes are not
+certified by this review.
+
+The historical 21-versus-24 DDL failure is already repaired: the independent
+expectation at `packages/maistro-core/tests/persistence/test_pg_learnings.py:173`
+includes the three Gauntlet columns, while production keeps all upgrades behind
+its transaction-scoped advisory lock. The requested exact vulture scan reports
+no unmatched identities. Neither result justifies a source, test or ledger edit.
+Only this existing handoff is updated; no tests added, no inventory delta.
+
+### Executed checks
+
+Commands ran with 600–1,200 second timeouts (results recorded here, not inferred
+from earlier verification claims):
+
+| Command | Fresh result |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1,323 findings / 1,323 reviewed identities; zero unclassified / never-allowlist; reported trusted base `3c761d14db94` |
+| `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py -x -q` | 37 passed, 6 database-dependent skips |
+| `uv run ruff check .` | PASS |
+| `uv run ruff format --check .` | PASS: 3,277 files already formatted |
+| `uv run pytest packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py -x -q -rs` | 81 passed |
+| `uv run python scripts/check-backlog-consistency.py` | PASS: 168 items |
+| `uv run python -` importing the current soak evaluator and checking historical round-30 JSON | PASS: assertions confirm rejection for `sustain_duration` and `exact_rc_artifact`; not a fresh soak |
+
+### Acceptance and architecture reconciliation
+
+Read Accepted ADR-081426-1f7c, ADR-081626-f383 and ADR-085. Physical execution
+identity is Attempt; Run admission is not physical-work evidence. The canonical
+Run store retains fencing authority. The lease ADR explicitly leaves takeover
+semantics undefined; do not invent reclaim authority merely to satisfy the issue.
+ADR-081, referenced by the load profile, is **Proposed**, not accepted authority.
+No competing scheduler, Goal store, execution/event/authorization authority or
+change to `Goal -> Graph -> Run -> NodeRun -> Attempt` is introduced.
+
+| #860 criterion | Fresh disposition |
+| --- | --- |
+| Representative RC load profile | **UNVERIFIED**: profile explicitly lacks concurrent users/Workspaces, fan-out, successful tool/model calls, Design/Canvas and sustained Goal reconciliation. No immutable promotion RC/config selected in the assignment. |
+| At least two deployed application replicas | **UNVERIFIED**: executed tests use ASGI middleware instances, not deployed production RC replicas. |
+| Sustained saturation, queue growth, reclaim, retries, memory/FD/process leaks and shutdown | **UNVERIFIED**: focused tests and short historical evidence are not sustained production observations; six database tests skipped. |
+| No duplicated physical work, including Goal reconciliation | **UNVERIFIED**: `scripts/soak/run_soak.py:1067` cancels the admission probe without executing physical work. No production physical-work oracle exercised. |
+| Rate/security/degraded behavior without replica-selection bypass | **NOT PROVEN**: freshly executed `tests/test_soak_promotion_gates.py:439` reproduces independent `[200, 200, 429]` allowances for the same authenticated and unauthenticated identities on two production middleware instances. `main.py:648` installs that middleware; `api/rate_limit.py:95` creates its process-local limiter. Deployment-level guarantee remains **UNVERIFIED**; local 429s do not establish non-bypass. |
+| Complete telemetry and pass/fail thresholds | **UNVERIFIED**: sampler regressions pass, but no complete RC query/application-loop/worker/queue/error series collected. Driver loop lag does not measure application loop lag. |
+| Active-work kill/restart, drain, fencing and recovery | **UNVERIFIED**: no live production Attempt was killed/recovered this round; exit/rejoin and Run counts alone are insufficient. |
+| Long-running exact-RC artifact/config soak | **UNVERIFIED**: evaluated historical round 30 fails duration and artifact gates. `scripts/soak/run_soak.py:744` explicitly rejects host preflight as exact RC, irrespective of duration. |
+| Findings classified before final promotion | **UNVERIFIED** for completeness: backlog consistency passes, but no representative load experiment performed; no issue mutations permitted. |
+| Human/machine evidence bound to exact artifact/config hashes | **UNVERIFIED** for promotion: this checkpoint binds local validation to starting HEAD, not to a promoted image/config and sustained observations. |
+
+**BLOCKED for acceptance, not integration approval.** CI repair needs no ledger
+amendment: the scan is already exact. The supplied historical failure is stale.
+Next action is not another dispatch of that same failure: designate the immutable
+RC/config, complete its representative workload and physical-work/telemetry
+oracles, reconcile replica-selection semantics, then execute the qualifying
+production soak. Runtime/config changes require a new soak. Local commit of
+this checkpoint preserves the fresh evidence without cosmetic code changes.
+
+Progress: {checked: 1, done: 0, skipped: 0, errors: 0,
+next: exact-RC production acceptance prerequisites}.
