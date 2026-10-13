@@ -121,3 +121,51 @@ oracles. Resolve the documented rate-budget acceptance mismatch and peer receipt
 visibility through the canonical architecture, then execute the required long
 soak and publish hash-tied evidence. A passing vulture scan and local tests cannot
 resolve those release-evidence prerequisites.
+
+## Revalidation — job 02f8b17b, starting HEAD 5fcde94861d3
+
+This writer round rechecked the supplied failure rather than accepting the prior
+report. Scope remains #860 only; the assigned worktree started clean, with no
+merge conflict. No `check-*.log` was supplied in the current job directory.
+The supplied historical `98a11313/check-3.log` is the schema assertion failure,
+not a vulture failure. No production repair is justified by that stale result.
+
+Fresh commands (each with a 1200-second timeout):
+
+- Exact vulture invocation above: **passed**, 1323 findings / 1323 reviewed
+  identities, zero unclassified or forbidden identities. Ledger unchanged.
+- Exact focused pytest command above: **126 passed, 6 skipped**, 2.88 seconds.
+  The ordered schema-fence assertion now covers all 24 statements. Skips are
+  not PostgreSQL execution evidence.
+- `uv run ruff check .`: **passed**.
+- `uv run ruff format --check .`: **passed**, 3277 files.
+- `uv run python scripts/check-doc-links.py`: **passed**, 2684 Markdown files,
+  zero broken links.
+
+Raw logs: `/home/dev/maistro/jobs/02f8b17b5d204bbf995008edb978067b/worker-*.log`.
+This round changes only this existing handoff; it adds no tests, so no inventory
+note or baseline delta is needed. The earlier inventory execution above is
+historical, not a command rerun in this round.
+
+The acceptance table above remains **UNVERIFIED** at production-soak grade:
+no live load, exact-RC deployment, or kill/restart was executed. Freshly executed
+production middleware probes still observe independent replica allowances
+(`tests/test_soak_promotion_gates.py:439`), and the production task-router probe
+still observes a peer receipt 404 (`:564`). The CLI rejection tests (`:105`)
+still reject synthetic four-hour evidence without the exact artifact; they do
+not run a four-hour workload. Thus there is no new hash-tied promotion evidence
+or under-load finding to file. This is not integration approval.
+
+Accepted ADR-081226-a66b and ADR-081626-f383 were reread: preserve
+Goal -> Graph -> Run -> NodeRun -> Attempt and canonical store fencing. In
+particular, expiry takeover is outside the accepted fencing contract; the
+issue's reclaim wording does not authorize a new scheduler or timeout-based
+execution authority.
+
+**BLOCKED / UNRESOLVED:** exact-RC/config selection, representative production
+workloads and physical-work/metric oracles remain prerequisites. A further
+unchanged-head lint or smoke-test round cannot satisfy them. Stop this item
+rather than inventing a ledger repair or changing the documented rate policy.
+Progress: checked 1 issue, done 0, skipped 0, fresh command errors 0; next is
+owner-designated RC/configuration and an ADR-compatible production-soak plan,
+not another CI repair of this non-reproducing failure.
