@@ -6624,3 +6624,95 @@ this head with the tree never edited. The develop base moved (3c761d14d ->
   vulture repair loop is empty, and no sanctioned in-lane repair exists. The
   stack stays unmerged pending the separately-scoped #1845 integration
   consumer.
+
+## CI-repair revalidation round at 29364cf48 (80th consecutive empty vulture-repair loop)
+
+Fresh CI-repair dispatch (job 278ff2019); the prior job (ca1206b53) died on a
+provider timeout AFTER its green 5/5 driver battery, so only that battery is
+inherited; everything below was re-executed first-hand at this head with the
+tree never edited. Head/base unchanged (HEAD 29364cf480a6, develop base
+2154f845347c = merge-base = origin/develop; no sync conflict;
+`git diff --numstat origin/develop -- quality/` empty).
+
+- **Driver battery 5/5 rc=0** (this job's check logs): `uv sync --locked
+  --extra dev`, `ruff check .` ("All checks passed!"), `ruff format --check .`
+  (3301 files already formatted), focused trio 316 passed,
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok at 16542
+  collected IDs (matches the recorded inventory; front-matter +132 == the
+  leaf's collected 132 — no note update due).
+- **Issue-focused commands re-executed**: leaf suite 132 passed; C1
+  `test_root_admission_identity.py` + live `test_idempotency.py` 140 passed;
+  leaf-scoped ruff check/format clean; `mypy admission_generation.py` Success;
+  all 10 issue-named tests present (defs 589, 775-935); classifier full-read
+  reconfirms the exact-class gate (`type(record) is`), `[0-9a-f]{64}`
+  fullmatch, bool-rejecting signed-int64 `now_us`, and the six-branch decision
+  order as a deferred-predicate table (admission_generation.py:144-153).
+- **exact-debt-ledger reproduced leg-by-leg at CI exact argv**
+  (`RATCHET_BASE_REV=origin/develop`): vulture leg GREEN rc=0, 1322 -> 1322,
+  `unclassified: 0`, `never_allowlist: 0` — the lane-brief amendment loop is
+  EMPTY (nothing genuinely dead, no `vulture-baseline.json` amendment due);
+  shipped-surface rc=0; provenance rc=1 SOLELY via the reachability
+  sub-ratchet (169 -> 171, NEW unauthorized
+  `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`);
+  shell-execution 3->3, contract-markers 358->358, enumerations 1->1,
+  lifecycle 0->0, adr-status 0, citation 0, promotion 74/270,
+  reachability-dispositions 169/169 all OK.
+- **Two-merge rule re-proven at source**: 0 rows in
+  `quality/ratchet-authorizations.json` (branch or origin/develop) name either
+  module; `ratchet_provenance.load_authorizations`
+  (scripts/ratchet_provenance.py:478) reads grants from the base revision, so
+  a candidate grant cannot authorize itself — and the issue forbids in-lane
+  grants/baselines/waivers.
+- **Direct gates re-run**: `check-reachability.py` rc=1 naming exactly the two
+  leaf modules (2 NEWLY UNREACHABLE of 1403); `check-reachability-dispositions.py`
+  rc=0 (49 groups / 169: 147 CONNECT, 20 LIBRARY, 2 RETIRE);
+  `check-promotion-surface.py` rc=0.
+- **Test-job red reproduced at CI-exact scope**
+  (`pytest tests/ --ignore=tests/tools/registry`): 3 failed / 4975 passed /
+  135 skipped — exactly the three reachability meta-tests
+  (`test_check_reachability.py::test_baseline_matches_the_tree`, both
+  `test_reachability_baseline_identity.py` gate-identity tests), each naming
+  only the two admission modules via the gate's own `::error` annotation.
+- **Coverage gate**: the merge-queue CI log for this exact head was fetched
+  read-only (job 115414147361): its scripts producer fails with exactly the
+  same three meta-tests (3F/5079P/135S) — and `cli_lock` does NOT appear, so
+  the diff-coverage leg's inputs are unaffected. The diff-coverage leg was
+  re-proven GREEN first-hand via the exact CI core producer
+  (`coverage run --branch --source=packages/maistro-core/src/maistro -m
+  pytest packages/maistro-core/tests --timeout=30 -q`, COVERAGE_FILE in /tmp,
+  zero tree writes; 1F/15475P/1063S/3xF in 350.74s), then `coverage xml` +
+  `check-diff-coverage.py --base 2154f845347c` rc=0: 3 measured changed files
+  (both leaf modules + packs.py) at or above 90% lines / 80% branch arcs,
+  the 3 test files exempt by declaration, `_vulture_whitelist.py`
+  unmeasured-informational.
+- **New base-environment artifact, not branch-attributable**:
+  `packages/maistro-core/tests/extensions/test_cli_lock.py::
+  test_lock_commands_exit_nonzero_for_an_invalid_lock` fails in this local
+  environment because rich console wrapping splits the asserted phrase
+  (`is not\na valid extension lock`) in `cli/_extensions.py:176`; it
+  reproduces byte-identically on a throwaway worktree at pure
+  origin/develop (2154f8453), both files were last touched on develop by the
+  M9 merges (#1998/#2005/#2019), the branch's extensions diff touches only
+  `packs.py` + `test_pack_contracts.py`, and CI's own log at this head shows
+  the test passing. Left untouched: outside this leaf's scope.
+- **Mutations re-killed 4/4 via a NEW /tmp SourceFileLoader plugin**
+  (mutated source exec'd into `maistro.tasks.admission_generation` before test
+  collection; sys.modules + parent attribute set; the repo tree never
+  touched; plugin proven inert without its env var — control 132 passed):
+  swap TAKEOVER/REPLACE_EXPIRED **50 failed**; lease-before-binding
+  **14 failed**; legacy-pending-as-v2 **10 failed**; mismatch-before-expiry
+  **22 failed**.
+- **Integrity**: no ledger, baseline, grant, disposition, export or wiring row
+  added or edited (`git diff --numstat origin/develop -- quality/` empty;
+  `tasks/idempotency.py`, `tasks/queue.py`, `tasks/__init__.py`,
+  `runs/__init__.py` zero-diff vs base); zero references to
+  `admission_generation` under `packages/*/src` + `scripts/` outside the
+  module itself; the sole in-src importer of `admission_identity` remains
+  `_vulture_whitelist.py:105` (classification surface, not a runtime
+  consumer).
+- **Verdict**: leaf acceptance stands fully proven; all four CI reds reduce to
+  the single issue-sanctioned unwired-leaf blocker. The issue forbids every
+  mechanism that would green them (callers/wiring, baseline entries,
+  dispositions, grants, waivers, exports) and the two-merge rule forbids
+  self-authorization at this base. The stack stays unmerged pending the
+  separately-scoped #1845 integration consumer.
