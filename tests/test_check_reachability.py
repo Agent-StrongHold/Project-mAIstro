@@ -104,6 +104,16 @@ def test_known_wired_subsystems_are_reachable(check):
         assert mod not in unreachable, f"{mod} lost its production call path"
 
 
+# Two whole-repo walks each — `unreachable_modules()` to borrow the baseline
+# entries, then `main()` to run the gate against them — and under the
+# coverage-gate producer every line of the walk itself is traced
+# (`--source=scripts`). Measured at ~7.5s untraced against the suite's 30s
+# default; the 2026-10-09 merge-queue run (37876585845) reded both at >30s on
+# a slower runner, so the margin is stated here rather than rediscovered per
+# runner. Same shape as test_check_cross_package_imports.py::120 and
+# test_check_execution_lifecycles.py::180. The assertions are untouched —
+# this widens only the latency bound on the self-check.
+@pytest.mark.timeout(180)
 def test_new_unreachable_module_fails_the_gate(check, tmp_path, monkeypatch, capsys):
     """The gate's whole job. Simulated by shrinking the baseline rather than
     writing a file into packages/, so a crashed test cannot leave a stray module
@@ -119,6 +129,7 @@ def test_new_unreachable_module_fails_the_gate(check, tmp_path, monkeypatch, cap
     assert unreachable[0] in capsys.readouterr().out
 
 
+@pytest.mark.timeout(180)
 def test_module_becoming_reachable_fails_until_the_baseline_is_pruned(
     check, tmp_path, monkeypatch, capsys
 ):
