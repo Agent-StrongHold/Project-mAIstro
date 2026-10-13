@@ -386,6 +386,33 @@ def main(argv: list[str]) -> int:
     scan_args = scan_args or ["packages", "tests", "--exclude", "*/.venv/*,*/node_modules/*"]
 
     candidate = _load_baseline()
+    print(f"Loading baseline from: {BASELINE}", file=sys.stderr)
+    print(
+        f"Current baseline admission_identity.py findings for pydantic-declarative-field:",
+        file=sys.stderr,
+    )
+    # Find pydantic-declarative-field rule
+    for rule in candidate["rules"]:
+        if rule["id"] == "pydantic-declarative-field":
+            findings = rule.get("findings", [])
+            admission_findings = [f for f in findings if "admission_identity.py" in f]
+            print(f"  Count: {len(admission_findings)}", file=sys.stderr)
+            for f in sorted(admission_findings):
+                print(f"    {f}", file=sys.stderr)
+            break
+    # Find protocol-and-adapter-port rule
+    for rule in candidate["rules"]:
+        if rule["id"] == "protocol-and-adapter-port":
+            findings = rule.get("findings", [])
+            admission_findings = [f for f in findings if "admission_identity.py" in f]
+            print(
+                f"Current baseline admission_identity.py findings for protocol-and-adapter-port:",
+                file=sys.stderr,
+            )
+            print(f"  Count: {len(admission_findings)}", file=sys.stderr)
+            for f in sorted(admission_findings):
+                print(f"    {f}", file=sys.stderr)
+            break
     candidate_rules = list(candidate["rules"])
     findings = _run_vulture(scan_args)
     candidate_classification = _classify(findings, candidate_rules)
