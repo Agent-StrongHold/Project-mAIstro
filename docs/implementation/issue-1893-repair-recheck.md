@@ -1,5 +1,74 @@
 # Issue #1893 repair recheck
 
+## Follow-up at 0c5dd63a6 (job 1c318f54b86e4c1fa05104f17e642bbc)
+
+Frozen item: #1893 only; clean assigned `auto-1893` worktree at
+`0c5dd63a647dd99a9425362153014a59a25102b1`, trusted base
+`2154f845347c9541016288c760f8da3f5cd2e064` (also local `origin/develop`).
+No merge conflict or incoming changes. Read supplied dispatch issue/PR/check-run
+evidence, prior result, repository instructions, accepted ADR-081226-a66b,
+ADR-082526-7f02 and ADR-083126-5e62, codec/DTO implementations and adjacent tests.
+Only this report changed; no source, test, ledger, grant, gate or activation edit.
+Inventory delta is **0**; existing inventory notes remain unchanged.
+
+### Fresh validation
+
+Logs are under `/home/dev/maistro/jobs/1c318f54b86e4c1fa05104f17e642bbc/`.
+These are this round's executions, not inherited verification claims:
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: **PASS**, 1322 reviewed identities/findings, zero unclassified (`worker-vulture.log`). No retained unbanked identity warrants the permitted Vulture amendment.
+- `RATCHET_BASE_REV=2154f845347c9541016288c760f8da3f5cd2e064 uv run python scripts/check-ratchet-provenance.py`: **FAIL**, exit 1 (`worker-provenance.log:20-29`). Both admission modules and dispositions lack trusted-base authorization: 169 trusted versus 171 candidate. This remains a required exact-debt-ledger step at `.github/workflows/vulture-ratchet.yml:77`.
+- `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q`: **201 passed, 3 skipped**, 204 collected (`worker-focused.log`).
+- `uv run pytest packages/maistro-core/tests/tasks packages/maistro-core/tests/runs packages/maistro-core/tests/extensions -x -q`: **2987 passed, 310 skipped, 6 warnings**, 3297 collected (`worker-adjacent.log`). Warnings are aiosqlite worker callbacks after event-loop closure; no codec failure reproduced.
+- `uv run ruff check .` and `uv run ruff format --check .`: **PASS**, 3301 formatted files.
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py`: **PASS**, two source files.
+- `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests`: **PASS**, 16543 collected identities, no duplicate evidence (`worker-inventory.log`).
+- `uv run python scripts/check-shipped-surface-truth.py`: **PASS** (`worker-surface.log`).
+
+Driver `check-0.log` through `check-4.log` were separately inspected: sync,
+lint, format and inventory passed; four-file pytest reported 324 passed and
+3 skipped. Those results do not override the reproduced provenance failure.
+
+### Acceptance and unresolved repair
+
+Executed pure tests establish immutable DTOs, named scalar/flat mapping,
+strict storage UUIDs, signed timestamps, header/row agreement, six typed safe
+error dispositions, exact supported snapshot round trips, malformed JSON
+rejection, tagged evidence preservation, unchanged stored fingerprint, and
+bound/unbound/partial legacy distinctions without invented identity. Header
+expiry/fingerprint evidence survives full-record failures. Storage assertions
+at `test_admission_codec.py:134-137` independently check both binding columns;
+no new pre-fix or mutation-test result is claimed this round.
+
+**UNVERIFIED this round:** real migrated disposable PostgreSQL raw/production
+pool parity and final SQL counts (all three PG legs skipped); original-model
+fingerprinting before tagging and materialization via `model_of/model_of_json`;
+authorized Workspace/Project/principal/registered-Graph admission and Run JSONB
+object insertion; full required integration CI. Fixture tags and a fixed
+fingerprint prove codec preservation, not the complete model/admission pipeline.
+
+Production-source import search finds only codec -> identity and Vulture
+whitelist -> identity. `admission_codec.py:50-53` states no runtime consumer
+exists. Preserve Goal -> Graph -> Run -> NodeRun -> Attempt and immutable
+admission provenance: the staged leaf cannot be made reachable by inventing a
+caller or activating the later consumer. Under ADR-083126-5e62, the Vulture-only
+exception does not authorize reachability grants or candidate self-approval.
+No SQL mutation, HTTP mapping, queue, clock, assessment or policy change made.
+
+Captured check-run attribution was extracted once to `worker-ci-summary.log`:
+#1945 at `90d4c278e6d729d41a3f30d9f17bc65025d6f59d` has test success and
+exact-debt-ledger failure; #1855 at
+`3f2c79a70d9e1b0b6b6ffc99562cb35db5326828` has test failure with null output text.
+Neither is the assigned HEAD. The requested assigned-head `test: failure`
+remains **UNRESOLVED** without its exact failing step/traceback; no speculative
+repair is justified. No additional issue was processed or remote list refreshed.
+
+**BLOCKED**: requires a separately coordinated trusted-base prerequisite (or
+separately authorized real consumer integration) and assigned-head test failure
+evidence. A documentation commit preserves this handoff, not a repaired gate or
+integration approval. Progress: `{checked: 1, done: 0, skipped: 0, errors: 1,
+next: trusted-base prerequisite and assigned-head CI traceback}`.
+
 ## Follow-up at 51ca9942b (job f339f77787aa46398e54a68d514110e9)
 
 Frozen scope: #1893 only, assigned clean `auto-1893` worktree, exact starting
