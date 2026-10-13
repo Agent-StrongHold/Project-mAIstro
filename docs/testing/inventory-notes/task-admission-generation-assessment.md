@@ -5893,3 +5893,88 @@ from earlier rounds on trust. No leaf file was edited.
   blocker. Verdict: writer handoff **MERGE-READY on leaf acceptance**;
   the stack stays unmerged pending the separately-scoped #1845
   integration consumer.
+
+## Round-81 independent re-execution (2026-10-13, head `cc262f2ed8a8`)
+
+Fresh CI-repair dispatch (job 31b51f26c8444263b24ff0d55b8e4e19) at unchanged
+head `7117e38c190a2cebf177c09cf5791f5e8b108bb7`; base 3c761d14db94 =
+merge-base = origin/develop (no sync conflict; `git merge-base HEAD
+origin/develop` == `git rev-parse origin/develop` == base). Every claim below
+re-executed first-hand this round; nothing taken from earlier rounds on
+trust. No leaf file edited; the tree is clean apart from this log.
+
+- **Driver battery 5/5 rc=0** (job check-0..4.log): `uv sync --locked
+  --extra dev`; `ruff check .` ("All checks passed!"); `ruff format --check
+  .` (3277 files); focused trio **315 passed**; core-suite inventory 16468
+  IDs ok.
+- **Issue focused commands**: assessment suite **132 passed** (2.06s);
+  identity+idempotency **140 passed** (4.58s); scoped `ruff check` /
+  `ruff format --check` clean; `mypy admission_generation.py` Success; FULL
+  `scripts/check-suite-inventory.py` **rc=0** (17 suites / 31335 IDs match
+  the recorded inventory — no note update due). All 10 issue-named tests
+  present verbatim (defs at test-file lines 775–935).
+- **exact-debt-ledger reproduced leg-by-leg at CI exact argv**
+  (vulture-ratchet.yml:77–85, `RATCHET_BASE_REV=origin/develop`): the
+  lane-brief vulture repair loop is **EMPTY** — `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` **rc=0**
+  (1323 reviewed → 1323 findings, unclassified=0, never_allowlist=0: no
+  unbanked identity, nothing genuinely dead, NO AMENDMENT DUE, 81st
+  consecutive empty round); `check-shipped-surface-truth.py` **rc=0**;
+  `check-ratchet-provenance.py` **rc=1 SOLELY** via the reachability
+  sub-ratchet ("NEW unreachable module absent from trusted base and not
+  previously authorized") naming exactly `maistro.runs.admission_identity`
+  + `maistro.tasks.admission_generation`, with all sibling sub-ratchets OK
+  (shell 3→3, contract-markers 358→358, enumerations 1→1, lifecycle 0→0,
+  contradictions 0, citations 0, promotion 270 modules, dispositions 169).
+  The two-merge blocker stands: grants are read from the base revision, and
+  origin/develop carries no admission grant rows; the issue forbids
+  in-lane grants/baselines/callers/waivers, so no sanctioned in-lane repair
+  exists.
+- **Quality pillars**: `check-reachability.py` **rc=1** with exactly 2
+  NEWLY UNREACHABLE modules out of 1396/171 — first-hand delta computation:
+  baseline json holds 169 rows, live unreachable is 171, added = exactly
+  the two admission modules, stale = []; `check-reachability-dispositions`
+  **rc=0**; `check-promotion-surface` **rc=0**; `check-radon-baseline`
+  **rc=0** (137→137 C-or-worse blocks); `check-convergence-matrix` **rc=0**
+  (52 subsystems classify all 1396 modules, 169 attributed); xenon at the
+  CI-exact argv **139 blocks ≤ 145** baseline, 0 module and 0 average
+  violations. Pitfall recorded: the project venv has no xenon (CI installs
+  it via `uv pip install`), so the first "0 violations" readout was a
+  failed spawn ("Failed to spawn: `xenon`"), not a pass — after installing
+  xenon 0.9.3 the real count is 139.
+- **test-job red reproduced at CI exact scope** (ci.yml:657 `pytest tests/
+  packages/hive-conductor/backend/tests packages/maistro-design/tests -q
+  --timeout=60`): **4 failed / 9257 passed / 150 skipped in 447s**. Three
+  failures are the reachability meta-tests
+  (`test_check_reachability.py::test_baseline_matches_the_tree`,
+  `test_reachability_baseline_identity.py` x2), each computing the same
+  two-module delta. The fourth
+  (`test_branch_independence_repository.py::test_every_quality_json_state_surface_is_classified_once`,
+  "unclassified quality state: quality/ac-state.json") is **local residue
+  only**: `quality/ac-state.json` is gitignored (.gitignore:81), untracked,
+  dated 2026-10-06, hence absent from every CI checkout — it contributes
+  nothing to CI.
+- **Coverage gate attribution**: the producer leg (quality.yml:712) runs
+  `tests/` under coverage, so it dies on the same 3 meta-tests; the
+  diff-coverage leg was proven GREEN first-hand in rounds 79/80 at this
+  identical tree (rc=0 vs base, 3 measured files ≥ 90% lines / 80% branch).
+- **All four issue-named mutation classes KILLED first-hand** via a /tmp
+  `-p` plugin that execs mutated source into the imported
+  `maistro.tasks.admission_generation` namespace before collection (tests
+  call `admission_generation._assess` by module attribute; zero tree
+  writes, `git status` clean after): swap TAKEOVER/REPLACE_EXPIRED **50F**,
+  lease-before-binding **14F**, legacy-as-v2 **10F**, mismatch-before-
+  expiry **22F**; identical-source control through the same harness
+  **132P**.
+- **Integrity**: `git diff --numstat origin/develop -- quality/` empty;
+  `tasks/idempotency.py`, `tasks/queue.py`, `tasks/__init__.py`,
+  `runs/__init__.py` zero-diff vs base; zero references to
+  `admission_generation` under `packages/*/src` outside the module itself;
+  0 issue-closure keywords in branch commits; front-matter
+  `inventory-delta: +132` still equals the collected assessment-suite
+  count exactly.
+- All four CI reds at this head (exact-debt-ledger, Quality gate, test,
+  Coverage gate) reduce to the single issue-sanctioned unwired-leaf
+  blocker. Verdict: writer handoff **MERGE-READY on leaf acceptance**; the
+  stack stays unmerged pending the separately-scoped #1845 integration
+  consumer.
