@@ -105,6 +105,13 @@ EXPECTED_TABLES = frozenset(
         # score names the Run, NodeRun and Attempt it scored, so it is
         # execution evidence, not a sidecar lifecycle.
         "canonical_run_eval_scores",
+        # The canonical Goal store (#1572, 063): identity + Subgoal lineage,
+        # the append-only desired-state revision chain, and the recorded,
+        # attributed transition ledger. Desired state and accountability, not
+        # execution state — they are NOT children of canonical_runs.
+        "canonical_goals",
+        "canonical_goal_revisions",
+        "canonical_goal_transitions",
         # The Workspace those Projects and Runs belong to (#516). Their
         # `workspace_id` columns were bare Text with nothing to reference
         # until migration 019 gave the Workspace a table of its own.
@@ -185,8 +192,10 @@ EXPECTED_TABLES = frozenset(
         # a second Run (#1176).
         "task_idempotency",
         "tasks",
-        # The durable cross-Workspace user model (#1047, 056, re-parented past
-        # develop's 054 and 055): one row per fact
+        # The durable cross-Workspace user model (#1047, 056 — the identity
+        # develop merged in #1951's c560d4c, kept so installed databases
+        # upgrade forward without a stamp edit):
+        # one row per fact
         # revision, plus the owner-bound statement keys that keep a tombstone
         # blocking every wording its lineage ever held.
         "user_model_facts",

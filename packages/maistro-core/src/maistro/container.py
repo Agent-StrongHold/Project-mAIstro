@@ -39,6 +39,9 @@ from maistro.events.consumer_cursor import (
     DEFAULT_HOLE_GRACE_SECONDS,
     LEGACY_BRIDGE_CONSUMER_ID,
 )
+from maistro.goals.authorization import ScopedGoalStore
+from maistro.goals.store import GoalStore
+from maistro.goals.wiring import wire_goal_store
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
@@ -262,6 +265,26 @@ class Container:
     #: (AC-5); in-memory with a loud warning otherwise, because PostgreSQL
     #: campaign tables are not part of the schema yet.
     campaign_store: CampaignStore | None = None
+    #: The canonical Goal store (`maistro.goals`, #1572) on the deployment's
+    #: selected backend — the ontology owner of the shared Goal concept.
+    #: Raw (id-addressed) on purpose: authorization is not the store's job,
+    #: it lives in the `goal_reader` seam below, over the canonical Workspace
+    #: authorization path (#1150).
+    goal_store: GoalStore = None  # type: ignore[assignment]  # wired in create_container
+
+    @property
+    def goal_reader(self) -> ScopedGoalStore:
+        """The principal-carrying Goal seam over `goal_store` (#1572).
+
+        Derived rather than stored — it wraps two stores this Container
+        already wires, so a second stored object would be a second thing to
+        keep in step. Workspace membership decides who may read or mutate a
+        Goal, and a foreign Goal answers like a missing one. What
+        `run_reader` is to `run_store`, this is to `goal_store`.
+        """
+
+        return ScopedGoalStore(self.goal_store, self.workspace_store)
+
     #: Durable log-as-context for repeated autonomous work (#301, M4-H): the
     #: append-only per-Workspace observation log and the disposable working
     #: graphs projected over it (ADR-082226-5104 §5-6). Rides the SQLite pool
@@ -2379,6 +2402,16 @@ async def create_container(
     # deployment gets the in-memory fallback plus a startup warning naming
     # the cost, rather than a silent durability lie (#103, AC-5).
     campaign_store: CampaignStore | None = await _wire_campaign_backend(db_pool)
+    # The canonical Goal store rides the same backend decision, upgraded where
+    # the deployment offers it: a PostgreSQL pool always selects the durable
+    # PgGoalStore, creating the migration-063 tables when the database has not
+    # run `alembic upgrade head` yet — the event stores' "wiring creates the
+    # schema it needs" contract, never a second (in-process) backend (#1572).
+    # Without a PG pool, SQLite selects its twin and no database selects memory
+    # with a warning.
+    # The authorized `goal_reader` seam is derived on
+    # the Container from this store and the Workspace store.
+    goal_store = await wire_goal_store(db_pool, pg_pool=pg_pool)
     working_log = await _wire_working_memory_backend(db_pool)
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     # Same backend the spine just chose (#1176): claims beside the Runs they
@@ -2665,6 +2698,7 @@ async def create_container(
         workspace_store=workspace_store,
         backlog_history_store=backlog_history_store,
         campaign_store=campaign_store,
+        goal_store=goal_store,
         working_log=working_log,
         run_store=run_store,
         run_reader=ScopedRunReader(run_store, workspace_store, project_scope_store),
