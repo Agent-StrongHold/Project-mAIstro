@@ -1,6 +1,107 @@
 # Issue #1893 bounded CI repair
 
-## Frozen scope
+## Current revalidation — job 1bb1dda4c99c4edf908183ced7a62f3a
+
+**BLOCKED; no evidence-backed code or Vulture ledger repair is available.**
+Starting source: `3c4e0cc86ec3701b1b9e6c92b508cbfef859643e`, clean assigned
+worktree `/home/dev/Git/wt/auto-1893`. Both the supplied develop base and the
+resolved local `origin/develop` are
+`2154f845347c9541016288c760f8da3f5cd2e064`. No sync conflict was present.
+No remote state was refreshed, and no merge or activation was performed.
+
+Frozen item: issue #1893, using this job's supplied `dispatch-context.json`,
+check-0 through check-4 logs and previous result artifact. Inspected the codec,
+identity constructors, adjacent codec/identity/CLI tests, existing inventory
+note, repository instructions and exact-debt-ledger workflow. This report is
+the only changed file; no tests were added, so the inventory delta is zero.
+The previous sections below are retained as historical evidence, not assumed
+verification.
+
+### Fresh commands and outcomes
+
+All commands used `uv run` from the assigned worktree. Logs are saved as
+`repair-*.log` in `/home/dev/maistro/jobs/1bb1dda4c99c4edf908183ced7a62f3a/`.
+
+- `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py
+  packages/maistro-core/tests/runs/test_root_admission_identity.py
+  packages/maistro-core/tests/extensions/test_pack_contracts.py
+  packages/maistro-core/tests/extensions/test_cli_lock.py -x -q -rs`:
+  **324 passed, 3 skipped**; 327 collected cases. All three skips are the
+  raw/production PostgreSQL pool contrasts: both DSNs are unset.
+- `uv run pytest packages/maistro-core/tests/extensions -x -q`:
+  **1068 passed**. The already-repaired CLI wrapping test passes at all three
+  terminal widths. This does not identify the unnamed remote `test: failure`.
+- `uv run ruff check .`: **PASS**.
+- `uv run ruff format --check .`: **PASS**, 3301 files already formatted.
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py
+  packages/maistro-core/src/maistro/runs/admission_identity.py`: **PASS**.
+- `uv run python scripts/check-suite-inventory.py --suite
+  packages/maistro-core/tests`: **PASS**, 16543 collected nodes, no duplicate
+  evidence. Existing inventory notes require no change.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`: **PASS**, 1322 reviewed
+  identities, zero unclassified. No missing/stale identity justifies the
+  permitted Vulture ledger amendment.
+- `RATCHET_BASE_REV=2154f845347c9541016288c760f8da3f5cd2e064 uv run python
+  scripts/check-ratchet-provenance.py`: **FAIL (exit 1)**. Both
+  `maistro.runs.admission_identity` and `maistro.tasks.admission_codec` add
+  unreachable modules and dispositions without trusted-base authorization
+  (169 trusted modules versus 171 candidate modules). The failure is in
+  reachability provenance, not Vulture.
+- `rg -n 'admission_codec|admission_identity' packages/*/src --glob '*.py'`:
+  only the codec's identity import and the Vulture whitelist's identity
+  import; **no production codec consumer**. This agrees with the provenance
+  gate and the modules' explicit inactive-contract documentation.
+
+### Acceptance review and reconciliation
+
+The acceptance table below was rechecked against the current codec source,
+constructors and freshly executed tests. Pure contract evidence passes for
+all nine non-PG prospective test names: immutable DTO round trips and fresh
+flat mappings; storage-only UUID hex; distinct bound/unbound/partial legacy
+evidence; header/full-decode separation preserving expiry and fingerprint;
+unknown-format refusal; tagged nonfinite preservation without fingerprint
+recomputation; invalid/duplicate JSON refusal. Additional executed tests
+cover signed timestamp bounds, header mismatch, safe typed errors, lossy
+numbers, excessive nesting, Unicode corruption and v2 binding constraints.
+The byte-preservation tests start with canonical snapshots: they do not prove
+preservation of arbitrary noncanonical source bytes or an end-to-end model
+serialization pipeline.
+
+**UNVERIFIED this round:** live migrated PostgreSQL durability, raw/production
+pool equivalence, database session identities and residue counts, actual
+`model_of`/`model_of_json` materialization, canonical Run JSONB object storage,
+authorized principals/Workspace/Project/registered Graph integration, consumer
+expiry/409 precedence, and unchanged full integration CI. No mocked return,
+skipped case, historical PG result or candidate-ledger pass is counted as
+proof. No new regression/mutation result is claimed because no code/test
+change was made.
+
+Read accepted ADR-081226-a66b, ADR-082526-7f02 and ADR-083126-5e62. Preserve
+`Goal -> Graph -> Run -> NodeRun -> Attempt`, immutable admission provenance,
+and protected-base authorization. The issue forbids activating a consumer or
+modifying reachability policy to make an inactive slice green. The explicit
+CI-repair exception allows reviewed Vulture identity bookkeeping only; it
+cannot authorize the failing reachability additions. Thus the previous block
+cannot safely be resolved in this lane by a dummy import, local grant or
+ledger edit. No SQL mutation, queue/HTTP mapping, assessment, clock,
+scope-utility, admission policy or authorization change was introduced.
+
+### Handoff
+
+Owner-coordinated trusted-base reachability resolution (or a separately
+approved real consumer) is required before this candidate can pass the
+unchanged exact-debt-ledger gate. A resolved base already containing the
+necessary authorization is not available in the frozen local snapshot.
+The original remote `test: failure` remains **UNATTRIBUTED**; supplied driver
+checks and focused fresh test runs pass. Do not repeat speculative code or
+ledger repairs without new evidence.
+
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 1, next: owner-coordinated
+reachability resolution and live integration evidence}`. Commit this report
+locally as the bounded handoff; it is not integration approval.
+
+## Previous repair — frozen scope
 
 - Assigned worktree: `/home/dev/Git/wt/auto-1893`, branch `auto-1893`.
 - Starting HEAD: `38b6c44e617dfd70d9f344da9d4236fe48b7f6a2` (verified); base: `2154f845347c9541016288c760f8da3f5cd2e064` (verified).
