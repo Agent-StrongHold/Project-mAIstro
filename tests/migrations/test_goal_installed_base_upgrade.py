@@ -373,7 +373,9 @@ async def _drive_and_reopen_the_durable_composition(prefix: str) -> None:
         runs_after = PgRunStore(pool_after, project_store=projects_after)
 
         read_goal = await goals_after.get_goal(goal.goal_id)
-        assert read_goal.status is GoalStatus.ACTIVE
+        # JSONB deserialisation gives an equal status value, not the same
+        # Python string object as the module-level vocabulary constant.
+        assert read_goal.status == GoalStatus.ACTIVE
         assert read_goal.current_revision == 2
         chain = await goals_after.list_goal_revisions(goal.goal_id)
         assert [revision.revision for revision in chain] == [1, 2]
