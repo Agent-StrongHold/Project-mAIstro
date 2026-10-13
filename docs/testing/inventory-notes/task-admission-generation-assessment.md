@@ -5978,3 +5978,92 @@ trust. No leaf file edited; the tree is clean apart from this log.
   blocker. Verdict: writer handoff **MERGE-READY on leaf acceptance**; the
   stack stays unmerged pending the separately-scoped #1845 integration
   consumer.
+
+## Round-82 independent re-execution (2026-10-13, job 0017b427c0c34a06b4a8a5c4edb282c4)
+
+Head `ae0f48afd05444f63bed93958a82df5a6c4b054e`, base
+`3c761d14db944a727fa0744444bc67cfe36d49f7`; `git merge-base HEAD origin/develop`
+equals the base exactly, so there is no develop sync conflict. Production and
+test content is byte-identical to round-80's fully re-executed tree
+(`git diff cc262f2ed8a8 HEAD -- packages/ scripts/ tests/ quality/` is empty;
+only this note grew).
+
+- **Driver battery 5/5 rc=0** (job check-0..4 logs, re-inspected): `uv sync
+  --locked --extra dev`, `ruff check .` ("All checks passed!"),
+  `ruff format --check .` (3277 files already formatted), focused trio
+  **315 passed**, `check-suite-inventory.py --suite packages/maistro-core/tests`
+  ok (16468 IDs).
+- **Issue-focused commands re-executed first-hand**: assessment suite
+  **132 passed**; C1 identity + live idempotency **140 passed**; scoped ruff
+  check/format clean; `mypy` on the module: Success: no issues found. All 10
+  issue-named tests present (definitions at lines 589 and 775–935 of the test
+  module).
+- **exact-debt-ledger reproduced leg-by-leg at CI exact argv**
+  (`vulture-ratchet.yml:77-81`, `RATCHET_BASE_REV=origin/develop`):
+  lane-brief vulture repair loop **EMPTY** — `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` rc=0
+  (1323 reviewed identities -> 1323 findings, unclassified=0,
+  never_allowlist=0): no unbanked identity exists, nothing is genuinely dead,
+  and **no ledger amendment is due**. `check-shipped-surface-truth.py` rc=0.
+  `check-ratchet-provenance.py` rc=1 **SOLELY** via the reachability
+  sub-ratchet (169 -> 171 unreachable of 1396, naming exactly
+  `maistro.runs.admission_identity` + `maistro.tasks.admission_generation`);
+  all 8 sibling sub-ratchets OK (adr-status, citation-status,
+  promotion-surface, dispositions, shell-execution, contract-markers,
+  enumerations, lifecycle).
+- **Two-merge blocker re-proven at source**: develop's
+  `ratchet-authorizations.json` contains zero grant rows naming either module
+  (its 5 `admission` substring matches are unrelated identities:
+  `recover_stranded_chat_admissions` in container.py, `create_a2a_task`,
+  `ScheduleRunAdmitter.admit_due`, canvas `_reconcile_admission`, and a quota
+  reader whose reason text mentions admission balances); grants are read from the base
+  revision per `scripts/ratchet_provenance.py` (two-merge rule, documented in
+  the develop grant text itself), so this branch cannot authorize its own new
+  unreachable modules — and the issue forbids in-lane
+  grants/baselines/callers/waivers.
+- **Quality pillars**: `check-reachability.py` rc=1 with **exactly 2 NEWLY
+  UNREACHABLE** modules (the two leaf modules — the gate's own remediation
+  text: baseline entry or real call path, both forbidden in-lane here);
+  `check-reachability-dispositions.py` rc=0 (49 groups / 169 modules);
+  `check-promotion-surface.py` rc=0.
+- **test-job red reproduced at CI-exact scope** (`ci.yml` `test` job,
+  `pytest tests/ --ignore=tests/tools/registry`): **4F / 4967P / 129S in
+  273.71s** — the 3 reachability meta-tests
+  (`test_check_reachability.py::test_baseline_matches_the_tree`,
+  `test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `...::test_the_baseline_is_exactly_the_unreachable_set`, each naming only
+  the two modules) plus the known local-only residue
+  `test_branch_independence_repository.py::test_every_quality_json_state_surface_is_classified_once`
+  ("unclassified quality state: quality/ac-state.json" — gitignored
+  (.gitignore:81), untracked, dated 2026-10-06, absent from CI checkouts).
+- **Coverage gate attribution re-proven**: the producer leg (quality.yml
+  `--source=scripts` step) runs the root suite, so it dies on the same 3
+  meta-tests; the diff-coverage leg was **proven GREEN first-hand this
+  round**: core producer leg at exact CI argv (`coverage run --branch
+  --source=packages/maistro-core/src/maistro -m pytest
+  packages/maistro-core/tests --timeout=30 -q`, COVERAGE_FILE in /tmp, zero
+  tree writes) = **15421 passed / 1044 skipped / 3 xfailed in 355.70s**
+  (identical to rounds 79/80), then `coverage xml` +
+  `check-diff-coverage.py <xml> --base 3c761d14db94...` **rc=0** ("3 changed
+  file(s) measured", each ≥ 90% lines / 80% branch arcs; 3 test files exempt
+  by declaration; `_vulture_whitelist.py` reported unmeasured-informational,
+  outside every MEASURED_ROOTS prefix; branch changes zero files under
+  `scripts/`).
+- **All four issue-named mutation classes KILLED first-hand again** via the
+  /tmp `-p` namespace-exec plugin (execs mutated source into the imported
+  `maistro.tasks.admission_generation` namespace and repoints the parent
+  package attribute before collection; zero tree writes): swap
+  TAKEOVER/REPLACE_EXPIRED **50F**, lease-before-binding **14F**,
+  legacy-as-v2 **10F**, mismatch-before-expiry **22F**; identical-source
+  control through the same harness **132P**.
+- **Integrity**: `git diff --numstat origin/develop -- quality/` empty;
+  zero production references to `admission_generation` under `packages/*/src`
+  outside the module itself; the only in-src importer of
+  `admission_identity` is the C2 classifier (classification surface only);
+  0 issue-closure keywords across the branch's 149 commits; front-matter
+  `inventory-delta: +132` still equals the collected assessment-suite count.
+- **Conclusion unchanged**: all four CI reds at this head
+  (exact-debt-ledger, test, Quality gate, Coverage gate) reduce to the single
+  issue-sanctioned unwired-leaf blocker; no sanctioned in-lane repair exists.
+  Writer handoff **MERGE-READY on leaf acceptance**; the stack stays
+  unmerged pending the separately-scoped #1845 integration consumer.
