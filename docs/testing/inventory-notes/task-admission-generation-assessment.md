@@ -6716,3 +6716,77 @@ tree never edited. Head/base unchanged (HEAD 29364cf480a6, develop base
   dispositions, grants, waivers, exports) and the two-merge rule forbids
   self-authorization at this base. The stack stays unmerged pending the
   separately-scoped #1845 integration consumer.
+
+## Round 81 (job d61baa2e): verifier pytest red root-caused — stale bytecode cache, not a source defect; battery re-proven green; ledger decomposition completed
+
+The verifier's deterministic battery on this head (prior job 4dea8c12,
+check-3.log) failed
+`test_expiry_is_inclusive_and_wins_over_everything[v2-bound-ack-at-deadline-b*]`
+with `mismatch` instead of `replace_expired`. First-hand re-derivation at this
+head reproduced it exactly (14/28 rows of that test failing, all and only the
+`FP_OTHER` fingerprint columns) — yet the committed source is correct, and
+this round proves the red never belonged to the tree:
+
+- **Root cause, evidenced at the bytecode level**: the `.pyc` for
+  `maistro.tasks.admission_generation` in this worktree's `__pycache__/`
+  (cpython-312) validated against the current source by mtime (1791816312)
+  AND size (7679) but disassembled with the MISMATCH row at line 144 and the
+  REPLACE_EXPIRED row at line 145 — the pre-fix row order, same line count.
+  Python's timestamp validation passed; the loaded code object was an older
+  same-size revision. `inspect.getsource` (disk) and `dis` (loaded bytecode)
+  disagreed, which pins the diagnosis. This also explains why CI at this head
+  (fresh checkout, fresh compile) reported only exact-debt-ledger and never
+  this failure.
+- **Repair (environment-only; zero tree changes)**: removed the two stale
+  `.pyc` files for the module and force-recompiled all package bytecode
+  (`python -m compileall -f packages`, rc=0, 243 cache dirs) to eliminate the
+  class. `git show HEAD:<module> | diff - <module>` proves the committed blob
+  equals the disk file; `git status` clean before and after the round.
+- **Driver battery 5/5 green after repair**: `uv sync --locked --extra dev`
+  rc=0; `ruff check .` rc=0; `ruff format --check .` rc=0; verifier trio
+  (`test_pack_contracts.py` + `test_root_admission_identity.py` +
+  `test_admission_generation_assessment.py`) 316 passed; suite inventory
+  ok (17 suites, 31422 unique IDs, 0 duplicates). Issue-focused commands:
+  leaf 132P; identity + live `test_idempotency.py` 140P;
+  `mypy packages/maistro-core/src/maistro/tasks/admission_generation.py`
+  Success; all 10 issue-named tests present; combined four-file run 383P.
+- **Mutations re-killed 4/4 by direct in-place probes this round**
+  (sed/python swap applied in place, mutated file asserted present before the
+  run, restored from a byte-identical backup verified by sha256, tree clean
+  after): lease-before-binding **14 failed**; legacy-pending-as-v2
+  **10 failed**; TAKEOVER/REPLACE_EXPIRED swap **50 failed**; and
+  mismatch-before-expiry was live-proven organically — the stale bytecode
+  WAS exactly that mutation and the verifier's own log records its 14/28
+  kill. (One probe operator error recorded for honesty: an earlier
+  lease-before-binding attempt replaced a non-adjacent two-line target,
+  silently no-op'd, and printed a meaningless 132P; redone with a
+  three-row block replace and a mutated-content assert.)
+- **exact-debt-ledger decomposed at CI-exact argv**
+  (`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`, RATCHET_BASE base 2154f845347c / candidate 73d3bd72cf6f):
+  vulture rc=0, 1322 reviewed identities -> 1322 findings, unclassified=0,
+  never_allowlist=0 — **the per-identity vulture ledger is green and needs no
+  amendment**. The job's red arrives one step later:
+  `check-ratchet-provenance.py` rc=1 delegating to
+  `check-reachability-provenance.py` rc=1 — "NEW unreachable module absent
+  from trusted base and not previously authorized" naming exactly
+  `maistro.runs.admission_identity` and `maistro.tasks.admission_generation`
+  (169 -> 171 unreachable of 1403). `check-shipped-surface-truth.py` rc=0,
+  `check-reachability-dispositions.py` rc=0 (49 groups / 169),
+  `check-promotion-surface.py` rc=0. The single red family remains the
+  sanctioned unwired-leaf reachability ratchet.
+- **Why no in-lane repair exists (re-derived)**: greening it requires either a
+  real runtime consumer (C3/#1845 integration — explicitly outside this leaf,
+  whose module boundary test
+  `test_existing_live_claim_flow_does_not_import_v2_classifier` pins the
+  unwired invariant) or reachability baseline/authorization rows — forbidden
+  by the issue ("No fake callers, baseline additions, grants, disabled gates
+  or quality waivers"; "A candidate baseline update cannot grant itself
+  permission") and structurally ineffective because
+  `ratchet_provenance.load_authorizations` reads grants from the merge base.
+- **Verdict**: leaf acceptance stands fully proven at this head; the
+  verifier's pytest red is resolved as a local bytecode-cache artifact with
+  the committed source proven correct; exact-debt-ledger remains the single,
+  issue-sanctioned unwired-leaf blocker. Per the issue's own completion
+  contract the stack stays unmerged pending the separately-scoped #1845
+  integration consumer.
