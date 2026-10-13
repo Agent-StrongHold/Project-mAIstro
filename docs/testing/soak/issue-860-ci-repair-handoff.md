@@ -1,5 +1,58 @@
 # Issue #860 CI repair handoff
 
+## Current checkpoint — job 5af6c6f2
+
+Frozen scope: issue #860; assigned `auto-860` worktree; reported schema-fence
+failure, exact vulture gate, existing soak acceptance surfaces, and this handoff.
+Starting HEAD `8835071663ae48168b5a3afbf5d05f3d929a734a` verified; tree clean.
+Supplied base `2154f845347c9541016288c760f8da3f5cd2e064` resolves. No merge
+conflict exists. Read local dispatch evidence, prior result, and the cited
+`98a11313167b41a98a420abfda80c292/check-3.log`; this job directory had no
+`check-*.log` files. No GitHub operations performed.
+
+Assumption: repair actual reproducible CI defects, not select an arbitrary RC
+or turn a preflight emulator into release evidence. Read repository instructions,
+accepted ADR-085 and ADR-082826-b601, the current runner/profile, production
+rate middleware and adjacent tests. Preserve Goal -> Graph -> Run -> NodeRun ->
+Attempt. Admission uniqueness is not physical execution proof; per-principal
+keys do not establish shared replica budgets. No architectural waiver inferred.
+
+Fresh validation (1,200-second command timeouts):
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: PASS, 1,323 reviewed identities / findings; zero unclassified or never-allowlist findings. Selected comparison base `3c761d14db94`. No ledger amendment justified.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py -x -q`: PASS, 37 passed, 6 skipped. The reported 24-versus-21 DDL mismatch is already repaired: test lines 175–177 include the audit columns. Skipped PostgreSQL coverage is not proof of concurrent database boot.
+- `uv run pytest tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py -x -q`: PASS, 81 passed. Includes actual production middleware replica-selection probes, receipt-router probes and CLI promotion-gate regressions; not a deployed soak.
+- `uv run ruff check .`: PASS.
+- `uv run ruff format --check .`: PASS, 3,277 files formatted.
+- `uv run python scripts/check-doc-links.py`: PASS, 2,704 Markdown files, zero broken relative links (before this handoff-only update).
+
+Acceptance checked against current reachable behavior, not historical pass claims:
+
+| Criterion | Evidence / disposition |
+| --- | --- |
+| Representative RC profile | **UNVERIFIED**: `m3a-load-profile.md` lists missing users/Workspaces, fan-out, successful model/tool calls, Design/Canvas and Goal/background workloads. |
+| Two production replicas | **UNVERIFIED**: two middleware instances are not deployed RC applications. |
+| Sustained saturation/reclaim/retry/leak observations | **UNVERIFIED**: no sustained production experiment executed. |
+| Physical-work deduplication and Goal reconciliation | **UNVERIFIED**: schedule probe cancels its queued Run; admission counts are not execution oracles. |
+| Replica-selection non-bypass/security/degraded behavior | **Not proven**: executed `tests/test_soak_promotion_gates.py:439` demonstrates fresh 200/200/429 allowance on each replica for the same identity. `rate_limit.py:94` constructs per-instance in-memory state; deployment-level security/degraded soak remains **UNVERIFIED**. |
+| Complete telemetry and thresholds | **UNVERIFIED**: driver-loop lag is not application-loop lag; profile explicitly leaves required observations incomplete. |
+| Active-work restart/drain/fencing/recovery | **UNVERIFIED**: regression tests do not perform a production active-work recovery experiment. |
+| Long-running exact RC/config soak | **UNVERIFIED**: `run_soak.py:744` rejects this host runner as exact artifact evidence even at four hours; executed CLI regressions preserve that gate. |
+| Findings filed/reclassified | **UNVERIFIED** this round: limitations recorded locally; no new load experiment or remote filing. |
+| Hash-bound machine/human production evidence | **UNVERIFIED**: fresh tests identify source behavior, not an immutable RC image/config soak. |
+
+**BLOCKED.** No source/test/gate/ledger change is evidence-backed; only this
+handoff changes, with no test inventory delta. The prior acceptance block is
+not resolved by passing CI. Required next input: selected immutable RC image and
+configuration, representative production-path workloads and physical-work/
+recovery/telemetry oracles, resolution of replica-budget semantics, then a
+qualifying >=4-hour soak. Do not redispatch the historical schema assertion as
+an unfixed defect. Local writer checkpoint only, not integration approval.
+
+Progress: checked 1 issue, acceptance-complete 0, skipped 0, validation errors 0;
+next: exact-RC prerequisites and qualifying soak. Earlier checkpoints below are
+preserved history, not substitutes for these freshly executed checks.
+
 ## Current checkpoint — job e73dc99b
 
 This section supersedes the historical validation results below, not their
