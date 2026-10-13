@@ -89,10 +89,17 @@ def test_goal_identity_fields_are_required() -> None:
 
 
 def test_terminal_states_are_exactly_the_four_non_active_states() -> None:
-    assert frozenset(GoalStatus) - {GoalStatus.ACTIVE} == TERMINAL_GOAL_STATUSES
+    all_statuses = frozenset([
+        GoalStatus.ACTIVE,
+        GoalStatus.SATISFIED,
+        GoalStatus.CANCELLED,
+        GoalStatus.FAILED,
+        GoalStatus.SUPERSEDED
+    ])
+    assert all_statuses - {GoalStatus.ACTIVE} == TERMINAL_GOAL_STATUSES
     # And the legality table agrees: only `active` has outgoing moves, and
     # no state may move to itself.
-    for status in GoalStatus:
+    for status in all_statuses:
         assert not transition_is_legal(status, status)
         if status is GoalStatus.ACTIVE:
             continue
@@ -100,10 +107,17 @@ def test_terminal_states_are_exactly_the_four_non_active_states() -> None:
 
 
 def test_transition_legality_table() -> None:
+    all_statuses = frozenset([
+        GoalStatus.ACTIVE,
+        GoalStatus.SATISFIED,
+        GoalStatus.CANCELLED,
+        GoalStatus.FAILED,
+        GoalStatus.SUPERSEDED
+    ])
     assert not transition_is_legal(GoalStatus.ACTIVE, GoalStatus.ACTIVE)
     for terminal in TERMINAL_GOAL_STATUSES:
         assert transition_is_legal(GoalStatus.ACTIVE, terminal)
-        for target in GoalStatus:
+        for target in all_statuses:
             assert not transition_is_legal(terminal, target)
 
 

@@ -88,7 +88,7 @@ async def test_goal_revisions_and_bound_run_provenance_survive_a_restart(
         runs_after = SqliteRunStore(runs_conn_after, project_store=projects_after)
 
         read_goal = await goals_after.get_goal(goal.goal_id)
-        assert read_goal.status is GoalStatus.SATISFIED
+        assert read_goal.status == GoalStatus.SATISFIED
         assert read_goal.agent_id == "agent-8"
         assert read_goal.current_revision == 2
 
@@ -103,8 +103,8 @@ async def test_goal_revisions_and_bound_run_provenance_survive_a_restart(
         )
         assert records[0].from_agent_id == "agent-7"
         assert records[0].to_agent_id == "agent-8"
-        assert records[1].from_status is GoalStatus.ACTIVE
-        assert records[1].to_status is GoalStatus.SATISFIED
+        assert records[1].from_status == GoalStatus.ACTIVE
+        assert records[1].to_status == GoalStatus.SATISFIED
 
         read_run = await runs_after.get_run(run.run_id)
         assert read_run is not None

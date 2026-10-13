@@ -94,7 +94,7 @@ class ScopedGoalStore:
     async def transition_goal(
         self,
         goal_id: str,
-        to_status: GoalStatus,
+        to_status: str,
         *,
         principal_id: str,
         expected_revision: int,

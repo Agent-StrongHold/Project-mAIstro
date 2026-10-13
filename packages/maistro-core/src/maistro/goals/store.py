@@ -46,7 +46,7 @@ def require_active(goal: Goal) -> None:
     """
     if goal.status in TERMINAL_GOAL_STATUSES:
         raise GoalTransitionError(
-            f"{goal.goal_id} is {goal.status.value} and cannot be mutated: "
+            f"{goal.goal_id} is {goal.status} and cannot be mutated: "
             "terminal Goal states are final"
         )
 
@@ -99,7 +99,7 @@ class GoalStore(Protocol):
     async def transition_goal(
         self,
         goal_id: str,
-        to_status: GoalStatus,
+        to_status: str,
         *,
         expected_revision: int,
         actor: str,
@@ -232,7 +232,7 @@ class InMemoryGoalStore:
             goal = self._require(goal_id)
             if not transition_is_legal(goal.status, to_status):
                 raise GoalTransitionError(
-                    f"{goal_id}: a Goal cannot move from {goal.status.value} to {to_status.value}"
+                    f"{goal_id}: a Goal cannot move from {goal.status} to {to_status}"
                 )
             if goal.current_revision != expected_revision:
                 raise GoalRevisionConflict(goal_id, expected_revision, goal.current_revision)

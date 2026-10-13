@@ -209,7 +209,7 @@ class SqliteGoalStore:
             goal = await self._require(goal_id)
             if not transition_is_legal(goal.status, to_status):
                 raise GoalTransitionError(
-                    f"{goal_id}: a Goal cannot move from {goal.status.value} to {to_status.value}"
+                    f"{goal_id}: a Goal cannot move from {goal.status} to {to_status}"
                 )
             self._check_revision(goal, expected_revision)
             moved_at = at or _utcnow()
@@ -219,7 +219,7 @@ class SqliteGoalStore:
                    SET status = ?, updated_at = ?, payload = ?
                    WHERE goal_id = ? AND current_revision = ? AND status = 'active'""",
                 (
-                    to_status.value,
+                    to_status,
                     _iso(moved_at),
                     updated.model_dump_json(),
                     goal_id,
@@ -350,7 +350,7 @@ class SqliteGoalStore:
                 goal.project_id,
                 goal.agent_id,
                 goal.parent_goal_id,
-                goal.status.value,
+                goal.status,
                 goal.current_revision,
                 _iso(goal.created_at),
                 _iso(goal.updated_at),

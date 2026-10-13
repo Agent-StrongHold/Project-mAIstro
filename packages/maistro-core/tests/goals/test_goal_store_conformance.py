@@ -236,7 +236,7 @@ async def test_lifecycle_transitions_cas_and_terminal_is_final(backend) -> None:
         await store.transition_goal(
             goal.goal_id, GoalStatus.CANCELLED, expected_revision=9, actor=_PRINCIPAL
         )
-    assert (await store.get_goal(goal.goal_id)).status is GoalStatus.ACTIVE
+    assert (await store.get_goal(goal.goal_id)).status == GoalStatus.ACTIVE
 
     moved = await store.transition_goal(
         goal.goal_id, GoalStatus.SATISFIED, expected_revision=1, actor=_PRINCIPAL
@@ -245,11 +245,18 @@ async def test_lifecycle_transitions_cas_and_terminal_is_final(backend) -> None:
     records = await store.list_goal_transitions(goal.goal_id)
     assert len(records) == 1
     assert records[0].actor == _PRINCIPAL
-    assert records[0].from_status is GoalStatus.ACTIVE
-    assert records[0].to_status is GoalStatus.SATISFIED
+    assert records[0].from_status == GoalStatus.ACTIVE
+    assert records[0].to_status == GoalStatus.SATISFIED
 
     # Terminal is final: no transition out, and no mutation at all.
-    for target in GoalStatus:
+    all_statuses = [
+        GoalStatus.ACTIVE,
+        GoalStatus.SATISFIED,
+        GoalStatus.CANCELLED,
+        GoalStatus.FAILED,
+        GoalStatus.SUPERSEDED
+    ]
+    for target in all_statuses:
         with pytest.raises(GoalTransitionError):
             await store.transition_goal(
                 goal.goal_id, target, expected_revision=moved.current_revision, actor=_PRINCIPAL
@@ -328,7 +335,7 @@ async def test_subgoal_lineage_preserves_parent_goal_and_project(backend) -> Non
     )
     after = await store.get_goal(parent.goal_id)
     assert after == before
-    assert after.status is GoalStatus.ACTIVE
+    assert after.status == GoalStatus.ACTIVE
 
 
 async def test_agent_reassignment_is_an_explicit_recorded_transition(backend) -> None:

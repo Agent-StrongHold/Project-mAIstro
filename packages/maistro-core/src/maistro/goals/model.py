@@ -29,9 +29,10 @@ final — a satisfied, cancelled, failed or superseded Goal never mutates again.
 
 from __future__ import annotations
 
+import enum
 import uuid
 from datetime import UTC, datetime
-from enum import StrEnum
+from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -49,7 +50,7 @@ def _require_non_empty(value: str, label: str) -> None:
         raise ValueError(f"{label} must be a non-empty string")
 
 
-class GoalStatus(StrEnum):
+class GoalStatus:
     """The domain lifecycle of a Goal. ``ACTIVE`` is the only state a Goal can
     leave; the rest are terminal, and a terminal Goal is immutable."""
 
@@ -62,7 +63,7 @@ class GoalStatus(StrEnum):
 
 #: The states a Goal may never leave. "Terminal states are final" is enforced
 #: by every store backend and by the conformance suite, not by convention.
-TERMINAL_GOAL_STATUSES: frozenset[GoalStatus] = frozenset(
+TERMINAL_GOAL_STATUSES: frozenset[str] = frozenset(
     {
         GoalStatus.SATISFIED,
         GoalStatus.CANCELLED,
@@ -74,12 +75,12 @@ TERMINAL_GOAL_STATUSES: frozenset[GoalStatus] = frozenset(
 #: Where a lifecycle transition may go. Keys are the only states a mutation
 #: can start from; terminal states have no row, so any transition out of one
 #: is illegal by construction rather than by a second check to keep in step.
-_ALLOWED_TRANSITIONS: dict[GoalStatus, frozenset[GoalStatus]] = {
+_ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     GoalStatus.ACTIVE: frozenset(TERMINAL_GOAL_STATUSES),
 }
 
 
-def transition_is_legal(current: GoalStatus, target: GoalStatus) -> bool:
+def transition_is_legal(current: str, target: str) -> bool:
     """Whether a Goal in ``current`` may move to ``target``."""
     return target in _ALLOWED_TRANSITIONS.get(current, frozenset())
 
@@ -138,7 +139,7 @@ class Goal(BaseModel):
     project_id: str
     agent_id: str
     parent_goal_id: str | None = None
-    status: GoalStatus = GoalStatus.ACTIVE
+    status: str = Field(default=GoalStatus.ACTIVE)
     current_revision: int = Field(default=1, ge=1)
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
@@ -153,10 +154,13 @@ class Goal(BaseModel):
             _require_non_empty(self.parent_goal_id, "Goal.parent_goal_id")
             if self.parent_goal_id == self.goal_id:
                 raise ValueError("Goal cannot be its own parent")
+        # Validate that status is one of the allowed values
+        if self.status not in {GoalStatus.ACTIVE, GoalStatus.SATISFIED, GoalStatus.CANCELLED, GoalStatus.FAILED, GoalStatus.SUPERSEDED}:
+            raise ValueError(f"Invalid status: {self.status}")
         return self
 
 
-class GoalTransitionKind(StrEnum):
+class GoalTransitionKind(enum.StrEnum):
     """The two explicit, recorded mutations that are not revision appends.
 
     A status move is the lifecycle transition itself; an agent reassign is how
@@ -187,10 +191,10 @@ class GoalTransitionRecord(BaseModel):
     #: The Goal's revision pointer after the recorded mutation — the state the
     #: actor had to hold for the compare-and-set to accept the change.
     revision: int = Field(ge=1)
-    from_status: GoalStatus | None = None  # noqa: V107
-    to_status: GoalStatus | None = None  # noqa: V107
-    from_agent_id: str | None = None  # noqa: V107
-    to_agent_id: str | None = None  # noqa: V107
+    from_status: Optional[str] = None  # noqa: V107
+    to_status: Optional[str] = None  # noqa: V107
+    from_agent_id: Optional[str] = None  # noqa: V107
+    to_agent_id: Optional[str] = None  # noqa: V107
 
     @model_validator(mode="after")  # noqa: V105
     def _validate_record(self) -> GoalTransitionRecord:
