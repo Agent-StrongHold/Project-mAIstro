@@ -560,6 +560,102 @@ async def test_sustained_admission_requires_work_and_retryable_backpressure(
     )
 
 
+@pytest.mark.asyncio
+async def test_receipt_load_reads_admitted_tasks_through_production_router(
+    soak: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Read observed receipts, including a peer's real process-local 404.
+
+    Both queues use one canonical admission spine. This is an ASGI contract
+    probe, not a production multi-replica soak or a second execution authority.
+    """
+    import httpx
+    from fastapi import FastAPI
+
+    from maistro.config.settings import Settings, get_settings
+    from maistro.runs.wiring import wire_execution_spine
+    from maistro.tasks.queue import TaskQueue, get_task_queue
+    from maistro_server.api.tasks import router
+
+    monkeypatch.setenv("WORKSPACE_BASE", "/tmp/maistro-workspace")
+    _, _, admitter, _, _, _ = await wire_execution_spine(None, workspace_id="soak-test")
+    headers = {"Authorization": "Bearer receipt-secret"}
+    stats = soak.LoadStats()
+
+    def replica() -> FastAPI:
+        queue = TaskQueue(admitter=admitter)
+        app = FastAPI()
+        app.include_router(router)
+        app.dependency_overrides[get_task_queue] = lambda: queue
+        app.dependency_overrides[get_settings] = lambda: Settings(api_keys=["soak:receipt-secret"])
+        return app
+
+    for replica_index in range(2):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=replica())) as client:
+            if replica_index == 0:
+                await soak.one_request_with(client, LB, headers, "task_submit", stats, 1)
+                assert stats.kind_status_codes["task_submit"] == {202: 1}
+            # Use the same load state when the LB sends a read to the peer.
+            await soak.one_request_with(client, LB, headers, "run_get", stats, 2)
+            if replica_index == 0:
+                assert stats.kind_status_codes["run_get"] == {200: 1}
+    assert stats.kind_status_codes["run_get"] == {200: 1, 404: 1}
+    # main_async publishes this snapshot's kind_status_codes in thresholds;
+    # preserve response classes through JSON serialization, not just totals.
+    counters = json.loads(json.dumps(await stats.snapshot()))
+    assert counters["kind_status_codes"]["run_get"] == {"200": 1, "404": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_id", [None, "", " ", ["task-a"], 42])
+async def test_receipt_load_does_not_invent_ids_from_invalid_admission(
+    soak: ModuleType, task_id: object
+) -> None:
+    import httpx
+
+    requests: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request.method)
+        return httpx.Response(202, json={"run_id": "run-a", "task_id": task_id})
+
+    stats = soak.LoadStats()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        await soak.one_request_with(client, LB, {}, "task_submit", stats, 1)
+        await soak.one_request_with(client, LB, {}, "run_get", stats, 2)
+    assert requests == ["POST"]
+    assert stats.kind_status_codes["run_get"] == {0: 1}
+    assert "run_get" not in stats.latencies
+
+
+@pytest.mark.asyncio
+async def test_receipt_load_bounds_observed_ids_and_preserves_read_failures(
+    soak: ModuleType,
+) -> None:
+    import httpx
+
+    observed: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        observed.append(request.url.path)
+        return httpx.Response(503)
+
+    stats = soak.LoadStats()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        await soak.one_request_with(client, LB, {}, "run_get", stats, 0)
+        assert observed == []  # no admission yet: explicitly unseeded, not a fake read
+        for index in range(501):
+            await stats.record("task_submit", 202, 0, "run-a", task_id=f"task-{index}")
+        assert len(stats.task_ids) == 500
+        await soak.one_request_with(client, LB, {}, "run_get", stats, 0)
+        await soak.one_request_with(client, LB, {}, "run_get", stats, 499)
+    assert observed == ["/tasks/task-1", "/tasks/task-500"]
+    assert stats.kind_status_codes["run_get"] == {0: 1, 503: 2}
+    assert len(stats.latencies["run_get"]) == 2
+    counters = json.loads(json.dumps(await stats.snapshot()))
+    assert counters["kind_status_codes"]["run_get"] == {"0": 1, "503": 2}
+
+
 # ─── boot hygiene (2026-10-06 incident chain) ────────────────────────────────
 
 

@@ -41,9 +41,11 @@ import subprocess
 import sys
 import time
 import uuid
+from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from maistro.http import configure_shared_http, shared_client
 from maistro.security.outbound import configure_outbound_policy
@@ -635,6 +637,9 @@ class LoadStats:
         self.status_codes: dict[int, int] = {}
         self.kind_status_codes: dict[str, dict[int, int]] = {}
         self.run_ids: set[str] = set()
+        # Receipt identities are observations, not execution state. Keep a
+        # bounded recent population for reads throughout a long soak.
+        self.task_ids: deque[str] = deque(maxlen=500)
         self.errors: list[str] = []
         self.retryable_counts: dict[str, int] = {}
 
@@ -646,15 +651,24 @@ class LoadStats:
         run_id: str | None,
         *,
         retry_after: str | None = None,
+        task_id: str | None = None,
     ) -> None:
         async with self.lock:
             self.counts[kind] = self.counts.get(kind, 0) + 1
-            self.latencies.setdefault(kind, []).append(latency)
+            if status != 0:  # Unseeded receipt reads issue no request.
+                self.latencies.setdefault(kind, []).append(latency)
             self.status_codes[status] = self.status_codes.get(status, 0) + 1
             by_kind = self.kind_status_codes.setdefault(kind, {})
             by_kind[status] = by_kind.get(status, 0) + 1
             if run_id:
                 self.run_ids.add(run_id)
+            if (
+                kind == "task_submit"
+                and status == 202
+                and isinstance(task_id, str)
+                and task_id.strip()
+            ):
+                self.task_ids.append(task_id)
             if status == 429 and retry_after and retry_after.strip():
                 self.retryable_counts[kind] = self.retryable_counts.get(kind, 0) + 1
 
@@ -831,7 +845,7 @@ async def one_request_with(
     import httpx
 
     start = time.monotonic()
-    status, run_id = 0, None
+    status, run_id, task_id = 0, None, None
     retry_after = None
     try:
         if kind == "health_ready":
@@ -851,9 +865,16 @@ async def one_request_with(
             if r.status_code == 202:
                 body = r.json()
                 run_id = body.get("run_id")
+                task_id = body.get("task_id")
         elif kind == "run_get":
-            r = await client.get(f"{base}/tasks/task-soak-{seq % 500}", headers=headers)
-            status = r.status_code
+            async with stats.lock:
+                receipt_id = stats.task_ids[seq % len(stats.task_ids)] if stats.task_ids else None
+            # Until admission supplies a receipt, record status 0 (no request),
+            # not a fabricated task lookup. Never pin to the submitting replica:
+            # a peer's missing receipt must stay visible in the status counts.
+            if receipt_id is not None:
+                r = await client.get(f"{base}/tasks/{quote(receipt_id, safe='')}", headers=headers)
+                status = r.status_code
         elif kind == "metrics_unauth":
             r = await client.get(f"{base}/metrics")
             status = r.status_code
@@ -861,7 +882,9 @@ async def one_request_with(
         status = -1
     except Exception:
         status = -2
-    await stats.record(kind, status, time.monotonic() - start, run_id, retry_after=retry_after)
+    await stats.record(
+        kind, status, time.monotonic() - start, run_id, retry_after=retry_after, task_id=task_id
+    )
 
 
 # ────────────────────────────── evidence phases ─────────────────────────────
@@ -1527,7 +1550,7 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     }
 
     # Threshold evaluation (docs/testing/soak/m3a-load-profile.md).
-    total_reqs = sum(stats.counts.values())
+    total_reqs = sum(stats.status_codes.values()) - stats.status_codes.get(0, 0)
     kill_window_estimate = restart_delay + 15  # passive-health fail_timeout is 10s
     window_statuses = {
         int(key): value for key, value in kill_record.get("window_status_counts", {}).items()
@@ -1540,12 +1563,16 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     p95s: dict[str, float] = {}
     for kind, lat in stats.latencies.items():
         if lat:
-            p95s[kind] = round(statistics.quantiles(lat, n=20)[18] * 1000, 2)
+            p95s[kind] = round(
+                (statistics.quantiles(lat, n=20)[18] if len(lat) > 1 else lat[0]) * 1000, 2
+            )
 
     thresholds = {
         "requests_total": total_reqs,
+        "requests_not_sent": stats.status_codes.get(0, 0),
         "status_counts": {str(k): v for k, v in sorted(stats.status_codes.items())},
         "kind_counts": dict(sorted(stats.counts.items())),
+        "kind_status_codes": (await stats.snapshot())["kind_status_codes"],
         "p95_latency_ms": p95s,
         "task_admission_ratio": admission_check["ratio"],
         "checks": {

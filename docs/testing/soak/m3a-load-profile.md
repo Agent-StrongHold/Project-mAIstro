@@ -61,8 +61,21 @@ through the LB):
 | Readiness reads | 45% | `GET /health/ready` (auth) | steady-state latency/pool baseline |
 | Liveness reads | 20% | `GET /health/live` (no auth) | liveness under load (health paths are rate-limit exempt) |
 | Task admission | 20% | `POST /tasks` (auth, unique `Idempotency-Key`) | Run/Attempt admission, queue growth, durable spine writes |
-| Receipt reads | 10% | `GET /tasks/{id}` (auth) | store reads under load |
+| Receipt reads | 10% | `GET /tasks/{id}` (auth) | observed task receipt visibility under load |
 | Metrics gate | 5% | `GET /metrics` (no auth) | security surface must stay gated under load |
+
+Receipt reads select from the most recent 500 non-empty task identities observed
+in successful task admissions, through the same LB and authenticated identity.
+Until a receipt is available, `run_get` records status `0` (no HTTP request), not
+a successful read or an invented task ID. These unseeded samples count under
+`thresholds.requests_not_sent`, not `requests_total` or HTTP latency samples.
+Actual response codes, including peer 404s, remain in
+`thresholds.kind_status_codes.run_get`; the driver does not add affinity or
+retry away missing receipts. The production task route currently reads its
+process-local queue, so these requests test receipt visibility, not direct
+PostgreSQL query latency. Historical runs using `task-soak-{seq % 500}` did not
+exercise admitted receipt reads and cannot establish that workload claim.
+This repair requires new live evidence; ASGI regression tests are not a soak.
 
 Model calls are **not** stubbed: task execution fails fast against the absent
 LiteLLM endpoint, which is itself a degraded-path load class (error accounting,
