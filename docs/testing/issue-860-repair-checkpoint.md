@@ -1,5 +1,77 @@
 # Issue #860 repair checkpoint
 
+## Follow-up job 0bf3afc0270f4fa1aa137b502934efdb
+
+Frozen scope: only issue #860 in auto-860, clean starting HEAD
+9d010eb5eb011f0dd5cc2c2f64f2bb3b4eab313a, supplied base
+2154f845347c9541016288c760f8da3f5cd2e064. No PR processing or remote mutations.
+Files eligible for edits: this checkpoint, quality/vulture-baseline.json only
+for actual reviewed scan differences, and
+packages/maistro-core/tests/persistence/test_pg_learnings.py plus
+its existing inventory note only if the historical failure reproduces.
+Read-only scope: repository instructions, relevant lifecycle/rate-limit ADRs,
+existing soak profile/harness/tests, and supplied job artifacts.
+
+Fresh initial evidence: current job contains no check-*.log files. The supplied
+historical check-3.log fails because 24 fenced DDL statements were observed
+against 21 expected. The prior result is BLOCKED, not evidence of current passes.
+Assumption: repair actual reproduced CI failures; do not invent exact-RC load
+results or broaden this lane into the separate rate-limit implementation issue.
+Fresh validation: exact requested vulture scan passed (1323 reviewed identities,
+1323 findings, zero unclassified/never-allowlist). Combined focused pytest
+`uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py tests/test_soak_promotion_gates.py -x -q`
+passed: 109 passed, 6 skipped. The historical 24-versus-21 failure does not
+reproduce. `uv run ruff check .`, `uv run ruff format --check .` (3277 files)
+and `uv run python scripts/check-backlog-consistency.py` (168 items) all passed.
+No ledger amendment or test change is justified by these results; inventory
+delta is zero. Supplied base resolves locally. Previous job evidence remains
+preserved below, distinct from these freshly executed checks.
+
+Read accepted ADR-081226-a66b and ADR-085, and proposed ADR-081. No architecture
+waiver applies: preserve Goal -> Graph -> Run -> NodeRun -> Attempt and canonical
+per-principal enforcement. Fresh inspection of the load profile confirms its
+explicit representative-traffic and telemetry gaps; run_soak.py:744–755 always
+rejects host preflight as exact-RC evidence. The executed rate-limit regression
+at tests/test_soak_promotion_gates.py:439–487 demonstrates independent allowances
+for the same identity on two production middleware instances, not deployed
+cluster safety. No long-running deployment was executed by this follow-up.
+Production reachability confirmed: maistro_server/main.py:648 installs
+RateLimitMiddleware; api/rate_limit.py:90–98 constructs its own in-memory
+limiter. The schedule probe at run_soak.py:1067–1092 cancels an unexecuted
+queued Run, so it cannot prove physical Attempt uniqueness/recovery.
+BACKLOG.md:267–279 already classifies the replica-budget gap as engine-116
+(gap-spec); this round neither files remote issues nor invents a competing
+rate-limit authority.
+
+### Fresh acceptance disposition
+
+| Criterion | This follow-up's evidence |
+|---|---|
+| Representative RC workload | UNVERIFIED: profile explicitly omits multi-user/Workspace, fan-out, successful model/tool, Design/Canvas and Goal/background workloads. |
+| At least two production replicas | UNVERIFIED: two ASGI middleware instances in executed tests are not deployed replicas. |
+| Sustained saturation, queues, reclaim, retries, leaks | UNVERIFIED: no sustained deployment run; six database-dependent tests skipped. |
+| No duplicate physical work and Goal reconciliation | UNVERIFIED: inspected schedule admission probe cancels its Run before execution. |
+| Rate/security/degraded behavior resists replica selection | Negative evidence: executed production-middleware regression obtains [200,200,429] independently on both instances for each identity class. Deployed security/degraded behavior UNVERIFIED. |
+| Full telemetry with explicit thresholds | UNVERIFIED: profile documents incomplete production worker/pool/lease and application-loop observations; no fresh production telemetry. |
+| Active-work restart, drain, fencing and recovery | UNVERIFIED: no active Attempt kill/restart performed. |
+| Long soak of exact RC/configuration | UNVERIFIED: executed promotion-gate tests reject host preflight even at four hours; no immutable promotion artifact/configuration was exercised. |
+| Classify load findings before promotion | Partial: engine-116 records the observed allowance gap, and backlog gate passed. Completeness for a new RC soak UNVERIFIED. |
+| Hash-bound machine/human production evidence | UNVERIFIED: this checkpoint is local validation metadata, not a new RC evidence pack. |
+
+Disposition: BLOCKED. Only this checkpoint changed; no tests, inventory notes,
+ledger, code, or runtime configuration changed. No failed validation commands.
+No current driver check logs were available; the supplied historical log was
+inspected and its failure was not reproducible. No full-tree pytest or live
+PostgreSQL/production soak was run. No need to amend an already matching ledger.
+Next action requires a designated immutable RC/configuration, completion of the
+representative workload and canonical cluster-budget decision, then a >=4-hour
+production soak with full telemetry and physical-work recovery evidence.
+Repeated preflight/unit validation cannot supply that evidence.
+Progress: checked 1, local validation/handoff done 1, acceptance complete 0,
+skipped issues 0, errors 0. Preserve the existing branch; no integration approval.
+
+## Previous job checkpoint (preserved)
+
 Frozen scope: issue #860, branch auto-860, starting HEAD
 f69ba79edf22ce56e5d01ed69fac0f84155089d4, base
 2154f845347c9541016288c760f8da3f5cd2e064. No other issues or PRs will
