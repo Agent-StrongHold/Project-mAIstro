@@ -1268,6 +1268,20 @@ class InstallablePackRegistry:
                 )
             return existing
 
+        if manifest.pack_id in self._active_extensions:
+            # The id is already occupied by an extension installed through
+            # the M9-B2 service. Absorbing a second object with the same
+            # identity would let this pack's version overwrite that
+            # extension's in dependency resolution, silently retargeting
+            # every dependent to a different provider — so the collision is
+            # rejected, never shadowed.
+            raise PackIdentityConflict(
+                f"{manifest.pack_id} is already active as an extension "
+                f"installed through the M9-B2 service at version "
+                f"{self._active_extensions[manifest.pack_id]}; a pack may "
+                "not install under an occupied extension identity"
+            )
+
         report = evaluate_pack_compatibility(
             manifest,
             CompatibilityPolicy(

@@ -871,6 +871,24 @@ class TestCompatibilityThroughM9Machinery:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    def test_pack_install_cannot_shadow_an_active_extension_id(self) -> None:
+        # ``_active_versions`` merges the M9-B2 extension ids with the packs
+        # installed here, one version per id. A pack whose id already belongs
+        # to an active extension would overwrite that extension's version at
+        # resolution time — silently retargeting dependents to a different
+        # provider — so the identity collision is rejected at install.
+        registry = InstallablePackRegistry(
+            platform_api_version="1.0.0",
+            active_extensions={"vertex.product_lab": "1.4.0"},
+        )
+        with pytest.raises(PackIdentityConflict, match="already active as an extension"):
+            registry.install(
+                _pack_bytes(pack_id="vertex.product_lab", publisher="vertex", version="2.0.0")
+            )
+        assert registry.records() == ()
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
     def test_api_version_major_mismatch_is_refused(self) -> None:
         registry = InstallablePackRegistry(platform_api_version="1.0.0")
         with pytest.raises(PackIncompatible, match="api_version major mismatch"):
