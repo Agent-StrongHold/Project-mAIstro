@@ -874,7 +874,7 @@ class TestCompatibilityThroughM9Machinery:
             platform_api_version="1.0.0",
             active_extensions={"acme.film_critique": "1.4.0"},
         )
-        with pytest.raises(PackIdentityConflict, match="already active as an extension"):
+        with pytest.raises(PackIdentityConflict, match="already an active extension"):
             registry.install(_pack_bytes(pack_id="acme.film_critique", publisher="acme"))
         assert registry.records() == ()
 
