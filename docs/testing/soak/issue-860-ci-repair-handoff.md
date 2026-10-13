@@ -1,5 +1,67 @@
 # Issue #860 CI repair handoff
 
+## Current checkpoint — job e73dc99b
+
+This section supersedes the historical validation results below, not their
+preserved evidence. Scope: issue #860 only, assigned `auto-860` worktree;
+starting HEAD verified as `52df6ce565b1964c342bf93369ac3af9afa40868`, supplied
+base `2154f845347c9541016288c760f8da3f5cd2e064` resolves. Initial tree clean.
+Read the supplied dispatch snapshot, previous result, and historical
+`98a11313167b41a98a420abfda80c292/check-3.log`. No current-job `check-*.log`
+files were present. No remote operations or re-enumeration of issues/PRs.
+
+Assumption: this is the writer's evidence-backed CI repair round, not permission
+to choose an arbitrary release artifact or replace execution authority. Frozen
+repair scope was the reported schema-test/vulture findings and this handoff;
+existing soak profile, runner, adjacent tests and ADRs were inspected for
+acceptance. No broader production redesign was attempted.
+
+Fresh commands, each validation batch allowed 1,200 seconds:
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: PASS, 1,323 findings / 1,323 reviewed identities, zero unclassified or never-allowlist findings. Gate-selected comparison base `3c761d14db94`. No retained unbanked identity or eliminated identity exists to amend; ledger unchanged.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py -x -q`: PASS, 118 passed, 6 skipped in 2.46 seconds. Skips are not acceptance proof.
+- `uv run ruff check .`: PASS.
+- `uv run ruff format --check .`: PASS, 3,277 files already formatted.
+- `uv run python scripts/check-doc-links.py`: PASS, 2,704 Markdown files, zero broken relative links.
+- `git diff --check`: PASS after the handoff update.
+
+The historical 24-versus-21 DDL assertion failure does not reproduce. Current
+`test_pg_learnings.py:175–177` already includes the three audit columns emitted
+by `pg_learnings.py:117–119`; the test checks the complete ordered DDL inside
+one advisory-locked transaction. Removing DDL or weakening that assertion would
+not be an evidence-backed repair. No code, test, ledger or grant changes are
+justified by the executed checks. No tests changed, so no inventory delta.
+
+Read accepted ADR-082826-b601 and ADR-085, plus Proposed ADR-081. Preserve
+`Goal -> Graph -> Run -> NodeRun -> Attempt`; admission uniqueness is not proof
+of physical-work fencing. ADR-085 principal keys do not establish shared replica
+budgets. Proposed deployment guidance does not waive issue acceptance.
+
+| Acceptance criterion | Current evidence / disposition |
+| --- | --- |
+| Representative RC load profile | **UNVERIFIED**: `m3a-load-profile.md` explicitly lacks concurrent users/Workspaces, Graph fan-out, successful tool/model calls, Design/Canvas and Goal/background workloads. |
+| Two production application replicas | **UNVERIFIED**: executed two-instance middleware tests are not deployed RC replicas. |
+| Sustained saturation, reclaim, retries, leaks and shutdown | **UNVERIFIED**: no sustained production workload executed this round. |
+| Physical-work deduplication and Goal reconciliation | **UNVERIFIED**: profile's schedule probe cancels its Run without execution; admission counts cannot prove physical-work fencing. |
+| Replica-selection non-bypass, security/degraded behavior | **UNVERIFIED** for deployment; executed `tests/test_soak_promotion_gates.py:439` confirms independent middleware allowances: the same identity receives 200/200/429 on each instance. Production `rate_limit.py:94` constructs an in-memory limiter per instance. |
+| Complete telemetry and explicit thresholds | **UNVERIFIED**: profile/sampler tests exist, but driver-loop lag is not application-loop latency; no qualifying production measurements. |
+| Active-work kill/restart, drain/fencing/recovery | **UNVERIFIED**: no active-work production recovery experiment executed. |
+| Long-running exact-RC/config soak | **UNVERIFIED**: `run_soak.py:744–755` always rejects host preflight artifact identity. Executed four-hour preflight CLI regressions confirm duration cannot override this. |
+| Findings filed/reclassified before promotion | **UNVERIFIED** this round: limitations recorded locally; no new load experiment or remote filing. GitHub mutations prohibited. |
+| Machine/human evidence tied to image/package/commit/config hashes | **UNVERIFIED**: these checks identify source HEAD, not a qualifying RC image/config soak. |
+
+**BLOCKED**, not merge-ready: CI findings supplied for repair are not currently
+reproducible; the earlier acceptance block remains. Do not keep dispatching the
+historical schema failure as a current defect. Next required input is the
+immutable RC/configuration intended for promotion, followed by representative
+production-path workloads, physical-work/recovery and application telemetry
+oracles, resolution of replica-budget semantics, and a qualifying >=4-hour
+soak. A longer run of this host-process harness cannot satisfy the artifact gate.
+Only this existing handoff changed; no historical measurements were rewritten.
+
+Progress: checked 1, acceptance-complete 0, skipped 0 issues, validation errors 0;
+next: exact-RC prerequisites and qualifying soak. Local writer handoff only.
+
 ## Frozen scope
 
 - Assigned issue: #860 only; writer in `/home/dev/Git/wt/auto-860`, branch `auto-860`.
