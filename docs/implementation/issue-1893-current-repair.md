@@ -1,0 +1,66 @@
+# Issue #1893 bounded CI repair
+
+## Frozen scope
+
+- Assigned worktree: `/home/dev/Git/wt/auto-1893`, branch `auto-1893`.
+- Starting HEAD: `38b6c44e617dfd70d9f344da9d4236fe48b7f6a2` (verified); base: `2154f845347c9541016288c760f8da3f5cd2e064` (verified).
+- Single item: issue #1893 CI repair. Input is the supplied `af14316a265b47059b168a5bf8bde783/dispatch-context.json`, not refreshed GitHub state.
+- Inspection: admission codec/identity and adjacent tests, CLI lock failure named by the prior result, relevant ADRs and exact CI gates.
+- Potential changes frozen to this report, `packages/maistro-core/tests/extensions/test_cli_lock.py`, its inventory note, and the explicitly permitted Vulture ledger only if the exact scan demonstrates a discrepancy. No reachability ledger/grant or production activation changes.
+
+## Initial evidence and assumption
+
+Worktree initially clean. Supplied check-0 through check-4 logs report dependency sync, lint, formatting, 312 passing / 3 skipped focused tests, and suite inventory passing. These are driver evidence, not fresh validation by this worker.
+
+The prior job result reports a reproducible wrapped diagnostic assertion at `test_cli_lock.py:138`, alongside a trusted-base reachability blocker. Assumption: reproduce and repair the actual CI test failure if present; leave unauthorized reachability additions unchanged and report the blocker. The issue prohibits production activation and baseline/grant changes to disguise an unwired codec. No conflict or develop-sync evidence requires a merge.
+
+## Reproduced evidence
+
+- `uv run pytest packages/maistro-core/tests/extensions/test_cli_lock.py -x -q`: **1 failed, 6 passed**, line 138. Rich wraps after `not`, so the contiguous phrase assertion fails although the invalid lock is rejected with exit code 1 and the correct diagnostic. This is actual local evidence for the requested CI test repair, not proof of the unnamed remote failure's identity.
+- Exact requested Vulture scan: **PASS**, 1322 findings, zero unclassified; no ledger amendment justified.
+- `RATCHET_BASE_REV=2154f845347c9541016288c760f8da3f5cd2e064 uv run python scripts/check-ratchet-provenance.py`: **FAIL**, admission_identity and admission_codec both lack trusted-base authorization for their new unreachable-module and disposition rows. No permitted local bookkeeping change resolves this.
+- Read accepted ADR-081226-a66b, ADR-082526-7f02, ADR-083126-5e62. Preserve canonical execution and immutable admission provenance; the protected base remains authorization authority. No activation or gate changes are proposed.
+
+## Repair and validation
+
+Changed `packages/maistro-core/tests/extensions/test_cli_lock.py`: normalize rendered whitespace while retaining the exit-1 and complete diagnostic assertions, including the rejected and supported lock formats. Parameterize the existing real CLI invocation at 40, 80, and 120 columns. Production rendering and lock rejection remain unchanged. Inventory delta is +2 in `docs/testing/inventory-notes/issue-1893-cli-wrap-repair.md`.
+
+Commands executed against the starting HEAD plus this repair:
+
+- Pre-fix regression check, with new width parameters but the old assertion: `uv run pytest packages/maistro-core/tests/extensions/test_cli_lock.py -q -k invalid_lock`: **2 failed (40/80 columns), 1 passed (120 columns)**. Injected boundary is terminal rendering width, not parser/CLI return mocking.
+- `uv run pytest packages/maistro-core/tests/extensions/test_cli_lock.py packages/maistro-core/tests/extensions/test_pack_contracts.py packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q -rs`: **324 passed, 3 skipped** (DSNs absent).
+- `uv run pytest packages/maistro-core/tests/extensions -x -q`: **1068 passed**.
+- `uv run ruff check .`: PASS; `uv run ruff format --check .`: PASS (3301 files).
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py`: PASS.
+- `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests`: PASS, **16543** nodes, no duplicate evidence.
+- `uv run python scripts/check-reachability.py`: PASS against candidate ledger (1403 production modules, 171 unreachable).
+- `uv run python scripts/check-reachability-dispositions.py`: PASS against candidate ledger (50 groups).
+- `uv run python scripts/check-shipped-surface-truth.py`: PASS.
+- `rg -n 'admission_codec|admission_identity' packages/*/src --glob '*.py'`: only codec -> identity and Vulture whitelist -> identity imports; no production codec consumer.
+- `git diff --check`: PASS.
+
+Vulture and trusted-base provenance results are recorded above. No Vulture amendment is needed: the scan found no missing or stale identity. Candidate-ledger passes do not override the provenance failure.
+
+## Acceptance audit
+
+Inspected the codec, identity constructors, codec tests and production CLI loader. The existing detailed audit in `issue-1893-repair-validation.md` is historical; the following states only this round's evidence.
+
+| Criterion | Current evidence / limit |
+| --- | --- |
+| Exact shared APIs, frozen/slotted header, immutable DTOs, fresh flat mapping | Source inspection and freshly executed codec/identity tests pass. |
+| Named columns, strict storage UUID hex, signed timestamps, supplied header must match row | Focused header mismatch, scalar range, schema/version, UUID and binding tests pass. Live SQL persistence UNVERIFIED. |
+| Six typed failure codes, validated scope only, safe messages and suppressed parsing chain | Focused invalid header/snapshot/record and partial legacy tests pass, including deep nesting, numeric precision and surrogate corruption. |
+| Legacy bound/unbound/partial/receipt-only, no identity guessing | Focused tests pass. A task/run pair without receipt evidence remains partial because the canonical binding constructor requires a receipt; inventing it would violate the no-guessing contract. completed_at supplies no authority. |
+| Header/full decode separation, expiry/fingerprint evidence survives corruption, unknown formats fail closed | Named prospective pure tests pass; no clock or incoming fingerprint enters the codec. Replacement/409 precedence belongs to the future consumer and is UNVERIFIED. |
+| Strict TEXT snapshots, duplicate/nonobject/bare nonfinite refusal, tag and fingerprint preservation | Focused tests pass. Fixtures supply tagged snapshots/fingerprints; actual model -> fingerprint -> evidence-json -> model_of/model_of_json materialization is UNVERIFIED. |
+| Raw/production pools on same disposable migrated PostgreSQL DB | UNVERIFIED: three PG cases skipped for missing DSNs. No migration, DB session identity, final row-count or durability evidence claimed this round. |
+| Run JSONB is an object, explicit authorized principals/Workspace/Project/registered Graph | UNVERIFIED: pure codec fixtures are not authorized admission or canonical Run insert evidence. |
+| No SQL mutation, HTTP mapping, queue/live assessment/scope/activation/policy change | No production changes this round; source remains a pure mapping/DTO codec. Canonical Goal -> Graph -> Run -> NodeRun -> Attempt is preserved. |
+| Focused tests, lint/format, applicable mypy and inventory | PASS as recorded, with PG skips explicitly excluded from proof. CLI regression is demonstrated before and after repair, extensions suite fully passes. |
+| Reachable production consumer and unchanged full required integration CI | BLOCKED: no consumer; trusted-base provenance rejects the existing two unreachable-module/disposition additions. Full integration CI and attribution of the remote `test: failure` are UNVERIFIED. No gate/grant/ledger change to conceal this. |
+
+## Handoff
+
+Changed files: CLI lock test, +2 inventory note, and this report. No GitHub mutations, activation, merges or destructive git operations. No conflict was present. The CLI repair is ready for handoff, but issue #1893 remains **BLOCKED** by trusted-base reachability authorization and the unverified integration acceptance above. Resolution requires owner-coordinated authorization on the trusted base or an authorized real consumer, not repeated candidate-ledger edits.
+
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 1, next: coordinated reachability resolution and live integration evidence}`. This round must be committed locally; it does not grant integration approval.
