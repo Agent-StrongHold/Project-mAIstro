@@ -121,8 +121,6 @@
     "maistro.quota.verifiers.mistral",
     "maistro.quota.verifiers.openrouter",
     "maistro.quota.verify",
-    "maistro.runs.admission_identity",
-    "maistro.tasks.admission_generation",
     "maistro.repertoire",
     "maistro.repertoire.protocol",
     "maistro.repertoire.run",
