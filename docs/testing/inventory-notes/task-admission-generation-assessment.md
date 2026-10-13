@@ -6383,3 +6383,91 @@ quality/` empty).
   callers, baseline entries, grants, waivers, and exports for exactly this
   purpose). Writer handoff **MERGE-READY on leaf acceptance**; the stack
   stays unmerged pending the separately-scoped #1845 integration consumer.
+
+## CI-repair round (2026-10-13, head 747120c78 -> merged head 8d944e321): independent re-derivation + develop sync discharged
+
+This round re-derived every leg first-hand at the CI head, then discharged
+the lane's develop-sync obligation with a real merge. Nothing in
+`packages/`, `scripts/`, or `quality/` was edited; the only tree change is
+this note plus the merge commit.
+
+- **Starting state**: worktree clean at 747120c78 (the exact CI head);
+  prior job 2aaa84eb ran its 5-check battery green (ruff check/format,
+  focused trio 316 passed, scoped suite inventory ok) and died on provider
+  timeout before committing, so the driver's "no commit" block referred to
+  that round, not to missing tree work.
+- **Develop sync discharged with a real merge**: fetch EXIT 0,
+  `HEAD..origin/develop` = 1 commit (2154f845347c, PR #1660 squash);
+  `git merge-tree` pre-flight conflict-free; merged into the lane as
+  8d944e321 (no push). Post-merge numstat rule:
+  `git diff --numstat origin/develop -- quality/` empty — the branch adds
+  no rows and develop's intentional agent_loop.py::tool_definitions row
+  removal is present; multiset intact. CI timeline note: the captured CI
+  runs (started 11:55Z) predate develop's 12:40Z commit, so the four CI reds
+  at 747120c78 were branch-content failures, not develop drift — the sync
+  was hygiene, not the fix.
+- **All four CI reds re-derived at 747120c78, then re-bound at 8d944e321**:
+  - *exact-debt-ledger*: `check-vulture-baseline.py packages/*/src
+    --min-confidence 60 --exclude '*/third_party/*'` rc=0 both heads
+    (747120c78: 1323 -> 1323; 8d944e321: base 2154f845347c, 1322 -> 1322,
+    unclassified 0, never_allowlist 0 — the amendment loop stays EMPTY);
+    `check-shipped-surface-truth.py` rc=0; `check-ratchet-provenance.py`
+    rc=1 at both heads SOLELY via the reachability trusted-base leg (both
+    leaf modules NEW-unreachable, unauthorized at base, missing from the
+    candidate baseline; shell-execution 3->3, contract-markers 358->358,
+    enumerations 1->1, lifecycle 0->0 all OK).
+  - *Quality gate*: `check-reachability.py` rc=1 at both heads on exactly
+    the two leaf modules, nothing else. Every other executed pillar step
+    rc=0 at 747120c78: radon, xenon at CI argv (139 blocks <= 145, 0
+    module, 0 average), bump-version, release-consistency, doc-links,
+    enumerations, workspace-retirement, route-permissions,
+    principal-identity, frontend-typed-client, vendor provenance x2,
+    credential-authority, wiring-reads, agent-store-writes,
+    contract-markers, convergence-matrix, reachability-dispositions,
+    security-inventory, image-inventory/pins, workflow-inventory,
+    backlog-consistency, execution-lifecycles, model-egress,
+    foreign-harness-egress, `mypy --strict packages/maistro-core/src`
+    (791 files), fitness 23 passed, formal/ 666 passed 1 skipped (after
+    the workflow's own `uv pip install -e packages/maistro-evolve` step).
+    The acceptance-state ratchet, run against a live pg18 with the job's
+    DSN env and `--mandate ac69535ef165`, fails
+    `design_coverage: 44.1172 falls below the floor of 44.2377` at both
+    heads — re-bound to the same two-module delta: the `-m ac` outcome run
+    fails the SPEC-082926-f1c3 reachability gate-identity tests in
+    `tests/test_reachability_baseline_identity.py`, dropping their
+    criteria from `reachable`; the mandate and chain halves stay green
+    (0 newly claimed, 0 unproven, 0 chain gaps).
+  - *test*: `pytest tests/ --ignore=tests/tools/registry` =
+    4 failed / 4974 passed / 135 skipped at 747120c78 — the three
+    reachability meta-tests naming exactly the two modules, plus
+    `test_every_quality_json_state_surface_is_classified_once` failing
+    only on the local gitignored `quality/ac-state.json` residue this
+    round's own ac-state run regenerates (CI-invisible). At 8d944e321 the
+    three meta-tests still fail identically; core suite
+    15472 passed / 1067 skipped / 3 xfailed / 0 failed.
+  - *Coverage gate*: the leaf's diff coverage re-measured with the
+    coverage-unit core producer recipe (`coverage run --branch
+    --source=packages/maistro-core/src/maistro -m pytest
+    packages/maistro-core/tests` = 15471 passed / 1067 skipped /
+    3 xfailed), `coverage xml`, then `check-diff-coverage.py <xml>
+    --base ac69535ef165` **rc=0** (3 measured files at/above 90% lines /
+    80% arcs; tests exempt; `_vulture_whitelist.py` unmeasured-
+    informational). The job's red is the combine step's
+    `set -euo pipefail` scripts producer running `tests/`
+    (quality.yml:713) and dying on the same meta-tests before any later
+    step — same root cause, not a coverage defect.
+- **Mutations re-killed independently** in a throwaway detached worktree
+  (source-level edits restored from an orig copy after each run; worktree
+  removed): control 132 passed; swap TAKEOVER/REPLACE_EXPIRED **50
+  failed**; lease-before-binding **14 failed**; legacy-pending-as-v2
+  **10 failed**; mismatch-before-expiry **22 failed** — identical to the
+  prior round's numbers.
+- **Issue battery re-run at 8d944e321**: focused trio 316 passed;
+  idempotency 67 passed; scoped ruff/format clean; `mypy
+  admission_generation.py` Success; all 10 issue-named tests present.
+- **Verdict unchanged**: the four CI reds reduce to the single
+  issue-sanctioned unwired-leaf blocker; the two-merge rule is re-proven
+  at the new base (2154f845347c carries 0 admission grant rows), the
+  lane-brief vulture amendment loop is empty, and no sanctioned in-lane
+  repair exists. Leaf acceptance stands; the stack stays unmerged pending
+  the separately-scoped #1845 integration consumer.
