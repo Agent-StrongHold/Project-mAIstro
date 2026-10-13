@@ -188,4 +188,3 @@ services for remaining acceptance. Do not repeat speculative ledger repairs.
 
 Progress: checked 1 issue, done 0 repairs, skipped 0 issues, blocked 1.
 This evidence-only checkpoint is committed locally; it is not integration approval.
-

@@ -44,7 +44,7 @@ head rather than inheriting it.
   skipped**.
 - **Downgrade/reapplication** on `r59g18`: `alembic downgrade 062` drops the
   Goal tables (count 3 → 0); `alembic upgrade 063` reapplies (0 → 3).
-- **Installed-base upgrades, both majors:** 
+- **Installed-base upgrades, both majors:**
   `tests/migrations/test_goal_installed_base_upgrade.py` → **8 passed**
   (fresh `r59ib18`, pg18) and **8 passed** (fresh `r59ib17`, pg17): databases
   built by the actual merged develop snapshots `c560d4c` (user-model `056`)

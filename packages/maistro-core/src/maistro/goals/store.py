@@ -10,9 +10,15 @@ The store persists *desired state and accountability*. It is not a scheduler,
 a queue, or a work-status holder: the canonical
 `Goal -> Graph -> Run -> NodeRun -> Attempt` spine keeps its own primitives,
 and no method here accepts a Run id, because a Run's outcome never moves Goal
-state implicitly (#1572). Mutations are compare-and-set on
-``Goal.current_revision``; every backend implements the guard so that a stale
-write is refused and two concurrent writers leave exactly one winner.
+state implicitly (#1572). Mutations are compare-and-set on the Goal as the
+writer read it: ``Goal.current_revision`` is the token on every backend, the
+lifecycle state guards terminal-finality, and the durable twins additionally
+guard the owner — a reassignment moves neither the revision nor the state, and
+their statements write the whole row from the read, so an unguarded owner
+would let the second of two concurrent reassignments land with a record
+claiming a prior owner the row never held. Every backend implements the guard
+so that a stale write is refused and two concurrent writers leave exactly one
+winner per moved column.
 """
 
 from __future__ import annotations
@@ -122,7 +128,17 @@ class GoalStore(Protocol):
         at: datetime | None = None,
     ) -> Goal:
         """Change the accountable Agent. An explicit, recorded transition:
-        the record carries both the old and the new owner."""
+        the record carries both the old and the new owner.
+
+        Ownership moves without burning a revision, so the durable twins
+        guard this write on the owner as read as well as the revision: a
+        reassignment whose read predated another writer's landing moves no
+        rows and is refused with :class:`GoalRevisionConflict` — never
+        landing with a record that claims a prior owner the row no longer
+        held. The reference reads under the same lock it writes under, so
+        its second caller re-derives from the landed owner and its record is
+        true by construction.
+        """
         ...
 
     async def list_goal_revisions(self, goal_id: str) -> list[GoalRevision]:
@@ -269,6 +285,12 @@ class InMemoryGoalStore:
                 )
             if goal.current_revision != expected_revision:
                 raise GoalRevisionConflict(goal_id, expected_revision, goal.current_revision)
+            # The revision guard is complete here because the read above is
+            # atomic with the write below: nothing can land between them, so
+            # the owner the record claims is the owner the row held. The
+            # durable twins cannot read under their write — separate
+            # round-trips, separate processes — so their guarded UPDATEs
+            # carry the owner as read in the WHERE clause instead.
             moved_at = at or _utcnow()
             updated = goal.model_copy(update={"agent_id": agent_id, "updated_at": moved_at})
             self._goals[goal_id] = updated

@@ -13,7 +13,13 @@ Three tables, mirroring the model's three append-only surfaces:
 
 * ``canonical_goals`` — identity, scope, ownership and the lifecycle state,
   with ``current_revision`` as the compare-and-set pointer column: the guard
-  every mutation is an ``UPDATE ... WHERE current_revision = ?`` against.
+  every mutation is an ``UPDATE ... WHERE current_revision = ?`` against,
+  alongside the state and the owner as read — a reassignment moves neither
+  revision nor status, and every statement writes the payload (the whole row
+  as read), so an unguarded owner would let the second of two concurrent
+  reassignments land with a record claiming a prior owner the row never
+  held, and let an append that read before a reassignment write the stale
+  owner back.
 * ``canonical_goal_revisions`` — the append-only desired-state chain, one row
   per accepted revision, keyed ``(goal_id, revision)``.
 * ``canonical_goal_transitions`` — the recorded, attributed mutation history.
@@ -181,13 +187,15 @@ class SqliteGoalStore:
             cursor = await self._conn.execute(
                 """UPDATE canonical_goals
                    SET current_revision = ?, updated_at = ?, payload = ?
-                   WHERE goal_id = ? AND current_revision = ? AND status = 'active'""",
+                   WHERE goal_id = ? AND current_revision = ? AND status = 'active'
+                     AND agent_id = ?""",
                 (
                     updated.current_revision,
                     _iso(updated.updated_at),
                     updated.model_dump_json(),
                     goal_id,
                     expected_revision,
+                    goal.agent_id,
                 ),
             )
             self._require_won(goal, expected_revision, cursor.rowcount)
@@ -216,13 +224,15 @@ class SqliteGoalStore:
             cursor = await self._conn.execute(
                 """UPDATE canonical_goals
                    SET status = ?, updated_at = ?, payload = ?
-                   WHERE goal_id = ? AND current_revision = ? AND status = 'active'""",
+                   WHERE goal_id = ? AND current_revision = ? AND status = 'active'
+                     AND agent_id = ?""",
                 (
                     to_status,
                     _iso(moved_at),
                     updated.model_dump_json(),
                     goal_id,
                     expected_revision,
+                    goal.agent_id,
                 ),
             )
             self._require_won(goal, expected_revision, cursor.rowcount)
@@ -264,8 +274,16 @@ class SqliteGoalStore:
             cursor = await self._conn.execute(
                 """UPDATE canonical_goals
                    SET agent_id = ?, updated_at = ?, payload = ?
-                   WHERE goal_id = ? AND current_revision = ? AND status = 'active'""",
-                (agent_id, _iso(moved_at), updated.model_dump_json(), goal_id, expected_revision),
+                   WHERE goal_id = ? AND current_revision = ? AND status = 'active'
+                     AND agent_id = ?""",
+                (
+                    agent_id,
+                    _iso(moved_at),
+                    updated.model_dump_json(),
+                    goal_id,
+                    expected_revision,
+                    goal.agent_id,
+                ),
             )
             self._require_won(goal, expected_revision, cursor.rowcount)
             await self._insert_transition(
@@ -331,8 +349,12 @@ class SqliteGoalStore:
 
         Under this store's operation lock a zero-rowcount answer is
         unreachable; the guard exists so a second process sharing the file
-        gets the contract's refusal — CAS on revision *and* state — instead
-        of a quiet overwrite.
+        gets the contract's refusal — compare-and-set on the revision, the
+        state, and the owner as read — instead of a quiet overwrite. When the
+        interleaved writer was a reassignment the revision is unchanged, so
+        the two numbers in the refusal coincide; the class is still the one
+        refusal a lost compare-and-set gets (``GoalRevisionConflict``: the
+        Goal moved before this write landed).
         """
         if rowcount != 1:
             raise GoalRevisionConflict(goal.goal_id, expected_revision, goal.current_revision)

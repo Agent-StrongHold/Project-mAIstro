@@ -10,17 +10,24 @@ sources are held to one catalogue by
 ``packages/maistro-core/tests/goals/test_goal_pg_schema_agreement.py``.
 
 What differs from the reference is not the rules but the concurrency, and it
-concentrates in one rule: **mutations are compare-and-set on
-``current_revision``.** An in-process lock is correct for the reference and
-the SQLite twin (one writer at a time) and means nothing across processes, so
-every mutation here is one guarded statement —
+concentrates in one rule: **mutations are compare-and-set on everything the
+write derived from its read.** An in-process lock is correct for the reference
+and the SQLite twin (one writer at a time) and means nothing across processes,
+so every mutation here is one guarded statement —
 
     UPDATE ... WHERE goal_id = $1 AND current_revision = $n
+                     AND status = 'active' AND agent_id = <owner as read>
 
-— and a zero-rowcount answer is the compare-and-set losing. Two concurrent
+— and a zero-rowcount answer is the compare-and-set losing. The revision and
+the state are the contract's token and terminal guard; the owner sits in the
+guard too because a reassignment moves neither of the other two columns and
+every statement writes the whole row from its read — without the owner arm,
+the second of two concurrent reassignments lands on top of the first with a
+record claiming a prior owner the row no longer held, and an append that read
+before a reassignment lands would write the stale owner back. Two concurrent
 writers across two processes both issue the guarded update; the row moves
 once, so exactly one of them wins, which is the property the conformance
-suite's race leg holds every backend to. Because ``UPDATE n`` alone cannot
+suite's race legs hold every backend to. Because ``UPDATE n`` alone cannot
 say why the guard failed, the loser re-reads the row once: gone means
 :class:`GoalNotFound`, still holding ``expected_revision`` means the row was
 finalized between read and write (mutation was already refused before the
@@ -136,22 +143,38 @@ async def ensure_goal_schema(pool: asyncpg.Pool) -> None:
 
 
 #: The guarded UPDATE's shape, shared by all three mutations. ``$1`` is the
-#: goal id and the last parameter is always the ``expected_revision`` the
-#: caller holds; the compare-and-set lives in the WHERE, not in a lock. The
-#: ``status = 'active'`` arm is the state half of the compare-and-set (#1572):
-#: a transition does not move ``current_revision``, so a revision-only guard
-#: would let the second of two concurrent transitions overwrite the first.
-#: It also closes the finalize-between-read-and-write race for every mutation:
-#: a Goal another writer moved to a terminal state matches no rows.
+#: goal id, ``$5`` is the ``expected_revision`` the caller holds, and ``$6``
+#: is the owner as the caller read it; the compare-and-set lives in the
+#: WHERE, not in a lock. Two arms do the guarding, and each earns its place:
+#:
+#: ``status = 'active'`` is the state half of the compare-and-set (#1572): a
+#: transition does not move ``current_revision``, so a revision-only guard
+#: would let the second of two concurrent transitions overwrite the first. It
+#: also closes the finalize-between-read-and-write race for every mutation: a
+#: Goal another writer moved to a terminal state matches no rows.
+#:
+#: ``agent_id = $6`` is the owner half, and it guards *all three* mutations
+#: because the payload each statement writes is the whole row as read. A
+#: reassignment moves neither the revision nor the status — ownership is
+#: recorded, not versioned — so a revision-only guard would let the second of
+#: two concurrent reassignments land on top of the first, its record claiming
+#: a prior owner the row never held at write time; and an append or
+#: transition that read before a reassignment landed would write the stale
+#: owner back over the row through the payload. Guarding every column a read
+#: supplies makes zero rows mean exactly one thing: the Goal moved between
+#: the read and this write, whoever moved it.
 _APPEND_SQL = """UPDATE canonical_goals
                  SET current_revision = $2, updated_at = $3, payload = $4::text::jsonb
-                 WHERE goal_id = $1 AND current_revision = $5 AND status = 'active'"""
+                 WHERE goal_id = $1 AND current_revision = $5 AND status = 'active'
+                   AND agent_id = $6"""
 _TRANSITION_SQL = """UPDATE canonical_goals
                      SET status = $2, updated_at = $3, payload = $4::text::jsonb
-                     WHERE goal_id = $1 AND current_revision = $5 AND status = 'active'"""
+                     WHERE goal_id = $1 AND current_revision = $5 AND status = 'active'
+                       AND agent_id = $6"""
 _REASSIGN_SQL = """UPDATE canonical_goals
                    SET agent_id = $2, updated_at = $3, payload = $4::text::jsonb
-                   WHERE goal_id = $1 AND current_revision = $5 AND status = 'active'"""
+                   WHERE goal_id = $1 AND current_revision = $5 AND status = 'active'
+                     AND agent_id = $6"""
 
 
 class PgGoalStore:
@@ -249,6 +272,7 @@ class PgGoalStore:
                 updated.updated_at,
                 json_of(updated),
                 expected_revision,
+                goal.agent_id,
             )
             await self._require_won(conn, goal_id, outcome, expected_revision)
             await self._insert_revision(conn, goal_id, revision)
@@ -288,6 +312,7 @@ class PgGoalStore:
                 moved_at,
                 json_of(updated),
                 expected_revision,
+                goal.agent_id,
             )
             await self._require_won(conn, goal_id, outcome, expected_revision)
             await self._insert_transition(conn, record)
@@ -328,6 +353,7 @@ class PgGoalStore:
                 moved_at,
                 json_of(updated),
                 expected_revision,
+                goal.agent_id,
             )
             await self._require_won(conn, goal_id, outcome, expected_revision)
             await self._insert_transition(conn, record)
@@ -387,9 +413,14 @@ class PgGoalStore:
 
         ``outcome`` is asyncpg's ``UPDATE <n>`` tag. One row moved: this
         caller won, and the append-only rows inside this transaction are
-        legitimate. Zero rows: another writer moved the pointer between the
-        read above and this write, so the caller's write is refused with what
-        the store holds now.
+        legitimate. Zero rows: another writer moved the Goal between the read
+        above and this write — onto a new revision, a terminal state, or a
+        new owner, whichever the guard caught — so the caller's write is
+        refused with what the store holds now. When the mover was a
+        reassignment the revision is unchanged, so the two numbers in the
+        refusal coincide; the class is still the one refusal a lost
+        compare-and-set gets (``GoalRevisionConflict``: the Goal moved before
+        this write landed).
         """
         if outcome == "UPDATE 1":
             return

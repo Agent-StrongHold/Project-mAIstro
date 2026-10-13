@@ -19,7 +19,9 @@ The acceptance criteria this suite holds every backend to (issue #1572):
   child's mutations.
 * **Recorded ownership change.** Reassigning the accountable Agent is its own
   transition record carrying both owners and the actor; a no-op reassignment
-  is refused.
+  is refused; and a writer whose read predated another's landing is refused
+  rather than landing a record that claims a prior owner the row no longer
+  held when the write landed — on every backend, whatever the interleaving.
 * **Terminal states are final.** No transition out of a terminal state, and
   no mutation of a terminal Goal, on any backend.
 * **Authorization (foreign = missing).** Two principals in two Workspaces
@@ -37,6 +39,7 @@ owns the PostgreSQL tables; the SQLite twin carries its own DDL, and
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from typing import Any
 
@@ -66,6 +69,7 @@ class _MemoryBackend:
     reopen assertions would be vacuously true."""
 
     durable = False
+    kind = "memory"
 
     def __init__(self) -> None:
         self._store = InMemoryGoalStore()
@@ -82,6 +86,7 @@ class _SqliteBackend:
     the round-trip legs prove durability and not just dictionary behavior."""
 
     durable = True
+    kind = "sqlite"
 
     def __init__(self, tmp_path) -> None:
         self._path = tmp_path / "goals.db"
@@ -107,6 +112,7 @@ class _PostgresBackend:
     """A migrated database; every `store()` is a fresh object on one pool."""
 
     durable = True
+    kind = "postgres"
 
     def __init__(self, pool) -> None:
         self._pool = pool
@@ -355,6 +361,206 @@ async def test_agent_reassignment_is_an_explicit_recorded_transition(backend) ->
     assert records[0].from_agent_id == "agent-7"
     assert records[0].to_agent_id == "agent-8"
     assert records[0].actor == _PRINCIPAL
+
+
+async def test_concurrent_reassignments_record_truthful_ownership(backend) -> None:
+    """Two reassignments issued from one read — the interleaving two
+    processes produce by timing. Whatever lands, no record may claim a prior
+    owner the row no longer held when the write landed: the chain each store
+    records (creation's owner, then each record's claim, in order) must end
+    exactly at the row's owner. On the durable twins a reassignment moves
+    neither the revision nor the state, so this truthfulness is what the
+    owner arm of the guarded UPDATE buys; a guard that missed it would let
+    the second writer land a record repeating the first read's owner."""
+    store = await backend.store()
+    goal = await _goal(backend)
+    results = await asyncio.gather(
+        store.reassign_agent(goal.goal_id, "agent-8", expected_revision=1, actor="racer-a"),
+        store.reassign_agent(goal.goal_id, "agent-9", expected_revision=1, actor="racer-b"),
+        return_exceptions=True,
+    )
+    for refusal in (r for r in results if isinstance(r, BaseException)):
+        assert isinstance(refusal, GoalRevisionConflict), "a race loser gets the one CAS refusal"
+    final = await store.get_goal(goal.goal_id)
+    assert final.status == GoalStatus.ACTIVE
+    assert final.current_revision == 1, "ownership moves without burning a revision"
+    records = await store.list_goal_transitions(goal.goal_id)
+    assert records, "at least one reassignment lands: the guard matches the row it read"
+    owner = goal.agent_id
+    for record in records:
+        assert record.kind is GoalTransitionKind.AGENT_REASSIGN
+        assert record.from_agent_id == owner, "a record claimed a prior owner the row moved past"
+        owner = record.to_agent_id
+    assert final.agent_id == owner
+
+
+async def _reassign_out_of_band(backend, goal_id: str, new_owner: str) -> None:
+    """Another writer's complete reassignment — the agent column and the
+    payload, exactly what the store's own write is — landing outside the
+    caller's read/write window. That second writer is what a second process
+    is; writing it directly is how the window's other side is staged without
+    depending on scheduler timing."""
+    if backend.kind == "postgres":
+        async with backend._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT payload FROM canonical_goals WHERE goal_id = $1", goal_id
+            )
+            # The fixture pool registers no JSON codec: the payload comes back
+            # as the text the store wrote, so parse it here.
+            payload = json.loads(row["payload"])
+            payload["agent_id"] = new_owner
+            await conn.execute(
+                "UPDATE canonical_goals SET agent_id = $2, payload = $3::text::jsonb "
+                "WHERE goal_id = $1",
+                goal_id,
+                new_owner,
+                json.dumps(payload),
+            )
+        return
+    import aiosqlite
+
+    conn = await aiosqlite.connect(backend._path)
+    try:
+        cursor = await conn.execute(
+            "SELECT payload FROM canonical_goals WHERE goal_id = ?", (goal_id,)
+        )
+        row = await cursor.fetchone()
+        payload = json.loads(row[0])
+        payload["agent_id"] = new_owner
+        await conn.execute(
+            "UPDATE canonical_goals SET agent_id = ?, payload = ? WHERE goal_id = ?",
+            (new_owner, json.dumps(payload), goal_id),
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
+
+
+async def _store_holding_first_read(backend, read_seen: asyncio.Event, proceed: asyncio.Event):
+    """A durable store whose first Goal read is observable and held until
+    released: the read/write window two concurrent writers produce by timing,
+    produced here by construction so the race's outcome does not depend on
+    scheduler luck. The PostgreSQL store rides the fixture's pool; the SQLite
+    store opens its own connection to the same file, which is precisely two
+    processes sharing one substrate. Each subclass hooks the read path that
+    backend's mutation path actually goes through (the SQLite store's
+    ``_require`` reads through ``_get_goal_row``, not ``get_goal``). Returns
+    the store and a closer for the resources the fixture does not own."""
+
+    async def _gate(held: Goal | None) -> Goal | None:
+        if held is not None and not read_seen.is_set():
+            read_seen.set()
+            await proceed.wait()
+        return held
+
+    if backend.kind == "postgres":
+        from maistro.goals.pg_store import PgGoalStore
+
+        class _HeldPg(PgGoalStore):
+            async def get_goal(self, goal_id: str) -> Goal | None:
+                return await _gate(await super().get_goal(goal_id))
+
+        return _HeldPg(backend._pool), None
+
+    import aiosqlite
+
+    from maistro.goals.sqlite_store import SqliteGoalStore
+
+    class _HeldSqlite(SqliteGoalStore):
+        async def _get_goal_row(self, goal_id: str) -> Goal | None:
+            return await _gate(await super()._get_goal_row(goal_id))
+
+    conn = await aiosqlite.connect(backend._path)
+    return _HeldSqlite(conn), conn.close
+
+
+async def test_a_reassignment_that_read_before_another_writer_landed_is_refused(backend) -> None:
+    """The concurrent-reassign race, deterministic: the caller's read is held
+    open while another writer's complete reassignment commits inside the
+    window. The read predated the landing, so the guarded UPDATE — which
+    carries the owner as read, because a reassignment moves neither the
+    revision nor the state — must move no rows and refuse the write. Anything
+    else lands a record claiming agent-7 as the prior owner at a moment the
+    row already said agent-8: an audit trail that never happened."""
+    store = await backend.store()
+    if not backend.durable:
+        pytest.skip(
+            "the reference reads under the same lock it writes under: the "
+            "read/write window this test holds open cannot open there"
+        )
+    goal = await _goal(backend)
+    read_seen, proceed = asyncio.Event(), asyncio.Event()
+    racing, close_racing = await _store_holding_first_read(backend, read_seen, proceed)
+
+    raced = asyncio.create_task(
+        racing.reassign_agent(goal.goal_id, "agent-9", expected_revision=1, actor="stale-reader")
+    )
+    await read_seen.wait()
+    await _reassign_out_of_band(backend, goal.goal_id, "agent-8")
+    proceed.set()
+    try:
+        with pytest.raises(GoalRevisionConflict):
+            await raced
+    finally:
+        if close_racing is not None:
+            await close_racing()
+
+    # The refusal left the landed state alone and recorded nothing.
+    final = await store.get_goal(goal.goal_id)
+    assert final.agent_id == "agent-8"
+    assert final.current_revision == 1
+    assert await store.list_goal_transitions(goal.goal_id) == [], "a refused write records nothing"
+
+    # And a fresh read re-derives: the same reassignment now succeeds against
+    # the landed state, recording the true prior owner.
+    fresh = await store.reassign_agent(
+        goal.goal_id, "agent-9", expected_revision=1, actor="fresh-reader"
+    )
+    assert fresh.agent_id == "agent-9"
+    records = await store.list_goal_transitions(goal.goal_id)
+    assert [(record.from_agent_id, record.to_agent_id) for record in records] == [
+        ("agent-8", "agent-9")
+    ]
+
+
+async def test_an_append_that_read_before_a_reassignment_landed_is_refused(backend) -> None:
+    """The payload is the whole row as read, so an append whose read predated
+    a landed reassignment would write the stale owner back over the row
+    through it — silently undoing the recorded ownership change. The guard
+    carries the owner as read on every mutation for exactly this: revision
+    still 1, state still active, but the owner moved, so the append matches
+    no rows and the reassignment survives it."""
+    store = await backend.store()
+    if not backend.durable:
+        pytest.skip(
+            "the reference reads under the same lock it writes under: the "
+            "read/write window this test holds open cannot open there"
+        )
+    goal = await _goal(backend)
+    read_seen, proceed = asyncio.Event(), asyncio.Event()
+    racing, close_racing = await _store_holding_first_read(backend, read_seen, proceed)
+
+    raced = asyncio.create_task(
+        racing.append_revision(
+            goal.goal_id, _draft("written over a stale owner"), expected_revision=1
+        )
+    )
+    await read_seen.wait()
+    await _reassign_out_of_band(backend, goal.goal_id, "agent-8")
+    proceed.set()
+    try:
+        with pytest.raises(GoalRevisionConflict):
+            await raced
+    finally:
+        if close_racing is not None:
+            await close_racing()
+
+    final = await store.get_goal(goal.goal_id)
+    assert final.agent_id == "agent-8", "the stale append rewrote the landed owner"
+    assert final.current_revision == 1
+    assert [r.desired_state for r in await store.list_goal_revisions(goal.goal_id)] == [
+        _draft().desired_state
+    ], "the refused append appended nothing"
 
 
 async def test_missing_goal_is_goal_not_found_on_every_read(backend) -> None:
