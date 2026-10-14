@@ -871,6 +871,23 @@ class TestCompatibilityThroughM9Machinery:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    def test_pack_id_colliding_with_an_active_extension_is_refused(self) -> None:
+        # One id names one provider. If an extension installed through the
+        # M9-B2 service already occupies the candidate pack_id, the install is
+        # rejected instead of installing a second object with the same
+        # identity — afterwards _active_versions would silently overwrite the
+        # extension's version with the pack's, misdirecting dependency
+        # resolution to the wrong provider.
+        registry = InstallablePackRegistry(
+            platform_api_version="1.0.0",
+            active_extensions={"acme.film_critique": "1.4.0"},
+        )
+        with pytest.raises(PackIdentityConflict, match="already active as an extension"):
+            registry.install(_pack_bytes(pack_id="acme.film_critique", publisher="acme"))
+        assert registry.records() == ()
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
     def test_api_version_major_mismatch_is_refused(self) -> None:
         registry = InstallablePackRegistry(platform_api_version="1.0.0")
         with pytest.raises(PackIncompatible, match="api_version major mismatch"):
