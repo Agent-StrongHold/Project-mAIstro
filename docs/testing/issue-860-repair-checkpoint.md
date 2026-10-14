@@ -1,5 +1,64 @@
 # Issue #860 repair checkpoint
 
+## Follow-up job 44c2d468a8f04dfcb9731d20f2e45a30
+
+Frozen scope: issue #860 only, auto-860 worktree, clean starting HEAD
+`d501ba9f7e64088ba820a60a9838a2f38687036d`; supplied base
+`2154f845347c9541016288c760f8da3f5cd2e064` resolves locally. No merge conflict.
+Inspected supplied dispatch context, prior result and historical
+`98a11313167b41a98a420abfda80c292/check-3.log`; this job initially contained no
+`check-*.log` files. Prior verification claims were not reused as fresh results.
+Candidate edits were frozen to this checkpoint, the schema test/inventory note
+and (only for actual scanner findings) the vulture ledger.
+
+### Fresh validation
+
+Logs are `worker-{vulture,pytest,ruff,format,backlog}.log` in the job directory
+`/home/dev/maistro/jobs/44c2d468a8f04dfcb9731d20f2e45a30/`.
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`
+  passed: 1323 reviewed identities / 1323 findings; zero unclassified or
+  never-allowlist findings. Arguments match both CI workflows. Scanner reported
+  trusted base `3c761d14db94`; this is not a claim of a supplied-base override.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py tests/test_soak_promotion_gates.py -x -q`
+  passed: **109 passed, 6 skipped**. Historical schema failure does not reproduce:
+  test lines 175–177 already include all three audit-column upgrades. No test or
+  ledger repair is warranted by current evidence.
+- `uv run ruff check .` passed; `uv run ruff format --check .` passed (3277 files).
+- `uv run python scripts/check-backlog-consistency.py` passed (168 items).
+
+Read repository instructions, docs/README.md, accepted ADR-085,
+ADR-081226-a66b and ADR-081626-f383, and proposed ADR-081. Preserve
+Goal -> Graph -> Run -> NodeRun -> Attempt. Admission uniqueness cannot replace
+physical Attempt fencing; proposed topology text does not waive acceptance.
+No alternate scheduler, store, event or authorization authority was introduced.
+
+### Acceptance checked against code and executed tests
+
+| Criterion | Evidence / disposition |
+|---|---|
+| Representative RC workload | UNVERIFIED: `m3a-load-profile.md:166` onward explicitly records missing users/Workspaces, fan-out, successful tools/models, Design/Canvas and Goal/background traffic. |
+| Two deployed application replicas | UNVERIFIED: executed ASGI instances are not deployed RC replicas. |
+| Sustained saturation, queue growth, lease reclaim, retry/backoff and leaks | UNVERIFIED: no sustained production load executed; six database tests skipped. |
+| No duplicate physical work and Goal reconciliation | UNVERIFIED: `run_soak.py:1067–1092` cancels the admission probe's queued Run without execution. |
+| Rate/security/degraded behavior resists replica selection | Negative evidence: executed `test_soak_promotion_gates.py:439–487` observes [200,200,429] independently on both middleware instances for each identity class. `main.py:648` installs that middleware; `api/rate_limit.py:90–98` constructs an instance-local limiter. Deployed security/degraded behavior UNVERIFIED. |
+| Complete telemetry with thresholds | UNVERIFIED: profile documents missing application-loop, worker/pool/lease and long-window observations; no new production telemetry collected. |
+| Active-work restart, graceful drain, fencing and recovery | UNVERIFIED: no active Attempt kill/restart performed. |
+| Long soak of exact RC/configuration | UNVERIFIED: `run_soak.py:744–755` always rejects host preflight as exact-RC evidence; passing promotion-gate tests confirm rejection, not production success. |
+| Findings classified before promotion | Partial: `BACKLOG.md:267–279` records the independent-budget gap as engine-116 (`gap-spec`); consistency gate passed. Completeness for a new RC soak UNVERIFIED. |
+| Machine/human evidence bound to exact artifact/config hashes | UNVERIFIED: these local validation logs are not a hash-bound production soak pack. |
+
+Disposition: **BLOCKED**. Only this checkpoint changed; no test additions or
+modifications (inventory delta zero), production/config changes, or ledger edits.
+Do not amend an already matching ledger or repeat this stale schema repair.
+Next requires a designated immutable promotion artifact/configuration, the
+canonical cluster-budget specification decision, representative production
+traffic and >=4-hour soak with complete telemetry and active Attempt recovery.
+No full-tree pytest, live database or production soak was run. No GitHub mutation.
+Progress: checked 1 issue; local validation/handoff done 1; acceptance complete 0;
+skipped issues 0; failed validation commands 0. Existing branch work preserved.
+
+
 ## Follow-up job ac09fde9cd724bf8a8e7799e4fbee0b1
 
 Frozen scope: issue #860 only; assigned worktree auto-860, starting HEAD
