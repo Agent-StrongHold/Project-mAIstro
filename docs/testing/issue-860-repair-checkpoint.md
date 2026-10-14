@@ -1,5 +1,79 @@
 # Issue #860 repair checkpoint
 
+## Follow-up job ac09fde9cd724bf8a8e7799e4fbee0b1
+
+Frozen scope: issue #860 only; assigned worktree auto-860, starting HEAD
+65dd9d50714e3c76cdabb6f956f419a6b8ebe540 verified, worktree initially clean.
+Supplied base: 2154f845347c9541016288c760f8da3f5cd2e064. No remote mutations.
+Edit scope: this checkpoint; the vulture ledger and historical schema-test
+expectations only if fresh failures justify repair. No such failures reproduced.
+Current job directory has no check-*.log files. Read the supplied historical
+98a11313167b41a98a420abfda80c292/check-3.log and prior result; neither is a
+current validation claim. Ambiguity resolved conservatively: this is a writer
+repair round, not permission to replace missing production evidence with tests.
+
+Fresh execution:
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`
+  passed: 1323 reviewed identities / 1323 findings, zero unclassified and
+  never-allowlist findings. No ledger amendment is justified.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py tests/test_soak_promotion_gates.py -x -q`
+  passed: 109 passed, 6 skipped. The historical 24-versus-21 schema failure
+  no longer reproduces: test_pg_learnings.py:175–177 already lists the three
+  audit columns inside the independently asserted advisory-lock fence.
+
+Production reachability and architecture were checked, not inferred from passes:
+`main.py:648` installs `RateLimitMiddleware`, whose constructor at
+`api/rate_limit.py:90–98` creates an instance-local InMemoryRateLimiter.
+The executed regression `test_soak_promotion_gates.py:439–487` obtains
+[200, 200, 429] independently on both instances for the same authenticated or
+unauthenticated identity. This falsifies a shared allowance, not deployed
+security correctness. BACKLOG.md:267–279 already classifies this as engine-116,
+with a cluster-budget specification decision pending.
+
+Read AGENTS.md, docs/README.md, accepted ADR-085, ADR-081226-a66b and
+ADR-081626-f383, and proposed ADR-081. Preserve Goal -> Graph -> Run ->
+NodeRun -> Attempt; do not create a second execution or authorization authority.
+ADR-081626-f383 requires physical execution fencing, so admission counts and
+process rejoin cannot stand in for that proof. The proposed topology ADR does
+not waive issue acceptance. run_soak.py:1067–1092 explicitly cancels its queued
+schedule probe without execution; run_soak.py:744–755 always rejects its host
+preflight as an exact-RC artifact. The inspected load profile explicitly records
+missing representative traffic and telemetry. No new production soak was run.
+
+### Acceptance disposition for this job
+
+| Criterion | Fresh evidence / disposition |
+|---|---|
+| Representative RC workload | UNVERIFIED: m3a-load-profile.md explicitly lacks multi-user/Workspace, fan-out, successful tools/models, Design/Canvas and background/Goal traffic. |
+| Two production replicas | UNVERIFIED: executed ASGI tests are not a deployed RC. |
+| Sustained saturation/reclaim/retries/leaks | UNVERIFIED: no sustained deployed workload; six DB tests skipped. |
+| Physical-work uniqueness and Goal reconciliation | UNVERIFIED: schedule admission probe does not execute physical work. |
+| Replica-selection non-bypass | Negative evidence: executed production middleware regression demonstrates independent allowances; deployed security/degraded behavior UNVERIFIED. |
+| Full telemetry and explicit thresholds | UNVERIFIED: profile records incomplete worker/pool/lease and application-loop observations. |
+| Active-work kill/restart, drain/fencing/recovery | UNVERIFIED: no active Attempt restart experiment performed. |
+| Long exact-RC soak | UNVERIFIED: executed tests reject even four-hour host preflight; no immutable promotion image/configuration exercised. |
+| Findings classified before promotion | Partial: existing engine-116 classifies allowance gap; completeness for a new RC soak UNVERIFIED. |
+| Hash-bound machine/human production evidence | UNVERIFIED: this checkpoint is local validation metadata only. |
+
+No code, tests, runtime configuration, inventory notes or ledger changed.
+Inventory delta: zero. Additional fresh validation passed:
+`uv run ruff check .`, `uv run ruff format --check .` (3277 files),
+`uv run python scripts/check-backlog-consistency.py` (168 items), and
+`git diff --check`.
+
+Disposition: BLOCKED. Historical CI failure is already repaired; exact-debt
+ledger matches the real scan. Do not dispatch another identical scanner-only
+repair expecting it to establish production acceptance. Next requires a designated
+immutable RC/configuration, the canonical cluster-budget specification decision,
+a representative production workload and >=4-hour deployment evidence including
+active Attempt recovery and full telemetry. No full-tree pytest or live
+PostgreSQL/production soak was run in this job. Only this checkpoint is committed
+locally; no integration approval or GitHub mutation.
+Progress: checked 1, local validation/handoff done 1, acceptance complete 0,
+skipped issues 0, command errors 0; next: production acceptance work above.
+
+
 ## Follow-up job 0bf3afc0270f4fa1aa137b502934efdb
 
 Frozen scope: only issue #860 in auto-860, clean starting HEAD
