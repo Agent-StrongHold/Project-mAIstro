@@ -1,5 +1,98 @@
 # Issue #1893 bounded CI repair
 
+## Current revalidation — job 000164664c544736be225d57ea51085a
+
+**BLOCKED: reproduced trusted-base authorization failure; no demonstrated
+source repair.** Frozen item: #1893, `auto-1893`, clean assigned source HEAD
+`17d1aef40d08702666cf7e25f973b50b7abc2aae`, validated base
+`321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62`. Only this existing report changes.
+No incoming work, conflicts, source/test changes, ledger/grant/gate changes,
+fetch/merge, production activation, or GitHub mutation. Inventory delta **0**;
+no test addition requiring another inventory note.
+
+Read repository instructions, supplied issue/failed-check evidence, prior result,
+driver check-0 through check-4 logs, codec/DTOs and adjacent tests, exact-debt-ledger
+workflow, and accepted ADRs 081226-a66b, 082826-b601, 082826-d9f5 and 083126-5e62.
+Reconciliation: preserve Goal → Graph → Run → NodeRun → Attempt and canonical
+store/consumer ownership; neither fake reachability imports nor activating the
+later C consumer is authorized by this B2 repair. The Vulture exception does not
+authorize reachability grants. Captured failed-check objects name different heads
+(`3f2c79a70d9e` and `973772507c94`), with null summary/text; they do not establish
+a failing node at this assigned head. Hosted `test: failure` remains UNRESOLVED.
+
+### Fresh commands and evidence
+
+Artifacts and executed JUnit node identities are under
+`/home/dev/maistro/jobs/000164664c544736be225d57ea51085a/worker-*`.
+Driver logs independently inspected: sync/lint/format pass, four focused files
+346 passed / 3 PostgreSQL skips, inventory 16567. Fresh executions:
+
+| Command | Outcome |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1322 reviewed identities / findings, zero unclassified. No ledger amendment justified. |
+| `RATCHET_BASE_REV=321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62 uv run python scripts/check-ratchet-provenance.py` | FAIL, exit 1: two unauthorized unreachable modules and two dispositions; `worker-provenance.log:17-30`. |
+| `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py packages/maistro-core/tests/extensions/test_cli_lock.py packages/maistro-core/tests/extensions/test_pack_contracts.py -x -q -ra --junitxml=<job>/worker-focused.xml` | 346 passed, 3 PG skips, 3 JUnit-format warnings. Not durability proof. |
+| `DATABASE_URL=postgresql:///maistro_1893_00016466 uv run alembic upgrade head` | PASS, fresh disposable DB, real chain from empty through 063. |
+| `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q -ra -o junit_family=legacy --junitxml=<job>/worker-pg.xml` | With DB environment below: **204 passed, zero skipped**. |
+| `uv run pytest packages/maistro-core/tests/tasks packages/maistro-core/tests/runs -x -q -ra` | Without PG environment: 1919 passed, 310 skipped, 6 aiosqlite event-loop-closed warnings. Skips are not PG evidence. |
+| `uv run ruff check .` / `uv run ruff format --check .` | PASS / PASS (3301 files). |
+| `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py` | PASS. |
+| `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests` | PASS, 16567 unique nodes, zero duplicate evidence. |
+| `uv run python scripts/check-shipped-surface-truth.py` | PASS. |
+| `uv run python scripts/check-reachability.py` / `uv run python scripts/check-reachability-dispositions.py` / `uv run python scripts/check-promotion-surface.py` | PASS against candidate evidence; does not authorize the failed provenance check. |
+
+Native PostgreSQL **18.6**, user `dev`: confirmed `maistro_1893_00016466` absent,
+then created it. `DATABASE_URL`, `MAISTRO_TEST_PG_DSN` and
+`MAISTRO_TEST_DATABASE_URL` all targeted `postgresql:///maistro_1893_00016466`;
+PG tests additionally used `MAISTRO_REQUIRE_PG_LEGS=1`, `REQUIRE_AUTH=false`,
+`MAISTRO_DRY_RUN=1`. Non-null production-codec and independent raw pools used
+session PID pairs **3177281/3177282**, **3177283/3177284**, **3177285/3177286**
+for unbound/bound/acknowledged. Each persisted exactly one scoped row and read
+identical named TEXT columns through both pools. Escaped-surrogate corruption
+was injected into each snapshot column and safely rejected through both readers.
+Final SQL PID **3177308**: revision **063**, **0 rows / 0 distinct generations /
+0 distinct Run IDs** in `task_idempotency`. Database retained; no downgrade test.
+
+Regression sensitivity: an in-memory encoder wrapper set `task_id=None` and ran
+the existing bound round-trip test. It failed at `test_admission_codec.py:134`
+as expected; harness required `TESTS_FAILED` and exited zero. No mutated source
+was written (`worker-mutation.log`).
+
+### Acceptance disposition
+
+- Exact frozen/slotted header, typed codes/errors, strict UUID hex, signed
+  timestamps, matching header, constructors and fresh flat mappings: inspected
+  production definitions and corresponding focused tests passed.
+- No guessed identity: bound/unbound/partial, receipt-only, pair-without-receipt,
+  invalid evidence and ignored legacy `completed_at` tests passed. A pair lacking
+  receipt evidence cannot satisfy the canonical binding without invention.
+- Header/full-decode separation: expiry and fingerprint preserved despite full
+  decode errors; unknown formats/scalar corruption fail closed. No clock,
+  incoming fingerprint, assessment, SQL mutation, HTTP/queue or scope change.
+- Snapshot fidelity/error hygiene: canonical-byte round trips, unchanged stored
+  fingerprint, tags, strict JSON/duplicates/nonobjects/nonfinite rejection,
+  numeric-loss/Unicode/deep-nesting and suppressed error-chain tests passed.
+- Real migrated two-pool storage contrast: all three states passed, sessions and
+  SQL counts above. Physical `request` TEXT maps to DTO `request_snapshot`.
+- Production behavior: import search finds codec → identity and Vulture whitelist
+  → identity only; **no production codec consumer**, consistent with
+  `admission_codec.py:50-53`. Tests are storage/DTO evidence, not admission.
+- **UNVERIFIED:** original-model evidence-json/model_of materialization and
+  fingerprint-before-tagging pipeline, Run JSONB object insertion, authorized
+  principal/Workspace/Project/registered-Graph admission through the codec,
+  full required integration CI. Live replacement/409 ordering belongs to C/F2.
+- **BLOCKER:** candidate entries at `quality/reachability-baseline.json:131,147`
+  and `quality/reachability-dispositions.json:612-613` cannot authorize themselves;
+  exact-debt-ledger fails against the assigned trusted base. An already-passing
+  Vulture ledger must not be changed to disguise this different failure.
+
+Next: owner-coordinated trusted-base authorization/integration resolution, plus
+the actual hosted failing step/head/traceback. Do not redispatch the same
+source/base expecting a different authorization result. This local commit is a
+blocked handoff, not integration approval.
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 1, next: owner prerequisite
+and concrete hosted failure evidence}`.
+
 ## Current revalidation — job 5696cb77cba142a786ea3b4c1c13f095
 
 **BLOCKED: the trusted-base reachability prerequisite still fails.** Frozen
