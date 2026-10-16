@@ -511,4 +511,3 @@ class AdmissionAssessment(StrEnum):
     These do not replace the live ``_AssessmentKind`` values in
     :mod:`maistro.tasks.idempotency` in this leaf; nothing consumes them yet.
     """
-

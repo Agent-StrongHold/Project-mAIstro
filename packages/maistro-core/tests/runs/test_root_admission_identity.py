@@ -149,9 +149,10 @@ def test_module_exports_exact_contract_and_assessment_values() -> None:
         "RootAdmissionResult",
         "StaleOwner",
     ]
-    assert tuple(
-        (member.name, member.value) for member in admission_identity.AdmissionAssessment
-    ) == ()
+    assert (
+        tuple((member.name, member.value) for member in admission_identity.AdmissionAssessment)
+        == ()
+    )
 
 
 # --- canonical JSON snapshots ---------------------------------------------
