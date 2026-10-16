@@ -149,16 +149,15 @@ def test_module_exports_exact_contract_and_assessment_values() -> None:
         "RootAdmissionResult",
         "StaleOwner",
     ]
-    assert (
-        tuple((member.name, member.value) for member in admission_identity.AdmissionAssessment)
-        == (
-            ("MISMATCH", "MISMATCH"),
-            ("REPLAYED", "REPLAYED"),
-            ("PENDING", "PENDING"),
-            ("TAKEOVER", "TAKEOVER"),
-            ("REPLACE_EXPIRED", "REPLACE_EXPIRED"),
-            ("LEGACY_UNRESOLVED", "LEGACY_UNRESOLVED"),
-        )
+    assert tuple(
+        (member.name, member.value) for member in admission_identity.AdmissionAssessment
+    ) == (
+        ("MISMATCH", "mismatch"),
+        ("REPLAYED", "replayed"),
+        ("PENDING", "pending"),
+        ("TAKEOVER", "takeover"),
+        ("REPLACE_EXPIRED", "replace_expired"),
+        ("LEGACY_UNRESOLVED", "legacy_unresolved"),
     )
 
 
