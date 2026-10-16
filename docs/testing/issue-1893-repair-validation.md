@@ -1,5 +1,147 @@
 # Issue #1893 repair validation
 
+## Current frozen repair: job 4f47140522c74a76b03b7440cda4c47b
+
+- Issue: #1893 only; writer branch/worktree `auto-1893` at
+  `/home/dev/Git/wt/auto-1893`.
+- Confirmed clean starting head: `9a67d68be565b8ae9bc309f039d6495771a380a9`;
+  assigned develop base: `321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62`.
+- Frozen evidence: supplied dispatch snapshot and check-0 through check-4 logs;
+  no GitHub refresh, mutations, or new issue enumeration.
+- Frozen edit scope: codec, identity DTO, their tests and inventory note only
+  if a reproduced defect warrants repair; this existing report; Vulture ledger
+  only for actual reviewed findings from the mandated exact scan. No other
+  ledger, authorization, activation, or gate changes are permitted.
+- Driver logs inspected: dependency setup, Ruff and format passed; focused
+  tests 324 passed / 3 skipped; inventory 16543 nodes. These are not this
+  worker's live DB validation.
+- Ambiguity: `test: failure` has no supplied traceback. Proceed by checking
+  the captured CI evidence and reproducing focused tests and named gates;
+  do not infer a source defect from a check name alone.
+- Prior result reports unauthorized reachability rows and no reproduced test
+  failure. Those claims will be checked rather than adopted as current proof.
+
+Current measured results:
+
+- Exact requested Vulture scan: exit 0, 1322 findings / reviewed identities,
+  zero unclassified (`/tmp/1893-4f47-vulture.log`). No ledger edit justified.
+- `RATCHET_BASE_REV=321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62 uv run python
+  scripts/check-ratchet-provenance.py`: exit 1. Both admission modules are NEW
+  unauthorized unreachable modules and NEW unauthorized dispositions
+  (`/tmp/1893-4f47-provenance.log:20-30`).
+- `origin/develop` resolves to the supplied base. The actual merge base is
+  `2154f845347c9541016288c760f8da3f5cd2e064`, which the gate correctly uses.
+  No unmerged index entries exist; this is not a develop-sync conflict.
+- Read accepted ADR-081226-a66b and ADR-082526-7f02. Immutable admission
+  provenance and the sole Run/NodeRun/Attempt lifecycle are preserved. No
+  activation or competing execution authority may be added to evade this gate.
+
+The provenance failure is reproduced, not guessed. It needs an authorized
+integration-owner resolution outside this lane; the Vulture exception cannot
+resolve it.
+
+Worker checks at the starting source SHA:
+
+- `uv run ruff check .`: passed.
+- `uv run ruff format --check .`: 3301 files already formatted.
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py
+  packages/maistro-core/src/maistro/runs/admission_identity.py`: passed.
+- `uv run pytest packages/maistro-core/tests/extensions/test_cli_lock.py
+  packages/maistro-core/tests/extensions/test_pack_contracts.py
+  packages/maistro-core/tests/runs/test_root_admission_identity.py
+  packages/maistro-core/tests/tasks/test_admission_codec.py -x -q`:
+  **324 passed, 3 skipped** (`/tmp/1893-4f47-focused.log`). PostgreSQL cases
+  skipped without DSNs; not durability evidence.
+- Production-source search for `admission_codec|decode_admission_record`
+  returns only the defining codec. The contract leaf remains inactive; unit
+  imports are not runtime reachability.
+- Attempted structured extraction of captured PR/check metadata with `jq`
+  could not run (`jq: command not found`). No remote fetch was performed.
+- PostgreSQL peer connection succeeds (18.6); proposed dedicated database
+  `maistro_1893_job4f471405` is confirmed absent before creation.
+
+Live storage validation:
+
+- Created only the previously absent disposable database
+  `maistro_1893_job4f471405` on local PostgreSQL 18.6 using peer auth.
+- `DATABASE_URL='postgresql://dev@/maistro_1893_job4f471405?host=/var/run/postgresql'
+  uv run alembic upgrade head`: passed, empty schema through revision **063**
+  (`/tmp/1893-4f47-migrations.log`). No downgrade or destructive chain test ran.
+- Both `MAISTRO_TEST_PG_DSN` and `MAISTRO_TEST_DATABASE_URL` used that same URL;
+  `MAISTRO_REQUIRE_PG_LEGS=1 uv run pytest
+  packages/maistro-core/tests/runs/test_root_admission_identity.py
+  packages/maistro-core/tests/tasks/test_admission_codec.py -x -q
+  -o junit_family=legacy --junitxml=/tmp/1893-4f47-pg.xml`:
+  **204 passed, zero skips** (`/tmp/1893-4f47-pg.log`).
+- These cases cover all ten named prospective tests, including three live
+  raw/production-codec pool states. Corrupt surrogate TEXT is injected into
+  each snapshot column and rejected safely through both pools.
+- Independent SQL after pytest confirms migration 063 and zero rows in
+  task_idempotency, tasks, canonical_runs, canonical_node_runs and
+  canonical_attempts. The disposable DB is retained for inspection.
+- `uv run python scripts/check-suite-inventory.py --suite
+  packages/maistro-core/tests`: passed, **16543** collected identities, no
+  duplicates (`/tmp/1893-4f47-inventory.log`). No tests were changed or added;
+  no inventory delta is needed.
+
+Captured CI evidence was inspected with the available search tool after `jq`
+proved unavailable. `dispatch-context.json:156356-156371` reports check
+115325250948 (`test`) **success** for PR #1945's captured head
+`90d4c278e6d729d41a3f30d9f17bc65025d6f59d`, with no summary or traceback.
+The failure at lines 146013-146028 belongs to #1855's older head
+`3f2c79a70d9e1b0b6b6ffc99562cb35db5326828`, also without a traceback.
+Neither establishes current-head CI. The dispatched `test: failure` is
+**UNRESOLVED**, not repaired or dismissed as green.
+
+Additional current results:
+
+- JUnit records production/raw backend PID pairs **1991260/1991261** (unbound),
+  **1991262/1991263** (bound), **1991264/1991265** (acknowledged), each reading
+  exactly one persisted admission row in `maistro_1893_job4f471405`.
+  Address/port fields are NULL because both pools use the Unix socket.
+- `uv run pytest packages/maistro-core/tests/tasks
+  packages/maistro-core/tests/runs -x -q`: **1919 passed, 310 skipped,
+  6 warnings**, exit 0, no DSNs set (`/tmp/1893-4f47-adjacent.log`).
+  SQLite worker warnings report closed event
+  loops in adjacent tests, not a reproduced codec assertion failure.
+- `uv run python scripts/check-shipped-surface-truth.py`,
+  `uv run python scripts/check-reachability.py`,
+  `uv run python scripts/check-reachability-dispositions.py`, and
+  `uv run python scripts/check-promotion-surface.py`: each exit 0; logs are
+  `/tmp/1893-4f47-{shipped,reachability,dispositions,promotion}.log`.
+  Candidate-ledger passes do not override the failed trusted-base provenance.
+- `git diff --check`: passed.
+
+### Current acceptance boundary and handoff
+
+**BLOCKED.** The exact provenance gate failure persists at
+`quality/reachability-baseline.json:131,147` and
+`quality/reachability-dispositions.json:606-613`. No valid in-scope code or
+Vulture repair was evidenced. Source/test/ledger edits would be speculative.
+Only this existing report changed; no added tests, no inventory delta,
+no grant/gate changes and no production activation.
+
+The live 204-node run proves immutable v2 round trips/fresh mappings; strict
+UUID storage and signed timestamps; fail-closed formats/headers; separate
+legacy unbound/partial/bound evidence; header expiry/fingerprint preservation
+when full decoding fails; rejection of invalid/duplicate/nonfinite/lossy JSON;
+tag preservation without stored-fingerprint recomputation; and raw/production
+pool TEXT equivalence. It does **not** prove authorized admission, Graph-kind
+registration, model materialization through evidence-json helpers, original
+model fingerprinting, Run JSONB INSERT shape, or consumer expiry/409 precedence.
+Those are **UNVERIFIED** by these DTO fixtures, which use string identities and
+insert storage rows directly. Full unchanged integration CI and coordination/
+activation approval remain **UNVERIFIED**. No pre-fix or mutation failure is
+claimed because no implementation or regression test was changed.
+
+Progress: checked 1 issue; done 0 repairs; skipped 0; errors 1 reproduced
+provenance blocker. Next: obtain an owner-authorized reachability resolution
+consistent with the two-merge rule and the exact current-head `test` traceback.
+Do not redispatch speculative repairs against only the same check name.
+This local documentation commit is an evidence handoff, not integration approval.
+
+Earlier sections below are historical evidence, not current-head verification.
+
 ## Frozen scope
 
 - Assigned writer worktree: `/home/dev/Git/wt/auto-1893`, branch `auto-1893`.
