@@ -151,14 +151,7 @@ def test_module_exports_exact_contract_and_assessment_values() -> None:
     ]
     assert tuple(
         (member.name, member.value) for member in admission_identity.AdmissionAssessment
-    ) == (
-        ("MISMATCH", "mismatch"),
-        ("REPLAYED", "replayed"),
-        ("PENDING", "pending"),
-        ("TAKEOVER", "takeover"),
-        ("REPLACE_EXPIRED", "replace_expired"),
-        ("LEGACY_UNRESOLVED", "legacy_unresolved"),
-    )
+    ) == ()
 
 
 # --- canonical JSON snapshots ---------------------------------------------

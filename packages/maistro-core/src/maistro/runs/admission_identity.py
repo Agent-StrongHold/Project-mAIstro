@@ -512,9 +512,3 @@ class AdmissionAssessment(StrEnum):
     :mod:`maistro.tasks.idempotency` in this leaf; nothing consumes them yet.
     """
 
-    MISMATCH = "mismatch"
-    REPLAYED = "replayed"
-    PENDING = "pending"
-    TAKEOVER = "takeover"
-    REPLACE_EXPIRED = "replace_expired"
-    LEGACY_UNRESOLVED = "legacy_unresolved"
