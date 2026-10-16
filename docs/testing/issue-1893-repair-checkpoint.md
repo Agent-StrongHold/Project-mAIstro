@@ -1,5 +1,100 @@
 # Issue 1893 repair checkpoint
 
+## Repair recheck: job 6fbc3c17552a4262828dec6dabe9c0ab
+
+Frozen scope: #1893 only, assigned worktree `/home/dev/Git/wt/auto-1893`,
+branch `auto-1893`, initially clean source
+`d79757c4f621b097a5fec76689776a533df12fcf`. Assigned target and local
+`origin/develop` both resolve to `321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62`;
+`git merge-base HEAD 321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62` resolves to
+`2154f845347c9541016288c760f8da3f5cd2e064`. The gate uses that merge base,
+not the target tip, as its trusted comparison. No unresolved merge or incoming
+work was present. No fetch, merge, remote mutation, or source deletion performed.
+
+Read repository instructions, frozen issue body, supplied check-0 through
+check-4 logs, prior result, codec and identity implementations and adjacent
+tests, binding-repair inventory note, exact-debt-ledger workflow, and accepted
+ADRs 081226-a66b, 082526-7f02 and 083126-5e62. The stage restriction remains:
+typed representation is not admission authority or production activation.
+Canonical `Goal -> Graph -> Run -> NodeRun -> Attempt`, immutable admission
+provenance and trusted-base authorization must not be bypassed to make this
+inactive leaf green. A legacy pair without receipt evidence stays partial;
+fabricating a receipt to satisfy the shared DTO would violate no-inference.
+
+### Fresh execution
+
+All validation commands used a 1200-second timeout. Logs are under
+`/home/dev/maistro/jobs/6fbc3c17552a4262828dec6dabe9c0ab/worker-*.log`.
+Earlier claims are not counted as this round's execution.
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`:
+  **PASS**, 1322 findings / reviewed identities, zero unclassified and zero
+  never-allowlist findings (`worker-vulture.log`). No ledger amendment is
+  warranted. The Vulture exception does not authorize reachability edits.
+- `RATCHET_BASE_REV=321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62 uv run python scripts/check-ratchet-provenance.py`:
+  **FAIL**, exit 1 (`worker-provenance.log`). Both admission modules are NEW
+  unauthorized unreachable identities and dispositions, 169 trusted versus
+  171 candidate entries. All other provenance sub-gates pass.
+- `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py packages/maistro-core/tests/extensions/test_cli_lock.py packages/maistro-core/tests/extensions/test_pack_contracts.py -x -q -r s`:
+  **324 passed, 3 skipped**, 327 cases, 1.62s (`worker-focused.log`). The
+  three skips are real-pool contrasts at `test_admission_codec.py:470`:
+  required PostgreSQL environment is absent. Skips are not durability proof.
+- `uv run ruff check .`: **PASS** (`worker-ruff.log`).
+- `uv run ruff format --check .`: **PASS**, 3301 files (`worker-format.log`).
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py`:
+  **PASS**, two files (`worker-mypy.log`).
+- `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests`:
+  **PASS**, 16543 collected nodes, zero duplicate evidence (`worker-inventory.log`).
+- `uv run python scripts/check-shipped-surface-truth.py`: **PASS**
+  (`worker-shipped-surface.log`).
+- `rg -n 'admission_codec|runs.admission_identity' packages/*/src`:
+  only codec-to-DTO and whitelist imports; no production consumer. Codec
+  lines 49-52 explicitly describe that boundary.
+
+### Acceptance evidence and limits
+
+| Criterion | Current evidence |
+| --- | --- |
+| Frozen/slotted header, required signatures and six error codes | Source review; focused header/schema/scalar tests PASS |
+| Strict UUID hex, signed timestamps and shared constructor validation | Focused owner/generation/scalar/constructor cases PASS |
+| Fresh flat named SQL mapping, immutable snapshots, optional binding | Three in-memory round-trip states PASS; independent task_id/run_id assertions at test lines 134-137 |
+| Legacy bound/unresolved/partial/receipt-only evidence without invented identity | Focused binding, missing receipt, whitespace and completed_at tests PASS |
+| Header preserves expiry/fingerprint across decode errors; mismatched/unknown formats fail closed | Header-separation and format/mismatch cases PASS; no clock or decision implemented |
+| Strict TEXT JSON, duplicate/nonobject/bare nonfinite rejection and safe diagnostic chains | JSON, nesting, lossy numbers, surrogate and error-scope cases PASS |
+| Tagged nonfinite and arbitrary permitted program_context evidence; stored fingerprint unchanged | Focused tag/Unicode/exact-number tests PASS; codec does not decode tags or recompute fingerprints |
+| Production evidence-json/model_of/model_of_json materialization and original-model fingerprinting | UNVERIFIED end-to-end; fixtures construct tags directly, codec does not materialize models |
+| Raw/production pools against the same real migrated DB; SQL/session/identity counts | UNVERIFIED this round: three PG skips, no DB was provisioned; prior PG claims not adopted |
+| Run text::jsonb payload is an object; authorized principals/Workspace/Project/Graph | UNVERIFIED: DTO fixtures establish neither Run persistence nor authorization |
+| Production reachability and unchanged full required CI | NOT PROVEN: no consumer and required provenance gate FAILS; full integration CI not run |
+| Consumer inclusive expiry/409 precedence, crash/dispatch and claim atomicity | UNVERIFIED and outside B2, reserved for consumer/integration leaves |
+| No SQL mutation, HTTP/queue/scope utility, live assessment, policy or execution authority change | Source review; this round changes only this checkpoint |
+
+The supplied deterministic checks all pass (including 324 passed / 3 skipped)
+and provide no failing test traceback. Bounded extraction of the frozen dispatch
+check-run records (`worker-captured-checks.json`) finds the failed `test` at
+`3f2c79a70d9e1b0b6b6ffc99562cb35db5326828`, with null summary/text, not this
+source. The captured `test` at `90d4c278e6d729d41a3f30d9f17bc65025d6f59d`
+passes while its `exact-debt-ledger` fails. No network refresh was performed.
+The generic `test: failure` is not reproduced by focused execution. No
+speculative scanner fix or cosmetic source change is justified. No pre-fix/
+mutation failure is claimed for unchanged code. No tests changed, so no
+inventory delta or new inventory note is needed. `git diff --check` passes.
+
+The preserved blocked entries are `quality/reachability-baseline.json:131,147`
+and `quality/reachability-dispositions.json:606-613`. CI requires the failing
+provenance gate at `.github/workflows/vulture-ratchet.yml:77`.
+
+**BLOCKED**: this is an evidence handoff, not merge approval. The actual failure
+requires owner-controlled trusted-base authorization/integration resolution,
+not another Vulture scan or candidate-side reachability/grant edit. Do not
+activate the C consumer or manufacture imports in this leaf. Supply an actual
+current-head test traceback if a distinct code repair is expected. Only this
+existing checkpoint is changed and will be committed locally.
+
+Progress: checked 1 issue, done 0 code repairs, skipped 0 issues, errors 1
+required gate; next: prerequisite owner resolution and remaining integration
+acceptance. No issue closure or GitHub mutation.
+
 ## Repair recheck: job 57b5d1880e88480487e08abd5148d462
 
 Frozen item: #1893 only; clean starting HEAD
