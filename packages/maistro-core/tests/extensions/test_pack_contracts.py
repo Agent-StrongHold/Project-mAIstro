@@ -873,11 +873,21 @@ class TestCompatibilityThroughM9Machinery:
             platform_api_version="1.0.0",
             active_extensions={"vertex.product_lab": "1.4.0"},
         )
-        with pytest.raises(PackIdentityConflict, match="already active as an extension"):
+        with pytest.raises(PackIdentityConflict, match="already an active extension"):
             registry.install(
                 _pack_bytes(pack_id="vertex.product_lab", publisher="vertex", version="2.0.0")
             )
         assert registry.records() == ()
+        # The refused install must leave dependency resolution on the original
+        # extension, not merely omit a pack record while changing its provider.
+        record = registry.install(
+            _pack_bytes(
+                pack_id="acme.film_critique",
+                publisher="acme",
+                dependencies=[{"id": "vertex.product_lab", "range": "^1.0.0"}],
+            )
+        )
+        assert record.state is PackState.ACTIVE
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")

@@ -469,3 +469,64 @@ Inspected the codec, identity constructors, codec tests and production CLI loade
 Changed files: CLI lock test, +2 inventory note, and this report. No GitHub mutations, activation, merges or destructive git operations. No conflict was present. The CLI repair is ready for handoff, but issue #1893 remains **BLOCKED** by trusted-base reachability authorization and the unverified integration acceptance above. Resolution requires owner-coordinated authorization on the trusted base or an authorized real consumer, not repeated candidate-ledger edits.
 
 Progress: `{checked: 1, done: 0, skipped: 0, errors: 1, next: coordinated reachability resolution and live integration evidence}`. This round must be committed locally; it does not grant integration approval.
+
+## Repair at 973772507c94 — supplied pack collision failure
+
+Frozen scope: issue #1893, job `88e144df073146a3b862fef1d0b06457`, starting
+HEAD `973772507c94428dba24fad7d9530490688d59e2`, assigned base
+`321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62`. Worktree started clean. Read the
+captured issue body, supplied check-0 through check-4 logs and prior result;
+no GitHub state was refreshed or mutated. Unlike the earlier unattributed
+failure, this job's `check-3.log` identifies a concrete regression at
+`test_pack_contracts.py:876`, reproduced locally before editing.
+
+The production registry rejects an active-extension identity collision with
+`PackIdentityConflict`, but the branch-added test expects stale diagnostic
+wording. Match the actual diagnostic and extend the same test with a real
+post-refusal dependent install requiring the original extension version. The
+mutation experiment confirms that the extension-version corruption this test
+names is detected. No production implementation or test collection changes.
+See `docs/testing/inventory-notes/issue-1893-pack-collision-repair.md` for exact
+commands, counts, pre-fix and mutation failures and the zero inventory delta.
+
+Fresh results: focused suite **346 passed / 3 PG skips**; extensions suite
+**1092 passed**; lint, format, scoped source mypy, exact Vulture, inventory,
+candidate reachability/dispositions, shipped-surface and promotion gates pass.
+The unchanged trusted-base provenance gate **fails**: both admission modules
+are new unreachable identities with unauthorized dispositions. Production
+import search finds only codec -> identity and Vulture whitelist -> identity,
+not a codec consumer. No Vulture ledger change is warranted (1322 reviewed
+identities match); no reachability grant/ledger/gate edit is permitted here.
+
+### Acceptance checked this round
+
+| Criterion | Executed evidence / remaining limit |
+| --- | --- |
+| Frozen/slotted header, exact shared APIs and immutable DTOs; fresh flat encode mapping | Source inspection plus codec/identity tests in the focused run pass. |
+| Named SQL columns, UUID .hex, signed timestamps, header/row equality | Focused schema, UUID, range and mismatch tests pass; live SQL UNVERIFIED. |
+| Six typed failure codes, validated scope only, safe messages/suppressed parse chains | Focused corrupt-header/snapshot/record and legacy-partial tests pass, including deep nesting, precision loss and surrogate cases. |
+| No inferred legacy work identity; bound/unbound/partial and receipt-only remain distinct | Focused legacy tests pass. A pair lacking receipt evidence remains partial because the #1851 binding constructor requires receipt identity; no identity is invented. completed_at conveys no authority. |
+| Scalar header survives malformed snapshot/partial binding; unknown format fails closed | Named prospective pure tests pass. No clock or incoming fingerprint enters the codec; replacement/409 precedence belongs to C/F2, not this leaf, and is UNVERIFIED. |
+| Strict TEXT JSON, no duplicate keys/nonobject/bare nonfinite tokens; tags and fingerprint preserved | Pure tests pass. Actual model -> original fingerprint -> evidence-json -> model_of/model_of_json materialization is UNVERIFIED; fixtures supply tags rather than exercise that production path. |
+| Raw and production pools against the same disposable migrated DB | UNVERIFIED: three PG tests skipped for unset DSNs; no migration, session identities, final SQL counts or durability proof claimed. |
+| Run JSONB is an object; explicit authorized principals/Workspace/Project/registered Graph | UNVERIFIED: codec fixtures and the pack test are not authorized admission or canonical Run INSERT evidence. |
+| No SQL mutation, HTTP/queue/live assessment/scope/policy/activation changes | No production changes this round. Mapping-only codec remains inactive. |
+| Focused tests, lint/format, applicable mypy, inventory and integration gates | Focused checks pass as recorded; provenance FAILS; full required integration CI UNVERIFIED. |
+| Reachable production behavior / independent mergeability | BLOCKED: no runtime codec consumer and no trusted-base authorization. Test imports and candidate baselines do not establish reachability. |
+
+ADR reconciliation: accepted ADR-081226-a66b preserves the single canonical
+Goal -> Graph -> Run -> NodeRun -> Attempt model; this repair adds no execution
+authority. Accepted ADR-083126-5e62 requires protected-base quality authority;
+passing candidate-ledger scans cannot authorize the two admission modules.
+Production activation is explicitly outside the issue's stage authorization.
+No merge conflict was present and the supplied develop base is already merged;
+a speculative sync cannot repair the reproduced assertion or authorize debt.
+
+Changed files this round: the existing pack collision test, its zero-delta
+inventory note and this report. Final disposition: **BLOCKED**, with the named
+CI test regression repaired. Owner-coordinated trusted-base authorization or a
+separately authorized real consumer remains necessary; do not manufacture
+reachability or self-authorize a grant. Local commit is a handoff only.
+
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 1, next: owner-coordinated
+provenance resolution and live integration evidence}`.
