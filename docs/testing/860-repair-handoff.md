@@ -258,3 +258,67 @@ this checkpoint preserves the fresh evidence without cosmetic code changes.
 
 Progress: {checked: 1, done: 0, skipped: 0, errors: 0,
 next: exact-RC production acceptance prerequisites}.
+
+## Job 8dde98a0 — fresh validation at 8d4b1ec7f0f3
+
+Frozen scope: #860 only, assigned `auto-860` worktree, supplied base
+`321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62`. Starting tree was clean.
+Read dispatch acceptance, prior result, repository instructions, load profile,
+adjacent tests and production rate/task routes. No current-job `check-*.log`
+files were supplied. Named prior `98a11313/check-3.log` reports 24 versus 21
+schema statements; that failure does **not** reproduce. The current independent
+expectation includes the three audit columns (`test_pg_learnings.py:175-177`).
+No merge conflict or current scanner failure justifies source or ledger repair.
+
+### Executed validation
+
+All commands used 1200-second timeouts and exited 0. Logs are in job directory
+`/home/dev/maistro/jobs/8dde98a05a674e7392b604558968f7a4/repair-*.log`.
+
+| Command | Result |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | 1322 findings / 1322 reviewed identities; unclassified 0; never-allowlist 0; base `321cbdb8fe9b` |
+| `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py -x -q` | 37 passed, 6 skipped |
+| `uv run pytest packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py -x -q -rs` | 81 passed |
+| `uv run ruff check .` | PASS |
+| `uv run ruff format --check .` | PASS; 3301 files |
+| `uv run python scripts/check-deployment-claims.py` | PASS |
+| `uv run python scripts/check-compose-secrets.py` | PASS; 9 tracked Compose files |
+| `uv run python scripts/check-merge-markers.py` | PASS |
+| `uv run python scripts/check-suite-inventory.py` | PASS; 17 suites, 31323 unique identities (collection, not execution) |
+
+No tests or runtime code changed; no inventory delta or ledger amendment is
+warranted. Only this existing handoff changes. All inherited work is preserved.
+
+### Architecture and acceptance disposition
+
+Read accepted ADR-081426-1f7c (physical identity is Attempt), ADR-081626-f383
+(store-owned fencing), and ADR-082526-b36a (renewal/expiry reclamation). The
+last ADR supplies the reclaim contract left open by the earlier lease ADR:
+restart is not authority to cancel another worker's live Attempt. Initially
+attempted filename `ADR-081426-1f7c-canonical-execution-runtime.md` was not found;
+actual file `ADR-081426-1f7c-execution-runtime-contract.md` was then read.
+No alternate authority or change to `Goal -> Graph -> Run -> NodeRun -> Attempt`.
+
+| #860 acceptance | Fresh evidence / remaining limit |
+| --- | --- |
+| Representative RC profile | UNVERIFIED: profile lacks user/Workspace population, fan-out, successful model/tool traffic and Design/Canvas/background scope; no selected RC configuration supplied. |
+| Two application replicas | UNVERIFIED: two ASGI instances exercised, not deployed RC replicas. |
+| Sustained saturation, reclaim, retries and leaks | UNVERIFIED: 118 focused tests passed; no sustained production observation. Six schema integration tests skipped. |
+| No duplicate physical work | UNVERIFIED: admission/accounting probes do not observe physical Attempts under production concurrency. |
+| Replica-selection-resistant enforcement | UNVERIFIED at deployment scope. Executed `test_soak_promotion_gates.py:439` reproduces independent `[200,200,429]` allowances for both identities on each replica. Production `main.py:648` installs middleware that creates a local limiter at `api/rate_limit.py:95`; local 429 probes cannot prove a shared budget. |
+| Complete telemetry and thresholds | UNVERIFIED: sampler regressions pass, but no complete RC PostgreSQL/application-loop/worker/queue/error/long-window series collected. |
+| Active-work kill/restart/drain/recovery | UNVERIFIED: no production Attempt interrupted. Executed receipt probe at `test_soak_promotion_gates.py:569` observes owner 200 / peer 404 through the real router (`api/tasks.py:144-146`); visibility is not proof of physical loss or recovery. |
+| Long exact-RC soak | UNVERIFIED: `run_soak.py:744-755` rejects host-process artifact equivalence. Executed CLI regressions reject missing/null/preflight artifact records despite synthetic four-hour duration. |
+| Findings filed/reclassified | UNVERIFIED for completeness. No representative load experiment or GitHub mutation; local budget/receipt limitations and missing release evidence are distinct from stale CI failure. |
+| Hash-bound machine/human soak evidence | UNVERIFIED: logs identify source validation only, not deployed images/configuration or sustained production observations. |
+
+**BLOCKED for issue acceptance.** The exact-debt-ledger repair request has no
+remaining reproduced failure. Repeating the same scan or lengthening preflight
+cannot supply production evidence. Next: select immutable RC/config, complete
+representative workload and Attempt oracle/telemetry, reconcile replica-selection
+semantics, then run the qualifying four-hour soak with active-work interruption.
+Runtime/config changes require a new soak. No integration approval is implied.
+
+Checkpoint: checked 1 issue; done 0 acceptance-complete issues; skipped 0 issues;
+validation errors 0; next: exact-RC production prerequisites. Local commit only.
