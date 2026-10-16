@@ -121,3 +121,66 @@ approval. Residual risks are the inactive consumer, unavailable original failing
 CI node and unverified PG/model-materialization/full-integration acceptance.
 
 Progress: `{checked: 1, done: 0, skipped: 0, errors: 1, next: trusted-base authorization decision and actual failing CI traceback}`.
+
+## Independent repair recheck — job 88b944800354419e919218abfac54a52
+
+Starting source SHA: `5c7a8dd288c9b5627258237adc32db0af5fbeea1`.
+Assigned item remains #1893 only. Initial tree clean; no salvage required.
+`origin/develop` resolves to the supplied `321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62`;
+no unresolved ref or merge conflict was found. No remote enumeration or fetch.
+
+Read repository instructions, the supplied dispatch issue body, previous result,
+all five driver logs, codec/identity implementation, codec tests, existing B2
+inventory contract and accepted ADRs 081226-a66b, 082526-7f02 and 083126-5e62.
+Those ADRs preserve canonical lifecycle, immutable admission provenance and
+trusted-base authority; nothing here warrants overriding them or activating the
+staged consumer. Driver logs contain no failed test or traceback.
+
+Independently executed against this source SHA:
+
+| Command | Observed result |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1322 findings, zero unclassified, zero never-allowlist. No amendment justified. |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-ratchet-provenance.py` | FAIL: trusted base `2154f845347c`; both admission modules are unauthorized new unreachable modules and unauthorized new dispositions. |
+| `uv run ruff check .` | PASS. |
+| `uv run ruff format --check .` | PASS: 3301 files. |
+| `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py` | PASS: two source files. |
+| Four-file focused pytest command recorded above, with `-x -q -rs` | 324 passed, 3 skipped in 1.68s; skips explicitly require both PG DSNs. |
+| `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest packages/maistro-core/tests -x -q` | Exit 0: 15470 passed, 1070 skipped, 3 xfailed, 53 warnings in 228.41s. |
+| `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests` | PASS: 16543 unique nodes, zero duplicate evidence. |
+
+Focused and full-core logs are `worker-focused.log` and `worker-core.log` under
+`/home/dev/maistro/jobs/88b944800354419e919218abfac54a52/`. Warnings include
+aiosqlite closed-event-loop thread shutdowns and an unawaited fake-process
+coroutine; neither caused a failure. No full integration CI result is claimed.
+
+The acceptance table above remains accurate for this round: the executed pure
+tests cover strict scalar/header agreement, immutable records, UUID storage,
+legacy dispositions, safe JSON failures, fresh mappings and preserved tagged
+snapshots/fingerprints. Inspection confirms no clock, SQL mutation, HTTP or
+queue behavior in the codec. The tag tests use prepared dictionaries and a
+fixed fingerprint, so production model materialization and original-model
+fingerprinting remain **UNVERIFIED**, not inferred from passing round trips.
+Live PostgreSQL durability, raw/production pool agreement, Run JSONB object
+storage and authorized Workspace/Project/Graph admission remain **UNVERIFIED**.
+No disposable DB was provisioned in this already authorization-blocked round.
+No mutation experiment or new regression test is claimed without a source fix.
+
+An explicit `rg` search across `packages/*/src` finds only codec-to-identity and
+whitelist-to-identity imports; no production codec reader. The module itself
+states this at `admission_codec.py:50-53`. Tests/whitelist imports do not establish
+runtime reachability. The exact-debt-ledger workflow still invokes the failing
+provenance checker at `.github/workflows/vulture-ratchet.yml:77`.
+
+**BLOCKED, not repaired.** The permitted Vulture amendment cannot authorize the
+reachability/disposition additions at `quality/reachability-baseline.json:131,147`
+and `quality/reachability-dispositions.json:604-614`. Do not manufacture a caller,
+delete retained contracts or weaken a gate to hide this. The actual failing CI
+node/head/traceback is still required to repair the reported `test: failure`.
+A separately reviewed trusted-base authorization or authorized real consumer
+integration is still required for the existing provenance block. Neither is
+within this repair lane's authority.
+
+Changed file: this checkpoint only; previous evidence preserved. No source,
+test, inventory-count, ledger, grant or gate changes. No GitHub mutation.
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 1, next: authorization decision and failing CI traceback}`.
