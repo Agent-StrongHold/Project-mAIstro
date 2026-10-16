@@ -297,3 +297,24 @@ parent/integration prerequisite. Independently, `check-reachability.py` and
 `check-ratchet-provenance.py` each fail on the intentionally unwired
 `maistro.runs.admission_identity` module; production wiring remains outside
 this leaf.
+
+## CI-repair follow-up — 2026-10-16 (`00ed20c41775`)
+
+Re-ran the CI-argv Vulture command with the assigned trusted base
+`ac7370141e8e61bd6f352bca35ed0b505104aadb`. It exits **1**: the trusted
+ledger has 1,322 identities while the scan has 1,327, reporting exactly the
+five retained `AdmissionAssessment` members at
+`admission_identity.py:515-520` (`MISMATCH`, `REPLAYED`, `TAKEOVER`,
+`REPLACE_EXPIRED`, and `LEGACY_UNRESOLVED`). The candidate ledger already
+contains exactly those five rows (the required CI-repair banking amendment),
+so there is no stale or unbanked candidate entry to edit. The remaining
+trusted-base authorization cannot be supplied by this leaf under the
+ratchet's two-merge rule.
+
+Focused acceptance was independently re-run: 79 focused tests pass; focused
+Ruff check/format and mypy pass; `check-suite-inventory.py --suite
+packages/maistro-core/tests` passes at 16,439 node IDs. `check-reachability.py`
+exits 1 only for the intentionally unwired `maistro.runs.admission_identity`.
+No production importer or package export exists, preserving the issue's
+inactive-leaf scope. The explicit integration blockers remain the trusted-base
+authorization and parent #1845's real runtime consumer.
