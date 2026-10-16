@@ -318,3 +318,32 @@ exits 1 only for the intentionally unwired `maistro.runs.admission_identity`.
 No production importer or package export exists, preserving the issue's
 inactive-leaf scope. The explicit integration blockers remain the trusted-base
 authorization and parent #1845's real runtime consumer.
+
+## CI-repair determination — 2026-10-16 (`5b86efd526fd`)
+
+The assigned exact-debt-ledger repair was independently rechecked at the
+assigned base `ac7370141e8e61bd6f352bca35ed0b505104aadb`. The focused contract
+suite passes (**79 passed**), focused Ruff check/format and mypy are clean, and
+`check-suite-inventory.py --suite packages/maistro-core/tests` reports the
+recorded **16,439** node IDs. This note adds no tests; the inventory delta
+remains `+79`.
+
+`RATCHET_BASE_REV=ac7370141e8e61bd6f352bca35ed0b505104aadb uv run python
+scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` exits **1**. The candidate ledger exactly banks the 1,327
+current scan identities, including the five mandated retained enum members,
+but the trusted base contains 1,322 and authorizes none of those identities.
+The reported entries are `MISMATCH`, `REPLAYED`, `TAKEOVER`,
+`REPLACE_EXPIRED`, and `LEGACY_UNRESOLVED` at
+`admission_identity.py:515-520`; `PENDING` is not Vulture-flagged because the
+required `Pending` class shares its name. Removing those ledger rows makes the
+candidate bookkeeping half fail, while a candidate-side grant cannot authorize
+it under the trusted-base rule.
+
+The independently run `check-reachability-dispositions.py` and
+`check-promotion-surface.py` pass. The required direct Vulture and ratchet
+checks remain blocked by the intentionally unwired leaf: no production importer
+exists outside this module's test, and adding one is expressly outside #1851.
+No source, wiring, grant, or additional ledger change is warranted in this
+leaf; the necessary next changes are the parent #1845 real consumer and a
+trusted-base authorization landed separately.
