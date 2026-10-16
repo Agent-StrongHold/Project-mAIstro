@@ -1,5 +1,86 @@
 # Issue #1893 repair checkpoint
 
+## Repair round 87a5a033 — bounded checkpoint
+
+Frozen item: #1893 only, branch `auto-1893`, starting head
+`2ed08872a1c740301341ad3738f0a782a6589a1a`, trusted base
+`ac7370141e8e61bd6f352bca35ed0b505104aadb`. Initial worktree is clean.
+This round's allowed file scope is the two admission modules, their two focused
+unit-test files, an inventory note if tests change, and this existing report.
+The explicitly permitted Vulture ledger repair is conditional on actual findings;
+reachability ledgers, grants, activation and unrelated tests remain out of scope.
+Captured inputs: job `87a5a0334572456cbdd20503eb2e61a2` dispatch and five check logs,
+plus the supplied prior result. No remote refresh or new issue enumeration.
+
+Driver logs inspected: dependency sync, Ruff check/format, focused pytest
+(346 passed, 3 skipped), and core inventory (16567) passed. These are driver
+observations, not newly executed acceptance evidence. Assumption: this is the
+writer repair lane; reproduce the exact gates and focused tests, rather than
+invent a repair for the unspecified hosted `test: failure`. No sync conflict
+exists and local `origin/develop` resolves to the exact dispatched base.
+A guessed provenance ADR filename was not found; skipped that path and will
+resolve the actual filename from the repository.
+
+Executed against this round's exact starting source head (1200-second timeouts):
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: exit 0, 1322 findings, zero unclassified.
+  No Vulture ledger amendment is justified by this scan.
+- `RATCHET_BASE_REV=origin/develop uv run python scripts/check-ratchet-provenance.py`:
+  exit 1. Both `maistro.runs.admission_identity` and `maistro.tasks.admission_codec`
+  are new unauthorized unreachable modules and have unauthorized dispositions.
+  This is the required workflow command at `.github/workflows/vulture-ratchet.yml:77`.
+- `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q -rs`:
+  204 nodes, 201 passed, 3 skipped in 1.24s. All skips are the raw/production
+  PostgreSQL comparison cases at `test_admission_codec.py:470`, because both
+  required DSNs are unset. No live database evidence is claimed this round.
+- `uv run ruff check .`: exit 0.
+- `uv run ruff format --check .`: exit 0, 3301 files formatted.
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py`: exit 0, two files.
+
+Reviewed both source modules, the codec's contract tests, accepted ADR-082526-7f02
+(actual filename `dispatch-identity-belongs-to-the-attempt`) and ADR-082826-b601
+(canonical Run consumer). Immutable admission history and the single canonical
+execution authority remain intact. No production activation, candidate grant,
+reachability-ledger edit, or speculative source fix is allowed to bypass the
+reproduced failure. This is not a develop-sync conflict.
+
+Current round status: BLOCKED, not repaired. The codec's pure contract assertions
+are exercised; the previous acceptance table below remains a useful scope map,
+not independent evidence for this round. Live PG round trips, real model
+materialization/Run JSONB, authorized admission, full CI, and repair of the
+unspecified hosted test failure are explicitly UNVERIFIED. No test changes or
+new inventory delta. Only this existing report is being updated; previous work
+is preserved.
+
+Final bounded checks:
+
+- `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests`:
+  exit 0, 16567 collected unique identities, zero duplicates, inventory matches.
+- `git diff --check`: exit 0 before staging.
+- Production-source import search found only the codec importing the identity
+  module (`admission_codec.py:67`) and the Vulture whitelist importing an identity
+  symbol (`_vulture_whitelist.py:105`), not a runtime consumer. The codec itself
+  documents the inactive stage at lines 50–53. Test imports do not establish
+  reachable admission behavior.
+- A bounded extraction of failed `check_runs` entries from the captured dispatch
+  emitted no failed-check details. It did not retrieve hosted job logs or prove
+  the reported hosted failure absent. The driver check logs are green; its
+  unspecified `test: failure` still has no reproduced failing test in this round.
+
+Acceptance reconciliation: the B2 row/header/UUID/error/snapshot/legacy contracts
+are covered by the executed focused tests, including all nine pure prospective
+contracts. The tenth (real raw/production pool contrast) skipped. These tests do
+not establish a production admission decision, authorization, crash safety,
+materialized model fidelity, or Run JSONB shape. Full unchanged CI is not proven:
+the actual trusted-base gate fails. No synthetic imports or new execution path
+will be introduced to make an explicitly inactive leaf appear reachable.
+
+Progress: checked 1, done 0 repairs, skipped 0 assigned items, errors 1 blocking
+gate. Next: coordinator resolves the trusted-base staging/authorization conflict
+outside this lane and provides the exact hosted failing test log/head. A local
+commit records this evidence-only handoff; it is not a repair or merge approval.
+
+
 Frozen scope: issue #1893 only; assigned worktree `/home/dev/Git/wt/auto-1893`, branch `auto-1893`, starting head `5fc4a0d9ec21fb7ab6ca07cd8dd4378f4d0733a0`, dispatched base `ac7370141e8e61bd6f352bca35ed0b505104aadb`. Inputs are the captured dispatch-context.json and check-0.log through check-4.log in job `189c1e36de224fd2b274d40ac9df5d44`. No GitHub mutation or issue re-enumeration.
 
 Captured evidence reviewed: driver check-0 through check-4 pass (dependency sync, lint, format, 346 passed/3 skipped, inventory 16567). Prior result is BLOCKED, not an approval. Captured issue explicitly forbids activating the codec or changing reachability grants to make the slice green. Local origin/develop resolves to the dispatched base; no develop-sync conflict exists. Captured check-run output supplies no failing test traceback for this head. Assumption: validate focused tests and exact-debt gates; do not speculate about the unspecified hosted test failure.
