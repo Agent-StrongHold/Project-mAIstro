@@ -1,6 +1,80 @@
 # Issue #1893 repair checkpoint
 
-## Current bounded recheck — job 758cab57
+## Current bounded recheck — job e29fb517
+
+**BLOCKED; no evidence-backed source repair available.** Scope was frozen to
+#1893 in the assigned worktree. Clean starting HEAD:
+`7aed4a852b7ef0edb75fb4aeeae4e2dfb3dfd076`. Both local `origin/develop`
+and its merge base with HEAD resolve to the supplied base
+`ac7370141e8e61bd6f352bca35ed0b505104aadb`. No unresolved merge exists.
+No remote refresh, GitHub mutation, grant/ledger/gate change, or activation
+was performed. Earlier results below are historical, not fresh evidence.
+
+Read repository instructions, the captured issue body, prior result artifact,
+all five driver check logs, the codec, relevant adjacent test sections, and
+accepted ADR-081226-a66b / ADR-082526-7f02. Reconciliation: immutable admission
+provenance must not become execution authority; preserve
+Goal -> Graph -> Run -> NodeRun -> Attempt. B2 explicitly forbids activation,
+so introducing a dummy consumer to pass reachability is not a repair.
+
+### Executed checks
+
+All commands ran at the starting source SHA with 1,200-second tool timeouts.
+Logs live under `/home/dev/maistro/jobs/e29fb5175fa54e7da008a8bc9254325c/`.
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: **pass**, 1,322 reviewed identities / findings, zero unclassified (`worker-vulture.log`). The permitted Vulture ledger exception is not needed.
+- `RATCHET_BASE_REV=origin/develop uv run python scripts/check-ratchet-provenance.py`: **exit 1**, four violations (`worker-provenance.log:20-29`). Both admission modules have new unauthorized unreachable-module entries and new unauthorized dispositions. Trusted count 169; candidate count 171. This is the exact workflow command at `.github/workflows/vulture-ratchet.yml:77`.
+- `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py packages/maistro-core/tests/extensions/test_cli_lock.py packages/maistro-core/tests/extensions/test_pack_contracts.py -x -q -rs`: **346 passed, 3 skipped**, 349 nodes, 2.81s (`worker-focused.log`). All skips are PostgreSQL cases at `test_admission_codec.py:470`, requiring both DSNs.
+- `uv run ruff check .`: pass (`worker-lint.log`).
+- `uv run ruff format --check .`: pass, 3,301 files (`worker-format.log`).
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py`: pass, two files (`worker-mypy.log`).
+- `rg -n 'admission_codec|decode_admission_record' packages/*/src`: only the codec's own export and definition (`worker-callers.log`); no production consumer found.
+
+Driver `check-0.log` through `check-4.log` independently report sync, lint,
+format, focused tests and suite inventory passing (16,567 core test nodes).
+Inventory was not independently rerun; no test changes or inventory delta.
+The supplied generic `test: failure` remains **UNRESOLVED**: no failing node
+is identified by those logs and the focused run does not reproduce it.
+No scanner finding or hypothetical test defect justifies a source edit.
+
+### Acceptance coverage and limits
+
+- Executed codec/identity contracts cover frozen/slotted immutable DTOs,
+  shared interfaces, named-column fresh flat mappings, signed timestamps,
+  strict storage UUID hex, header/row agreement, six typed errors and safe
+  displayed error chains, validated hash-only scope, and v2 binding shape.
+- Executed legacy tests distinguish bound/unbound/partial/receipt-only rows,
+  refuse invented identity, ignore `completed_at` as authority, and retain
+  expiry/fingerprint header evidence despite full-record decode failure.
+  Unknown formats fail closed. Consumer expiry/409 ordering is outside B2.
+- Executed snapshot tests cover canonical TEXT round trips, nonfinite tags,
+  unchanged stored fingerprint, and malformed/duplicate/nonobject/bare
+  nonfinite JSON rejection. Handcrafted tags and fixed fingerprints do not
+  prove original-model fingerprinting or production model materialization.
+- Real migrated PostgreSQL round trips with both pool codecs, matching DSNs,
+  non-null pool, SQL constraints, Run JSONB object shape, session identities
+  and final row counts: **UNVERIFIED this round**; three skipped tests are
+  not durability proof. No database or mutation experiment was run.
+- Production evidence-json/model_of materialization, arbitrary program_context
+  end-to-end, authorized principals/Workspace/Project/Graph admission,
+  consumer expiry/409 precedence, complete required integration CI and owner
+  coordination/activation approval: **UNVERIFIED**. Pure DTO fixtures and
+  direct calls are not runtime reachability.
+- Mapping-only codec inspection confirms no clock, incoming fingerprint,
+  claim/SQL mutation, HTTP mapping, queue or assessment change. Source and
+  tests remain untouched; no competing execution or authorization path.
+- Required trusted-base provenance: **BLOCKED**. The Vulture-only exception
+  cannot authorize the candidate reachability baseline/disposition additions.
+
+Only this existing handoff changed; no inventory note is necessary without
+a test delta. Next action belongs to integration coordination: resolve the
+trusted-base prerequisite through the authorized process and supply the exact
+failing CI SHA/step/node/traceback. Do not redispatch identical inputs as a
+source-repair task. Progress: checked 1 issue, done 0 repairs, skipped 0
+issues, errors 1 failing gate. This local commit preserves evidence, not
+integration approval.
+
+## Previous bounded recheck — job 758cab57
 
 **BLOCKED; no source repair justified.** Starting HEAD was verified as
 `1b1b9037f379bee9fbbb9329b2bbd2b33bd00b44`, with a clean worktree. The supplied
