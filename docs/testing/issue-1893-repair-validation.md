@@ -1,6 +1,121 @@
 # Issue #1893 repair validation
 
-## Current frozen repair: job 4f47140522c74a76b03b7440cda4c47b
+## Current frozen repair: job 43909947d2e7404aaaf3afd319741c46
+
+**BLOCKED; evidence handoff only.** The exact trusted-base failure reproduces.
+No production defect or unbanked Vulture identity was found that would justify
+an in-scope implementation repair. The unnamed hosted `test: failure` remains
+UNRESOLVED, not dismissed or claimed fixed.
+
+### Scope and architecture
+
+- Only issue #1893, assigned worktree `/home/dev/Git/wt/auto-1893`.
+  Clean starting/tested head: `84a14a81cb53cd9faeae76966481a930e156c73f`.
+  Assigned base, local `origin/develop`, and actual merge base all resolve to
+  `321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62`. No sync conflict exists.
+- Used the supplied dispatch snapshot, prior result, and all five driver logs;
+  no GitHub mutation or refresh. Driver checks passed, but their three PG skips
+  are not durability proof. The captured failed checks carry no traceback for
+  this assigned head; failures on other heads are not current-source evidence.
+- Read repository instructions, codec/identity constructors, adjacent tests,
+  and accepted ADRs 081426-1f7c, 082526-7f02, 082826-b601, 082826-d9f5.
+  Reconciliation: immutable admission evidence and the canonical
+  `Goal -> Graph -> Run -> NodeRun -> Attempt` authority remain unchanged.
+  A B2-only stage cannot add fake callers or a new admission authority to pass
+  reachability. Activation and integration ownership remain separate decisions.
+- Only this existing report changes. No source, tests, inventory counts,
+  ledgers, grants, or gates change. No new inventory-delta note is needed.
+
+All fresh logs below are in
+`/home/dev/maistro/jobs/43909947d2e7404aaaf3afd319741c46/`.
+
+### Executed checks and actual blocker
+
+| Command | Result / artifact |
+| --- | --- |
+| `uv run ruff check .` | PASS; `worker-ruff.log` |
+| `uv run ruff format --check .` | PASS, 3301 files; `worker-format.log` |
+| `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py` | PASS; `worker-mypy.log` |
+| `uv run pytest packages/maistro-core/tests/tasks packages/maistro-core/tests/runs -x -q` | 1919 passed, 310 skipped, 5 aiosqlite closed-loop warnings; `worker-adjacent.log` |
+| `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests` | PASS, 16567 identities; `worker-inventory.log` |
+| `uv run python scripts/check-shipped-surface-truth.py` | PASS; `worker-surface.log` |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS, 1322 reviewed identities / 1322 findings; `worker-vulture.log` |
+| `RATCHET_BASE_REV=321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62 uv run python scripts/check-ratchet-provenance.py` | **Exit 1**; `worker-provenance.log:20-29` |
+
+The last command is the gate from `.github/workflows/vulture-ratchet.yml:77`.
+Both `maistro.runs.admission_identity` and `maistro.tasks.admission_codec`
+are NEW unreachable modules and NEW dispositions absent from the trusted base
+and not previously authorized. The Vulture-ledger exception does not authorize
+reachability/disposition grants. No ledger amendment is warranted by the exact
+Vulture scan, and candidate-side changes cannot supply trusted authorization.
+
+### Live storage and regression evidence
+
+Created only a new disposable database, `maistro_1893_43909947`, using
+`createdb`. PostgreSQL is **18.6**, connected through the local Unix socket.
+`DATABASE_URL=postgresql:///maistro_1893_43909947 uv run alembic upgrade head`
+applied the real migration chain from empty schema through **063**, including
+055 (`worker-migrations.log`). No existing DB, SQLite substitute, or recreated
+schema was used; no destructive downgrade test ran.
+
+With both `MAISTRO_TEST_PG_DSN` and `MAISTRO_TEST_DATABASE_URL` set to
+`postgresql:///maistro_1893_43909947`, and `MAISTRO_REQUIRE_PG_LEGS=1`, ran:
+
+```text
+uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q -o junit_family=legacy --junitxml=<job>/worker-focused.xml
+```
+
+**204 passed, zero skipped** (`worker-focused.log`). A separate
+`--collect-only -q` run saved all 204 node IDs in `worker-collected.log`.
+JUnit records production/raw backend PID pairs **3002946/3002947** (unbound),
+**3002948/3002949** (bound), **3002950/3002951** (acknowledged). Each pair
+asserted the same DB/server identity, independent sessions, and **one persisted
+scoped row**. Both pools read identical snapshot TEXT/mappings/DTOs; escaped
+surrogates injected into all three snapshot columns fail safely without losing
+header fingerprint evidence. SQL address/port fields are NULL for Unix sockets.
+Final SQL confirms revision 063 and **0 rows / 0 distinct generations / 0
+bound Run IDs** in `task_idempotency` (`worker-db-counts.log`). DB retained.
+
+An in-process regression probe wrapped `encode_admission_record` to replace
+`task_id` with `None`, without editing source. Running the existing three
+`test_v2_round_trip_preserves_all_snapshot_bytes` cases produced **2 failed,
+1 passed**, both failures at `test_admission_codec.py:134`; the probe asserted
+`pytest.ExitCode.TESTS_FAILED` (`worker-mutation.log`). This independently
+checks the storage-pair repair rather than relying on encode/decode agreement.
+No new test or implementation change is claimed.
+
+### Acceptance and next action
+
+- All ten named prospective tests execute, including the three live PG cases:
+  immutable v2 round trips and fresh mappings; strict owner/generation UUID hex;
+  signed timestamps; legacy bound/unbound/partial/receipt-only distinctions;
+  header expiry/fingerprint preservation through full-decode failure; unknown
+  formats rejected; tagged nonfinite evidence retained without changing the
+  stored fingerprint; duplicate/nonobject/invalid JSON rejected; identical
+  raw/production-pool TEXT decoding. Additional malformed-number/Unicode,
+  mismatch, and safe-error tests also pass.
+- Representation-only constraints remain intact. Production-source search
+  (`worker-runtime-imports.log`) finds only codec-to-identity imports and the
+  Vulture whitelist, not a runtime consumer. `admission_codec.py:51` explicitly
+  describes the inactive stage. These tests do not prove reachable admission.
+- **UNVERIFIED:** original-model fingerprinting before tagging, materialization
+  via `model_of`/`model_of_json`, Run JSONB object INSERT, real authorized
+  principal/Workspace/Project/registered-Graph admission, consumer expiry/409
+  precedence, concurrency/crash invariants, full unchanged hosted CI, and
+  coordination/activation approval. Synthetic DTO/storage identities cannot
+  establish those claims. No production activation is authorized by this work.
+- Required next input: owner-coordinated trusted-base resolution consistent
+  with the two-merge rule, and the exact failing hosted `test` traceback for
+  the evaluated SHA. Repeating this repair against unchanged source/base and
+  only a check name cannot resolve the blocker.
+
+Progress: checked 1 issue; done 0 repairs; skipped 0 issues; errors 1 reproduced
+provenance gate; next: owner resolution and concrete hosted-test evidence.
+This documentation commit is a local handoff, never integration approval.
+
+The following sections are historical, not verification of the current head.
+
+## Historical frozen repair: job 4f47140522c74a76b03b7440cda4c47b
 
 - Issue: #1893 only; writer branch/worktree `auto-1893` at
   `/home/dev/Git/wt/auto-1893`.
