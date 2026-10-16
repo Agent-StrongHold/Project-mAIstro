@@ -110,7 +110,11 @@ def test_the_corpus_carries_no_body_status_line_at_all(sandbox) -> None:
 @pytest.mark.ac("ADR-092126-a28a/AC-2")
 @pytest.mark.ac("ADR-092126-a28a/AC-3")
 @pytest.mark.parametrize("root_index", [0, 1], ids=["adr", "spec"])
-@pytest.mark.parametrize("bullet", ["", "- ", "* ", "+ "], ids=["bare", "dash", "star", "plus"])
+@pytest.mark.parametrize(
+    "bullet",
+    ["", "- ", "* ", "+ ", "1. ", "2) "],
+    ids=["bare", "dash", "star", "plus", "ordered-dot", "ordered-paren"],
+)
 @pytest.mark.parametrize("indent", [0, 1, 2, 3])
 def test_a_body_status_line_fails_even_when_it_agrees(sandbox, root_index, bullet, indent) -> None:
     """Absence, not agreement — the rule that makes the retirement durable.
@@ -132,7 +136,7 @@ def test_a_body_status_line_fails_even_when_it_agrees(sandbox, root_index, bulle
     assert any(p.path == path and p.kind == "body-status-line" for p in problems)
 
 
-@pytest.mark.parametrize("bullet", ["", "- "])
+@pytest.mark.parametrize("bullet", ["", "- ", "1. ", "2) "])
 def test_four_space_code_is_not_a_body_status_declaration(sandbox, bullet) -> None:
     """Four initial spaces make a code block rather than a body declaration."""
     path = _an_adr(sandbox.DOC_ROOTS[0])
@@ -268,7 +272,9 @@ def _front_matter_status(path: Path) -> str:
 
 #: A body status declaration in either spelling: bare, or as a Markdown list
 #: item. Multiline so it can be searched against a whole document.
-_BODY_STATUS_LINE_RE = re.compile(r"^ {0,3}(?:[-*+][ \t]+)?\*\*Status:\*\*.*$", re.M)
+_BODY_STATUS_LINE_RE = re.compile(
+    r"^ {0,3}(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?\*\*Status:\*\*.*$", re.M
+)
 
 
 def _with_status_line(text: str, value: str, *, bullet: str = "", indent: int = 0) -> str:
@@ -469,6 +475,32 @@ def test_update_banks_the_current_state_and_then_passes(sandbox, capsys) -> None
     assert set(payload["known"]) == found
 
     assert sandbox.main([]) == 0
+
+
+@pytest.mark.parametrize(
+    ("marker", "expected"),
+    [
+        ("123456789. ", True),
+        ("1234567890. ", False),
+        ("a. ", False),
+        ("-1. ", False),
+        ("1.x ", False),
+    ],
+)
+def test_ordered_marker_grammar_is_bounded(marker: str, expected: bool) -> None:
+    text = f"{marker}**Status:** Accepted"
+    assert bool(_gate()._BODY_STATUS_RE.search(text)) is expected
+
+
+def test_generated_ledger_describes_absence_metric(sandbox) -> None:
+    assert sandbox.main(["--update"]) == 0
+    payload = json.loads(sandbox.LEDGER.read_text())
+    assert payload["metric_definition_version"] == "2"
+    assert "absence" in payload["_comment"]
+    assert "regardless of agreement" in payload["_comment"]
+    assert "whole corpus now agrees" not in payload["_comment"]
+    assert payload["known"] == []
+    assert payload["details"] == {}
 
 
 def test_the_main_guard_exits_zero_in_process(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -68,13 +68,14 @@ DOC_ROOTS = (ROOT / "docs" / "adr", ROOT / "docs" / "specs")
 LEDGER = ROOT / "quality" / "adr-status-language-baseline.json"
 METRIC_DEFINITION_VERSION = "2"
 
-#: A body status line, bare or as a Markdown list item (`- **Status:** X`).
-#: Both spellings are retired (ADR-092126-a28a), so the *value* is never
+#: A body status line, bare or in an unordered/ordered Markdown list.
+#: Ordered markers use one to nine ASCII digits and a dot or closing paren.
+#: All spellings are retired (ADR-092126-a28a), so the *value* is never
 #: parsed — only quoted back in the diagnostic. That is the simplification
 #: retirement buys: while this category compared body against front matter it
 #: needed the status vocabulary, multi-word values (`AC Defined` read as `AC`)
 #: and case folding, and each of those was a defect in turn.
-_BODY_STATUS_RE = re.compile(r"^ {0,3}(?:[-*+][ \t]+)?\*\*Status:\*\*.*$", re.M)
+_BODY_STATUS_RE = re.compile(r"^ {0,3}(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?\*\*Status:\*\*.*$", re.M)
 
 #: `**Superseded by [ADR-xxx](...)`` — the banner naming the replacement.
 #: `^`-anchored per line, tolerating the blockquote and emphasis markup the
@@ -203,11 +204,11 @@ def _write_baseline(problems: list[StatusProblem]) -> None:
         "metric_definition_version": METRIC_DEFINITION_VERSION,
         "_comment": (
             "Legacy body '**Status:**' lines written before front matter was canonical (#379). "
-            "Body status language is checked per-identity (#387): a new contradiction fails, "
-            "and a fixed one must shrink this ledger in the same change. Banner and "
-            "status-assertion contradictions are never baselined. This ledger is empty: the "
-            "whole corpus now agrees with its front matter, so an entry here would be a "
-            "tolerance nothing currently needs — fix the document instead."
+            "Metric v2 checks absence per identity: every body status line is a finding "
+            "regardless of agreement with front matter. A new finding fails, and a fixed "
+            "one must shrink this ledger in the same change. Banner and status-assertion "
+            "contradictions are never baselined. Expanding this ledger requires prior "
+            "trusted-base authorization; delete the retired body status line instead."
         ),
         "known": sorted({p.identity for p in problems}),
         "details": {p.identity: p.detail for p in sorted(problems, key=lambda p: p.identity)},
