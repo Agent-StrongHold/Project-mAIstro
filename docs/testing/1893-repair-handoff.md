@@ -1,6 +1,90 @@
 # Issue #1893 repair checkpoint
 
-## Current bounded recheck — job 22566a54
+## Current bounded recheck — job 237b1bfe
+
+Frozen scope: issue #1893 only, assigned worktree `/home/dev/Git/wt/auto-1893`,
+starting HEAD `c18d070b9ab9a45ee4e36e9d253517fc9a017e42`, supplied develop
+base `321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62`. Clean starting worktree.
+Candidate changes are restricted to the existing codec/identity files, their
+adjacent tests and inventory notes if an actual defect is reproduced, and this
+handoff. Vulture ledger changes require actual unbanked retained identities;
+no other grant, ledger or gate edits are permitted.
+
+Read the frozen issue body and supplied check-0..4 logs: dependency sync, lint,
+format and inventory pass; focused tests report 324 passed, three skipped.
+The prior result is BLOCKED, not a successful repair. Ambiguity: the named
+`test: failure` supplies no current-head traceback; assume no source defect
+until reproduced. Existing historical evidence below is not fresh validation.
+No remote refresh or expanded issue list is authorized or needed.
+
+Fresh gate results: exact Vulture command passes (1,322 findings, 1,322 reviewed
+identities, zero unclassified); no ledger amendment is warranted. Provenance
+with the supplied base exits 1: trusted merge base `2154f845347c` contains 169
+reachable-disposition exclusions versus 171 candidate exclusions. Both
+`maistro.runs.admission_identity` and `maistro.tasks.admission_codec` have new
+unauthorized dispositions and unreachable-module entries. Logs are
+`worker-vulture.log` and `worker-provenance.log` in this job directory.
+
+Read accepted ADR-081226-a66b, ADR-082826-b601 and ADR-083126-5e62. Reconciliation:
+keep canonical execution authority and staged representation-only scope;
+candidate bookkeeping cannot authorize itself. This is a policy prerequisite,
+not a merge conflict or Vulture debt. No speculative source repair is justified.
+
+### Fresh focused validation and acceptance
+
+All commands below ran at the starting source SHA, with a 1,800-second timeout:
+
+- `uv run ruff check .`: pass.
+- `uv run ruff format --check .`: pass, 3,301 files.
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py
+  packages/maistro-core/src/maistro/runs/admission_identity.py`: pass.
+- `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py
+  packages/maistro-core/tests/runs/test_root_admission_identity.py
+  packages/maistro-core/tests/extensions/test_cli_lock.py
+  packages/maistro-core/tests/extensions/test_pack_contracts.py -x -q -rs`:
+  **324 passed, three skipped**, 327 nodes; `worker-focused.log` in the job
+  directory. The skipped nodes explicitly require both PostgreSQL DSNs.
+- `uv run python scripts/check-suite-inventory.py --suite
+  packages/maistro-core/tests`: pass, 16,543 nodes, no duplicate evidence.
+- `uv run python scripts/check-shipped-surface-truth.py`: pass.
+- `git diff --check`: pass before final documentation update.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`: pass as recorded above.
+- `RATCHET_BASE_REV=321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62 uv run python
+  scripts/check-ratchet-provenance.py`: **FAIL**, exit 1 as recorded above;
+  this is the required workflow step at `.github/workflows/vulture-ratchet.yml:77`.
+
+| Acceptance criterion | Fresh evidence / limit |
+| --- | --- |
+| Frozen/slotted header, exact interfaces, fresh flat encoding, named columns and matching scalars | Codec/DTO inspection plus executed immutable, scalar-mismatch, fresh-mapping and round-trip cases pass. |
+| UUID `.hex` only at storage, signed timestamp validation, six typed safe failure codes | Executed UUID/scalar/schema/corruption tests pass, including suppressed parser chains and validated scope hashes. |
+| Legacy bound/unbound/partial distinctions without invented identity | Executed tests pass, including receipt-only, one-sided binding, bound pair without receipt and unreadable original data. Canonical DTO requires a receipt, so absent receipt remains explicit partial evidence. |
+| Header/full-decode separation; unknown format fail-closed | Executed expiry/fingerprint preservation and unknown-format tests pass. Consumer inclusive expiry/409 ordering is outside B2 and UNVERIFIED here. |
+| Strict JSON TEXT, canonical snapshot bytes, tag and stored-fingerprint preservation | Executed duplicate/nonobject/nonfinite/numeric-loss/Unicode tests and all three v2 state round trips pass. |
+| Original-model fingerprinting, existing evidence-json serialization, `model_of`/`model_of_json`, arbitrary context materialization | UNVERIFIED: tests handcraft tags and use a fixed fingerprint; passing round trips do not establish materialization. |
+| Real migrated PostgreSQL, raw/production pools, paired binding CHECK, Run JSONB object insertion, sessions and final SQL counts | UNVERIFIED this round: all three PostgreSQL cases skipped; no database was created or queried. Historical database results below are not adopted as fresh evidence. |
+| Explicit authorized principals/Workspace/Project and registered Graph kinds | UNVERIFIED: codec fixtures use synthetic strings and no authorized admission path. |
+| No clock, claim, SQL mutation, HTTP/queue/assessment/scope/legacy-policy change | Full codec inspection confirms staged mapping-only behavior. No production files changed. |
+| Runtime reachability and unchanged required integration CI | UNVERIFIED/blocked: source import search finds only codec -> identity and whitelist import; provenance rejects both new unreachable modules. No full integration CI claim. |
+| Inventory, scoped typing and formatting | Commands above pass. No tests added or changed; inventory delta zero, so no new inventory note. |
+
+**BLOCKED; no source repair claimed.** Only this handoff changed. There is no
+new pre-fix or mutation failure to report. The unspecified hosted `test: failure`
+remains UNRESOLVED: supplied deterministic logs and this focused run contain no
+failing node. Do not modify source or Vulture bookkeeping speculatively.
+
+Next action: obtain the exact failing test SHA/step/node/traceback and resolve
+trusted-base staging authorization with the integration owner. An already-landed
+reachability authorization or separately authorized real consumer is required;
+this lane cannot create one. No fetch/merge was attempted because no sync
+conflict exists and no new authorized base was supplied. No push, GitHub
+mutation, grant/gate change, activation or destructive operation occurred.
+
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 1, next: trusted-base
+coordination and current-head failing-test evidence}`. Commit this handoff;
+do not redispatch unchanged inputs as though passing focused tests repaired CI.
+
+## Previous bounded recheck — job 22566a54
 
 This section records newly executed evidence, not adoption of the historical
 claims below. Source SHA: `532da33e2594afb646023ef870611f1ea157dbcd`;
