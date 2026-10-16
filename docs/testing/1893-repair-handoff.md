@@ -1,6 +1,70 @@
 # Issue #1893 repair checkpoint
 
-## Current bounded recheck — job 237b1bfe
+## Current bounded recheck — job 758cab57
+
+**BLOCKED; no source repair justified.** Starting HEAD was verified as
+`1b1b9037f379bee9fbbb9329b2bbd2b33bd00b44`, with a clean worktree. The supplied
+base and local `origin/develop` both resolve to
+`ac7370141e8e61bd6f352bca35ed0b505104aadb`. No sync conflict exists.
+Only #1893 in the assigned `auto-1893` worktree was processed; the supplied
+issue/PR snapshot was not refreshed. This section records new execution,
+not adoption of earlier verification claims.
+
+Read repository instructions, accepted ADR-081226-69ee and ADR-081426-1f7c,
+the complete codec/identity modules and their tests, the quality-gate policy,
+and the exact-debt-ledger workflow. Reconciliation: retain the staged,
+representation-only scope and canonical Goal -> Graph -> Run -> NodeRun ->
+Attempt authority. An artificial consumer or candidate-approved reachability
+grant is not an authorized repair.
+
+All five supplied `check-*.log` files pass (driver tests: 346 passed, three
+skipped). They provide no failing node for the reported `test: failure`.
+That ambiguity remains **UNRESOLVED**, not grounds for speculative changes.
+Fresh logs are in `/home/dev/maistro/jobs/758cab5734dd458e9eead8670ce904af/`:
+`worker-vulture.log`, `worker-provenance.log`, `worker-pytest.log`, and
+`worker-quality.log`. Commands ran with 1,200-second tool timeouts:
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: **pass**, 1,322 reviewed findings, zero unclassified. No Vulture amendment warranted.
+- `RATCHET_BASE_REV=ac7370141e8e61bd6f352bca35ed0b505104aadb uv run python scripts/check-ratchet-provenance.py`: **exit 1**. Both admission modules are new unauthorized unreachable modules and have new unauthorized dispositions: four violations, 169 trusted versus 171 candidate entries. Other provenance subgates pass.
+- `uv run pytest packages/maistro-core/tests/tasks packages/maistro-core/tests/runs packages/maistro-core/tests/extensions/test_cli_lock.py packages/maistro-core/tests/extensions/test_pack_contracts.py -x -q`: **2,064 passed, 310 skipped**, 2,374 nodes, 49.44s. Six adjacent aiosqlite thread-cleanup warnings report closed event loops; no failed assertion. Skips are not durability evidence.
+- `uv run ruff check .`: pass; `uv run ruff format --check .`: pass (3,301 files).
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py`: pass, two files.
+- `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests`: pass, 16,567 nodes, no duplicate evidence.
+- `uv run python scripts/check-shipped-surface-truth.py`: pass.
+- `uv run python scripts/check-reachability.py`: pass against candidate baseline, 1,403 modules / 171 unreachable.
+- `uv run python scripts/check-reachability-dispositions.py`: pass candidate shape, 50 groups / 171 dispositions.
+- `uv run python scripts/check-promotion-surface.py`: pass, 74 tolerated modules. Candidate-ledger checks do not override failed trusted-base provenance.
+
+### Acceptance and limits at this source SHA
+
+| Criterion | Fresh evidence / limit |
+| --- | --- |
+| Shared interfaces, frozen/slotted header, immutable DTOs, fresh flat SQL mapping | Complete source inspection and executed contract tests pass. |
+| Named columns, strict UUID hex, signed timestamps, header/row agreement | Executed scalar/schema/UUID/mismatch tests pass; physical `request` maps to DTO `request_snapshot`. |
+| Six typed errors, validated scope, no raw snapshot/token in messages or displayed parsing chains | Executed safe-error tests pass, including excessive nesting, numeric loss and invalid Unicode injections. |
+| Legacy bound/unbound/partial and receipt-only; no guessed identity or completed_at authority | Executed legacy tests pass. Bound pairs without receipt evidence remain partial because canonical binding requires receipt identity. |
+| Header expiry/fingerprint survives full-decode failure; unknown format fails closed | Named prospective tests pass. Inclusive expiry/409 consumer precedence is outside B2 and UNVERIFIED here. |
+| Strict JSON TEXT; duplicate/nonobject/bare nonfinite rejection; snapshot/tag/fingerprint preservation | Executed JSON tests and unbound/bound/acknowledged round trips pass. Fixed fingerprints and handcrafted tags do not prove original-model fingerprinting or materialization. |
+| Evidence-json serialization and model_of/model_of_json materialization of arbitrary context | UNVERIFIED end-to-end: no production codec consumer was found. |
+| Real migrated DB, matching nonempty DSNs, both pools, binding CHECK, Run JSONB object and final SQL/session counts | UNVERIFIED this round: PostgreSQL cases skipped; no database execution claimed. Historical PG evidence is not fresh proof. |
+| Authorized principals/Workspace/Project and registered Graph kinds | UNVERIFIED through admission: codec fixtures use synthetic identities. |
+| No clock, claim mutation, SQL mutation, HTTP/queue/assessment/scope/policy changes | Complete codec inspection confirms mapping-only behavior; no production/test code changed. Production import search finds only codec -> identity and the whitelist import. |
+| Inventory and required integration gates | Scoped checks above pass; full integration CI UNVERIFIED and trusted-base provenance BLOCKED. |
+
+Only this existing handoff was updated. No tests were added or changed, so
+inventory delta is zero and no new inventory note is needed. No new mutation
+or pre-fix failure is claimed. The Vulture-only ledger exception cannot resolve
+the actual reachability blocker. No ledger, grant, gate, activation, remote,
+or destructive Git changes were made.
+
+Next: owner coordination must establish the trusted-base prerequisite, and the
+actual failing CI SHA/step/node/traceback is needed for a targeted test repair.
+Do not redispatch identical inputs as if another passing scoped run fixes this.
+Progress: `{checked: 1, done: 0 repairs, skipped: 0 issues, errors: 1 failing gate,
+next: trusted-base prerequisite and failing-test evidence}`. Local commit is a
+preserved handoff, not integration approval.
+
+## Previous bounded recheck — job 237b1bfe
 
 Frozen scope: issue #1893 only, assigned worktree `/home/dev/Git/wt/auto-1893`,
 starting HEAD `c18d070b9ab9a45ee4e36e9d253517fc9a017e42`, supplied develop
