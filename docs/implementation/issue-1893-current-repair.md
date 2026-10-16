@@ -1,5 +1,87 @@
 # Issue #1893 bounded CI repair
 
+## Current revalidation — job 6d431a56419540e6b93fbd8c1d5f5c36
+
+**BLOCKED: trusted-base reachability authorization still fails.** This round
+processed only #1893 at clean starting HEAD
+`c0509f7e7ac4e47f561fd0385c87193f1299ccb0`, with resolved supplied base
+`ac7370141e8e61bd6f352bca35ed0b505104aadb`. Only this existing report changed;
+no source, test, ledger, grant, gate, or production activation changes. Inventory
+delta **0**; no new tests or inventory note. No fetch, merge, or GitHub mutation.
+
+Read the frozen dispatch issue, supplied prior result, driver check-0 through
+check-4 logs, codec and identity constructors, adjacent tests, exact-debt-ledger
+workflow, and accepted ADRs 081226-a66b, 082826-b601, 082826-d9f5 and 083126-5e62.
+Reconciliation: keep Goal → Graph → Run → NodeRun → Attempt and canonical
+store/consumer ownership. Neither activating the deferred C consumer nor adding
+fake runtime imports is an authorized B2 repair. The Vulture exception does not
+authorize reachability policy changes.
+
+### Fresh executed evidence
+
+Artifacts are in `/home/dev/maistro/jobs/6d431a56419540e6b93fbd8c1d5f5c36/`.
+Driver logs independently inspected: dependency sync, lint, format and inventory
+passed; focused tests reported 346 passed / 3 skipped. Fresh worker commands:
+
+| Command | Outcome |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS, 1322 reviewed identities / findings, zero unclassified (`worker-vulture.log`). No ledger amendment justified. |
+| `RATCHET_BASE_REV=ac7370141e8e61bd6f352bca35ed0b505104aadb uv run python scripts/check-ratchet-provenance.py` | FAIL, exit 1: two unauthorized modules and two unauthorized dispositions (`worker-provenance.log:17-30`). |
+| `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py packages/maistro-core/tests/extensions/test_cli_lock.py packages/maistro-core/tests/extensions/test_pack_contracts.py -x -q -ra -o junit_family=legacy --junitxml=<job>/worker-focused.xml` | 349 collected: 346 passed, 3 PostgreSQL skips; exact nodes in JUnit. |
+| `uv run pytest packages/maistro-core/tests/tasks packages/maistro-core/tests/runs -x -q -ra` | 2229 collected: 1919 passed, 310 skipped, 6 aiosqlite closed-event-loop thread warnings (`worker-adjacent.log`). |
+| `uv run ruff check .` / `uv run ruff format --check .` | PASS / PASS (3301 files). |
+| `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py` | PASS, two source files. |
+| `uv run python scripts/check-shipped-surface-truth.py` | PASS. |
+| `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests` | PASS, 16567 unique nodes, no duplicate evidence. |
+
+Regression sensitivity was executed without modifying source: an in-memory
+encoder wrapper forced `task_id=None`, then `pytest.main` ran the bound
+round-trip node. It failed at `test_admission_codec.py:134` as expected;
+the harness required `TESTS_FAILED` and exited zero (`worker-mutation.log`).
+This tests storage-shape sensitivity, not a transaction or dispatch invariant.
+
+### Acceptance and residual risks
+
+- Frozen/slotted header, six typed error codes, strict UUID hex, signed scalar
+  timestamps, header agreement, immutable constructors, named-column mapping
+  and fresh flat encoding: inspected implementation and focused tests passed.
+- Identity preservation: bound/unbound/partial, receipt-only, malformed evidence,
+  missing receipt and ignored legacy `completed_at` tests passed. A pair lacking
+  receipt evidence remains partial instead of inventing a canonical receipt.
+- Header/full-decode separation and fail-closed formats: expiry/fingerprint
+  survive malformed snapshot/partial binding. No clock, incoming fingerprint,
+  assessment, SQL mutation, HTTP mapping, queue or scope utility change.
+- Snapshot evidence: canonical-byte/tag preservation, unchanged stored
+  fingerprint, duplicate/nonobject/bare-nonfinite rejection, numeric-loss,
+  Unicode/deep-nesting and suppressed parsing-chain tests passed.
+- Real raw/production-pool PostgreSQL round trip: **UNVERIFIED this round**;
+  the three tests skipped because both required DB variables were unset.
+  No database was provisioned; no session identities or final SQL counts are
+  claimed. Prior reports are not substituted for current durability evidence.
+- Original-model evidence-json/model_of materialization, fingerprint-before-
+  tagging pipeline, Run JSONB object insertion and authorized principal/
+  Workspace/Project/registered-Graph admission: **UNVERIFIED**. Synthetic
+  snapshots and manually tagged fixtures do not establish these live paths.
+- Production reachability: source import search finds only codec → identity
+  and Vulture whitelist → identity. No production codec consumer exists,
+  consistent with `admission_codec.py:50-53`; storage contract tests are not
+  live admission evidence. Replacement/409 ordering belongs to C/F2.
+- Required integration gates: **FAILED** trusted-base provenance. Candidate
+  entries at `quality/reachability-baseline.json:131,147` and
+  `quality/reachability-dispositions.json:612-613` cannot authorize themselves.
+  Full required integration CI is **UNVERIFIED**.
+- Reported hosted `test: failure`: **UNRESOLVED**, not reproduced by the focused
+  or adjacent runs; no failing traceback at the assigned head was supplied.
+  The six SQLite lifecycle warnings are retained, not treated as proof of that
+  unrelated hosted failure. No speculative source fix is justified.
+
+Next: owner-coordinated trusted-base authorization/integration resolution and
+actual hosted failing step/head/traceback. Do not redispatch unchanged source
+and base expecting candidate ledger banking to satisfy the prerequisite.
+This local report commit is a blocked handoff, not integration approval.
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 1, next: owner prerequisite
+and concrete hosted failure evidence}`.
+
 ## Current revalidation — job 000164664c544736be225d57ea51085a
 
 **BLOCKED: reproduced trusted-base authorization failure; no demonstrated
