@@ -1,5 +1,101 @@
 # Issue #1893 repair checkpoint
 
+## Current bounded recheck — job 22566a54
+
+This section records newly executed evidence, not adoption of the historical
+claims below. Source SHA: `532da33e2594afb646023ef870611f1ea157dbcd`;
+frozen develop ref: `321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62`.
+Assigned branch/worktree were clean and matched dispatch. Only #1893 was
+processed; no remote lists were refreshed. The only repository change this
+round is this handoff. No tests were added or changed; inventory delta is zero.
+
+**BLOCKED, not repaired.** The exact Vulture command passes with 1,322 findings
+and 1,322 reviewed identities; no ledger amendment is justified.
+`RATCHET_BASE_REV=321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62 uv run python
+scripts/check-ratchet-provenance.py` exits 1. Its resolved trusted merge base is
+`2154f845347c9541016288c760f8da3f5cd2e064`. Both admission modules are new
+unauthorized unreachable modules and new unauthorized dispositions (169 trusted
+versus 171 candidate). The Vulture-only exception cannot authorize reachability
+policy changes. This is not a worktree conflict; merging without an already
+landed authorization does not resolve it.
+
+Read repository instructions, the full codec and its tests, prerequisite DTO
+constructors, existing inventory, CI provenance workflow, and accepted
+ADR-081226-a66b, ADR-082826-b601, and ADR-083126-5e62. Their reconciliation stays:
+retain the canonical execution spine and inactive representation-only scope;
+never add fake reachability or candidate-controlled grants to pass a gate.
+Production-source import inspection finds only codec -> identity and the
+Vulture whitelist, not a runtime admission consumer.
+
+### Commands and actual outcomes
+
+Logs are retained in
+`/home/dev/maistro/jobs/22566a5457d34191b8434c8534ba64a5/worker-*.log`;
+PostgreSQL JUnit evidence is `worker-pg.xml` in that directory.
+
+- Supplied `check-0.log` through `check-4.log` were read: all passing, with
+  three skipped PostgreSQL cases. They contain no failing test traceback.
+  Captured check metadata names a failed `test` at a different head
+  (`3f2c79a70d9e...`), with no output text, and an `exact-debt-ledger` failure
+  at `90d4c278e6d7...`. Neither identifies a current-head failing test.
+- `uv run ruff check .` and `uv run ruff format --check .`: pass.
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py
+  packages/maistro-core/src/maistro/runs/admission_identity.py`: pass.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`: pass.
+- `uv run python scripts/check-suite-inventory.py --suite
+  packages/maistro-core/tests`: pass, 16,543 collected nodes.
+- `uv run python scripts/check-shipped-surface-truth.py`: pass.
+- `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py
+  packages/maistro-core/tests/runs/test_root_admission_identity.py
+  packages/maistro-core/tests/extensions/test_cli_lock.py
+  packages/maistro-core/tests/extensions/test_pack_contracts.py -x -q -rs`:
+  **324 passed, 3 skipped**, 327 nodes; PG skips are not durability evidence.
+- Verified disposable `maistro_1893_22566a54` did not exist, then created it.
+  `DATABASE_URL=postgresql:///maistro_1893_22566a54 uv run alembic upgrade head`:
+  pass, real empty-to-063 chain on PostgreSQL 18.6, including migration 055.
+- With both `MAISTRO_TEST_PG_DSN` and `MAISTRO_TEST_DATABASE_URL` set to
+  `postgresql:///maistro_1893_22566a54`, and `MAISTRO_REQUIRE_PG_LEGS=1`, ran
+  `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py
+  packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q
+  -o junit_family=legacy --junitxml=<job-directory>/worker-pg.xml`:
+  **204 passed, zero skipped**. Production/raw backend PIDs were
+  2117835/2117836 (unbound), 2117837/2117838 (bound), and 2117845/2117849
+  (acknowledged), all on that database via local socket. Each case persisted
+  one scoped row and exercised both readers, including corrupt TEXT injection.
+  Independent final SQL session 2117880 confirmed revision 063 and zero
+  admission rows, generation identities, bound Run identities, canonical Runs,
+  NodeRuns, and Attempts. Database retained for inspection; no downgrade run.
+- `uv run pytest packages/maistro-core/tests/tasks
+  packages/maistro-core/tests/runs -x -q`: **1,919 passed, 310 skipped,
+  6 warnings** (2,229 nodes). This broader run had no PG DSNs. Warnings concern
+  existing aiosqlite worker threads encountering closed event loops; no fix
+  or production-impact conclusion is claimed.
+
+### Current acceptance limits and next action
+
+Executed focused cases prove strict UUID/scalar/schema validation, frozen DTOs,
+fresh paired binding mappings, legacy bound/unbound/partial distinctions,
+header/full-decode separation, strict JSON TEXT, safe typed failures, canonical
+snapshot/tag/fingerprint preservation, and real raw/production pool equivalence.
+The existing tests use synthetic identities, handcrafted tags and a fixed
+fingerprint: they do **not** establish original-model fingerprinting,
+`model_of`/`model_of_json` materialization, authorized Workspace/Project/Graph
+admission, or Run JSONB object insertion through a reachable production caller.
+Those criteria and full integration CI remain **UNVERIFIED**. Consumer expiry/
+409 ordering is deliberately not B2 behavior. No new regression test or mutation
+claim is made because this round found no actionable codec defect.
+
+The reported `test: failure` remains **UNRESOLVED**. Obtain its exact failing
+SHA/step/node/traceback and resolve trusted-base staging authorization through
+the integration owner before another repair dispatch. Do not interpret passing
+scoped tests as repair of an unidentified CI failure. No push, GitHub mutation,
+source activation, gate modification, grant edit, or destructive Git operation.
+
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 1, next: trusted-base
+coordination and current-head failing-test evidence}`. This documentation commit
+is a preserved handoff, not integration approval.
+
 ## Frozen scope
 
 - Assigned writer worktree: `/home/dev/Git/wt/auto-1893`, branch `auto-1893`.
