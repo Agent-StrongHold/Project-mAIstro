@@ -1,6 +1,135 @@
 # Issue #1893 bounded CI repair
 
-## Current revalidation — job 5e8721073a6a498eaaa797e238052e81
+## Current revalidation — job f506636f76f948c1983452e2a533ac70
+
+**BLOCKED; no reproduced source/test defect or unbanked Vulture identity.**
+Frozen assignment: issue #1893 only, branch `auto-1893`, clean starting HEAD
+`c99fcdaf9d079e01dcbd6f7732201aeedcae5281`, supplied base
+`321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62` (resolved before use). The provenance
+checker resolves their trusted merge base to
+`2154f845347c9541016288c760f8da3f5cd2e064`. No conflict, incoming edits, fetch,
+merge, activation, GitHub mutation, or quality-ledger/grant/gate change occurred.
+This existing report is the only changed file. No tests changed; inventory delta
+is **0**, so no new inventory note is required. Historical sections are retained,
+not relied upon as current proof.
+
+Read repository instructions, frozen issue/PR evidence, driver check-0 through
+check-4 logs, prior result, codec and adjacent tests, and the CI gate invocation.
+Accepted ADRs 081226-a66b, 082826-b601, 082826-d9f5 and 083126-5e62 preserve the
+canonical Goal → Graph → Run → NodeRun → Attempt spine, sole execution/store
+ownership, and trusted-base authorization. Reconciliation: an inactive typed
+codec does not authorize activating the C consumer to satisfy reachability.
+The Vulture-ledger exception does not authorize reachability policy edits.
+The assigned writer lane establishes this bounded worktree scope, not rollout
+or independent merge approval. Captured linked PR heads differ from this HEAD;
+their claims are not current execution evidence.
+
+### Fresh executed validation
+
+All commands ran at the source SHA above with long timeouts. Logs, the bounded
+DB validation harness, captured evidence, and 204 executed node identities are
+under `/home/dev/maistro/jobs/f506636f76f948c1983452e2a533ac70/worker-*`
+(and `validate-pg.py`). Driver checks were independently inspected: sync, lint,
+format, inventory pass; 324 passed / 3 PG skips is not durability proof.
+
+| Command | Observed result |
+| --- | --- |
+| `uv sync --locked --extra dev` | PASS, 256 resolved / 214 checked. |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS, 1322 reviewed identities / 1322 findings; zero unclassified. No ledger amendment justified. |
+| `RATCHET_BASE_REV=321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62 uv run python scripts/check-ratchet-provenance.py` | **FAIL, exit 1**: two unauthorized unreachable modules and two dispositions; all other subchecks pass. |
+| `uv run pytest tests/migrations/test_migration_chain.py -x -q` | 18 passed, using a freshly created disposable PostgreSQL database before runtime tests. |
+| `uv run alembic upgrade head` | PASS; final real-chain revision 063. |
+| `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q -o junit_family=legacy --junitxml=<job>/worker-focused.xml` | **204 passed, zero skipped**. |
+| `uv run pytest packages/maistro-core/tests/tasks packages/maistro-core/tests/runs -x -q -ra` | **2226 passed, 3 skipped, 100 warnings**, 2229 collected. |
+| `uv run ruff check .` | PASS. |
+| `uv run ruff format --check .` | PASS. |
+| `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py` | PASS. |
+| `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests` | PASS, 16543 unique nodes. |
+| `uv run python scripts/check-reachability.py` | PASS against candidate ledger; not authorization. |
+| `uv run python scripts/check-reachability-dispositions.py` | PASS against candidate ledger; not authorization. |
+| `uv run python scripts/check-promotion-surface.py` | PASS. |
+| `uv run python scripts/check-shipped-surface-truth.py` | PASS. |
+| `git diff --check` | PASS before report update; repeated before commit. |
+
+The DB harness created **maistro_1893_f506636f** only after confirming it absent,
+on the existing `maistro-postgres` container, PostgreSQL **18.6**. Both
+`MAISTRO_TEST_PG_DSN` and `MAISTRO_TEST_DATABASE_URL` target that same disposable
+DB; `DATABASE_URL` targets it for Alembic, and `MAISTRO_REQUIRE_PG_LEGS=1` prevents
+silent codec skips. Credentials are not recorded here. `REQUIRE_AUTH=false` and
+`MAISTRO_DRY_RUN=1` match the test environment, not production activation.
+
+The three codec states use non-null production-codec `pg_pool` and an independent
+raw asyncpg pool. Recorded production/raw PIDs: unbound **267802/267803**, bound
+**267804/267805**, acknowledged **267806/267807**; server identity
+`172.20.0.2/32:5432`, database `maistro_1893_f506636f`. Each state persists exactly
+one scoped row through migration-055 constraints, compares named TEXT columns
+and exact DTOs, injects escaped-surrogate corruption into each snapshot column,
+requires typed errors through both readers, and deletes its row. Final SQL after
+the *broader adjacent suite* (PID **269125**) reports revision **063**, **3 rows /
+0 distinct non-null generations / 2 distinct Run IDs** in `task_idempotency`.
+Do not report zero residue for that broader run. The isolated DB is retained.
+
+The adjacent skips concern archive/retention capabilities, not missing PostgreSQL.
+Its 100 warnings include SQLAlchemy non-checked-in connection cleanup and
+unawaited asyncpg cancellation coroutines; these are residual test-lifecycle
+warnings, not silently counted as clean output or repaired outside this leaf.
+
+Regression sensitivity was executed, not assumed: an in-memory encoder wrapper
+forced `task_id=None`, then ran the existing bound round-trip case via
+`pytest.main`. It failed at `test_admission_codec.py:134` (`None != 'rcpt-1'`),
+and the harness verified `TESTS_FAILED`. No mutated source was written to disk.
+This independently tests storage shape rather than encode/decode agreement.
+
+### Acceptance accounting and disposition
+
+- **Typed interfaces/immutable DTOs:** inspected frozen/slotted header, six error
+  codes, header agreement, signed timestamps, strict UUID hex, constructors and
+  fresh flat mapping; corresponding focused tests pass. Physical `request` TEXT
+  maps to DTO `request_snapshot`, matching the migrated schema rather than adding
+  an alternate column or mutation authority.
+- **No inferred identity:** bound/unbound/partial legacy, receipt-only,
+  task-without-Run, unreadable evidence, and ignored `completed_at` cases pass.
+  A legacy pair without receipt evidence stays partial because the canonical
+  binding requires a receipt; no identity is fabricated to satisfy it.
+- **Header/full-decode separation:** named expiry/fingerprint preservation,
+  mismatched header, scalar corruption and unknown-format cases pass. The codec
+  accepts neither clock nor incoming fingerprint. Live replacement/409 ordering
+  belongs to C/F2 and is **UNVERIFIED**, not a claim of these unit tests.
+- **Snapshots/error hygiene:** canonical byte round trips, strict JSON object /
+  duplicate / bare-nonfinite rejection, unchanged stored fingerprint, tagged
+  evidence retention, deep nesting, lossy-number and Unicode cases pass. Error
+  messages suppress parsing chains and do not disclose injected evidence.
+- **Real storage contrast:** all three raw/production pool states execute on the
+  migrated database with session identities and persisted row counts above;
+  no fake or skipped PostgreSQL case is used as proof.
+- **Original-model pipeline:** evidence-json/model_of/model_of_json
+  materialization, fingerprint-before-tagging, Run JSONB object INSERT, and
+  authorized principal/Workspace/Project/registered-Graph admission remain
+  **UNVERIFIED for this leaf**. Synthetic DTO/storage fixtures and adjacent
+  admission tests do not prove a production codec consumer.
+- **Production boundary:** source search finds only codec → identity and Vulture
+  whitelist → identity imports; no production codec caller. The inactive
+  boundary remains explicit at `admission_codec.py:50-53`. No scheduler, store,
+  authorization, SQL mutation, queue/HTTP, scope utility, or assessment changed.
+- **Required gates:** the exact provenance failure persists at
+  `quality/reachability-baseline.json:131,147` and
+  `quality/reachability-dispositions.json:606-613`: both admission modules are
+  new/unapproved relative to trusted base. Candidate-ledger passes cannot
+  authorize them; the Vulture-only exception cannot repair this failure.
+- **Hosted `test: failure` / full integration CI:** **UNVERIFIED and unattributed**.
+  No failing node was reproduced in driver or fresh scoped checks. The hosted
+  job also contains other packages/frontends/root tests; these subsets are not
+  a full-job pass. No speculative or cosmetic test repair was made.
+
+**Next:** an authorized owner must resolve the coordinated trusted-base
+reachability prerequisite or provide an approved real integration path, then
+assign synchronization/revalidation. Supply the actual failing hosted test step,
+head and traceback before another test-repair dispatch. This worker cannot land
+that grant, activate the consumer, or mutate GitHub. Progress:
+`{checked: 1, done: 0, skipped: 0, errors: 1, next: owner resolution and failing-test evidence}`.
+This locally committed handoff is not merge approval; the repair remains blocked.
+
+## Previous revalidation — job 5e8721073a6a498eaaa797e238052e81
 
 **BLOCKED.** Issue #1893 only; assigned worktree `/home/dev/Git/wt/auto-1893`,
 branch `auto-1893`, clean starting source
