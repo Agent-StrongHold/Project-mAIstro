@@ -664,3 +664,77 @@ source, tests, ledgers, grants or gates changed. Inventory delta is zero, so no
 new inventory note is needed. Progress: checked 1, done 0 repairs, skipped 0,
 errors 1 unresolved provenance blocker. The local commit is a blocked evidence
 handoff, not integration approval.
+
+## Repair job 954c2939 — no evidence-backed code repair
+
+Source: `fbfb875a3ad7f658bb43c5b8c49b3ad0091bef4a`, branch `auto-1893`,
+clean incoming worktree. Scope frozen to #1893. The supplied develop base and
+local `origin/develop` both resolve to
+`321cbdb8fe9b5a0eacb75deaaa01dad1d12b6f62`; the provenance gate selects trusted
+merge base `2154f845347c`. No fetch, merge, GitHub mutation or ledger edit.
+
+Read repository instructions, saved issue acceptance, supplied driver logs,
+prior result, codec and identity source, adjacent codec tests and binding
+inventory evidence. Accepted ADR-081226-a66b and ADR-082526-7f02 preserve the
+single Run/NodeRun/Attempt hierarchy and immutable admission provenance.
+Reconciliation: the issue explicitly prohibits activation in B2, so adding a
+fake import or a new admission authority to defeat reachability is not a repair.
+An initially requested ADR filename did not exist; the actual lifecycle ADR
+was located and read. Earlier validation claims are not adopted as current proof.
+
+### Fresh commands and results
+
+Logs are `worker-*.log` under
+`/home/dev/maistro/jobs/954c2939077d4260bf7cbeb48cb6acf4`.
+Commands ran with 1200-second timeouts at the source SHA above.
+
+| Command | Result |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | Passed: 1322 findings, zero unclassified; no ledger amendment justified |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-ratchet-provenance.py` | **Exit 1**: both admission modules are new unreachable modules and new dispositions without trusted-base authorization |
+| `uv run ruff check .` | Passed |
+| `uv run ruff format --check .` | Passed: 3301 files |
+| `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py` | Passed: two files |
+| `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q` | 201 passed, 3 skipped; 204 nodes |
+| `uv run pytest packages/maistro-core/tests/tasks packages/maistro-core/tests/runs -x -q` | 1919 passed, 310 skipped, 6 aiosqlite closed-event-loop thread warnings; 2229 nodes |
+| `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests` | Passed: 16543 nodes, zero duplicate evidence |
+| `rg -n 'admission_codec\|decode_admission_record' packages/*/src` | Only the codec export and definition; no production consumer found |
+
+The supplied driver checks also pass (324 tests, three PostgreSQL skips).
+Neither those checks nor fresh scoped runs reproduce the dispatched `test:
+failure`. Its actual failing CI traceback remains required; adjacent SQLite
+warnings are recorded, not relabelled as that failure or repaired speculatively.
+
+### Acceptance boundary
+
+- Frozen/slotted header, scalar/header consistency, strict UUID hex and signed
+  timestamps, fresh flat encoding, typed safe errors and constructor validation:
+  inspected source and passing focused tests.
+- Snapshot round trips, unchanged stored fingerprints, tagged nonfinite evidence,
+  invalid/duplicate/nonobject JSON rejection, and permitted Unicode/numeric
+  evidence: passing focused tests. Fixtures establish codec behavior, not original
+  model fingerprinting or production model materialization.
+- Bound/unbound/partial legacy distinctions, receipt-only failure, no inferred
+  work identity, and scalar expiry/fingerprint surviving failed full decode:
+  passing focused tests. Bound v2 encoding already sets task and Run together;
+  no new regression or mutation experiment was performed this round.
+- Raw/production PostgreSQL pool equivalence and real migrated SQL constraints:
+  **UNVERIFIED this round**, three focused PostgreSQL cases skipped. No database
+  was provisioned; no session or row-count durability claim is made.
+- Existing evidence-json model encoding/materialization, Run JSONB object shape,
+  authorized principals/Workspace/Project/Graph admission, consumer expiry/409
+  ordering, full required CI and coordination/activation approval:
+  **UNVERIFIED**. There is no production codec consumer; passing contract tests
+  are not runtime reachability. B2 still adds no clock, claim, SQL mutation,
+  HTTP mapping, queue or authorization path.
+
+**BLOCKED.** The actual failing gate is trusted-base reachability provenance,
+not Vulture. The permitted Vulture-only ledger exception cannot repair those
+unauthorized rows (`quality/reachability-baseline.json:131,147` and
+`quality/reachability-dispositions.json:606-613`). Integration-owner resolution
+must precede another repair dispatch; do not self-authorize grants or activate
+out-of-scope consumers. Obtain the exact failing hosted test traceback as well.
+Only this report changed. No tests changed, so inventory delta is zero and no
+new inventory note is needed. Progress: checked 1, done 0 repairs, skipped 0,
+errors 1 unresolved gate blocker. This local documentation commit is a blocked
+handoff, not integration approval.
