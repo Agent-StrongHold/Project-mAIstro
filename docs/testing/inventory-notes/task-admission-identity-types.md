@@ -279,3 +279,21 @@ The source/test restoration is green: focused pytest reports **79 passed**; focu
 The explicitly requested CI Vulture command was re-run with the assigned trusted base: `RATCHET_BASE_REV=ac7370141e8e61bd6f352bca35ed0b505104aadb uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`. It exits **1**. Candidate bookkeeping is exact (1,327 scanned and ledger findings), but the trusted base has 1,322 entries and does not authorize five retained `AdmissionAssessment` identities: `MISMATCH`, `REPLAYED`, `TAKEOVER`, `REPLACE_EXPIRED`, and `LEGACY_UNRESOLVED` (`admission_identity.py:515-520`). The only sixth member not flagged is `PENDING`, because the module's required `Pending` result class has the same name.
 
 No source or ledger change eliminates those findings without violating the leaf contract: the issue fixes all six enum members, forbids a runtime consumer in this inactive leaf, and forbids a self-grant. A direct `check-reachability.py` re-run also exits **1** solely for the intentionally unwired `maistro.runs.admission_identity` module. The blocking changes remain parent #1845's real consumer and a trusted-base authorization, not a waiver, fake caller, or suppression in this leaf.
+
+## CI-repair validation — 2026-10-16 (`55926e801e36`)
+
+This CI-repair pass independently re-ran the focused contract suite: **79 passed**,
+with focused Ruff check/format and mypy clean. The recorded inventory remains
+`packages/maistro-core/tests: +79` (the suite inventory collected 16,439 node
+IDs, matching its baseline); this pass adds no tests.
+
+The required Vulture command with `RATCHET_BASE_REV=ac737014` still finds 1,327
+candidate findings and fails only because the trusted base has 1,322 identities.
+The candidate ledger's five retained `AdmissionAssessment` rows are exact for
+the scan (`MISMATCH`, `REPLAYED`, `TAKEOVER`, `REPLACE_EXPIRED`, and
+`LEGACY_UNRESOLVED`); no additional row, grant, suppression, or fake consumer
+was added in this pass. The trusted-base authorization remains the separate
+parent/integration prerequisite. Independently, `check-reachability.py` and
+`check-ratchet-provenance.py` each fail on the intentionally unwired
+`maistro.runs.admission_identity` module; production wiring remains outside
+this leaf.
