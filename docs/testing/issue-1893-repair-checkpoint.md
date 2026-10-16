@@ -1,5 +1,96 @@
 # Issue 1893 repair checkpoint
 
+## Repair recheck: job a6cc447b4c2e411a872eca70d0e6e2dd
+
+Frozen scope: #1893 only, assigned `auto-1893` worktree, clean starting HEAD
+`7a6b87b5bd38f5bcfb4cb55f35a35d0aeea572a7`. Supplied base and resolved local
+`origin/develop` both equal `ac7370141e8e61bd6f352bca35ed0b505104aadb`.
+No sync conflict, remote refresh, GitHub mutation or production activation.
+Read repository instructions, frozen dispatch issue/check evidence, driver
+check-0..4 logs, prior result, codec/identity implementations and codec tests,
+and accepted ADRs 082526-7f02, 082826-b601 and 062. Preserve immutable admission
+provenance and `Goal -> Graph -> Run -> NodeRun -> Attempt`; a fake consumer or
+alternate execution authority is not an acceptable reachability repair.
+
+### Fresh validation at the starting source SHA
+
+Commands used 1200-second timeouts; logs are `worker-*.log` in
+`/home/dev/maistro/jobs/a6cc447b4c2e411a872eca70d0e6e2dd/`.
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`:
+  PASS, 1322 reviewed identities/findings, zero unclassified. No amendment is
+  warranted; Vulture authorization cannot authorize reachability ledger edits.
+- `RATCHET_BASE_REV=ac7370141e8e61bd6f352bca35ed0b505104aadb uv run python scripts/check-ratchet-provenance.py`:
+  **FAIL, exit 1**: both admission modules and their dispositions are NEW and
+  unauthorized against the trusted base (169 -> 171); other sub-ratchets pass.
+- `uv run pytest packages/maistro-core/tests/tasks packages/maistro-core/tests/runs/test_root_admission_identity.py packages/maistro-core/tests/extensions/test_cli_lock.py packages/maistro-core/tests/extensions/test_pack_contracts.py -x -q -rs`:
+  **845 passed, 20 PG-gated skips**, 865 cases. Skips are not durability proof.
+- `uv run ruff check .` and `uv run ruff format --check .`: PASS.
+- `uv run mypy packages/maistro-core/src/maistro/tasks/admission_codec.py packages/maistro-core/src/maistro/runs/admission_identity.py`: PASS.
+- `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests`:
+  PASS, 16567 nodes, no duplicate evidence.
+- `uv run python scripts/check-shipped-surface-truth.py`,
+  `uv run python scripts/check-reachability.py` and
+  `uv run python scripts/check-reachability-dispositions.py`: PASS. Candidate
+  ledger agreement does not override the failed trusted-base authorization.
+
+### Fresh PostgreSQL evidence
+
+Created new disposable DB `repair_1893_a6cc447b` on the existing
+`maistro-postgres` PostgreSQL 18.6 container (host port 5433). Creation succeeded
+without reuse. Nonempty `DATABASE_URL`, `MAISTRO_TEST_PG_DSN` and
+`MAISTRO_TEST_DATABASE_URL` all targeted that DB; `MAISTRO_REQUIRE_PG_LEGS=1`.
+Credentials were read from container configuration and not printed or recorded.
+
+- `uv run alembic upgrade head`: PASS, real empty -> 001 -> ... -> 063 chain,
+  including migration 055. No stamping, SQLite recreation or downgrade test.
+- `uv run pytest packages/maistro-core/tests/tasks/test_admission_codec.py packages/maistro-core/tests/runs/test_root_admission_identity.py -x -q -rs -o junit_family=legacy --junitxml=<job>/worker-pg.xml`:
+  **204 passed, zero skipped**, including three real raw/production pool cases.
+- Independent production/raw PID pairs: unbound 373488/373489, bound
+  373490/373491, acknowledged 373492/373493. All identify this same DB at
+  `172.20.0.2/32:5432`; each case asserts one persisted admission row.
+- Final SQL audit: revision 063, `task_idempotency=0`, `canonical_runs=0`.
+  DB retained for audit; session properties and counts are in `worker-pg.xml`
+  and `worker-pg-audit.json`. These are codec storage tests, not Run admission.
+
+### Acceptance and remaining limits
+
+| Criterion | Executed evidence / limit |
+| --- | --- |
+| Frozen/slotted header, exact interfaces/six codes, signed timestamps, strict storage UUID hex, shared constructors | Source review and focused header/schema/scalar/owner/generation/identity tests PASS |
+| Fresh flat named SQL mapping; snapshot bytes and bound/unbound/acknowledged states | Focused round trips and live migration-055-constrained INSERT/read/decode PASS |
+| Legacy bound/unresolved/partial/receipt-only without inferred identity | Focused binding/whitespace/missing-receipt/completed_at tests PASS; missing receipt stays partial rather than fabricated |
+| Header retains expiry/fingerprint despite snapshot or binding errors; mismatched headers and unknown formats rejected | Header-separation/scalar-mismatch/format tests PASS; codec takes no clock or request fingerprint |
+| Strict TEXT JSON; duplicate/nonobject/bare nonfinite rejection; safe messages/chains and validated scope | JSON/nesting/precision/Unicode/error tests PASS, including corrupt TEXT through both real pools |
+| Tagged arbitrary program_context evidence and stored fingerprint preserved | Tag/Unicode/exact-number cases PASS; no tag decoding or fingerprint recalculation in codec |
+| Same migrated DB and independent raw/production JSON-codec pools | Three real cases PASS with session/row evidence above |
+| Evidence-json model materialization, original-model fingerprinting and Run JSONB object rather than string | UNVERIFIED end-to-end: fixtures build tags directly and do not insert canonical Runs |
+| Authorized explicit principals, Workspace/Project and registered Graph kinds | UNVERIFIED as admission: DTO fixture identity strings do not establish authorization |
+| Production reachability and full required integration CI | NOT PROVEN: only codec-to-DTO and whitelist imports found; provenance FAILS; full integration CI not rerun |
+| Consumer inclusive expiry/409 precedence, crash/dispatch/claim invariants | UNVERIFIED; reserved for C/F2, outside this representation-only leaf |
+| No SQL mutation, HTTP/queue/scope utility, live assessor or admission-policy changes | Preserved; this round changes this checkpoint only |
+
+The frozen check-run snapshot reports `test: failure` at sibling head
+`3f2c79a70d9e1b0b6b6ffc99562cb35db5326828`, with null summary/text. Its captured
+`test` at `80171ce1cff9ca45eaf000bf52569875643a5ba0` passes while
+`exact-debt-ledger` fails. Neither is current-head CI evidence. The supplied
+generic test failure remains UNRESOLVED, not repaired by passing focused tests.
+No source/test repair or pre-fix/mutation experiment is claimed; no tests changed,
+so no inventory delta or new inventory note is necessary.
+
+**BLOCKED.** Preserved unauthorized entries remain at
+`quality/reachability-baseline.json:131,147` and
+`quality/reachability-dispositions.json:606-613`; CI requires the failing gate
+at `.github/workflows/vulture-ratchet.yml:77`. Resolving the trusted-base
+prerequisite requires owner-controlled authorization/integration outside this
+lane. Re-running unchanged source or amending Vulture cannot resolve it.
+No ledger/grant/gate changes are justified or made. Only this existing report
+is committed locally as an evidence handoff, not integration approval.
+
+Progress: checked 1 issue, done 0 code repairs, skipped 0 issues, errors 1
+required gate. Next: trusted-base prerequisite resolution and, if a distinct
+test repair is required, an actual current-head failing traceback.
+
 ## Repair recheck: job 6fbc3c17552a4262828dec6dabe9c0ab
 
 Frozen scope: #1893 only, assigned worktree `/home/dev/Git/wt/auto-1893`,
