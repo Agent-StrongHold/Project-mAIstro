@@ -30,18 +30,10 @@ The invariants this module enforces (each pinned by
   ``(asset_id, version)``; every instantiated object carries the pack's
   publisher/version provenance (``GraphTemplate`` metadata, ``Persona``
   ``source_template_*``/``extension_metadata``, Rubric
-  ``ProvenanceOrigin.PACK`` + the full snapshot identity on
-  ``RubricProvenance`` — publisher, pack version, asset id/version, and
-  the manifest digest — so rubrics instantiated from different versions
-  of the same pack are provenance-distinguishable).
-- **The manifest snapshot is anchored to its bytes.** The snapshot's outer
-  dataclasses and tuples are frozen and persona payload trees are frozen
-  recursively; the one part of the tree that cannot be frozen here (the
-  canonical ``RubricDimension`` objects inside a rubric asset — a canonical
-  model, not this contract's to re-freeze) is closed by construction:
-  ``PackManifest.asset`` resolves every use against a pristine re-parse of
-  ``raw``, so a caller who mutates a stored asset cannot make new
-  instantiations diverge from the bytes ``source_sha256`` names.
+  ``ProvenanceOrigin.PACK`` + ``pack_id``). For Rubrics the canonical model
+  has no free provenance slot beyond ``pack_id``; the exact asset version is
+  pinned by the registry's immutable manifest snapshot (digest-addressed)
+  plus the revision immutability the Rubric store enforces.
 - **Dependencies resolve through the M9 compatibility machinery.** A pack
   declares ``api_version`` plus dependencies on other extensions (packs are
   extensions that ship assets; capability providers are extensions), and
@@ -75,9 +67,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from pydantic import ValidationError
+
+if TYPE_CHECKING:
+    # Annotation-only: the runtime import is deferred into ``_probe_persona``
+    # (see the comment there) so this module never closes the
+    # ``maistro.agents.recipes`` ↔ ``maistro.personas`` import cycle.
+    from maistro.personas.model import Persona
 
 from maistro.extensions.compatibility import (
     CompatibilityPolicy,
@@ -99,9 +97,6 @@ from maistro.ontology.rubric import (
     RubricSemantic,
     ScoringMethod,
 )
-
-if TYPE_CHECKING:
-    from maistro.personas.model import Persona
 
 __all__ = [
     "SUPPORTED_PACK_MANIFEST_VERSION",
@@ -158,10 +153,11 @@ _CAPABILITY_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
 #: extension/platform identities the compatibility machinery understands.
 _EXTENSION_ID_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
 
-#: Pack-id name segment (the ``publisher.name`` tail). The publisher half
-#: reuses ``_PUBLISHER_RE`` so any publisher slug an extension manifest
-#: accepts (including hyphenated ids like ``pub-1``) can own packs.
-_PACK_SEGMENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+#: Pack-id name segment: the slug after the ``publisher.`` prefix. Same
+#: alphabet as the publisher slug (hyphens/underscores fine), so every
+#: publisher the extension manifest accepts can name packs under itself —
+#: including hyphenated (``pub-1.my_pack``) and dotted (``a.b.my_pack``) ones.
+_PACK_SEGMENT_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 
 class PackContractError(RuntimeError):
@@ -209,8 +205,14 @@ def _require_str(document: Mapping[str, Any], key: str) -> str:
     return value
 
 
-def _require_finite(value: Any, what: str) -> float:
-    """Reject non-finite pack numbers (``1e400``/``Infinity``/``NaN`` in JSON)."""
+def _require_finite_number(value: object, what: str) -> float:
+    """Require a finite JSON number (bools excluded).
+
+    ``json.loads`` maps overflow literals like ``1e400`` to infinities and
+    accepts ``NaN`` spellings, and the canonical models only constrain these
+    values by ordering (``gt=0``), which infinities satisfy — so finiteness
+    is checked here, fail-closed, before a pack rubric is accepted.
+    """
     if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
         raise _reject(f"{what} must be a finite number")
     return float(value)
@@ -227,28 +229,6 @@ def _semver_key(version: str) -> tuple[int, int, int]:
     match = SEMVER_RE.match(version)
     assert match is not None, "only parsed semvers reach this helper"
     return int(match.group(1)), int(match.group(2)), int(match.group(3))
-
-
-def _raise_pack_unavailable(
-    pack_id: str,
-    version: str | None,
-    installed: list[tuple[tuple[str, str], PackInstallRecord]],
-) -> NoReturn:
-    """The no-candidate half of ``InstallablePackRegistry._require_record``.
-
-    Installed but not active: the disabled record itself answers, with the
-    operator's note surfaced verbatim. Never installed: the request was
-    refused, nothing is recorded.
-    """
-    if installed:
-        disabled = max(installed, key=lambda entry: _semver_key(entry[0][1]))[1]
-        detail = f"; note: {disabled.note}" if disabled.note else ""
-        raise PackDisabledError(f"pack {pack_id!r} is disabled in this registry{detail}")
-    raise PackDisabledError(
-        f"pack {pack_id!r}"
-        + (f" at version {version!r}" if version else "")
-        + " has no active install in this registry"
-    )
 
 
 # --------------------------------------------------------------------------
@@ -299,9 +279,9 @@ class PackPersonaDefinition:
     arguments built from these string keys, so the scanner's name-level
     analysis keeps attributing ``purpose``/``style_guidance`` usages to the
     canonical Persona model that owns them (their banked debt lives there),
-    not to this pass-through payload. The tree is frozen recursively
-    (``MappingProxyType`` over tuples): a caller holding the manifest
-    snapshot cannot mutate a stored payload in place.
+    not to this pass-through payload. It is deep-frozen (nested mappings
+    and lists included) so the inspected snapshot cannot drift away from
+    the ``source_sha256`` stamped on it.
     """
 
     name: str
@@ -309,11 +289,56 @@ class PackPersonaDefinition:
 
 
 @dataclass(frozen=True)
+class PackRubricNumericScale:
+    """A bounded numeric scale, as parsed pack data (immutable)."""
+
+    min_value: float = 0.0
+    max_value: float = 100.0
+
+
+@dataclass(frozen=True)
+class PackRubricPassFailScale:
+    """A binary pass/fail scale, as parsed pack data (immutable)."""
+
+    pass_value: float = 1.0
+    fail_value: float = 0.0
+
+
+@dataclass(frozen=True)
+class PackRubricScale:
+    """A dimension's scale, as parsed pack data (immutable).
+
+    The canonical ``RubricScale`` models are minted from these primitives
+    at every probe/instantiation, so a mutable Pydantic object never lives
+    inside the inspected manifest snapshot.
+    """
+
+    numeric: PackRubricNumericScale | None = None
+    pass_fail: PackRubricPassFailScale | None = None
+
+
+@dataclass(frozen=True)
+class PackRubricDimension:
+    """One rubric dimension, as parsed pack data (immutable).
+
+    Pack-local, not the canonical ``RubricDimension``: the canonical
+    Pydantic model is mutable, and the snapshot stores only frozen data.
+    """
+
+    id: str
+    name: str
+    weight: Any
+    scale: PackRubricScale
+    method: ScoringMethod
+    evidence_required: bool = False
+
+
+@dataclass(frozen=True)
 class PackRubricDefinition:
     """A Rubric default catalog. Instantiated as a canonical ``RubricSemantic``."""
 
     name: str
-    dimensions: tuple[RubricDimension, ...]
+    dimensions: tuple[PackRubricDimension, ...]
     gate_pass_threshold: float
     veto_dimension_ids: tuple[str, ...] = ()
 
@@ -331,22 +356,18 @@ class PackAsset:
 
 
 def _parse_graph_node(item: object, node_ids: set[str]) -> PackGraphNode:
-    """Keys, identity, and name type for one graph node — the per-item half
-    of the node-list pass, extracted so each function stays under the
-    complexity floor (same decomposition style as ``_validate_graph_head``)."""
+    """Validate one graph-node object, registering its id in ``node_ids``."""
     if not isinstance(item, dict) or set(item) - {"node_id", "node_type", "name"}:
         raise _reject("each graph node must have only node_id, node_type, name")
-    # The shape check above only refuses *unknown* keys; without this, a
-    # node missing node_id/node_type reaches _require_str's direct index
-    # and a raw KeyError escapes the typed PackManifestRejected boundary.
-    missing_node = [key for key in ("node_id", "node_type") if key not in item]
-    if missing_node:
-        raise _reject(f"missing graph node keys: {missing_node}")
+    missing = [key for key in ("node_id", "node_type") if key not in item]
+    if missing:
+        raise _reject(f"graph node missing required keys: {missing}")
     node_id = _require_str(item, "node_id")
     if _ASSET_ID_RE.match(node_id) is None:
         raise _reject(f"malformed graph node_id: {node_id!r}")
     if node_id in node_ids:
         raise _reject(f"duplicate graph node_id: {node_id!r}")
+    node_ids.add(node_id)
     node_name = item.get("name", "")
     if not isinstance(node_name, str):
         raise _reject("graph node name must be a string")
@@ -356,13 +377,8 @@ def _parse_graph_node(item: object, node_ids: set[str]) -> PackGraphNode:
 def _parse_graph_nodes(raw_nodes: object) -> tuple[PackGraphNode, ...]:
     if not isinstance(raw_nodes, list) or not raw_nodes:
         raise _reject("graph nodes must be a non-empty list")
-    nodes: list[PackGraphNode] = []
     node_ids: set[str] = set()
-    for item in raw_nodes:
-        node = _parse_graph_node(item, node_ids)
-        node_ids.add(node.node_id)
-        nodes.append(node)
-    return tuple(nodes)
+    return tuple(_parse_graph_node(item, node_ids) for item in raw_nodes)
 
 
 def _parse_graph_edges(raw_edges: object, node_ids: set[str]) -> tuple[tuple[str, str], ...]:
@@ -384,26 +400,19 @@ def _parse_graph_edges(raw_edges: object, node_ids: set[str]) -> tuple[tuple[str
     return tuple(edges)
 
 
+def _parse_graph_entry_node(payload: dict[str, Any], node_ids: set[str]) -> str | None:
+    """The optional entry node: well-formed, and a node of this graph."""
+    entry_node = payload.get("entry_node")
+    if entry_node is not None and (not isinstance(entry_node, str) or not entry_node.strip()):
+        raise _reject("graph entry_node must be a non-empty string when present")
+    if entry_node is not None and entry_node not in node_ids:
+        raise _reject(f"graph entry_node {entry_node!r} is not a node of this graph")
+    return entry_node
+
+
 def _parse_graph_payload(payload: object) -> PackGraphDefinition:
     if not isinstance(payload, dict):
         raise _reject("graph payload must be an object")
-    name, description, entry_node = _validate_graph_head(payload)
-    nodes = _parse_graph_nodes(payload["nodes"])
-    node_ids = {node.node_id for node in nodes}
-    edges = _parse_graph_edges(payload["edges"], node_ids)
-    _validate_entry_node_member(entry_node, node_ids)
-    return PackGraphDefinition(
-        name=name,
-        nodes=nodes,
-        edges=edges,
-        description=description,
-        entry_node=entry_node,
-    )
-
-
-def _validate_graph_head(payload: dict[str, Any]) -> tuple[str, str, str | None]:
-    """Keys, name, description, and entry_node type — everything before the
-    node/edge structural pass."""
     allowed = {"name", "description", "entry_node", "nodes", "edges"}
     unknown = sorted(set(payload) - allowed)
     if unknown:
@@ -415,46 +424,27 @@ def _validate_graph_head(payload: dict[str, Any]) -> tuple[str, str, str | None]
     description = payload.get("description", "")
     if not isinstance(description, str):
         raise _reject("graph description must be a string")
-    entry_node = payload.get("entry_node")
-    if entry_node is not None and (not isinstance(entry_node, str) or not entry_node.strip()):
-        raise _reject("graph entry_node must be a non-empty string when present")
-    return name, description, entry_node
+
+    nodes = _parse_graph_nodes(payload["nodes"])
+    node_ids = {node.node_id for node in nodes}
+    edges = _parse_graph_edges(payload["edges"], node_ids)
+    return PackGraphDefinition(
+        name=name,
+        nodes=nodes,
+        edges=edges,
+        description=description,
+        entry_node=_parse_graph_entry_node(payload, node_ids),
+    )
 
 
-def _validate_entry_node_member(entry_node: str | None, node_ids: set[str]) -> None:
-    if entry_node is not None and entry_node not in node_ids:
-        raise _reject(f"graph entry_node {entry_node!r} is not a node of this graph")
-
-
-def _freeze(value: Any) -> Any:
-    """Recursively freeze a parsed JSON tree into immutable containers.
-
-    The manifest snapshot hands its parsed assets to callers; plain dicts
-    and lists inside a persona payload would let a caller mutate a stored
-    snapshot in place. Frozen mappings over tuples close every container
-    the parser builds — the remaining mutable surface (canonical
-    ``RubricDimension`` objects) is closed by :meth:`PackManifest.asset`
-    resolving against a pristine re-parse of ``raw``.
-    """
-    if isinstance(value, dict):
-        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
-    if isinstance(value, list):
-        return tuple(_freeze(item) for item in value)
-    return value
-
-
-def _thaw(value: Any) -> Any:
-    """The inverse of :func:`_freeze`, as fresh plain containers.
-
-    Canonical models validate ``dict``/``list`` fields; every thaw is a
-    fresh copy, so an instantiated object never aliases the frozen
-    snapshot tree it came from.
-    """
-    if isinstance(value, Mapping):
-        return {key: _thaw(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_thaw(item) for item in value]
-    return value
+def _parse_persona_surfaces(payload: dict[str, Any]) -> list[str]:
+    """The optional ``surfaces`` list: strings, and none of them blank."""
+    surfaces_raw = payload.get("surfaces", [])
+    if not isinstance(surfaces_raw, list) or not all(isinstance(s, str) for s in surfaces_raw):
+        raise _reject("persona surfaces must be a list of strings")
+    if any(not surface.strip() for surface in surfaces_raw):
+        raise _reject("persona surfaces must be non-empty strings")
+    return surfaces_raw
 
 
 def _parse_persona_payload(payload: object) -> PackPersonaDefinition:
@@ -475,28 +465,29 @@ def _parse_persona_payload(payload: object) -> PackPersonaDefinition:
     if "name" not in payload:
         raise _reject("missing persona payload keys: ['name']")
     name = _require_str(payload, "name")
-    _validate_persona_surfaces(payload)
-    _validate_persona_objects(payload)
-    return PackPersonaDefinition(name=name, payload=_freeze(payload))
-
-
-def _validate_persona_surfaces(payload: dict[str, Any]) -> None:
-    """``surfaces`` is an optional list of non-empty strings."""
-    surfaces_raw = payload.get("surfaces", [])
-    if not isinstance(surfaces_raw, list) or not all(isinstance(s, str) for s in surfaces_raw):
-        raise _reject("persona surfaces must be a list of strings")
-    if any(not surface.strip() for surface in surfaces_raw):
-        raise _reject("persona surfaces must be non-empty strings")
-
-
-def _validate_persona_objects(payload: dict[str, Any]) -> None:
-    """``defaults``/``behavior`` are optional objects when present."""
+    _parse_persona_surfaces(payload)
     for key in ("defaults", "behavior"):
         if not isinstance(payload.get(key, {}), dict):
             raise _reject(f"persona {key} must be an object")
+    return PackPersonaDefinition(name=name, payload=_deep_freeze(payload))
 
 
-def _parse_scale(raw: object) -> RubricScale:
+def _deep_freeze(value: Any) -> Any:
+    """Recursively freeze parsed JSON data into immutable equivalents.
+
+    Objects become read-only mappings and arrays become tuples, so a
+    consumer holding the inspected manifest snapshot cannot mutate an
+    asset after inspection (the snapshot must keep describing exactly
+    the bytes ``source_sha256`` anchors).
+    """
+    if isinstance(value, dict):
+        return MappingProxyType({key: _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_deep_freeze(item) for item in value)
+    return value
+
+
+def _parse_scale(raw: object) -> PackRubricScale:
     if not isinstance(raw, dict) or not raw:
         raise _reject("rubric dimension scale must be a non-empty object")
     unknown = sorted(set(raw) - {"numeric", "pass_fail"})
@@ -508,22 +499,30 @@ def _parse_scale(raw: object) -> RubricScale:
         block = raw["numeric"]
         if not isinstance(block, dict) or set(block) - {"min_value", "max_value"}:
             raise _reject("numeric scale must have only min_value and max_value")
-        numeric = NumericScale(
-            min_value=_require_finite(block.get("min_value", 0.0), "numeric min_value"),
-            max_value=_require_finite(block.get("max_value", 100.0), "numeric max_value"),
+        numeric = PackRubricNumericScale(
+            min_value=_require_finite_number(
+                block.get("min_value", 0.0), "numeric scale min_value"
+            ),
+            max_value=_require_finite_number(
+                block.get("max_value", 100.0), "numeric scale max_value"
+            ),
         )
     if "pass_fail" in raw:
         block = raw["pass_fail"]
         if not isinstance(block, dict) or set(block) - {"pass_value", "fail_value"}:
             raise _reject("pass_fail scale must have only pass_value and fail_value")
-        pass_fail = PassFailScale(
-            pass_value=_require_finite(block.get("pass_value", 1.0), "pass_fail pass_value"),
-            fail_value=_require_finite(block.get("fail_value", 0.0), "pass_fail fail_value"),
+        pass_fail = PackRubricPassFailScale(
+            pass_value=_require_finite_number(
+                block.get("pass_value", 1.0), "pass_fail scale pass_value"
+            ),
+            fail_value=_require_finite_number(
+                block.get("fail_value", 0.0), "pass_fail scale fail_value"
+            ),
         )
-    return RubricScale(numeric=numeric, pass_fail=pass_fail)
+    return PackRubricScale(numeric=numeric, pass_fail=pass_fail)
 
 
-def _parse_rubric_dimension(item: object) -> RubricDimension:
+def _parse_rubric_dimension(item: object) -> PackRubricDimension:
     if not isinstance(item, dict):
         raise _reject("each rubric dimension must be an object")
     allowed_dim = {"id", "name", "weight", "method", "scale", "evidence_required"}
@@ -536,37 +535,41 @@ def _parse_rubric_dimension(item: object) -> RubricDimension:
     method = item["method"]
     if not isinstance(method, str) or method not in {m.value for m in ScoringMethod}:
         raise _reject(f"unknown rubric scoring method: {method!r}")
-    # bool() coerces any truthy junk ("false" -> True), so require an actual
-    # JSON boolean instead of coercing a pack-declared scoring requirement.
+    # ``PackRubricDimension`` is a frozen dataclass, not the canonical Pydantic
+    # model, so no field validation runs here: require an explicit JSON boolean
+    # so a truthy string like "false" cannot invert evidence requirements.
     evidence_required = item.get("evidence_required", False)
     if not isinstance(evidence_required, bool):
-        raise _reject("rubric evidence_required must be a boolean")
-    return RubricDimension(
+        raise _reject("rubric dimension evidence_required must be a boolean")
+    return PackRubricDimension(
         id=_require_str(item, "id"),
         name=_require_str(item, "name"),
-        weight=_require_finite(item["weight"], "rubric dimension weight"),
+        weight=_require_finite_number(item["weight"], "rubric dimension weight"),
         scale=_parse_scale(item["scale"]),
         method=ScoringMethod(method),
         evidence_required=evidence_required,
     )
 
 
+def _parse_rubric_dimensions(payload: dict[str, Any]) -> tuple[PackRubricDimension, ...]:
+    """The required ``dimensions`` list: a non-empty list of valid dimensions."""
+    raw_dimensions = payload["dimensions"]
+    if not isinstance(raw_dimensions, list) or not raw_dimensions:
+        raise _reject("rubric dimensions must be a non-empty list")
+    return tuple(_parse_rubric_dimension(item) for item in raw_dimensions)
+
+
+def _parse_veto_dimension_ids(payload: dict[str, Any]) -> tuple[str, ...]:
+    """The optional ``veto_dimension_ids``: a list of strings when present."""
+    veto_raw = payload.get("veto_dimension_ids", [])
+    if not isinstance(veto_raw, list) or not all(isinstance(v, str) for v in veto_raw):
+        raise _reject("veto_dimension_ids must be a list of strings")
+    return tuple(veto_raw)
+
+
 def _parse_rubric_payload(payload: object) -> PackRubricDefinition:
     if not isinstance(payload, dict):
         raise _reject("rubric payload must be an object")
-    name, threshold = _validate_rubric_head(payload)
-    dimensions = _parse_rubric_dimensions(payload)
-    veto_dimension_ids = _validate_veto_ids(payload)
-    return PackRubricDefinition(
-        name=name,
-        dimensions=dimensions,
-        gate_pass_threshold=threshold,
-        veto_dimension_ids=veto_dimension_ids,
-    )
-
-
-def _validate_rubric_head(payload: dict[str, Any]) -> tuple[str, float]:
-    """Keys, name, and the gate threshold — everything before dimensions."""
     allowed = {"name", "dimensions", "gate_pass_threshold", "veto_dimension_ids"}
     unknown = sorted(set(payload) - allowed)
     if unknown:
@@ -575,22 +578,14 @@ def _validate_rubric_head(payload: dict[str, Any]) -> tuple[str, float]:
     if missing:
         raise _reject(f"missing rubric payload keys: {missing}")
     name = _require_str(payload, "name")
-    threshold = _require_finite(payload["gate_pass_threshold"], "rubric gate_pass_threshold")
-    return name, threshold
-
-
-def _parse_rubric_dimensions(payload: dict[str, Any]) -> tuple[RubricDimension, ...]:
-    raw_dimensions = payload["dimensions"]
-    if not isinstance(raw_dimensions, list) or not raw_dimensions:
-        raise _reject("rubric dimensions must be a non-empty list")
-    return tuple(_parse_rubric_dimension(item) for item in raw_dimensions)
-
-
-def _validate_veto_ids(payload: dict[str, Any]) -> tuple[str, ...]:
-    veto_raw = payload.get("veto_dimension_ids", [])
-    if not isinstance(veto_raw, list) or not all(isinstance(v, str) for v in veto_raw):
-        raise _reject("veto_dimension_ids must be a list of strings")
-    return tuple(veto_raw)
+    return PackRubricDefinition(
+        name=name,
+        dimensions=_parse_rubric_dimensions(payload),
+        gate_pass_threshold=_require_finite_number(
+            payload["gate_pass_threshold"], "rubric gate_pass_threshold"
+        ),
+        veto_dimension_ids=_parse_veto_dimension_ids(payload),
+    )
 
 
 _PAYLOAD_KEYS: dict[PackAssetKind, str] = {
@@ -685,10 +680,7 @@ class PackManifest:
     ``raw`` is the exact bytes the operator's decision is about and
     ``source_sha256`` anchors them; a pack identity is
     ``(pack_id, version, source_sha256)`` — a semantic version alone never
-    names a pack (the M9-B1 rule, inherited unchanged). The frozen
-    dataclasses and tuples keep the outer tree immutable, and every *use*
-    of an asset (``asset``/instantiation) is anchored to ``raw`` itself —
-    see :meth:`asset`.
+    names a pack (the M9-B1 rule, inherited unchanged).
     """
 
     manifest_version: int
@@ -718,18 +710,8 @@ class PackManifest:
 
         Without ``version`` the highest declared version answers — the same
         version-addressing the registry's active-version resolution uses.
-
-        Resolution runs against a pristine re-parse of ``raw``, never the
-        stored tree: the outer dataclasses/tuples are frozen and persona
-        payload trees are frozen recursively, but the canonical
-        ``RubricDimension`` objects inside a rubric asset are mutable (a
-        canonical model this contract must not re-freeze). Anchoring every
-        use to the immutable bytes means a caller who mutates a stored
-        asset cannot make new instantiations diverge from what
-        ``source_sha256`` names — the digest stays truthful provenance.
         """
-        pristine = inspect_pack_manifest(self.raw)
-        candidates = [asset for asset in pristine.assets if asset.asset_id == asset_id]
+        candidates = [asset for asset in self.assets if asset.asset_id == asset_id]
         if version is not None:
             candidates = [asset for asset in candidates if asset.version == version]
         if not candidates:
@@ -782,6 +764,22 @@ def _parse_capabilities(raw: object) -> tuple[str, ...]:
 # --------------------------------------------------------------------------
 
 
+def _probe_asset(asset: PackAsset, *, pack_id: str) -> None:
+    """Dispatch one parsed asset to the canonical probe of its kind.
+
+    ``_parse_asset`` already guarantees the exactly-one payload block per
+    kind, so the probe reads it straight out of the kind's payload slot
+    (the ``cast`` documents that parse-time invariant for the type checker;
+    it never converts anything at runtime).
+    """
+    if asset.kind is PackAssetKind.GRAPH_TEMPLATE:
+        _probe_graph_template(cast(PackGraphDefinition, asset.graph))
+    elif asset.kind is PackAssetKind.PERSONA:
+        _probe_persona(cast(PackPersonaDefinition, asset.persona))
+    else:
+        _probe_rubric(cast(PackRubricDefinition, asset.rubric), pack_id=pack_id)
+
+
 def _canonical_probe_assets(manifest: PackManifest) -> None:
     """Construct (and discard) the canonical object each asset declares.
 
@@ -794,14 +792,7 @@ def _canonical_probe_assets(manifest: PackManifest) -> None:
     """
     for asset in manifest.assets:
         try:
-            if asset.kind is PackAssetKind.GRAPH_TEMPLATE and asset.graph is not None:
-                _probe_graph_template(asset.graph)
-            elif asset.kind is PackAssetKind.PERSONA and asset.persona is not None:
-                _probe_persona(asset.persona)
-            elif asset.kind is PackAssetKind.RUBRIC and asset.rubric is not None:
-                _probe_rubric(asset.rubric, pack_id=manifest.pack_id)
-            else:
-                raise _reject(f"asset {asset.asset_id!r} carries no {asset.kind.value} payload")
+            _probe_asset(asset, pack_id=manifest.pack_id)
         except (ValidationError, ValueError) as exc:
             raise _reject(
                 f"asset {asset.asset_id!r} payload fails canonical "
@@ -840,25 +831,21 @@ def _persona_constructor_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
     The payload's ``behavior`` key is the pack-facing spelling of the
     canonical model's ``behavior_defaults`` field; everything else maps
     one-to-one. String-keyed by construction (see ``PackPersonaDefinition``).
-    The frozen snapshot tree is thawed into fresh plain containers — the
-    canonical model validates ``dict``/``list`` fields, and the instantiated
-    Persona never aliases the snapshot.
     """
-    fields: dict[str, Any] = _thaw(payload)
+    fields = dict(payload)
     fields["behavior_defaults"] = fields.pop("behavior", {})
     return fields
 
 
 def _probe_persona(definition: PackPersonaDefinition) -> Persona:
     """A scratch Persona: canonical identity/surface validation."""
-    # Imported here, not at module level: ``maistro.personas.__init__``
-    # eagerly imports the persona expander, which imports
-    # ``maistro.agents.recipes`` — a module-level import would make this
-    # module unimportable from any context that is still mid-initialization
-    # of ``maistro.agents.recipes`` (the runtime anchor chain,
-    # ``maistro.runtime`` -> ``maistro.extensions``, is reachable from
-    # recipes' own graph import). Canonical validation is unchanged: the
-    # real ``Persona`` model gates every probe and instantiation.
+    # Deferred import: ``maistro.agents.recipes`` imports ``maistro.graph``,
+    # whose node package auto-imports every node module, reaching
+    # ``maistro.runs`` → ``maistro.runtime`` → ``maistro.extensions`` (this
+    # package). A module-level ``maistro.personas`` import here closes that
+    # cycle: personas.expander imports ``maistro.agents.recipes`` back while
+    # it is still mid-initialization. Persona is constructed at call time
+    # only, so the import can live inside the function.
     from maistro.personas.model import Persona
 
     return Persona(
@@ -867,6 +854,36 @@ def _probe_persona(definition: PackPersonaDefinition) -> Persona:
             "id": _PROBE,
             "workspace_id": _PROBE,
         }
+    )
+
+
+def _canonical_dimension(dimension: PackRubricDimension) -> RubricDimension:
+    """Mint one canonical ``RubricDimension`` from frozen pack data."""
+    scale = dimension.scale
+    return RubricDimension(
+        id=dimension.id,
+        name=dimension.name,
+        weight=dimension.weight,
+        method=dimension.method,
+        evidence_required=dimension.evidence_required,
+        scale=RubricScale(
+            numeric=(
+                NumericScale(
+                    min_value=scale.numeric.min_value,
+                    max_value=scale.numeric.max_value,
+                )
+                if scale.numeric is not None
+                else None
+            ),
+            pass_fail=(
+                PassFailScale(
+                    pass_value=scale.pass_fail.pass_value,
+                    fail_value=scale.pass_fail.fail_value,
+                )
+                if scale.pass_fail is not None
+                else None
+            ),
+        ),
     )
 
 
@@ -879,7 +896,7 @@ def _probe_rubric(definition: PackRubricDefinition, *, pack_id: str) -> RubricSe
         goal_revision=1,
         workspace_id=_PROBE,
         project_id=_PROBE,
-        dimensions=list(definition.dimensions),
+        dimensions=[_canonical_dimension(d) for d in definition.dimensions],
         aggregation=RubricAggregation(veto_dimension_ids=list(definition.veto_dimension_ids)),
         gate=RubricGate(pass_threshold=definition.gate_pass_threshold),
         provenance=RubricProvenance(
@@ -895,19 +912,19 @@ def _parse_pack_identity(
 ) -> tuple[str, str, str, str, str]:
     """Validate and return (pack_id, name, publisher, version, api_version)."""
     pack_id = _require_str(document, "pack_id")
-    segments = pack_id.split(".")
-    if len(segments) != 2:
-        raise _reject(f"pack_id must be publisher.name (two slug segments), got {pack_id!r}")
-    name = _require_str(document, "name")
     publisher = _require_str(document, "publisher")
     if _PUBLISHER_RE.match(publisher) is None:
         raise _reject(f"malformed publisher id: {publisher!r}")
-    if segments[0] != publisher:
+    # Any publisher slug the extension manifest accepts can publish: the id is
+    # the publisher namespace plus one slug segment, so hyphenated ("pub-1.x")
+    # and dotted ("a.b.x") publishers namespace packs exactly like plain ones.
+    name = _require_str(document, "name")
+    prefix = f"{publisher}."
+    if not pack_id.startswith(prefix) or _PACK_SEGMENT_RE.match(pack_id[len(prefix) :]) is None:
         raise _reject(
-            f"pack_id {pack_id!r} must live under its own publisher namespace {publisher!r}"
+            "pack_id must be publisher.name — a single slug segment under its own "
+            f"publisher namespace — got {pack_id!r} for publisher {publisher!r}"
         )
-    if _PACK_SEGMENT_RE.match(segments[1]) is None:
-        raise _reject(f"pack_id name segment must be a slug, got {pack_id!r}")
     version = _validate_semver(document["version"], "version")
     api_version = _validate_semver(document["api_version"], "api_version")
     return pack_id, name, publisher, version, api_version
@@ -936,10 +953,26 @@ def inspect_pack_manifest(raw: bytes) -> PackManifest:
         raise _reject(f"payload fails canonical validation: {exc}") from exc
 
 
-def _validate_manifest_envelope(document: dict[str, Any]) -> None:
-    """Envelope keys, supported version, and kind — everything before
-    identity/asset parsing, extracted so ``_inspect_document`` stays under
-    the complexity floor (same decomposition style as ``_parse_pack_identity``)."""
+def _parse_manifest_version(value: object) -> int:
+    """The envelope version: a plain int pinned to the one supported value."""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value != SUPPORTED_PACK_MANIFEST_VERSION
+    ):
+        raise _reject(f"unsupported manifest_version: {value!r}")
+    return value
+
+
+def _parse_assets(raw_assets: object) -> tuple[PackAsset, ...]:
+    """The asset inventory: a non-empty list of unique (asset_id, version)."""
+    if not isinstance(raw_assets, list) or not raw_assets:
+        raise _reject("assets must be a non-empty list")
+    seen: set[tuple[str, str]] = set()
+    return tuple(_parse_asset(item, seen) for item in raw_assets)
+
+
+def _inspect_document(raw: bytes, document: dict[str, Any]) -> PackManifest:
     required = (
         "manifest_version",
         "kind",
@@ -958,31 +991,14 @@ def _validate_manifest_envelope(document: dict[str, Any]) -> None:
     missing = [key for key in required if key not in document]
     if missing:
         raise _reject(f"missing manifest keys: {missing}")
-    declared_version = document["manifest_version"]
-    # `True == 1` and `1.0 == 1` in Python: an equality check alone lets JSON
-    # `true`/`1.0` masquerade as the supported integer version, after which the
-    # snapshot below silently normalizes the malformed value. Require the type.
-    if not isinstance(declared_version, int) or isinstance(declared_version, bool):
-        raise _reject(f"manifest_version must be an integer, got {declared_version!r}")
-    if declared_version != SUPPORTED_PACK_MANIFEST_VERSION:
-        raise _reject(f"unsupported manifest_version: {declared_version!r}")
+    manifest_version = _parse_manifest_version(document["manifest_version"])
     if document["kind"] != PACK_MANIFEST_KIND:
         raise _reject(f"unsupported manifest kind: {document['kind']!r}")
 
-
-def _inspect_document(raw: bytes, document: dict[str, Any]) -> PackManifest:
-    _validate_manifest_envelope(document)
-
     pack_id, name, publisher, version, api_version = _parse_pack_identity(document)
 
-    raw_assets = document["assets"]
-    if not isinstance(raw_assets, list) or not raw_assets:
-        raise _reject("assets must be a non-empty list")
-    seen: set[tuple[str, str]] = set()
-    assets = tuple(_parse_asset(item, seen) for item in raw_assets)
-
     manifest = PackManifest(
-        manifest_version=SUPPORTED_PACK_MANIFEST_VERSION,
+        manifest_version=manifest_version,
         kind=PACK_MANIFEST_KIND,
         pack_id=pack_id,
         name=name,
@@ -991,7 +1007,7 @@ def _inspect_document(raw: bytes, document: dict[str, Any]) -> PackManifest:
         api_version=api_version,
         capabilities=_parse_capabilities(document.get("capabilities", [])),
         dependencies=_parse_dependencies(document.get("dependencies")),
-        assets=assets,
+        assets=_parse_assets(document["assets"]),
         source_sha256=sha256_hex(raw),
         raw=raw,
     )
@@ -1139,11 +1155,10 @@ def instantiate_rubric_asset(
 
     Identity is canonical: ``rubric_id`` is minted (or caller-supplied) and
     the Goal/Workspace/Project scopes are the caller's canonical ones. The
-    pack origin rides in ``provenance`` — ``ProvenanceOrigin.PACK`` plus the
-    exact source-snapshot identity (pack id/publisher/version, asset
-    id/version, manifest digest), so two revisions instantiated from
-    different versions of the same pack stay provenance-distinguishable.
-    The pack supplied defaults; it does not own the Rubric.
+    pack origin rides in ``provenance`` (``ProvenanceOrigin.PACK`` plus the
+    full registry snapshot — publisher, pack version, manifest digest, and
+    the exact asset id/version) — the pack supplied defaults; it does not own
+    the Rubric.
     """
     for field_name, value in (
         ("goal_id", goal_id),
@@ -1157,36 +1172,33 @@ def instantiate_rubric_asset(
     if asset.kind is not PackAssetKind.RUBRIC or asset.rubric is None:
         raise PackAssetUnknown(f"pack asset {asset_id!r} is not a rubric asset")
     definition = asset.rubric
+    pack_prov = manifest.provenance()
 
     rubric = _probe_rubric(definition, pack_id=manifest.pack_id)
-    pack_provenance = manifest.provenance()
-    instantiated = rubric.model_copy(
-        update={
+    # ``model_copy(update=...)`` does not validate, so revalidate the final
+    # model: caller-supplied ``revision``/``goal_revision`` must still satisfy
+    # the canonical ``ge=1`` constraints before reaching canonical stores.
+    return RubricSemantic.model_validate(
+        {
+            **rubric.model_dump(),
             "rubric_id": _canonical_id(rubric_id, "rubric_id"),
             "revision": revision,
             "goal_id": goal_id,
             "goal_revision": goal_revision,
             "workspace_id": workspace_id,
             "project_id": project_id,
-            "provenance": RubricProvenance(
-                authored_by=authored_by,
-                origin=ProvenanceOrigin.PACK,
-                pack_id=pack_provenance.pack_id,
-                publisher=pack_provenance.publisher,
-                pack_version=pack_provenance.version,
-                asset_id=asset.asset_id,
-                asset_version=asset.version,
-                manifest_sha256=pack_provenance.manifest_sha256,
-            ),
+            "provenance": {
+                "authored_by": authored_by,
+                "origin": ProvenanceOrigin.PACK,
+                "pack_id": pack_prov.pack_id,
+                "publisher": pack_prov.publisher,
+                "pack_version": pack_prov.version,
+                "manifest_sha256": pack_prov.manifest_sha256,
+                "asset_id": asset.asset_id,
+                "asset_version": asset.version,
+            },
         }
     )
-    # model_copy(update=...) skips validation: caller-supplied identity and
-    # scope values must face the canonical model's own constraints (revision
-    # and goal_revision are ge=1) before this function returns one.
-    try:
-        return RubricSemantic.model_validate(instantiated.model_dump())
-    except ValidationError as exc:
-        raise ValueError(f"instantiated rubric violates the canonical model: {exc}") from exc
 
 
 # --------------------------------------------------------------------------
@@ -1255,8 +1267,24 @@ class InstallablePackRegistry:
 
         Idempotent for identical bytes; a same-(pack_id, version) install
         with different bytes is an identity conflict, never a replacement.
+
+        Deliberately *not* the authorization step: publisher trust, signature
+        evidence, operator consent, and audit transitions belong to the M9-B2
+        governed install service (#953), which packs flow through before they
+        are offered here (wired in M9-F3, #968). This registry is the pack's
+        use gate over data-only manifests, not a second lifecycle.
         """
         manifest = inspect_pack_manifest(raw)
+        occupied = self._active_extensions.get(manifest.pack_id)
+        if occupied is not None:
+            # An extension with this identity is already active here; letting
+            # the pack install would let _active_versions() overwrite the
+            # extension's version with the pack's, so dependency decisions
+            # could silently resolve to a different provider. Refuse instead.
+            raise PackIdentityConflict(
+                f"{manifest.pack_id} is already an active extension in this "
+                f"registry (version {occupied}); one identity, one provider"
+            )
         key = (manifest.pack_id, manifest.version)
         existing = self._records.get(key)
         if existing is not None:
@@ -1403,41 +1431,57 @@ class InstallablePackRegistry:
     # -- internals ----------------------------------------------------------
 
     def _active_versions(self) -> dict[str, str]:
-        """Every extension/pack id active here, for dependency resolution.
-
-        Several versions of one pack can be active side by side, but the
-        compatibility evaluator resolves each dependency id against a single
-        version — so it must get the highest active version, the same answer
-        ``_require_record`` and the asset lookup give by default. Insertion
-        order is not resolution order: whichever version happened to be
-        installed last must not make a ``^2.0.0`` dependent fail while an
-        active compatible version sits in the registry.
-        """
+        """Every extension/pack id active here, for dependency resolution."""
         versions = dict(self._active_extensions)
-        highest: dict[str, tuple[tuple[int, int, int], str]] = {}
-        for (pack_id, _version), record in self._records.items():
+        for (pack_id, version_key), record in self._records.items():
             if record.state is not PackState.ACTIVE:
                 continue
-            key = _semver_key(record.manifest.version)
-            if pack_id not in highest or key > highest[pack_id][0]:
-                highest[pack_id] = (key, record.manifest.version)
-        for pack_id, (_key, version) in highest.items():
-            versions[pack_id] = version
+            # Keep the highest active version per id: installs may arrive out
+            # of semver order, and dependency resolution must see the same
+            # version that unpinned lookups resolve to.
+            current = versions.get(pack_id)
+            if current is None or _semver_key(version_key) > _semver_key(current):
+                versions[pack_id] = record.manifest.version
         return versions
 
-    def _require_record(
-        self, pack_id: str, version: str | None, *, active_only: bool
-    ) -> PackInstallRecord:
-        installed = [
+    def _records_for_pack(
+        self, pack_id: str, version: str | None
+    ) -> list[tuple[tuple[str, str], PackInstallRecord]]:
+        """Every installed record of one pack id, optionally version-pinned."""
+        return [
             (key, record)
             for key, record in self._records.items()
             if key[0] == pack_id and (version is None or key[1] == version)
         ]
+
+    @staticmethod
+    def _raise_unavailable(
+        pack_id: str,
+        version: str | None,
+        installed: list[tuple[tuple[str, str], PackInstallRecord]],
+    ) -> NoReturn:
+        """The typed refusal for a use gate with nothing active to answer."""
+        if installed:
+            # Installed but not active: the disabled record itself answers,
+            # with the operator's note surfaced verbatim.
+            disabled = max(installed, key=lambda entry: _semver_key(entry[0][1]))[1]
+            detail = f"; note: {disabled.note}" if disabled.note else ""
+            raise PackDisabledError(f"pack {pack_id!r} is disabled in this registry{detail}")
+        raise PackDisabledError(
+            f"pack {pack_id!r}"
+            + (f" at version {version!r}" if version else "")
+            + " has no active install in this registry"
+        )
+
+    def _require_record(
+        self, pack_id: str, version: str | None, *, active_only: bool
+    ) -> PackInstallRecord:
+        installed = self._records_for_pack(pack_id, version)
         candidates = [
             entry for entry in installed if not active_only or entry[1].state is PackState.ACTIVE
         ]
         if not candidates:
-            _raise_pack_unavailable(pack_id, version, installed)
+            self._raise_unavailable(pack_id, version, installed)
         # Highest active version wins when the caller does not pin one —
         # deterministic, and version-pinned callers are never surprised.
         _key, record = max(candidates, key=lambda entry: _semver_key(entry[0][1]))

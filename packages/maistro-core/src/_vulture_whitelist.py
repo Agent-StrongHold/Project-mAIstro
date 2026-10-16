@@ -562,6 +562,21 @@ _VULTURE_WHITELIST = (
     # conformance suites in packages/maistro-core/tests/extensions/ — the
     # same contract-ships-first posture as the M9-B1 store seams above.
     SandboxViolationLog.violations_for,
+    # Installable domain-pack contracts (M9-F1, #966). The pack contract
+    # ships first by design, the same posture as the M9-B1 store seams and
+    # the M9-D1 registry above: its in-tree consumers are the conformance
+    # suite (packages/maistro-core/tests/extensions/test_pack_contracts.py),
+    # and the Workspace-scoped activation/configuration lifecycle that drives
+    # these verbs in production is M9-F3 (#968). `activate` is the disable
+    # gate's reversal (new use only — nothing was deleted; named activate,
+    # not enable, so the scanner's name-level matching cannot un-bank the
+    # unrelated security-store `enable` rows); the three `instantiate_*`
+    # methods are the gated instantiation entrypoints that compose the
+    # module-level pure functions behind the registry's active check.
+    InstallablePackRegistry.activate,
+    InstallablePackRegistry.instantiate_graph,
+    InstallablePackRegistry.instantiate_persona,
+    InstallablePackRegistry.instantiate_rubric,
     # Effective-authority evidence linkage (M9-G1, #969). `with_execution_context`
     # pins a computed intersection to canonical Run evidence (run/node-run/attempt
     # ids) without mutating the digest-anchored result; its consumers are the
