@@ -105,3 +105,66 @@ Do not repeat this bounded shakedown or stale schema-test repair as a substitute
 Progress: `{checked: 1, done: 0, skipped: 0, errors: 0, next: "#860 exact-RC production soak and remaining acceptance gaps"}`.
 The single assigned issue remains blocked; local validation/handoff is complete.
 
+## Revalidation — job b02de7b02d314455957a06bbff5ffffe
+
+Frozen scope: #860 only, clean `auto-860` at
+`3944cacdb52635ef7ccd5cb702129bf9d45fca3e`, supplied develop base unchanged.
+This section updates the existing handoff instead of creating another parallel
+repair report. Current job supplied no `check-*.log`; the named prior
+`98a11313.../check-3.log` is the 24-versus-21 schema assertion failure.
+
+Fresh executions (not inherited verification claims):
+
+- Exact requested vulture scan: exit 0, 1322 findings / reviewed identities,
+  zero unclassified. No retained unbanked identities exist to amend; changing
+  `quality/vulture-baseline.json` would have no evidential basis.
+- Schema regression file: 37 passed, 6 PostgreSQL tests skipped. The expected
+  list already includes all three Gauntlet validation columns at lines 172–176;
+  the supplied failure does not reproduce. Skips do not prove live DB fencing.
+- `uv run ruff check .`: exit 0; `uv run ruff format --check .`: exit 0,
+  3301 files already formatted.
+- `uv run pytest tests/test_soak_promotion_gates.py tests/test_gitleaksignore_contract.py tests/test_prod_stack_boot_contract.py -x -q`:
+  88 passed.
+- `uv run pytest packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py packages/maistro-server/tests/api/test_rate_limit.py -x -q`:
+  27 passed.
+
+Re-read accepted lifecycle, execution-fencing, occurrence-claim and rate-limit
+ADRs, the actual soak evaluator, production Compose topology, middleware and
+adjacent tests. The same architectural distinction holds: canonical Run
+admission uniqueness is not physical Attempt effect uniqueness. The accepted
+execution-fencing ADR explicitly leaves expiry takeover outside its current
+contract; no new reclaim authority may be invented to satisfy this issue.
+`RateLimitMiddleware` constructs a separate `InMemoryRateLimiter` per instance;
+per-replica 429 responses alone cannot prove a replica-independent allowance.
+No production code, gates, ledger or tests changed in this revalidation, so no
+inventory delta is needed.
+
+`uv run python scripts/check-suite-inventory.py`: exit 0, all 17 suites match,
+31327 unique identities. An executed `uv run python` import of the actual soak
+module evaluated `m3a-round109-shakedown.json`: 420.05 seconds versus 14400
+minimum, failing exactly `sustain_duration` and `exact_rc_artifact`. This was
+an evaluator check, not a new live soak. Full command output is retained in
+`/home/dev/maistro/jobs/b02de7b02d314455957a06bbff5ffffe/worker-*.log`.
+
+### Fresh acceptance assessment
+
+| Criterion | Evidence and remaining limitation |
+| --- | --- |
+| 1 Representative profile | Inspected `m3a-load-profile.md`; concurrent users/Workspaces, fan-out, successful model/tool work and Design/Canvas coverage remain UNVERIFIED. |
+| 2 Two replicas | Historical raw JSON has two direct-replica probes; no new production-topology execution, therefore UNVERIFIED for this RC. |
+| 3 Sustained load | Executed evaluator rejects 420.05 seconds; long-window saturation/reclaim/leaks remain UNVERIFIED. |
+| 4 Exactly-once physical work | Historical one-Run admission and cancelled occurrence probe do not establish physical effects or Goal reconciliation: UNVERIFIED. |
+| 5 Security/degraded/rate behavior | 27 server tests pass; replica-independent allowance remains UNVERIFIED and middleware budgets are explicitly process-local. |
+| 6 Required metrics/thresholds | Existing profile distinguishes driver-loop lag from application-loop latency; complete production instrumentation remains UNVERIFIED. |
+| 7 Kill/restart during work | Historical SIGTERM/rejoin record inspected; no live kill/restart this round, physical fencing/recovery remains UNVERIFIED. |
+| 8 Exact-RC long soak | UNMET: actual evaluator rejects duration and artifact. No immutable designated RC supplied in the lane assignment. |
+| 9 Finding disposition | Existing evidence/handoff records retained; external filing and final reclassification remain UNVERIFIED. No remote mutations. |
+| 10 Hash-bound publication | Historical JSON contains commit/config hashes, not exact promoted application image evidence; promotion-grade identity remains UNVERIFIED. |
+
+Disposition remains **BLOCKED**, not a completed implementation or integration
+approval. The supplied scanner/test repair request has no currently reproduced
+failure. No cosmetic code or ledger change was made to manufacture a repair.
+Next action is the production-artifact/workload decision and missing soak work
+already listed above, not another run of the same short emulator. Progress:
+`{checked: 1, done: 0, skipped: 0, errors: 0, next: "#860 exact-RC soak"}`.
+
