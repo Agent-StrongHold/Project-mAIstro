@@ -20,6 +20,23 @@ canonical inspection migration retires or re-scopes it.
 canonical boundary is Workspace membership; a route-local
 `user_id == ...` comparison would be a second, divergent authority (#1174's
 stop condition).
+
+Standalone deployments and the retained projection (ADR-082826-d9f5): when
+this process has no canonical bridge -- `EngineService.run_store` is None
+because no core Container is bound, which is a real configuration, not an
+error -- the historical `DagRunStore` projection stays readable so a
+bridge-less install keeps its event history. That compatibility path is
+closeout-reviewed policy, and its boundaries are load-bearing:
+
+- it is presentation only: every read enforces the Workspace scope above,
+  fail-closed on rows that name no Workspace;
+- it has no terminal authority: `cancel_visible_run` returns None rather
+  than touching the projection, so the path can neither terminalize nor
+  resurrect a run; and
+- it loses the moment the bridge exists: with a canonical RunStore wired, a
+  missing canonical Run is a missing run even if stale history retains the
+  same string id, and the projection can never answer identity or lifecycle
+  questions again.
 """
 
 from __future__ import annotations
