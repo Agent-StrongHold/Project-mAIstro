@@ -15,6 +15,7 @@ import pytest
 
 import maistro.tasks.queue as queue_mod
 from maistro.memory.store import TaskRecord
+from maistro.observability.metrics import active_tasks
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import RunStatus
 from maistro.runs.store import InMemoryRunStore
@@ -121,6 +122,117 @@ async def test_rejected_transition_persists_nothing(
     assert not await queue.update_status(task.task_id, TaskStatus.QUEUED)
     await _drain(queue)
     assert len(sink) == submitted
+
+
+@pytest.mark.parametrize(
+    "terminal", [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]
+)
+async def test_settle_terminal_receipt_persists_canonical_outcome_and_notifies(
+    monkeypatch: pytest.MonkeyPatch, terminal: TaskStatus
+) -> None:
+    """An accepted redundant transition must not replace canonical timestamps.
+
+    The fake session measures the queue's ordered write snapshots, not database
+    durability or cross-replica convergence. The Run uses the real store and
+    lifecycle; only the task receipt's clock differs from its authority.
+    """
+    sink = _install_factory(monkeypatch)
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("w1")
+    runs = InMemoryRunStore(project_store=projects)
+    queue = TaskQueue(admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=root.project_id))
+    task = await queue.submit(TaskCreate(description="canonical terminal projection"))
+    assert await queue.update_status(task.task_id, TaskStatus.PLANNING)
+    assert await queue.update_status(task.task_id, TaskStatus.CODING)
+    assert task.run_id is not None
+    running = await runs.get_run(task.run_id)
+    assert running is not None and running.started_at is not None
+    started = running.started_at
+    finished = started
+    run = await runs.transition_run(
+        task.run_id,
+        RunStatus(terminal.value),
+        at=finished,
+        result={"files_changed": ["hello.py"]} if terminal is TaskStatus.COMPLETED else None,
+        error="canonical failure" if terminal is TaskStatus.FAILED else None,
+    )
+    queue.set_result(task.task_id, TaskResult(files_changed=["stale.py"], error="old outcome"))
+    assert await queue.update_status(task.task_id, terminal)
+    assert task.completed_at != run.finished_at
+    gauge = sum(float(sample["value"]) for sample in active_tasks.collect())
+    waiter = asyncio.create_task(queue.wait_for_update(task.task_id))
+    await asyncio.sleep(0)
+
+    queue.settle_terminal_receipt(task.task_id, run=run)
+
+    await asyncio.wait_for(waiter, timeout=1)
+    assert await queue.drain_persistence() == 0
+    assert task.started_at == started
+    assert task.completed_at == finished
+    expected = (
+        TaskResult(files_changed=["hello.py"])
+        if terminal is TaskStatus.COMPLETED
+        else TaskResult(error="canonical failure")
+        if terminal is TaskStatus.FAILED
+        else None
+    )
+    assert task.result == expected
+    assert sink[-1].status == terminal.value
+    assert sink[-1].started_at == started
+    assert sink[-1].completed_at == finished
+    assert sink[-1].result == (expected.model_dump() if expected is not None else None)
+    assert sum(float(sample["value"]) for sample in active_tasks.collect()) == gauge
+    queue.settle_terminal_receipt(task.task_id, run=run)
+    assert await queue.drain_persistence() == 0
+    assert sum(float(sample["value"]) for sample in active_tasks.collect()) == gauge
+
+
+@pytest.mark.parametrize("missing", [False, True])
+async def test_settle_terminal_receipt_does_not_create_or_terminalize_a_receipt(
+    monkeypatch: pytest.MonkeyPatch, missing: bool
+) -> None:
+    sink = _install_factory(monkeypatch)
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("w1")
+    runs = InMemoryRunStore(project_store=projects)
+    queue = TaskQueue(admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=root.project_id))
+    task = await queue.submit(TaskCreate(description="still locally queued"))
+    assert task.run_id is not None
+    run = await runs.transition_run(task.run_id, RunStatus.CANCELLED)
+    assert await queue.drain_persistence() == 0
+    before = task.model_dump()
+    written = len(sink)
+
+    queue.settle_terminal_receipt("absent" if missing else task.task_id, run=run)
+
+    assert await queue.drain_persistence() == 0
+    assert task.model_dump() == before
+    assert len(sink) == written
+    assert queue.get("absent") is None
+
+
+async def test_settle_terminal_receipt_rejects_a_different_canonical_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sink = _install_factory(monkeypatch)
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("w1")
+    runs = InMemoryRunStore(project_store=projects)
+    queue = TaskQueue(admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=root.project_id))
+    task = await queue.submit(TaskCreate(description="first canonical identity"))
+    other = await queue.submit(TaskCreate(description="another canonical identity"))
+    assert await queue.update_status(task.task_id, TaskStatus.CANCELLED)
+    assert other.run_id is not None
+    other_run = await runs.transition_run(other.run_id, RunStatus.CANCELLED, error="other outcome")
+    assert await queue.drain_persistence() == 0
+    before = task.model_dump()
+    written = len(sink)
+
+    queue.settle_terminal_receipt(task.task_id, run=other_run)
+
+    assert await queue.drain_persistence() == 0
+    assert task.model_dump() == before
+    assert len(sink) == written
 
 
 async def test_database_failure_is_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
