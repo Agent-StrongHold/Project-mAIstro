@@ -435,6 +435,15 @@ def test_the_run_id_header_is_readable_cross_origin() -> None:
     assert chat_api.RUN_ID_HEADER in cors[0].kwargs["expose_headers"]
 
 
+def test_retry_after_is_readable_cross_origin() -> None:
+    """The 503's Retry-After must survive CORS for a cross-origin client."""
+    from maistro_server.main import app
+
+    cors = [m for m in app.user_middleware if m.cls.__name__ == "CORSMiddleware"]
+    assert cors, "the app no longer installs CORSMiddleware"
+    assert "Retry-After" in cors[0].kwargs["expose_headers"]
+
+
 def test_content_chunks_are_produced_lazily() -> None:
     """A long answer must not be fully serialized before the first frame."""
     from collections.abc import Iterator
