@@ -302,6 +302,8 @@ class PgGoalStore:
         actor: str,
         at: datetime | None = None,
     ) -> Goal:
+        if not isinstance(agent_id, str) or not agent_id.strip() or agent_id != agent_id.strip():
+            raise ValueError("agent_id must be a nonblank, trimmed string")
         goal = await self._require_active(goal_id)
         if goal.agent_id == agent_id:
             raise GoalTransitionError(
