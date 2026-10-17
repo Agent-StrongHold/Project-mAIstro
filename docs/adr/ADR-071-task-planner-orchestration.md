@@ -35,7 +35,6 @@ history:
 
 # ADR-071: General Task Planner & Orchestration
 
-**Status:** Proposed
 **Date:** 2026-05-30
 **Applies:** ADR-070 (the Repertoire pattern) to general task planning.
 

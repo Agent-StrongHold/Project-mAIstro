@@ -27,7 +27,6 @@ history:
 
 # ADR-013: Memory types — Learning, EpisodicMemory, Outcome, scopes, tiers
 
-**Status:** Accepted  
 **Date:** 2026-04-26  
 **Tranche:** T2  
 **Depends on:** ADR-002

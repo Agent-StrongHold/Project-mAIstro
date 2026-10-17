@@ -33,7 +33,6 @@ owners:
 
 # ADR-081226-6b46: Capability, Provider, Binding and Invocation
 
-- **Status:** Accepted
 - **Date:** 2026-08-12
 - **Deciders:** MAIstro maintainers
 - **Technical Area:** Capabilities, tools, integrations, fulfillment

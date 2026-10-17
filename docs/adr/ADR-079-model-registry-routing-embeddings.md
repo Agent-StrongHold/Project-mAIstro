@@ -28,7 +28,6 @@ history:
 
 # ADR-079: LLM Provider / Model Registry, Routing, and Embeddings
 
-**Status:** Proposed
 **Date:** 2026-05-30
 **Specifies** how the engine knows which models exist, how it picks one per task, and how it produces
 the embeddings that ADR-012 stores — the model-selection substrate the ADR-007 scoring formula

@@ -30,7 +30,6 @@ history:
 
 # ADR-078: Configuration Management — DB source of truth, RBAC online edit, file export
 
-**Status:** Accepted
 **Date:** 2026-05-30
 **Defines the engine config model** that ADR-073 already assumes ("policy tunables live in the DB,
 RBAC-gated online-editable, exported to human-readable form") but never specified centrally.

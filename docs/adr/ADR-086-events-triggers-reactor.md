@@ -27,7 +27,6 @@ history:
 
 # ADR-086: Events, Triggers, and the Reactor
 
-**Status:** Proposed
 **Date:** 2026-05-30
 **Specifies the delivery semantics** of the ADR-037 event bus and the trigger/reactor layer that
 turns events into action — the substrate every proactive behavior in the engine stands on.

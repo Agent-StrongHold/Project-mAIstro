@@ -27,7 +27,6 @@ history:
 
 # ADR-012: First Alembic migration (memory tables + pgvector)
 
-**Status:** Accepted  
 **Date:** 2026-04-26  
 **Tranche:** T2  
 **Depends on:** ADR-011

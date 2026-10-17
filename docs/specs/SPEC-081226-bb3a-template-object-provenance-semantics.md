@@ -49,7 +49,6 @@ owners:
 
 # SPEC-081226-bb3a: Template, Object and Provenance Semantics
 
-- **Status:** AC Defined
 - **Date:** 2026-08-12
 - **ADR:** `ADR-081226-bb3a`
 - **Technical Area:** Reusable definitions, workspace objects, provenance, versioning

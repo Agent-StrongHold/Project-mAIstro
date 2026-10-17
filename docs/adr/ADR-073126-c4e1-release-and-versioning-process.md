@@ -29,7 +29,6 @@ history:
 
 # ADR-073126-c4e1: Release and versioning process
 
-**Status:** Accepted
 **Date:** 2026-07-31
 
 > **Amended 2026-09-30 (#19): the rc release tier is cut from `develop`, not

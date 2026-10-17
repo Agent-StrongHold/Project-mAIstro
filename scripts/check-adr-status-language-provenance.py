@@ -7,6 +7,12 @@ both the measurement and the ledger from the candidate tree would let one
 commit widen its own tolerance, so this adapter resolves the ledger from the
 trusted base exactly like the governing-citation ratchet.
 
+Metric v2 changes agreement to absence and includes nested/indented records.
+The candidate ledger must explicitly record the checker's version. A recorded
+trusted version mismatch fails via require_metric_version; the only legacy
+transition admitted is the existing unversioned, structurally empty ledger,
+which carries no tolerances forward. Nonempty legacy debt cannot relabel itself.
+
 One bootstrap rule is specific to this ratchet: the ledger is new in #387's
 change, and "absent at the base" is a real answer — a genuinely new ratchet
 whose trusted baseline is therefore empty. Treating that emptiness as the
@@ -21,6 +27,7 @@ landed grant (two-merge protocol, #534).
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -29,7 +36,6 @@ ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts" / "check-adr-status-language.py"
 PROVENANCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "adr-status-language"
-METRIC_DEFINITION_VERSION = "1"
 
 
 def _load(path: Path, name: str) -> ModuleType:
@@ -51,7 +57,7 @@ def _load(path: Path, name: str) -> ModuleType:
 
 def _corpus(checker: ModuleType) -> list[Path]:
     """Every document the scan is pointed at, so an empty corpus is a failure."""
-    return sorted(path for root in checker.DOC_ROOTS for path in sorted(root.glob("*.md")))
+    return sorted(path for root in checker.DOC_ROOTS for path in sorted(root.rglob("*.md")))
 
 
 def _known(payload: object) -> set[str]:
@@ -61,6 +67,40 @@ def _known(payload: object) -> set[str]:
     return {str(value) for value in values} if isinstance(values, list) else set()
 
 
+def _metric_version(payload: object) -> str | None:
+    if not isinstance(payload, dict) or payload.get("metric_definition_version") is None:
+        return None
+    return str(payload["metric_definition_version"])
+
+
+def _require_metric_versions(
+    prov: ModuleType,
+    checker: ModuleType,
+    trusted_ref: object,
+    trusted_payload: object,
+    candidate_payload: object,
+) -> bool:
+    """Pin v2 and allow only the documented zero-tolerance legacy transition."""
+    version = checker.METRIC_DEFINITION_VERSION
+    if _metric_version(candidate_payload) != version:
+        raise prov.RatchetProvenanceError(
+            f"{RATCHET}: candidate ledger must record metric_definition_version {version!r}"
+        )
+    recorded = _metric_version(trusted_payload)
+    legacy_empty = not trusted_ref.absent_at_base and recorded is None
+    if legacy_empty and not (
+        isinstance(trusted_payload, dict)
+        and trusted_payload.get("known") == []
+        and trusted_payload.get("details") == {}
+    ):
+        raise prov.RatchetProvenanceError(
+            f"{RATCHET}: only an explicitly empty unversioned legacy ledger may migrate to "
+            f"v{version}; re-baseline nonempty or malformed legacy debt deliberately"
+        )
+    prov.require_metric_version(version, recorded=recorded, ratchet=RATCHET, baseline=trusted_ref)
+    return legacy_empty
+
+
 def main() -> int:
     checker = _load(CHECKER, "_adr_status_language_under_provenance")
     prov = _load(PROVENANCE, "_ratchet_provenance")
@@ -68,14 +108,19 @@ def main() -> int:
     corpus = _corpus(checker)
     problems = checker.audit()
     current = {problem.identity for problem in problems}
-    candidate = set(checker._load_baseline())
 
     try:
         trusted_ref = prov.resolve_baseline(checker.LEDGER, root=ROOT)
-        trusted = _known(trusted_ref.loads(default={"known": []}))
+        trusted_payload = trusted_ref.loads(default={"known": [], "details": {}})
+        candidate_payload = json.loads(checker.LEDGER.read_text())
+        legacy_empty = _require_metric_versions(
+            prov, checker, trusted_ref, trusted_payload, candidate_payload
+        )
+        trusted = _known(trusted_payload)
+        candidate = set(checker._load_baseline())
         prov.require_measurement(corpus, ratchet=RATCHET, what="ADR and spec documents")
         authorized = prov.load_authorizations(RATCHET, base=trusted_ref.base_sha)
-    except prov.RatchetProvenanceError as exc:
+    except (prov.RatchetProvenanceError, OSError, ValueError) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
 
@@ -83,7 +128,9 @@ def main() -> int:
     old_value = (
         "no ledger at the trusted base (ratchet introduced by this change)"
         if first_introduction
-        else f"{len(trusted)} reviewed body-status contradiction(s)"
+        else "empty unversioned legacy ledger (explicit zero-tolerance migration to v2)"
+        if legacy_empty
+        else f"{len(trusted)} reviewed body-status finding(s)"
     )
 
     print(
@@ -91,9 +138,9 @@ def main() -> int:
             ratchet=RATCHET,
             baseline=trusted_ref,
             tool="ADR body-status language scan",
-            metric_definition_version=METRIC_DEFINITION_VERSION,
+            metric_definition_version=checker.METRIC_DEFINITION_VERSION,
             old_value=old_value,
-            new_value=f"{len(current)} current body-status contradiction(s)",
+            new_value=f"{len(current)} current body-status finding(s)",
             candidate_sha=prov.head_sha(ROOT),
             authorizations=tuple(
                 f"{identity}: {authorized[identity]}"

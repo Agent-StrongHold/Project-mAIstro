@@ -33,7 +33,6 @@ owners:
 
 # ADR-081226-bb3a: Template, Object and Provenance Semantics
 
-- **Status:** Accepted
 - **Date:** 2026-08-12
 - **Deciders:** MAIstro maintainers
 - **Technical Area:** Reusable definitions, workspace objects, provenance, versioning

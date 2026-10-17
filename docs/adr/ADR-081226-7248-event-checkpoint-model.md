@@ -34,7 +34,6 @@ owners:
 
 # ADR-081226-7248: Event and Checkpoint Model
 
-- **Status:** Accepted
 - **Date:** 2026-08-12
 - **Deciders:** MAIstro maintainers
 - **Technical Area:** Events, durable history, checkpoints, recovery

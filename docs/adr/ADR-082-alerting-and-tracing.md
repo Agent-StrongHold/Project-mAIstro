@@ -32,7 +32,6 @@ history:
 
 # ADR-082: Alerting, SLO, and Trace Context Propagation
 
-**Status:** Accepted
 **Date:** 2026-05-30
 **Substrate:** ADR-037 (telemetry/event backend), ADR-038 (reliability taxonomy + error budgets).
 
