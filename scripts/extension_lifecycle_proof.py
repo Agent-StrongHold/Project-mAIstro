@@ -987,33 +987,35 @@ class LifecycleProof:
             "pinned artifact digest",
         )
 
-        public = CatalogService(InMemoryCatalogStore())
-        await public.set_catalog(ORG_B, pairs)
-        public_listing = await public.list_extensions(ORG_B)
+        org_b = CatalogService(InMemoryCatalogStore())
+        await org_b.set_catalog(ORG_B, pairs)
+        org_b_listing = await org_b.list_extensions(ORG_B)
         private_identities = sorted(
             (item["extension_name"], item["version"], str(item["package_sha256"]))
             for item in listing
         )
-        public_identities = sorted(
+        org_b_identities = sorted(
             (item["extension_name"], item["version"], str(item["package_sha256"]))
-            for item in public_listing
+            for item in org_b_listing
         )
         stage.check(
-            "public-distribution-serves-identical-bytes",
-            private_identities == public_identities,
-            f"the public distribution serves {ORG_B} from the identical "
-            "identity set — one published snapshot, digest-anchored for "
-            "every consumer",
+            "independent-private-snapshots-serve-identical-bytes",
+            private_identities == org_b_identities,
+            f"a second organization's private catalog, {ORG_B}, seeded "
+            "independently from the same publisher pairs, serves the identical "
+            "digest-anchored identity set — per-org snapshots hold exactly the "
+            "entries published into them (no cross-org distribution seam "
+            "exists yet; this proves snapshot fidelity, not distribution)",
         )
         stage.check(
             "unpublished-org-sees-nothing",
-            await private.list_extensions("org-nobody") == ()
-            and await private.get_catalog("org-nobody") is None,
-            "an organization the distribution never reached has no catalog "
-            "at all — distribution is per-org, not ambient",
+            await org_b.list_extensions("org-nobody") == ()
+            and await org_b.get_catalog("org-nobody") is None,
+            "an organization that never received a snapshot has no catalog "
+            "at all — the private catalog is per-org, not ambient",
         )
         stage.evidence["private_org"] = ORG
-        stage.evidence["public_org"] = ORG_B
+        stage.evidence["second_org"] = ORG_B
         stage.evidence["listed_versions"] = [
             f"{name}@{version}" for name, version, _ in private_identities
         ]

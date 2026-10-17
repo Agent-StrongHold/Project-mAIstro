@@ -152,9 +152,9 @@ class TestProofDeterminism:
 @pytest.mark.contract("boundary")
 @pytest.mark.scope("integration")
 class TestEpicCatalogDistribution:
-    """Epic #948: public/private catalog distribution through the #979 service."""
+    """Epic #948: per-org private catalog snapshots through the #979 service."""
 
-    async def test_distribution_stage_proves_public_and_private_surfaces(
+    async def test_distribution_stage_proves_independent_private_snapshots(
         self, proof_module, tmp_path: Path
     ) -> None:
         report = await _run_proof(proof_module, tmp_path / "scratch")
@@ -165,22 +165,22 @@ class TestEpicCatalogDistribution:
             "private-listing-serves-publisher-metadata",
             "search-and-publisher-filter",
             "version-detail-anchors-the-manifest",
-            "public-distribution-serves-identical-bytes",
+            "independent-private-snapshots-serve-identical-bytes",
             "unpublished-org-sees-nothing",
         } <= check_ids
-        assert stage["evidence"]["private_org"] != stage["evidence"]["public_org"]
+        assert stage["evidence"]["private_org"] != stage["evidence"]["second_org"]
         assert len(stage["evidence"]["listed_versions"]) == 4
 
-    async def test_public_distribution_carries_pinned_identity_per_consumer(
+    async def test_each_org_snapshot_carries_pinned_identity(
         self, proof_module, tmp_path: Path
     ) -> None:
-        """Both consuming orgs see byte-identical identity digests, per entry."""
+        """Each seeded org's snapshot lists byte-identical identity digests."""
         proof = proof_module.LifecycleProof(tmp_path / "scratch")
         await proof.run()
         stage = next(s for s in proof.stages if s.name == "distribution")
         # Re-derive what the stage proved, from the same store pairs: the
-        # entries offered to each org are the same objects, so their digests
-        # cannot drift between consumers.
+        # entries seeded into each org's snapshot are the same objects, so
+        # their digests cannot drift between orgs.
         identities = sorted(
             (e.identity.extension_name, e.identity.semantic_version, e.identity.package_sha256)
             for e in proof.catalog_entries
