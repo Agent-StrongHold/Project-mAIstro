@@ -164,3 +164,16 @@ def test_the_load_balancer_bounds_a_dead_replica() -> None:
     connect = re.search(r"proxy_connect_timeout\s+(\d+)s;", conf)
     assert connect and int(connect.group(1)) <= 5, "a dead replica's connect() can hang for 60s"
     assert re.search(r"proxy_next_upstream\s+[^;]*\berror\b[^;]*\btimeout\b", conf)
+    assert re.search(r"^\s*proxy_next_upstream_tries\s+2;", conf, re.M)
+
+
+def test_degraded_responses_do_not_eject_healthy_replicas() -> None:
+    """#860 F10: provider-outage 503s must not poison passive health counts.
+
+    This pins the deployed policy, not a claim of live failover or soak proof.
+    Keep the transport retries from develop without reinstating its 503 retry.
+    """
+    conf = (ROOT / "deploy" / "nginx.conf").read_text()
+    directives = re.findall(r"^\s*proxy_next_upstream\s+([^;]+);", conf, re.M)
+    assert len(directives) == 1
+    assert set(directives[0].split()) == {"error", "timeout", "http_502", "http_504"}

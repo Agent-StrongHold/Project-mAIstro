@@ -1,0 +1,33 @@
+{
+  "schema": "m3a860.production-stack-identity/v1",
+  "captured_at": "2026-10-06T11:15:49.177703+00:00",
+  "hashes": {
+    "git_head": "ad9b17cb9d25b4fab82799f6cc206a23e323234c",
+    "server_1_image_id": "sha256:ef3698e0c56ae2827795254234adfd83af5a9bdad24839617e94d1ccccfa6ba0",
+    "server_2_image_id": "sha256:e1952541787efab9ac80e8990d7c221b9e553bb5b5ab4f4874b3d8545d8c1102",
+    "compose_config_sha256_no_interpolate": "7ec2839b92d6bba8730b92f4881ff5e1a935d58b682bac3ceef6e552030ccc5b"
+  },
+  "topology": "deploy/docker-compose.prod.yml project m3a860: nginx:1.27-alpine lb (127.0.0.1:18080) -> maistro-server-1 + maistro-server-2 (built from git head) -> pgvector pg17 primary + streaming hot standby + redis:7",
+  "postgres_replication": {
+    "primary_pg_stat_replication": "walreceiver|streaming|async",
+    "replica_in_recovery_and_lsn": "t|0/4472C98",
+    "lags": "172.22.0.4||"
+  },
+  "versions": {
+    "lb": "nginx version: nginx/1.27.5",
+    "postgres": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linu"
+  },
+  "env_supplied_at_runtime": [
+    "POSTGRES_PASSWORD",
+    "REPLICATION_PASSWORD",
+    "REDIS_PASSWORD",
+    "API_KEYS=[soak:soak-key-1, soak:soak-key-2] (principal soak)",
+    "TASK_DELEGATION_KEY",
+    "ROUTER_API_KEY",
+    "LITELLM_BASE_URL=http://172.18.0.6:4000 (dev gateway)",
+    "LITELLM_API_KEY",
+    "MAISTRO_LB_PORT=18080",
+    "MAISTRO_BIND_HOST=127.0.0.1"
+  ],
+  "note": "throwaway soak fixtures; images built locally from the assigned head, not pulled from a registry; NOT promotion evidence (exact_rc_artifact requires an immutable selected RC artifact)"
+}

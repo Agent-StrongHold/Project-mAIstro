@@ -1,0 +1,83 @@
+{
+  "schema": "m3a860.production-sustained-round/v1",
+  "round": "A (first sustained round; client-side recording defects documented below)",
+  "captured_at": "2026-10-06T11:16:13.845227+00:00",
+  "finished_at": "2026-10-06T11:22:13.849133+00:00",
+  "hashes": {
+    "git_head": "88edcc7ea03baf4257a9edfb47e56a5493d6d329",
+    "server_1_image_id": "sha256:ef3698e0c56ae2827795254234adfd83af5a9bdad24839617e94d1ccccfa6ba0",
+    "server_2_image_id": "sha256:e1952541787efab9ac80e8990d7c221b9e553bb5b5ab4f4874b3d8545d8c1102",
+    "compose_config_sha256": "7c1bcdbbf0118980ccd967f9618fa673f7b78dadd6c208b226af5af7f3658694"
+  },
+  "profile": {
+    "requested_rps": 30.0,
+    "window_s": 360.0,
+    "mix": {
+      "health_ready": 45,
+      "health_live": 20,
+      "task_submit": 20,
+      "run_get": 10,
+      "metrics_unauth": 5
+    },
+    "note": "offered the documented host-preflight mix at 30 rps WITHOUT production-limit awareness",
+    "offered_rps": 30.0
+  },
+  "kill_window": {
+    "restart_mode": "SIGTERM drain via docker restart -t 20",
+    "events": [
+      {
+        "t": 126.0,
+        "event": "replica_2_restart_begin (docker restart -t 20 => SIGTERM drain)"
+      },
+      {
+        "t": 129.6,
+        "event": "replica_2_restart_done rc/output=m3a860-maistro-server-2-1"
+      }
+    ]
+  },
+  "totals": {
+    "counts": {
+      "health_ready": 1887,
+      "task_submit": 853,
+      "health_live": 857,
+      "run_get": 432,
+      "metrics_unauth": 211
+    },
+    "status_by_kind": {
+      "health_live|200": 857,
+      "health_ready|200": 39,
+      "health_ready|503": 1848,
+      "metrics_unauth|401": 211,
+      "run_get|404": 237,
+      "run_get|429": 195,
+      "task_submit|202": 483,
+      "task_submit|429": 370
+    },
+    "distinct_run_ids": 0,
+    "client_errors": []
+  },
+  "findings": [
+    "Profile-vs-artifact mismatch: at production baseline limits (60 rpm / burst 10 per process, maistro-core security/resource_policy.py:16-17) the documented host-preflight authenticated share is rejected en masse (task_submit 429x370 of 853; run_get 429x195 of 432); the profile document's 3000 rpm override is NOT part of the production artifact.",
+    "Readiness 503 storm is deliberate degraded semantics: any open/recovering LLM circuit marks /health/ready 503 (packages/maistro-server/src/maistro_server/api/health.py:228-247, #365/#1567); with failing model calls the breaker opened within the window and readiness reported degraded for the rest of it (1848 of 1887 readiness probes).",
+    "Degraded execution path observed end-to-end on the artifact: admission 202 -> queue claim -> Attempt execution -> model call failure -> circuit opens after 5 failures/60s -> task terminalized 'failed' (replica logs, CircuitOpenError); spine terminalized (477->484 failed, 0 non-terminal).",
+    "Client-side defects (probe harness, not the stack): latency samples lost to a KeyError, run_id capture lost; counts/statuses unaffected. Round B supersedes for latency and spine audit."
+  ],
+  "resource_trend": {
+    "srv1": {
+      "rss_first": "124.2MiB",
+      "rss_last": "126.3MiB",
+      "fds_first": 20,
+      "fds_last": 20
+    },
+    "srv2": {
+      "rss_first": "122.1MiB",
+      "rss_last": "116.4MiB",
+      "fds_first": 24,
+      "fds_last": 21
+    },
+    "pg_sessions_first": 16,
+    "pg_sessions_last": 13
+  },
+  "samples_note": "60 samples @6s retained in the working-notes copy; summarized here for size",
+  "promotion_disclaimer": "observation window 360s << 14400s minimum; not promotion evidence; sustain_duration and exact_rc_artifact remain failing gates for the harness"
+}
