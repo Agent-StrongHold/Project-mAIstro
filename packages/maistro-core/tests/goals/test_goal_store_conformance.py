@@ -622,3 +622,26 @@ async def test_scoped_reassignment_rejects_invalid_owner(scoped, invalid_agent_i
     assert unchanged is not None
     assert unchanged.agent_id == "original"
     assert await store.list_goal_transitions(goal.goal_id) == []
+
+async def test_pg_reassignment_keeps_columns_payload_and_history_consistent(backend) -> None:
+    if not isinstance(backend, _PostgresBackend):
+        pytest.skip("PostgreSQL-specific canonical row consistency proof")
+    store = await backend.store()
+    goal = await _goal(backend)
+    updated = await store.reassign_agent(
+        goal.goal_id, "agent-new", expected_revision=goal.current_revision, actor="operator"
+    )
+    async with backend._pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT agent_id, payload FROM canonical_goals WHERE goal_id = $1", goal.goal_id
+        )
+        history = await conn.fetch(
+            "SELECT payload FROM canonical_goal_transitions WHERE goal_id = $1 ORDER BY seq",
+            goal.goal_id,
+        )
+    assert row is not None
+    assert row["agent_id"] == updated.agent_id == "agent-new"
+    assert row["payload"]["agent_id"] == row["agent_id"]
+    assert len(history) == 1
+    assert history[0]["payload"]["from_agent_id"] == "agent-7"
+    assert history[0]["payload"]["to_agent_id"] == row["agent_id"]
