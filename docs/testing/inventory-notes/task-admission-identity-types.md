@@ -1434,3 +1434,67 @@ approval); stack left unmerged; the four red gates remain the issue-anticipated
 explicit merge blocker whose only fixes are the #1845 integration head
 (real consumer wiring) and owner-landed develop grants, both outside this
 leaf. Note-only commit; no inventory delta (stays +79). (Refs #1851)
+
+## Round evidence — 2026-10-17 round 202 (job `a4c9ec71a3274c56906a33084c09878e`, head `150cdb9e8910`)
+
+Independent verifier+writer round at the exact assigned head `150cdb9e8910b4fbe16f6082011d5745c6d73afd`
+(base `ab8b3737fa64f8d840f421ef87ca506c509444ff`); no earlier claim assumed; every load-bearing fact
+re-derived firsthand.
+
+- Driver battery 5/5 green (job logs `check-0..4`): `uv sync --locked --extra dev` rc=0; `ruff check .`
+  "All checks passed!"; `ruff format --check .` 3299 files already formatted; focused pytest **79 passed**;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok at 16439.
+- Live re-execution at this head: focused pytest 79 passed; `mypy packages/maistro-core/src/maistro/runs/admission_identity.py`
+  Success; focused ruff check/format clean; full `check-suite-inventory.py` rc=0 (17 suites,
+  31323 collected == 31323 unique, 0 duplicate evidence); `check-reachability-dispositions.py`,
+  `check-reachability-dispositions-provenance.py`, `check-promotion-surface.py`,
+  `check-shipped-surface-truth.py` all rc=0.
+- Contract re-proven by fresh AST walk: 17 dataclasses all `frozen=True`+`slots=True` (the 18th ClassDef is
+  the `AdmissionAssessment` StrEnum); every record/result field order exact per the issue
+  (`RootAdmissionEnvelope` 14 fields; `AdmissionRecordV2` 6; `LegacyAdmissionRecord` 7 incl. defaulted
+  `binding`; `RootAdmissionResult` 4; empty variants field-free); 6 enum member/value pairs verbatim and in
+  order; `__all__` 21 names unique and set-exact; `owns()` a single `BoolOp(And)` of exactly 3 compares;
+  `field(repr=False)` x2; `field(init=False)` x2; both `admitted` properties return exactly
+  `binding is not None`; 0 suppression markers.
+- All 12 issue-named tests defined exactly once; zero importers of `admission_identity` in tracked
+  `packages/*/src` outside module+test; `runs/__init__.py` has no admission reference; branch diff vs base
+  is exactly the 4 in-scope files (+2380/-0), `quality/` numstat exactly +5/-0
+  (`vulture-baseline.json`), `ratchet-authorizations.json`/`reachability-baseline.json` 0-line diff.
+- `#1841` anchors intact at this head: `store_boundary.py:56`
+  `require_admitted_actor(actor_principal_id: str | None) -> str`; `store.py:550`
+  `get_run(self, run_id: str, *, principal_id: str | None = None)`; `actor_principal_id` retained
+  (`store.py` x8, `model.py` x3).
+- CI at this head (dispatch snapshot, evidence only): `exact-debt-ledger` completed **failure**;
+  `gates-ran` pending "Required execution evidence is still arriving"; remaining checks in progress at
+  capture — pending/unavailable CI stays UNVERIFIED; no green inferred from the snapshot.
+- Red gates re-derived live at CI-exact argv with true exit codes:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` rc=1 —
+  banking GREEN (candidate 1327 == scan 1327, `unclassified: 0`, `never_allowlist: 0`), authorization RED
+  on exactly `admission_identity.py:515-520` (`MISMATCH`/`REPLAYED`/`TAKEOVER`/`REPLACE_EXPIRED`/
+  `LEGACY_UNRESOLVED`) with the gate's own remedy "land a reviewed grant first";
+  `check-reachability.py` rc=1 with exactly 1 NEWLY UNREACHABLE (`maistro.runs.admission_identity`,
+  170/1402); `check-ratchet-provenance.py` rc=1 solely via `check-reachability-provenance.py`; the CI test
+  trio reproduced 3 failed (`test_baseline_matches_the_tree`,
+  `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set`), all naming this module; Coverage root cause
+  re-read at `quality.yml` (`coverage run ... -m pytest tests/ ...` producer contains the same trio).
+- Base motion: fresh `git fetch origin`; `origin/develop` still `ab8b3737` == assigned base (both
+  resolutions of the ambiguous refname are the same value), merge-base equal, 0 commits behind — no
+  develop sync conflict exists to merge, and no grant for the 5 identities has landed, so the two-merge
+  wall stands.
+- `exact-debt-ledger` disposition (carried instruction re-examined): no issue-legal in-leaf change greens
+  it — removing the 5 banked rows regresses the banking half to red (unclassified 5); a branch-side grant
+  is inert (grants load from the merge base) and prohibited; a runtime caller, keep-alive import,
+  re-export, reachability-baseline entry, or suppression is prohibited by the issue's exact scope/staging
+  text; develop is unmoved so nothing can be merged in. The red gates remain the issue-anticipated
+  explicit merge blocker whose repair paths are the `#1845` integration head (real consumer wiring) and
+  owner-landed develop grants, both outside this leaf. The issue's open reconciliation checkbox stays
+  satisfied by this standing record re-anchored to this round's re-issued lane authority; banked rows
+  authorize nothing; the enum contract is intact and not removed.
+- Advisory (no in-lane action possible): the round-200 note commit message contains the prose
+  "only fixes: #1845 integration head", whose `fixes: #1845` adjacency matches GitHub's closure-keyword
+  pattern; it is not a trailer and this lane cannot rewrite pushed history — squash note commits at the
+  integration merge so the parent issue is not auto-closed prematurely.
+
+Verdict: writer handoff MERGE-READY (handoff only, never integration approval); stack left unmerged;
+no inventory delta (stays +79). (Refs #1851)
