@@ -4,8 +4,10 @@
   maistro-engine Windows bootstrapper.
 
 .DESCRIPTION
-  install.sh / get.sh need bash; a fresh Windows 10 box has none. This script
-  is the native entrypoint: it enables WSL2, installs an Ubuntu distro
+  install.sh / get.sh need bash, which may be absent on Windows 10. This
+  native entrypoint requires an administrator-approved PowerShell setup that
+  permits this script to run; it is not a zero-setup guarantee for a fresh
+  Windows installation. It enables WSL2, installs an Ubuntu distro
   (handling the Windows feature-enable reboot WSL2 sometimes requires), then
   hands off to the existing Linux installer (get.sh -> install.sh) running
   inside that distro. Re-run this script after a requested reboot, or just
@@ -62,7 +64,23 @@
   Passed straight through to install.sh as MAISTRO_SKIP_WIZARD / *_START_STACK
   / *_INSTALL_CLI / *_OPEN_BROWSER.
 
+.NOTES
+  Prerequisite: PowerShell script execution must be permitted by your
+  administrator-approved setup. A fresh Windows client may use Restricted,
+  which prevents .ps1 scripts from running. Inspect the policies read-only
+  with Get-ExecutionPolicy -List before running any example below. Group
+  Policy takes precedence; elevation alone does not remove that restriction.
+  If execution is disallowed, stop and ask your administrator for approved
+  setup instructions, including any signing requirements. Do not work around
+  the restriction. Elevation and post-reboot resume use normal policy
+  resolution without selecting a process execution policy. Resume requires
+  an approved policy that remains effective after logon; a session-only
+  permission is not sufficient. If a relaunch is blocked, obtain approved
+  setup instructions and re-run manually; do not weaken the policy.
+
 .EXAMPLE
+  Get-ExecutionPolicy -List
+  # If execution is disallowed, stop and obtain administrator-approved setup instructions.
   Invoke-WebRequest -UseBasicParsing -Uri https://raw.githubusercontent.com/Agent-StrongHold/Project-mAIstro/main/get.ps1 -OutFile .\get.ps1
   Get-Content .\get.ps1
   # Review the downloaded script and run it only if you trust its contents.
@@ -374,7 +392,7 @@ function Invoke-Elevated {
     $scriptPath = Save-StableCopy
     $passthrough = Get-PassthroughArgs
     $quoted = $passthrough | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
-    $fullArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$scriptPath`"") + $quoted
+    $fullArgs = @('-NoProfile', '-File', "`"$scriptPath`"") + $quoted
     Write-InfoMsg "Elevation is required to enable WSL2. Requesting an admin prompt..."
     Start-Process -FilePath 'powershell.exe' -ArgumentList $fullArgs -Verb RunAs
 }
@@ -387,7 +405,7 @@ function Register-Resume {
     $passthrough = Get-PassthroughArgs -IncludeResume
     $quoted = $passthrough | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
     $argStr = ($quoted -join ' ')
-    $cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" $argStr"
+    $cmd = "powershell.exe -NoProfile -File `"$ScriptPath`" $argStr"
     New-Item -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' -Force | Out-Null
     New-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' `
         -Name 'MaistroInstallResume' -Value $cmd -PropertyType String -Force | Out-Null
