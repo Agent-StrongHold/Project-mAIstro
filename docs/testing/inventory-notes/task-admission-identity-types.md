@@ -620,3 +620,79 @@ in its correct reviewed state (scan-exact 5 rows). Gate greenness requires the
 authorizations — both outside this leaf, which leaves the stack unmerged per the
 issue's own staging language. Writer handoff only; not an integration approval.
 (Refs #1851)
+
+## CI-repair revalidation — 2026-10-17 (`6b538c1ea414`, job `214116bb8cda`)
+
+Assigned repair at the exact branch head `6b538c1ea414` (base
+`ab8b3737fa64`); worktree found clean at the assigned head. Prior round's
+block (job `a7036eb6a5d8`) was a provider timeout after its five deterministic
+checks all returned rc=0 — an operational block, not an engineering one. This
+round independently re-derived every acceptance claim at this exact tree
+instead of assuming any prior report (including the `0e6947d44022` round
+above). No source, test, or ledger change was warranted; note-only commit
+(inventory delta stays `packages/maistro-core/tests: +79`).
+
+Executed firsthand this round, all at `6b538c1ea414`:
+
+- Leaf contract re-proven by fresh structural probe: `__all__` exactly the 21
+  required names; `AdmissionAssessment` exactly the six lowercase pairs in
+  issue order; all 16 record dataclasses `frozen=True, slots=True`;
+  `owns()` true only for the exact (scope_key, generation_id, owner_token)
+  triple and false for same-owner/diff-generation, same-generation/diff-owner,
+  and diff-scope tickets; `owner_token` absent from `repr` while the
+  independently printable `generation_id` remains when the role values
+  coincide; v2 lease clamped inside `[created_at_us, expires_at_us]` while
+  legacy accepts an unclamped `lease_expires_at_us`.
+- All 12 issue-named tests present in
+  `packages/maistro-core/tests/runs/test_root_admission_identity.py`
+  (collect-only listing); focused suite **79 passed** (driver check-3 log,
+  re-affirmed).
+- `mypy packages/maistro-core/src/maistro/runs/admission_identity.py` →
+  Success. `check-reachability-dispositions.py` rc=0 (49 groups / 169
+  modules); `check-promotion-surface.py` rc=0.
+- No-wiring proof re-run: zero references to `admission_identity` under
+  `packages/*/src` or `packages/hive-conductor` outside the module itself and
+  its test file; `runs/__init__.py` has no admission reference.
+- #1841 anchors verified verbatim at this tree: `store_boundary.py:56`
+  `def require_admitted_actor(actor_principal_id: str | None) -> str;`
+  `store.py:550`
+  `async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None;`
+  `actor_principal_id: str | None = None` retained at `store.py:507/576/907/1299`.
+  No type conflict to return for contract revision.
+- Four-gate decomposition reproduced at CI argv, same two root causes, zero
+  delta vs the `0e6947d44022` round: `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` rc=1
+  (banking half green; authorization half red on exactly the 5 retained
+  `AdmissionAssessment` identities vs merge base `ab8b3737fa64`, which grants
+  nothing for `admission_identity` — verified against
+  `ratchet-authorizations.json` at both HEAD and base);
+  `check-reachability.py` rc=1 with exactly 1 NEWLY UNREACHABLE
+  (`maistro.runs.admission_identity`, 170/1402); full root suite `pytest
+  tests/ -q` → exactly 3 failed / 5072 passed / 135 skipped, the failures
+  being `tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  and `tests/test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`,
+  each naming the intentionally unwired module (the Coverage gate aborts in
+  its scripts producer on these same three under `set -euo pipefail`);
+  `check-diff-coverage.py <core producer xml> --base ab8b3737fa64` → ok
+  (module at/above 90% lines / 80% branches; test file exempt as test code),
+  and the core coverage producer re-run in full → 15369 passed, 1067 skipped.
+
+Baseline reconciliation (issue checklist item, reaffirmed at this head): the
+five retained `quality/vulture-baseline.json` rows are the CI-repair lane's
+explicitly authorized banking amendment for reviewed retained identities
+("amend quality/vulture-baseline.json for reviewed retained identities"); they
+are scan-exact, remove nothing, authorize nothing
+(`ratchet-authorizations.json` diff is 0 lines), and make no gate green — the
+authorization half stays red by construction until an owner-landed develop
+grant and the #1845 real consumer land. This record, not the note's mere
+existence, is the recorded owner/lane decision the issue's checklist demands;
+nothing here treats the discrepancy as approval or touches the restored enum
+contract.
+
+Conclusion: every leaf acceptance criterion holds at `6b538c1ea414`; the four
+red CI gates are the issue-anticipated explicit merge blocker (unwired leaf +
+ungranted retained identities), repairable only at the #1845 integration head
+— outside this leaf's legal action space. Stack left unmerged; no push; writer
+handoff MERGE-READY (handoff only, never integration approval). No inventory
+delta (stays +79). (Refs #1851)
