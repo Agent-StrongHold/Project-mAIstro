@@ -21,6 +21,7 @@ from services.design_service import (
     get_design_store,
     get_renderer_registry,
 )
+from services.request_principal import require_actor_id
 
 from maistro_design.consistency import (
     CreativeProjectSnapshot,
@@ -81,12 +82,14 @@ _ABSENT = object()
 
 
 def _request_principal_id(request: Request) -> str:
-    """Return the authenticated principal; never invent an actor identity."""
-    user = getattr(request.state, "user", None) or {}
-    principal = str(user.get("id") or user.get("username") or "")
-    if not principal:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return principal
+    """Return the authenticated actor id; never invent an actor identity.
+
+    AuthMiddleware stamps ``request.state.principal`` for every authenticated
+    ``/v1/`` request (the same boundary HITL and the layout routes use), so
+    the canonical helper — not a locally re-derived user mapping — supplies
+    the principal the canonical spine records as the actor.
+    """
+    return require_actor_id(request)
 
 
 def _get_org_id(request: Request) -> str:
@@ -392,7 +395,6 @@ async def create_render_job(
     Query params:
       format: reserved output format (pdf, pptx, docx, png)
     """
-    """
     _require_ready()
     org_id = _get_org_id(request)
     try:
@@ -402,14 +404,11 @@ async def create_render_job(
         # unavailable capability; another scope must remain indistinguishable.
         project = await store.get(project_id, org_id=org_id)
         if not project:
-        project = await store.get(project_id, org_id=org_id)
-        if not project:
             raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
         raise HTTPException(
             status_code=501,
             detail="Design rendering is unavailable until the canonical Canvas rendering seam is enabled",
-        )
         )
     except HTTPException:
         raise

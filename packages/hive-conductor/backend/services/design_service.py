@@ -280,7 +280,11 @@ async def start_design_service(settings: Settings) -> None:
             scope_store = core_engine.project_scope_store
             workspace_id = str(getattr(settings, "hive_default_workspace_id", "") or "")
             if run_store is not None and scope_store is not None and workspace_id:
-                root = await scope_store.root_for_workspace(workspace_id)
+                # The canonical Root Project is the authorized Workspace/Project
+                # scope; `create_root` is idempotent (create-or-return), the
+                # same admission pattern chat runs use. Design never derives
+                # scope from its own org/team identifiers.
+                root = await scope_store.create_root(workspace_id)
                 _canonical_execution_singleton = DesignCanonicalExecution(
                     run_store,
                     workspace_id=workspace_id,

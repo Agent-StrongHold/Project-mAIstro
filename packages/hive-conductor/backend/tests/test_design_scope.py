@@ -23,6 +23,7 @@ if str(_BACKEND) not in sys.path:
 from fastapi import HTTPException  # noqa: E402
 from routes import design as design_routes  # noqa: E402
 
+from maistro.identity import Principal  # noqa: E402
 from maistro_design.types import (  # noqa: E402
     ArtifactKind,
     ArtifactNode,
@@ -343,7 +344,7 @@ class TestTheRoutesPassItDown:
         monkeypatch.setattr(design_routes, "get_design_store", lambda: object())
         monkeypatch.setattr(design_routes, "get_design_canonical_execution", lambda: _Canonical())
         answer = await design_routes.create_design_project(
-            _Request(org_id="org-7", user={"id": "user-1"}), object()
+            _Request(org_id="org-7", principal=Principal(user_id="user-1")), object()
         )
         assert seen == {"org_id": "org-7", "team_id": None}
         assert answer["org_id"] == "org-7"
@@ -355,7 +356,7 @@ class TestTheRoutesPassItDown:
         monkeypatch.setattr(design_routes, "get_design_canonical_execution", lambda: None)
         with pytest.raises(HTTPException) as raised:
             await design_routes.create_design_project(
-                _Request(org_id="org-7", user={"id": "user-1"}), object()
+                _Request(org_id="org-7", principal=Principal(user_id="user-1")), object()
             )
         assert raised.value.status_code == 503
         assert "canonical execution spine" in str(raised.value.detail)
@@ -366,9 +367,7 @@ class TestTheRoutesPassItDown:
     ) -> None:
         """The canonical spine records who asked; an anonymous request must
         not fall back to a fabricated actor identity."""
-        monkeypatch.setattr(
-            design_routes, "get_design_canonical_execution", lambda: object()
-        )
+        monkeypatch.setattr(design_routes, "get_design_canonical_execution", lambda: object())
         with pytest.raises(HTTPException) as raised:
             await design_routes.create_design_project(_Request(org_id="org-7"), object())
         assert raised.value.status_code == 401
@@ -396,7 +395,7 @@ class TestTheRoutesPassItDown:
         monkeypatch.setattr(design_routes, "get_design_canonical_execution", lambda: _Canonical())
         with pytest.raises(HTTPException) as raised:
             await design_routes.create_design_project(
-                _Request(org_id="org-7", user={"id": "user-1"}), object()
+                _Request(org_id="org-7", principal=Principal(user_id="user-1")), object()
             )
         assert raised.value.status_code == 503
         assert "persistence unavailable" in str(raised.value.detail).lower()
@@ -426,7 +425,7 @@ class TestTheRoutesPassItDown:
         monkeypatch.setattr(design_routes, "get_design_canonical_execution", lambda: _Canonical())
         with pytest.raises(HTTPException) as raised:
             await design_routes.create_design_project(
-                _Request(org_id="org-7", user={"id": "user-1"}), object()
+                _Request(org_id="org-7", principal=Principal(user_id="user-1")), object()
             )
         assert raised.value.status_code == 500
         assert "Project preparation failed" in str(raised.value.detail)

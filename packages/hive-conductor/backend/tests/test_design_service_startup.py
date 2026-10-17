@@ -339,3 +339,76 @@ class TestImportableMeansParseable:
         (root / "sparse" / "tokens.css").write_text(":root{}", encoding="utf-8")
         monkeypatch.setattr(importer, "CATALOG_ROOT", root)
         assert design_service._importable("sparse")
+
+
+class TestCanonicalExecutionWiring:
+    """#52: the Design routes must not run a package-private lifecycle.
+
+    `start_design_service` is where the Conductor decides whether Design
+    operations can reach the canonical Run/NodeRun/Attempt spine. These pin
+    the decision itself: wired when the spine is present, truthfully absent
+    (never stubbed) when it is not.
+    """
+
+    async def test_the_adapter_is_built_when_the_spine_is_available(self, monkeypatch, tmp_path):
+        from services import engine as engine_service
+
+        from maistro_design.canonical_execution import DesignCanonicalExecution
+
+        class _ScopeStore:
+            async def create_root(self, workspace_id: str):
+                from maistro.projects.scope import Project
+
+                return Project(
+                    project_id="root-1",
+                    workspace_id=workspace_id,
+                    name="Root",
+                    parent_project_id=None,
+                    is_root=True,
+                )
+
+        class _CoreEngine:
+            run_store = object()
+            project_scope_store = _ScopeStore()
+
+        monkeypatch.setattr(design_service, "_get_async_session_factory", lambda: None)
+        monkeypatch.setattr(design_service, "_engine_singleton", None)
+        monkeypatch.setattr(design_service, "_store_singleton", None)
+        monkeypatch.setattr(design_service, "_renderer_registry_singleton", None)
+        monkeypatch.setattr(design_service, "_canonical_execution_singleton", None)
+        monkeypatch.setattr(engine_service, "get_engine", lambda: _CoreEngine())
+
+        class _Settings:
+            open_design_url = None
+            open_design_api_key = None
+            hive_default_workspace_id = "ws-design"
+
+        await design_service.start_design_service(_Settings())
+        canonical = design_service.get_design_canonical_execution()
+        assert isinstance(canonical, DesignCanonicalExecution)
+        assert design_service.get_design_status().to_dict()["canonical_execution_available"] is True
+
+    async def test_no_spine_leaves_execution_unavailable_rather_than_stubbed(self, monkeypatch):
+        from services import engine as engine_service
+
+        class _CoreEngine:
+            run_store = None
+            project_scope_store = None
+
+        monkeypatch.setattr(design_service, "_get_async_session_factory", lambda: None)
+        monkeypatch.setattr(design_service, "_engine_singleton", None)
+        monkeypatch.setattr(design_service, "_store_singleton", None)
+        monkeypatch.setattr(design_service, "_renderer_registry_singleton", None)
+        monkeypatch.setattr(design_service, "_canonical_execution_singleton", None)
+        monkeypatch.setattr(engine_service, "get_engine", lambda: _CoreEngine())
+
+        class _Settings:
+            open_design_url = None
+            open_design_api_key = None
+            hive_default_workspace_id = "ws-design"
+
+        await design_service.start_design_service(_Settings())
+        assert design_service.get_design_canonical_execution() is None
+        assert (
+            design_service.get_design_status().to_dict()["canonical_execution_available"] is False
+        )
