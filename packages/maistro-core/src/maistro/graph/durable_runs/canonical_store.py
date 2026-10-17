@@ -37,6 +37,7 @@ from maistro.runs.store import RunCursor, RunIntegrityError, RunStore, run_curso
 from .continuation import GraphContinuation, GraphContinuationStore
 from .fair_scan import (
     DEFAULT_MAX_INSPECTED,
+    DEFAULT_PAGE_SIZE,
     ScanContinuation,
     ScanPage,
     cursor_time,
@@ -45,6 +46,7 @@ from .fair_scan import (
 from .hitl import (
     HitlAuthorization,
     earliest_hitl_deadline,
+    record_has_hitl_pause,
     require_hitl_authorization,
     settlement_time,
 )
@@ -808,6 +810,102 @@ class CanonicalDurableRunStore:
             run_ids = [run.run_id for run in runs]
         records = await self._assemble_all(run_ids)
         return [record for record in records if record.run.status is status]
+
+    async def list_hitl_paused(
+        self,
+        *,
+        limit: int = 100,
+        project_id: str | None = None,
+        workspace_id: str | None = None,
+        after: tuple[str, str] | None = None,
+        max_inspected: int = DEFAULT_MAX_INSPECTED,
+    ) -> ScanPage[DurableRunRecord, tuple[str, str]]:
+        """Paused Runs holding a human pause, oldest-created-first (#1109).
+
+        Pages the pause-kind projection so human eligibility is decided before
+        the limit: a prefix of machine-only PAUSED Runs, however long, costs
+        this query nothing. The index is a projection, so each candidate is
+        still revalidated below against the assembled canonical record — a
+        stale row whose Run has moved on contributes no item and costs only
+        its place in the page.
+
+        ``workspace_id`` is canonical Run scope (#1240). The continuation
+        index cannot carry it, so — like staleness — it filters the read
+        after assembly, which is why this returns a :class:`ScanPage` and
+        keeps walking index pages past the rows it drops, up to
+        ``max_inspected``: a page that assembles to nothing eligible is
+        progress through the projection, not the end of it, and ``exhausted``
+        is set only when the projection itself ran out. A Workspace-wide walk
+        (no ``project_id``) over a large multi-tenant store can still spend
+        ``max_inspected`` on foreign rows before reaching its own — callers
+        should pass ``project_id`` (a Project belongs to exactly one
+        Workspace) so the keyset itself runs over eligible rows only.
+        """
+        if limit <= 0 or max_inspected <= 0:
+            return ScanPage(items=[], resume_after=after, inspected=0)
+        items: list[DurableRunRecord] = []
+        cursor = after
+        inspected = 0
+        while len(items) < limit and inspected < max_inspected:
+            # Minimum rows per projection read, so a small item target does
+            # not force one round trip per ineligible row.
+            requested = min(
+                max(limit, DEFAULT_PAGE_SIZE),
+                max_inspected - inspected,
+            )
+            run_ids = await self._continuations.list_hitl_paused_run_ids(
+                limit=requested,
+                project_id=project_id,
+                after=cursor,
+            )
+            if not run_ids:
+                return ScanPage(
+                    items=items,
+                    resume_after=cursor,
+                    inspected=inspected,
+                    exhausted=True,
+                )
+            for run_id in run_ids:
+                inspected += 1
+                candidate = await self._hitl_paused_candidate(run_id, workspace_id)
+                if candidate is None:
+                    # Deleted between the index read and this read: there is
+                    # no row left to page past, the same disposition
+                    # `scan_due_page` gives its own vanished candidates.
+                    continue
+                cursor, record = candidate
+                if record is None:
+                    continue
+                items.append(record)
+                if len(items) >= limit:
+                    break
+        return ScanPage(items=items, resume_after=cursor, inspected=inspected)
+
+    async def _hitl_paused_candidate(
+        self,
+        run_id: str,
+        workspace_id: str | None,
+    ) -> tuple[tuple[str, str], DurableRunRecord | None] | None:
+        """One projection row's keyset position, and its record if eligible.
+
+        The record is not ``None`` only when the assembled canonical Run
+        still agrees with the projection: PAUSED, carrying a human pause,
+        and inside the caller's Workspace when one is given (#1109, #1240).
+        ``None`` means the row contributes no position: its Run was deleted
+        between the index read and this read, the same disposition
+        ``scan_due_page`` gives its own vanished candidates.
+        """
+        record = await self.get(run_id)
+        if record is None:
+            return None
+        position = (cursor_time(record.run.created_at), record.run_id)
+        if (
+            record.run.status is RunStatus.PAUSED
+            and record_has_hitl_pause(record)
+            and (workspace_id is None or record.run.workspace_id == workspace_id)
+        ):
+            return position, record
+        return position, None
 
     async def list_due(
         self,

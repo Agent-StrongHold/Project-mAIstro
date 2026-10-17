@@ -138,6 +138,30 @@ async def test_agent_name_cannot_manufacture_a_node_id(
     assert _forwarded(recorded) == (RUN_A, NODE_A, ATTEMPT_A)
 
 
+async def test_stream_contract_yields_exactly_one_canonical_body(
+    governed_client: tuple[GovernedLLMClient, AsyncMock],
+) -> None:
+    """The canonical stream is the completion, once: no provider fan-out.
+
+    Pins the streaming half of the adapter-SDK acceptance (#961): a provider
+    — adapter-backed or gateway — never streams a raw upstream response
+    through the governed seam. `ModelChatRequest` carries no stream field and
+    `stream()` degenerates to exactly one governed completion, so whatever
+    resolved, the consumer sees one canonical body.
+    """
+
+    client, recorded = governed_client
+    with bind_execution_context(run_id=RUN_A, node_run_id=NODE_A, attempt_id=ATTEMPT_A):
+        client.set_turn()
+        chunks = [
+            chunk
+            async for chunk in client.stream([{"role": "user", "content": "hello"}], "fast-model")
+        ]
+
+    recorded.assert_awaited_once()  # one egress call, not a chunked fan-out
+    assert chunks == [_egress_result().body]
+
+
 async def test_complete_without_prior_set_turn_reads_complete_bound_context(
     governed_client: tuple[GovernedLLMClient, AsyncMock],
 ) -> None:

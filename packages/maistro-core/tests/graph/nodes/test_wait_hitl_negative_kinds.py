@@ -14,14 +14,21 @@ import pytest
 
 from maistro.graph.nodes import NodeContext, get_node, list_kinds
 
+_CTX_CALLS = 0
+
 
 def _ctx(**overrides: Any) -> NodeContext:
+    global _CTX_CALLS
+    _CTX_CALLS += 1
     base = {
-        "run_id": "r1",
+        "run_id": f"r1-{_CTX_CALLS}",
         "dag_id": "d1",
         "node_id": "n1",
         "user_id": "u1",
+        "workspace_id": "w1",
         "project_id": "p1",
+        "node_run_id": "nr1",
+        "attempt_id": "a1",
     }
     base.update(overrides)
     return NodeContext(**base)
@@ -136,10 +143,8 @@ async def test_wait_for_subtasks_short_circuits_when_no_subtasks(
     Node = get_node("jira.wait_for_subtasks")
     result = await Node().run(
         {
-            "base_url": "https://jira.example.com",
+            "binding_id": "test-jira-subtasks-binding",
             "parent_key": "PROJ-100",
-            "pat": "pat",
-            "flavor": "server",
             "target_statuses": ["Done"],
         },
         _ctx(),
@@ -167,10 +172,8 @@ async def test_wait_for_subtasks_all_done_returns_completed(
     Node = get_node("jira.wait_for_subtasks")
     result = await Node().run(
         {
-            "base_url": "https://jira.example.com",
+            "binding_id": "test-jira-subtasks-binding",
             "parent_key": "PROJ-100",
-            "pat": "pat",
-            "flavor": "server",
             "target_statuses": ["Done", "Closed"],
         },
         _ctx(),
@@ -197,9 +200,8 @@ async def test_wait_for_subtasks_some_open_pauses_for_poll_interval(
     Node = get_node("jira.wait_for_subtasks")
     result = await Node().run(
         {
-            "base_url": "https://jira.example.com",
+            "binding_id": "test-jira-subtasks-binding",
             "parent_key": "PROJ-100",
-            "pat": "pat",
             "target_statuses": ["Done"],
             "poll_interval_seconds": 60,
         },
@@ -227,9 +229,8 @@ async def test_wait_for_subtasks_timeout_returns_timed_out(
     ctx.metadata[f"wait_first_seen:{ctx.node_id}"] = one_hour_ago
     result = await Node().run(
         {
-            "base_url": "https://jira.example.com",
+            "binding_id": "test-jira-subtasks-binding",
             "parent_key": "PROJ-100",
-            "pat": "pat",
             "target_statuses": ["Done"],
             "timeout_seconds": 60,
             "poll_interval_seconds": 60,
@@ -322,6 +323,47 @@ async def test_compliance_block_replay_upserts_one_logical_penalty() -> None:
     assert first.success and second.success
     assert first.output.penalty_id == second.output.penalty_id
     assert len(bb.metadata["penalties"]) == 1
+
+
+async def test_compliance_block_keeps_distinct_penalties_coexisting() -> None:
+    """A second, different rule appends without clobbering the first: the
+    upsert loop must walk past non-matching penalties and only replace its own
+    logical effect."""
+    from maistro.graph.types import GraphBlackboard
+
+    bb = GraphBlackboard(task_objective="x", workspace="")
+    bb.metadata["penalties"] = [
+        {
+            "id": "other-rule-penalty",
+            "node_id": "block-0",
+            "rule_id": "policy.other",
+            "severity": 1.0,
+            "reason": "already recorded",
+            "evidence": {},
+            "halt_run": False,
+        }
+    ]
+    ctx = NodeContext(run_id="r1", dag_id="d1", node_id="block-1", blackboard=bb)
+    Node = get_node("compliance.block")
+    result = await Node().run(
+        {
+            "rule_id": "pii.email_in_summary",
+            "severity": 3.0,
+            "reason": "contains an email",
+            "evidence": {"matched": "alice@example.com"},
+        },
+        ctx,
+    )
+
+    assert result.success
+    penalties = bb.metadata["penalties"]
+    assert [penalty["rule_id"] for penalty in penalties] == [
+        "policy.other",
+        "pii.email_in_summary",
+    ]
+    assert penalties[0]["id"] == "other-rule-penalty"
+    assert penalties[1]["id"] == result.output.penalty_id
+    assert penalties[1]["severity"] == 3.0
 
 
 async def test_compliance_block_replay_replaces_only_its_own_penalty() -> None:
