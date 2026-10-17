@@ -83,7 +83,11 @@ module-level FAIL/PARTIAL gaps the previous sweep named:
   — **33 passed** (1.51s): canonical-graph cycle path still reachable.
 - `uv run python scripts/check-promotion-surface.py` — **exit 0**
   ("promotion surface: ok").
-- `uv run python scripts/check-suite-inventory.py` — **exit 0**.
+- `uv run python scripts/check-suite-inventory.py` — **exit 0** ("ok: 17
+  suite(s) match the recorded inventory"), after `uv sync --locked --extra dev`:
+  the merge brought new dev-extra packages into the workspace (e.g.
+  `maistro-ext-harness`, pyproject.toml:91), and without the resync the gate
+  reports collection errors — environment, not drift.
 - `uv run python scripts/check-doc-links.py` — **exit 0**.
 - `uv run python -m maistro_registry.cli eval . --min-mrr 0.9` — **exit 0**.
 
