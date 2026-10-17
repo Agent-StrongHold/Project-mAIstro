@@ -645,3 +645,31 @@ async def test_pg_reassignment_keeps_columns_payload_and_history_consistent(back
     assert len(history) == 1
     assert history[0]["payload"]["from_agent_id"] == "agent-7"
     assert history[0]["payload"]["to_agent_id"] == row["agent_id"]
+
+async def test_pg_concurrent_reassignment_has_one_consistent_winner(backend) -> None:
+    if not isinstance(backend, _PostgresBackend):
+        pytest.skip("PostgreSQL-only concurrency proof")
+    store = await backend.store()
+    goal = await _goal(backend)
+    results = await asyncio.gather(
+        store.reassign_agent(goal.goal_id, "agent-a", expected_revision=1, actor="operator"),
+        store.reassign_agent(goal.goal_id, "agent-b", expected_revision=1, actor="operator"),
+        return_exceptions=True,
+    )
+    successes = [value for value in results if isinstance(value, Goal)]
+    failures = [value for value in results if isinstance(value, Exception)]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert isinstance(failures[0], (GoalRevisionConflict, GoalTransitionError))
+    async with backend._pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT agent_id, payload FROM canonical_goals WHERE goal_id = $1", goal.goal_id
+        )
+        history = await conn.fetch(
+            "SELECT payload FROM canonical_goal_transitions WHERE goal_id = $1", goal.goal_id
+        )
+    assert row is not None
+    assert row["agent_id"] == successes[0].agent_id
+    assert row["payload"]["agent_id"] == row["agent_id"]
+    assert len(history) == 1
+    assert history[0]["payload"]["to_agent_id"] == row["agent_id"]
