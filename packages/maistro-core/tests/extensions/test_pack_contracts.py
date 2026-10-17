@@ -863,6 +863,34 @@ class TestCompatibilityThroughM9Machinery:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    def test_pack_install_cannot_shadow_an_active_extension_id(self) -> None:
+        # ``_active_versions`` merges the M9-B2 extension ids with the packs
+        # installed here, one version per id. A pack whose id already belongs
+        # to an active extension would overwrite that extension's version at
+        # resolution time — silently retargeting dependents to a different
+        # provider — so the identity collision is rejected at install.
+        registry = InstallablePackRegistry(
+            platform_api_version="1.0.0",
+            active_extensions={"vertex.product_lab": "1.4.0"},
+        )
+        with pytest.raises(PackIdentityConflict, match="already an active extension"):
+            registry.install(
+                _pack_bytes(pack_id="vertex.product_lab", publisher="vertex", version="2.0.0")
+            )
+        assert registry.records() == ()
+        # The refused install must leave dependency resolution on the original
+        # extension, not merely omit a pack record while changing its provider.
+        record = registry.install(
+            _pack_bytes(
+                pack_id="acme.film_critique",
+                publisher="acme",
+                dependencies=[{"id": "vertex.product_lab", "range": "^1.0.0"}],
+            )
+        )
+        assert record.state is PackState.ACTIVE
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
     def test_pack_id_colliding_with_an_active_extension_is_refused(self) -> None:
         # One id names one provider. If an extension installed through the
         # M9-B2 service already occupies the candidate pack_id, the install is
