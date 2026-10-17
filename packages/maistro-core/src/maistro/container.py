@@ -39,6 +39,9 @@ from maistro.events.consumer_cursor import (
     DEFAULT_HOLE_GRACE_SECONDS,
     LEGACY_BRIDGE_CONSUMER_ID,
 )
+from maistro.goals.authorization import ScopedGoalStore
+from maistro.goals.store import GoalStore
+from maistro.goals.wiring import wire_goal_store
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
@@ -144,8 +147,10 @@ if TYPE_CHECKING:
     from maistro.events.processing import HandlerCaller
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
     from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
+    from maistro.extensions.health import ExtensionHealthService, InMemoryExtensionHealthStore
     from maistro.extensions.service import ExtensionInstallService
-    from maistro.extensions.store import InMemoryExtensionStore
+    from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
+    from maistro.extensions.store import ExtensionStore
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
         AgentIdentity as LifecycleIdentity,
@@ -260,6 +265,26 @@ class Container:
     #: (AC-5); in-memory with a loud warning otherwise, because PostgreSQL
     #: campaign tables are not part of the schema yet.
     campaign_store: CampaignStore | None = None
+    #: The canonical Goal store (`maistro.goals`, #1572) on the deployment's
+    #: selected backend — the ontology owner of the shared Goal concept.
+    #: Raw (id-addressed) on purpose: authorization is not the store's job,
+    #: it lives in the `goal_reader` seam below, over the canonical Workspace
+    #: authorization path (#1150).
+    goal_store: GoalStore = None  # type: ignore[assignment]  # wired in create_container
+
+    @property
+    def goal_reader(self) -> ScopedGoalStore:
+        """The principal-carrying Goal seam over `goal_store` (#1572).
+
+        Derived rather than stored — it wraps two stores this Container
+        already wires, so a second stored object would be a second thing to
+        keep in step. Workspace membership decides who may read or mutate a
+        Goal, and a foreign Goal answers like a missing one. What
+        `run_reader` is to `run_store`, this is to `goal_store`.
+        """
+
+        return ScopedGoalStore(self.goal_store, self.workspace_store)
+
     #: Durable log-as-context for repeated autonomous work (#301, M4-H): the
     #: append-only per-Workspace observation log and the disposable working
     #: graphs projected over it (ADR-082226-5104 §5-6). Rides the SQLite pool
@@ -479,8 +504,21 @@ class Container:
     # Governed extension install lifecycle (#953, M9-B2). Process-lifetime
     # in-memory records until the B1 signing/identity substrate (#952) lands;
     # this is a records-and-authority store, never an execution authority.
-    extension_install_store: InMemoryExtensionStore | None = None
+    # Typed as the store protocol: a host may prewire
+    # ``extension_install_service`` over any conforming store, and
+    # ``ensure_extension_install_service`` synchronizes this field from that
+    # service so every reader observes the one canonical record.
+    extension_install_store: ExtensionStore | None = None
     extension_install_service: ExtensionInstallService | None = None
+    # Extension operational views (#978, M9-I3): health evidence, operator
+    # decisions, and the projection facade over the SAME install store —
+    # never a second lifecycle authority, only a read/projection layer.
+    # Health evidence and operator decisions are durable-admission state:
+    # create_container wires the SQLite twin whenever it owns a SQLite
+    # connection, so a quarantine/disable survives restart instead of the
+    # held extension flipping back to ready.
+    extension_health_store: InMemoryExtensionHealthStore | SqliteExtensionHealthStore | None = None
+    extension_health_service: ExtensionHealthService | None = None
     # Private organizational extension catalog (#979). In-memory catalog per
     # organization until a durable backend is configured.
     catalog_store: InMemoryCatalogStore | None = None
@@ -2028,17 +2066,51 @@ class Container:
         activation substrate can inspect and decide, but installation fails
         closed with a clear error instead of improvising code execution. Hosts
         that own activation replace ``extension_install_service`` with one
-        built over their own loader.
+        built over their own loader. A host that prewires the service over
+        its own loader *and* store need not mirror the store onto
+        ``extension_install_store``; this method synchronizes the field from
+        the supplied service so every reader observes the one canonical
+        store the returned service owns.
         """
         from maistro.extensions.service import ExtensionInstallService, UnwiredExtensionLoader
         from maistro.extensions.store import InMemoryExtensionStore
 
         if self.extension_install_service is None:
+            if self.extension_install_store is None:
+                self.extension_install_store = InMemoryExtensionStore()
             self.extension_install_service = ExtensionInstallService(
-                self.extension_install_store or InMemoryExtensionStore(),
+                self.extension_install_store,
                 loader=UnwiredExtensionLoader(),
             )
+        else:
+            self.extension_install_store = self.extension_install_service.store
         return self.extension_install_service
+
+    def ensure_extension_health_service(self) -> ExtensionHealthService:
+        """Return the extension operational-view facade (#978, M9-I3).
+
+        Built over the same install-store instance the install-lifecycle
+        service uses, so health projections read the one canonical record of
+        activation. ``create_container`` wires the SQLite twin for the health
+        store whenever durable storage is configured; the in-memory fallback
+        below is only reached by deliberately ephemeral containers and tests.
+        """
+        from maistro.extensions.health import ExtensionHealthService, InMemoryExtensionHealthStore
+
+        # Ensure the lifecycle side exists first so both services share the
+        # one store instance; building them independently could fork the
+        # canonical record into two drifting copies. Take the store from the
+        # returned service, not from the container field: a host that
+        # prewired the service over its own store may never have mirrored
+        # the store onto ``extension_install_store``, and reading the field
+        # directly could project health from an empty fork.
+        install = self.ensure_extension_install_service()
+        if self.extension_health_service is None:
+            self.extension_health_service = ExtensionHealthService(
+                install.store,
+                self.extension_health_store or InMemoryExtensionHealthStore(),
+            )
+        return self.extension_health_service
 
     def ensure_catalog_service(self) -> CatalogService:
         """Return the private organizational extension catalog service (#979).
@@ -2330,6 +2402,16 @@ async def create_container(
     # deployment gets the in-memory fallback plus a startup warning naming
     # the cost, rather than a silent durability lie (#103, AC-5).
     campaign_store: CampaignStore | None = await _wire_campaign_backend(db_pool)
+    # The canonical Goal store rides the same backend decision, upgraded where
+    # the deployment offers it: a PostgreSQL pool always selects the durable
+    # PgGoalStore, creating the migration-063 tables when the database has not
+    # run `alembic upgrade head` yet — the event stores' "wiring creates the
+    # schema it needs" contract, never a second (in-process) backend (#1572).
+    # Without a PG pool, SQLite selects its twin and no database selects memory
+    # with a warning.
+    # The authorized `goal_reader` seam is derived on
+    # the Container from this store and the Workspace store.
+    goal_store = await wire_goal_store(db_pool, pg_pool=pg_pool)
     working_log = await _wire_working_memory_backend(db_pool)
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     # Same backend the spine just chose (#1176): claims beside the Runs they
@@ -2392,6 +2474,7 @@ async def create_container(
     from maistro.security.sentinel.policy import Sentinel
 
     audit_log = await _wire_audit_log(pg_pool=pg_pool, db_pool=db_pool)
+    extension_health_store = await _wire_extension_health_store(db_pool=db_pool)
     permission_table = build_permission_table(
         preset=config.security.permission_preset,
         permissions=config.security.permissions,
@@ -2615,6 +2698,7 @@ async def create_container(
         workspace_store=workspace_store,
         backlog_history_store=backlog_history_store,
         campaign_store=campaign_store,
+        goal_store=goal_store,
         working_log=working_log,
         run_store=run_store,
         run_reader=ScopedRunReader(run_store, workspace_store, project_scope_store),
@@ -2630,6 +2714,7 @@ async def create_container(
         working_memory=working_memory,
         agents=agents,
         audit_log=audit_log,
+        extension_health_store=extension_health_store,
         db_pool=db_pool,
         session_conn=session_conn,
         schedule_conn=schedule_conn,
@@ -2745,6 +2830,29 @@ async def _wire_prompt_manager(*, pg_pool: Any, db_pool: Any) -> PromptManager:
     from maistro.prompts.store import InMemoryPromptManager
 
     return InMemoryPromptManager()
+
+
+async def _wire_extension_health_store(*, db_pool: Any) -> Any:
+    """Select the extension health store from the configured backend (#978).
+
+    Health evidence and the operator decisions recorded against it
+    (quarantine, disable) are durable-admission state: leaving the
+    in-memory fallback here would let a held extension become ready again
+    on the first health request after a restart. The SQLite twin is wired
+    whenever the container owns a SQLite connection, matching the other
+    relational stores; the in-memory store remains only for the deliberate
+    ephemeral configuration and tests.
+    """
+    if db_pool is not None:
+        from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
+
+        store = SqliteExtensionHealthStore(db_pool)
+        await store.ensure_schema()
+        return store
+
+    from maistro.extensions.health import InMemoryExtensionHealthStore
+
+    return InMemoryExtensionHealthStore()
 
 
 async def _wire_audit_log(*, pg_pool: Any, db_pool: Any) -> Any:

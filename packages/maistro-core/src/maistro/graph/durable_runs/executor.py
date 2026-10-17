@@ -282,6 +282,7 @@ async def resume_durable_graph(
     node_resolver: NodeResolver,
     run_store: RunStore | None = None,
     max_steps: int = 256,
+    now: datetime | None = None,
 ) -> DurableRunRecord:
     """Resume through canonical Attempt recovery, never a second physical walker."""
     from .attempt_executor import resume_durable_graph as resume
@@ -292,6 +293,7 @@ async def resume_durable_graph(
         node_resolver=node_resolver,
         run_store=run_store,
         max_steps=max_steps,
+        now=now,
     )
 
 
