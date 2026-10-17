@@ -775,6 +775,82 @@ banking amendment — they remove nothing, grant nothing, and green no gate.
 Stack left unmerged; no push; writer handoff only, never integration approval.
 No inventory delta (stays +79). (Refs #1851)
 
+## CI-repair revalidation — 2026-10-17 (`10195750ee73`, job `8f3f549c1a4a4373b20d1e607b7fc0ad`) — amendment space exhausted by execution
+
+First round assigned at the exact branch head `10195750ee73d760f0e37c23e3c1f9fc72cbfa62`
+(base `ab8b3737fa64`); worktree found clean at the assigned head. New this round:
+the two counterfactual ledger/contract states that prior rounds derived from the
+gate's source were **executed**, exhausting the CI-repair amendment space
+empirically. Note-only commit; no source, test, or ledger change.
+
+Fresh execution at this head (nothing assumed from prior rounds): driver
+battery green (`uv sync --locked --extra dev`; `ruff check .`; `ruff format
+--check .` 3,299 files; focused pytest **79 passed**; `mypy` on the module
+Success; `check-suite-inventory.py --suite packages/maistro-core/tests` ok at
+16,439). `git ls-remote origin develop` = `ab8b3737fa64` — the trusted base is
+not just the current develop tip, it is **frozen upstream**, so the two-merge
+wall cannot be crossed by a develop sync either.
+
+`exact-debt-ledger` (`vulture-ratchet.yml`) three-step decomposition at this
+head: `check-ratchet-provenance.py` rc=1 (solely "check-reachability-provenance.py:
+trusted-base gate returned 1" — the unwired module); `check-shipped-surface-truth.py`
+rc=0; `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` rc=1 — `unclassified: 0`, `never_allowlist: 0`, no
+candidate-bookkeeping block (banking half green, 1,327 scan == 1,327 ledger),
+authorization half red on exactly the five retained identities
+(`admission_identity.py:515-520`). Issue-named integration commands at this
+head: `check-reachability.py` rc=1 (exactly 1 NEWLY UNREACHABLE:
+`maistro.runs.admission_identity`, 170/1,402), `check-reachability-dispositions.py`
+rc=0 (49 groups / 169 modules), `check-promotion-surface.py` rc=0. `test` gate
+reachability subset re-run at CI env (`REQUIRE_AUTH=false MAISTRO_DRY_RUN=1
+RATCHET_BASE_REV=origin/develop`): exactly **3 failed / 36 passed**, every
+failure emitting `::error title=New unreachable
+modules::maistro.runs.admission_identity`.
+
+**Executed counterfactual triangle** (throwaway clone pinned at this exact
+head, every gate run with `RATCHET_BASE_REV=ab8b3737fa64` — CI's resolution for
+this PR; see measurement trap below):
+
+1. **As-is** (enum kept, five rows banked — the committed state): vulture gate
+   rc=1, 1,322 trusted → 1,327 findings, exactly the 5 enum identities
+   unauthorized. (The committed state is the *least-red legal configuration*.)
+2. **Rows pruned** (enum kept, ledger reverted to develop's 1,322): rc=1 with
+   BOTH halves red — "5 NEW identit(y/ies) not in the ledger" *and* "Authorized
+   debt must also be banked in the candidate ledger". The lane-brief remedy
+   "remove identities your fix eliminated" has an empty elimination set and a
+   removal provably regresses banking; prior rounds' source-derived argument is
+   now execution-proven.
+3. **Members deleted + rows pruned** (the only remaining code-side lever): the
+   vulture gate goes **green** (rc=0, 1,322 == 1,322) — and the issue-mandated
+   contract test `test_module_exports_exact_contract_and_assessment_values`
+   **fails** (1 failed / 78 passed). Together with (1) and (2): the vulture
+   half greens **if and only if** the issue's fixed six-member
+   `AdmissionAssessment` contract is deleted, which the issue explicitly
+   forbids ("without ... removing the restored enum contract"). No ledger
+   state, no code state, and no combination thereof greens the gate within the
+   leaf's legal action space. Resolution remains exclusively: owner-landed
+   develop-side grant (impossible while develop is frozen at the base) and/or
+   the #1845 real-consumer integration head.
+
+Measurement trap recorded for future rounds: a fresh `git clone` of this
+worktree resolves `origin/develop` to the canonical repo's **stale local**
+`develop` ref (trusted ledger 1,378 rows from an older base), silently
+producing bogus "NEW"/"no longer found" deltas; unpinned clone runs are void.
+CI pins the base via `RATCHET_BASE_REV` (workflow env), so worktree runs —
+whose `origin/develop` is the true frozen upstream tip — match CI exactly.
+
+Ledger decision (unchanged, now execution-backed): the five retained rows stay
+banked exactly as the scan finds them (scan-exact, no silent row loss); no
+amendment can alter the outcome (states 1–3 exhaust the space); the rows add no
+grant, no waiver, no reachability entry, and green no gate by themselves. The
+issue-checklist reconciliation record stands: the round-2 lane brief's
+amendment authority was invoked and found insufficient pending the owner's
+develop-side decision — not silently treated as approval. All leaf acceptance
+criteria proven; the red gates are the issue's own anticipated explicit merge
+blocker ("report implementation/test readiness plus the explicit merge blocker
+and leave the stack unmerged"). Stack left unmerged; no push; writer handoff
+only, never integration approval. No inventory delta (stays +79). (Refs #1851)
+
 ## CI-repair revalidation — 2026-10-17 (`88b032872717`, job `c2731ec4e79248cab`)
 
 Assigned repair of the merge-queue evaluation at the exact branch head
