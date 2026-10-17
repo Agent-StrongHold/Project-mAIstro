@@ -1662,3 +1662,64 @@ Driver logs 5/5 green (uv sync; ruff check; ruff format; pytest 79 passed; suite
 
 Verdict: writer handoff MERGE-READY (handoff only, never integration approval); the `#1845` integration
 hold stands; stack left unmerged; no inventory delta (stays +79). (Refs #1851)
+
+## Round-205 independent verifier + writer re-execution (head `f86237ded`, base `ab8b3737`)
+
+Job `61556ecdcdb54291850c79bddd7d1d16`. Every load-bearing fact re-derived firsthand at the exact
+assigned head; no earlier claim assumed. Driver logs 5/5 green (uv sync; ruff check; ruff format;
+pytest 79 passed; suite inventory ok).
+
+- Worktree clean at exact head `f86237ded38549a4c64620ab53837c2cc776f527`. **Base motion resolved by
+  fresh fetch:** `refs/remotes/origin/develop` advanced `ab8b3737` → `07fac4abd` (+2: `369ab9add`
+  ontology Protocol docstring, `07fac4abd` cancellation-cause-codec test). Neither commit touches
+  `quality/` (`git diff --name-only ab8b3737..refs/remotes/origin/develop -- quality/` is empty) nor
+  imports `admission_identity` — **no grant landed, the two-merge wall stands, and no develop sync
+  conflict exists** (PR `#1936` is `mergeable=True`, `mergeable_state=behind`; per lane brief the
+  merge-develop remedy applies only to sync conflicts, so the stack stays unmerged and the PR head
+  unmoved by this round).
+- Focused acceptance re-executed live: `pytest
+  packages/maistro-core/tests/runs/test_root_admission_identity.py -q` → 79 passed rc=0; ruff check +
+  `format --check` on both leaf files → clean; `mypy` on the module → Success; full
+  `check-suite-inventory.py` → ok (17 suites, 31323 == 31323, 0 duplicate identities).
+- Contract re-proven by AST walk: 18 ClassDefs = 17 frozen+slots dataclasses (no exceptions) + the
+  `AdmissionAssessment` StrEnum at `:508` with the 6 lowercase pairs verbatim in order at `:515-520`;
+  `__all__` 21 names; `owns()` is a single `And` with exactly 3 operands (scope_key, generation_id,
+  owner_token); `repr=False` ×2 (`AdmissionTicket`/`AdmissionRecordV2` `owner_token`);
+  `admitted == "self.binding is not None"` ×2; `field(init=False)` ×2 (`format_version`); 0 `# noqa`,
+  0 `type: ignore`, 0 vulture strings. All 12 issue-named tests defined exactly once.
+- Scope invariants hold: diff vs base is exactly the 4 in-scope files (+2849/-0); 0 production
+  importers of `admission_identity`; no `maistro.runs.__init__` export; `quality/` numstat +5/-0
+  (vulture-baseline only); grant/reachability files 0-line diffs.
+- `#1841` anchors intact: `store_boundary.py:56 require_admitted_actor(actor_principal_id: str | None)
+  -> str`; `store.py:550 get_run(..., principal_id: str | None = None)` + 8 `actor_principal_id` refs;
+  `model.py:306` field + `:335-336` validation.
+- CI-exact gates re-run with true exit codes: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (RATCHET_BASE_REV=refs/remotes/origin/develop) →
+  rc=1, banking GREEN (1327 findings == candidate ledger 1327, unclassified 0, never_allowlist 0),
+  authorization RED on exactly the 5 enum identities `:515-520` with the gate's own remedy "land a
+  reviewed grant first". Baseline rows re-parsed from JSON: exactly those 5 reviewed retained
+  identities, multiset +5/-0 vs base; no fix eliminated any identity, so the CI-repair instruction's
+  "remove identities your fix eliminated" clause is vacuously satisfied and the amendment stands as-is.
+  Two-merge mechanism re-read at `scripts/ratchet_provenance.py:478-498` (`load_authorizations` reads
+  grants from the base revision; docstring: "a new grant does not take effect in the change that
+  introduces it"). `check-reachability.py` → rc=1, exactly 1 NEWLY UNREACHABLE:
+  `maistro.runs.admission_identity` (170/1402). `check-reachability-dispositions.py` → rc=0.
+  `check-promotion-surface.py` → rc=0. `check-shipped-surface-truth.py` → rc=0.
+  `check-ratchet-provenance.py` → rc=1 solely via the reachability leg (contract-marker, enumeration,
+  lifecycle legs all OK).
+- CI test trio reproduced live: 3 failed / 46 passed across `tests/test_check_reachability.py` +
+  `tests/test_reachability_baseline_identity.py`, each failure naming `maistro.runs.admission_identity`
+  as the extra unreachable module. Coverage producer root cause re-read at `quality.yml:713-714`
+  (producer runs `pytest tests/`, which contains the trio).
+- Disposition unchanged: no issue-legal in-leaf change greens the four red gates — the 5 identities are
+  the issue-mandated enum contract (removal prohibited; row removal would regress banking; branch grant
+  inert by construction and outside the lane exception; caller/export/baseline-entry/suppression all
+  issue-prohibited). The resolving changes remain the `#1845` integration head (real reviewed runtime
+  consumer) and owner-landed develop grants, both outside this leaf — exactly the issue's prescribed
+  "report implementation/test readiness plus the explicit merge blocker and leave the stack unmerged".
+- Reconciliation status: the issue's five-retained-baseline-entries checkbox remains open pending an
+  owner decision outside this leaf; the re-issued CI-repair lane authority ("Ledger amendment is
+  permitted and required in CI-repair rounds") is recorded here; banked rows authorize nothing.
+
+Verdict: writer handoff MERGE-READY (handoff only, never integration approval); the `#1845` integration
+hold stands; stack left unmerged; no inventory delta (stays +79). (Refs #1851)
