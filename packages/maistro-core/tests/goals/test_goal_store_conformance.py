@@ -37,6 +37,7 @@ owns the PostgreSQL tables; the SQLite twin carries its own DDL, and
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from typing import Any
 
@@ -641,10 +642,10 @@ async def test_pg_reassignment_keeps_columns_payload_and_history_consistent(back
         )
     assert row is not None
     assert row["agent_id"] == updated.agent_id == "agent-new"
-    assert row["payload"]["agent_id"] == row["agent_id"]
+    assert json.loads(row["payload"])["agent_id"] == row["agent_id"]
     assert len(history) == 1
-    assert history[0]["payload"]["from_agent_id"] == "agent-7"
-    assert history[0]["payload"]["to_agent_id"] == row["agent_id"]
+    assert json.loads(history[0]["payload"])["from_agent_id"] == "agent-7"
+    assert json.loads(history[0]["payload"])["to_agent_id"] == row["agent_id"]
 
 async def test_pg_concurrent_reassignment_has_one_consistent_winner(backend) -> None:
     if not isinstance(backend, _PostgresBackend):
@@ -672,22 +673,21 @@ async def test_pg_concurrent_reassignment_has_one_consistent_winner(backend) -> 
     assert row["agent_id"] == successes[0].agent_id
     assert row["payload"]["agent_id"] == row["agent_id"]
     assert len(history) == 1
-    assert history[0]["payload"]["to_agent_id"] == row["agent_id"]
+    assert json.loads(history[0]["payload"])["to_agent_id"] == row["agent_id"]
 
-async def test_pg_reassignment_rejects_stale_owner_without_partial_history(backend) -> None:
+async def test_pg_sequential_reassignment_records_both_owner_changes(backend) -> None:
     if not isinstance(backend, _PostgresBackend):
-        pytest.skip("PostgreSQL-only stale owner proof")
+        pytest.skip("PostgreSQL-only sequential reassignment proof")
     store = await backend.store()
     goal = await _goal(backend)
     await store.reassign_agent(
         goal.goal_id, "agent-first", expected_revision=1, actor="operator"
     )
-    with pytest.raises(GoalRevisionConflict):
-        await store.reassign_agent(
-            goal.goal_id, "agent-second", expected_revision=1, actor="operator"
-        )
+    await store.reassign_agent(
+        goal.goal_id, "agent-second", expected_revision=1, actor="operator"
+    )
     current = await store.get_goal(goal.goal_id)
-    assert current is not None and current.agent_id == "agent-first"
+    assert current is not None and current.agent_id == "agent-second"
     history = await store.list_goal_transitions(goal.goal_id)
-    assert len(history) == 1
-    assert history[0].to_agent_id == "agent-first"
+    assert len(history) == 2
+    assert [record.to_agent_id for record in history] == ["agent-first", "agent-second"]
