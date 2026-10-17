@@ -8,6 +8,13 @@ Items can be in three states:
 Manual dismissals live in kv_store under store_name='setup_checklist',
 key = item_id, value = {"dismissed_at": ISO8601}. The 7-day expiry is computed
 at read time — no background job needed.
+
+Scope, versus the other two "first-run state" notions (#443): this catalog
+answers "which optional post-provisioning steps remain" (LLM provider key,
+first chat, interview, integration PATs) for an already-authenticated user.
+It is deliberately NOT a first-run gate and never decides whether setup may
+run — that is ``routes/setup.py::_is_setup_complete`` alone, which this
+module's items presuppose has already gone terminal.
 """
 
 from __future__ import annotations
@@ -19,6 +26,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from services import user_credentials as cred_svc
+from services.request_principal import require_actor_id
 
 router = APIRouter(tags=["setup-checklist"])
 logger = logging.getLogger(__name__)
@@ -28,11 +36,7 @@ _DISMISS_TTL_DAYS = 7
 
 
 def _user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    uid = user.get("id")
-    if not uid:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return str(uid)
+    return require_actor_id(request)
 
 
 def _kv() -> Any | None:

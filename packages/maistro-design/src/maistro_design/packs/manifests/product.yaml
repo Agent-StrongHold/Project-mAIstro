@@ -1,0 +1,69 @@
+# Domain pack: product (M7-A4, #793)
+# One of three packs of the same loop — never a product identity. Canvas is
+# an execute backend binding here (visuals), alongside Builders.
+pack_id: product
+# Pack release version (M9-F3, #968): the identity Workspace activations
+# are recorded against; bump it when the manifest's defaults change.
+version: 1.0.0
+name: Product Pack
+summary: >-
+  Positioning, audience, and an artifact plan explored before produce; copy,
+  decks, and posters produced through Builders and Canvas, then evaluated and
+  refined on the same canonical loop as every other pack.
+explore_focus:
+  - positioning
+  - audience
+  - artifact_plan
+execute_backends:
+  - builders
+  - canvas
+artifact_kinds:
+  - positioning_statement
+  - audience_profile
+  - artifact_plan
+  - ad_copy
+  - deck
+  - poster
+rubric_dimensions:
+  - dimension_id: clarity_of_offer
+    name: Clarity of offer
+    description: The offer and who it is for are stated unambiguously.
+  - dimension_id: claim_evidence
+    name: Claim-evidence
+    description: Every claim the artifact makes is backed by evidence it shows.
+  - dimension_id: channel_fit
+    name: Channel fit
+    description: The artifact suits the channel it will ship through.
+fence_points:
+  - explore.accept
+  - evaluate.accept
+graph:
+  name: product-loop
+  entry_node: explore.positioning
+  nodes:
+    - node_id: explore.positioning
+      kind: pack.explore
+      phase: explore
+    - node_id: explore.audience
+      kind: pack.explore
+      phase: explore
+    - node_id: explore.artifact_plan
+      kind: pack.explore
+      phase: explore
+      fenced: true
+    - node_id: execute.produce
+      kind: pack.execute
+      phase: execute
+    - node_id: evaluate.rubric
+      kind: pack.evaluate
+      phase: evaluate
+      fenced: true
+    - node_id: refine.revise
+      kind: pack.refine
+      phase: refine
+  edges:
+    - [explore.positioning, explore.audience]
+    - [explore.audience, explore.artifact_plan]
+    - [explore.artifact_plan, execute.produce]
+    - [execute.produce, evaluate.rubric]
+    - [evaluate.rubric, refine.revise]

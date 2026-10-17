@@ -1,7 +1,8 @@
-"""DesignOrchestrateNode — DAG node wrapping DesignEngine.generate().
+"""Design domain nodes for the canonical maistro-core graph executor.
 
-Registered under kind "design.orchestrate" so design workflows compose
-with the maistro-core graph executor (ADR-042 / ADR-061).
+Registered under the shared graph node registry (ADR-042 / ADR-061) so design
+work composes with — and carries the Run/NodeRun/Attempt provenance of — the
+canonical executor rather than a side execution path.
 """
 
 from __future__ import annotations
@@ -12,6 +13,11 @@ from pydantic import BaseModel, Field
 
 from maistro.graph.nodes import register_node
 from maistro.graph.nodes.base import BaseNode, NodeContext
+from maistro_design.consistency import (
+    ConsistencyEvaluation,
+    CreativeProjectSnapshot,
+    evaluate_project_snapshot,
+)
 from maistro_design.engine import DesignEngine
 from maistro_design.skills.builtins import load_builtins
 from maistro_design.skills.registry import InMemoryDesignSkillRegistry
@@ -43,6 +49,19 @@ class DesignOrchestrateOut(BaseModel):
     output_count: int = 0
 
 
+class ConsistencyEvalOut(BaseModel):
+    """Output of one cross-artifact consistency evaluation run."""
+
+    passed: bool
+    evaluation: ConsistencyEvaluation = Field(
+        description="Full result contract: provenance, per-dimension verdicts, findings, refinement proposal",
+    )
+    proposed_refinement_artifact_ids: tuple[str, ...] = Field(  # noqa: V107
+        default_factory=tuple,
+        description="Convenience projection of evaluation.refinement.targets for orchestration callers",
+    )
+
+
 @register_node
 class DesignOrchestrateNode(BaseNode[DesignOrchestrateIn, DesignOrchestrateOut]):
     """Runs a design skill workflow: discovery validation → Warden scan → prompt-stack assembly.
@@ -56,7 +75,6 @@ class DesignOrchestrateNode(BaseNode[DesignOrchestrateIn, DesignOrchestrateOut])
     input_schema: ClassVar[type[BaseModel]] = DesignOrchestrateIn
     output_schema: ClassVar[type[BaseModel]] = DesignOrchestrateOut
     cost_hint: ClassVar[float] = 1.0
-    idempotent: ClassVar[bool] = False
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Design: orchestrate skill"
     description: ClassVar[str] = (
@@ -96,4 +114,61 @@ class DesignOrchestrateNode(BaseNode[DesignOrchestrateIn, DesignOrchestrateOut])
             prompt_stack=prompt_stack,
             canvas_id=project.canvas_id,
             output_count=len(project.outputs),
+        )
+
+
+@register_node  # noqa: V102
+class ConsistencyEvalNode(BaseNode[CreativeProjectSnapshot, ConsistencyEvalOut]):
+    """Cross-artifact consistency evaluation as a canonical graph node (#779).
+
+    Wraps :func:`maistro_design.consistency.evaluate_project_snapshot` so an
+    evaluation is one NodeRun with real Attempt evidence inside a Run — the
+    same provenance universe as generation, refinement, and everything else.
+    Deterministic and external-io-free: the verdict is computed from the
+    snapshot alone, and the node proposes refinement targets without writing
+    any project state.
+
+    The ``noqa: V102`` marker records that this class is instantiated by the
+    shared graph-node registry through its ``kind`` string
+    (``design.consistency_eval``) — no scanned call site names the class
+    directly, which is true of every ``@register_node`` subclass.
+    """
+
+    kind: ClassVar[str] = "design.consistency_eval"
+    kind_category: ClassVar = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = CreativeProjectSnapshot
+    output_schema: ClassVar[type[BaseModel]] = ConsistencyEvalOut
+    cost_hint: ClassVar[float] = 0.1
+    external_io: ClassVar[bool] = False
+    display_name: ClassVar[str] = "Design: cross-artifact consistency evaluation"
+    description: ClassVar[str] = (
+        "Evaluate a frozen creative project snapshot for cross-artifact "
+        "consistency (persona, claims, terminology, coverage, accessibility, "
+        "locked decisions) and propose targeted refinement. Proposal only — "
+        "this node never mutates project state."
+    )
+
+    async def _execute(
+        self,
+        inputs: CreativeProjectSnapshot,
+        ctx: NodeContext,
+    ) -> ConsistencyEvalOut:
+        # Canonical provenance guard: the NodeRun/Attempt records live under
+        # the Run's project, so a snapshot naming a different project would
+        # make the persisted evaluation contradictory (evaluated project X,
+        # filed under project Y). Reject instead of silently mis-filing.
+        if ctx.project_id is not None and inputs.project_id != ctx.project_id:
+            msg = (
+                f"snapshot project_id {inputs.project_id!r} does not match "
+                f"the Run's canonical project_id {ctx.project_id!r}"
+            )
+            raise ValueError(msg)
+        evaluation = evaluate_project_snapshot(inputs)
+        return ConsistencyEvalOut(
+            passed=evaluation.passed,
+            evaluation=evaluation,
+            proposed_refinement_artifact_ids=tuple(
+                target.artifact_id
+                for target in (evaluation.refinement.targets if evaluation.refinement else ())
+            ),
         )

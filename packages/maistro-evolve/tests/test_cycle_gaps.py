@@ -66,6 +66,37 @@ async def test_run_tournament_battles_returns_early_with_fewer_than_two_scored_g
     assert cycle.tournament.get_stats()["total_battles"] == 0
 
 
+@pytest.mark.asyncio
+async def test_run_tournament_battles_clears_inherited_elo_without_battles() -> None:
+    """A never-battled genome must not keep inherited Elo evidence (#853).
+
+    Crossover/mutation deepcopy the parent's harness_params, so a child that
+    sits out the tournament (odd-sized field, no common benchmarks) would
+    otherwise collect the parent's Elo bonus.
+    """
+    population = PopulationStore()
+    g1 = _genome("a")
+    g1.eval_scores = {"proxy_ifeval": 0.5}
+    g2 = _genome("b")
+    g2.eval_scores = {"proxy_ifeval": 0.6}
+    # Child of a battled parent: inherited evidence, no battles of its own.
+    # Its only benchmark shares nothing with the others, so it can never be
+    # paired into a battle regardless of the shuffle.
+    g3 = _genome("child")
+    g3.eval_scores = {"other_benchmark": 0.55}
+    g3.harness_params["avg_elo"] = 1400.0
+    g3.harness_params["elo_battles"] = 7
+    population.add(g1)
+    population.add(g2)
+    population.add(g3)
+    cycle = EvolutionCycle(harness=EvalHarness(), tournament=EloTournament())
+
+    await cycle._run_tournament_battles(population, EvolutionConfig())
+
+    assert g3.harness_params.get("avg_elo") is None
+    assert g3.harness_params.get("elo_battles") is None
+
+
 def test_breed_island_does_nothing_for_empty_island() -> None:
     from maistro_evolve.population import IslandPopulation
 
