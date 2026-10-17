@@ -45,6 +45,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
+import regex
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 __all__ = [
@@ -442,10 +443,19 @@ def _local_impact_closure(
 # ─── Checks ──────────────────────────────────────────────────────────────────
 
 
+# Preserve caller-authored regex syntax while bounding backtracking. Budget
+# exhaustion must propagate: silently returning a non-match could approve an
+# artifact whose banned-marker or contradiction check never completed.
+_REGEX_TIMEOUT_SECONDS = 0.05
+
+
 def _contains(pattern: str, text: str) -> bool:
     try:
-        return re.search(pattern, text, re.IGNORECASE) is not None
-    except re.error:
+        return (
+            regex.search(pattern, text, regex.IGNORECASE, timeout=_REGEX_TIMEOUT_SECONDS)
+            is not None
+        )
+    except regex.error:
         return pattern.lower() in text.lower()
 
 
@@ -469,12 +479,14 @@ def _mentions_affirmatively(pattern: str, text: str) -> bool:
     marker is the defect regardless of phrasing.
     """
     try:
-        compiled = re.compile(pattern, re.IGNORECASE)
-    except re.error:
+        compiled = regex.compile(pattern, regex.IGNORECASE)
+    except regex.error:
         compiled = None
     starts: list[int] = []
     if compiled is not None:
-        starts = [match.start() for match in compiled.finditer(text)]
+        starts = [
+            match.start() for match in compiled.finditer(text, timeout=_REGEX_TIMEOUT_SECONDS)
+        ]
     else:
         needle = pattern.lower()
         lowered = text.lower()
