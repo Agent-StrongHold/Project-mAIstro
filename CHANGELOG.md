@@ -129,6 +129,12 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Prevent competing Graph recovery ticks from stealing a persisted claim (#837).**
+  Claim ownership is fenced before orphaned-attempt reconciliation, including
+  the WAITING-to-RUNNING activation window. Losing readers leave the owner's
+  lifecycle and physical work unchanged; ordinary timer parks release the
+  marker and expired claims remain recoverable without redispatch.
+
 - **Rubrics instantiated from pack assets now pin the exact source snapshot
   (#966).** `RubricProvenance` recorded only `pack_id`, so rubrics minted from
   different versions of the same pack were provenance-indistinguishable.
