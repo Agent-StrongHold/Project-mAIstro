@@ -696,3 +696,81 @@ ungranted retained identities), repairable only at the #1845 integration head
 — outside this leaf's legal action space. Stack left unmerged; no push; writer
 handoff MERGE-READY (handoff only, never integration approval). No inventory
 delta (stays +79). (Refs #1851)
+
+## CI-repair revalidation — 2026-10-17 (`829d444973d0`, job `3c44b4d5e2cc`)
+
+Assigned repair of the carried `exact-debt-ledger` CI failure at the exact
+branch head `829d444973d05e0a2940f2ff84e9cc346f9ecf85` (base `ab8b3737fa64`,
+unchanged on `origin/develop` — re-fetched this round); worktree found clean at
+the assigned head. Driver battery check-0..4 all rc=0 (`uv sync --locked
+--extra dev`, `ruff check .`, `ruff format --check .`, focused pytest, core
+suite inventory 16,439). Every claim below was re-derived by direct execution
+at this tree; no source, test, or ledger change was warranted, so this is a
+note-only commit (inventory delta stays `packages/maistro-core/tests: +79`).
+
+Instructed command, run at CI's exact argv (verified identical in
+`vulture-ratchet.yml:82-84` and `quality.yml:1079-1082`):
+`uv run python scripts/check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` → true exit **1**. Output
+decomposition, read firsthand:
+
+- `unclassified: 0`, `never_allowlist: 0`; no "Candidate ledger bookkeeping"
+  block (no "must also be banked" / "must be pruned") → banking half **green**:
+  the candidate ledger banks exactly the scan's identities (1,327 == 1,327;
+  the five rows sit under `pydantic-declarative-field`, verified by reading
+  the ledger's own rule entries).
+- Authorization half **red** on exactly 5 NEW-against-trusted-base identities
+  at `admission_identity.py:515-520`: `unused variable 'MISMATCH'`,
+  `'REPLAYED'`, `'TAKEOVER'`, `'REPLACE_EXPIRED'`, `'LEGACY_UNRESOLVED'`
+  (60% confidence). Gate message: "New Vulture debt is not authorized by the
+  trusted base. Running --update in this branch cannot authorize it; land a
+  reviewed grant first."
+- "Fix what is genuinely dead": nothing qualifies. The five identities are
+  verbatim members of the issue's fixed `AdmissionAssessment` contract
+  (`admission_identity.py:508-520`, exactly the six lowercase pairs; only
+  `PENDING` is unflagged, shielded by same-name attribute loads elsewhere in
+  `packages/*/src`). Deleting or renaming them violates the issue's exact
+  member/value contract; both prohibited avenues were already tried and
+  reverted on this branch (`b811e6978`, `a813787ac` → removed in `36372888d`).
+  "Remove identities your fix eliminated": this round's fix eliminates none,
+  so no row is removed; the instructed amendment for reviewed retained
+  identities is already present and scan-exact.
+- The authorization wall is base-side and external to this leaf: grants load
+  from the merge base (`load_authorizations(RATCHET, base=trusted_ref.base_sha)`,
+  `scripts/ratchet_provenance.py`), `origin/develop` is still `ab8b3737fa64`,
+  and its `quality/ratchet-authorizations.json` carries 102 vulture + 11
+  reachability grants, none naming `admission_identity` (counted this round);
+  the branch copies of `quality/ratchet-authorizations.json` and
+  `quality/reachability-baseline.json` remain 0-line diffs vs base.
+
+Remaining three CI gates re-reproduced at this head, same two root causes,
+zero delta vs the `6b538c1ea414` round: `check-reachability.py` rc=1 with
+exactly 1 NEWLY UNREACHABLE (`maistro.runs.admission_identity`, 170/1402);
+the test gate's named subset `pytest
+tests/test_reachability_baseline_identity.py tests/test_check_reachability.py`
+(CI env `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 RATCHET_BASE_REV=origin/develop`)
+→ exactly **3 failed / 36 passed**, every failure emitting
+`::error title=New unreachable modules::maistro.runs.admission_identity`; the
+Coverage gate aborts one hop downstream in its `pytest tests/` scripts
+producer (`quality.yml`, `set -euo pipefail`), which contains those same three
+files — full-suite decomposition recorded in the preceding rounds stands.
+Focused leaf validation re-executed green: pytest **79 passed**, focused ruff
+check/format clean, `mypy packages/maistro-core/src/maistro/runs/admission_identity.py`
+Success, `check-suite-inventory.py --suite packages/maistro-core/tests` ok
+(16,439 matches the recorded inventory). Scope re-proven: branch diff vs base
+is exactly the 4 in-scope files (+1,683/-0 total: module 520, test 660, note,
+vulture-baseline +5); zero tracked importers of `admission_identity` outside
+module+test; `runs/__init__.py` has no admission reference.
+
+Conclusion (unchanged, now proven at `829d444973d0`): the exact-debt-ledger
+red is irreducible in this leaf — any candidate ledger state exits 1 (pruning
+the five rows moves the failure to the banking half), and the only two exits
+are owner-landed develop grants and the #1845 real-consumer integration head,
+both outside this leaf's legal action space and both required by the issue's
+own staging language ("report implementation/test readiness plus the explicit
+merge blocker and leave the stack unmerged"; "A candidate baseline update
+cannot grant itself permission"). Baseline reconciliation per the issue
+checklist: the five banked rows are the scan-exact, lane-authorized CI-repair
+banking amendment — they remove nothing, grant nothing, and green no gate.
+Stack left unmerged; no push; writer handoff only, never integration approval.
+No inventory delta (stays +79). (Refs #1851)
