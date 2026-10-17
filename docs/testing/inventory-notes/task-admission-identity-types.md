@@ -385,3 +385,16 @@ leaves `maistro.runs.admission_identity` unwired. The required real consumer
 and trusted-base authorization must land outside this inactive leaf; no
 additional source, suppression, grant, fake caller, or ledger edit is a
 valid repair here.
+
+## CI-repair verification at assigned head (`7f8980627822`)
+
+Focused validation was rerun: 79 contract tests pass; focused Ruff check and
+format plus mypy pass; and the recorded core suite inventory remains 16,439
+node IDs (`inventory-delta: +79` unchanged). The CI-argv Vulture gate remains
+blocked at trusted base `ac737014`: its five findings are the required
+`AdmissionAssessment` members at `admission_identity.py:515-520`, while the
+candidate ledger already banks all 1,327 scan findings. The ratchet provenance
+gate also remains blocked solely because the leaf is intentionally unreachable.
+No contract, ledger, grant, or artificial-consumer change was made by this
+verification; the parent integration still needs the real consumer and prior
+trusted-base authorization.
