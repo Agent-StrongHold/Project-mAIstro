@@ -119,6 +119,8 @@ class ScopedGoalStore:
         actor: str,
         at: datetime | None = None,
     ) -> Goal:
+        if not isinstance(agent_id, str) or not agent_id.strip() or agent_id != agent_id.strip():
+            raise ValueError("agent_id must be a nonblank, trimmed string")
         await self._visible_goal(goal_id, principal_id, WorkspaceAction.ADMINISTER)
         return await self.goal_store.reassign_agent(
             goal_id,
