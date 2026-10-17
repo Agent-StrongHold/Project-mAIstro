@@ -454,3 +454,22 @@ reachability-baseline tests remain red only for the intentionally unwired
 grant, or synthetic importer: the required fixes are the parent #1845 real
 consumer and a separately landed trusted-base authorization. No tests were
 added in this verification pass.
+
+## CI-repair review at assigned head (`ecc2de4829cc`)
+
+Fresh local validation at this exact head passed: focused pytest (**79 passed**),
+focused Ruff check/format, mypy, and the core suite inventory (**16,439** node
+IDs). `check-reachability-dispositions.py` and
+`check-promotion-surface.py` also pass. The recorded
+`inventory-delta: packages/maistro-core/tests: +79` is unchanged.
+
+The CI-argv Vulture command still exits 1: the candidate has 1,327 findings
+versus the trusted base's 1,322, and its only five new identities are the
+required `AdmissionAssessment` members at
+`admission_identity.py:515-520`. Candidate bookkeeping is already exact, but
+the trusted base has no authorization. `check-reachability.py` and
+`check-ratchet-provenance.py` also exit 1 solely because the deliberately
+unwired `maistro.runs.admission_identity` is newly unreachable. The issue's
+remaining baseline-reconciliation and real-consumer integration holds are
+therefore **UNVERIFIED**: this leaf cannot resolve either through a candidate
+baseline, grant, or synthetic consumer.
