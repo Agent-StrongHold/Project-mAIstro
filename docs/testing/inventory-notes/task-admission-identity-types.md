@@ -934,3 +934,75 @@ the scan-exact CI-repair-round banking amendment authorized by the lane brief;
 they add no grant, no waiver, no reachability entry, and green no gate by
 themselves. Stack left unmerged; no push; writer handoff only, never
 integration approval. No inventory delta (stays +79). (Refs #1851)
+
+## Round 195 — independent re-derivation at the new assigned base `ab8b3737` (job `bc904b9e`)
+
+No earlier verification claim assumed; every load-bearing fact re-derived
+firsthand at head `aeb2bf93d4b24a0636ebb5a99a7c768a7628579d`.
+
+Base movement resolved: `origin/develop` re-fetched and now at `ab8b3737fa64`
+(test(graph) beam-selection pin, #1627) — exactly this round's assigned base,
+one commit past the previously recorded `ac737014`. That tip is an ancestor of
+this branch (318 ahead / 0 behind; merge-base = `ab8b3737`), so no develop sync
+conflict exists and none is warranted. The new develop commit touches the graph
+package only; none of the leaf files or quality ledgers changed on develop.
+
+CI-exact gate re-runs at this head (rc captured directly, not from logs):
+
+- `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → rc=1. Banking half GREEN (1,327 findings,
+  0 unclassified, 0 never_allowlist, all banked); authorization half RED on
+  exactly the 5 `AdmissionAssessment` enum identities at
+  `admission_identity.py:515-520` ("New Vulture debt is not authorized by the
+  trusted base", base `ab8b3737`). `git show origin/develop:quality/ratchet-authorizations.json`
+  contains 0 `admission_identity` grants, and the branch copy is a 0-line diff
+  vs base, so the two-merge wall stands unchanged at the new tip.
+- `check-shipped-surface-truth.py` → rc=0.
+- `check-ratchet-provenance.py` → rc=1 solely via
+  `check-reachability-provenance.py` trusted-base gate.
+- `check-reachability.py` → rc=1: exactly `maistro.runs.admission_identity`
+  NEWLY UNREACHABLE (unchanged count: one module).
+- CI test-gate trio reproduced:
+  `RATCHET_BASE_REV=origin/develop pytest tests/test_reachability_baseline_identity.py
+  tests/test_check_reachability.py` → 3 failed / 36 passed, each failure naming
+  the unwired module.
+- Coverage gate root cause re-confirmed by workflow read:
+  `quality.yml:713-714` producer runs `pytest tests/`, which contains the same
+  three failing files; not an independent defect.
+
+CI-repair lane instruction executed, decision unchanged with fresh evidence:
+the instructed vulture command lists the 5 identities as unauthorized-from-
+trusted-base (not unbanked — the candidate ledger already banks them). None is
+genuinely dead: all five are the issue's fixed six-member `AdmissionAssessment`
+contract, re-verified by AST at this head (members/values/order verbatim) and
+by the passing contract test. The lane-permitted ledger amendment is already in
+its correct reviewed state: `git diff --numstat` vs base over `quality/` is
+exactly +5/-0 on `vulture-baseline.json` (the 5 scan-identical rows, develop's
+1,322 rows a strict subset — no silent row loss) and 0 lines on
+`ratchet-authorizations.json` / `reachability-baseline.json` (no self-grant, no
+self-baseline). No fix this round eliminated any identity, so no row removal is
+warranted; removal would regress banking (ledger must equal scan).
+
+Leaf acceptance re-proven at this head: focused pytest 79/79; all 12 issue-named
+tests defined exactly once (grep) and passing; ruff check + format clean on
+both leaf files; focused mypy Success; full `check-suite-inventory.py` rc=0
+(17 suites, 31,323 collected == unique, 0 dupes; recorded delta stays +79);
+AST audit green (17/17 frozen+slots dataclasses with exact field counts —
+`CanonicalJsonObject` 1, envelope 14, Legacy 7 — `__all__` 21 unique, 6
+verbatim enum pairs, `owns()` the pure 3-compare conjunction never relating
+generation to owner, `admitted == (binding is not None)` ×2, `repr=False` ×2,
+`init=False` ×2); zero production importers and no `runs/__init__` export;
+`idempotency.py`, `store.py`, `store_boundary.py`, `model.py` all 0-line diffs
+vs base; #1841 anchors revalidated at this head (`store_boundary.py:56`,
+`store.py:550`, `model.py:306/:335-336`).
+
+Conclusion (unchanged, now proven against the `ab8b3737` trusted base): the
+leaf satisfies all of its own acceptance criteria; the four red merge-queue
+gates are the exact merge blocker the issue mandates reporting ("report
+implementation/test readiness plus the explicit merge blocker and leave the
+stack unmerged") and decompose to two structural facts — the intentionally
+unwired leaf and the five banked-but-unauthorized retained enum identities —
+whose only resolutions are owner-landed develop grants (two-merge rule) and the
+#1845 real-consumer integration head, both outside this leaf's legal action
+space. Stack left unmerged; no push; writer handoff only, never integration
+approval. No inventory delta (stays +79). (Refs #1851)
