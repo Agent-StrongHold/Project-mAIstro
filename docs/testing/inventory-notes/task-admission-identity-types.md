@@ -1193,3 +1193,63 @@ banked-but-unauthorized retained enum identities — whose only fixes are the
 leaf. Stack left unmerged; no code, ledger, or inventory change this round
 (delta stays +79). Writer handoff only, never integration approval. (Refs
 #1851)
+
+## Independent re-derivation at assigned head (`6bbbab4ce82b`, job `87e0c8b3`)
+
+Every load-bearing fact re-derived firsthand at the exact assigned head; no
+earlier verification claim assumed. Driver battery 5/5 green from the supplied
+deterministic logs (`check-0..4`: sync, ruff check, ruff format, 79 passed,
+`--suite packages/maistro-core/tests` ok) and re-executed live: focused pytest
+**79 passed**, `mypy admission_identity.py` Success, `ruff check .` clean,
+`ruff format --check .` 3299 files formatted, suite-inventory gate ok.
+
+- Base motion: fresh `git fetch origin develop`; `refs/remotes/origin/develop`
+  = `ab8b3737fa64` (the assigned base; the `origin/develop` refname is
+  ambiguous in this clone only because a same-valued local branch exists —
+  both resolve to `ab8b3737`). Merge-base = `ab8b3737`, branch 322 ahead / 0
+  behind: no sync conflict, none warranted. `ratchet-authorizations.json` and
+  all `quality/` files except `vulture-baseline.json` are 0-line diffs vs
+  base.
+- Contract re-proven by independent AST audit: 17/17 dataclasses
+  `frozen=True, slots=True`; `__all__` 21 unique set-exact; `AdmissionAssessment`
+  StrEnum with exactly the six lowercase pairs in issue order; `owns()` a
+  single BoolOp of exactly 3 compares; `field(repr=False)` ×2 and
+  `field(init=False)` ×2; both `admitted` properties return exactly
+  `binding is not None`; exact field order verified for all six record types;
+  zero suppression markers. All 12 issue-named tests present in the 660-line
+  test file; no skips in the 79.
+- Scope invariants: zero production importers of `admission_identity`; no
+  `maistro.runs.__init__` export; branch diff vs base is exactly the four
+  in-scope surfaces (+2380/-0). #1841 anchors re-read at this head:
+  `store_boundary.py:56`, `store.py:550` (+ guard enforcement at `:936` and
+  `:1340`), `model.py:306/:335-336` — signature un-weakened.
+- Inventory arithmetic re-derived: baseline.json `packages/maistro-core/tests`
+  = 11524; expected = baseline + Σ recorded deltas = 16439 collected node IDs
+  (gate ok); this note's `+79` contributes exactly once.
+- CI-exact gates re-run live at their pinned argv:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → rc=1, banking GREEN (`unclassified: 0`,
+  `never_allowlist: 0`; base 1322 → candidate 1327 with no banking error),
+  authorization RED on exactly the five enum identities
+  `admission_identity.py:515-520`, gate's own remedy "land a reviewed grant
+  first" — grants load from the merge base, so the two-merge wall stands at a
+  develop that has not moved. `check-reachability.py` → rc=1 with exactly one
+  NEWLY UNREACHABLE: `maistro.runs.admission_identity`. Test gate root trio
+  `pytest tests/test_reachability_baseline_identity.py
+  tests/test_check_reachability.py -q --timeout=60` → 3 failed / 36 passed,
+  every failure the `baseline == unreachable` assertion naming this module;
+  the Coverage producer (quality.yml:714) runs the same `tests/` tree under
+  `set -euo pipefail`, so those three failures abort it before `coverage.xml`.
+- No repair exists in this leaf: the only conceivable fixes are an
+  issue-prohibited reachability-baseline entry or synthetic caller, a
+  branch-side grant that is inert by construction and prohibited by the issue
+  ("A candidate baseline update cannot grant itself permission"), or the
+  #1845 integration head / owner-landed develop grants — both outside this
+  leaf. The 998-comment history (single automation account, all
+  `maistro-progress` markers) contains no superseding owner ruling; the
+  five-row banking amendment stands as recorded under the lane brief's
+  CI-repair authority.
+
+Verdict unchanged: writer handoff MERGE-READY (handoff only, never
+integration approval); stack left unmerged; no code, ledger, or inventory
+count change (delta stays +79). (Refs #1851)
