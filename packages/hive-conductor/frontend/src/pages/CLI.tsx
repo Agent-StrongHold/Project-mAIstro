@@ -24,6 +24,11 @@ function failureLines(err: unknown): string[] {
     if (err.status === 504) return ["error: command timed out"];
     if (err.status === 503) return ["error: backend unavailable"];
     if (err.status === 401) return ["error: unauthorized — sign in and retry"];
+    // lib/api.ts wraps every transport-level failure (aborted, dropped
+    // connection, offline) as ApiError with status 0 (#1423/#1436) — the
+    // same words the boot path uses, so an unreachable hive reads as
+    // unreachable, not as "command failed (0)".
+    if (err.status === 0) return ["error: could not reach hive-conductor"];
     return [`error: command failed (${err.status})`];
   }
   return ["error: could not reach hive-conductor"];
