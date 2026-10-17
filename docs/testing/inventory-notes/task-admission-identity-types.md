@@ -347,3 +347,20 @@ exists outside this module's test, and adding one is expressly outside #1851.
 No source, wiring, grant, or additional ledger change is warranted in this
 leaf; the necessary next changes are the parent #1845 real consumer and a
 trusted-base authorization landed separately.
+
+## Verification at assigned repair head (`93ad331ee43e`)
+
+This repair verification re-ran the focused suite (**79 passed**), focused
+Ruff check/format, mypy, and the recorded suite inventory (**16,439** node
+IDs), all successfully. The CI-argv Vulture check still exits 1: the candidate
+ledger already banks all 1,327 scan identities, while trusted base `ac737014`
+authorizes none of the five retained `AdmissionAssessment` identities. No
+additional baseline entry, grant, suppression, or artificial runtime consumer
+was added. `check-reachability.py` and `check-ratchet-provenance.py` likewise
+exit 1 for the intentionally unwired `maistro.runs.admission_identity` module;
+`check-reachability-dispositions.py` and `check-promotion-surface.py` pass.
+
+The existing five-row baseline delta predates this verification and remains an
+explicit scope-reconciliation/parent-integration blocker, not acceptance of a
+standalone merge. This note records the observed state only; it does not
+supply trusted-base authorization.
