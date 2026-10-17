@@ -37,12 +37,12 @@
     },
     "maistro.builders.contracts::RunStatus": {
       "classification": "CONVERGE",
-      "rationale": "Builders' own RunStatus, consumed by builders.runtime and by the graph_executor that drives its own traversal. #49 moves Builders onto canonical Graph/Run.",
+      "rationale": "Builders' receipt-level RunStatus. After the #49 cutover the shipped compositions (BuilderPipeline, run_builders_dag, the `maistro builders` CLI turn executor) run through the canonical adapter, which projects this enum from canonical Run state; it can no longer decide generic lifecycle truth. Deletion owed after parity (#35).",
       "converged_by": "#49"
     },
     "maistro.builders.pipeline::StageStatus": {
       "classification": "CONVERGE",
-      "rationale": "Per-stage states for the issue-to-merge pipeline, driven by GraphPipelineExecutor. Becomes NodeRun state under #49.",
+      "rationale": "Per-stage receipt states for the issue-to-merge pipeline. After the #49 cutover the canonical adapter projects them from NodeRun/Attempt evidence; the legacy executor that drove them directly is compatibility-only with no shipped caller. Deletion owed after parity (#35).",
       "converged_by": "#49"
     },
     "maistro_canvas.types::JobStatus": {
