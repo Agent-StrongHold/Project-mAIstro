@@ -416,3 +416,27 @@ reachability and ratchet-provenance commands remain red on the single
 intentionally unwired `maistro.runs.admission_identity` module. A real parent
 #1845 consumer and a separately landed trusted-base authorization are required;
 this leaf cannot validly add either a fake consumer or a self-grant.
+
+## CI-repair verification at assigned head (`ca75aba8f83d`)
+
+Fresh focused validation at this exact head passed: 79 contract tests, focused
+Ruff check/format, mypy, and the core suite inventory (16,439 node IDs; the
+recorded `inventory-delta: +79` is unchanged). The contract's six
+`AdmissionAssessment` values are the required lowercase literals in the
+required order.
+
+With `RATCHET_BASE_REV=ac7370141e8e61bd6f352bca35ed0b505104aadb`, the CI-argv
+Vulture command scans 1,327 findings and exits 1 only because its trusted base
+contains 1,322 identities and authorizes none of the five retained enum-member
+findings at `admission_identity.py:515-520`. Candidate bookkeeping is exact:
+all 1,327 scan findings, including those five identities, are already banked.
+The checker confirms that a candidate-side ledger entry cannot authorize new
+debt. The explicit CI-repair ledger exception is therefore exhausted; no
+additional candidate row is warranted.
+
+`check-reachability.py`, `check-ratchet-provenance.py`, and the three
+reachability-baseline tests remain red only for the intentionally unwired
+`maistro.runs.admission_identity` leaf. This is not repaired with a baseline,
+grant, or synthetic importer: the required fixes are the parent #1845 real
+consumer and a separately landed trusted-base authorization. No tests were
+added in this verification pass.
