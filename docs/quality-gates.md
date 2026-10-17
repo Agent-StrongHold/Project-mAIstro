@@ -18,7 +18,7 @@ A **floor** is a fixed minimum/maximum threshold. A **ratchet** records reviewed
 | pyright | ratchet | 24 | type errors mypy does not catch |
 | radon CC | identity ratchet | `quality/radon-baseline.json` | a new or regressed complexity hotspot |
 | xenon | count ratchet | 77 | per-function > B, per-module > B, project average > A |
-| vulture | identity ratchet | `quality/vulture-baseline.json`, in `quality.yml` + `vulture-ratchet.yml` | any change to the reviewed finding set, by name — a new finding, a fixed one left unbanked, or a same-count substitution |
+| vulture | identity ratchet | `quality/vulture-baseline.json`; dedicated required owner plus topic-push fallback (below) | any change to the reviewed finding set, by name — a new finding, a fixed one left unbanked, or a same-count substitution |
 | reachability | identity ratchet | `quality/reachability-baseline.json` | a module built but never wired to any entry point |
 | convergence matrix | identity ratchet | `docs/architecture/CONVERGENCE-MATRIX.md` | a subsystem left unclassified, or a row whose ownership/reachability claim no longer matches the code |
 | reachability dispositions | identity ratchet | `quality/reachability-dispositions.json` | an unreachable module with no disposition, a disposition left behind after its module became reachable, or a CONNECT/RETIRE row with no named root/replacement |
@@ -55,6 +55,26 @@ parsed without evaluating source. Free-text and database-column lifecycle audits
 separate from this syntax gate.
 
 The blocking Vulture workflow pins Vulture 2.16 and scans `packages/*/src` at confidence 60 while excluding `*/third_party/*`; `quality/vulture-baseline.json` is banked from that exact command so a different analyzer version or scan scope cannot silently redefine the reviewed identity set.
+
+Vulture's single owner on shared PR (`opened`, `reopened`, `synchronize`),
+merge-group and protected-branch push events is `Vulture Ratchet` /
+`exact-debt-ledger`. Quality retains the identical command only for its existing
+topic-prefix pushes, which the dedicated workflow does not receive (#1357).
+Both use Python 3.12, the root locked all-extras environment, full candidate
+checkout and the same trusted integration-base expression. The scan is one
+cross-package source analysis; service availability and unrelated installed
+analyzers do not widen its source universe. Neither existing Vulture workflow
+receives PR `edited`, reusable `workflow_call`, or the CI-only integration-sync
+push; this slice does not add those event profiles or change Ruff's separate
+edited-event fallback. Trigger expansion requires an explicit ownership review.
+
+`tests/test_ci_vulture_ownership.py` verifies the actual trigger/condition matrix,
+required contexts and prerequisites, and rejects missing, duplicated, narrowed,
+advisory or candidate-authorized owners. No job, runner, required context,
+ledger, tolerance or live ruleset is removed. Common events lose one duplicate
+Vulture scan in Quality; the dedicated provenance and shipped-surface gates
+remain required. This is an execution reduction, not a measured whole-CI speedup.
+
 
 The convergence-matrix checker is intentionally **structural**. It does not prove that prose such as “this product route traverses Warden” is operationally true. The matrix now says that limitation explicitly. Product-path claims require acceptance evidence or human re-audit; a green matrix check alone is not evidence of runtime enforcement.
 
