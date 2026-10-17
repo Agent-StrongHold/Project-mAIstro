@@ -5,6 +5,7 @@
 # file is a migration-contract test. Recorded here rather than splitting the
 # literal, which would obscure the exact shape the CHECK admits.
 5f506736b9f2e57616ef1fcb0fab087a5e125d91:tests/migrations/test_task_admission_generation_upgrade.py:generic-api-key:46
+aee4e0845b0cdd71e2f9aa19bc46fd5fde8cd7ad:tests/migrations/test_task_admission_generation_upgrade.py:generic-api-key:46
 48f4d12b3834aaac520b80cb9d366d719722a526:packages/maistro-core/tests/agents/auditor/test_checks.py:aws-access-token:238
 2ee85e34ffbc8c32a458f992cb500c13d4252d77:packages/maistro-core/tests/code_registry/test_registry.py:generic-api-key:15
 ae2c7d23f3e36409dc876e0a741e524a315e5dd1:packages/maistro-core/tests/skills/test_parser.py:generic-api-key:193
@@ -71,3 +72,23 @@ cde47a2edf6c24a72bacfcc6fab85073d6a67919:packages/maistro-core/tests/graph/durab
 bd8dc5faa7c063b8e146d5b72d3475c779111168:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:361
 bd8dc5faa7c063b8e146d5b72d3475c779111168:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:375
 b5c22a358a8b0a0fb064e89eb6b4eba6855b58c2:.gitleaksignore:generic-api-key:54
+# #2045: Python caller-context/delegation arguments, not a credential.
+# The fixture spelling is corrected; retain only this historical finding.
+7907644e80b7abf22e8371d5529d6d0a49d3d906:packages/maistro-core/tests/agents/test_tool_call_identity.py:generic-api-key:127
+
+# Historical M4-A8 merge commit (#1750): producer-attribution test arguments.
+# Both findings are Python names and an enum qualifier, not credential values.
+77c17b9b89d92a209e5f5081cf31112b93ac7e45:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:462
+77c17b9b89d92a209e5f5081cf31112b93ac7e45:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:476
+
+# ---- #860 historical soak fixtures on the unmerged auto-860 lane ----
+# Protected-branch scans use --all, which includes fetched unmerged branches.
+# These exact fingerprints are already documented in auto-860's ignore file.
+# The first is a deterministic fixture supplied only to the harness's own
+# throwaway stack; the current lane replaced its credential-shaped spelling.
+# The second is a task-deduplication correlation ID in immutable probe evidence,
+# not authentication material. Preserve the recorded observation unchanged.
+# Scope each exemption to its original commit, path, rule and line. New values
+# or commits remain scanned; no source path or rule is excluded wholesale.
+8185c1d076e3471e41fd948ac2bc43c6c2d110b8:scripts/soak/run_soak.py:generic-api-key:51
+88edcc7ea03baf4257a9edfb47e56a5493d6d329:docs/testing/soak/evidence/m3a-round7-prodstack-quick-probes.json:generic-api-key:13

@@ -53,6 +53,11 @@ LEARNING_PERSISTED_FIELDS = frozenset(
         "last_confirmed_at",
         "validated_by",
         "validated_at",
+        # The Gauntlet's audit trail beyond the ladder's own columns (M4-B2):
+        # the evaluator build, the exact evaluation Runs, the frozen content.
+        "validated_evaluator_version",
+        "validation_run_ids",
+        "validation_content_hash",
         "promoted_by",
         "supersedes",
         "superseded_by",

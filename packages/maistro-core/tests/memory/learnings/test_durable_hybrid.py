@@ -16,6 +16,8 @@ got back. The similarity path itself runs against a real PostgreSQL in
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -37,6 +39,7 @@ class _Store:
     def __init__(self, *, similar: list[Learning] | None = None) -> None:
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
         self._similar = similar or []
+        self.promoted: Learning | None = None
 
     def _record(self, name: str, *args: Any, **kwargs: Any) -> None:
         self.calls.append((name, args, kwargs))
@@ -79,6 +82,29 @@ class _Store:
             "check_auto_promotions", threshold, org_id=org_id, min_confidence=min_confidence
         )
         return [_learning(11)]
+
+    async def promote_learning(
+        self,
+        learning_id: int,
+        *,
+        org_id: str = "",
+        validated_by: str = "",
+        evaluator_version: str = "",
+        validated_at: datetime | None = None,
+        validation_run_ids: Sequence[str] = (),
+        validation_content_hash: str = "",
+    ) -> Learning | None:
+        self._record(
+            "promote_learning",
+            learning_id,
+            org_id=org_id,
+            validated_by=validated_by,
+            evaluator_version=evaluator_version,
+            validated_at=validated_at,
+            validation_run_ids=validation_run_ids,
+            validation_content_hash=validation_content_hash,
+        )
+        return self.promoted
 
     async def get_promoted(
         self,
@@ -193,6 +219,46 @@ async def test_check_auto_promotions_forwards_and_returns(wrapped) -> None:
         ("check_auto_promotions", (3,), {"org_id": "org-1", "min_confidence": 0.9})
     ]
     assert [item.id for item in promoted] == [11]
+
+
+async def test_promote_learning_forwards_the_whole_validation_verdict(wrapped) -> None:
+    """The Gauntlet's promotion seam (M4-B2): every verdict field arrives intact.
+
+    A hand-written delegation that dropped or reordered a keyword would write a
+    promoted learning whose provenance says nothing about the trials that earned
+    it — exactly the failure the acceptance criteria forbid — so the wrapper is
+    held to forwarding all seven arguments verbatim and returning what it got.
+    """
+    hybrid, store = wrapped
+    validated_at = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    store.promoted = _learning(11)
+
+    promoted = await hybrid.promote_learning(
+        11,
+        org_id="org-1",
+        validated_by="independent-trials",
+        evaluator_version="1.4.2",
+        validated_at=validated_at,
+        validation_run_ids=("run-eval-1", "run-eval-2"),
+        validation_content_hash="deadbeef",
+    )
+
+    assert promoted is not None
+    assert promoted.id == 11
+    assert store.calls == [
+        (
+            "promote_learning",
+            (11,),
+            {
+                "org_id": "org-1",
+                "validated_by": "independent-trials",
+                "evaluator_version": "1.4.2",
+                "validated_at": validated_at,
+                "validation_run_ids": ("run-eval-1", "run-eval-2"),
+                "validation_content_hash": "deadbeef",
+            },
+        )
+    ]
 
 
 async def test_get_promoted_forwards_and_returns(wrapped) -> None:

@@ -116,3 +116,53 @@ workflow using the installed **1.62.1** runner. Docker is not installed here,
 so the CI-pinned **1.52.0** browser/full-stack run is still pending CI; local
 collection is not represented as a browser execution. Ruff, formatting,
 whitespace and relative-document-link checks pass.
+
+## Develop integration refresh (2026-10-17)
+
+The existing draft branch is refreshed against
+`develop@ab8b3737fa64f8d840f421ef87ca506c509444ff`. The six production files
+remain the original Hive-only retirement scope. There are no net core-store,
+migration, workflow or quality-ledger changes relative to this base.
+
+The executor conflict preserves both mandatory canonical admission and the
+landed #1332 cancellation correlation hook: one captured Container supplies
+admission, continuation, effects and traversal; `on_admitted` runs once after
+`create_run` and before physical work. A raising projection sink remains
+logged and isolated. The scheduler retains the current canonical ScheduleStore
+selection. Newer chat-cancellation fixtures now compose the canonical Run and
+continuation stores together; missing authority produces an explicit failed
+projection with no canonical correlation or cancellable Run. Existing cases
+remain, and the inventory delta above is unchanged.
+
+Fresh verification on the integrated candidate:
+
+- Authority/admission/cancellation and blocking fitness selection: **41 passed**.
+  Independent review also ran the authority/chat selection: **39 passed**.
+- Affected Hive coverage selection: **442 passed, 14 skipped**. All **six**
+  changed production files pass the unchanged **90% line / 80% branch** diff
+  coverage floors against the exact develop base.
+- Core Graph plus the new Hive fitness cases: **1,951 passed, 125 skipped**;
+  no live PostgreSQL DSN was configured.
+- Full Hive run: **3,620 passed, 26 skipped, 24 failed**. Twenty failures were
+  caused by the executor's inherited SOCKS proxy without the optional
+  `socksio` package. A fresh **151-test** rerun of all affected files passes
+  with process proxy variables removed and non-loopback TCP blocked; its
+  model gateway is the existing loopback fake. The remaining four Docker
+  attestation failures reproduce identically on untouched develop: this
+  executor has no Docker CLI. Those source and test files are unchanged.
+  This is not reported as an all-green full-suite run.
+- CI-exact ten-package mypy: **1,057 files passed**. Full Ruff and format,
+  convergence/lifecycle/model-egress/harness-egress/wiring/contract-marker,
+  cross-package-import, retired-guidance, agent-store-write, route-permission,
+  principal-identity, release-consistency, document-link, radon and exact
+  Vulture gates pass. Vulture remains **1,322 reviewed identities**.
+- Inventory: Hive **3,670**, core **16,362**, both matching recorded counts.
+  No new test-count change, quality grant or baseline update was introduced.
+
+The October 5 CI checkpoint does not validate this refresh. Fresh exact-head CI
+is required after publication. No local Docker/browser, live PostgreSQL,
+#1113-specific multiprocess recovery or real-provider proof is claimed.
+The PR remains a partial convergence draft; #1113, #44 and the parent epics
+remain open. The separately published #1983/#1987 resolver composition must
+still retain the single captured Container and its model admission decisions
+when combined, and requires a combined retest.

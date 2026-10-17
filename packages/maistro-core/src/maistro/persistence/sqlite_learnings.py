@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import json
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -74,6 +75,9 @@ CREATE TABLE IF NOT EXISTS learnings (
     stage TEXT NOT NULL DEFAULT 'memory',
     validated_by TEXT NOT NULL DEFAULT '',
     validated_at TEXT,
+    validated_evaluator_version TEXT NOT NULL DEFAULT '',
+    validation_run_ids TEXT NOT NULL DEFAULT '[]',
+    validation_content_hash TEXT NOT NULL DEFAULT '',
     supersedes INTEGER,
     superseded_by INTEGER,
     promoted_by TEXT NOT NULL DEFAULT ''
@@ -138,6 +142,12 @@ _UPGRADE_COLUMNS = {
     "stage": "TEXT NOT NULL DEFAULT 'memory'",
     "validated_by": "TEXT NOT NULL DEFAULT ''",
     "validated_at": "TEXT",
+    # The Gauntlet's audit trail beyond the ladder's own columns (M4-B2):
+    # defaults, because a pre-Gauntlet row's lack of validation is a known
+    # fact, not a missing one.
+    "validated_evaluator_version": "TEXT NOT NULL DEFAULT ''",
+    "validation_run_ids": "TEXT NOT NULL DEFAULT '[]'",
+    "validation_content_hash": "TEXT NOT NULL DEFAULT ''",
     "supersedes": "INTEGER",
     "superseded_by": "INTEGER",
     "promoted_by": "TEXT NOT NULL DEFAULT ''",
@@ -181,6 +191,9 @@ _SQLITE_INSERT_FIELDS = (
     "stage",
     "validated_by",
     "validated_at",
+    "validated_evaluator_version",
+    "validation_run_ids",
+    "validation_content_hash",
     "promoted_by",
     "supersedes",
     "superseded_by",
@@ -280,9 +293,12 @@ class SqliteLearningStore:
                 evidence_run_ids, evaluation_ids,
                 applicability, reinforcement_count, contradiction_count,
                 created_at, last_confirmed_at,
-                stage, validated_by, validated_at, promoted_by,
+                stage, validated_by, validated_at,
+                validated_evaluator_version, validation_run_ids,
+                validation_content_hash, promoted_by,
                 supersedes, superseded_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 learning.category,
                 json.dumps(list(learning.trigger_keys)),
@@ -317,6 +333,9 @@ class SqliteLearningStore:
                 learning.stage,
                 learning.validated_by,
                 _utc_text(learning.validated_at) if learning.validated_at is not None else None,
+                learning.validated_evaluator_version,
+                json.dumps(list(learning.validation_run_ids)),
+                learning.validation_content_hash,
                 learning.promoted_by,
                 learning.supersedes,
                 learning.superseded_by,
@@ -598,6 +617,70 @@ class SqliteLearningStore:
             lr.status = "promoted"
         return promoted_rows
 
+    async def promote_learning(
+        self,
+        learning_id: int,
+        *,
+        org_id: str = "",
+        validated_by: str = "",
+        evaluator_version: str = "",
+        validated_at: datetime | None = None,
+        validation_run_ids: Sequence[str] = (),
+        validation_content_hash: str = "",
+        authority: Actor = Actor.AGENT,
+    ) -> Learning | None:
+        """Flip one active learning to promoted, writing its validation provenance.
+
+        The per-candidate promotion seam the Gauntlet path needs (M4-B2): the
+        store must be able to promote exactly one learning with the verdict's
+        provenance — the exact evaluation Runs, the evaluator version, the
+        frozen-content hash — because an independent validator decides per
+        candidate. Only an `active`, in-scope row flips; anything else
+        returns None untouched, and a rejected candidate's row (its evidence,
+        its anti-learning) is never modified here.
+
+        The ladder (ADR-103) is honoured atomically: a promoted row is written
+        as a repertoire row in the same statement, and the commit instant is
+        the validation instant (the Gauntlet's acceptance *is* the
+        transition).
+
+        ADR-057: the ``promote`` authority — an agent-authority call under
+        ``SYSTEM_MANAGED`` is denied before the UPDATE runs.
+        """
+        require_write_authority(
+            self._exposure_mode, "promote", authority, subject=type(self).__name__
+        )
+        cursor = await self._conn.execute(
+            """UPDATE learnings
+               SET status = 'promoted', stage = 'repertoire',
+                   validated_by = ?,
+                   validated_evaluator_version = ?, validated_at = ?,
+                   validation_run_ids = ?, validation_content_hash = ?
+               WHERE id = ? AND org_id = ? AND status = 'active'""",
+            (
+                validated_by,
+                evaluator_version,
+                _utc_text(validated_at or datetime.now(UTC)),
+                json.dumps(list(validation_run_ids)),
+                validation_content_hash,
+                learning_id,
+                org_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            await self._conn.commit()
+            return None
+        await self._conn.commit()
+        select_cursor = await self._conn.execute(
+            "SELECT * FROM learnings WHERE id = ?",
+            (learning_id,),
+        )
+        columns = [d[0] for d in select_cursor.description]
+        row = await select_cursor.fetchone()
+        if row is None:
+            return None
+        return _row_to_learning(dict(zip(columns, row, strict=True)))
+
     async def get_promoted(
         self,
         task_type: str | None = None,
@@ -823,6 +906,11 @@ def _lifecycle_fields(row: dict[str, Any]) -> dict[str, Any]:
         "last_confirmed_at": _load_moment(row.get("last_confirmed_at")),
         "validated_by": _text(row, "validated_by"),
         "validated_at": _load_moment(row.get("validated_at")),
+        # The Gauntlet's provenance (M4-B2): blank/None/empty is the honest
+        # "never validated".
+        "validated_evaluator_version": _text(row, "validated_evaluator_version"),
+        "validation_run_ids": _json_list(row, "validation_run_ids"),
+        "validation_content_hash": _text(row, "validation_content_hash"),
         "promoted_by": _text(row, "promoted_by"),
         "supersedes": row.get("supersedes"),
         "superseded_by": row.get("superseded_by"),

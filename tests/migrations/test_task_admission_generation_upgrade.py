@@ -50,17 +50,20 @@ NIL_HEX = "0" * 32
 #: survive the forward upgrade byte-for-byte.
 SHIPPED_COLUMNS = (
     "scope_key",
+    "claim_token",
     "fingerprint",
     "request",
     "task_id",
     "run_id",
+    "completed_at",
     "created_at",
     "expires_at",
     "lease_expires_at",
 )
 
-#: Every nullable-but-required v2 field. NULL in any one of them must be
-#: rejected independently — the explicit IS NOT NULL half of the contract.
+#: Every v2-required field. NULL in any one must be rejected independently:
+#: the 038-owned claim token is physically NOT NULL; the rest rely on 054's
+#: explicit CHECK predicates.
 V2_REQUIRED_FIELDS = (
     "generation_id",
     "claim_token",
@@ -132,6 +135,29 @@ def _stamped_version() -> str | None:
     return str(rows[0][0]) if rows else None
 
 
+def _chain_head() -> str:
+    """The single head of the migration chain, read from the version files.
+
+    Every develop collision re-parents this branch's revisions onto a new
+    chain tip, so a fixed literal in an assertion about "the head" is only
+    ever an artifact of whichever sync wrote it — it has rotted three times
+    already (043_invocation_quota_door, 055, 056). The invariant under test
+    is that the refused downgrade leaves the stamp AT HEAD, so the head is
+    resolved from the same scripts the upgrade above ran.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "alembic"))
+    heads = ScriptDirectory.from_config(config).get_heads()
+    assert len(heads) == 1, (
+        f"expected exactly one migration head, found {sorted(heads)}; "
+        "see tests/migrations/test_single_migration_head.py"
+    )
+    return heads[0]
+
+
 @pytest.fixture
 def empty_database():
     """Start each test from `base`, so one failure cannot cascade into the next."""
@@ -150,10 +176,10 @@ def _shipped_row_sql(scope_key: str, *, complete: bool) -> str:
         run = "NULL"
     return f"""
         insert into task_idempotency
-            (scope_key, fingerprint, request, task_id, run_id,
-             created_at, expires_at, lease_expires_at)
-        values ('{scope_key}', 'fp-{scope_key}', '{{"request":"{scope_key}"}}',
-                {task}, {run}, 1000, 2000, 1500)
+            (scope_key, claim_token, fingerprint, request, task_id, run_id,
+             completed_at, created_at, expires_at, lease_expires_at)
+        values ('{scope_key}', '{OWNER_TOKEN}', 'fp-{scope_key}', '{{"request":"{scope_key}"}}',
+                {task}, {run}, 0, 1000, 2000, 1500)
     """
 
 
@@ -214,6 +240,11 @@ def _v2_columns() -> dict[str, dict[str, Any]]:
     }
 
 
+def _zero_default(column: dict[str, Any]) -> bool:
+    """PostgreSQL reports the zero BIGINT default with an optional cast."""
+    return str(column["default"]).split("::", maxsplit=1)[0].strip("'") == "0"
+
+
 class TestTheForwardUpgrade:
     def test_forward_upgrade_preserves_shipped_038_rows(self, empty_database) -> None:
         """A database stamped at the shipped chain keeps every claim
@@ -240,12 +271,10 @@ class TestTheForwardUpgrade:
         re-shape the baseline into exactly the form the L41 branch's 038
         builds — so the walk forward exercises a database that arrived at the
         claim table through its own migration history, not a bare stamp."""
-        assert _alembic("upgrade", "038").returncode == 0
-        # The L41 reconciliation of 038 owns two columns the develop baseline
-        # does not. The table is empty here, so NOT NULL lands directly; the
-        # defaulted completed_at carries the L41 server default.
-        _execute("alter table task_idempotency add column claim_token TEXT NOT NULL")
-        _execute("alter table task_idempotency add column completed_at BIGINT NOT NULL DEFAULT 0")
+        assert _alembic("upgrade", "052").returncode == 0
+        # The L41 reconciliation of 038 already owns these two columns on the
+        # actual chain. Reaching the known shape through its real history keeps
+        # this test about 054 preserving it rather than re-adding it by hand.
         _execute(
             """
             insert into task_idempotency
@@ -273,7 +302,7 @@ class TestTheForwardUpgrade:
             "default": None,
         }
         assert columns["completed_at"]["type"] == "bigint"
-        assert str(columns["completed_at"]["default"]).lstrip("'").rstrip("'") == "0"
+        assert _zero_default(columns["completed_at"])
         # The forward representation arrived without rewriting the claim.
         assert (
             _query(
@@ -314,8 +343,8 @@ class TestTheForwardUpgrade:
 
     def test_fresh_chain_builds_the_contracted_forward_shape(self, empty_database) -> None:
         """The forward shape on a fresh chain: every contracted column with the
-        contracted type and nullability, format_version defaulting to 1 — and
-        no completed_at, which v2 does not need and the baseline never had."""
+        contracted type and nullability, format_version defaulting to 1 —
+        including the claim-token and completion evidence 038 already owns."""
         assert _alembic("upgrade", "head").returncode == 0
         columns = _v2_columns()
         expected = {
@@ -327,9 +356,10 @@ class TestTheForwardUpgrade:
             "created_at": ("bigint", "NO"),
             "expires_at": ("bigint", "NO"),
             "lease_expires_at": ("bigint", "NO"),
+            "completed_at": ("bigint", "NO"),
             "format_version": ("smallint", "NO"),
             "generation_id": ("text", "YES"),
-            "claim_token": ("text", "YES"),
+            "claim_token": ("text", "NO"),
             "workspace_id": ("text", "YES"),
             "project_id": ("text", "YES"),
             "origin_principal_id": ("text", "YES"),
@@ -343,7 +373,7 @@ class TestTheForwardUpgrade:
         actual = {name: (spec["type"], spec["nullable"]) for name, spec in columns.items()}
         assert actual == expected, f"unexpected forward shape: {sorted(actual)}"
         assert str(columns["format_version"]["default"]) == "1"
-        assert "completed_at" not in columns
+        assert _zero_default(columns["completed_at"])
 
     def test_unknown_shape_does_not_advance_revision(self, empty_database) -> None:
         """A claim table whose shape is not the shipped one refuses to be
@@ -439,14 +469,19 @@ class TestTheForwardUpgrade:
 class TestTheV2Check:
     def test_each_required_v2_field_null_is_rejected(self, empty_database) -> None:
         """NULL injected into each nullable-but-required v2 field, one at a
-        time. PostgreSQL CHECK passes UNKNOWN, so every field needs its own
-        explicit IS NOT NULL — this is the test that proves each one exists."""
+        time. PostgreSQL CHECK passes UNKNOWN, so the nullable fields need
+        explicit IS NOT NULL; 038's claim token is already physically NOT NULL."""
         assert _alembic("upgrade", "head").returncode == 0
         import psycopg
 
         for field in V2_REQUIRED_FIELDS:
             row = _valid_v2_row(**{field: None})
-            with pytest.raises(psycopg.errors.CheckViolation):
+            error = (
+                psycopg.errors.NotNullViolation
+                if field == "claim_token"
+                else psycopg.errors.CheckViolation
+            )
+            with pytest.raises(error):
                 _insert_v2(row)
             # The row never landed: the next iteration inserts the same key.
             assert _query("select count(*) from task_idempotency") == [(0,)], field
@@ -521,7 +556,7 @@ class TestTheV2Check:
                  actor_principal_id, action, receipt_id, receipt_snapshot,
                  provenance_snapshot, fingerprint, request, task_id, run_id,
                  created_at, expires_at, lease_expires_at, acknowledged_at)
-            values ('legacy-odd', 1, 'not-even-hex', NULL,
+            values ('legacy-odd', 1, 'not-even-hex', '{OWNER_TOKEN}',
                     '', '', '', '', '', '', NULL,
                     NULL, 'fp', 'req', NULL, NULL,
                     500, 400, 450, 9999)
@@ -539,6 +574,11 @@ class TestTheDowngrade:
         change: the stamp, the columns and the row itself all survive the
         failed attempt untouched."""
         assert _alembic("upgrade", "head").returncode == 0
+        # The head this test upgraded to, whatever the integrated chain's tip
+        # is: the assertion below is "the stamp did not move", not a fixed
+        # revision (the tip moves on every collision re-parent).
+        head = _stamped_version()
+        assert head == _chain_head()
         _insert_v2(_valid_v2_row(task_id="receipt-1", run_id="run-1", acknowledged_at=3000))
         _execute(_shipped_row_sql("legacy-claim", complete=True))
         before = _query("select * from task_idempotency order by scope_key")
@@ -547,7 +587,12 @@ class TestTheDowngrade:
 
         assert result.returncode != 0, "the downgrade discarded live v2 identity"
         assert "format_version" in result.stderr + result.stdout
-        assert _stamped_version() == "055"
+        # A multi-revision downgrade is transactional: even revisions preceding
+        # the refusal roll back, preserving the original head. Read that head
+        # from the same version files the upgrade used, so subsequent migrations
+        # (including backlog authority, audit indexes and the Goal store) cannot
+        # stale a literal.
+        assert _stamped_version() == _chain_head()
         assert _query("select * from task_idempotency order by scope_key") == before
         assert "generation_id" in _v2_columns()
 
@@ -573,9 +618,13 @@ class TestTheDowngrade:
             "expires_at",
             "lease_expires_at",
             "claim_token",
+            "completed_at",
         }
         assert set(columns) == retained
-        assert columns["claim_token"] == {"type": "text", "nullable": "YES", "default": None}
+        assert columns["claim_token"] == {"type": "text", "nullable": "NO", "default": None}
+        assert columns["completed_at"]["type"] == "bigint"
+        assert columns["completed_at"]["nullable"] == "NO"
+        assert _zero_default(columns["completed_at"])
         assert _query(
             "select count(*) from pg_constraint where conname = "
             "'ck_task_idempotency_v2_identity' and conrelid = "

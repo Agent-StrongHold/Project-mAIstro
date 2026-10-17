@@ -2,6 +2,9 @@
 # Loop/verbs/beat-plan exploration; Canvas plus a structured artifact tree as
 # execute backends. A game pack, not a game engine — no runtime ships here.
 pack_id: game
+# Pack release version (M9-F3, #968): the identity Workspace activations
+# are recorded against; bump it when the manifest's defaults change.
+version: 1.0.0
 name: Game Pack
 summary: >-
   Loop, verbs, and a beat plan explored before produce; canvas compositions

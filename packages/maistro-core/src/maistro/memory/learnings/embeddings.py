@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from maistro.memory.learnings.evidence import DEFAULT_MIN_PROMOTION_CONFIDENCE
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from maistro.memory.learnings.store import InMemoryLearningStore
     from maistro.protocols.embeddings import EmbeddingClient
     from maistro.types.memory import Learning
@@ -196,6 +199,28 @@ class HybridLearningStore:
         min_confidence: float = DEFAULT_MIN_PROMOTION_CONFIDENCE,
     ) -> list[Learning]:
         return await self._store.check_auto_promotions(threshold, min_confidence=min_confidence)
+
+    async def promote_learning(
+        self,
+        learning_id: int,
+        *,
+        org_id: str = "",
+        validated_by: str = "",
+        evaluator_version: str = "",
+        validated_at: datetime | None = None,
+        validation_run_ids: Sequence[str] = (),
+        validation_content_hash: str = "",
+    ) -> Learning | None:
+        """Delegate: this wrapper adds search ranking, not promotion policy (M4-B2)."""
+        return await self._store.promote_learning(
+            learning_id,
+            org_id=org_id,
+            validated_by=validated_by,
+            evaluator_version=evaluator_version,
+            validated_at=validated_at,
+            validation_run_ids=validation_run_ids,
+            validation_content_hash=validation_content_hash,
+        )
 
     async def get_promoted(
         self,

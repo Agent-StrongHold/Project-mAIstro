@@ -77,6 +77,7 @@ class _FrontierItem:
     ctx: NodeContext
     result: NodeResult
     replay_semantics: ReplaySemantics = ReplaySemantics.NON_RETRYABLE
+    effect_key: str | None = None
 
 
 def _replace_state(
@@ -281,6 +282,7 @@ async def resume_durable_graph(
     node_resolver: NodeResolver,
     run_store: RunStore | None = None,
     max_steps: int = 256,
+    now: datetime | None = None,
 ) -> DurableRunRecord:
     """Resume through canonical Attempt recovery, never a second physical walker."""
     from .attempt_executor import resume_durable_graph as resume
@@ -291,6 +293,7 @@ async def resume_durable_graph(
         node_resolver=node_resolver,
         run_store=run_store,
         max_steps=max_steps,
+        now=now,
     )
 
 
@@ -597,15 +600,11 @@ def _may_revisit_after(prior_state: GraphExecutionState, item: _FrontierItem) ->
     """
     if not item.replay_semantics.retryable:
         return False
-    # EFFECT_KEY is a contract, not a descriptive label: the node must have a
-    # logical Node/Run identity available for its effect key to be meaningful.
-    if item.replay_semantics is ReplaySemantics.EFFECT_KEY:
-        if not (item.ctx.run_id and item.ctx.node_id):
-            return False
-        # BaseNode records the key produced by its executable contract. A
-        # retryable effect without that boundary is not safe to revisit.
-        if not item.result.metadata.get("replay_effect_key"):
-            return False
+    # EFFECT_KEY is a contract, not a descriptive label: the node must have
+    # supplied a concrete logical key at execution time. Missing keys fail
+    # closed because the executor cannot prove replay safety on its own.
+    if item.replay_semantics is ReplaySemantics.EFFECT_KEY and not item.effect_key:
+        return False
     visits = prior_state.visit_counts.get(item.node_id, 0)
     return visits < _visit_budget(item.spec)
 

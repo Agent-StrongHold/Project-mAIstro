@@ -388,6 +388,7 @@ def canonical_graph_spine(monkeypatch: pytest.MonkeyPatch):
         workspace_id=project.workspace_id,
         a2a_delegator=None,
         guest_peers=None,
+        harness_adapters={},
         event_bus=None,
         capability_effects=new_in_memory_effect_context(),
         provider_registry=providers,
