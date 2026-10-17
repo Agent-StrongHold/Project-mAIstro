@@ -1,29 +1,5 @@
 {
   "_comment": "Undeclared authenticated route prefixes for Workspace cutover P0.2 (#53). Judged against the trusted merge base; a declared prefix must be deleted here.",
   "metric_definition_version": "1",
-  "tolerated": {
-    "/v1/auth": "absent from quality/route-permissions.json",
-    "/v1/backlog": "absent from quality/route-permissions.json",
-    "/v1/canvas": "absent from quality/route-permissions.json",
-    "/v1/chat": "absent from quality/route-permissions.json",
-    "/v1/cli": "absent from quality/route-permissions.json",
-    "/v1/dag-metrics": "absent from quality/route-permissions.json",
-    "/v1/dag-runs": "absent from quality/route-permissions.json",
-    "/v1/dashboard": "absent from quality/route-permissions.json",
-    "/v1/design": "absent from quality/route-permissions.json",
-    "/v1/eval-judge": "absent from quality/route-permissions.json",
-    "/v1/install": "absent from quality/route-permissions.json",
-    "/v1/memory": "absent from quality/route-permissions.json",
-    "/v1/messages": "absent from quality/route-permissions.json",
-    "/v1/profile": "absent from quality/route-permissions.json",
-    "/v1/program": "absent from quality/route-permissions.json",
-    "/v1/quotas": "absent from quality/route-permissions.json",
-    "/v1/setup": "absent from quality/route-permissions.json",
-    "/v1/setup-checklist": "absent from quality/route-permissions.json",
-    "/v1/tasks": "absent from quality/route-permissions.json",
-    "/v1/topology": "absent from quality/route-permissions.json",
-    "/v1/voice": "absent from quality/route-permissions.json",
-    "/v1/widgets": "absent from quality/route-permissions.json",
-    "/v1/work-items": "absent from quality/route-permissions.json"
-  }
+  "tolerated": {}
 }

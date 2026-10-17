@@ -59,8 +59,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 # checked against this locked current row, never against a snapshot taken
 # before it.
 _LOCK_ROW_SQL = """
-SELECT scope_key, fingerprint, request, task_id, run_id,
-       created_at, expires_at, lease_expires_at
+SELECT scope_key, claim_token, fingerprint, request, task_id, run_id,
+       completed_at, created_at, expires_at, lease_expires_at
 FROM task_idempotency WHERE scope_key = $1
 FOR UPDATE
 """
@@ -70,8 +70,10 @@ FOR UPDATE
 #: predicate ``complete`` carries, which keeps "late acknowledgement cannot
 #: rewrite the binding" true as a property of the row, not of the lock dance.
 _BIND_SQL = """
-UPDATE task_idempotency SET task_id = $2, run_id = $3
-WHERE scope_key = $1 AND task_id IS NULL
+UPDATE task_idempotency
+SET task_id = $2, run_id = $3,
+    completed_at = (EXTRACT(EPOCH FROM clock_timestamp()) * 1000000)::bigint
+WHERE scope_key = $1 AND completed_at = 0
 """
 
 #: The generation-fenced release: only this caller's own unbound generation
@@ -80,8 +82,8 @@ WHERE scope_key = $1 AND task_id IS NULL
 #: live successor claimed after it.
 _RELEASE_CLAIM_SQL = """
 DELETE FROM task_idempotency
-WHERE scope_key = $1 AND task_id IS NULL
-  AND created_at = $2 AND lease_expires_at = $3
+WHERE scope_key = $1 AND completed_at = 0
+  AND claim_token = $2 AND created_at = $3 AND lease_expires_at = $4
 """
 
 
@@ -163,14 +165,18 @@ def _same_generation(row: AdmissionRecord, claim: AdmissionRecord) -> bool:
     its identity.)
     """
     return (
+        row.claim_token,
         row.fingerprint,
         row.request,
+        row.completed_at_us,
         row.created_at_us,
         row.expires_at_us,
         row.lease_expires_at_us,
     ) == (
+        claim.claim_token,
         claim.fingerprint,
         claim.request,
+        claim.completed_at_us,
         claim.created_at_us,
         claim.expires_at_us,
         claim.lease_expires_at_us,
@@ -219,30 +225,30 @@ class PgRootAdmissionCoordinator:
         reported upward as a failure the caller may release.
         """
         run = await prepare_run()
-        conn: asyncpg.Connection
-        async with self._pool.acquire() as conn:
-            try:
-                # READ COMMITTED, like every canonical spine transaction: the
-                # fences must evaluate against the locked row's current
-                # values, and the binding INSERT…UPDATE re-reads nothing
-                # older than the lock.
-                async with conn.transaction(isolation="read_committed"):
-                    return await self._bind_locked(
-                        conn,
-                        scope_key=scope_key,
-                        claim=claim,
-                        task_id=task_id,
-                        run=run,
-                    )
-            except _connection_errors():
-                # Ambiguous: the commit may or may not have landed. Reread the
-                # durable generation on a new connection instead of assuming
-                # "nothing admitted" — deleting the key here would be exactly
-                # the duplicate mint this module exists to forbid.
-                reread = await self._read(scope_key)
-                if reread is not None and reread.admitted:
-                    return AdmissionAlreadyBound(reread)
-                raise
+        try:
+            conn: asyncpg.Connection
+            # READ COMMITTED, like every canonical spine transaction: the
+            # fences must evaluate against the locked row's current values,
+            # and the binding INSERT…UPDATE re-reads nothing older than the
+            # lock.
+            async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
+                return await self._bind_locked(
+                    conn,
+                    scope_key=scope_key,
+                    claim=claim,
+                    task_id=task_id,
+                    run=run,
+                )
+        except _connection_errors():
+            # Ambiguous: the commit may or may not have landed. The failed
+            # connection must be released before the durable reread: otherwise
+            # a one-connection pool deadlocks exactly when recovery is needed.
+            # `_read` now necessarily acquires a fresh connection rather than
+            # reusing a connection whose transaction outcome is unknown.
+            reread = await self._read(scope_key)
+            if reread is not None and reread.admitted:
+                return AdmissionAlreadyBound(reread)
+            raise
         # Unreachable: every path above returns or raises.
         raise AssertionError("bind_admission transaction context fell through")  # pragma: no cover
 
@@ -286,7 +292,12 @@ class PgRootAdmissionCoordinator:
         # ceilings) and the binding rise or fall together.
         await self._insert_run(conn, run)
         await conn.execute(_BIND_SQL, scope_key, task_id, run.run_id)
-        bound = replace(claim, task_id=task_id, run_id=run.run_id)
+        bound = replace(
+            claim,
+            task_id=task_id,
+            run_id=run.run_id,
+            completed_at_us=max(claim.created_at_us, 1),
+        )
         return AdmissionBound(record=bound, task_id=task_id, run_id=run.run_id)
 
     async def release_claim(self, scope_key: str, claim: AdmissionRecord) -> bool:
@@ -302,6 +313,7 @@ class PgRootAdmissionCoordinator:
             tag: str = await conn.execute(  # nosec B608 — literal SQL, bound params
                 _RELEASE_CLAIM_SQL,
                 scope_key,
+                claim.claim_token,
                 claim.created_at_us,
                 claim.lease_expires_at_us,
             )
@@ -313,8 +325,8 @@ class PgRootAdmissionCoordinator:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT scope_key, fingerprint, request, task_id, run_id,
-                       created_at, expires_at, lease_expires_at
+                SELECT scope_key, claim_token, fingerprint, request, task_id, run_id,
+                       completed_at, created_at, expires_at, lease_expires_at
                 FROM task_idempotency WHERE scope_key = $1
                 """,
                 scope_key,
@@ -327,13 +339,15 @@ class PgRootAdmissionCoordinator:
         record. The same codec the claim stores use, owned here for the
         atomic lane's statements."""
         return AdmissionRecord(
-            fingerprint=row[1],
-            request=row[2],
-            task_id=row[3],
-            run_id=row[4],
-            created_at_us=row[5],
-            expires_at_us=row[6],
-            lease_expires_at_us=row[7],
+            claim_token=row[1],
+            fingerprint=row[2],
+            request=row[3],
+            task_id=row[4],
+            run_id=row[5],
+            completed_at_us=row[6],
+            created_at_us=row[7],
+            expires_at_us=row[8],
+            lease_expires_at_us=row[9],
         )
 
 

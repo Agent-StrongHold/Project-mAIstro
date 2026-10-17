@@ -15,6 +15,12 @@ Two traps this pins shut:
 Timing scenarios run against a fake `now_utc` so the boundary cases (elapsed
 exactly equal to, and exactly one second short of, the timeout) are exact
 rather than wall-clock races.
+
+Polling goes through the governed `jira.subtasks` capability Binding
+(`test-jira-subtasks-binding`, registered by the `governed_pm_bindings`
+autouse fixture in conftest.py) rather than a bare `base_url`/`pat` pair —
+the node's egress is authorized through a Binding, not DAG-author-supplied
+credentials (#1195).
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -34,9 +41,8 @@ from maistro.graph.nodes.jira_wait_for_subtasks import (
 )
 
 _BASE_INPUTS: dict[str, Any] = {
-    "base_url": "https://jira.example.com",
+    "binding_id": "test-jira-subtasks-binding",
     "parent_key": "PROJ-100",
-    "pat": "pat",
 }
 _NODE_ID = "n1"
 
@@ -59,7 +65,10 @@ def _ctx(metadata: dict[str, Any] | None = None) -> NodeContext:
         run_id="r1",
         dag_id="d1",
         node_id=_NODE_ID,
+        node_run_id="nr1",
+        attempt_id="a1",
         user_id="u1",
+        workspace_id="w1",
         project_id="p1",
         metadata=metadata or {},
     )
@@ -76,10 +85,28 @@ def _clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
 def _open_subtasks(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every poll sees a subtask that is still open."""
 
-    async def _statuses(*_args: Any, **_kwargs: Any) -> dict[str, str]:
-        return {"PROJ-101": "In Progress"}
+    class _Resp:
+        status_code = 200
 
-    monkeypatch.setattr(jira_module, "_fetch_subtask_statuses", _statuses)
+        def json(self) -> Any:
+            return {
+                "fields": {
+                    "subtasks": [{"key": "PROJ-101", "fields": {"status": {"name": "In Progress"}}}]
+                }
+            }
+
+    class _Client:
+        is_closed = False
+
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None: ...
+        async def get(self, *a: Any, **kw: Any) -> _Resp:
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
 
 
 # --- polling configuration bounds (host-approved floor + relationship) ------

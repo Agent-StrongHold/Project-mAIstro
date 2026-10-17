@@ -96,6 +96,11 @@ class RsiCycleConfig:
     benchmarks: list[str] = field(default_factory=lambda: list(DEFAULT_BENCHMARKS))
     open_prs: bool = False
     base_branch: str = "main"
+    # Source pin (#404 AC3): a full 40/64-hex digest the cycle's clone is
+    # fetched and verified against. None resolves the remote's HEAD digest
+    # first and pins to that — the clone is always digest-verified, never
+    # "whatever the ref points at when the fetch happens".
+    source_commit: str | None = None
     # Keep the cloned workspace after the cycle (debugging). Default False:
     # long-running loops would otherwise slowly fill the disk with one clone
     # per run_id that nothing ever deletes.
@@ -245,6 +250,7 @@ class RsiCycle:
                 self._config.repo_url,
                 self._config.test_command,
                 base_branch=self._config.base_branch,
+                commit=self._config.source_commit,
             )
             probe = (
                 probe_from_commands(self._config.benchmark_commands)
