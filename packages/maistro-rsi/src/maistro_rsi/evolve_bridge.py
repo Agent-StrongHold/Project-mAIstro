@@ -17,6 +17,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+import structlog
+
 from maistro_evolve.code_rsi import evaluate_code_rsi
 from maistro_evolve.fixer_genome import render_system_prompt
 from maistro_evolve.harness import BenchmarkRunner, EvalHarness
@@ -126,9 +128,19 @@ async def run_evolution(
     against whatever benchmarks `config.target_benchmarks` names (``code_rsi``)."""
     from maistro_evolve.cycle import EvolutionCycle
 
+    logger = structlog.get_logger()
     cycle = EvolutionCycle(harness=harness)
-    for _ in range(cycles):
+    for index in range(cycles):
         await cycle.run_cycle(store, llm_call=llm_call, config=config)
+        # M4-A8 audit trail (#115): emit the producer-credit report each cycle
+        # so a live run's attribution ledger is observable from the structured
+        # log — the append-only event history plus the folded per-producer
+        # statistics (with repeated-regressor flags), scoped per eval context.
+        logger.debug(
+            "evolve_attribution_report",
+            cycle=index,
+            report=cycle.ledger.attribution_report(),
+        )
     return store
 
 

@@ -637,6 +637,23 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
         jobs = await store.list_jobs_for_layer(layer_id, org_id=auth.org_id)
         return JSONResponse(content=[j.to_dict() for j in jobs])
 
+    async def job_queue_health(
+        auth: CurrentUser = Depends(get_current_user),
+    ) -> JSONResponse:
+        """Queue health for the caller's org (#398): stuck / retrying / exhausted.
+
+        Registered before ``/jobs/{job_id}`` on purpose — FastAPI matches in
+        registration order, so ``job_id`` must not be able to swallow the
+        literal ``health`` segment. ``add_api_route`` is the exact call the
+        ``@router.get`` sugar makes; spelling it out keeps the registration
+        order in one visible place and the handler name reachable by static
+        analysis rather than only through decorator dispatch.
+        """
+        stats = await store.job_queue_stats(org_id=auth.org_id)
+        return JSONResponse(content=stats.to_dict())
+
+    router.add_api_route("/jobs/health", job_queue_health, methods=["GET"])
+
     @router.get("/jobs/{job_id}")
     async def get_job(
         job_id: str,

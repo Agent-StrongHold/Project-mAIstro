@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -157,7 +158,13 @@ def new_test_signal(
 
 
 def run_test_selection(
-    repo_dir: str | Path, selectors: list[str], *, timeout: int = 600
+    repo_dir: str | Path,
+    selectors: list[str],
+    *,
+    timeout: int = 600,
+    extra_args: tuple[str, ...] = (),
+    interpreter: str | None = None,
+    execute: Callable[[list[str]], tuple[int, str]] | None = None,
 ) -> tuple[int, str]:
     """Run pytest on specific files/selectors in ``repo_dir``; return (exit_code, output).
 
@@ -165,6 +172,10 @@ def run_test_selection(
     against a baseline checkout (expect non-zero) and the candidate (expect zero).
     Also the executor behind the mutation probe, so every pytest-over-candidate
     run in the scorecard flows through here.
+
+    ``extra_args`` extends the invocation (after ``-q -p no:cacheprovider``) for
+    callers that need more from the same run — the fail-first probe passes
+    ``-rfE`` so failure/error identities are parseable from the short summary.
     """
     # The candidate boundary env (#78): this executes the candidate's own
     # tests — conftest, fixtures, declared plugins — so it must not inherit the
@@ -173,10 +184,27 @@ def run_test_selection(
     # two runs, often within the same second, and a cached .pyc would make the
     # baseline run reuse the candidate's bytecode and wrongly pass.
     # -p no:cacheprovider drops pytest's own cache too.
+    # ``interpreter`` and ``execute`` are the containment seam (#614): a caller
+    # that must run the candidate's tests inside a sandbox composes the SAME
+    # argv — one builder, so a contained run cannot drift from the host shape —
+    # and routes it through ``execute`` instead of this process tree. The
+    # default stays the host subprocess the CLI paths have always used.
+    argv = [
+        interpreter if interpreter is not None else sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        *extra_args,
+        *selectors,
+    ]
+    if execute is not None:
+        return execute(argv)
     env = candidate_env()
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *selectors],
+            argv,
             cwd=str(repo_dir),
             capture_output=True,
             text=True,

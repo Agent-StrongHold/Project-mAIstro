@@ -274,6 +274,10 @@ def frontend_files() -> list[Path]:
         for path in FRONTEND.rglob(pattern):
             if _SKIP_PARTS.intersection(path.parts):
                 continue
+            # OpenAPI output (types.gen.ts) embeds route paths in JSDoc; those
+            # are schema metadata, not call sites (#1048 / S1.3).
+            if path.name.endswith(".gen.ts"):
+                continue
             files.append(path)
     return sorted(files)
 

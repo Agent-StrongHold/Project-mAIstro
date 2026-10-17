@@ -296,6 +296,24 @@ def record() -> SettingsRecord:
     return _cache
 
 
+def reload() -> SettingsRecord:
+    """Drop the cached record and re-read the store (#389).
+
+    `POST /v1/settings/reload` is this function's HTTP surface. It exists so a
+    record edited out of band -- an operator's script writing the durable
+    document directly, a restore from backup -- becomes visible without a
+    process restart: the cache is dropped *first*, so the read below cannot
+    answer from stale state even if the store read itself fails halfway.
+
+    Raises whatever the store raises on an unavailable read (the route maps
+    that to 503); on success the returned record IS what the store now holds,
+    so the caller can verify the reload against a revision it saw before.
+    """
+    global _cache
+    _cache = None
+    return load()
+
+
 def current() -> SettingsModel:
     """The current settings payload, as a copy.
 

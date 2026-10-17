@@ -118,6 +118,13 @@ class A2ADelegator:
             for existing in self._tasks.values():
                 if existing.metadata.get("delegation_key") == delegation_key:
                     return existing.id
+        # Legacy effect-scoped receipt identity: callers that address the
+        # transport by replay effect_key dedupe on the same rule.
+        effect_key = str(task_metadata.get("effect_key") or "")
+        if effect_key:
+            for existing in self._tasks.values():
+                if existing.metadata.get("effect_key") == effect_key:
+                    return existing.id
 
         task_id = str(uuid.uuid4())
 

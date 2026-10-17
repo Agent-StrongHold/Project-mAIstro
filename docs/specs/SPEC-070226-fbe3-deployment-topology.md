@@ -99,7 +99,7 @@ chaos/failover tests, alerting wiring) happens at deploy time on real infrastruc
   `deploy/scripts/verify-restore.sh`.
 - Health endpoints for the LB already exist in maistro-server
   (`/health`, `/health/live`, `/health/ready` — `maistro_server/api/health.py`,
-  tested in `tests/api/test_health.py`).
+  tested in `packages/maistro-server/tests/api/test_health.py`).
 
 ## Acceptance criteria
 
