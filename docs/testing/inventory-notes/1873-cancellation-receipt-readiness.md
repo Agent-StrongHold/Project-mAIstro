@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +6
+  packages/maistro-core/tests: +7
   packages/maistro-server/tests: +8
 ---
 
@@ -8,7 +8,7 @@ inventory-delta:
 
 Refs #1339, #1690, #91, #849. This is a bounded refresh of PR #1873's
 same-replica cancellation projection onto develop `ab8b3737`. It includes the
-original production patch, two bounded correctness repairs and fourteen
+original production patch, two bounded correctness repairs and fifteen
 collected cases; no test is removed
 and no coverage floor or shared inventory baseline changes.
 
@@ -35,6 +35,9 @@ leaving stale files/error visible. These preserve existing Run authority.
   it is not a PostgreSQL durability proof.
 - Core: missing and non-terminal local receipts are unchanged by settlement,
   with no fabricated receipt and no new persistence write.
+- Core: cancellation before execution starts preserves the canonical absent
+  start time and persists its finish time without a second gauge decrement.
+  This case runs in the core coverage producer independently of server tests.
 - Core: a terminal receipt rejects settlement from a different Run; canonical
   empty outcomes also clear stale local results in the ordered write snapshot.
 - Server: four cases cover non-task provenance, absent task ID, empty task ID
@@ -72,7 +75,7 @@ cross-replica concern, authorize a cutover, or alter #1845's admission generatio
 work. Keep the corrective PR draft until current-head CI and review pass and
 the owner accepts this bounded disposition.
 
-## Executed validation after the review corrections
+## Validation before the isolated-producer correction
 
 Python 3.12.14; imports verified to resolve from this candidate checkout.
 
@@ -113,3 +116,28 @@ outcome left stale files in the task receipt. After the reciprocal identity
 guards and unconditional canonical result assignment, the focused files pass
 **35 tests**, including an unchanged foreign Run, receipt and gauge. The
 broader corrected-candidate results are recorded above.
+
+## Isolated-producer coverage correction
+
+The PR coverage gate at `8488ea4` reported **4/6 changed core arcs (66.7%)**
+even though the combined local core/server slice measured 5/6 and the topic
+push gate passed. CI's server producer records only server sources, so the
+route's queued-cancellation case could not reliably supply the missing core
+arc. Running the core persistence tests alone reproduced the exact 4/6
+measurement at lines 1675 and 1677.
+
+The added core queued-cancellation test exercises the real Run lifecycle
+before execution starts and asserts the local and persisted projection's
+timestamps, empty outcome and unchanged terminal gauge. No production logic,
+coverage source configuration, or threshold changes are needed.
+
+With separate invocations using `coverage run --branch
+--source=packages/maistro-core/src/maistro` for the core persistence file and
+`coverage run --append --branch
+--source=packages/maistro-server/src/maistro_server` for the Run API file,
+**17 core tests and 19 server tests pass**. The combined XML now passes the
+repository gate with core **11/11 lines and 5/6 arcs** and server **12/12 lines
+and 6/6 arcs**, without relying on server tests to record core coverage.
+Ruff lint/format and suite inventory pass: core **16,367**, server **573**.
+The new PR head still requires hosted CI; the earlier full-slice and static
+checks above apply to the unchanged production implementation.

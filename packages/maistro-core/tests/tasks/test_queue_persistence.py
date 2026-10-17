@@ -211,6 +211,40 @@ async def test_settle_terminal_receipt_does_not_create_or_terminalize_a_receipt(
     assert queue.get("absent") is None
 
 
+async def test_settle_queued_cancellation_preserves_absent_canonical_start_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's producer must prove cancellation before execution ever started.
+
+    CI measures this module with the core suite, separately from the server
+    producer; a route test alone does not cover this projection branch there.
+    """
+    sink = _install_factory(monkeypatch)
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("w1")
+    runs = InMemoryRunStore(project_store=projects)
+    queue = TaskQueue(admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=root.project_id))
+    task = await queue.submit(TaskCreate(description="cancel before execution"))
+    assert task.run_id is not None
+    run = await runs.transition_run(task.run_id, RunStatus.CANCELLED)
+    assert run.started_at is None
+    assert run.finished_at is not None
+    assert await queue.update_status(task.task_id, TaskStatus.CANCELLED)
+    gauge = sum(float(sample["value"]) for sample in active_tasks.collect())
+
+    queue.settle_terminal_receipt(task.task_id, run=run)
+
+    assert await queue.drain_persistence() == 0
+    assert task.status is TaskStatus.CANCELLED
+    assert task.started_at is None
+    assert task.completed_at == run.finished_at
+    assert task.result is None
+    assert sink[-1].started_at is None
+    assert sink[-1].completed_at == run.finished_at
+    assert sink[-1].result is None
+    assert sum(float(sample["value"]) for sample in active_tasks.collect()) == gauge
+
+
 async def test_settle_terminal_receipt_rejects_a_different_canonical_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
