@@ -1,8 +1,17 @@
 # Example local override — not used by default CI.
-# Copy to `docker-compose.override.yml` at repo root to experiment with profiles.
+# Copy to `docker-compose.override.yml` at repo root to experiment with
+# profiles. ./install.sh includes it automatically — it invokes compose with
+# explicit -f files (base, wizard plan override, then this one last), so
+# Compose's own automatic override loading never applies to installer runs.
+# The installer refuses the file unless the invoking user owns it and it is
+# not group/world-writable.
 #
 # Suggested profile names (see docs/install/compose-slices.example.yml):
 #   data, engine, llm, observability, webui, full
+#
+# A service assigned to a profile starts only once that profile is active;
+# installer runs activate profiles via MAISTRO_COMPOSE_PROFILES, e.g.:
+#   MAISTRO_COMPOSE_PROFILES="llm" ./install.sh
 #
 # Example:
 # services:

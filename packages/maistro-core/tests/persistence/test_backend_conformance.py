@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.sessions.store import InMemorySessionStore
@@ -89,13 +90,13 @@ async def session_store(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
 @pytest.fixture(params=["memory", "sqlite", "postgres"])
 async def outcome_store(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
     if request.param == "memory":
-        yield InMemoryOutcomeStore()
+        yield InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         return
     if request.param == "sqlite":
         from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
 
         conn = await _sqlite_conn()
-        store = SqliteOutcomeStore(conn)
+        store = SqliteOutcomeStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
         try:
             yield store
@@ -106,7 +107,7 @@ async def outcome_store(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
     from maistro.persistence.pg_outcomes import PgOutcomeStore
 
-    yield PgOutcomeStore(pg_pool)
+    yield PgOutcomeStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
 
 
 # ── quota ─────────────────────────────────────────────────────────
@@ -131,6 +132,63 @@ async def test_usage_accumulates_across_calls(quota_tracker: Any) -> None:
     assert row["output_tokens"] == 7
     assert row["total_tokens"] == 18
     assert row["request_count"] == 2
+
+
+async def test_retrying_one_event_does_not_double_count(quota_tracker: Any) -> None:
+    await quota_tracker.record_usage(
+        provider="anthropic",
+        billing_cycle="monthly",
+        input_tokens=7,
+        output_tokens=5,
+        event_id="invocation-1",
+    )
+    row = await quota_tracker.record_usage(
+        provider="anthropic",
+        billing_cycle="monthly",
+        input_tokens=7,
+        output_tokens=5,
+        event_id="invocation-1",
+    )
+
+    assert row["total_tokens"] == 12
+    assert row["request_count"] == 1
+
+
+async def test_reusing_an_event_identity_with_different_usage_is_rejected(
+    quota_tracker: Any,
+) -> None:
+    """The same identity re-submitted with different usage is rejected.
+
+    Retry-safety by event identity must not become a way to silently rewrite
+    history: every backend that claims the protocol refuses the reuse, and
+    the original event stays the only contribution to the totals.
+    """
+    await quota_tracker.record_usage(
+        provider="anthropic",
+        billing_cycle="monthly",
+        input_tokens=7,
+        output_tokens=5,
+        event_id="invocation-1",
+    )
+    with pytest.raises(ValueError, match="event_id"):
+        await quota_tracker.record_usage(
+            provider="anthropic",
+            billing_cycle="monthly",
+            input_tokens=9,
+            output_tokens=5,
+            event_id="invocation-1",
+        )
+
+    # The rejected attempt changed nothing, and the identity still deduplicates.
+    row = await quota_tracker.record_usage(
+        provider="anthropic",
+        billing_cycle="monthly",
+        input_tokens=7,
+        output_tokens=5,
+        event_id="invocation-1",
+    )
+    assert row["total_tokens"] == 12
+    assert row["request_count"] == 1
 
 
 async def test_providers_are_tracked_separately(quota_tracker: Any) -> None:
@@ -163,6 +221,59 @@ async def test_usage_pct_is_a_fraction_of_the_free_allowance(quota_tracker: Any)
 
 async def test_unused_provider_reports_zero(quota_tracker: Any) -> None:
     assert await quota_tracker.get_usage_pct("never-called", "monthly", free_tokens=100) == 0.0
+
+
+async def test_incomplete_evidence_reports_no_percentage(quota_tracker: Any) -> None:
+    """#718's false-complete fix, pinned identically across all three
+    backends: a provider/cycle whose calls could not report usage must not
+    present a measured percentage. The old behavior returned ``0.0`` —
+    full headroom — for evidence that is explicitly incomplete, which read
+    as complete accounting while omitting spend. ``None`` is the truthful
+    answer: the ratio over the reported remainder is unknowable."""
+    await quota_tracker.record_invocation(
+        invocation_id="inv-unreported",
+        provider="anthropic",
+        billing_cycle="monthly",
+        input_tokens=0,
+        output_tokens=0,
+        usage_reported=False,
+    )
+
+    assert await quota_tracker.get_usage_pct("anthropic", "monthly", free_tokens=100) is None
+
+
+async def test_one_unreported_call_keeps_the_whole_cycle_unknown(quota_tracker: Any) -> None:
+    """Reported neighbours do not repair completeness: the unreported call's
+    tokens are still missing, so a ratio would understate spend while
+    presenting as complete."""
+    await quota_tracker.record_invocation(
+        invocation_id="inv-reported",
+        provider="anthropic",
+        billing_cycle="monthly",
+        input_tokens=25,
+        output_tokens=25,
+        usage_reported=True,
+    )
+    await quota_tracker.record_invocation(
+        invocation_id="inv-unreported",
+        provider="anthropic",
+        billing_cycle="monthly",
+        input_tokens=0,
+        output_tokens=0,
+        usage_reported=False,
+    )
+
+    assert await quota_tracker.get_usage_pct("anthropic", "monthly", free_tokens=200) is None
+
+
+async def test_read_path_does_not_fabricate_usage_rows(quota_tracker: Any) -> None:
+    """Reading a percentage for a provider that was never called is a
+    measured zero and must not materialize a zero usage row — dashboards
+    would list providers nobody ever called."""
+    await quota_tracker.get_usage_pct("never-called", "monthly", free_tokens=100)
+
+    rows = [r for r in await quota_tracker.get_all_usage() if r["provider"] == "never-called"]
+    assert rows == []
 
 
 # ── sessions ──────────────────────────────────────────────────────
@@ -304,13 +415,13 @@ async def learning_store(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
     if request.param == "memory":
         from maistro.memory.learnings.store import InMemoryLearningStore
 
-        yield InMemoryLearningStore()
+        yield InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         return
     if request.param == "sqlite":
         from maistro.persistence.sqlite_learnings import SqliteLearningStore
 
         conn = await _sqlite_conn()
-        store = SqliteLearningStore(conn)
+        store = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
         try:
             yield store
@@ -321,7 +432,7 @@ async def learning_store(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
     from maistro.persistence.pg_learnings import PgLearningStore
 
-    store = PgLearningStore(pg_pool)
+    store = PgLearningStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await store.ensure_schema()
     yield store
 
@@ -349,6 +460,53 @@ async def test_a_stored_learning_comes_back(learning_store: Any) -> None:
     listed = await learning_store.list_all()
 
     assert [item.learning for item in listed] == ["roll back before redeploying"]
+
+
+async def test_all_declared_learning_fields_survive_round_trip(learning_store: Any) -> None:
+    """A backend must not silently drop a declared Learning field (#1156)."""
+    expected = _learning(
+        source_query="how do I safely redeploy?",
+        org_id="org-round-trip",
+        team_id="team-round-trip",
+        agent_id="agent-round-trip",
+        user_id="user-round-trip",
+        scope="team",
+        hit_count=7,
+        status="active",
+        rca_category="safety",
+        rca_prevention="validate before deploy",
+        success_after_use=2,
+        failure_after_use=1,
+        run_id="run-round-trip",
+        node_run_id="node-round-trip",
+        attempt_id="attempt-round-trip",
+    )
+    await learning_store.store(expected)
+
+    [actual] = await learning_store.list_all(org_id="org-round-trip")
+
+    for field in (
+        "category",
+        "trigger_keys",
+        "learning",
+        "tool_name",
+        "source_query",
+        "org_id",
+        "team_id",
+        "agent_id",
+        "user_id",
+        "scope",
+        "hit_count",
+        "status",
+        "rca_category",
+        "rca_prevention",
+        "success_after_use",
+        "failure_after_use",
+        "run_id",
+        "node_run_id",
+        "attempt_id",
+    ):
+        assert getattr(actual, field) == getattr(expected, field), field
 
 
 async def test_store_returns_a_usable_id(learning_store: Any) -> None:
@@ -387,6 +545,146 @@ async def test_nothing_relevant_is_an_empty_list(learning_store: Any) -> None:
     await learning_store.store(_learning(trigger_keys=["rollback"]))
 
     assert await learning_store.find_relevant("entirely unrelated text") == []
+
+
+async def test_relevant_learnings_match_case_insensitively(learning_store: Any) -> None:
+    """Keyword matching has the same case-folding behavior in every backend."""
+    await learning_store.store(_learning(trigger_keys=["DEPLOY"], learning="target"))
+
+    found = await learning_store.find_relevant("please deploy")
+
+    assert [item.learning for item in found] == ["target"]
+
+
+async def test_org_scope_is_exact_for_mutations(learning_store: Any) -> None:
+    """An empty org scope must not act as a wildcard in any backend."""
+    learning_id = await learning_store.store(
+        _learning(learning="org-a row", org_id="org-a", hit_count=1)
+    )
+
+    await learning_store.mark_outcome([learning_id], success=True, org_id="")
+    await learning_store.check_auto_promotions(threshold=1, org_id="")
+
+    [stored] = await learning_store.list_all(org_id="org-a")
+    assert stored.success_after_use == 0
+    assert stored.status == "active"
+
+
+async def test_agent_scoped_reads_still_see_the_org_shared_pool(learning_store: Any) -> None:
+    """`agent_id = ''` is the org-wide shared pool in every backend.
+
+    Both SQL twins shipped `(agent_id = ? OR agent_id = '')` while the
+    in-memory twin matched exactly — the same read answered differently per
+    backend. The shared predicate now carries one rule: an agent-scoped read
+    sees its own rows plus the shared pool, never another agent's.
+    """
+    await learning_store.store(_learning(learning="shared", agent_id="", trigger_keys=["deploy"]))
+    await learning_store.store(
+        _learning(learning="mine", agent_id="agent-a", trigger_keys=["deploy"])
+    )
+    await learning_store.store(
+        _learning(learning="theirs", agent_id="agent-b", trigger_keys=["deploy"])
+    )
+
+    found = await learning_store.find_relevant("please deploy", agent_id="agent-a")
+
+    assert sorted(item.learning for item in found) == ["mine", "shared"]
+
+
+async def test_relevant_learnings_apply_org_team_and_user_scope(learning_store: Any) -> None:
+    """Every backend must apply the same three scope axes before ranking."""
+    await learning_store.store(
+        _learning(
+            learning="target",
+            org_id="org-a",
+            team_id="team-a",
+            user_id="user-a",
+            agent_id="agent-a",
+        )
+    )
+    await learning_store.store(
+        _learning(
+            learning="other team",
+            org_id="org-a",
+            team_id="team-b",
+            user_id="user-a",
+            agent_id="agent-a",
+        )
+    )
+    await learning_store.store(
+        _learning(
+            learning="other user",
+            org_id="org-a",
+            team_id="team-a",
+            user_id="user-b",
+            agent_id="agent-a",
+        )
+    )
+    await learning_store.store(
+        _learning(
+            learning="other org",
+            org_id="org-b",
+            team_id="team-a",
+            user_id="user-a",
+            agent_id="agent-a",
+        )
+    )
+
+    found = await learning_store.find_relevant(
+        "please deploy",
+        org_id="org-a",
+        team_id="team-a",
+        user_id="user-a",
+        agent_id="agent-a",
+    )
+
+    assert [item.learning for item in found] == ["target"]
+
+
+async def test_promoted_learnings_apply_org_team_and_user_scope(learning_store: Any) -> None:
+    """Prompt-ready learnings must use the same scope boundary as matching reads."""
+    await learning_store.store(
+        _learning(
+            learning="target",
+            tool_name="target-tool",
+            status="promoted",
+            org_id="org-a",
+            team_id="team-a",
+            user_id="user-a",
+            agent_id="agent-a",
+        )
+    )
+    await learning_store.store(
+        _learning(
+            learning="other team",
+            tool_name="team-tool",
+            status="promoted",
+            org_id="org-a",
+            team_id="team-b",
+            user_id="user-a",
+            agent_id="agent-a",
+        )
+    )
+    await learning_store.store(
+        _learning(
+            learning="other user",
+            tool_name="user-tool",
+            status="promoted",
+            org_id="org-a",
+            team_id="team-a",
+            user_id="user-b",
+            agent_id="agent-a",
+        )
+    )
+
+    found = await learning_store.get_promoted(
+        org_id="org-a",
+        team_id="team-a",
+        user_id="user-a",
+        agent_id="agent-a",
+    )
+
+    assert [item.learning for item in found] == ["target"]
 
 
 async def test_marking_an_outcome_is_accepted(learning_store: Any) -> None:

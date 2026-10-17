@@ -132,6 +132,28 @@ class TestEloTournament:
         ife_history = t.get_battle_history(benchmark="proxy_ifeval")
         assert len(ife_history) == 1
 
+    def test_battle_history_exposes_publication_identity(self):
+        """#1064: canonical publication evidence (``node_run_id``/
+        ``attempt_id``) must be inspectable through the same public method the
+        Hive ``/tournament/battles`` route serializes battles through --
+        otherwise it exists only on ``GenomeBattle`` and is never actually
+        reachable via the public API."""
+        t = EloTournament()
+        t.record_battle(
+            "proxy_ifeval", "g1", "g2", 0.8, 0.4, node_run_id="node-1", attempt_id="attempt-a"
+        )
+        # A library/direct caller with no canonical identity still gets a
+        # history row -- just with empty (not missing) provenance fields.
+        t.record_battle("proxy_bfcl", "g1", "g3", 0.5, 0.6)
+
+        history = t.get_battle_history(genome_id="g1")
+        assert len(history) == 2
+        by_benchmark = {row["benchmark"]: row for row in history}
+        assert by_benchmark["proxy_ifeval"]["node_run_id"] == "node-1"
+        assert by_benchmark["proxy_ifeval"]["attempt_id"] == "attempt-a"
+        assert by_benchmark["proxy_bfcl"]["node_run_id"] == ""
+        assert by_benchmark["proxy_bfcl"]["attempt_id"] == ""
+
     def test_stats(self):
         t = EloTournament()
         t.record_battle("proxy_ifeval", "g1", "g2", 0.8, 0.4)
@@ -140,3 +162,97 @@ class TestEloTournament:
         assert stats["total_battles"] == 2
         assert stats["total_genomes_rated"] == 2
         assert stats["benchmarks_tracked"] == 2
+
+
+class TestBattleIdempotency:
+    """#1064: a recovered Attempt for the same logical NodeRun must not
+    re-apply wins/losses/Elo a second time."""
+
+    def test_no_node_run_id_always_records_fresh(self):
+        """Library/direct callers (no canonical identity) are unaffected."""
+        t = EloTournament()
+        first = t.record_battle("proxy_ifeval", "g1", "g2", 0.8, 0.4)
+        second = t.record_battle("proxy_ifeval", "g1", "g2", 0.8, 0.4)
+        assert first.id != second.id
+        assert t.get_stats()["total_battles"] == 2
+
+    def test_same_node_run_id_and_benchmark_is_idempotent(self):
+        t = EloTournament()
+        first = t.record_battle(
+            "proxy_ifeval", "g1", "g2", 0.8, 0.4, node_run_id="node-1", attempt_id="attempt-a"
+        )
+        elo_after_first = t.get_elo("g1", "proxy_ifeval")
+
+        replay = t.record_battle(
+            "proxy_ifeval", "g1", "g2", 0.8, 0.4, node_run_id="node-1", attempt_id="attempt-b"
+        )
+
+        assert replay.id == first.id
+        assert replay.attempt_id == "attempt-a"  # the original publication, not the replay
+        assert t.get_stats()["total_battles"] == 1
+        assert t.get_elo("g1", "proxy_ifeval") == elo_after_first
+
+    def test_same_node_run_id_different_benchmark_records_independently(self):
+        """Idempotency is keyed by (node_run_id, benchmark): a multi-benchmark
+        battle NodeRun that faults after recording benchmark A must be able
+        to record benchmark B on retry without re-recording A."""
+        t = EloTournament()
+        t.record_battle(
+            "proxy_ifeval", "g1", "g2", 0.8, 0.4, node_run_id="node-1", attempt_id="attempt-a"
+        )
+        t.record_battle(
+            "proxy_bfcl", "g1", "g2", 0.3, 0.7, node_run_id="node-1", attempt_id="attempt-a"
+        )
+        assert t.get_stats()["total_battles"] == 2
+
+    def test_different_node_run_id_is_a_genuine_new_battle(self):
+        """A real later rematch of the same pair/benchmark (a different
+        logical NodeRun) must never be suppressed by idempotency."""
+        t = EloTournament()
+        t.record_battle(
+            "proxy_ifeval", "g1", "g2", 0.8, 0.4, node_run_id="node-1", attempt_id="attempt-a"
+        )
+        t.record_battle(
+            "proxy_ifeval", "g1", "g2", 0.2, 0.9, node_run_id="node-2", attempt_id="attempt-b"
+        )
+        assert t.get_stats()["total_battles"] == 2
+
+    def test_find_published_battle(self):
+        t = EloTournament()
+        assert t.find_published_battle("node-1", "proxy_ifeval") is None
+        assert t.find_published_battle("", "proxy_ifeval") is None
+        battle = t.record_battle(
+            "proxy_ifeval", "g1", "g2", 0.8, 0.4, node_run_id="node-1", attempt_id="attempt-a"
+        )
+        found = t.find_published_battle("node-1", "proxy_ifeval")
+        assert found is not None
+        assert found.id == battle.id
+
+    def test_find_published_battle_is_indexed_not_a_linear_scan(self):
+        """#1064: ``record_battle`` calls ``find_published_battle`` for every
+        canonical battle it records, so a long-running tournament must not
+        pay an O(n) ``_battles`` scan on every one of them -- the index dict
+        is consulted directly instead."""
+        t = EloTournament()
+        for i in range(500):
+            t.record_battle(
+                "proxy_ifeval",
+                f"g{i}",
+                f"h{i}",
+                0.8,
+                0.4,
+                node_run_id=f"node-{i}",
+                attempt_id="attempt-a",
+            )
+        assert len(t._battles) == 500
+        assert len(t._published_battles) == 500
+
+        # The index, not ``_battles``, is what answers the lookup: emptying
+        # ``_battles`` (impossible for a real scan to still find anything in)
+        # must not change the answer, proving the index -- not a scan -- is
+        # authoritative here.
+        last = t._battles[-1]
+        t._battles.clear()
+        found = t.find_published_battle("node-499", "proxy_ifeval")
+        assert found is not None
+        assert found.id == last.id

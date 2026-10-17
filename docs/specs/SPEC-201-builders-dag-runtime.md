@@ -6,7 +6,6 @@ kind: spec
 status: Accepted
 created: 2026-06-03
 substrate:
-  - maistro-engine#SPEC-200
   - maistro-engine#ADR-090
 implements:
   - maistro-engine#ADR-090
@@ -14,24 +13,12 @@ related:
   - maistro-engine#SPEC-190
   - maistro-engine#ADR-049
   - maistro-engine#ADR-075
+  - maistro-engine#SPEC-200
 supersedes: []
 blocks: []
 blocked-by: []
-contracts:
-  - behavioral
-  - boundary
-tests:
-  - packages/maistro-bootstrap/tests/test_builders_turn_record.py
-  - packages/maistro-bootstrap/tests/test_builders_agent_loop.py
-  - packages/maistro-bootstrap/tests/test_builders_cli.py
-  - packages/maistro-bootstrap/tests/test_builders_actions.py
-  - packages/maistro-bootstrap/tests/test_builders_models.py
-  - packages/maistro-bootstrap/tests/test_builders_quality.py
-  - packages/maistro-bootstrap/tests/test_builders_store.py
-  - packages/maistro-bootstrap/tests/test_builders_message_board.py
-  - packages/maistro-bootstrap/tests/test_builders_dagflow.py
-  - packages/maistro-bootstrap/tests/test_builders_spec_session.py
-  - packages/maistro-bootstrap/tests/test_builders_edge_coverage.py
+contracts: []
+tests: []
 layer: Ability
 owners:
   - '@BlakeMatthews-dev'
@@ -50,7 +37,10 @@ history:
 
 ## Context
 
-ADR-090 defines the Builders stage machine and worker roles. SPEC-200 defines the safety layer.
+ADR-090 defines the Builders stage machine and worker roles and is the governing authority for this
+spec. SPEC-200 (Builders Safety Layer, **AC Defined**) is non-authoritative design context for the
+safety layer's execution contexts and ephemeral workspace — related background, not a governing
+dependency.
 This spec describes the interactive builders session — a hybrid opencode/Claude Code-style TUI
 that takes a task description, routes through a LiteLLM proxy for model access, and runs a ReAct
 agent loop (think -> act -> observe) with human-in-the-loop approval gates.
@@ -124,6 +114,20 @@ Uses `LocalWorktreeSandbox` (git + filesystem only). No containers, Docker, or P
 
 ## File Layout
 
+Test-evidence disposition (#812): the eleven `packages/maistro-bootstrap/tests/test_builders_*.py`
+paths cited in front matter since authoring **never existed in this tree** —
+`git log` holds no such path. They named the intended bootstrap app's suite
+before implementation, and the builders runtime that did ship is the
+canonical pipeline graph under `packages/maistro-core/src/maistro/builders/`
+(ADR-099), covered by `packages/maistro-core/tests/builders/`. The TUI, CLI,
+and turn-record scope of this spec was not carried into that landing, so
+none of the shipped builders tests prove this document's acceptance
+criteria. Front matter therefore declares no contracts and cites no tests:
+a contract kind is a promise the contract-marker gate cross-checks against
+marker-carrying tests, and none of the shipped builders tests carry this
+document's claims. Contracts and tests return with the change that re-scopes
+this spec to the shipped runtime (or supersedes it) with its proving tests.
+
 ```
 packages/maistro-bootstrap/src/maistro_bootstrap/builders/
   __init__.py              # Public exports
@@ -169,5 +173,5 @@ packages/maistro-bootstrap/src/maistro_bootstrap/builders/
 ## References
 
 - ADR-090 — Builders Pipeline stage machine and worker roles
-- SPEC-200 — Builders Safety Layer
+- SPEC-200 — Builders Safety Layer (AC Defined — design context, not governing authority)
 - [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/prod)

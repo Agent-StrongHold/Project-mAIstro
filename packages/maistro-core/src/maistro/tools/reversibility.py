@@ -18,7 +18,6 @@ class ToolRegistration:
     reversibility: ToolReversibility
     compensator: str | None = None
     impact_estimator: str | None = None
-    idempotency_key: str | None = None
 
 
 class ToolRegistrationError(Exception):
