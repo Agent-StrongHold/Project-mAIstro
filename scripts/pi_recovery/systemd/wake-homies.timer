@@ -1,0 +1,12 @@
+[Unit]
+Description=Check pinned Pi foremen every 15 minutes and after startup
+
+[Timer]
+OnStartupSec=2min
+OnCalendar=*:07,22,37,52
+Persistent=true
+AccuracySec=10s
+Unit=wake-homies.service
+
+[Install]
+WantedBy=timers.target

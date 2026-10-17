@@ -1,0 +1,11 @@
+[Unit]
+Description=Checkpoint the registered Pi journal and active task branch
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/lib/pi_recovery/cli.py resume --checkpoint
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.config/pi-recovery.env
+TimeoutStartSec=60
+UMask=0077
+NoNewPrivileges=true

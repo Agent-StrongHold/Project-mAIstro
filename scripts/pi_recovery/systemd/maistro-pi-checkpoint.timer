@@ -1,0 +1,12 @@
+[Unit]
+Description=Checkpoint the registered Pi session every two minutes
+
+[Timer]
+OnStartupSec=20s
+OnCalendar=*:0/2
+Persistent=true
+AccuracySec=10s
+Unit=maistro-pi-checkpoint.service
+
+[Install]
+WantedBy=timers.target
