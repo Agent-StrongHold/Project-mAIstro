@@ -91,6 +91,7 @@ async def _schedule(schedules, project_id: str, **overrides: object) -> Schedule
         "name": "hourly",
         "cron": "0 * * * *",
         "graph_template_id": TEMPLATE_ID,
+        "actor_principal_id": "test-actor-principal",
         # Real schedules predate the moment they are evaluated; the default
         # factory would stamp *now*, which is after these fixed instants.
         "created_at": NOON - timedelta(days=30),

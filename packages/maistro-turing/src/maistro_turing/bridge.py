@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from maistro.security._types import WardenVerdict
+from maistro_turing.sync_runner import DEFAULT_SYNC_TIMEOUT_SECONDS, SyncLoopRunner
 
 if TYPE_CHECKING:
     # maistro-core does not ship a py.typed marker yet, so these imports are
@@ -289,6 +290,8 @@ class TuringProviderBridge:
         self,
         llm_client: LLMClient | None = None,
         pools: list[PoolConfig] | None = None,
+        *,
+        sync_timeout_seconds: float = DEFAULT_SYNC_TIMEOUT_SECONDS,
     ) -> None:
         self._client = llm_client
         self._pools: dict[str, PoolConfig] = {}
@@ -296,6 +299,13 @@ class TuringProviderBridge:
             for p in pools:
                 self._pools[p.pool_name] = p
         self._default_pool = pools[0] if pools else None
+        # Dedicated thread/loop boundary for sync callers (#397): bounded
+        # wait, cancellation propagation, reentrancy rejection. Async callers
+        # must use `acomplete` so they never occupy their loop waiting.
+        self._sync_runner = SyncLoopRunner(
+            timeout=sync_timeout_seconds,
+            name="turing-provider-sync",
+        )
 
     def register_pool(self, pool: PoolConfig) -> None:
         self._pools[pool.pool_name] = pool
@@ -303,26 +313,24 @@ class TuringProviderBridge:
             self._default_pool = pool
 
     def complete(self, prompt: str, *, max_tokens: int | None = None, pool: str = "") -> str:
+        """Synchronous completion through the dedicated sync-loop boundary.
+
+        The coroutine runs on the bridge's own loop thread (never the
+        caller's), the wait is bounded by ``sync_timeout_seconds``, and a
+        timed-out call cancels the underlying work (#397). A reentrant call
+        from the runner's own loop raises immediately instead of deadlocking.
+        """
         if self._client is None:
             raise RuntimeError("no LLM client configured")
         pool_cfg = self._pools.get(pool) if pool else self._default_pool
         model = pool_cfg.model if pool_cfg else ""
-        import asyncio
 
         coro = self._client.complete(
             messages=[{"role": "user", "content": prompt}],
             model=model,
             max_tokens=max_tokens,
         )
-        try:
-            asyncio.get_running_loop()
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, coro)
-                result = future.result()
-        except RuntimeError:
-            result = asyncio.run(coro)
+        result = self._sync_runner.run(coro)
         choices = result.get("choices", [])
         if choices:
             return str(choices[0].get("message", {}).get("content", ""))
@@ -342,6 +350,10 @@ class TuringProviderBridge:
         if choices:
             return str(choices[0].get("message", {}).get("content", ""))
         return ""
+
+    def close(self) -> None:
+        """Cancel outstanding sync-bridge work and stop the dedicated loop."""
+        self._sync_runner.close()
 
     def pool_names(self) -> list[str]:
         return list(self._pools.keys())

@@ -675,6 +675,16 @@
     {
       "source": "packages/hive-conductor/backend/routes/design.py",
       "method": "POST",
+      "route": "/projects/{project_id}/consistency",
+      "handler": "evaluate_project_consistency",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "cross-artifact consistency inspection (#779): runs the deterministic evaluator over the submitted frozen snapshot and returns the result contract; it proposes refinement, it never rewrites project state",
+      "truth_contract": "pure evaluation of the request body — no store access, no durable effect, no model call; the same evaluator the design.consistency_eval graph node runs inside a Run"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/design.py",
+      "method": "POST",
       "route": "/projects/{project_id}/render",
       "handler": "create_render_job",
       "disposition": "disabled",
@@ -1234,6 +1244,26 @@
       "effect_owner": "maistro-rsi service"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/rum.py",
+      "method": "POST",
+      "route": "/events",
+      "handler": "ingest_events",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "perceived-load telemetry ingest (#1420): appends the reporter's own schema-projected timings to the bounded in-memory ring; off unless RUM_INGEST_ENABLED, capped per body and per event count, projected onto the hive.rum.v1 allowlist before storage",
+      "effect_owner": "services/rum_store.py RumStore.ingest (bounded in-memory ring)"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/rum.py",
+      "method": "POST",
+      "route": "/rum-contract",
+      "handler": "_contract",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "OpenAPI rendering aid for the ingest contract (#1048 drift gate): ingest_events reads its body manually so the 64 KiB cap applies before parsing, which hides the schema from FastAPI's component collection, so this scratch-app route renders the RumBatchIn component schemas through FastAPI itself",
+      "truth_contract": "never mounted on any served app and never routable at runtime; exists only inside ensure_openapi_contract's throwaway FastAPI app so the OpenAPI document renders the hive.rum.v1 schemas byte-identically to a declared body parameter; no store access, no durable effect"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/schedules.py",
       "method": "DELETE",
       "route": "/{schedule_id}",
@@ -1600,7 +1630,7 @@
       "handler": "stream_dag_run",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "the DagBuilder Run button's socket: gated on dags.write and admitted by authorize_hive_dag_scope against the canonical WorkspaceStore before accept(); services.graph_runner.execute_dag_streaming is a frame facade over canonical_dag_runner.execute_dag, so the button's run is one interactive durable Run/NodeRun/Attempt in the authorized Workspace/Project, audited as dag_run, and the same dag_run_store projection POST /{dag_id}/run records is written under the canonical run_id as soon as the Run settles; an unexpected (non-Run) failure frame carries only the exception kind, while a failed Run reports its canonical error exactly as the HTTP route does (#766)",
+      "reason": "the DagBuilder Run button's socket: gated on dags.write and admitted by authorize_hive_dag_scope against the canonical WorkspaceStore before accept(); services.graph_runner.execute_dag_streaming streams one interactive durable Run/NodeRun/Attempt live in the authorized Workspace/Project, audited as dag_run: node frames are emitted while the Run is in flight, each durably recorded into the same dag_run_store projection POST /{dag_id}/run records (under the canonical run_id) BEFORE its frame is sent and stamped with the projection's per-run sequence number; idle stretches carry bounded heartbeat frames, a consumer that stops reading gets an explicit resync frame plus a canonical-truth replay instead of silent loss, and closing the socket cancels the in-flight Run as #355 documents; an unexpected (non-Run) failure frame carries only the exception kind, while a failed Run reports its canonical error exactly as the HTTP route does (#766)",
       "effect_owner": "services.dag_execution_scope.authorize_hive_dag_scope -> services.graph_runner.execute_dag_streaming -> services.canonical_dag_runner.execute_dag (durable Run/NodeRun/Attempt) + services.dag_run_store projection"
     },
     {
@@ -1880,8 +1910,8 @@
       "handler": "create_a2a_task",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "durably admits one idempotent remote delegation as a canonical Run (claims by logical effect)",
-      "effect_owner": "runs store claim_run_by_effect (Run admit or replay of the claimed Run)"
+      "reason": "durably admits one idempotent remote A2A delegation as a canonical Run (ADR-058, SPEC-182)",
+      "effect_owner": "maistro.runs.store.RunStore.claim_run_by_effect (idempotent canonical Run admission)"
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/canvas.py",
@@ -1932,6 +1962,116 @@
       "production_enabled": true,
       "reason": "admits the turn as a Run and routes the completion",
       "effect_owner": "Run admit + conductor routing (stream or full)"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/inspections",
+      "handler": "inspect_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates the durable install record and moves the governed state machine (INSPECTING to AWAITING_AUTHORIZATION or REJECTED) without importing extension code",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/authorization",
+      "handler": "decide_extension_authorization",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "applies the explicit operator decision, freezing granted permissions to the immutable snapshot on approval or denying terminally, with actor and reason recorded",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/installation",
+      "handler": "install_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "installs the bound artifact and activates it only after verification; a failed activation persists the truthful FAILED state with a reason instead of a partial install",
+      "effect_owner": "extension install store + extension loader (activation) + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/expired-authorizations",
+      "handler": "sweep_expired_authorizations",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "abandons every authorization request whose decision window elapsed, durably keeping late approvals from activating",
+      "effect_owner": "extension install store expire_abandoned + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/health/{extension_id}/operator",
+      "handler": "decide_extension_operator_state",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "applies the durable operator admission decision (enable/disable/quarantine/release) with the authenticated actor and a required reason; append-only evidence whose newest row is the restart-surviving runtime state",
+      "effect_owner": "extension health store (operator decisions) + health projections"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/pin",
+      "handler": "pin_extension_version",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "pins the active version so activation of another version is refused until the pin is explicitly lifted (#954); both decisions land on the audit trail",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/unpin",
+      "handler": "unpin_extension_version",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "lifts the pin with an audited, reason-carrying decision before any version change can follow (#954)",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/disable",
+      "handler": "disable_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "suspends the extension: clears the active pointer so the resolution seam stops serving it immediately, while records and transitions stay queryable (#954)",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/resume",
+      "handler": "resume_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "returns a disabled extension to service by re-running its activation loader with the same digest-bound artifact; the grant is not re-decided (#954)",
+      "effect_owner": "extension install store + extension loader (activation) + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/rollback",
+      "handler": "rollback_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "restores a superseded version through the loader only when its frozen grant declares no broadened authority and it still evaluates compatible; otherwise 409 with the current version untouched (#954)",
+      "effect_owner": "extension install store + extension loader (activation) + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/remove",
+      "handler": "remove_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "uninstalls the record (terminal for authority) while preserving every historical record and transition as queryable evidence; owned-resource cleanup runs before the transition (#954)",
+      "effect_owner": "extension install store + owned-resource janitor + transition audit trail"
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/projects.py",
@@ -2022,6 +2162,46 @@
       "production_enabled": true,
       "reason": "submits the task to the durable queue",
       "effect_owner": "task queue submit -> canonical Run"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/user_model.py",
+      "method": "POST",
+      "route": "/{lineage_id}/correct",
+      "handler": "correct_fact",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "appends the owner's provenance-bearing correction revision through the one canonical user-model service",
+      "effect_owner": "maistro.memory.user_model.service.UserModelService.correct (UserModelFact revision append)"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/user_model.py",
+      "method": "POST",
+      "route": "/{lineage_id}/mark-private",
+      "handler": "mark_fact_private",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "records the owner's shareability decision (reusable=false) as a new revision through the canonical service",
+      "effect_owner": "maistro.memory.user_model.service.UserModelService.mark_not_reusable (UserModelFact revision append)"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/user_model.py",
+      "method": "DELETE",
+      "route": "/{lineage_id}",
+      "handler": "forget_fact",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "tombstones the owner's fact through the canonical service; content purged, every held wording stays blocked",
+      "effect_owner": "maistro.memory.user_model.service.UserModelService.forget (UserModelFact tombstone)"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/user_model.py",
+      "method": "POST",
+      "route": "/recall",
+      "handler": "recall_for_task",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "relevance-gated recall of the authenticated user's facts for one task; ranking input only, never an authorization",
+      "effect_owner": "maistro.memory.user_model.service.UserModelService.recall_for_task (read-only scoring)"
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/webhooks.py",
@@ -2454,6 +2634,14 @@
       "production_enabled": true,
       "reason": "decides a review through the real backend route",
       "effect_owner": "routes/rsi.py decide_review"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/pages/RSI.tsx",
+      "signal": "timer-status-simulation",
+      "disposition": "unresolved",
+      "production_enabled": true,
+      "owner_issue": 359,
+      "reason": "the scanned timer is the #359 backoff re-arm (setTimeout(() => void run(false), backoffDelayMs())), which polls real backend state; the status words the detector matches inside its lazily captured body are the runs-list JSX (`r.status === 'running'`), which renders the backend's own status rather than a client-timer success animation. Unresolved only because the detector cannot yet distinguish a re-arm timer from a success-animation timer, not because any state is faked."
     },
     {
       "source": "packages/hive-conductor/frontend/src/pages/Settings.tsx",

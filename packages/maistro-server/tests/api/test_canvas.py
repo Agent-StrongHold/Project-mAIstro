@@ -73,8 +73,10 @@ class FakeCanvasStore:
         self.canvases[record.id] = record
         return record
 
-    async def get_canvas(self, canvas_id: str) -> FakeDesign | None:
-        return self.canvases.get(canvas_id)
+    async def get_canvas(self, canvas_id: str, *, org_id: str) -> FakeDesign | None:
+        """Scoped read (#857): another org's canvas reads as absent."""
+        record = self.canvases.get(canvas_id)
+        return record if record is not None and record.org_id == org_id else None
 
     async def list_canvases(
         self, org_id: str, *, include_archived: bool = False
@@ -85,14 +87,16 @@ class FakeCanvasStore:
             if c.org_id == org_id and (include_archived or c.archived_at is None)
         ]
 
-    async def update_canvas(self, canvas: FakeDesign) -> FakeDesign:
+    async def update_canvas(self, canvas: FakeDesign, *, org_id: str) -> FakeDesign:
+        if canvas.org_id != org_id:
+            raise LookupError(canvas.id)  # a scoped store refuses cross-org writes
         self.canvases[canvas.id] = canvas
         return canvas
 
-    async def list_layers(self, canvas_id: str) -> list[Any]:
+    async def list_layers(self, canvas_id: str, *, org_id: str) -> list[Any]:
         return []
 
-    async def latest_composite(self, canvas_id: str) -> Any:
+    async def latest_composite(self, canvas_id: str, *, org_id: str) -> Any:
         return None
 
 
@@ -118,10 +122,13 @@ def client(store: FakeCanvasStore) -> TestClient:
     return TestClient(_make_app(store))
 
 
-def _create(client: TestClient, name: str = "Book cover") -> dict[str, Any]:
+def _create(
+    client: TestClient, name: str = "Book cover", headers: dict[str, str] | None = None
+) -> dict[str, Any]:
     resp = client.post(
         "/v2/canvas/designs",
         json={"name": name, "width": 800, "height": 600},
+        headers=headers or {},
     )
     assert resp.status_code == 201
     return dict(resp.json())
@@ -617,7 +624,52 @@ class TestRouteFailureContract:
         assert resp.json()["detail"] == "Export version not found"
 
 
-# ── Content negotiation (ADR-076) ─────────────────────────────────────
+# ── Org scope (#857: reads and writes carry the authenticated principal) ─
+
+
+class TestOrgScope:
+    def test_foreign_design_reads_as_absent(self, store: FakeCanvasStore) -> None:
+        app = _make_app(store, api_keys=["alice:token-a", "bob:token-b"])
+        client = TestClient(app)
+        alice = {"Authorization": "Bearer token-a"}
+        bob = {"Authorization": "Bearer token-b"}
+        created = _create(client, headers=alice)
+
+        assert client.get(f"/v2/canvas/designs/{created['id']}", headers=bob).status_code == 404
+        assert (
+            client.put(
+                f"/v2/canvas/designs/{created['id']}", json={"name": "stolen"}, headers=bob
+            ).status_code
+            == 404
+        )
+        assert client.delete(f"/v2/canvas/designs/{created['id']}", headers=bob).status_code == 404
+        assert client.get("/v2/canvas/designs", headers=bob).json() == []
+        # Alice still sees hers untouched.
+        assert (
+            client.get(f"/v2/canvas/designs/{created['id']}", headers=alice).json()["name"]
+            == (created["name"])
+        )
+
+    def test_store_receives_the_authenticated_org(self, store: FakeCanvasStore) -> None:
+        seen: list[str] = []
+        original = store.get_canvas
+
+        async def spy(canvas_id: str, *, org_id: str) -> Any:
+            seen.append(org_id)
+            return await original(canvas_id, org_id=org_id)
+
+        store.get_canvas = spy  # type: ignore[method-assign]
+        app = _make_app(store, api_keys=["alice:token-a"])
+        client = TestClient(app)
+        created = _create(client, headers={"Authorization": "Bearer token-a"})
+        client.get(
+            f"/v2/canvas/designs/{created['id']}", headers={"Authorization": "Bearer token-a"}
+        )
+        assert seen == ["alice"]
+
+
+# ── Content negotiation (canvas-local media type; ADR-076's general scheme
+# ── lives in maistro.api_versioning and is tested separately) ──────────
 
 
 class TestContentNegotiation:

@@ -23,7 +23,9 @@ import asyncio
 
 import pytest
 
+from maistro.runtime import RuntimeDeadlineExceeded
 from maistro_canvas.canvas.executor import CanvasExecutor, _sanitise_error
+from maistro_canvas.canvas.retry_policy import JobFailureClass, classify_failure
 from maistro_canvas.protocols import ImageData
 from maistro_canvas.types import (
     CanvasNotFoundError,
@@ -269,6 +271,45 @@ class TestErrorSanitisation:
 
     def test_an_exception_with_no_message_is_still_handled(self):
         assert "provider error" in _sanitise_error(RuntimeError())
+
+
+class TestFailureClassification:
+    """Typed deadlines cannot become provider faults because of opaque IDs (#1762)."""
+
+    @pytest.mark.parametrize("error_type", [TimeoutError, RuntimeDeadlineExceeded])
+    @pytest.mark.parametrize(
+        "detail",
+        [
+            "16e5402cfaec4030ba717ef5ce22d377",
+            "abc401def",
+            "abc429def",
+            "abc503def",
+            "401 unauthorized 403 forbidden 429 rate_limit 503 service unavailable",
+            "",
+            "plain",
+        ],
+    )
+    def test_typed_timeout_wins_over_incidental_message_markers(self, error_type, detail):
+        error = error_type(detail)
+        assert classify_failure(error) is JobFailureClass.TIMEOUT
+        assert _sanitise_error(error) == "Generation failed: provider request timed out."
+
+    @pytest.mark.parametrize(
+        ("detail", "expected"),
+        [
+            ("HTTP 401", JobFailureClass.AUTH),
+            ("HTTP 403", JobFailureClass.AUTH),
+            ("Unauthorized", JobFailureClass.AUTH),
+            ("Forbidden", JobFailureClass.AUTH),
+            ("HTTP 403 after connection timeout", JobFailureClass.AUTH),
+            ("HTTP 503 behind a forbidden gateway", JobFailureClass.UNAVAILABLE),
+            ("HTTP 429 behind a forbidden gateway", JobFailureClass.RATE_LIMITED),
+            ("connection timeout", JobFailureClass.TIMEOUT),
+            ("unknown provider error", JobFailureClass.UNKNOWN),
+        ],
+    )
+    def test_untyped_provider_errors_preserve_existing_precedence(self, detail, expected):
+        assert classify_failure(RuntimeError(detail)) is expected
 
 
 class TestStartJobPreconditions:

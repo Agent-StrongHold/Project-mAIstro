@@ -419,7 +419,8 @@ maistro/graph/
 - `packages/maistro-core/src/maistro/graph/executor.py` — existing executor being replaced
 - `packages/maistro-core/src/maistro/graph/scout.py` — merging into ScoutStrategy
 - `packages/maistro-core/src/maistro/graph/types.py` — extended with beam_width
-- `docs/analysis/COMPETITIVE-IMPROVEMENTS.md` — IMP-010, IMP-022, IMP-021, IMP-024
+- Historical competitive-improvements inventory (removed `docs/analysis/COMPETITIVE-IMPROVEMENTS.md`;
+  IMP-010/021/022/024 absorbed into this ADR and related specs)
 - Hermes `_dispatch_node_single` retry + circuit breaker pattern
 - Pi `AgentHarness` phase machine pattern
 - OpenClaw `SubgraphRegistry` lifecycle tracking pattern

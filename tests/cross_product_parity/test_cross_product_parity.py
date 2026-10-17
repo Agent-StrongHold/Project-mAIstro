@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from maistro.graph.definitions import Graph, Node
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from tests.cross_product_parity.harness import (
     BUILDERS,
     CONDUCTOR_INSPECTION,
@@ -49,6 +50,7 @@ async def test_cross_product_parity_profile_is_real_sqlite_and_survives_restart(
     run = await first.run_store.create_run(
         graph,
         provenance={"admission_source": "m1-459-harness"},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     first_project_id = first.project_id
     await first.close()

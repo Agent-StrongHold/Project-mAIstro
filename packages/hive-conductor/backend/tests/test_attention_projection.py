@@ -25,6 +25,7 @@ from maistro.graph.nodes.base import (
 )
 from maistro.runs.lifecycle import transition_node_run, transition_run
 from maistro.runs.model import GraphSnapshot, NodeRun, Run, RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 _NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
 
@@ -51,6 +52,7 @@ def _paused_record(
         workspace_id=workspace_id,
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     if created_at is not None:
         run = run.model_copy(update={"created_at": created_at})
@@ -299,6 +301,104 @@ async def test_a_machine_wait_is_not_attention(run_store) -> None:
     }
 
 
+async def test_attention_finds_the_workspace_pause_behind_a_full_page_of_foreign_pauses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The #1109 repair's Attention regression: Workspace-wide, behind one
+    full walk page of other tenants' human pauses, this Workspace's pause is
+    still found and `truncated` stays False. Driven against the canonical
+    store, where Workspace scope filters the assembled page — the shape that
+    read as an empty projection page and a false "ran out" before the
+    repair. `MAX_PENDING_SCAN_RECORDS` is pulled down to the page size so the
+    foreign prefix is a full page at Attention's own limit; without the
+    repair the walk answered empty here and called it complete."""
+    from services import attention as attention_module
+    from services import dag_agents
+
+    from maistro.graph.durable_runs import CanonicalDurableRunStore
+    from maistro.graph.durable_runs.continuation import InMemoryGraphContinuationStore
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs import InMemoryRunStore
+
+    projects = InMemoryProjectScopeStore()
+    spine = InMemoryRunStore(project_store=projects)
+    continuations = InMemoryGraphContinuationStore()
+    store = CanonicalDurableRunStore(spine, continuations)
+    monkeypatch.setattr(dag_agents, "get_canonical_run_store", lambda: store)
+    monkeypatch.setattr(attention_module, "MAX_PENDING_SCAN_RECORDS", 100)
+
+    ws = await _workspace("admin", "Attention behind foreign page")
+    foreign_ws = await _workspace("someone-else", "Attention foreign page")
+    own_project = (await projects.create_root(ws)).project_id
+    foreign_project = (await projects.create_root(foreign_ws)).project_id
+
+    async def _plant_canonical_pause(run_id: str, *, workspace_id: str, project_id: str) -> str:
+        """One human-paused Run on the canonical spine, projected beside it."""
+        from maistro.graph.durable_runs.continuation import GraphContinuation
+
+        graph = Graph(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            name="attention",
+            nodes=[Node(node_id="ask", node_type="human.ask_question")],
+        )
+        admitted = await spine.create_run(
+            graph,
+            initial_status=RunStatus.QUEUED,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        await spine.transition_run(admitted.run_id, RunStatus.RUNNING)
+        await spine.transition_run(admitted.run_id, RunStatus.PAUSED)
+        node_run = await spine.create_node_run(admitted.run_id, node_id="ask")
+        await spine.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+        await spine.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+        await spine.transition_node_run(node_run.node_run_id, RunStatus.PAUSED)
+        run = await spine.get_run(admitted.run_id)
+        assert run is not None
+        node_runs = tuple(await spine.list_node_runs(admitted.run_id))
+        state = GraphExecutionState(
+            run_id=admitted.run_id,
+            active_node_ids=("ask",),
+            blackboard_snapshot={},
+            metadata={
+                "initial_inputs": {},
+                "hitl_answers": {},
+                "pauses": {
+                    "ask": {
+                        "kind": "hitl",
+                        "metadata": {
+                            "paused_reason": PAUSE_AWAITING_HUMAN_ANSWER,
+                            "question": f"{run_id}?",
+                        },
+                        "resume_at": None,
+                    }
+                },
+            },
+        )
+        await continuations.create(
+            GraphContinuation.of(
+                DurableRunRecord(run=run, graph_state=state, node_runs=node_runs, version=1)
+            )
+        )
+        return admitted.run_id
+
+    for index in range(100):
+        await _plant_canonical_pause(
+            f"att-foreign-{index:03d}",
+            workspace_id=foreign_ws,
+            project_id=foreign_project,
+        )
+    mine_run_id = await _plant_canonical_pause(
+        "att-behind", workspace_id=ws, project_id=own_project
+    )
+
+    body = await list_attention("admin", ws, now=_NOW)
+
+    assert body is not None
+    assert _ids(body) == [f"{mine_run_id}/ask"]
+    assert body["summary"]["truncated"] is False
+
+
 async def test_listing_attention_writes_nothing(run_store) -> None:
     ws = await _workspace("admin", "Attention read-only")
     await run_store.create(
@@ -333,7 +433,9 @@ async def test_a_failed_run_is_queued_with_its_error(monkeypatch: pytest.MonkeyP
         name="failing",
         nodes=[Node(node_id="only", node_type="transform.alias_keys")],
     )
-    run = await container.run_store.create_run(graph)
+    run = await container.run_store.create_run(
+        graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await container.run_store.transition_run(run.run_id, status)
     await container.run_store.transition_run(

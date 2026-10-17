@@ -19,6 +19,8 @@ import pytest
 import stores
 from services import dashboard_layouts
 
+from maistro.identity import Principal
+
 ROUTE_SOURCE = Path(__file__).resolve().parents[1] / "routes" / "dashboard_layout.py"
 
 LAYOUT: dict[str, Any] = {
@@ -391,7 +393,7 @@ async def test_a_principal_with_a_preset_reads_it_at_revision_zero(store: Any) -
     from services.model_store import JsonStore
 
     backing = store(JsonStore("dashboard_layouts"))
-    request = SimpleNamespace(state=SimpleNamespace(user={"id": "demo"}))
+    request = SimpleNamespace(state=SimpleNamespace(principal=Principal(user_id="demo")))
 
     body = await dashboard_layout.get_layout(request)  # type: ignore[arg-type]
 

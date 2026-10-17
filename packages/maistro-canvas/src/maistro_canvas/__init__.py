@@ -74,6 +74,7 @@ from maistro_canvas.layers import (
 from maistro_canvas.protocols import (
     AssetRegistry,
     AssetSheetService,
+    CanvasJobStore,
     CanvasStore,
     CompositorService,
     ImageData,
@@ -89,6 +90,7 @@ from maistro_canvas.types import (
     CanvasTier,
     GenerationJobRecord,
     JobAction,
+    JobQueueStats,
     JobStatus,
     LayerRecord,
     LayerType,
@@ -121,6 +123,7 @@ __all__ = [
     # Existing canvas primitives
     "BlendMode",
     "CanvasError",
+    "CanvasJobStore",
     "CanvasRecord",
     "CanvasRuntime",
     "CanvasStore",
@@ -154,6 +157,7 @@ __all__ = [
     "ImageGenClient",
     "InMemoryExportStore",
     "JobAction",
+    "JobQueueStats",
     "JobStatus",
     "LayerKind",
     "LayerRecord",

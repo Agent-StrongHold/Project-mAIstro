@@ -307,6 +307,7 @@ class TestRunTauBench:
         assert result.metadata == {
             "total_samples": len(TAU_BENCH_SAMPLES),
             "fidelity": "proxy",
+            "evidence": {"method": "structured-call-match", "outcomes": "simulated"},
         }
         assert result.cost_usd > 0.0
         assert result.score > 0.0
@@ -372,4 +373,8 @@ class TestRunTauBench:
         # but no score is added for that sample.
         assert result.samples_evaluated == 1
         assert result.score == 0.0
-        assert result.metadata == {"total_samples": 1, "fidelity": "proxy"}
+        assert result.metadata == {
+            "total_samples": 1,
+            "fidelity": "proxy",
+            "evidence": {"method": "structured-call-match", "outcomes": "simulated"},
+        }
