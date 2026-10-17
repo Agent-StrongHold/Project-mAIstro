@@ -151,7 +151,7 @@ _TRANSITION_SQL = """UPDATE canonical_goals
                      WHERE goal_id = $1 AND current_revision = $5 AND status = 'active'"""
 _REASSIGN_SQL = """UPDATE canonical_goals
                    SET agent_id = $2, updated_at = $3, payload = $4::text::jsonb
-                   WHERE goal_id = $1 AND current_revision = $5 AND status = 'active'"""
+                   WHERE goal_id = $1 AND current_revision = $5 AND status = 'active' AND agent_id = $6"""
 
 
 class PgGoalStore:
@@ -302,6 +302,8 @@ class PgGoalStore:
         actor: str,
         at: datetime | None = None,
     ) -> Goal:
+        if not isinstance(agent_id, str) or not agent_id.strip() or agent_id != agent_id.strip():
+            raise ValueError("agent_id must be a nonblank, trimmed string")
         goal = await self._require_active(goal_id)
         if goal.agent_id == agent_id:
             raise GoalTransitionError(
@@ -328,6 +330,7 @@ class PgGoalStore:
                 moved_at,
                 json_of(updated),
                 expected_revision,
+                goal.agent_id,
             )
             await self._require_won(conn, goal_id, outcome, expected_revision)
             await self._insert_transition(conn, record)
