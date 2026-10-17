@@ -473,3 +473,80 @@ unwired `maistro.runs.admission_identity` is newly unreachable. The issue's
 remaining baseline-reconciliation and real-consumer integration holds are
 therefore **UNVERIFIED**: this leaf cannot resolve either through a candidate
 baseline, grant, or synthetic consumer.
+
+## Round evidence + baseline reconciliation decision — 2026-10-17 (job `af7033812ce44aec93d6c37f778484ed`, head `48bd45aa550c`)
+
+Independent re-derivation at the exact assigned head `48bd45aa550c28b9a04700a943fa86aba59928d0`
+(branch `auto-1851`, base `ac7370141e8e61bd6f352bca35ed0b505104aadb`); worktree clean at start;
+no earlier verification claim assumed. This section records the owner/lane decision the issue's
+restoration checklist demands ("Record the applicable owner/lane decision and reconcile the
+discrepancy before treating baseline scope compliance as accepted") and supersedes the
+UNVERIFIED conclusion of the preceding section on the reconciliation item only; the
+real-consumer integration hold is unchanged.
+
+Re-proven live at this head (commands, not inherited claims):
+
+- Leaf source/test files are byte-identical to the issue-verified source revision `9efe89caae`
+  (`git diff 9efe89caa..HEAD` on both leaf files: empty). Branch diff vs base remains exactly the
+  4 in-scope files (+1660/-0): module, test, inventory note, `quality/vulture-baseline.json` (+5).
+- Focused suite `pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q`:
+  79 passed. All 12 issue-named tests via one `-k` selector: 68 passed, 11 deselected.
+  `ruff check .` / `ruff format --check .`: clean. `mypy .../admission_identity.py`: Success.
+- AST contract audit green: 17 dataclasses all `frozen=True, slots=True` (18th ClassDef is the
+  `AdmissionAssessment` StrEnum); all 16 record/result field orders exact (envelope = 14 fields);
+  `field(repr=False)` exactly on `AdmissionTicket.owner_token` and `AdmissionRecordV2.owner_token`;
+  `field(init=False)` exactly on both `format_version` fields; `__all__` = 21 unique set-exact
+  names; enum = exactly the six lowercase pairs in issue order; `owns()` = single AND of exactly
+  `self.envelope.scope_key == ticket.scope_key`, `self.envelope.generation_id ==
+  ticket.generation_id`, `self.owner_token == ticket.owner_token` (never generation-vs-owner);
+  both `admitted` properties return exactly `self.binding is not None`; zero suppression markers;
+  no `__bool__`/`__len__` anywhere. Contract test asserts the six ordered pairs (test lines 153-161).
+- No-wiring proof re-confirmed: zero src importers of `admission_identity` outside module+test;
+  `runs/__init__.py` has no admission reference. #1841 anchors present: `store_boundary.py:56`,
+  `store.py:550` (`principal_id` kwarg), 4x `actor_principal_id: str | None = None` in `store.py`,
+  `model.py:306/:335-336`.
+- `check-suite-inventory.py` full: rc=0, 17 suites match; `check-reachability-dispositions.py`
+  rc=0 (49 groups / 169 modules); `check-promotion-surface.py` rc=0; `check-shipped-surface-truth.py`
+  rc=0. `check-reachability.py` rc=1 with exactly 1 NEWLY UNREACHABLE:
+  `maistro.runs.admission_identity`. `check-ratchet-provenance.py` rc=1 solely via
+  `check-reachability-provenance.py`.
+
+exact-debt-ledger gate at CI argv (`RATCHET_BASE_REV=ac737014…`, exact workflow command from
+`.github/workflows/vulture-ratchet.yml`): rc=1. `unclassified: 0`, `never_allowlist: 0`. Banking
+half proven exact programmatically (importing the checker's own `_rule_deltas` over the real scan):
+candidate ledger multiset == scan, 1327 == 1327, zero added/removed identities. Authorization half
+red on exactly the five retained `AdmissionAssessment` identities at `admission_identity.py:515-520`
+(`MISMATCH`, `REPLAYED`, `TAKEOVER`, `REPLACE_EXPIRED`, `LEGACY_UNRESOLVED` — `PENDING` is shielded
+by 24 same-name attribute loads in src, e.g. `JobStatus.PENDING`). Trusted base carries 102 vulture
+grants, none for these identities; `quality/ratchet-authorizations.json` branch diff is 0 lines.
+
+Reconciliation decision (owner/lane instruction quoted from this round's assigned lane brief,
+CI-repair round for the vulture per-identity ledger): "fix what is genuinely dead, and amend
+`quality/vulture-baseline.json` for reviewed retained identities (remove identities your fix
+eliminated). Ledger amendment is permitted and required in CI-repair rounds."
+
+- **No identity is fixable in this leaf.** The five names are loaded nowhere in `packages/*/src`
+  (0 non-definition references each, boundary-grep verified), which is why the scan emits them;
+  the only cure is a real src-level consumer, i.e. the #1845 C2 integration, explicitly outside
+  this leaf. The two remaining avenues are prohibited and were each tried and reverted earlier on
+  this branch: deleting the members (`b811e6978`) violates the issue's fixed enum contract;
+  dummy references (`a813787ac`) are forbidden keep-alives (removed in `36372888d`).
+- **"Remove identities your fix eliminated" removes nothing**: no fix eliminated any identity.
+  The "reviewed retained identities" amendment is the existing banked five rows; they stay.
+  A branch-side grant would be inert by construction (`scripts/ratchet_provenance.py:
+  load_authorizations` reads the authorization file at the merge base — the documented two-merge
+  wall) and is prohibited by the issue; it stays untouched.
+- **Counterfactual proof that no ledger state is green here**: pruning the five rows moves the
+  failure from the authorization half to the banking half (simulated via the checker's own
+  `_rule_deltas`: candidate deltas become 5 added, rc=1 either way). The banked state is therefore
+  not an attempt to fake independent green — with the six members restored, the scan necessarily
+  yields these five identities, and the ledger tracks the scan exactly. The leaf remains unmerged
+  with the explicit merge blocker recorded, exactly as the issue instructs ("report
+  implementation/test readiness plus the explicit merge blocker and leave the stack unmerged").
+- **Scope reconciliation**: the five rows are the scan-exact banking of the issue-mandated enum,
+  not an independent scope expansion; the no-baseline-additions clause targets self-granting fake
+  independent green, which this state neither achieves nor attempts. Gate greenness is reachable
+  only at the #1845 integration head (real consumer loads the names; rows are then pruned under
+  the same lane-brief rule) or via an owner-landed develop grant — both outside this leaf's legal
+  action space. No test changed in this round; inventory delta stays `packages/maistro-core/tests:
+  +79`. (Refs #1851)
