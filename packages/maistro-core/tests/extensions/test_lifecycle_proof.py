@@ -218,21 +218,48 @@ class TestEpicCanonicalExecution:
     async def test_every_digest_link_of_the_chain_is_identical(
         self, proof_module, tmp_path: Path
     ) -> None:
-        """Catalog entry, install record, lock pin: one artifact digest."""
+        """One digest per lineage: the lock pin's 1.1.0 and the canonically
+        executed 2.0.0 each link pin/entry/record/built bytes identically."""
         proof = proof_module.LifecycleProof(tmp_path / "scratch")
-        await proof.run()
-        record = await proof.service.active(proof.scope, "acme.notary")
-        assert record is not None and record.artifact_sha256 is not None
-        entry = next(
+        report = await proof.run()
+
+        # Executed-artifact lineage: the canonical Attempt ran the 2.0.0
+        # install, so read that artifact's digest from canonical-stage
+        # evidence — not from the post-rollback active record.
+        stage = next(s for s in report["stages"] if s["name"] == "canonical-execution")
+        executed_version = stage["evidence"]["extension"]["version"]
+        executed_digest = stage["evidence"]["artifact_sha256"]
+        assert executed_version == "2.0.0"
+        executed_entry = next(
             e
             for e in proof.catalog_entries
             if e.identity.extension_name == "acme.notary"
-            and e.identity.semantic_version == record.version
+            and e.identity.semantic_version == executed_version
         )
-        assert entry.identity.package_sha256 == record.artifact_sha256
-        assert record.artifact_sha256 == proof_module.sha256_hex(
-            proof.artifacts[f"acme.notary@{record.version}"]
+        assert executed_entry.identity.package_sha256 == executed_digest
+        assert executed_digest == proof_module.sha256_hex(
+            proof.artifacts[f"acme.notary@{executed_version}"]
         )
+
+        # Pinned lineage: the discover-stage lock pin (1.1.0) — also the
+        # record the rollback stage leaves active at the end of the run.
+        assert proof.lock is not None
+        pin = proof.lock.get("acme.notary")
+        assert pin is not None and pin.package_sha256 is not None
+        pinned_entry = next(
+            e
+            for e in proof.catalog_entries
+            if e.identity.extension_name == "acme.notary"
+            and e.identity.semantic_version == pin.semantic_version
+        )
+        assert pinned_entry.identity.package_sha256 == pin.package_sha256
+        assert pin.package_sha256 == proof_module.sha256_hex(
+            proof.artifacts[f"acme.notary@{pin.semantic_version}"]
+        )
+        record = await proof.service.active(proof.scope, "acme.notary")
+        assert record is not None
+        assert record.version == pin.semantic_version == "1.1.0"
+        assert record.artifact_sha256 == pin.package_sha256
 
 
 @pytest.mark.contract("boundary")
