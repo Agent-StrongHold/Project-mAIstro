@@ -1610,3 +1610,55 @@ same-valued local branch). No earlier claim assumed.
 
 Verdict: writer handoff MERGE-READY (handoff only, never integration approval); the `#1845` integration
 hold stands; stack left unmerged; no inventory delta (stays +79). (Refs #1851)
+
+## Round-204 independent verifier + writer re-execution (head `17bf8bb0`, base `ab8b3737`)
+
+Every load-bearing fact re-derived firsthand at the exact assigned head; no earlier claim assumed.
+Driver logs 5/5 green (uv sync; ruff check; ruff format; pytest 79 passed; suite inventory ok).
+
+- Worktree clean at exact head `17bf8bb0effe6b3c9dcba874f88202eff6a7de6e`; base unmoved
+  (`origin/develop` = `ab8b3737` = merge-base, 0 behind; refname ambiguity is a same-valued local
+  branch) — no develop sync conflict exists.
+- Focused acceptance re-executed live: `pytest packages/maistro-core/tests/runs/test_root_admission_identity.py -q`
+  → 79 passed rc=0; ruff check + `format --check` on both leaf files → clean; `mypy` on the module →
+  Success; `check-suite-inventory.py` → ok (17 suites, 31323 == 31323, 0 duplicate identities).
+- Contract re-proven by AST walk: 17/17 dataclasses frozen+slots; `__all__` 21 names set-exact;
+  `AdmissionAssessment` StrEnum with the 6 lowercase pairs in order at `admission_identity.py:508-520`;
+  `owns()` 3-term conjunction; `owner_token` `repr=False` on `AdmissionTicket`+`AdmissionRecordV2`;
+  `admitted == (binding is not None)` on both record types; empty variants define no `__bool__`;
+  all 12 issue-named tests defined exactly once and the contract test asserts `__all__` + enum pairs
+  verbatim.
+- Scope invariants hold: diff vs base is exactly the 4 in-scope files (+2797/-0: module 520, tests 660,
+  note 1612, vulture-baseline +5); 0 production importers of `admission_identity`; no
+  `maistro.runs.__init__` export; `quality/ratchet-authorizations.json` and
+  `quality/reachability-baseline.json` 0-line diffs vs develop.
+- `#1841` anchors intact: `store_boundary.py:56 require_admitted_actor(actor_principal_id: str | None) -> str`;
+  `store.py:550 get_run(..., principal_id: str | None = None)`; 8 `actor_principal_id` refs in `store.py`
+  (`create_run` :499, `claim_run_by_effect` :567); `model.py:306` field + `:335-336` validation.
+- CI-exact gates re-run with true exit codes: `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → rc=1, banking GREEN (1327 findings, unclassified 0, never_allowlist 0,
+  candidate ledger == scan), authorization RED on exactly the 5 enum identities `:515-520` with the gate's
+  own remedy "land a reviewed grant first"; two-merge wall confirmed at `scripts/ratchet_provenance.py:478-499`
+  (grants read from the base revision, so a branch-side grant is inert by construction). Baseline multiset
+  re-parsed: develop 1322 → HEAD 1327, +5/-0, exactly the 5 scanned enum rows.
+  `check-reachability.py` → rc=1, exactly 1 NEWLY UNREACHABLE: `maistro.runs.admission_identity`.
+  `check-reachability-dispositions.py` → rc=0. `check-promotion-surface.py` → rc=0.
+  `check-ratchet-provenance.py` → rc=1 solely via the reachability leg (enumeration + lifecycle OK).
+  `check-shipped-surface-truth.py` → rc=0.
+- CI test trio reproduced live: `pytest tests/test_check_reachability.py tests/test_reachability_baseline_identity.py -q`
+  → 3 failed / 36 passed, each failure naming `maistro.runs.admission_identity` — the issue-anticipated
+  honest state for an intentionally inactive leaf; no issue-legal in-leaf change greens the four red gates
+  (row removal regresses banking; branch grant inert + prohibited; caller/export/baseline-entry/suppression
+  prohibited). The resolving changes remain the `#1845` integration head and owner-landed develop grants,
+  both outside this leaf.
+- Closure-keyword review: PR `#1936` body has no closure keyword ("Refs #1851" only); branch commit bodies
+  contain 0 closure trailers; the two subject-line regex hits are prose inside note-commit messages
+  (round-199 "the only fixes: #1845 integration head..." and round-203's description of it) — branch-only,
+  inert until a default-branch landing; squash-at-integration mitigation stands. This commit adds no
+  closure keyword.
+- Reconciliation status: the issue's five-retained-baseline-entries checkbox remains open pending an owner
+  decision outside this leaf; the lane-authority record in this note stands unchanged (banked rows authorize
+  nothing; the red authorization leg is the issue-anticipated explicit merge blocker, not a waiver).
+
+Verdict: writer handoff MERGE-READY (handoff only, never integration approval); the `#1845` integration
+hold stands; stack left unmerged; no inventory delta (stays +79). (Refs #1851)
