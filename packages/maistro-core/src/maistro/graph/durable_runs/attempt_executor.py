@@ -215,8 +215,15 @@ async def resume_durable_graph(
     run_store: RunStore | None = None,
     events: RecoveryEventSink | None = None,
     max_steps: int = DEFAULT_MAX_STEPS,
+    now: datetime | None = None,
 ) -> DurableRunRecord:
-    """Claim and resume persisted Graph work through canonical physical evidence."""
+    """Claim and resume persisted Graph work through canonical physical evidence.
+
+    ``now`` is the calling tick's moment: a recovery claim is live or expired
+    by the same clock the due scan used, not by this process's wall clock
+    (a fixed/simulated tick clock must keep judging claims it lists). Direct
+    resumes omit it and judge by the wall clock.
+    """
     # A direct resume can be the first process to observe a crash between the
     # continuation write and its canonical lifecycle mirror. Repair that
     # narrow split before interpreting the spine's status.
@@ -233,32 +240,38 @@ async def resume_durable_graph(
     }:
         raise ValueError(f"cannot resume run in status {record.run.status!r}")
 
+    # A RUNNING record whose claim horizon is still ahead of the tick's own
+    # moment is mid-flight under another recovery's claim checkpoint: stealing
+    # it here (the due scan only saw the pre-claim listing) would bump the
+    # continuation version under the live worker, so its terminal write is
+    # refused as a version regression and the Run is left stranded RUNNING
+    # until the stolen claim itself expires. The refusal also precedes
+    # orphaned-Attempt reconciliation, which a non-owner must not run against
+    # work a live claim still owns. The claim TTL -- not a competing tick --
+    # owns the hand-on: an expired claim has ``resume_at <= now`` and stays
+    # stealable below, by the same moment the due scan used.
+    claim_now = now if now is not None else datetime.now(UTC)
+    if (
+        record.run.status is RunStatus.RUNNING
+        and record.resume_at is not None
+        and record.resume_at > claim_now
+    ):
+        raise LiveAttemptOwned(
+            f"cannot resume run {record.run_id!r}: a recovery claim held by "
+            f"another worker does not expire until {record.resume_at.isoformat()}"
+        )
+
     spine = await traversal._canonical_spine(record, run_store)
     record = await _reconcile_orphaned_attempts(record, store=store, run_store=spine, events=events)
 
-    claim_until = datetime.now(UTC) + GRAPH_RECOVERY_CLAIM_TTL
+    claim_until = claim_now + GRAPH_RECOVERY_CLAIM_TTL
     record = await traversal._checkpoint(
         record,
         store=store,
         resume_at=claim_until,
     )
 
-    run = record.run
-    if run.status in {RunStatus.WAITING, RunStatus.QUEUED}:
-        stepped: Run | None = None
-        if spine is not None:
-            canonical = await spine.get_run(run.run_id)
-            if canonical is not None:
-                for step in transition_path(canonical.status, RunStatus.RUNNING):
-                    canonical = await spine.transition_run(run.run_id, step)
-                stepped = canonical
-        if stepped is None:
-            record = traversal._replace_record(
-                record,
-                run=transition_run(run, RunStatus.RUNNING),
-            )
-        else:
-            record = traversal._replace_record(record, run=stepped)
+    record = await _reactivate_for_walk(record, spine)
 
     return await _walk(
         record,
@@ -268,6 +281,35 @@ async def resume_durable_graph(
         run_store=spine,
         max_steps=max_steps,
     )
+
+
+async def _reactivate_for_walk(
+    record: DurableRunRecord,
+    spine: RunStore | None,
+) -> DurableRunRecord:
+    """Mirror a resumable WAITING/QUEUED record onto RUNNING before the walk.
+
+    A canonical spine receives the full transition path hop by hop (each
+    transition audited on the lifecycle mirror); without one the durable
+    record moves directly. Records already RUNNING -- including one resumed
+    straight from a stolen-but-expired claim -- pass through untouched.
+    """
+    run = record.run
+    if run.status not in {RunStatus.WAITING, RunStatus.QUEUED}:
+        return record
+    stepped: Run | None = None
+    if spine is not None:
+        canonical = await spine.get_run(run.run_id)
+        if canonical is not None:
+            for step in transition_path(canonical.status, RunStatus.RUNNING):
+                canonical = await spine.transition_run(run.run_id, step)
+            stepped = canonical
+    if stepped is None:
+        return traversal._replace_record(
+            record,
+            run=transition_run(run, RunStatus.RUNNING),
+        )
+    return traversal._replace_record(record, run=stepped)
 
 
 async def _reconcile_orphaned_attempts(

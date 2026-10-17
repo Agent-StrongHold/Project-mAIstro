@@ -129,6 +129,14 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Rubrics instantiated from pack assets now pin the exact source snapshot
+  (#966).** `RubricProvenance` recorded only `pack_id`, so rubrics minted from
+  different versions of the same pack were provenance-indistinguishable.
+  `RubricProvenance` gained optional `publisher`, `pack_version`,
+  `manifest_sha256`, `asset_id`, and `asset_version` fields, and pack rubric
+  instantiation populates them from the installed manifest snapshot; catalog
+  adoption — which carries no manifest — still records `pack_id` only.
+
 - **Pending HITL discovery is fair instead of filtering after a bounded PAUSED
   prefix (#1109).** `GET /v1/hitl/pending` used to page the generic PAUSED
   listing and filter each page in memory, so `limit` bounded a PAUSED *prefix*
@@ -220,6 +228,11 @@ or placeholder-only section.
   `MAISTRO_COMPOSE_PROFILES` activates profiles an override assigns.
 
 ### Security
+
+- **Protected-branch secret scans recognize two historical soak false positives (#860).**
+  Preserve full-history scanning and the default rules while carrying over the
+  exact commit/path/rule/line fingerprints for a synthetic local-stack fixture
+  and a recorded task-deduplication ID already documented on the soak lane.
 
 - **Boot Agent model tools retain governed admission and logical identity** (#1954 follow-up; [review finding](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1954#discussion_r4189499393)).
   Clarification and model-fallback search use the persisted Run actor/scope and
