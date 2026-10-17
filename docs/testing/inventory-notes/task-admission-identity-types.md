@@ -280,6 +280,20 @@ The explicitly requested CI Vulture command was re-run with the assigned trusted
 
 No source or ledger change eliminates those findings without violating the leaf contract: the issue fixes all six enum members, forbids a runtime consumer in this inactive leaf, and forbids a self-grant. A direct `check-reachability.py` re-run also exits **1** solely for the intentionally unwired `maistro.runs.admission_identity` module. The blocking changes remain parent #1845's real consumer and a trusted-base authorization, not a waiver, fake caller, or suppression in this leaf.
 
+## CI-repair revalidation — 2026-10-17 (`0f2387ac4776`, job `2b948648`)
+
+The supplied driver logs independently confirm `ruff check .`, `ruff format --check .`,
+the focused suite (**79 passed**), and the suite-inventory check all passed. This
+round re-ran the CI-argv Vulture and provenance checks with
+`RATCHET_BASE_REV=ac7370141e8e61bd6f352bca35ed0b505104aadb`: Vulture exits 1
+only because its trusted ledger lacks authorization for the five retained enum
+member identities; candidate bookkeeping is exact at 1,327 findings. The
+reachability and provenance checks also exit 1 only for the deliberately
+unwired `maistro.runs.admission_identity` leaf. The existing five ledger rows
+are therefore retained as the CI-repair banking amendment; this round adds no
+grant, no reachability entry, and no runtime caller. No test count changed
+(the recorded delta remains `packages/maistro-core/tests: +79`).
+
 ## CI-repair validation — 2026-10-16 (`55926e801e36`)
 
 This CI-repair pass independently re-ran the focused contract suite: **79 passed**,
