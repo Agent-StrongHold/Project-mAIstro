@@ -1,89 +1,115 @@
 ---
 inventory-delta:
-  tests/: +9
+  tests/: +2
 ---
 
 # auto-1859 — the API gate's temporary-disposition contract (#1859)
 
-## Contract decision (recorded, not silently chosen)
+## Status: resolved on the owner-accepted exception contract, reconciled with develop `ab8b3737`
 
-Issue #1859 asked the policy owner to state whether a registered `temporary`
-entry is tracking-only while the gate stays red, or whether a narrowly
-governed exception actually passes. No owner statement exists anywhere in the
-dispatch evidence: #1859 has zero comments, #389's captured thread has none,
-and the only review on the implementation PR (#1716) is a Codex bot
-suggestion. The exception branch is gated on owner authorization that never
-arrived, so this change implements the only branch that cannot weaken #389:
-**registration is tracking-only — every canned handler fails
-`scripts/check-api-route-contracts.py` whether it is registered or not.**
-No registry route entry changed disposition; no canned route ships.
+## The contradiction (characterized before anything changed)
 
-## What was wrong (characterized before changing)
+At PR #1716 head `61913386e` — and still at this branch's original base
+`faf93b2f0` — the gate contradicted itself: the checker documentation,
+`docs/api/route-contract-inventory.md` and the registry `_comment`
+advertised a registered `temporary` disposition (tracking issue + unexpired
+review date) as the way a canned handler ships, `_check_registry` validated
+those fields, but `main()` unconditionally failed every canned handler
+without consulting its disposition, and its advice offered registration as
+a pass that never existed. A synthetic full-gate run at that base with a
+canned handler whose exact registry entry carried `disposition="temporary"`,
+issue `#9999` and a future expiry exited **1** while the advice offered
+"or register a temporary disposition" — recorded by the first attempt
+(`8e6b74bb2`).
 
-A synthetic full-gate run with a canned handler whose exact registry entry
-carries `disposition="temporary"`, a tracking issue (#9999) and a future
-expiry exited **1** — while the failure advice simultaneously offered
-"or register a temporary disposition in …" as the third option. The module
-docstring and `docs/api/route-contract-inventory.md` advertised registration
-as the way a canned handler "can only ship", and `quality/api-route-contracts.json`'s
-`_comment` said the gate "refuses it once expired" (implying it passes before
-expiry). `_check_registry` validated the fields; `main()` never consulted the
-disposition. So the documented escape hatch could never be used — the docs
-offered a pass that the code never granted.
+## Where the owner decision actually lives (the blocker, resolved)
 
-## Changes
+#1859 asked the policy owner to state whether a temporary entry is
+tracking-only-while-red or a narrowly governed exception, and to cite
+accepted policy before changing acceptance behavior. The first attempt
+looked in the issue threads and found nothing (#1859 carried no policy
+comments; the only #1716 review is a Codex bot), so it shipped the branch
+that cannot weaken #389 — tracking-only — and flagged the missing owner
+statement as its blocker.
 
-- `scripts/check-api-route-contracts.py`: docstring states the tracking-only
-  contract; `_canned_handlers` returns `(registry identity, display)` pairs so
-  `main()` can tell a tracked entry from an unregistered one; the canned
-  finding names a valid temporary entry (issue, expiry) as tracking-only debt
-  that "does not pass this gate", and the unregistered advice offers only
-  implement-or-refuse, saying explicitly that registration "cannot pass this
-  gate". Also drops an accidental duplicated `REQUIRED_TEMPORARY` assignment.
-- `docs/api/route-contract-inventory.md` (CI-enforcement section) and the
-  registry `_comment`: same contract, no registration-as-a-pass anywhere.
-- `quality/api-route-contracts.json`: `_comment` line only; all 15 route
-  entries byte-identical.
+The statement exists in the repository instead of the threads: after that
+attempt (commits `8e6b74bb2`/`8684ee504`, 2026-10-05 04:22 UTC), develop
+landed the decision through merged, CI-green PRs on this same gate, all
+present in this round's base `ab8b3737`:
 
-## Root-suite delta (+9, all in `tests/test_check_api_route_contracts.py`)
+- **#1974** (`901b84f78`, 2026-10-05 11:00 UTC) —
+  `_temporary_exempt_identities()`: a registry entry with
+  `disposition="temporary"`, a tracking issue and an unexpired review date
+  exempts that exact `(file, method, path)` identity from the canned
+  findings, and `main()` passes it through. `docs/api/
+  route-contract-inventory.md` documents the excuse. That is the narrowly
+  governed **exact-route exception**, accepted and shipped on develop
+  ~7 hours after the tracking-only attempt raced it.
+- **#1976** (`94781cf6b`) — the excuse is pinned to the declared handler
+  identity, so a wrong-identity entry cannot satisfy it.
+- **#1975** (`9a5eb7ba6`) — the canned judgment scope was refined; the
+  excuse applies to every detected handler class.
 
-Full-gate `main()`-level proofs, with relative-to-`date.today()` dates so the
-future/expired cases are deterministic on any run day:
+Accepted, merged develop state is the policy of record for this gate; the
+#389 invariant stays intact because the excuse is per-identity, must expire,
+and the shipped registry holds **zero** `temporary` entries (9 implemented /
+5 unsupported-501 / 1 preview) — no canned route ships today.
 
-- `test_main_valid_temporary_entry_is_tracking_only_and_still_fails` — the
-  characterization pinned as contract: valid entry, exit 1, exactly one
-  finding (the canned handler), message names `#9999` and `tracking-only`;
-  asserts the registry leg contributed nothing (no rot / needs-an-issue /
-  expired / unparseable strings).
-- `test_main_valid_temporary_entry_passes_when_the_handler_is_not_canned` —
-  negative control: the same entry over a real-work handler leaves the gate
-  green, proving the red comes from the canned body, not the registration.
-- `test_main_temporary_entry_without_issue_fails`, `..._with_expired_date_fails`,
-  `..._with_malformed_date_fails`, `..._with_wrong_identity_fails` — missing
-  issue, expired date, unparseable date, and rot (entry under a foreign
-  identity) all fail with the named finding plus the canned handler.
-- `test_main_unregistered_canned_advice_does_not_offer_registration_as_a_pass`
-  — asserts the old "or register a temporary disposition" phrasing is gone.
-- `test_main_missing_registry_still_names_the_canned_handler` — an unreadable
-  registry must not hide the canned handler behind it.
-- `test_registry_routes_tolerates_malformed_registry` — the advice lookup's
-  defensive branches: non-list `routes`, non-object entries, non-string
-  identity parts.
+## Reconciliation of this branch (this round)
 
-One existing test updated in place for the `_canned_handlers` return-shape
-change (no count change). Both contract-pinning tests were executed against
-the pre-change script (HEAD) and FAIL there, PASS against the change.
+- Merged develop `ab8b3737` into the branch. All four surfaces the tracking
+  only attempt had touched — `scripts/check-api-route-contracts.py`,
+  `docs/api/route-contract-inventory.md`, `quality/api-route-contracts.json`,
+  `tests/test_check_api_route_contracts.py` — are **byte-identical to
+  `ab8b3737`**: the tracking-only reversal is superseded by the
+  owner-accepted exception contract it raced against. Conflicts were
+  resolved toward develop, and the auto-merged registry `_comment` was
+  restored to develop's wording (it passes before expiry and refuses once
+  expired — correct under the exception contract).
+- This lane's surviving contribution: this decision record and the two
+  main()-level negative proofs #1859 names that develop's suite still
+  lacked (below). The 9 tracking-only tests from the first attempt were
+  withdrawn together with that contract.
 
-## Validation
+## Acceptance mapping (#1859)
 
-- `uv run pytest tests/ --timeout=30 -q` → 4425 passed, 91 skipped.
-- `uv run pytest tests/test_check_api_route_contracts.py -q` → 39 passed.
-- `uv run pytest packages/hive-conductor/backend/tests/test_noop_route_contracts.py -q`
-  → 15 passed (includes the gate self-check as a subprocess on the real tree).
-- `python3 scripts/check-api-route-contracts.py` → OK (279 handlers, 15
-  audited, 0 canned), exit 0.
-- `uv run ruff check` + `ruff format --check` on changed files → clean.
-- `uv run python scripts/check-doc-links.py` → 0 broken links.
-- `scripts/check-diff-coverage.py` (coverage producer replicated: `coverage
-  run --branch --source=scripts -m pytest tests/`) → see the run log; the
-  changed gate lines are exercised by the new tests.
+- **Owner-approved contract** → the exception branch, per merged develop
+  #1974/#1976/#1975 in base `ab8b3737` (cited above); not silently relaxing
+  #389: no temporary entry exists in the registry, and the excuse is
+  exact-identity and expiring.
+- **Exception applied end to end, negatives still fail** → develop's suite
+  proves at `main()` level: valid temporary entry passes
+  (`test_registered_valid_temporary_disposition_excuses_logging_only_handler`,
+  `main() == 0`), expired does not, unregistered/logging-only does not,
+  handler-identity drift fails alone; this lane adds the two named
+  negatives that were still missing at `main()` level — missing tracking
+  issue and unparseable review date.
+- **No new exemption instance or closure claim** → registry byte-identical
+  to develop; zero `temporary` entries; nothing here closes #389.
+
+## Root-suite delta (+2, `tests/test_check_api_route_contracts.py`)
+
+- `test_main_temporary_disposition_without_issue_does_not_excuse` — a
+  temporary entry with no tracking issue: registry failure ("needs an
+  issue") and the canned finding both fire, `main() == 1`.
+- `test_main_temporary_disposition_with_malformed_date_does_not_excuse` —
+  an unparseable review date: registry failure ("unparseable expires") and
+  the canned finding both fire, `main() == 1`.
+
+(The first attempt's note claimed `tests/: +9`; those tests pinned the
+superseded tracking-only contract and were withdrawn with it. Net lane
+delta against develop is +2.)
+
+## Validation (this round, at the reconciled head)
+
+- `uv sync --locked --extra dev` — clean.
+- `uv run pytest tests/test_check_api_route_contracts.py -q` — all passed
+  (develop's suite + the 2 new negatives).
+- `uv run python scripts/check-api-route-contracts.py` — OK on the real
+  tree (0 canned), exit 0.
+- `uv run ruff check` + `uv run ruff format --check` on changed files —
+  clean.
+- `uv run python scripts/check-suite-inventory.py` (root `tests/`) — ok,
+  baseline updated for the +2.
+- Four surfaces verified byte-identical to `ab8b3737` via
+  `git diff ab8b3737 -- <file>` (empty).
