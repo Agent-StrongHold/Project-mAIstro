@@ -8,16 +8,24 @@ that is not built yet.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from fastapi.testclient import TestClient
 
+from maistro.observability.metrics import active_tasks
 from maistro.runs.wiring import wire_execution_spine
 from maistro.tasks import queue as queue_module
+from maistro.tasks.models import TaskStatus
 from maistro.tasks.queue import configure_task_queue
 from maistro_server.api import runs as runs_api
 from maistro_server.main import app
 
 WORKSPACE = "/tmp/maistro-workspace/test"  # nosec B108 — API contract, gated by the route
+
+
+def _gauge_total(gauge: Any) -> float:
+    return sum(float(sample["value"]) for sample in gauge.collect())
 
 
 @pytest.fixture
@@ -80,7 +88,12 @@ async def test_an_unknown_run_is_404(wired, client: TestClient) -> None:
 
 
 async def test_run_cancel_uses_the_canonical_lifecycle(wired, client: TestClient) -> None:
+    baseline = _gauge_total(active_tasks)
     created = _submit(client)
+    queue = queue_module.get_task_queue()
+    receipt = queue.get(created["task_id"])
+    assert receipt is not None and receipt.status is TaskStatus.QUEUED
+    assert _gauge_total(active_tasks) == pytest.approx(baseline + 1)
 
     response = client.post(f"/runs/{created['run_id']}/cancel")
 
@@ -89,6 +102,11 @@ async def test_run_cancel_uses_the_canonical_lifecycle(wired, client: TestClient
     persisted = await wired.get_run(created["run_id"])
     assert persisted is not None
     assert persisted.status.value == "cancelled"
+    receipt = queue.get(created["task_id"])
+    assert receipt is not None
+    assert receipt.status is TaskStatus.CANCELLED
+    assert receipt.completed_at == persisted.finished_at
+    assert _gauge_total(active_tasks) == pytest.approx(baseline)
 
 
 async def test_node_runs_are_empty_until_the_task_executes(wired, client: TestClient) -> None:

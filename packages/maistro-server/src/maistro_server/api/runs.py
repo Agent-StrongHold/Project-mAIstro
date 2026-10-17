@@ -18,9 +18,13 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from maistro.runs.chat_execution import ATTEMPT_AGENT_KEY, CHAT_EXECUTOR_ID
 from maistro.runs.model import Attempt
 from maistro.runs.service import RunExecutionService
+from maistro.runs.sources import ADMISSION_SOURCE
 from maistro.runs.store import RunStore
 from maistro.runtime import PythonExecutionRuntime
+from maistro.tasks.admission import TASK_ID_KEY, TASK_QUEUE_SOURCE
 from maistro.tasks.http_contract import DELEGATION_HEADER
+from maistro.tasks.models import TaskStatus
+from maistro.tasks.queue import get_task_queue
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.delegation import resolve_delegated_identity
 from maistro_server.api.schemas import AttemptSummary, NodeRunSummary, RunSummary
@@ -100,6 +104,19 @@ async def cancel_run(
         store=store,
         runtime=PythonExecutionRuntime(),
     ).cancel_run(run_id)
+    if run.provenance.get(ADMISSION_SOURCE) == TASK_QUEUE_SOURCE:
+        task_id = run.provenance.get(TASK_ID_KEY)
+        if isinstance(task_id, str) and task_id:
+            # The Run is already CANCELLED, so the queue's redundant transition
+            # is not refused: the admitter accepts a transition whose target
+            # state already holds, and update_status terminalizes the live
+            # receipt through its ordinary path (metrics, persistence). The
+            # wall-clock stamps that path writes are then overwritten with the
+            # canonical Run's own truth — the receipt is a projection, so it
+            # carries the Run's finish time and outcome, not the clock.
+            queue = get_task_queue()
+            await queue.update_status(task_id, TaskStatus.CANCELLED)
+            queue.settle_terminal_receipt(task_id, run=run)
     return RunSummary(
         run_id=run.run_id,
         status=run.status.value,
