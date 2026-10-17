@@ -550,3 +550,73 @@ eliminated). Ledger amendment is permitted and required in CI-repair rounds."
   the same lane-brief rule) or via an owner-landed develop grant — both outside this leaf's legal
   action space. No test changed in this round; inventory delta stays `packages/maistro-core/tests:
   +79`. (Refs #1851)
+
+## CI-repair revalidation — 2026-10-17 (`0e6947d44022`, job `886c3d0af0f9`)
+
+Assigned repair at the exact merge head `0e6947d44022` (= the CI-evaluated synthetic
+merge of develop `ab8b3737fa64` + the leaf stack); worktree found clean at the
+assigned head. This round independently re-derived every acceptance claim rather
+than assuming prior rounds' reports; no source, test, or ledger change was
+warranted, so this is a note-only commit (inventory delta stays
+`packages/maistro-core/tests: +79`).
+
+Driver battery at this head (job `886c3d0af0f9` check-0..4 logs): `uv sync
+--locked --extra dev`, `ruff check .`, `ruff format --check .`, focused pytest
+(**79 passed**), and `check-suite-inventory.py --suite
+packages/maistro-core/tests` (16439 collected, matches recorded inventory) —
+all rc=0. The immediately preceding job (`ebe666495c57`) failed only on a
+provider timeout; its deterministic checks were green.
+
+Independent leaf-acceptance re-verification (all executed firsthand this round):
+
+- Focused commands from the issue: pytest **79 passed**; focused ruff check/format
+  clean; `mypy packages/maistro-core/src/maistro/runs/admission_identity.py`
+  Success; full `check-suite-inventory.py` rc=0 (17 suites). All 12 issue-named
+  tests present (19 test functions, 79 node IDs).
+- Fresh 8-group behavioral probe battery: `__all__` 21 names set-exact;
+  `AdmissionAssessment` exactly the 6 lowercase pairs in issue order; all 16
+  record dataclasses frozen+slots; `owner_token` absent from repr even when the
+  role values coincide; `owns()` truth table (matching triple, same-owner/diff-
+  generation, same-generation/diff-owner, diff-scope); FrozenInstanceError; the
+  four empty variants truthy (no truthiness override); `created` rejects int 1;
+  CanonicalJsonObject rejects dup-key (root+nested)/NaN/1e999/non-object/
+  non-string/dict and normalizes sort-keys with no parsed-object accessor;
+  legacy lease unclamped vs v2 clamped; Claimed/Replayed/Pending preconditions.
+
+Four-gate CI decomposition, all reproduced locally at this exact tree:
+
+- **test**: full root suite at CI args (`pytest tests/ --ignore=tests/tools/registry`)
+  → **exactly 3 failed / 4979 passed / 135 skipped**; the three failures are
+  `tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  and `tests/test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`,
+  each naming the intentionally unwired `maistro.runs.admission_identity`.
+- **Coverage gate**: root cause is the gate job's scripts producer
+  (`coverage run --append --branch --source=scripts -m pytest tests/ ...` under
+  `set -euo pipefail` in `quality.yml`), which aborts on those same 3 failures
+  before `coverage xml`. New this round: the module itself measures
+  **100% lines / 100% branches** (245 stmts, 82 branches, 0 miss) under
+  `--source=packages/maistro-core/src/maistro` with the focused suite, so the
+  publish-set floor and the per-file diff thresholds have no deficit to repair;
+  the three CI producer jobs (no-services/PostgreSQL/MinIO) succeeded at this
+  head.
+- **Quality gate + exact-debt-ledger**: `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` rc=1 —
+  banking half green (candidate ledger 1327 == scan 1327), authorization half
+  red on exactly the 5 retained `AdmissionAssessment` identities at
+  `admission_identity.py:515-520`; grants load from merge base `ab8b3737fa64`
+  (two-merge wall), and `check-ratchet-provenance.py` rc=1 solely via
+  `check-reachability-provenance.py` (169→170, the same unwired module).
+  `check-reachability-dispositions.py` rc=0, `check-promotion-surface.py` rc=0.
+
+Repair-space conclusion (re-proven, unchanged): the two structural facts — the
+intentionally unwired leaf (issue: "No other production module imports or calls
+the new module in this leaf") and the 5 retained-but-ungranted enum identities —
+have no in-leaf legal fix (wiring/fake callers, reachability-baseline entries,
+self-grants, and suppressions are all issue-prohibited; branch-side grants are
+inert by construction). The lane-authorized vulture banking amendment is already
+in its correct reviewed state (scan-exact 5 rows). Gate greenness requires the
+#1845 integration head with the real consumer plus owner-landed develop
+authorizations — both outside this leaf, which leaves the stack unmerged per the
+issue's own staging language. Writer handoff only; not an integration approval.
+(Refs #1851)
