@@ -468,6 +468,13 @@ async def test_pg_service_deduplicates_logical_effect_across_node_run_visits() -
     assert replay.attempt_id == "attempt-1"
 
 
+def _event_schema_catalogue_rows(query: str) -> list[dict[str, Any]]:
+    """Catalogue answers for the composition fixture's migrated Event table."""
+    if "FROM pg_attribute a" in query:
+        return [{"attname": "event_id", "data_type": "text", "can_insert": True}]
+    return [{"columns": ["event_id"]}, {"columns": ["stream_id", "sequence"]}]
+
+
 async def test_container_selects_the_pg_invocation_ledger_when_a_pool_is_wired() -> None:
     """The container's durable-backend precedence picks the canonical ledger.
 
@@ -493,6 +500,10 @@ async def test_container_selects_the_pg_invocation_ledger_when_a_pool_is_wired()
             # used to call rather than of the composition it stands for.
             executed.append(query)
             return "OK"
+
+        async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+            executed.append(query)
+            return _event_schema_catalogue_rows(query)
 
         def transaction(self) -> _Transaction:
             return _Transaction()
