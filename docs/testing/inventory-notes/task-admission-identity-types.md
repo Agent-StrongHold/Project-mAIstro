@@ -1342,3 +1342,95 @@ approval); stack left unmerged; the four red gates remain the
 issue-anticipated explicit merge blocker whose only fixes are the #1845
 integration head and owner-landed develop grants, both outside this leaf.
 Note-only commit; no inventory delta (stays +79). (Refs #1851)
+
+## Round-201 verifier + CI-repair round at the assigned head (`44322576cdfd`, job `3574a69a9a33`)
+
+Dispatch reported the previous round's `BLOCKED` verdict as an open block and
+re-issued the CI-repair ledger authority ("fix what is genuinely dead, and
+amend quality/vulture-baseline.json for reviewed retained identities; ledger
+amendment is permitted and required in CI-repair rounds"). This round re-ran
+every acceptance check and every red gate firsthand at the exact assigned head
+`44322576cdfdbb2c9bfe9f552ff23fb2fad5a745` (clean tree on arrival); no earlier
+claim taken on faith.
+
+- Driver logs inspected (job dir `3574a69a`): 5/5 green — uv sync ok;
+  `ruff check .` All checks passed; `ruff format --check .` 3299 files already
+  formatted; focused pytest 79 passed; suite inventory ok (core tests 16439).
+- Focused acceptance re-executed live: focused pytest 79 passed (rc=0);
+  per-file ruff check/format clean; `mypy .../admission_identity.py` Success;
+  FULL `check-suite-inventory.py` rc=0 (17 suites, 31323 collected == unique,
+  0 duplicate evidence).
+- The four red gates re-derived with rc captured (not inherited):
+  1. `test` job: full root suite re-run end-to-end → **exactly 3 failed**
+     (5072 passed, 135 skipped):
+     `tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+     `tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+     `tests/test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`
+     — each asserts `baseline == current unreachable set` and each diff names
+     `maistro.runs.admission_identity` as the extra element.
+  2. `exact-debt-ledger`: CI-argv vulture scan → **rc=1** (rc taken from the
+     python process, not a pipe), banking half GREEN (`unclassified: 0`,
+     `never_allowlist: 0`; candidate 1327 == scan), authorization half RED on
+     exactly the 5 retained enum identities `admission_identity.py:515-520`,
+     with the gate's own remedy "land a reviewed grant first".
+  3. Quality gate leg: `check-reachability.py` rc=1 with exactly 1 NEWLY
+     UNREACHABLE (`maistro.runs.admission_identity`, 170/1402);
+     `check-ratchet-provenance.py` rc=1 **solely** via
+     `check-reachability-provenance.py` (same module, NEW + missing from
+     candidate baseline); `check-reachability-dispositions.py`,
+     `check-reachability-dispositions-provenance.py`,
+     `check-promotion-surface.py`, `check-shipped-surface-truth.py` all rc=0.
+  4. Coverage gate: root cause re-read at `quality.yml:713-714` — the
+     aggregate producer runs `coverage run … -m pytest tests/ …`, so the same
+     trio aborts it before `coverage.xml`.
+- Two-merge wall re-confirmed from source, not memory:
+  `scripts/ratchet_provenance.py:487-498` documents and implements grants read
+  **from the base revision**; fresh `git fetch origin` → `origin/develop` =
+  `ab8b3737fa64` = the assigned base (refname ambiguity is a same-valued local
+  branch), HEAD 0 behind — develop unmoved, so no landed grant exists and
+  landing one is a prohibited GitHub mutation for this lane.
+- Ledger state re-proven from parsed JSON (multiset, never `set()`):
+  `quality/` numstat vs base is exactly `+5/-0 vulture-baseline.json`;
+  per-rule Counter delta +5/-0 (all `pydantic-declarative-field`), 0 rows lost;
+  the banked identity set equals the fresh scan's new-identity set exactly;
+  `ratchet-authorizations.json` / `reachability-baseline.json` /
+  promotion files have 0-line diffs. Per the re-issued lane authority the 5
+  reviewed retained identities stay banked: none is genuinely dead (they are
+  the issue's own fixed six-member enum contract, pair-asserted by the
+  contract test), no fix this round eliminated any identity, and removing
+  rows would regress the banking half to red. The banked rows authorize
+  nothing — the authorization leg is and stays red, so the issue's merge hold
+  is preserved (banking is not authorizing).
+- Contract audit re-run as a fresh AST walk at this head: 18 top-level
+  ClassDefs = **17 dataclasses, all `frozen=True, slots=True`** (this corrects
+  round-200's "16/16" wording; the 18th ClassDef is the `AdmissionAssessment`
+  StrEnum) + the enum's exact six lowercase member/value pairs in required
+  order; `__all__` 21 names unique and set-exact; `owns()` a single
+  `BoolOp(And)` of exactly 3 compares; `field(repr=False)` ×2 and
+  `field(init=False)` ×2; both `admitted` properties are a docstring plus one
+  `return self.binding is not None` (AST `Compare(IsNot, Constant(None))` —
+  `is not` desugars to `IsNot`, an earlier probe's `Is` check was the probe's
+  bug, not the code's); 0 suppression markers.
+- Scope invariants re-proven: 0 references to `admission_identity` in
+  `packages/*/src` outside the module; 0 admission references in
+  `runs/__init__.py`; branch diff vs base exactly the 4 in-scope files
+  (+2380/-0). `#1841` anchors re-read intact: `store_boundary.py:56`,
+  `store.py:550` (+ `:507/:576/:907/:1299`), `model.py:306`/`:335-336`.
+- Repair decision: no issue-legal in-leaf fix greens any of the four gates —
+  every candidate repair (runtime caller, keep-alive import, re-export,
+  reachability-baseline entry, suppression, branch-side grant, enum removal)
+  is respectively prohibited by the issue's exact scope/staging text and/or
+  structurally inert (two-merge rule). The issue itself designates these gates
+  as the expected state of an unwired leaf and prescribes the terminal
+  disposition: report implementation/test readiness plus the explicit merge
+  blocker and leave the stack unmerged. The issue's open checklist item
+  ("reconcile the five retained baseline entries and the claimed lane
+  instruction") remains satisfied by this standing record, now re-anchored to
+  this round's re-issued lane authority; the enum contract is intact and not
+  removed.
+
+Verdict: writer handoff MERGE-READY (handoff only, never integration
+approval); stack left unmerged; the four red gates remain the issue-anticipated
+explicit merge blocker whose only fixes are the #1845 integration head
+(real consumer wiring) and owner-landed develop grants, both outside this
+leaf. Note-only commit; no inventory delta (stays +79). (Refs #1851)
