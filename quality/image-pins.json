@@ -77,10 +77,10 @@
     },
     {
       "image": "mcr.microsoft.com/playwright",
-      "tag": "v1.52.0-noble",
-      "digest": "sha256:a021500a801bab0611049217ffad6b9697d827205c15babb86a53bc1a61c02d5",
-      "recorded": "2026-09-30",
-      "recorded_in": "#349",
+      "tag": "v1.64.0-noble",
+      "digest": "sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f",
+      "recorded": "2026-10-10",
+      "recorded_in": "#1779",
       "note": "Playwright browsers + deps, e2e harness only.",
       "used_by": ["packages/hive-conductor/tests/Dockerfile.playwright"]
     },
