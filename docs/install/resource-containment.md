@@ -76,15 +76,22 @@ release. Performance tuning changes host size, concurrency admission, worker
 counts, and service-specific values within the checked safety ranges; it does
 not remove the containment ceiling.
 
-The release soak should deliberately apply memory and process pressure to the
-engine or Conductor and record `OOMKilled`/restart evidence, readiness recovery,
-and that PostgreSQL and the host remain available. A green idle health check is
-not pressure evidence.
+The release soak does not treat a green idle health check as pressure evidence.
+`scripts/soak-compose-pressure.py` is the executable pressure case: it reads a
+service's ceiling from a shipped profile (failing closed when the profile is
+out of policy), replays it verbatim onto the real Docker/Podman daemon,
+drives memory pressure until the cgroup kills the container, verifies the
+restart policy recreates it, drives PID fan-out until the fork budget is
+exhausted, and records `OOMKilled`/restart evidence, the contained spawn
+count, and host liveness as JSON (`--output`). The RC soak for #860 runs it
+against the release candidate stack and keeps the JSON artifact with the
+release evidence.
 
 ## References
 
 - `deploy/docker-compose.prod.yml` - production reference topology
 - `docker-compose.yml` - default full stack
 - `scripts/check-compose-resources.py` - rendered-profile policy gate
+- `scripts/soak-compose-pressure.py` - executable memory/PID pressure case for the release soak (#860)
 - [deployment topology](deployment-topology.md)
 - [sizing guidance](sizing.md)

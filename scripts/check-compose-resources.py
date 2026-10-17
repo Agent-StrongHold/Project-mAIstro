@@ -92,7 +92,13 @@ def _display(path: Path) -> str:
 
 
 def parse_memory(value: object) -> int | None:
-    """Return bytes for a finite Compose memory value, or ``None``."""
+    """Return bytes for a finite Compose memory value, or ``None``.
+
+    Units follow the Docker/Podman RAM convention (go-units ``RAMInBytes``):
+    ``k``/``kb``, ``m``/``mb``, ``g``/``gb`` ... are powers of 1024, so the
+    parsed number matches what the daemon actually enforces for the same
+    string (verified: ``--memory 2g`` applies ``2147483648``).
+    """
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -106,28 +112,28 @@ def parse_memory(value: object) -> int | None:
     unit = (match.group(2) or "b").lower()
     multipliers = {
         "b": 1,
-        "k": 1000,
-        "kb": 1000,
+        "k": 1024,
+        "kb": 1024,
         "ki": 1024,
         "kib": 1024,
-        "m": 1000**2,
-        "mb": 1000**2,
+        "m": MiB,
+        "mb": MiB,
         "mi": MiB,
         "mib": MiB,
-        "g": 1000**3,
-        "gb": 1000**3,
+        "g": GiB,
+        "gb": GiB,
         "gi": GiB,
         "gib": GiB,
-        "t": 1000**4,
-        "tb": 1000**4,
+        "t": 1024**4,
+        "tb": 1024**4,
         "ti": 1024**4,
         "tib": 1024**4,
-        "p": 1000**5,
-        "pb": 1000**5,
+        "p": 1024**5,
+        "pb": 1024**5,
         "pi": 1024**5,
         "pib": 1024**5,
-        "e": 1000**6,
-        "eb": 1000**6,
+        "e": 1024**6,
+        "eb": 1024**6,
         "ei": 1024**6,
         "eib": 1024**6,
     }
