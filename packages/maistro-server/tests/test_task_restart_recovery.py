@@ -90,6 +90,11 @@ def _server_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     env.update(
         {
             "ROUTER_API_KEY": "restart-test-router-key",
+            # Settings reads .env as well as the child environment.  Override
+            # it with an explicit empty list so a developer's legacy key cannot
+            # turn this auth-disabled restart proof into a startup failure (or
+            # unexpectedly require credentials) before task admission (#843).
+            "API_KEYS": "[]",
             "REQUIRE_AUTH": "false",
             "DEBUG": "true",
         }
@@ -288,7 +293,12 @@ import asyncio, json
 
 MARKER = {marker!r}
 
-async def _execute(request, on_response=None):
+# **_kwargs absorbs the canonical runner-executor wiring (#718): the
+# `/tasks` worker calls `conductor.run_task` with `governed_egress`,
+# `workspace_id` and `project_id`, so a stub pinned to the pre-#718
+# signature failed every recovered task with a TypeError before its
+# marker could be written.
+async def _execute(request, on_response=None, **_kwargs):
     from maistro.agents.types import ConductorOutput
 
     with open(MARKER, "a") as fh:
