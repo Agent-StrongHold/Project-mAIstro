@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib import import_module
 from pathlib import Path
 
 from config import get_settings
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from logging_setup import configure_logging
@@ -18,11 +19,13 @@ from middleware.auth import AuthMiddleware
 from middleware.privilege import PrivilegeMiddleware
 from middleware.request_log import RequestLogMiddleware
 from middleware.security_headers import SecurityHeadersMiddleware
-from pydantic import BaseModel, ConfigDict
 from routes import (
     agents,
+    api_docs,
+    attention,
     audit,
     auth,
+    backlog,
     capabilities,
     chat,
     cli,
@@ -45,6 +48,7 @@ from routes import (
     program,
     providers,
     quotas,
+    rum,
     schedules,
     setup,
     setup_checklist,
@@ -61,9 +65,15 @@ from routes import optimizer as optimizer_r
 from routes import settings as settings_r
 from services import engine as engine_service
 from services import foundation as foundation_service
-from services.ha_tools import get_all_confirms, get_pending_confirms, respond_confirm
 from services.oauth_login import close_oauth_login_service
 from services.settings_store import SettingsPersistenceError
+
+from maistro.api_versioning import (
+    API_VERSIONS,
+    DEFAULT_API_VERSION,
+    VersionNegotiationMiddleware,
+)
+from maistro.observability.middleware import REQUEST_ID_HEADER, RequestIDMiddleware
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "frontend" / "dist"
@@ -104,32 +114,31 @@ def _include_optional_router(
             exc,
             exc_info=True,
         )
+        try:
+            # M3-B7 (#97): degraded entry is an operational event, not only a
+            # log line. The /v1/audit trail keeps it queryable next to the
+            # capability changes it resembles, and severity=warning separates
+            # it from routine operations. Wrapped defensively: an audit-store
+            # failure must never break startup the way the import failure
+            # itself deliberately does not.
+            from routes.audit import log_audit
+
+            log_audit(
+                "optional_router_degraded",
+                "system",
+                target=module_name,
+                detail={"error": state[module_name]},
+                severity="warning",
+            )
+        except Exception as audit_exc:
+            _log.warning(
+                "optional_router_audit_failed: module=%s error=%s",
+                module_name,
+                audit_exc,
+            )
     else:
         state[module_name] = None
     app.state.optional_routers = state
-
-
-class ConfirmResponseBody(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    response: str
-
-
-_confirms_router = APIRouter(tags=["confirms"])
-
-
-@_confirms_router.get("")
-def list_confirms():
-    return get_all_confirms()
-
-
-@_confirms_router.get("/pending")
-def list_pending():
-    return get_pending_confirms()
-
-
-@_confirms_router.post("/{confirm_id}/respond")
-async def respond_to_confirm(confirm_id: str, body: ConfirmResponseBody):
-    return await respond_confirm(confirm_id, body.response)
 
 
 async def _shutdown_background_services() -> None:
@@ -163,14 +172,16 @@ async def _shutdown_background_services() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
+    import asyncio
     import logging as _logging
 
-    import stores
+    from services.audit_bridge import bind_audit_event_loop
     from settings_defaults import apply_default_settings_if_needed
 
     from maistro.security.transport import assert_session_transport_is_safe
 
     _lifespan_log = _logging.getLogger("hive.lifespan")
+    bind_audit_event_loop(asyncio.get_running_loop())
 
     # Before anything else, and deliberately NOT inside a try/except (#369).
     # Every other start-up step below degrades on failure, because a Conductor
@@ -193,11 +204,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         profile="hive-conductor",
     )
 
-    try:
-        await foundation_service.start_foundation(get_settings())
-    except Exception as exc:
-        _lifespan_log.warning("foundation_start_failed: %s", exc, exc_info=True)
-        stores.initialize_stores()
+    # The state database owns provisioned accounts, sessions, settings, and
+    # registration policy. A startup failure must stop the API rather than
+    # rebinding those security-critical surfaces to a fresh in-memory registry.
+    await foundation_service.start_foundation(get_settings())
     apply_default_settings_if_needed()
     try:
         await engine_service.start_engine(get_settings())
@@ -254,15 +264,53 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await foundation_service.stop_foundation()
 
 
+async def unhandled_exception_handler(request: Request, exc: Exception) -> Response:
+    """A 500 must still carry the request id every other response does (#1063).
+
+    With no handler registered for this, an unhandled exception propagates
+    past `RequestIDMiddleware` (its `call_next` raises rather than
+    returning a response), straight to Starlette's outer
+    `ServerErrorMiddleware` -- which builds the 500 with no knowledge of
+    the id at all, exactly when a caller most needs it to report the
+    failure. The body/status is Starlette's own unhandled-exception
+    default (`PlainTextResponse("Internal Server Error", 500)`); only the
+    header is new. Module-level (not nested in `create_app()`) so a test
+    can exercise it against an isolated app, independent of the shared
+    production `app` singleton and whatever order other test files touch it.
+    """
+    from starlette.responses import PlainTextResponse
+
+    request_id = getattr(request.state, "request_id", "")
+    logging.getLogger("hive").exception(
+        "unhandled_exception: %s", exc, extra={"request_id": request_id}
+    )
+    response = PlainTextResponse("Internal Server Error", status_code=500)
+    if request_id:
+        response.headers[REQUEST_ID_HEADER] = request_id
+    return response
+
+
 def create_app() -> FastAPI:
     configure_logging()
-    app = FastAPI(title="Hive Conductor", version="0.9.0", lifespan=lifespan)
+    # docs_url=None retires FastAPI's default docs page, which loads Swagger UI
+    # from jsdelivr and inlines its bootstrap script — both refused by the
+    # enforced CSP, leaving a blank page full of violations (#1425).
+    # routes/api_docs serves the reference from vendored first-party assets
+    # under the unchanged policy instead; `/redoc` keeps FastAPI's default.
+    app = FastAPI(title="Hive Conductor", version="0.9.0", lifespan=lifespan, docs_url=None)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=get_settings().cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # Response headers a browser client may actually read (#1063): without
+        # this, `response.headers` in browser JS only exposes the
+        # CORS-safelisted set, so a server-generated X-Request-ID would have
+        # been sent and then invisible to any cross-origin caller that didn't
+        # supply its own -- the same hazard maistro-server's own CORS config
+        # already names for this exact header.
+        expose_headers=[REQUEST_ID_HEADER],
     )
     app.add_middleware(RequestLogMiddleware)
     # Privilege boundary — added before Auth so Auth wraps it and the
@@ -272,6 +320,28 @@ def create_app() -> FastAPI:
     # application rewiring (#63, the disposition root this fulfils).
     app.add_middleware(PrivilegeMiddleware)
     app.add_middleware(AuthMiddleware)
+
+    # Request correlation — wraps Auth/Privilege/RequestLog/CORS and the route
+    # handler, so a request id is bound onto the canonical execution context
+    # (#1063) before any of them run: forwarding to maistro-server's own
+    # /tasks call, and everything the handler logs, can see it. Missing,
+    # invalid, or duplicate `X-Request-ID` values become a fresh server id
+    # (see `maistro.observability.middleware`), never an unvalidated pass-through.
+    app.add_middleware(RequestIDMiddleware)
+
+    # API version negotiation (ADR-076) — the same maistro-core middleware
+    # maistro-server wires: the negotiated version is selected by Accept
+    # media type / api_version query / api_version JSON body field, the
+    # default is advertised on every response, and an unsupported selector
+    # is a 406 that never reaches a route handler. Infrastructure paths
+    # (health, docs) pass through untouched. Added before the security
+    # headers so it stays inside them: even a 406 carries the header set.
+    app.add_middleware(
+        VersionNegotiationMiddleware,
+        versions=API_VERSIONS,
+        default_version=DEFAULT_API_VERSION,
+        skip_prefixes=("/health", "/docs", "/redoc", "/openapi.json"),
+    )
 
     # Security headers — the true outermost middleware (added last), so
     # headers land on every response, including early rejections from the
@@ -292,7 +362,12 @@ def create_app() -> FastAPI:
             status_code=503, content={"detail": f"settings were not persisted: {exc}"}
         )
 
+    app.add_exception_handler(Exception, unhandled_exception_handler)
+
     app.include_router(health.router)
+    # The API reference and its vendored assets (#1425). Public like FastAPI's
+    # default /docs was: AuthMiddleware gates only /v1/ and names /docs public.
+    app.include_router(api_docs.router)
     app.include_router(auth.router, prefix="/v1/auth")
     app.include_router(credentials.router, prefix="/v1/credentials")
     app.include_router(install.router, prefix="/v1/install")
@@ -305,7 +380,9 @@ def create_app() -> FastAPI:
     app.include_router(agents.router, prefix="/v1/agents")
     app.include_router(program.router, prefix="/v1/program")
     app.include_router(work_items.router, prefix="/v1/work-items")
+    app.include_router(backlog.router)
     app.include_router(workspaces.router, prefix="/v1/workspaces")
+    app.include_router(attention.router, prefix="/v1/workspaces")
     app.include_router(mcp.router, prefix="/v1/mcp")
     app.include_router(cli.router, prefix="/v1/cli")
     app.include_router(containers.router, prefix="/v1/containers")
@@ -341,7 +418,15 @@ def create_app() -> FastAPI:
     app.include_router(messages.router, prefix="/v1/messages")
     app.include_router(audit.router, prefix="/v1/audit")
     app.include_router(quotas.router, prefix="/v1/quotas")
-    app.include_router(_confirms_router, prefix="/v1/confirms")
+    # Perceived-load telemetry collector (#1420). The route exists even when
+    # ingest is disabled so an enabled client gets a bounded 202 instead of a
+    # 404 churn loop; services/rum_store.py decides whether anything is kept.
+    app.include_router(rum.router, prefix="/v1/rum")
+    # The ingest handler reads its body manually (byte cap before parsing),
+    # so the OpenAPI document needs the router's help to keep describing it;
+    # without this the generated client types silently lose the contract
+    # (#1048 drift gate).
+    rum.ensure_openapi_contract(app)
     # Optional feature slices degrade explicitly: a missing dependency may keep
     # the base API available, but it must never make an entire route family
     # disappear without an actionable startup log.
@@ -355,7 +440,10 @@ def create_app() -> FastAPI:
 
         static_root = STATIC_DIR.resolve()
 
-        @app.get("/{full_path:path}")
+        # Out of the schema: it is not an API, and listing it would make the
+        # OpenAPI document (and `frontend/src/api/types.gen.ts`) depend on
+        # whether the frontend happens to be built.
+        @app.get("/{full_path:path}", include_in_schema=False)
         async def spa_fallback(full_path: str):
             # Do not return the SPA shell for unknown API paths (avoids JSON parse errors in the UI).
             if full_path.startswith("v1/"):
@@ -373,9 +461,15 @@ def create_app() -> FastAPI:
             # and the "v1/" guard above never fires for such a path. `..` traversal
             # is the other half. resolve() collapses both (and any symlink escape),
             # and is_relative_to() is the actual boundary check.
-            fp = (static_root / full_path).resolve()
-            if fp.is_relative_to(static_root) and fp.is_file():
-                return FileResponse(fp)
+            # Two boundary checks on purpose: the normalized string check is
+            # the containment a scanner can follow, and `resolve()` closes the
+            # symlink escape the string check cannot see.
+            root_text = os.path.normpath(str(static_root))
+            candidate = os.path.normpath(os.path.join(root_text, full_path))
+            if candidate.startswith(root_text + os.sep):
+                fp = Path(candidate).resolve()
+                if fp.is_relative_to(static_root) and fp.is_file():
+                    return FileResponse(fp)
             return FileResponse(static_root / "index.html")
 
     return app

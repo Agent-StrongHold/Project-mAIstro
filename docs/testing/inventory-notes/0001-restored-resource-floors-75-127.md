@@ -28,8 +28,8 @@ and two on the `rate_limit_burst = 0` sentinel, which the limiter reads as "no
 burst check" rather than "allow nothing", so it is accepted under a tight
 per-minute limit and refused under a loose one, while a negative value stays
 incoherent in every mode.
-The maistro-server node ID covers the readiness diagnostic reporting the
-effective values.
+The maistro-server node ID covers the readiness probe's aggregate status
+without exposing the effective values to anonymous callers.
 
 Six more maistro-core node IDs answer the Codex review on #127. Three cover
 non-finite limits — `nan`, `+inf`, `-inf` — refused in every mode including

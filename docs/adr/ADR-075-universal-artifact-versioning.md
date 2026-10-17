@@ -33,7 +33,7 @@ history:
 
 # ADR-075: Universal Artifact Versioning and Release Channels
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-30
 **Establishes one versioning model** for every runtime artifact the engine produces, evolves, and
 executes, so that learn-forward evolution and mission-critical stability can coexist without one

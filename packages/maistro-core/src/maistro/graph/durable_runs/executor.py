@@ -24,10 +24,12 @@ from maistro.graph.execution_state import (
 )
 from maistro.graph.nodes.base import (
     HUMAN_PAUSE_REASONS,
+    RESUMED_PAUSE_KEY,
     TIMER_RESUMABLE_PAUSE_REASONS,
     BaseNode,
     NodeContext,
     NodeResult,
+    ReplaySemantics,
 )
 from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_payload
 from maistro.runs.lifecycle import (
@@ -67,16 +69,15 @@ _PREDICATE_NAMESPACE_ALIASES = {
 
 @dataclass(frozen=True)
 class _FrontierItem:
-    """Bind one active frontier node to its canonical NodeRun and execution inputs."""
+    """Bind one active frontier node to its canonical NodeRun and replay contract."""
 
     node_id: str
     spec: GraphNode
     node_run: NodeRun
     ctx: NodeContext
     result: NodeResult
-    # Copied from the resolved node, not inferred from catalog metadata at the
-    # fold. This keeps retry safety tied to the implementation actually run.
-    retry_safe: bool = True
+    replay_semantics: ReplaySemantics = ReplaySemantics.NON_RETRYABLE
+    effect_key: str | None = None
 
 
 def _replace_state(
@@ -248,6 +249,7 @@ async def run_durable_graph(
     provenance: Mapping[str, Any] | None = None,
     blackboard_metadata: Mapping[str, Any] | None = None,
     run_store: RunStore | None = None,
+    max_steps: int = 256,
 ) -> DurableRunRecord:
     """Compatibility entry point delegating physical work to canonical Attempts.
 
@@ -269,6 +271,7 @@ async def run_durable_graph(
         provenance=provenance,
         blackboard_metadata=blackboard_metadata,
         run_store=run_store,
+        max_steps=max_steps,
     )
 
 
@@ -278,6 +281,8 @@ async def resume_durable_graph(
     store: DurableRunStore,
     node_resolver: NodeResolver,
     run_store: RunStore | None = None,
+    max_steps: int = 256,
+    now: datetime | None = None,
 ) -> DurableRunRecord:
     """Resume through canonical Attempt recovery, never a second physical walker."""
     from .attempt_executor import resume_durable_graph as resume
@@ -287,6 +292,8 @@ async def resume_durable_graph(
         store=store,
         node_resolver=node_resolver,
         run_store=run_store,
+        max_steps=max_steps,
+        now=now,
     )
 
 
@@ -577,15 +584,26 @@ def _visit_budget(spec: GraphNode) -> int:
 
 
 def _may_revisit_after(prior_state: GraphExecutionState, item: _FrontierItem) -> bool:
-    """Whether this failed node has a safe try left.
+    """Whether this failed node has a try left under its executable contract.
 
-    A logical retry is a new NodeRun and therefore can repeat an external
-    effect. Only nodes that declare themselves idempotent may spend a graph
-    retry budget; non-idempotent nodes fail closed after physical evidence is
-    recorded. The declaration is copied from the resolved implementation into
-    ``_FrontierItem`` so it is executable policy rather than palette metadata.
+    A retry here is the node's **next visit** -- a new NodeRun, with its own
+    Attempt -- not a second Attempt under the one that just completed. The
+    distinction is the whole reason the Attempt firewall refuses to redispatch
+    a completed Attempt: completion means the physical work ran, side effects
+    and all. A node that ran and did not succeed is a *logical* failure, and
+    asking for it again is asking for another visit.
+
+    Transport failures never reach this decision. A 429 or a 5xx is the call
+    not landing rather than the work failing, and `maistro.resilience`
+    classifies and retries those beneath the Attempt, where repeating is safe
+    because nothing was accomplished yet.
     """
-    if not item.retry_safe:
+    if not item.replay_semantics.retryable:
+        return False
+    # EFFECT_KEY is a contract, not a descriptive label: the node must have
+    # supplied a concrete logical key at execution time. Missing keys fail
+    # closed because the executor cannot prove replay safety on its own.
+    if item.replay_semantics is ReplaySemantics.EFFECT_KEY and not item.effect_key:
         return False
     visits = prior_state.visit_counts.get(item.node_id, 0)
     return visits < _visit_budget(item.spec)
@@ -1031,8 +1049,13 @@ def _merge_frontier_blackboards(
 
 def _actually_spawned(kind: str, result: NodeResult) -> bool:
     """Return whether a node result represents a synthetic spawn that was dispatched."""
+    # A synth node that dispatched nothing fails without spending a level; one
+    # whose dispatched child failed also fails (#1193), but the child ran, so
+    # its NodeResult metadata still records the spawn.
     if kind == "agent.synth_dag":
-        return bool(getattr(result.output, "dispatched", False))
+        return bool(getattr(result.output, "dispatched", False)) or bool(
+            result.metadata.get("dispatched")
+        )
     return True
 
 
@@ -1055,6 +1078,77 @@ def _maybe_increment_synth_depth(
     return _replace_record(record, graph_state=state)
 
 
+def _detach_json_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Ordinary, independently mutable JSON containers for frozen graph state."""
+    thawed = thaw_json_value(value)
+    return dict(thawed) if isinstance(thawed, Mapping) else {}
+
+
+def _current_pause_carry(record: DurableRunRecord, node_id: str) -> dict[str, Any] | None:
+    """Carry this node's own current persisted pause entry, or None when absent.
+
+    Selection reads only ``graph_state.metadata['pauses'][node_id]`` — never the
+    singleton ``metadata['pause']`` (which names whichever frontier member
+    checkpointed first, i.e. often a sibling) and never another node's entry.
+    A current entry outranks any answered pause stamped under
+    ``hitl_answers[node_id]['_pause']``: the answer belongs to an older visit,
+    so a newer elapsed pause on the same node must not be replaced by it.
+
+    Absence of the pauses key is absence. A present entry that is not a JSON
+    object — including ``None`` — is corrupt evidence and raises rather than
+    silently borrowing a stale answer or a sibling's pause. Metadata detaches
+    through the public ``thaw_json_value`` so the node receives containers it
+    may mutate without touching the frozen record; the wrapper ``resume_at``
+    is stamped last and therefore wins any same-name inner value.
+    """
+    state_metadata = record.graph_state.metadata
+    if "pauses" not in state_metadata:
+        return None
+    pauses = state_metadata["pauses"]
+    if not isinstance(pauses, Mapping):
+        raise ValueError(
+            f"run {record.run_id!r} graph state pauses must be a JSON object, "
+            f"got {type(pauses).__name__}"
+        )
+    if node_id not in pauses:
+        return None
+    entry = pauses[node_id]
+    if not isinstance(entry, Mapping):
+        raise ValueError(
+            f"run {record.run_id!r} node {node_id!r} has a corrupt persisted "
+            f"pause entry: expected a JSON object, got {type(entry).__name__}"
+        )
+    if "metadata" in entry:
+        pause_metadata = entry["metadata"]
+        if not isinstance(pause_metadata, Mapping):
+            raise ValueError(
+                f"run {record.run_id!r} node {node_id!r} persisted pause "
+                f"metadata must be a JSON object, got {type(pause_metadata).__name__}"
+            )
+        carried = _detach_json_mapping(pause_metadata)
+    else:
+        carried = {}
+    carried["resume_at"] = entry.get("resume_at")
+    return carried
+
+
+def _answered_pause_carry(answered: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Carry the server-stamped ``_pause`` of an answered HITL visit.
+
+    The pre-existing fallback for records whose node has no current pause
+    entry: the executor copies the pause payload the durable answer seam
+    stamped (see ``stores.answer_record``), preserving current answer
+    behavior, with the same detached JSON copying as the current-entry path.
+    """
+    pause = answered.get("_pause")
+    if not isinstance(pause, Mapping):
+        return None
+    pause_metadata = pause.get("metadata")
+    carried = _detach_json_mapping(pause_metadata) if isinstance(pause_metadata, Mapping) else {}
+    carried["resume_at"] = pause.get("resume_at")
+    return carried
+
+
 def _build_ctx(record: DurableRunRecord, node_id: str) -> NodeContext:
     """Build the runtime execution context for one canonical NodeRun."""
     from maistro.graph.types import GraphBlackboard
@@ -1073,6 +1167,16 @@ def _build_ctx(record: DurableRunRecord, node_id: str) -> NodeContext:
         synth_depth = dict(snapshot.get("metadata") or {}).get("synth_depth", 0)
     except (TypeError, ValueError):
         synth_depth = 0
+    metadata: dict[str, Any] = {
+        "hitl_answers": dict(record.hitl_answers),
+        "synth_depth": synth_depth,
+    }
+    carried = _current_pause_carry(record, node_id)
+    if carried is None:
+        answered = record.hitl_answers.get(node_id)
+        carried = _answered_pause_carry(answered) if isinstance(answered, Mapping) else None
+    if carried is not None:
+        metadata[RESUMED_PAUSE_KEY] = carried
     return NodeContext(
         run_id=record.run_id,
         dag_id=record.run.graph.graph_id,
@@ -1081,10 +1185,7 @@ def _build_ctx(record: DurableRunRecord, node_id: str) -> NodeContext:
         workspace_id=record.run.workspace_id,
         project_id=record.run.project_id,
         blackboard=blackboard,
-        metadata={
-            "hitl_answers": dict(record.hitl_answers),
-            "synth_depth": synth_depth,
-        },
+        metadata=metadata,
     )
 
 

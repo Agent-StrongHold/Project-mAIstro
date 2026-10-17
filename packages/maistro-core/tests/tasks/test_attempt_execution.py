@@ -9,6 +9,8 @@ reads exactly as it did before.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from maistro.agents.types import CodeOutput, ConductorOutput
@@ -21,6 +23,7 @@ from maistro.tasks.execution import TASK_EXECUTOR_ID, TaskAttemptExecutor, TaskE
 from maistro.tasks.models import TaskCreate, TaskStatus
 from maistro.tasks.queue import TaskQueue
 from maistro.tasks.runner import TaskRunner
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 def _ok(files: list[str] | None = None) -> ConductorOutput:
@@ -260,6 +263,35 @@ async def test_the_adapter_returns_the_full_output_not_the_stored_summary(wired)
 # --- cancellation and shutdown --------------------------------------------
 
 
+async def test_queue_cancellation_signals_the_canonical_attempt(wired) -> None:
+    queue, runs = wired
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def slow(_request: TaskCreate) -> ConductorOutput:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+        return _ok()
+
+    task = await queue.submit(TaskCreate(description="long task"))
+    running = asyncio.create_task(_runner(queue, runs, slow)._execute_task(task.task_id))
+    await started.wait()
+
+    assert await queue.cancel(task.task_id) is True
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert stopped.is_set()
+    receipt = queue.get(task.task_id)
+    assert receipt is not None and receipt.status is TaskStatus.CANCELLED
+    node_run = (await runs.list_node_runs(task.run_id or ""))[0]
+    attempt = (await runs.list_attempts(node_run.node_run_id))[0]
+    assert attempt.status is AttemptStatus.CANCELLED
+    assert (await runs.get_run(task.run_id or "")).status is RunStatus.CANCELLED
+
+
 async def test_an_in_flight_attempt_is_cancellable_by_canonical_identity(wired) -> None:
     import asyncio
 
@@ -442,7 +474,8 @@ async def test_cancelling_a_multi_node_run_is_refused() -> None:
             project_id=root.project_id,
             name="Two nodes",
             nodes=[Node(node_id="a", node_type="agent"), Node(node_id="b", node_type="agent")],
-        )
+        ),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     with pytest.raises(RunIntegrityError, match="admits exactly one"):
@@ -500,3 +533,170 @@ async def test_a_task_worker_without_a_ttl_is_unchanged(wired) -> None:
     assert attempts[0].execution_lease is not None
     assert attempts[0].execution_lease.expires_at is None
     assert await runs.reclaim_expired_attempts() == []
+
+
+# --- cancelling through the queue's canonical seam -------------------------
+
+
+async def test_cancelling_an_unknown_task_id_is_not_a_cancellation(wired) -> None:
+    queue, _runs = wired
+
+    assert await queue.cancel("task-never-was") is False
+
+
+async def test_cancelling_a_task_whose_run_already_completed_is_refused(wired) -> None:
+    """The receipt is a projection; a finished Run is not cancellable.
+
+    When the canonical Run already reached a successful terminal state, the
+    queue must not mark the task CANCELLED — that would contradict the Run
+    the receipt projects.
+    """
+    queue, runs = wired
+    task = await queue.submit(TaskCreate(description="Fix the parser"))
+    run_id = task.run_id or ""
+    await runs.transition_run(run_id, RunStatus.RUNNING)
+    await runs.transition_run(run_id, RunStatus.COMPLETED, result="done")
+
+    assert await queue.cancel(task.task_id) is False
+    receipt = queue.get(task.task_id)
+    assert receipt is not None
+    assert receipt.status is not TaskStatus.CANCELLED
+
+
+async def test_a_queue_without_an_admitter_cancels_only_the_receipt() -> None:
+    queue = TaskQueue()
+
+    task = await queue.submit(TaskCreate(description="Fix the parser"))
+
+    assert await queue.cancel(task.task_id) is True
+    receipt = queue.get(task.task_id)
+    assert receipt is not None
+    assert receipt.status is TaskStatus.CANCELLED
+
+
+# --- the legacy two-method admitter compatibility (#1338) -----------------
+#
+# `cancel_run` joined the TaskAdmitter protocol after `admit` and
+# `record_transition` (#1320). A downstream adapter compiled against that
+# earlier shape is still wired in live deployments; cancelling its admitted
+# work must neither crash nor quietly rewrite the receipt's meaning.
+
+
+class _LegacyTwoMethodAdmitter:
+    """The pre-#1320 protocol shape: admit and record_transition, no more.
+
+    Records what it was told so the tests can prove the queue asked it for
+    nothing it never promised to answer.
+    """
+
+    def __init__(self) -> None:
+        self.transitions: list[TaskStatus] = []
+        self.next_run_id = 0
+
+    async def admit(self, task: TaskCreate, *, workspace_id: str | None = None) -> str:
+        self.next_run_id += 1
+        return f"run-legacy-{self.next_run_id}"
+
+    async def record_transition(
+        self,
+        run_id: str,
+        status: TaskStatus,
+        *,
+        result: object | None = None,
+        error: str | None = None,
+        previous_status: TaskStatus | None = None,
+    ) -> bool:
+        self.transitions.append(status)
+        return True
+
+
+async def test_a_legacy_admitters_admitted_work_never_raises_on_cancel() -> None:
+    """The #1338 crash: cancelling admitted work under a two-method adapter.
+
+    The queue probes the capability instead of assuming it, so the first
+    cancelled task is a refusal rather than an AttributeError.
+    """
+    queue = TaskQueue(admitter=_LegacyTwoMethodAdmitter())
+
+    task = await queue.submit(TaskCreate(description="Fix the parser"))
+
+    assert task.run_id  # the work is admitted — the legacy shape admitted it
+    assert await queue.cancel(task.task_id) is False
+    receipt = queue.get(task.task_id)
+    assert receipt is not None
+    assert receipt.status is TaskStatus.QUEUED, (
+        "physical cancellation is unavailable; the receipt must stay open, not read as stopped"
+    )
+
+
+async def test_a_legacy_admitters_in_flight_work_is_not_terminalized_by_cancel() -> None:
+    """In-flight admitted work under a legacy adapter must stay in flight.
+
+    A local no-op cannot count as a successful physical cancellation (#1242):
+    terminalizing the receipt CANCELLED would say the execution stopped when
+    nothing ever signalled it.
+    """
+    admitter = _LegacyTwoMethodAdmitter()
+    queue = TaskQueue(admitter=admitter)
+    task = await queue.submit(TaskCreate(description="Fix the parser"))
+    await queue.update_status(task.task_id, TaskStatus.PLANNING)
+
+    assert await queue.cancel(task.task_id) is False
+    receipt = queue.get(task.task_id)
+    assert receipt is not None
+    assert receipt.status is TaskStatus.PLANNING
+    assert TaskStatus.CANCELLED not in admitter.transitions, (
+        "a refusal to physically cancel must not be laundered through the "
+        "adapter as a canonical CANCELLED transition either"
+    )
+
+
+async def test_repeat_cancels_under_a_legacy_admitter_keep_refusing() -> None:
+    """Repeat calls are refusals, not a crash and not a delayed success."""
+    queue = TaskQueue(admitter=_LegacyTwoMethodAdmitter())
+    task = await queue.submit(TaskCreate(description="Fix the parser"))
+
+    assert await queue.cancel(task.task_id) is False
+    assert await queue.cancel(task.task_id) is False
+    receipt = queue.get(task.task_id)
+    assert receipt is not None
+    assert receipt.status is TaskStatus.QUEUED
+
+
+async def test_a_legacy_admitters_unadmitted_work_still_cancels_the_receipt() -> None:
+    """Work with no canonical identity has only its receipt, as documented.
+
+    Nothing physical exists to stop, so the receipt-only path remains — and
+    it is visibly distinct: there is no run_id on the receipt at all, so it
+    cannot be mistaken for stopped physical execution.
+    """
+    queue = TaskQueue(admitter=None)
+    task = await queue.submit(TaskCreate(description="Fix the parser"))
+    assert task.run_id is None
+
+    assert await queue.cancel(task.task_id) is True
+    receipt = queue.get(task.task_id)
+    assert receipt is not None
+    assert receipt.status is TaskStatus.CANCELLED
+    assert receipt.run_id is None
+
+
+async def test_a_capable_admitters_repeat_cancel_reports_the_settled_receipt(wired) -> None:
+    """The capable path is unchanged: first cancel wins, the repeat hits the
+    pinned already-terminal contract (False), and nothing crashes."""
+    queue, runs = wired
+    task = await queue.submit(TaskCreate(description="Fix the parser"))
+
+    assert await queue.cancel(task.task_id) is True
+    assert await queue.cancel(task.task_id) is False
+    run = await runs.get_run(task.run_id or "")
+    assert run is not None and run.status is RunStatus.CANCELLED
+
+
+async def test_the_admitter_reports_a_run_that_never_existed(wired) -> None:
+    _queue, runs = wired
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("w1")
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
+
+    assert await admitter.cancel_run("run-never-was") is False

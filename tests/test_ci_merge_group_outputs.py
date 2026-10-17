@@ -6,9 +6,58 @@ import pytest
 from scripts import ci_merge_group_scope as helper
 
 
-def test_pull_request_keeps_every_specialized_leg_enabled() -> None:
-    assert all(helper.scope_for_event("pull_request", ["docs/README.md"]).values())
+def test_pull_request_classifies_measured_changed_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files = ["docs/ci/BRANCH-PROTECTION.md"]
+    assert helper.scope_for_event("pull_request", files) == helper.classify(files)
+    monkeypatch.setattr(helper, "resolve_base_revision_from_env", lambda: "a" * 40)
+    monkeypatch.setattr(helper, "changed_paths_from_git", lambda _base: files)
+    assert helper.scope_from_environment("pull_request") == helper.classify(files)
+
+
+def test_pull_request_without_diff_evidence_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert all(helper.scope_for_event("pull_request", None).values())
+
+    def fail_base() -> str:
+        raise helper.BaseRevisionError("missing base")
+
+    monkeypatch.setattr(helper, "resolve_base_revision_from_env", fail_base)
     assert all(helper.scope_from_environment("pull_request").values())
+    assert (
+        "pull_request scope is unmeasured; enabling every specialized leg"
+        in capsys.readouterr().err
+    )
+
+
+def test_push_keeps_every_specialized_leg_enabled() -> None:
+    # Protected-branch pushes are not path-scoped candidates.
+    assert all(helper.scope_from_environment("push").values())
+
+
+def test_hive_e2e_scope_covers_the_jobs_actual_inputs() -> None:
+    """PRs touching only the Hive jobs' inputs still run both Hive E2E jobs.
+
+    Both jobs execute scripts/prepull-base-images.sh directly, and the Hive
+    Dockerfile installs maistro-bootstrap/-canvas/-design/-evolve (#1351
+    review): generic scripts/ or packages/ changes must not leave hive_e2e
+    false while docker_build alone selects.
+    """
+    for path in (
+        "scripts/prepull-base-images.sh",
+        "packages/maistro-bootstrap/pyproject.toml",
+        "packages/maistro-canvas/src/maistro_canvas/board.py",
+        "packages/maistro-design/pyproject.toml",
+        "packages/maistro-evolve/src/maistro_evolve/cycle.py",
+    ):
+        scope = helper.classify([path])
+        assert scope["hive_e2e"] is True, path
+    # An unrelated script keeps the old behavior: docker_build only.
+    scope = helper.classify(["scripts/verify-wheel-imports.py"])
+    assert scope["hive_e2e"] is False
+    assert scope["docker_build"] is True
 
 
 def test_merge_group_uses_changed_paths(monkeypatch: pytest.MonkeyPatch) -> None:

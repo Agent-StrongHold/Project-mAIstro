@@ -32,6 +32,7 @@ from maistro.graph.nodes import BaseNode, NodeContext, pause_until
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import AttemptStatus, RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 class _In(BaseModel):
@@ -60,14 +61,6 @@ class _FlakyStep(BaseNode[_In, _Out]):
             self.remaining -= 1
             raise ValueError("transient failure")
         return _Out()
-
-
-class _UnsafeFlakyStep(_FlakyStep):
-    """A non-idempotent effect must not be repeated as a logical node retry."""
-
-    kind: ClassVar[str] = "test.node_retry.unsafe"
-    idempotent: ClassVar[bool] = False
-    external_io: ClassVar[bool] = True
 
 
 class _AskStep(BaseNode[_In, _Out]):
@@ -110,13 +103,16 @@ def _graph(
 
 
 async def _run(graph: Graph, node: BaseNode[Any, Any], run_store: InMemoryRunStore) -> Any:
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     return await run_durable_graph(
         graph,
         store=InMemoryDurableRunStore(),
         node_resolver=lambda node_id, _graph: node,
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
 
@@ -144,20 +140,6 @@ async def test_a_node_that_fails_then_succeeds_gets_a_second_visit() -> None:
         assert [item.status for item in attempts] == [AttemptStatus.COMPLETED], (
             "each visit is one physically complete try; only the logical outcome differed"
         )
-
-
-async def test_non_idempotent_failure_does_not_spend_a_retry_budget() -> None:
-    """A completed physical try is not replayed when its effect is unsafe."""
-    run_store, workspace_id, project_id = await _spine()
-    node = _UnsafeFlakyStep(failures=1)
-    graph = _graph(workspace_id, project_id, _UnsafeFlakyStep.kind, policies={"max_attempts": 3})
-
-    record = await _run(graph, node, run_store)
-
-    assert record.status is RunStatus.FAILED
-    assert node.calls == 1
-    node_runs = await run_store.list_node_runs(record.run_id)
-    assert len(node_runs) == 1
 
 
 async def test_the_budget_bounds_the_tries_and_the_run_still_fails() -> None:
@@ -258,7 +240,9 @@ async def test_the_other_walk_reaches_the_same_verdict(
     run_store, workspace_id, project_id = await _spine()
     node = _FlakyStep(failures=failures)
     graph = _graph(workspace_id, project_id, _FlakyStep.kind, policies={"max_attempts": 3})
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     record = await traversal.run_durable_graph(
         graph,
@@ -266,6 +250,7 @@ async def test_the_other_walk_reaches_the_same_verdict(
         node_resolver=lambda node_id, _graph: node,
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is expected_status

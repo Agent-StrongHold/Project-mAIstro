@@ -15,7 +15,7 @@ A security regression suite. Each model exercises one of Maistro's security inva
 | I3 | `test_trust_boundary.py` | Permission grants: glob-based R/W, regex command allowlist, expiry, path traversal detection |
 | I4 | `test_dangerous_tools.py` | Dangerous command patterns, tool names, blocked host paths all detected |
 | I5 | `test_external_content.py` | Prompt injection detection, content wrapping with boundary markers, invisible char stripping |
-| I6 | `test_sentinel_policy.py` | Pre-call permission check, post-call Warden scan + PII redaction, audit logging |
+| I6 | `test_sentinel_policy.py` | Pre-call permission check (fail-closed default: table miss denies; ADR-072726-0d6b as implemented for #1165, explicit `allow_on_miss` compat mode), post-call Warden scan + PII redaction, audit logging |
 | I7 | `test_auth_scopes.py` | Scope expansion (category:*→all, *:*→superuser), ServiceIdentity immutability |
 | I8 | `test_secret_equal.py` | Constant-time comparison, type confusion defense, case sensitivity |
 | I9 | `test_task_policy.py` | Task creation deny lists, budget enforcement per tier, per-user isolation |
@@ -40,6 +40,7 @@ A security regression suite. Each model exercises one of Maistro's security inva
 | I28 | `test_auth_client.py` | Service key client: auto-injected auth headers, merge/override behavior |
 | I29 | `test_sentinel_validator.py` | Schema validation + repair: fuzzy enum, type coercion, default fill, field rename |
 | I30 | `test_memory_scopes.py` | Memory scope isolation: global→team→user→agent→session hierarchy |
+| I31 | `test_invocation_effect_idempotency.py` | Invocation effect/idempotency: COMPLETED never re-dispatches, UNKNOWN/blocked retries refused, only proven-not-applied FAILED retryable, logical effect identity stable across Attempts (#882) |
 
 ## Quick start
 
@@ -56,8 +57,8 @@ PYTHONPATH=packages/maistro-core/src pytest formal/models/test_strike_escalation
 # Deep exploration (10,000 examples)
 PYTHONPATH=packages/maistro-core/src pytest formal/models/ -v --nightly
 
-# Regenerate extracted constants
-PYTHONPATH=packages/maistro-core/src python -m formal.extractors.extract_security_constants
+# Run the security oracle directly against the candidate implementation
+PYTHONPATH=packages/maistro-core/src pytest formal/models/test_dangerous_tools.py -q
 ```
 
 ## How to read failures
@@ -72,6 +73,17 @@ AssertionError: strike_count=2 but scrutiny_level='elevated' (expected 'locked')
 ```
 
 This tells you the exact steps and broken invariant.
+
+## Invariant evidence rules (#410)
+
+Every counted invariant must be able to fail: it is expressed against an
+independent model, a documented contract, or a constructive input class, has
+a documented counterexample class, and has been demonstrated to fail a
+realistic mutant. Tautologies (`counter >= 0` on the machine's own counter),
+empty `pass` invariants, and self-referential impl-vs-impl assertions are
+rejected from the evidence counts. The full inventory — counted properties,
+rejected invariants, informational keeps, and the demonstrated mutants —
+lives in [INVARIANTS.md](INVARIANTS.md).
 
 ## CI
 
