@@ -23,9 +23,20 @@ operator would:
 - **Server-side quota composition (AC3)**: admission at the extension seam
   precedes dispatch, a denied admission produces no Invocation, no event, and
   no usage row, and the denied reservation can never settle afterwards.
-- **Top cost contributor (AC5, cost half)**: the per-extension cost breakdown
-  ranks contributors; error/latency taxonomy and health views are child issue
-  #978 and are deliberately absent from this base.
+- **Truthful availability (AC4)**: child #978's projection (#2021) is now an
+  ancestor of this head, so the epic's own invocation composes with it. The
+  attributed invocation's outcome, recorded at the host seam into the durable
+  health store, projects the greeter READY; the same evidence under a platform
+  bump projects INCOMPATIBLE; an operator quarantine, an extension's own
+  fault, and a transient dependency failure each strip readiness with
+  structurally distinct summaries in one operator view — and the holds plus
+  failure evidence survive the health store being reopened (restart), still
+  refusing success-shaped availability.
+- **Top contributors (AC5)**: the per-extension cost breakdown ranks
+  contributors and partitions the parent total; error and latency ranking
+  (#978 digests) is composed here from host-recorded evidence with the
+  taxonomy's provenance preserved, and the metered cost and the usage digest
+  agree on the same physical call.
 - **Historical evidence (AC6)**: rows keep their exact extension version
   identity after an upgrade and after the extension is removed — history is
   never reattributed and never silently dropped.
@@ -37,9 +48,13 @@ host internals.
 
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import aiosqlite
 import pytest
 
 from maistro.capabilities.binding import Binding
@@ -56,22 +71,43 @@ from maistro.capabilities.invocation import (
 )
 from maistro.events.envelope import EventEnvelope, InMemoryEventStore
 from maistro.extensions import (
+    ExtensionCodeLoader,
     ExtensionDescriptor,
+    ExtensionErrorKind,
+    ExtensionErrorRecord,
+    ExtensionHealth,
+    ExtensionHealthService,
     ExtensionHost,
     ExtensionIdentity,
+    ExtensionInstallRecord,
+    ExtensionInstallService,
     ExtensionMeter,
+    ExtensionObservation,
+    ExtensionOperationalState,
+    ExtensionOperatorAction,
+    ExtensionOperatorState,
+    ExtensionPackage,
     ExtensionQuotaConflict,
     ExtensionQuotaDenied,
     ExtensionQuotaLedger,
     ExtensionQuotaPolicy,
     ExtensionQuotaRequest,
+    ExtensionScope,
     ExtensionUsageAmounts,
     ExtensionUsageConflict,
     ExtensionUsageEvent,
     GovernedEffectRoute,
+    InMemoryExtensionStore,
     InvocationScope,
+    LoadedExtension,
+    ObservationOutcome,
+    OperatorDecision,
+    RankingMetric,
+    TrustClaim,
+    TrustPolicy,
 )
 from maistro.extensions.host import EFFECT_EVENT_TYPE
+from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
 from maistro.graph import Graph, Node
 from maistro.policy.types import Decision, PolicyVerdict
 from maistro.projects.scope_store import InMemoryProjectScopeStore
@@ -580,3 +616,475 @@ async def test_historical_evidence_survives_upgrade_and_removal(tmp_path: Path) 
     # Attribution by publisher still resolves the historical contributor.
     by_publisher = await meter.breakdown("publisher", org_id=ORG)
     assert by_publisher[PUBLISHER].events == 2
+
+
+# ---------------------------------------------------------------------------
+# AC4/AC5 composition with the operational projection (#978 landed via #2021)
+# ---------------------------------------------------------------------------
+
+SCOPE = ExtensionScope(org_id=ORG, workspace_id=WORKSPACE)
+DEPENDENCY_ID = "acme.provider"
+DEPENDENCY_VERSION = "2.0.0"
+PLATFORM = "1.0.0"
+HEALTH_PAYLOAD = b"epic-m9i-health-payload"
+HEALTH_PUBLISHER = "reference"
+HEALTH_TRUST = TrustPolicy(trusted_publishers=frozenset({HEALTH_PUBLISHER}))
+AT = datetime(2026, 10, 1, 12, 0, 0, tzinfo=UTC)
+
+
+class _ActivatingLoader(ExtensionCodeLoader):
+    """The host loader seam: loads whatever the lifecycle authorized."""
+
+    async def load(self, record: ExtensionInstallRecord, payload: bytes) -> LoadedExtension:
+        del payload
+        return LoadedExtension(extension_id=record.extension_id, version=record.version)
+
+
+def _health_manifest(
+    extension_id: str,
+    version: str,
+    *,
+    dependencies: tuple[tuple[str, str], ...] = (),
+) -> bytes:
+    document: dict[str, Any] = {
+        "manifest_version": 1,
+        "id": extension_id,
+        "name": extension_id,
+        "version": version,
+        "publisher": HEALTH_PUBLISHER,
+        "api_version": PLATFORM,
+        "permissions": ["network.http"],
+        "entry_points": [{"name": "main", "module": "mod", "attribute": "activate"}],
+        "artifact": {
+            "sha256": hashlib.sha256(HEALTH_PAYLOAD).hexdigest(),
+            "size": len(HEALTH_PAYLOAD),
+        },
+    }
+    if dependencies:
+        document["dependencies"] = [
+            {"id": dependency_id, "range": range_spec} for dependency_id, range_spec in dependencies
+        ]
+    return json.dumps(document).encode()
+
+
+async def _install_extension(
+    store: InMemoryExtensionStore,
+    extension_id: str,
+    version: str,
+    *,
+    dependencies: tuple[tuple[str, str], ...] = (),
+) -> ExtensionInstallRecord:
+    """Drive one candidate through the canonical inspect → authorize → install
+    lifecycle so the projection reads real registry evidence."""
+    service = ExtensionInstallService(store, loader=_ActivatingLoader(), trust_policy=HEALTH_TRUST)
+    record = await service.inspect(
+        actor="operator",
+        scope=SCOPE,
+        package=ExtensionPackage(
+            manifest_bytes=_health_manifest(extension_id, version, dependencies=dependencies),
+            payload=HEALTH_PAYLOAD,
+        ),
+        trust_evidence=TrustClaim(
+            publisher_id=HEALTH_PUBLISHER,
+            signature_present=True,
+            signer_key_id="key-1",
+            package_sha256=hashlib.sha256(HEALTH_PAYLOAD).hexdigest(),
+        ),
+    )
+    record = await service.authorize(
+        record.install_id, actor="operator", scope=SCOPE, approve=True, reason="needed"
+    )
+    record = await service.install(
+        record.install_id, actor="operator", scope=SCOPE, payload=HEALTH_PAYLOAD
+    )
+    assert record.state.value == "active"
+    return record
+
+
+def _obs(
+    observation_id: str,
+    extension_id: str,
+    version: str,
+    *,
+    outcome: ObservationOutcome = ObservationOutcome.SUCCESS,
+    latency_ms: float = 10.0,
+    cost_units: float | None = None,
+    error: ExtensionErrorRecord | None = None,
+) -> ExtensionObservation:
+    return ExtensionObservation(
+        observation_id=observation_id,
+        at=AT,
+        org_id=ORG,
+        workspace_id=WORKSPACE,
+        extension_id=extension_id,
+        version=version,
+        latency_ms=latency_ms,
+        outcome=outcome,
+        cost_units=cost_units,
+        error=error,
+    )
+
+
+def _ext_error(
+    error_id: str,
+    extension_id: str,
+    version: str,
+    *,
+    kind: ExtensionErrorKind = ExtensionErrorKind.EXTENSION,
+    dependency: str | None = None,
+    dependency_version: str | None = None,
+) -> ExtensionErrorRecord:
+    return ExtensionErrorRecord(
+        error_id=error_id,
+        at=AT,
+        org_id=ORG,
+        workspace_id=WORKSPACE,
+        extension_id=extension_id,
+        version=version,
+        kind=kind,
+        code="runtime_fault",
+        message="recorded at the host seam for the epic proof",
+        dependency=dependency,
+        dependency_version=dependency_version,
+    )
+
+
+def _decision(
+    decision_id: str,
+    extension_id: str,
+    action: ExtensionOperatorAction,
+    *,
+    reason: str,
+) -> OperatorDecision:
+    return OperatorDecision(
+        decision_id=decision_id,
+        at=AT,
+        org_id=ORG,
+        workspace_id=WORKSPACE,
+        extension_id=extension_id,
+        action=action,
+        state=ExtensionOperatorState.ENABLED
+        if action is ExtensionOperatorAction.ENABLE
+        else ExtensionOperatorState.QUARANTINED
+        if action is ExtensionOperatorAction.QUARANTINE
+        else ExtensionOperatorState.DISABLED,
+        actor="operator",
+        reason=reason,
+    )
+
+
+@pytest.mark.ac("M9-I/AC-4")
+async def test_availability_projection_composes_the_epic_evidence(
+    tmp_path: Path,
+) -> None:
+    """AC4 at the epic seam: the *same* attributed invocation that feeds the
+    meter also feeds the truthful availability projection — and installed
+    extensions can never report success-shaped availability under a platform
+    bump, an operator hold, their own fault, or a failing dependency."""
+    install_store = InMemoryExtensionStore()
+    await _install_extension(install_store, DEPENDENCY_ID, DEPENDENCY_VERSION)
+    await _install_extension(
+        install_store,
+        EXTENSION_ID,
+        EXTENSION_VERSION,
+        dependencies=((DEPENDENCY_ID, f"^{DEPENDENCY_VERSION}"),),
+    )
+
+    # The epic's own spine invocation (AC1/AC2): attributed, metered once.
+    events = InMemoryEventStore()
+    invocations = InMemoryInvocationStore()
+    meter = ExtensionMeter(tmp_path / "metering.sqlite", clock=lambda: CLOCK)
+    await meter.ensure_schema()
+    _, _, _, invocation_id = await _invoke_once(invocations=invocations, events=events)
+    await meter.record(_meter_row("evt-health", invocation_id=invocation_id))
+
+    async with aiosqlite.connect(tmp_path / "health.sqlite") as conn:
+        health_store = SqliteExtensionHealthStore(conn)
+        await health_store.ensure_schema()
+        service = ExtensionHealthService(install_store, health_store)
+
+        # The host seam records the outcome it measured for the invocation the
+        # event stream already attributes (identity and cost from AC1/AC2).
+        await service.record_observation(
+            _obs(
+                "obs-epic-invoke",
+                EXTENSION_ID,
+                EXTENSION_VERSION,
+                latency_ms=12.5,
+                cost_units=500.0,
+            )
+        )
+
+        ready = await service.status(SCOPE, EXTENSION_ID)
+        assert ready is not None
+        assert ready.ready is True
+        assert ready.live is True
+        assert ready.summary is ExtensionOperationalState.READY
+        assert ready.healthy is ExtensionHealth.HEALTHY
+        assert ready.not_ready_reasons == ()
+
+        # Cross-seam agreement: the digest's cost total and the extension
+        # meter's total describe the one physical call — no drift, no double
+        # counting between the two telemetry surfaces.
+        meter_total = await meter.totals(org_id=ORG, workspace_id=WORKSPACE)
+        greeter_digest = await service.usage_digests(SCOPE)
+        assert len(greeter_digest) == 1
+        assert greeter_digest[0].cost_units_total == 500.0 == meter_total.micro_usd
+        assert greeter_digest[0].active is True
+
+        # A platform API bump is re-derived now: the still-installed extension
+        # becomes structurally incompatible and loses readiness.
+        bumped = ExtensionHealthService(install_store, health_store, platform_api_version="2.0.0")
+        incompatible = await bumped.status(SCOPE, EXTENSION_ID)
+        assert incompatible is not None
+        assert incompatible.ready is False
+        assert incompatible.live is True
+        assert incompatible.summary is ExtensionOperationalState.INCOMPATIBLE
+        assert incompatible.incompatibility_failures
+
+        # An operator quarantine holds even over perfectly clean evidence —
+        # a deliberate hold, never a health symptom, and never success-shaped.
+        await service.apply_decision(
+            _decision(
+                "decision-quarantine",
+                EXTENSION_ID,
+                ExtensionOperatorAction.QUARANTINE,
+                reason="suspected misbehavior",
+            )
+        )
+        quarantined = await service.status(SCOPE, EXTENSION_ID)
+        assert quarantined is not None
+        assert quarantined.ready is False
+        assert quarantined.healthy is ExtensionHealth.HEALTHY
+        assert quarantined.summary is ExtensionOperationalState.QUARANTINED
+
+        # Two more extensions in the same scope, each blocked differently: the
+        # operator view carries all four verdicts at once, distinct.
+        await _install_extension(install_store, "reference.faulty", "0.1.0")
+        await service.record_observation(
+            _obs(
+                "obs-faulty",
+                "reference.faulty",
+                "0.1.0",
+                outcome=ObservationOutcome.FAILURE,
+                error=_ext_error("err-faulty", "reference.faulty", "0.1.0"),
+            )
+        )
+        await _install_extension(
+            install_store,
+            "reference.dependent",
+            "0.1.0",
+            dependencies=((DEPENDENCY_ID, f"^{DEPENDENCY_VERSION}"),),
+        )
+        await service.record_observation(
+            _obs(
+                "obs-dependent",
+                "reference.dependent",
+                "0.1.0",
+                outcome=ObservationOutcome.FAILURE,
+                error=_ext_error(
+                    "err-dependent",
+                    "reference.dependent",
+                    "0.1.0",
+                    kind=ExtensionErrorKind.DEPENDENCY,
+                    dependency=DEPENDENCY_ID,
+                    dependency_version=DEPENDENCY_VERSION,
+                ),
+            )
+        )
+
+        overview = {status.extension_id: status for status in await service.statuses(SCOPE)}
+        assert overview[EXTENSION_ID].summary is ExtensionOperationalState.QUARANTINED
+        faulty = overview["reference.faulty"]
+        assert faulty.ready is False
+        assert faulty.summary is ExtensionOperationalState.UNHEALTHY
+        dependent = overview["reference.dependent"]
+        assert dependent.ready is False
+        assert dependent.live is True
+        assert dependent.summary is ExtensionOperationalState.DEGRADED
+        assert dependent.healthy is ExtensionHealth.DEGRADED
+        # The dependency itself is fine: the transient failure is the
+        # dependency's provider condition, not its own health verdict.
+        assert overview[DEPENDENCY_ID].summary is ExtensionOperationalState.READY
+
+
+@pytest.mark.ac("M9-I/AC-4")
+async def test_operator_holds_and_failure_evidence_survive_a_restart(
+    tmp_path: Path,
+) -> None:
+    """AC4's durability half at the epic seam: the durable health store
+    reopened under a fresh service still refuses success-shaped availability —
+    the operator hold and the failure evidence are separate surviving facts.
+
+    (Install-record durability across a process restart is #978's open
+    PostgreSQL clarification; the claim proven here is that the recorded
+    health evidence and holds themselves survive, projected over the
+    canonical install evidence.)"""
+    install_store = InMemoryExtensionStore()
+    await _install_extension(install_store, EXTENSION_ID, EXTENSION_VERSION)
+    path = tmp_path / "health-restart.sqlite"
+
+    async with aiosqlite.connect(path) as conn:
+        store = SqliteExtensionHealthStore(conn)
+        await store.ensure_schema()
+        before = ExtensionHealthService(install_store, store)
+        await before.record_observation(
+            _obs("obs-restart-ok", EXTENSION_ID, EXTENSION_VERSION, latency_ms=8.0)
+        )
+        await before.record_observation(
+            _obs(
+                "obs-restart-fault",
+                EXTENSION_ID,
+                EXTENSION_VERSION,
+                outcome=ObservationOutcome.FAILURE,
+                error=_ext_error("err-restart-fault", EXTENSION_ID, EXTENSION_VERSION),
+            )
+        )
+        await before.apply_decision(
+            _decision(
+                "decision-restart",
+                EXTENSION_ID,
+                ExtensionOperatorAction.QUARANTINE,
+                reason="suspected misbehavior",
+            )
+        )
+        held = await before.status(SCOPE, EXTENSION_ID)
+        assert held is not None
+        assert held.summary is ExtensionOperationalState.QUARANTINED
+        assert held.healthy is ExtensionHealth.UNHEALTHY
+
+    # "Restart": a fresh service instance over the reopened durable store.
+    async with aiosqlite.connect(path) as conn:
+        store = SqliteExtensionHealthStore(conn)
+        await store.ensure_schema()
+        after = ExtensionHealthService(install_store, store)
+
+        resumed = await after.status(SCOPE, EXTENSION_ID)
+        assert resumed is not None
+        assert resumed.ready is False
+        assert resumed.summary is ExtensionOperationalState.QUARANTINED
+        assert resumed.policy_state is ExtensionOperatorState.QUARANTINED
+        assert resumed.healthy is ExtensionHealth.UNHEALTHY
+        assert any("quarantined by operator" in r for r in resumed.not_ready_reasons)
+
+        # The failure evidence survived too, with its provenance intact.
+        errors = await after.recent_errors(SCOPE, EXTENSION_ID)
+        assert [error.error_id for error in errors] == ["err-restart-fault"]
+        assert errors[0].extension_id == EXTENSION_ID
+        assert errors[0].version == EXTENSION_VERSION
+        digests = await after.usage_digests(SCOPE)
+        assert (digests[0].invocations, digests[0].failures) == (2, 1)
+
+        # Lifting the hold after the restart does not manufacture readiness:
+        # the surviving failure evidence still refuses it.
+        await after.apply_decision(
+            _decision(
+                "decision-release",
+                EXTENSION_ID,
+                ExtensionOperatorAction.ENABLE,
+                reason="investigation closed",
+            )
+        )
+        released = await after.status(SCOPE, EXTENSION_ID)
+        assert released is not None
+        assert released.ready is False
+        assert released.policy_state is ExtensionOperatorState.ENABLED
+        assert released.summary is ExtensionOperationalState.UNHEALTHY
+
+
+@pytest.mark.ac("M9-I/AC-5")
+async def test_top_extension_error_and_latency_contributors_are_rankable(
+    tmp_path: Path,
+) -> None:
+    """AC5's error/latency half at the epic seam: operators rank top error and
+    latency contributors from host-recorded evidence, the taxonomy keeps
+    extension/version/dependency provenance, unmeasured cost never reads as
+    free, and SLO error-budget inputs derive from the same evidence."""
+    del tmp_path
+    install_store = InMemoryExtensionStore()
+    for extension_id in ("ext.buggy", "ext.slowpoke", "ext.speedy", "ext.silent"):
+        await _install_extension(install_store, extension_id, "1.0.0")
+
+    async with aiosqlite.connect(":memory:") as conn:
+        store = SqliteExtensionHealthStore(conn)
+        await store.ensure_schema()
+        service = ExtensionHealthService(install_store, store)
+
+        # Each metric has a *different* top contributor, so a ranking that
+        # reads the wrong axis cannot pass: buggy owns failures/error-rate,
+        # slowpoke owns latency, speedy owns measured cost, silent owns raw
+        # usage while its cost was never metered.
+        for index, latency in enumerate((30.0, 20.0, 10.0)):
+            failed = index < 2
+            await service.record_observation(
+                _obs(
+                    f"obs-buggy-{index}",
+                    "ext.buggy",
+                    "1.0.0",
+                    outcome=ObservationOutcome.FAILURE if failed else ObservationOutcome.SUCCESS,
+                    latency_ms=latency,
+                    error=_ext_error(f"err-buggy-{index}", "ext.buggy", "1.0.0")
+                    if failed
+                    else None,
+                )
+            )
+        for index, latency in enumerate((900.0, 800.0)):
+            await service.record_observation(
+                _obs(f"obs-slow-{index}", "ext.slowpoke", "1.0.0", latency_ms=latency)
+            )
+        for index in range(2):
+            await service.record_observation(
+                _obs(
+                    f"obs-fast-{index}",
+                    "ext.speedy",
+                    "1.0.0",
+                    latency_ms=100.0 + index * 10.0,
+                    cost_units=5.0,
+                )
+            )
+        for index in range(5):
+            await service.record_observation(
+                _obs(f"obs-silent-{index}", "ext.silent", "1.0.0", latency_ms=50.0)
+            )
+
+        by_usage = await service.rank(SCOPE, RankingMetric.USAGE)
+        assert by_usage[0].extension_id == "ext.silent"
+        assert by_usage[0].invocations == 5
+
+        by_failures = await service.rank(SCOPE, RankingMetric.FAILURES)
+        assert by_failures[0].extension_id == "ext.buggy"
+        assert by_failures[0].failures == 2
+
+        by_error_rate = await service.rank(SCOPE, RankingMetric.ERROR_RATE)
+        assert by_error_rate[0].extension_id == "ext.buggy"
+        assert by_error_rate[0].error_rate == pytest.approx(2 / 3)
+
+        by_latency = await service.rank(SCOPE, RankingMetric.LATENCY)
+        assert by_latency[0].extension_id == "ext.slowpoke"
+        assert by_latency[0].latency_max_ms == 900.0
+
+        # Cost ranking: only speedy was metered — unmeasured sorts last, so
+        # silence never reads as free.
+        by_cost = await service.rank(SCOPE, RankingMetric.COST)
+        cost_order = [digest.extension_id for digest in by_cost]
+        assert cost_order[0] == "ext.speedy"
+        assert by_cost[0].cost_units_total == 10.0
+        assert cost_order.index("ext.silent") > cost_order.index("ext.speedy")
+        buggy_digest = next(digest for digest in by_cost if digest.extension_id == "ext.buggy")
+        assert buggy_digest.cost_units_total is None
+
+        # The taxonomy's provenance survives the ranking round trip.
+        errors = await service.recent_errors(SCOPE, "ext.buggy")
+        assert [error.error_id for error in errors] == ["err-buggy-1", "err-buggy-0"]
+        assert all(
+            error.extension_id == "ext.buggy" and error.version == "1.0.0" for error in errors
+        )
+
+        # SLO inputs derive from the recorded evidence — exhausted for the
+        # faulty contributor, absent (never perfect) without any evidence.
+        position = await service.slo(SCOPE, "ext.buggy", slo_target=0.5)
+        assert position is not None
+        assert position.window_observations == 3
+        assert position.observed_success_rate == pytest.approx(1 / 3)
+        assert position.budget_exhausted is True
+        assert await service.slo(SCOPE, "ext.unknown") is None
