@@ -19,8 +19,8 @@
       "id": "codeql",
       "file": ".github/workflows/codeql.yml",
       "disposition": "ACTIVE",
-      "triggers": ["pull_request", "push", "schedule"],
-      "rationale": "GitHub CodeQL static analysis over the Python code, on PRs, pushes to main and a weekly schedule."
+      "triggers": ["pull_request", "push", "schedule", "workflow_dispatch"],
+      "rationale": "GitHub CodeQL static analysis over Actions, JavaScript/TypeScript and Python, on main-targeted PRs, pushes to main, a weekly schedule and opt-in manual verification of a selected branch."
     },
     {
       "id": "compliance-evidence",
