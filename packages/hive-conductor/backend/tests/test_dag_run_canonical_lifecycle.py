@@ -138,6 +138,9 @@ class _SpyStore:
         self.calls["append_event"] += 1
         return await self._inner.append_event(run_id, **kwargs)
 
+    async def record_nonterminal_result(self, run_id: str, **kwargs: Any) -> Any:
+        return await self._inner.record_nonterminal_result(run_id, **kwargs)
+
     async def finish_run(self, run_id: str, **kwargs: Any) -> Any:
         self.calls["finish_run"] += 1
         return await self._inner.finish_run(run_id, **kwargs)

@@ -101,11 +101,11 @@ class LiveRunProjection:
             return None
 
     async def record_result(self, result: dict[str, Any]) -> None:
-        """Mirror the settled canonical outcome (start-if-needed + finish).
+        """Mirror a canonical result; only terminal statuses finish the row.
 
         Node events were already appended live; re-appending them here would
         duplicate every node in the SSE replay, so this records only what the
-        live path could not know: the terminal status and the bounded result.
+        live path could not know: the returned status and the bounded result.
         A Run that produced no live events (recovered/detached execution)
         still gets its full projection row here.
         """
@@ -113,15 +113,18 @@ class LiveRunProjection:
         if not run_id:
             return
         try:
+            from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
             from services.dag_run_store import get_dag_run_store
 
+            # Validate before even opening a row. Missing/unknown status is a
+            # logged projection failure, never an invented failed outcome.
+            status = RunStatus(str(result.get("status")))
             store = get_dag_run_store()
             await self._ensure_started(store, run_id)
-            await store.finish_run(
-                run_id,
-                status=str(result.get("status") or "failed"),
-                result=result,
-            )
+            if status in TERMINAL_RUN_STATUSES:
+                await store.finish_run(run_id, status=status.value, result=result)
+            else:
+                await store.record_nonterminal_result(run_id, status=status.value, result=result)
         except Exception:
             logger.warning(
                 "dag_run_live_projection_result_not_recorded run_id=%s dag_id=%s",
