@@ -673,3 +673,21 @@ async def test_pg_concurrent_reassignment_has_one_consistent_winner(backend) -> 
     assert row["payload"]["agent_id"] == row["agent_id"]
     assert len(history) == 1
     assert history[0]["payload"]["to_agent_id"] == row["agent_id"]
+
+async def test_pg_reassignment_rejects_stale_owner_without_partial_history(backend) -> None:
+    if not isinstance(backend, _PostgresBackend):
+        pytest.skip("PostgreSQL-only stale owner proof")
+    store = await backend.store()
+    goal = await _goal(backend)
+    await store.reassign_agent(
+        goal.goal_id, "agent-first", expected_revision=1, actor="operator"
+    )
+    with pytest.raises(GoalRevisionConflict):
+        await store.reassign_agent(
+            goal.goal_id, "agent-second", expected_revision=1, actor="operator"
+        )
+    current = await store.get_goal(goal.goal_id)
+    assert current is not None and current.agent_id == "agent-first"
+    history = await store.list_goal_transitions(goal.goal_id)
+    assert len(history) == 1
+    assert history[0].to_agent_id == "agent-first"
