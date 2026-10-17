@@ -1723,3 +1723,53 @@ pytest 79 passed; suite inventory ok).
 
 Verdict: writer handoff MERGE-READY (handoff only, never integration approval); the `#1845` integration
 hold stands; stack left unmerged; no inventory delta (stays +79). (Refs #1851)
+
+## Round-206 independent verifier + writer re-execution (job 9b611003, head c00faced0b75)
+
+Prior round ended BLOCKED/provider-timeout with 5/5 green driver checks but no report; every
+load-bearing fact below was re-derived firsthand at the exact assigned head, no earlier claim assumed:
+
+- Driver logs 5/5 green (`uv sync`, `ruff check .`, `ruff format --check .` 3299 files,
+  focused pytest 79 passed, `check-suite-inventory --suite packages/maistro-core/tests` ok 16439).
+- Live re-execution greens: focused pytest 79/79 rc=0; focused ruff check rc=0 and format rc=0;
+  `mypy packages/maistro-core/src/maistro/runs/admission_identity.py` rc=0 (Success); full
+  `check-suite-inventory.py` rc=0 (17 suites, 31323 == 31323, 0 duplicate evidence).
+- Contract re-proven by AST walk + live import introspection: 18 ClassDefs = 17 dataclasses all
+  `frozen=True, slots=True` + `AdmissionAssessment(StrEnum)`; the six lowercase member/value pairs
+  exact and in order; `__all__` 21 unique, set-exact to the issue's 21 names; `owns()` the pure
+  3-term scope/generation/owner conjunction; `admitted` exactly `binding is not None` x2;
+  `field(repr=False)` x2; `init=False` format versions x2; 0 suppressions; no `__bool__` on the
+  empty variants. All 12 issue-named tests defined exactly once (19 functions, 79 collected), with
+  substantive assertions (duplicate keys at nesting depth, NaN/Infinity/overflow, subclass-type
+  rejection, fencing quadrants including generation==owner coincidence, repr field-omission).
+- Scope invariants hold at this head: branch diff vs base ab8b3737 = exactly the 4 in-scope files
+  (+2910/-0); 0 production importers of `admission_identity`; no `maistro.runs.__init__` export;
+  `quality/` numstat exactly +5/-0 on `vulture-baseline.json` (rows = the 5 scan identities);
+  `ratchet-authorizations.json` / `reachability-baseline.json` 0-line diffs; #1841 anchors intact
+  and untouched (`store_boundary.py:56`, `store.py:936/:1340` guards, `model.py` field+validation).
+- Base motion re-resolved by fresh fetch: `refs/remotes/origin/develop` = 07fac4abd (+2 over base:
+  cancellation-codec test 07fac4abd, ontology docstring 369ab9add); neither touches `quality/` nor
+  imports `admission_identity`; live `gh pr view 1936` reports MERGEABLE at this head -> no develop
+  sync conflict and none warranted; 0 `admission_identity` grants in develop's
+  `ratchet-authorizations.json` -> two-merge wall stands.
+- CI-exact gates re-run with true exit codes: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (RATCHET_BASE_REV=refs/remotes/origin/develop)
+  rc=1, banking GREEN (1322 -> 1327 ledger == scan, unclassified 0, never_allowlist 0),
+  authorization RED on exactly the 5 enum identities `:515-520` ("land a reviewed grant first");
+  `check-ratchet-provenance.py` rc=1 solely via the reachability leg; `check-reachability.py` rc=1,
+  exactly 1 NEWLY UNREACHABLE `maistro.runs.admission_identity` (170/1402);
+  `check-reachability-dispositions.py` / `check-promotion-surface.py` / `check-shipped-surface-truth.py`
+  all rc=0. CI test trio reproduced: 3 failed / 36 passed, every failure naming the module
+  (`::error title=New unreachable modules::maistro.runs.admission_identity`); Coverage producer root
+  cause re-read at `quality.yml:713-714` (`pytest tests/` contains the trio).
+- Disposition unchanged: no issue-legal in-leaf change greens the four red gates (the identities are
+  the issue's fixed enum contract; row removal regresses banking; a branch-side grant is inert by the
+  two-merge rule and issue-prohibited; caller/export/baseline-entry/suppression all issue-prohibited).
+  Resolving changes remain the `#1845` integration head and owner-landed develop grants, both outside
+  this leaf. Live closure-keyword audit: PR #1936 body has 0 keyword+reference hits ("Refs #1851"
+  only); branch note-commit messages carry prose "fixes" mentions that are inert until default-branch
+  landing — squash-message scrub recorded for the integration merge. The issue's baseline-reconciliation
+  checkbox remains open pending an owner decision outside this leaf; banked rows authorize nothing.
+
+Verdict: writer handoff MERGE-READY (handoff only, never integration approval); the `#1845` integration
+hold stands; stack left unmerged; no inventory delta (stays +79). (Refs #1851)
