@@ -1049,3 +1049,81 @@ round: every criterion re-passed and every red gate decomposes to the two
 already-documented structural facts (unwired leaf; banked-but-unauthorized
 retained enum identities). Conclusion unchanged; stack left unmerged; writer
 handoff only. (Refs #1851)
+
+## Round-197 repair round at the CI-evaluated head (job 601d1a98623e)
+
+Dispatched to repair the four red merge-queue gates at `b4205b9839db` (Quality
+gate Pillars 1–4/7/8, exact-debt-ledger, test, Coverage gate) after the prior
+round requested attention as BLOCKED. Working tree clean at the assigned head;
+every load-bearing claim re-derived firsthand, none taken on trust:
+
+- CI check-run listing for this exact head re-read from dispatch evidence:
+  exactly four failures (the four gates above); every other check success or a
+  service-skipped leg. No additional failing gate exists.
+- CI-exact `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → rc=1 on authorization only. Banking GREEN:
+  1,327 findings, 0 unclassified, 0 never_allowlist. Authorization RED on
+  exactly the five enum identities `admission_identity.py:515-520` vs trusted
+  base `ab8b3737`; the gate's own output states the remedy: "land a reviewed
+  grant first".
+- Ledger integrity proven as a multiset with a row-level Counter diff vs base:
+  1,322 base rows are a strict subset of the 1,327 head rows, 0 rows lost, and
+  the delta is exactly the five scan-identical enum rows. `git diff --numstat`
+  vs base over `quality/` is +5/-0 on `vulture-baseline.json` and 0 lines on
+  `ratchet-authorizations.json`, `reachability-baseline.json`, and
+  `promotion-baseline.json` — no self-grant, no self-baseline, no waiver.
+- `git fetch origin` executed: `refs/remotes/origin/develop` and the develop
+  tip both remain `ab8b3737` (the assigned base) — no grant has landed on
+  develop, so the two-merge wall stands and there is no sync conflict to
+  resolve and nothing to merge.
+- `check-reachability.py` → rc=1, exactly one NEWLY UNREACHABLE module:
+  `maistro.runs.admission_identity` (170/1402 total unreachable).
+- Test gate reproduced: `pytest tests/test_reachability_baseline_identity.py
+  tests/test_check_reachability.py -q` → 3 failed / 36 passed, each failure
+  printing `::error title=New unreachable modules::maistro.runs.admission_identity`.
+- Coverage gate root cause re-confirmed at `.github/workflows/quality.yml:713-714`:
+  the aggregate producer runs `coverage run … -m pytest tests/ …`, so it dies
+  on the same three reachability tests; no independent coverage defect.
+- Issue-mandated integration-head commands re-run: dispositions rc=0,
+  promotion rc=0.
+- Green leaf evidence re-executed: ruff check clean, ruff format --check clean,
+  focused pytest 79/79 (0.96s), full `check-suite-inventory.py` rc=0 (17
+  suites, 31,323 collected == unique, 0 dupes), focused mypy Success.
+- Restored contract anchors re-read at this head: `AdmissionAssessment` at
+  `admission_identity.py:508-520` with the six verbatim lowercase pairs;
+  contract test asserts the pairs in required order
+  (`test_root_admission_identity.py:153-158`); `__all__` = 21 names.
+  Branch diff vs base remains exactly the four in-scope files (+2,236/-0).
+
+Reconciliation of the issue checklist item (five retained baseline entries vs
+the published no-baseline-additions rule), recorded with this round's owner
+instruction as authority: the CI-repair lane brief for this round explicitly
+permits and requires amending `quality/vulture-baseline.json` for reviewed
+retained identities in exact-debt-ledger repair rounds. The five rows are the
+scan-exact classification of the issue-mandated fixed `AdmissionAssessment`
+contract (removing the enum would violate the restored contract; suppressing or
+renaming it is issue-prohibited). The amendment greens nothing: the
+debt-ledger gate stays red on the authorization leg against the trusted base,
+and no other gate moves — so the rows are banking, not a waiver, mask, or
+self-grant. No fix this round eliminated any identity, so no row removal is
+warranted; removing rows would regress banking to red.
+
+Disposition of the four red gates — no issue-legal in-leaf fix exists:
+
+1. exact-debt-ledger: authorization must come from the merge base; landing the
+   grant requires an owner commit on develop (a GitHub mutation this lane
+   prohibits). Banking side is already in its correct reviewed state.
+2. test + reachability: the only fixes are a `reachability-baseline.json`
+   entry ("baseline additions" — explicitly prohibited by this issue) or the
+   #1845 real-consumer integration wiring (outside this leaf by the issue's
+   staging constraint).
+3. Coverage gate: same single root cause as (2) via the `quality.yml` producer.
+4. Quality gate (Pillars): composite over the vulture/reachability provenance
+   legs already dispositioned in (1)–(3).
+
+Per the issue's own instruction — "If that integration is unavailable, report
+implementation/test readiness plus the explicit merge blocker and leave the
+stack unmerged" — this round records implementation/test readiness, the
+explicit four-gate merge blocker, and leaves the stack unmerged. No code,
+ledger, or inventory change this round (delta stays +79). Writer handoff only,
+never integration approval. (Refs #1851)
