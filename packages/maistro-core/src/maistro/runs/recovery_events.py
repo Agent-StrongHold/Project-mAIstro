@@ -86,7 +86,12 @@ class CanonicalEventSink(Protocol):
 
 
 class CanonicalEventStoreSink:
-    """Adapt the selected canonical EventStore to the recovery sink protocol."""
+    """M1 product-local projection: Event
+
+    Adapt the already-owned canonical EventStore to the recovery sink
+    protocol. This adapter defines no Event semantics of its own: identity,
+    ordering, and persistence remain exclusively with ``maistro.events``.
+    """
 
     def __init__(self, store: EventStore) -> None:
         self.store = store

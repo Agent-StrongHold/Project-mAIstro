@@ -80,7 +80,9 @@ async def _pg_pool():
     await ensure_event_schema(pool)
     # Truncate rather than drop: the schema is created once and each test needs
     # empty tables, without racing CREATE TABLE IF NOT EXISTS across the pool.
-    await pool.execute("TRUNCATE handler_invocations, trigger_definitions, event_log")
+    await pool.execute(
+        "TRUNCATE handler_invocations, trigger_definitions, event_log, event_replay_cursors"
+    )
     return pool
 
 
@@ -191,6 +193,55 @@ class TestEventLog:
         await event_log.append("b")
         found = await event_log.query(since=first.created_at, until=first.created_at)
         assert [e.id for e in found] == [first.id]
+
+
+class TestReplayCursor:
+    """Durable replay acknowledgements (#836/#1163) on every backend.
+
+    A cursor that lives only in process memory cannot survive the restart it
+    exists for, so the acknowledgement is a store concern — asserted here for
+    the PostgreSQL leg exactly as for memory and SQLite.
+    """
+
+    async def test_acknowledgement_is_monotonic(self, event_log):
+        assert await event_log.get_replay_cursor("reactor") == 0
+        assert await event_log.acknowledge_replay("reactor", 4) == 4
+        assert await event_log.acknowledge_replay("reactor", 2) == 4
+        assert await event_log.get_replay_cursor("reactor") == 4
+
+    async def test_negative_acknowledgement_is_rejected(self, event_log):
+        with pytest.raises(ValueError, match="non-negative"):
+            await event_log.acknowledge_replay("reactor", -1)
+
+
+async def test_pg_replay_cursor_survives_a_pool_restart():
+    """The PostgreSQL cursor is durable, not pool-lifetime state.
+
+    Mirrors the SQLite restart test in `test_durable_log.py`: a new pool (a
+    restarted worker) must resume from the acknowledged position instead of
+    replaying settled events as if they were new.
+    """
+    import asyncpg
+
+    from maistro.events.pg_stores import PgEventLog, ensure_event_schema
+
+    url = _require_postgres()
+    first_pool = await asyncpg.create_pool(url, min_size=1, max_size=2)
+    try:
+        await ensure_event_schema(first_pool)
+        await first_pool.execute("TRUNCATE event_log, event_replay_cursors")
+        first = PgEventLog(first_pool)
+        event = await first.append("task.created")
+        assert await first.acknowledge_replay("reactor", event.id) == event.id
+    finally:
+        await first_pool.close()
+
+    second_pool = await asyncpg.create_pool(url, min_size=1, max_size=2)
+    try:
+        restarted = PgEventLog(second_pool)
+        assert await restarted.get_replay_cursor("reactor") == event.id
+    finally:
+        await second_pool.close()
 
 
 class TestTriggerStore:
