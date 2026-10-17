@@ -117,6 +117,62 @@ def test_reviewed_resolution_closes_missing_metadata(gate, tmp_path):
     assert inventory["surfaces"][0]["components"][0]["license_status"] == "reviewed"
 
 
+def test_more_specific_resolution_overrides_class_wildcard(gate, tmp_path):
+    """A targeted copyleft record must beat a class-level resolution.
+
+    The real policy resolves binary-embedded crate/module trees with a broad
+    ``pkg:cargo/*``-style class record while calling out known MPL-2.0 members
+    by narrower patterns; the narrow record must win so copyleft stays
+    visible instead of being flattened into the class NOASSERTION.
+    """
+    policy = _policy(tmp_path)
+    policy["reviewed_resolutions"] = [
+        {
+            "identity": "pkg:pypi/example@*",
+            "license": "NOASSERTION",
+            "reason": "Class-level resolution for a binary-embedded tree",
+            "owner": "legal@example.test",
+            "reviewed_on": "2026-01-01",
+        },
+        {
+            "identity": "pkg:pypi/example@1.0",
+            "license": "MPL-2.0",
+            "reason": "Known MPL-2.0 member of that tree",
+            "owner": "legal@example.test",
+            "reviewed_on": "2026-01-01",
+        },
+    ]
+    inventory, unknown = _run(gate, tmp_path, policy, _sbom(tmp_path, licenses=None))
+    assert unknown == []
+    component = inventory["surfaces"][0]["components"][0]
+    assert component["license_status"] == "reviewed"
+    assert component["licenses"] == ["MPL-2.0"]
+    assert component["legal_class"] == "copyleft"
+
+
+def test_equally_specific_resolutions_remain_ambiguous(gate, tmp_path):
+    """Overlapping patterns of equal specificity are still a hard error."""
+    policy = _policy(tmp_path)
+    policy["reviewed_resolutions"] = [
+        {
+            "identity": "pkg:pypi/example@1*",
+            "license": "MIT",
+            "reason": "one",
+            "owner": "legal@example.test",
+            "reviewed_on": "2026-01-01",
+        },
+        {
+            "identity": "pkg:pypi/example@*0",
+            "license": "Apache-2.0",
+            "reason": "two",
+            "owner": "legal@example.test",
+            "reviewed_on": "2026-01-01",
+        },
+    ]
+    with pytest.raises(gate.InventoryError, match="equally specific"):
+        _run(gate, tmp_path, policy, _sbom(tmp_path, licenses=None))
+
+
 def test_copyleft_is_classified_not_assumed_compatible(gate, tmp_path):
     policy = _policy(tmp_path)
     inventory, unknown = _run(

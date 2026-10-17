@@ -157,6 +157,17 @@ def _check_policy(policy: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return surfaces
 
 
+def _pattern_specificity(pattern: str) -> int:
+    """Literal weight of a fnmatch pattern: characters that must match as-is.
+
+    A resolution whose pattern is strictly more literal than another (for
+    example ``pkg:cargo/zbus@*`` over ``pkg:cargo/*``) overrides the broader
+    class resolution, so a known copyleft crate can be surfaced exactly where
+    a class-level resolution covers the rest of a binary-embedded tree.
+    """
+    return sum(1 for ch in pattern if ch not in "*?[")
+
+
 def _resolution(identity: str, resolutions: list[Any]) -> dict[str, Any] | None:
     matches: list[dict[str, Any]] = []
     for item in resolutions:
@@ -165,11 +176,13 @@ def _resolution(identity: str, resolutions: list[Any]) -> dict[str, Any] | None:
         pattern = str(item.get("identity", ""))
         if pattern and fnmatch.fnmatchcase(identity, pattern):
             matches.append(item)
-    if len(matches) > 1:
-        raise InventoryError(f"multiple reviewed resolutions match {identity!r}")
     if not matches:
         return None
-    item = matches[0]
+    best = max(_pattern_specificity(str(item.get("identity", ""))) for item in matches)
+    top = [item for item in matches if _pattern_specificity(str(item.get("identity", ""))) == best]
+    if len(top) > 1:
+        raise InventoryError(f"multiple equally specific reviewed resolutions match {identity!r}")
+    item = top[0]
     for field in ("license", "reason", "owner", "reviewed_on"):
         if not str(item.get(field, "")).strip():
             raise InventoryError(f"reviewed resolution for {identity!r} needs {field}")
