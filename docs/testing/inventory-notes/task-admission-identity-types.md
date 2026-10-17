@@ -1127,3 +1127,69 @@ stack unmerged" — this round records implementation/test readiness, the
 explicit four-gate merge blocker, and leaves the stack unmerged. No code,
 ledger, or inventory change this round (delta stays +79). Writer handoff only,
 never integration approval. (Refs #1851)
+
+## Round-198 verification + handoff at the assigned repair head (job 0e3c428f1982)
+
+Prior job `7578ccd6cd7d` completed all five deterministic checks rc=0 but died
+on a provider timeout before recording a verdict; this round re-derived every
+load-bearing fact itself at `31c0cea9d23b` (clean tree). Nothing was taken on
+trust:
+
+- Driver checks re-read from this job's logs: `uv sync --locked --extra dev`
+  ok, `ruff check .` "All checks passed!", `ruff format --check .` clean
+  (3,299 files), focused pytest **79 passed**, `check-suite-inventory.py
+  --suite packages/maistro-core/tests` ok (16,439 collected == recorded).
+- `git fetch origin`: `refs/remotes/origin/develop` still `ab8b3737fa64` (0
+  ahead / 321 behind) — no grant has landed on develop; the two-merge wall
+  stands and there is no sync conflict to resolve.
+- CI-exact vulture gate re-run: rc=1 on the authorization leg only. Banking
+  GREEN (1,327 findings, `unclassified: 0`, `never_allowlist: 0`); the only
+  unauthorized debt is the five enum identities at `admission_identity.py:515-520`.
+- Two-merge mechanics re-verified at the source: `scripts/ratchet_provenance.py:478-518`
+  (`load_authorizations`) reads grants via `resolve_baseline(path, base=base)`,
+  and its docstring states "a new grant does not take effect in the change that
+  introduces it ... two merges". A branch-side grant is inert by construction;
+  landing one is an owner develop commit (GitHub mutation, prohibited here).
+- Ledger integrity: `git diff --numstat origin/develop HEAD -- quality/` is
+  exactly `+5/-0 quality/vulture-baseline.json`; the five rows are at
+  `quality/vulture-baseline.json:283-287`. 0-line diffs on
+  `ratchet-authorizations.json` / `reachability-baseline.json`.
+- `check-reachability.py` rc=1 with exactly one NEWLY UNREACHABLE module:
+  `maistro.runs.admission_identity` (170/1,402 total unreachable).
+- Test gate reproduced: `pytest tests/test_reachability_baseline_identity.py
+  tests/test_reachability_scanner.py tests/test_check_reachability.py -q` →
+  **3 failed / 41 passed**, each failure asserting the committed baseline vs a
+  tree containing `maistro.runs.admission_identity`.
+- Coverage root cause re-read at `.github/workflows/quality.yml:713-714`: the
+  aggregate producer runs `coverage run … -m pytest tests/ …`, which contains
+  the same three files — one root cause, no independent coverage defect.
+- Focused mypy → Success; `check-reachability-dispositions.py` → rc=0;
+  `check-promotion-surface.py` → rc=0.
+- Restored contract re-read: `AdmissionAssessment` at
+  `admission_identity.py:508-520` defines exactly the six required lowercase
+  pairs, and `test_root_admission_identity.py:153-161` asserts the pairs in the
+  required order.
+- Scope audit: branch diff vs base is exactly the four in-scope surfaces
+  (note 1,129 / module 520 / test 660 / vulture-baseline +5); zero production
+  importers of the module; no `maistro.runs.__init__` export.
+
+Checklist-item reconciliation (issue body, 2026-10-16 22:04 UTC section):
+recorded with this round's lane brief as the applicable owner authority — the
+CI-repair lane instruction explicitly permits and requires amending
+`quality/vulture-baseline.json` for reviewed retained identities in
+exact-debt-ledger rounds. The five banked rows are the scan-exact
+classification of the issue's own fixed six-member `AdmissionAssessment`
+contract; they bank debt without waiving it (the authorization leg stays red,
+nothing else moves), so they are not a self-grant, mask, or approval. No fix
+eliminated an identity, so no row removal is warranted; issue comment history
+(993 comments, all automated progress markers) contains no superseding owner
+ruling.
+
+Verdict: all leaf acceptance criteria re-proven at this exact head; the four
+red hosted gates (exact-debt-ledger, Quality, test, Coverage) decompose to the
+two documented structural facts — the intentionally unwired leaf and the
+banked-but-unauthorized retained enum identities — whose only fixes are the
+#1845 integration head and owner-landed develop grants, both outside this
+leaf. Stack left unmerged; no code, ledger, or inventory change this round
+(delta stays +79). Writer handoff only, never integration approval. (Refs
+#1851)
