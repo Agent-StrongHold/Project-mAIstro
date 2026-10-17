@@ -364,3 +364,24 @@ The existing five-row baseline delta predates this verification and remains an
 explicit scope-reconciliation/parent-integration blocker, not acceptance of a
 standalone merge. This note records the observed state only; it does not
 supply trusted-base authorization.
+
+## CI-repair result at assigned head (`6ed9d7d6d915`)
+
+The required CI-argv Vulture command was re-run against the assigned trusted
+base `ac7370141e8e61bd6f352bca35ed0b505104aadb`. It exits **1**: the candidate
+ledger precisely banks all 1,327 scan findings, but the trusted base contains
+1,322 and authorizes none of the five retained `AdmissionAssessment` members
+at `admission_identity.py:515-520` (`MISMATCH`, `REPLAYED`, `TAKEOVER`,
+`REPLACE_EXPIRED`, and `LEGACY_UNRESOLVED`). The repair-round ledger amendment
+is already present; adding it again cannot satisfy the trusted-base
+authorization requirement, and removing it would fail candidate bookkeeping.
+
+Focused contract validation is green at this head: 79 tests pass, focused Ruff
+check/format and mypy pass, and `check-suite-inventory.py --suite
+packages/maistro-core/tests` records 16,439 node IDs (the existing `+79`
+delta is unchanged). `check-reachability.py` and
+`check-ratchet-provenance.py` remain red only because this issue expressly
+leaves `maistro.runs.admission_identity` unwired. The required real consumer
+and trusted-base authorization must land outside this inactive leaf; no
+additional source, suppression, grant, fake caller, or ledger edit is a
+valid repair here.
