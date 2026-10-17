@@ -16,10 +16,10 @@ production seams. The load-bearing properties:
   plugin lying about its identity is recorded FAILED with nothing active);
 * the lineage stays honest about what this base cannot prove yet (the #954
   post-install restart-durability boundary note is present, not hidden);
-* the #954 post-install lifecycle is covered by its dedicated suite
-  (test_post_install_lifecycle.py); this proof pins the record-level
-  properties its durable siblings must preserve (append-only trails, audited
-  version displacement, queryable history after deactivation).
+* the #954 post-install lifecycle (disable/resume/rollback/remove) is
+  covered by its dedicated suite (test_post_install_lifecycle.py) and now
+  driven end to end by the proof's ``disable-rollback-remove`` stage against
+  the same service seam, closing the last epic acceptance link in-tree.
 """
 
 from __future__ import annotations
@@ -53,6 +53,7 @@ EXPECTED_STAGES = (
     "update-fence",
     "canonical-execution",
     "catalog-integrity",
+    "disable-rollback-remove",
     "durable-restart",
     "canonical-truth-boundary",
 )
@@ -347,6 +348,74 @@ class TestPostInstallHistoryTruth:
             trail = await proof.store.transitions_for(record.install_id)
             assert trail, f"every record keeps its audit trail ({record.install_id})"
             assert trail[-1].to_state is record.state
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.scope("integration")
+class TestPostInstallLifecycle:
+    """Epic #948: the #954 operator verbs, driven on the service seam."""
+
+    async def test_disable_rollback_remove_stage_proves(self, proof_module, tmp_path: Path) -> None:
+        report = await _run_proof(proof_module, tmp_path / "scratch")
+        stage = next(s for s in report["stages"] if s["name"] == "disable-rollback-remove")
+        assert stage["ok"]
+        check_ids = {c["id"] for c in stage["checks"]}
+        assert {
+            "disable-stops-new-use-structurally",
+            "disabled-record-keeps-grant-and-trail",
+            "resume-recrosses-the-loader-seam",
+            "rollback-restores-the-superseded-version",
+            "rollback-narrows-authority-truthfully",
+            "rollback-cannot-smuggle-broader-authority",
+            "remove-uninstalls-one-record-terminal",
+            "removal-preserves-historical-evidence",
+            "remove-is-idempotent",
+        } <= check_ids
+        post_install = stage["evidence"]["post_install"]
+        assert post_install["rolled_back_to"]["version"] == "1.1.0"
+        assert post_install["removed"]["version"] == "2.0.0"
+        assert post_install["removed"]["terminal"] is True
+
+    async def test_removed_record_keeps_evidence_and_grant_narrowed(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        """Re-derive the end state from the store, not the stage's own claims.
+
+        Removal is terminal yet evidence-preserving (digest, frozen grant,
+        audited trail), rollback left the narrower 1.1.0 active under an
+        empty grant, and the rolled-back artifact's reach for the superseded
+        grant is an observed denial.
+        """
+        proof = proof_module.LifecycleProof(tmp_path / "scratch")
+        report = await proof.run()
+        removed = [
+            record
+            for record in await proof.store.records_in_state(ExtensionState.REMOVED)
+            if record.extension_id == "acme.notary"
+        ]
+        assert len(removed) == 1
+        record = removed[0]
+        assert record.version == "2.0.0"
+        assert record.artifact_sha256 == proof_module.sha256_hex(
+            proof.artifacts["acme.notary@2.0.0"]
+        )
+        assert record.granted_permissions == (proof_module.STORAGE_CAPABILITY,)
+        trail = await proof.store.transitions_for(record.install_id)
+        assert trail[-1].to_state is ExtensionState.REMOVED
+        assert "hygiene" in trail[-1].reason
+
+        active = await proof.service.active(proof.scope, "acme.notary")
+        assert active is not None
+        assert active.version == "1.1.0"
+        assert active.granted_permissions == ()
+
+        denials = [
+            o
+            for o in report["invocations"]
+            if o["outcome"] == "denied:undeclared-capability"
+            and o["extension"]["version"] == "1.1.0"
+        ]
+        assert denials, "the rolled-back 1.1.0 probe must be an observed denial"
 
 
 @pytest.mark.contract("boundary")

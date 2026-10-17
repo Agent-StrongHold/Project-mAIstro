@@ -3,10 +3,10 @@
 
 One script runs the whole external extension lifecycle — discover → resolve →
 inspect → authorize → install → invoke → observe → update → reauthorization
-fence → restart durability — against the platform's real production seams, and
-emits the evidence as a machine-readable ``lineage.json`` plus a
-human-readable ``lineage.md`` into an output directory. Exit 0 iff every stage
-check passed.
+fence → disable/rollback/remove → restart durability — against the platform's
+real production seams, and emits the evidence as a machine-readable
+``lineage.json`` plus a human-readable ``lineage.md`` into an output
+directory. Exit 0 iff every stage check passed.
 
 Epic-level stages (#948): beyond the #981 lifecycle, the proof closes the two
 epic acceptance links no sibling lane owned alone —
@@ -22,6 +22,15 @@ epic acceptance links no sibling lane owned alone —
   the governed ``Capability → Provider → Binding → Invocation`` seam, so the
   one public lineage documents every canonical object link from catalog
   entry through executed Run/Invocation.
+
+Post-install lifecycle (#954, landed): the ``disable-rollback-remove``
+stage drives the four operator verbs on the production service seam —
+disable clears the active pointer structurally, resume re-crosses the
+loader seam with the same bound artifact, rollback restores a superseded
+version and truthfully narrows authority back (and cannot smuggle broader
+frozen authority), and removal is terminal for authority while preserving
+the record, its grant, digests, and full audited trail as historical
+evidence.
 
 What "no source-tree modification / editable-install bypass" means here,
 mechanically:
@@ -49,17 +58,15 @@ stores record internally (the SQLite registry's ``installed_at``) are marked
 as such in the lineage and excluded from the deterministic core digest.
 
 Honesty boundary (stated, not hidden): the post-install lifecycle surface
-(pin/upgrade/rollback/disable/remove) is #954's, and at the proof's base
-commit the durable durable operations did not exist; the proof pins every
-property they must preserve — append-only records, queryable history after
-deactivation, denial leaves the prior version active — and the lineage marks
-those stages accordingly. Since #954's semantics landed (superseded
-retirement, audited version displacement), this proof asserts the retired
-record's trail grows by exactly the audited retirement event rather than
-staying byte-frozen. Canonical Goal/Run truth is likewise untouched by
-construction: the proof asserts the extension subsystem imports nothing from
-the canonical run/goal trees, so no extension status path exists that could
-override it.
+(#954) has landed, and this proof drives disable/resume/rollback/remove on
+the service seam; the one boundary that remains is activation-pointer
+durability across a process restart (the B2 activation store is
+process-lifetime by design), which the ``durable-restart`` stage's note
+marks. The proof asserts the retired/superseded record's trail grows by
+exactly the audited retirement event rather than staying byte-frozen.
+Canonical Goal/Run truth is likewise untouched by construction: the proof
+asserts the extension subsystem imports nothing from the canonical
+run/goal trees, so no extension status path exists that could override it.
 
 Usage::
 
@@ -105,6 +112,7 @@ from maistro.extensions import (
     ExtensionScope,
     InvalidTransition,
     LoadedExtension,
+    RollbackRefused,
     UnknownInstall,
     resolve_lock,
 )
@@ -213,13 +221,30 @@ HANDLERS = {"greet": greet, "probe_undeclared": probe_undeclared}
 
 
 def _notary_source(version: str, permissions: tuple[str, ...]) -> str:
-    """The notary plugin source; 2.0.0 fences its work behind the grant."""
+    """The notary plugin source; 2.0.0 fences its work behind the grant.
+
+    The zero-authority 1.x versions also expose ``probe_undeclared`` — the
+    same deliberate reach for storage authority the greeter artifact has —
+    so a rollback to 1.x can prove the narrowed grant still refuses what
+    the superseded version had been granted.
+    """
     if permissions:
         capability_line = f'    context.capability("{permissions[0]}")  # refuses unless granted'
         docstring_suffix = ", only after the host confirms the storage grant:"
+        probe_defs = ""
+        handlers = '{"seal": seal}'
     else:
         capability_line = "    del context  # zero-authority version: the context is unused"
         docstring_suffix = " (pure; no capability needed):"
+        probe_defs = '''
+
+
+def probe_undeclared(context):
+    """Deliberately reach for authority this manifest never declared."""
+    context.capability("workspace.storage.write")
+    return "unreachable"
+'''
+        handlers = '{"seal": seal, "probe_undeclared": probe_undeclared}'
     source = f'''"""acme.notary {version} entrypoint (proof artifact)."""
 
 import hashlib
@@ -237,9 +262,8 @@ def seal(context, text):
     """Return the sha256 seal of ``text``{docstring_suffix}"""
 {capability_line}
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-HANDLERS = {{"seal": seal}}
+{probe_defs}
+HANDLERS = {handlers}
 
 
 class NotaryLifecycle:
@@ -1592,6 +1616,196 @@ class LifecycleProof:
         stage.evidence["active_version"] = active.version
         return stage
 
+    async def stage_disable_rollback_remove(self) -> Stage:
+        """The #954 post-install lifecycle: disable → resume → rollback → remove.
+
+        Drives the four operator verbs on the production service seam, in
+        order, on the extension the run has been about: disabling stops new
+        use structurally (the active pointer is cleared); resume re-crosses
+        the loader seam with the same bound artifact; rollback restores the
+        superseded 1.1.0 and truthfully narrows authority back (the storage
+        handler is refused again); a rollback that would smuggle broader
+        frozen authority back is refused; removal is terminal for authority
+        yet preserves the record, its grant, digests, and full trail as
+        historical evidence.
+        """
+        stage = self._stage("disable-rollback-remove")
+        active = await self.service.active(self.scope, "acme.notary")
+        assert active is not None and active.state is ExtensionState.ACTIVE
+        removal_candidate = active  # the 2.0.0 record this stage will retire
+
+        disabled = await self.service.disable(
+            self.scope, "acme.notary", actor=OPERATOR, reason="quarter-end audit hold"
+        )
+        stage.check(
+            "disable-stops-new-use-structurally",
+            disabled.state is ExtensionState.DISABLED
+            and await self.service.active(self.scope, "acme.notary") is None,
+            "disable clears the active pointer as part of the transition, so "
+            "resolution answers nothing from that point on — stopping use is "
+            "structural, not a convention",
+        )
+        disabled_record = await self.service.get(disabled.install_id, scope=self.scope)
+        disabled_trail = await self.store.transitions_for(disabled.install_id)
+        stop = disabled_trail[-1]
+        stage.check(
+            "disabled-record-keeps-grant-and-trail",
+            disabled_record.state is ExtensionState.DISABLED
+            and disabled_record.granted_permissions == active.granted_permissions
+            and stop.to_state is ExtensionState.DISABLED
+            and stop.from_state is ExtensionState.ACTIVE
+            and stop.actor == OPERATOR
+            and "audit hold" in stop.reason,
+            "the disabled record keeps its frozen grant, manifest snapshot "
+            "and digest, and its trail ends with one audited "
+            "ACTIVE→DISABLED event carrying the accountable actor and reason",
+        )
+
+        resumed = await self.service.resume(
+            disabled.install_id,
+            actor=OPERATOR,
+            scope=self.scope,
+            payload=self.artifacts[NOTARY_2_0_0],
+            reason="audit hold lifted",
+        )
+        resumed_trail = await self.store.transitions_for(disabled.install_id)
+        stage.check(
+            "resume-recrosses-the-loader-seam",
+            resumed.state is ExtensionState.ACTIVE
+            and (await self.service.active(self.scope, "acme.notary")).install_id
+            == resumed.install_id
+            and [t.to_state for t in resumed_trail[-2:]]
+            == [ExtensionState.INSTALLING, ExtensionState.ACTIVE]
+            and resumed.artifact_sha256 == active.artifact_sha256,
+            "resume presents the same bound artifact, digests it, re-enters "
+            "through INSTALLING so the loader — the only code-execution "
+            "seam — runs again, and restores the pointer to the same record; "
+            "the grant is not re-decided",
+        )
+
+        rolled_back = await self.service.rollback(
+            self.scope,
+            "acme.notary",
+            actor=OPERATOR,
+            payload=self.artifacts[NOTARY_1_1_0],
+            reason="2.0.0 seal regression; restore last known good",
+        )
+        rollback_active = await self.service.active(self.scope, "acme.notary")
+        retired_trail = await self.store.transitions_for(removal_candidate.install_id)
+        stage.check(
+            "rollback-restores-the-superseded-version",
+            rolled_back.state is ExtensionState.ACTIVE
+            and rollback_active is not None
+            and rollback_active.version == "1.1.0"
+            and (await self.service.get(removal_candidate.install_id, scope=self.scope)).state
+            is ExtensionState.SUPERSEDED
+            and retired_trail[-1].to_state is ExtensionState.SUPERSEDED,
+            "rollback re-activates the superseded 1.1.0 through the loader "
+            "seam and retires 2.0.0 with one audited ACTIVE→SUPERSEDED "
+            "event — version displacement is recorded, never silent",
+        )
+        await self._load(rolled_back)
+        narrowed = self._invoke(rolled_back, "seal", "post-rollback-line")
+        fenced = self._invoke(rolled_back, "probe_undeclared")
+        stage.check(
+            "rollback-narrows-authority-truthfully",
+            rolled_back.granted_permissions == ()
+            and narrowed.outcome == "ok"
+            and narrowed.capability_requests == []
+            and fenced.outcome == "denied:undeclared-capability",
+            "the restored version's frozen grant is the narrower one it was "
+            "authorized with: after rollback the scope holds no storage "
+            "authority at all (the pure 1.1.0 handler runs with zero "
+            "capability grants), and reaching for the storage capability "
+            "anyway is still refused — rollback keeps no authority the "
+            "restored version never held",
+        )
+
+        smuggle_refused = False
+        try:
+            await self.service.rollback(
+                self.scope,
+                "acme.notary",
+                actor=OPERATOR,
+                payload=self.artifacts[NOTARY_2_0_0],
+                reason="attempt to restore the broader grant",
+            )
+        except RollbackRefused:
+            smuggle_refused = True
+        still_1_1_0 = await self.service.active(self.scope, "acme.notary")
+        rollback_trail = await self.store.transitions_for(rolled_back.install_id)
+        stage.check(
+            "rollback-cannot-smuggle-broader-authority",
+            smuggle_refused
+            and still_1_1_0 is not None
+            and still_1_1_0.version == "1.1.0"
+            and rollback_trail[-1].to_state is ExtensionState.ACTIVE,
+            "rolling back to a version whose frozen grant declares authority "
+            "the active grant lacks (2.0.0's storage capability) is refused "
+            "before anything is touched — broader authority needs a fresh "
+            "inspect → authorize pass, never a rollback side door",
+        )
+
+        removed = await self.service.remove(
+            removal_candidate.install_id,
+            actor=OPERATOR,
+            scope=self.scope,
+            reason="superseded twice; uninstall for hygiene",
+        )
+        removed_record = await self.service.get(removal_candidate.install_id, scope=self.scope)
+        removed_trail = await self.store.transitions_for(removal_candidate.install_id)
+        survivor = await self.service.active(self.scope, "acme.notary")
+        stage.check(
+            "remove-uninstalls-one-record-terminal",
+            removed.state is ExtensionState.REMOVED
+            and removed_record.state is ExtensionState.REMOVED
+            and survivor is not None
+            and survivor.version == "1.1.0",
+            "removal is terminal for the record's authority — there is no "
+            "edge out of REMOVED, and reuse requires a fresh inspect → "
+            "authorize → install cycle — while the active 1.1.0 keeps running "
+            "untouched",
+        )
+        stage.check(
+            "removal-preserves-historical-evidence",
+            removed_record.artifact_sha256 == removal_candidate.artifact_sha256
+            and removed_record.granted_permissions == removal_candidate.granted_permissions
+            and removed_record.manifest == removal_candidate.manifest
+            and removed_record.trust_evidence == removal_candidate.trust_evidence
+            and len(removed_trail) >= len(retired_trail) + 1
+            and removed_trail[-1].to_state is ExtensionState.REMOVED
+            and "hygiene" in removed_trail[-1].reason,
+            "the removed record keeps its digest, frozen grant, manifest "
+            "snapshot and full transition history ending in one audited "
+            "REMOVED event — removal never deletes historical evidence",
+        )
+        removed_again = await self.service.remove(
+            removal_candidate.install_id,
+            actor=OPERATOR,
+            scope=self.scope,
+            reason="idempotent retry",
+        )
+        trail_after_retry = await self.store.transitions_for(removal_candidate.install_id)
+        stage.check(
+            "remove-is-idempotent",
+            removed_again.state is ExtensionState.REMOVED
+            and len(trail_after_retry) == len(removed_trail),
+            "removing an already-removed record is an idempotent no-op that records nothing new",
+        )
+        stage.evidence["post_install"] = {
+            "disabled_then_resumed": {
+                "install_id": resumed.install_id,
+                "version": resumed.version,
+            },
+            "rolled_back_to": {"install_id": rolled_back.install_id, "version": "1.1.0"},
+            "removed": {
+                "install_id": removal_candidate.install_id,
+                "version": removal_candidate.version,
+                "terminal": True,
+            },
+        }
+        return stage
+
     async def stage_durable_restart(self) -> Stage:
         """Restart durability: the registry layer survives; locks reproduce."""
         stage = self._stage("durable-restart")
@@ -1676,11 +1890,11 @@ class LifecycleProof:
             "Activation-state restart durability (the B2 activation store) is "
             "in-memory by design at this base commit; the durable registry "
             "layer (B1 + SQLite) is what restart proves here. The #954 "
-            "post-install lifecycle (pin/upgrade/rollback/disable/remove) is "
-            "implemented on the service seam; this proof pins the properties "
-            "its durable siblings must preserve — append-only records, audited "
-            "version displacement, denial leaves the prior version active, "
-            "history queryable after deactivation."
+            "post-install lifecycle (disable/resume/rollback/remove) is "
+            "driven end to end on the service seam by the "
+            "disable-rollback-remove stage above; what remains unproven here "
+            "is only those activation pointers surviving a process restart — "
+            "the B2 activation store is process-lifetime by design."
         )
         return stage
 
@@ -1744,6 +1958,7 @@ class LifecycleProof:
         await self.stage_update_and_fence()
         await self.stage_canonical_execution()
         await self.stage_catalog_tamper_and_outage()
+        await self.stage_disable_rollback_remove()
         await self.stage_durable_restart()
         self.stage_canonical_truth_untouched()
         return self.report()

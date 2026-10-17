@@ -8,7 +8,7 @@ evidence as a machine-readable `lineage.json` and a per-run human-readable
 
 ```console
 uv run python scripts/extension_lifecycle_proof.py --out /tmp/lifecycle-lineage
-# PROVED: 12/12 stages, 52/52 checks
+# PROVED: 13/13 stages, 61/61 checks
 ```
 
 The suite that pins the harness is
@@ -47,6 +47,7 @@ platform behavior:
 | update-fence | authority delta + state machine | same-authority upgrade still needs an explicit decision; the broader-authority request names its delta; installing before re-authorization is fenced; denial is terminal and leaves the prior version active; grants never transfer across versions (`ArtifactMismatch`) |
 | canonical-execution | `AttemptExecutionService` + `PythonExecutionRuntime` + `ExtensionHost`/`GovernedEffectRoute`/`GovernedInvocationExecutionService` | the installed, re-authorized artifact executes inside a canonical `Graph → Run → NodeRun → Attempt`; its declared effect crosses the governed `Capability → Provider → Binding → Invocation` seam; the canonical Invocation row carries the Run → NodeRun → Attempt correlation; the event stream carries the extension provenance; one artifact digest links catalog entry → install record → executed code |
 | catalog-integrity | install records vs. snapshot digests | a tampered catalog is a different snapshot and cannot rewrite installed truth; a catalog outage blocks only discovery — installed extensions keep invoking and the audit trail stays queryable |
+| disable-rollback-remove | `ExtensionInstallService.disable`/`resume`/`rollback`/`remove` (#954) | disabling stops new use structurally (the active pointer is cleared) while the record keeps its frozen grant and audited trail; resume re-crosses the loader seam with the same bound artifact; rollback restores the superseded 1.1.0, truthfully narrows authority back to its frozen grant (the storage reach is denied again), and cannot smuggle broader frozen authority; removal is terminal for authority yet preserves the record, its digests, grant, and full trail as historical evidence |
 | durable-restart | `SqliteExtensionInstallStore` + `materialize_lock` | the lock alone reinstalls the exact pinned identities through real digest/signature verification; history, trust evidence, and catalog provenance survive restart; a clean registry rebuilt from the lock holds the identical identity set |
 | canonical-truth-boundary | (structural check) | no module under `maistro/extensions` imports `maistro.runs`, `maistro.goals`, or `maistro.graph` — extension status has no write path into canonical Goal/Run truth by construction |
 
@@ -55,13 +56,12 @@ platform behavior:
 The proof states its limits in the lineage itself (`Stage.note`), and this
 document repeats them:
 
-- **Rollback / disable / remove are not reachable at the base commit.** The
-  post-install lifecycle is issue **#954**'s surface (`TRANSITIONS` gives
-  `ACTIVE` no outgoing edges by design until it lands). What the proof pins
-  today are exactly the properties those operations must preserve when they
-  arrive: records are append-only, a denied upgrade leaves the prior
-  authorized version active, and history stays queryable after
-  deactivation. The lineage marks the boundary on `durable-restart`.
+- **Rollback / disable / remove are driven, not deferred.** The #954
+  post-install lifecycle landed, and the `disable-rollback-remove` stage
+  drives all four operator verbs on the production service seam. What
+  restart does **not** prove is those activation pointers surviving a
+  process restart — the B2 activation store is process-lifetime by design,
+  and the lineage marks that boundary on `durable-restart`.
 - **The private catalog file is proof-side data**, in a documented file
   format consumed through the production resolution layer. The catalog
   *service* (publisher metadata, search, serving) is the #979 module in
@@ -94,7 +94,7 @@ document repeats them:
 | operator inspects permissions/trust/version/dependencies before install | `inspect` (manifest-only evaluation, permission display from the immutable snapshot) + `distribution` (per-version detail with declared permissions and pinned digests, publisher metadata, search) |
 | provider, connector/tool, Agent/Graph or domain/UI families installed and invoked through canonical seams | connector/tool: `invoke-observe` + the governed tool seam; Agent/Graph: `canonical-execution` runs the installed artifact inside a canonical Attempt whose effect crosses the canonical Invocation seam; provider/UI-family routing beyond the tool seam remains with M9-D/M9-E (stated above, not claimed) |
 | update requiring broader authority triggers explicit re-authorization | `update-fence`: the delta names the new permission, install-before-decision is fenced, denial is terminal, grants never transfer across versions |
-| rollback/disable/remove truthful, historical evidence preserved | not reachable at this base — `ACTIVE` has no outgoing edges until #954 lands; the proof pins the properties those operations must preserve (append-only records, denial leaves the prior version active, history queryable) and the lineage marks the boundary on `durable-restart` |
+| rollback/disable/remove truthful, historical evidence preserved | `disable-rollback-remove`: disable clears the active pointer but keeps the frozen grant and audited trail; resume re-crosses the loader seam with the same bound artifact; rollback restores the superseded version and truthfully narrows authority (a rollback that would smuggle the broader frozen grant is refused); removal is terminal for authority, idempotent, and preserves the record's digest, grant, manifest snapshot, and full trail as historical evidence |
 | catalog outage does not break installed pinned extensions | `catalog-integrity`: tampered snapshot ≠ installed truth; with the catalog gone, discovery fails loudly while the installed extension keeps invoking and the audit trail stays queryable |
 | one public proof documents every canonical object/evidence link from catalog entry through executed Run/Invocation | this script + `lineage.json`/`lineage.md`: `distribution` anchors the catalog entry to its digests; `discover` pins the lock; `authorize-install` freezes the grant; `canonical-execution` proves one artifact digest links catalog entry → install record → code executed inside a canonical Run/Invocation, with attempt correlation on the Invocation row and extension provenance on the event stream |
 
@@ -106,7 +106,7 @@ document repeats them:
 | every operation retains canonical Workspace/caller/Run/Invocation and extension provenance | every transition carries actor/org/workspace/version/reason; every install record carries publisher, signature, digests, catalog URL + snapshot digest, trust evidence; every invocation observation carries caller, scope, install id, artifact digest, grant (`test_every_invocation_record_carries_canonical_provenance`) |
 | extension cannot bypass Warden/security/egress/tenant policy | authority flows only from the declared manifest through the frozen grant (`grant-frozen-to-snapshot`, `undeclared-capability-denied`); cross-Workspace access is refused at the service boundary (`cross-workspace-read-denied`, `cross-workspace-decision-denied`); the loader refuses path escapes and identity lies |
 | catalog/extension-specific statuses never override canonical Goal/Run truth | `canonical-truth-boundary` proves no import path from the extension subsystem into canonical run/goal truth; `tamper-cannot-rewrite-active-truth` proves catalog rewrites cannot rewrite installed truth |
-| upgrade/remove/restart behavior matches durable registry state | `update-fence` (upgrade/fence/denial semantics), `durable-restart` (registry state survives restart and reproduces from the lock); remove is #954's open surface — documented above, not claimed |
+| upgrade/remove/restart behavior matches durable registry state | `update-fence` (upgrade/fence/denial semantics), `disable-rollback-remove` (remove is terminal for authority, idempotent, and evidence-preserving), `durable-restart` (registry state survives restart and reproduces from the lock) |
 | one reproducible script/test + human-readable lineage document | this script + `test_lifecycle_proof.py` + the generated `lineage.md` + this document |
 
 ## Determinism
