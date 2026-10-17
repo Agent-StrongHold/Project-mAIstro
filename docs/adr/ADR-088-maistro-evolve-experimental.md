@@ -30,7 +30,7 @@ history:
 
 # ADR-088: maistro-evolve — experimental genome optimiser
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-30
 **Records the intended shape** of the maistro-evolve package while stating plainly that it is
 EXPERIMENTAL — no stability contract yet, and this ADR will be revised once it settles.
