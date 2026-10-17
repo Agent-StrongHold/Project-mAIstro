@@ -70,6 +70,14 @@ rotation does not reset that principal's quota or abuse history.
 * Every entry must parse as `principal:secret`; `sk-`-prefixed entries are
   secret-shaped and rejected as plain.
 * Empty principals (`":secret"`) and empty secrets (`"alice:"`) are rejected.
+* One credential resolves to exactly one principal and authority
+  ([#1095](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1095)):
+  the same secret under two entries — two principals, or the user list and
+  `ADMIN_API_KEYS` — is a collision, and the server refuses to start on it.
+  Which identity a bearer credential carries must never depend on the order
+  of the entries; if the startup gate is bypassed, the collided credential
+  authenticates nobody rather than the last entry's principal. The full
+  `principal:secret` entries on both sides keep working.
 * Key material is never a principal id, log label, metric label, or
   rate-limit bucket id — boot errors describe a bad entry by position and
   defect, never by content.
@@ -87,4 +95,6 @@ and event actor references are migrated as well; the mapping row preserves the
 historical `default -> conductor` identity fact. The migration is idempotent and runs under
 the entrypoint's PostgreSQL advisory migration lock, so a crashed process rolls
 back and two replicas converge before either serves requests. Mixed old/new
-rows are merged without dropping existing grants.
+rows are merged without dropping existing grants. `tests/migrations/
+test_legacy_principal_ownership_live.py` runs all three claims against a real
+PostgreSQL (`MAISTRO_TEST_DATABASE_URL`, wired into the `postgres` CI job).

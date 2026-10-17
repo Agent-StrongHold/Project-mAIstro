@@ -248,6 +248,14 @@ jobs:
       # different scenario from the one they were written for (#177).
       - name: The chain applies to an empty database, and reverses
         run: uv run pytest tests/migrations/test_migration_chain.py -v --tb=short
+      # #1095: the legacy-principal ownership merge claims losslessness and
+      # restart-reconcilability. Both are assertions about rows and
+      # transactions, so only a live server can answer them: the suite seeds
+      # installer-era `default` rows beside post-install `conductor` rows,
+      # SIGKILLs a migration blocked mid-transaction, and races two entrypoint
+      # replicas through the advisory lock.
+      - name: Legacy principal ownership migration is lossless and restart-safe
+        run: uv run pytest tests/migrations/test_legacy_principal_ownership_live.py -v --tb=short
       # The migration chain is itself under test here: it could not run to
       # completion against a clean database before this change.
       - name: Apply migrations

@@ -85,6 +85,52 @@ def invalid_api_key_entries(settings: Settings) -> list[str]:
     return problems
 
 
+def ambiguous_api_key_entries(settings: Settings) -> list[str]:
+    """Describe credentials that would authenticate as more than one identity.
+
+    A configured entry admits two bearer credentials: its bare secret and the
+    full ``principal:secret`` entry. Either can collide with another entry's
+    credential — the same secret under two principals, the same secret with
+    different authority in the two lists, or one principal's full entry being
+    another principal's bare secret. A collision must not be resolved by
+    configuration order, so it is configuration invalidity instead, described
+    without echoing key material (principal names and positions only).
+    """
+    # credential -> identity -> the entries that admit it under that identity
+    admissions: dict[str, dict[tuple[str, str], list[str]]] = {}
+    for label, entries in (
+        ("entry", settings.api_keys),
+        ("admin entry", settings.admin_api_keys),
+    ):
+        authority = "admin" if label == "admin entry" else "user"
+        for position, entry in enumerate(entries, start=1):
+            parsed = _parse_api_key_entry(entry)
+            if parsed is None:
+                continue
+            user_id, secret, _ = parsed
+            for credential in (secret, entry.strip()):
+                admissions.setdefault(credential, {}).setdefault((user_id, authority), []).append(
+                    f"{label} {position}"
+                )
+
+    problems: list[str] = []
+    for identities in admissions.values():
+        if len(identities) < 2:
+            continue
+        refs: list[str] = []
+        described: list[str] = []
+        for (user_id, authority), identity_refs in identities.items():
+            described.append(f"'{user_id}' ({authority})")
+            refs.extend(identity_refs)
+        problems.append(
+            " and ".join(refs)
+            + " admit one credential as "
+            + " and ".join(described)
+            + "; one credential must resolve to exactly one principal"
+        )
+    return problems
+
+
 def _configured_entries(settings: Settings) -> tuple[tuple[str, bool], ...]:
     """Return entries with authority sourced from configuration, not text."""
     return tuple((entry, False) for entry in settings.api_keys) + tuple(
@@ -101,12 +147,12 @@ def resolve_token_principal(token: str, settings: Settings) -> AuthenticatedPrin
         return AuthenticatedPrincipal(user_id="dev", token="", roles=frozenset({"admin", "user"}))  # nosec B106
     index = _build_token_index(settings)
     for secret, principal in index.items():
-        if secret_equal(token, secret):
+        if principal is not None and secret_equal(token, secret):
             return principal
     return None
 
 
-def _build_token_index(settings: Settings) -> dict[str, AuthenticatedPrincipal]:
+def _build_token_index(settings: Settings) -> dict[str, AuthenticatedPrincipal | None]:
     """Map bearer secret -> principal for configured key entries.
 
     Legacy plain secret-only entries are deliberately absent from the index
@@ -119,11 +165,14 @@ def _build_token_index(settings: Settings) -> dict[str, AuthenticatedPrincipal]:
     a legacy plain key ``<secret>`` as ``principal:<secret>`` and keep every
     existing client working — the #843 migration path. Administrator roles
     come only from the list that supplied the entry.
+
+    A credential admitted by two entries as two different identities is
+    mapped to ``None`` here and so authenticates nobody (#1095): which
+    identity wins must never be a question of list order. The startup gate
+    (`ambiguous_api_key_entries`) rejects the configuration outright; this is
+    the fail-closed half for a gate that is bypassed.
     """
-    index: dict[str, AuthenticatedPrincipal] = {}
-    # Add ordinary keys first and explicit administrator keys last. If an
-    # operator intentionally uses the same secret in both lists, authority is
-    # still explicit in configuration rather than inferred from the secret.
+    index: dict[str, AuthenticatedPrincipal | None] = {}
     for entry, is_admin in _configured_entries(settings):
         parsed = _parse_api_key_entry(entry)
         if parsed is None:
@@ -131,8 +180,13 @@ def _build_token_index(settings: Settings) -> dict[str, AuthenticatedPrincipal]:
         user_id, secret, _ = parsed
         roles = frozenset({"admin", "user"}) if is_admin else frozenset({"user"})
         principal = AuthenticatedPrincipal(user_id=user_id, token=secret, roles=roles)
-        index[secret] = principal
-        index[entry.strip()] = principal
+        for credential in (secret, entry.strip()):
+            if credential not in index:
+                index[credential] = principal
+                continue
+            existing = index[credential]
+            if existing is None or existing.user_id != user_id or existing.roles != roles:
+                index[credential] = None
     return index
 
 

@@ -46,7 +46,11 @@ from maistro_server.api import (
     workspaces,
     ws,
 )
-from maistro_server.api.auth import API_KEY_ENTRY_DOC, invalid_api_key_entries
+from maistro_server.api.auth import (
+    API_KEY_ENTRY_DOC,
+    ambiguous_api_key_entries,
+    invalid_api_key_entries,
+)
 from maistro_server.api.chat_completions import RUN_ID_HEADER
 from maistro_server.api.middleware import PayloadSizeLimitMiddleware, SecurityHeadersMiddleware
 from maistro_server.api.rate_limit import RateLimitMiddleware
@@ -92,6 +96,19 @@ def _validate_startup(settings: Settings) -> None:
             "once prefixed with its principal — the same secret keeps "
             "authenticating, now attributed to the named principal. See "
             "docs/install/api-key-identity.md for the migration path."
+        )
+    # #1095: one bearer credential must resolve to exactly one principal and
+    # authority. A secret shared across entries made configuration order the
+    # tiebreaker for who a request authenticates as, so the collision itself
+    # is a startup failure. Descriptions never echo key material
+    # (ambiguous_api_key_entries guarantees that).
+    ambiguous_entries = ambiguous_api_key_entries(settings)
+    if ambiguous_entries:
+        raise RuntimeError(
+            "CRITICAL: API key credentials that resolve to more than one "
+            f"principal (#1095): {'; '.join(ambiguous_entries)}. Give each "
+            "principal its own secret — which identity a credential carries "
+            "must never depend on configuration order."
         )
     if settings.require_webhook_secrets and not (
         settings.github_webhook_secret and settings.ci_webhook_secret

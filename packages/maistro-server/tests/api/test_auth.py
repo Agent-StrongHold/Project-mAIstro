@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from maistro.config.settings import Settings, get_settings
 from maistro_server.api.auth import (
+    ambiguous_api_key_entries,
     invalid_api_key_entries,
     resolve_token_principal,
     verify_api_key,
@@ -77,6 +78,24 @@ class TestAuthThroughHTTPStack:
             headers={"Authorization": "Bearer wrong-key"},
         )
         assert response.status_code == 401
+
+    def test_collided_credential_is_rejected_over_http(self) -> None:
+        """#1095: a secret admitted by two entries authenticates nobody over
+        the wire — not whichever principal happened to be configured last."""
+        app = _make_app(api_keys=["alice:shared", "bob:shared"])
+        client = TestClient(app)
+        response = client.get(
+            "/tasks",
+            headers={"Authorization": "Bearer shared"},
+        )
+        assert response.status_code == 401
+        # The unambiguous full entries still authenticate their principals.
+        for entry in ("alice:shared", "bob:shared"):
+            accepted = client.get(
+                "/tasks",
+                headers={"Authorization": f"Bearer {entry}"},
+            )
+            assert accepted.status_code == 200
 
 
 class TestSecretComparison:
@@ -221,6 +240,102 @@ class TestExplicitPrincipalContract:
         so secrets containing colons are unchanged by the new contract."""
         settings = Settings(api_keys=["ops:weird:secret"])
         assert resolve_token_principal("weird:secret", settings) is not None
+
+
+class TestCredentialAllocationIsUnambiguous:
+    """#1095: one bearer credential must resolve to exactly one principal and
+    authority. `_build_token_index` used to be last-write-wins, so the same
+    secret under two entries made list order decide who a request
+    authenticated as — a reordering of configuration is not a reassignment of
+    identity, so a collision fails closed at resolve time and is rejected at
+    startup instead."""
+
+    def test_same_secret_two_principals_authenticates_nobody(self) -> None:
+        settings = Settings(api_keys=["alice:shared", "bob:shared"])
+        assert resolve_token_principal("shared", settings) is None
+
+    def test_configuration_order_never_decides_identity(self) -> None:
+        """The collide case in either order: same answer, no identity."""
+        forward = Settings(api_keys=["alice:shared", "bob:shared"])
+        reversed_ = Settings(api_keys=["bob:shared", "alice:shared"])
+        assert resolve_token_principal("shared", forward) is None
+        assert resolve_token_principal("shared", reversed_) is None
+
+    def test_collided_secret_does_not_lock_out_full_entries(self) -> None:
+        """The full entries remain unambiguous and keep working; only the
+        credential that two identities compete for is dead."""
+        settings = Settings(api_keys=["alice:shared", "bob:shared"])
+        alice = resolve_token_principal("alice:shared", settings)
+        bob = resolve_token_principal("bob:shared", settings)
+        assert alice is not None and alice.user_id == "alice"
+        assert bob is not None and bob.user_id == "bob"
+
+    def test_user_admin_role_mismatch_on_one_secret_fails_closed(self) -> None:
+        """The same secret as user and as admin is two authorities for one
+        credential; the admin grant must not win by list position."""
+        settings = Settings(api_keys=["alice:shared"], admin_api_keys=["bob:shared"])
+        assert resolve_token_principal("shared", settings) is None
+
+    def test_same_principal_in_both_lists_is_still_a_role_mismatch(self) -> None:
+        settings = Settings(api_keys=["alice:shared"], admin_api_keys=["alice:shared"])
+        assert resolve_token_principal("shared", settings) is None
+
+    def test_bare_secret_alias_vs_full_entry_alias_collision(self) -> None:
+        """`bob:alice:shared` makes `alice:shared` bob's bare secret — which
+        is also alice's full-entry credential. That credential is ambiguous
+        even though no secret text repeats verbatim."""
+        settings = Settings(api_keys=["alice:shared", "bob:alice:shared"])
+        assert resolve_token_principal("alice:shared", settings) is None
+
+    def test_identical_duplicate_entry_is_not_ambiguity(self) -> None:
+        """The same entry twice (whitespace variants included) admits every
+        credential as one identity; rejecting that would forbid harmless
+        configuration duplication. Rotation stays two secrets, one principal."""
+        settings = Settings(api_keys=["alice:shared", " alice:shared "])
+        principal = resolve_token_principal("shared", settings)
+        assert principal is not None
+        assert principal.user_id == "alice"
+        assert ambiguous_api_key_entries(settings) == []
+
+
+class TestAmbiguousEntryDescriptions:
+    """The startup gate's evidence for collisions: which entries compete and
+    for which identities — positions and principal names, never key material."""
+
+    def test_unambiguous_configuration_yields_no_problems(self) -> None:
+        settings = Settings(
+            api_keys=["ops:secret-a", "alice:secret-b"],
+            admin_api_keys=["root:secret-c"],
+        )
+        assert ambiguous_api_key_entries(settings) == []
+
+    def test_same_secret_two_principals_is_described(self) -> None:
+        settings = Settings(api_keys=["alice:shared", "bob:shared"])
+        problems = ambiguous_api_key_entries(settings)
+        assert len(problems) == 1
+        assert "entry 1" in problems[0] and "entry 2" in problems[0]
+        assert "'alice' (user)" in problems[0] and "'bob' (user)" in problems[0]
+
+    def test_user_admin_mismatch_is_described_with_both_authorities(self) -> None:
+        settings = Settings(api_keys=["alice:shared"], admin_api_keys=["root:shared"])
+        problems = ambiguous_api_key_entries(settings)
+        assert len(problems) == 1
+        assert "'alice' (user)" in problems[0] and "'root' (admin)" in problems[0]
+
+    def test_bare_secret_vs_full_entry_collision_is_described(self) -> None:
+        settings = Settings(api_keys=["alice:shared", "bob:alice:shared"])
+        problems = ambiguous_api_key_entries(settings)
+        assert len(problems) == 1
+        assert "'alice'" in problems[0] and "'bob'" in problems[0]
+
+    def test_descriptions_never_echo_key_material(self) -> None:
+        secret = "super-secret-material-9f2c"
+        settings = Settings(
+            api_keys=[f"alice:{secret}", f"bob:{secret}"],
+            admin_api_keys=[f"root:{secret}"],
+        )
+        for problem in ambiguous_api_key_entries(settings):
+            assert secret not in problem
 
 
 class TestInvalidEntryDescriptions:

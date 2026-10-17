@@ -92,6 +92,11 @@ EXPECTED_TABLES = frozenset(
         # restart (#556).
         "node_templates",
         "outcomes",
+        # The durable record that the installer-era `default` principal became
+        # `conductor` (036, #1095). The chain asserts on the live catalog, so a
+        # migration that leaves a table behind must see it named here — the
+        # suite failed until it did, which is the check working.
+        "principal_identity_mappings",
         # A version and the label pointing at it were one row until 022; a
         # version may carry several labels, which that shape had no room for
         # (#328).
