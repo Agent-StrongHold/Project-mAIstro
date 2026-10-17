@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +24
+  tests/: +28
 ---
 
 # L319 tool-version reporting: required Provenance.tool_version
@@ -33,3 +33,13 @@ grew the two identity helpers (`bundled_implementation_fingerprint`,
 
 Computed with `scripts/check-suite-inventory.py --suite tests/` (expected
 5206, collected 5230 → +24), not estimated. No other suite moved.
+
+## Addendum (PR #2142 diff-coverage follow-up, on top of b958119e9)
+
+The CI Coverage gate flagged four scripts whose `_tool_version` wiring was
+never executed by tests (check-frontend-typed-client, check-principal-identity,
+check-route-permissions, check-workspace-retirement at 40% of 5 changed lines
+each). Each of their test files gained one verdict-path test driving main()
+to both a pass and a fail verdict through a fake provenance namespace that
+carries `bundled_implementation_fingerprint`: **+4** (24 → 28 total), computed
+by the same scoped run (expected 5230, collected 5234).
