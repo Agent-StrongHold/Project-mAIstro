@@ -41,6 +41,7 @@ from .expectations import (
     PostStateExpectation,
     expectation_from_policy,
 )
+from .quality import summarize_quality
 from .routing import (
     ObservationModality,
     ObservationRoute,
@@ -80,4 +81,5 @@ __all__ = [
     "expectation_from_policy",
     "route_observation",
     "route_observations",
+    "summarize_quality",
 ]

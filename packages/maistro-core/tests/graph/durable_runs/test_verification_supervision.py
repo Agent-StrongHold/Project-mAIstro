@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from maistro.graph import Graph, Node
 from maistro.graph.durable_runs import InMemoryDurableRunStore, run_durable_graph
 from maistro.graph.nodes import BaseNode, NodeContext, NodeResult
+from maistro.graph.nodes.base import ReplaySemantics
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import RunStatus
@@ -226,8 +227,6 @@ async def test_escalation_never_exceeds_visit_budget() -> None:
 
 
 async def test_non_retryable_nodes_do_not_escalate() -> None:
-    from maistro.graph.nodes.base import ReplaySemantics
-
     class _Sticky(_ReportingNode):
         replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.NON_RETRYABLE
 
@@ -242,3 +241,63 @@ async def test_non_retryable_nodes_do_not_escalate() -> None:
     )
     assert record.status is RunStatus.COMPLETED
     assert node.visit == 1
+
+
+class _SelfReportingNode(BaseNode[_In, _Out]):
+    """Reports quality through the production self-report channel.
+
+    Unlike ``_ReportingNode`` (which hand-builds its NodeResult envelope),
+    this node writes ``NodeContext.result_metadata`` in ``_execute`` and lets
+    ``BaseNode.run`` merge it — exactly the path a shipped node like
+    ``llm.summarize`` takes, so the escalation gate is exercised end to end
+    through the production channel rather than a test-only envelope.
+    """
+
+    kind: ClassVar[str] = "test.verification_self_report"
+    kind_category: ClassVar = "sync.llm"
+    input_schema: ClassVar[type[BaseModel]] = _In
+    output_schema: ClassVar[type[BaseModel]] = _Out
+    # Same contract as the shipped model node: retryable under an effect key
+    # so supervision may spend another visit when the graph declares a budget.
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
+
+    def __init__(self, *, quality_by_visit: list[float | None]) -> None:
+        self._quality_by_visit = quality_by_visit
+        self.visit: int = 0
+        self.models_seen: list[str | None] = []
+
+    async def _execute(self, inputs: _In, ctx: NodeContext) -> _Out:
+        escalated = ctx.metadata.get("escalated_model")
+        self.models_seen.append(str(escalated) if escalated else None)
+        quality = (
+            self._quality_by_visit[self.visit] if self.visit < len(self._quality_by_visit) else None
+        )
+        self.visit += 1
+        if quality is not None:
+            ctx.result_metadata["quality"] = quality
+        return _Out()
+
+
+async def test_production_self_report_channel_drives_escalation() -> None:
+    """A node self-reporting through ``NodeContext.result_metadata`` — the
+    channel shipped nodes use — is withheld and re-queued at the next rung
+    by the executor's supervision, without any test-built NodeResult."""
+    node = _SelfReportingNode(quality_by_visit=[0.2, 0.9])
+    record, _ = await _run(
+        node,
+        policies={
+            "max_attempts": 2,
+            "escalation_ladder": {"models": ["flash", "pro"], "quality_floor": 0.7},
+        },
+        workspace="ws-verify-channel",
+    )
+    assert record.status is RunStatus.COMPLETED
+    assert node.visit == 2
+    assert node.models_seen == [None, "pro"]
+    # Both visits are distinct completed NodeRuns; the shortfall visit was
+    # withheld from advancement, never rewritten.
+    assert [node_run.status for node_run in record.node_runs] == [
+        RunStatus.COMPLETED,
+        RunStatus.COMPLETED,
+    ]
+    assert record.node_runs[0].node_run_id != record.node_runs[1].node_run_id
