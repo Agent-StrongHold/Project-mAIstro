@@ -75,7 +75,17 @@ METRIC_DEFINITION_VERSION = "2"
 #: retirement buys: while this category compared body against front matter it
 #: needed the status vocabulary, multi-word values (`AC Defined` read as `AC`)
 #: and case folding, and each of those was a defect in turn.
-_BODY_STATUS_RE = re.compile(r"^ {0,3}(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?\*\*Status:\*\*.*$", re.M)
+#
+#: Fenced code blocks (``` ... ``` or ~~~ ... ~~~) are excluded from matching,
+#: so documentation examples containing `**Status:**` inside fences are not flagged.
+#: Blockquote prefixes (`> ` or `>**Status:**`) are supported — they render as
+#: body text and should be treated as declarations.
+#: Four-space indentation exempts unmarked code blocks; marked list markers
+#: at any reasonable depth are treated as declarations (the PR retires body status).
+_BODY_STATUS_RE = re.compile(
+    r"^(?:(?: {0,3}> ?)* ?){0,3}(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?\*\*Status:\*\*.*$",
+    re.M,
+)
 
 #: `**Superseded by [ADR-xxx](...)`` — the banner naming the replacement.
 #: `^`-anchored per line, tolerating the blockquote and emphasis markup the
@@ -138,7 +148,7 @@ def _audit_file(path: Path) -> list[StatusProblem]:
     front_matter = result.front_matter
     if front_matter is None:
         return []  # missing front matter is the registry lint's failure, not ours
-    body = _body_without_front_matter(path)
+    body = _outside_fenced_blocks(_body_without_front_matter(path))
     problems: list[StatusProblem] = []
 
     for match in _BODY_STATUS_RE.finditer(body):
@@ -190,6 +200,38 @@ def _body_without_front_matter(path: Path) -> str:
         return text
     end = text.find("\n---", 3)
     return text[end + 4 :] if end != -1 else text
+
+
+def _outside_fenced_blocks(text: str) -> str:
+    """Return text with every fenced code block (``` ... ``` / ~~~ ... ~~~) replaced by a single space.
+
+    This prevents lines like ```` Status: Accepted ```` inside fences from being
+    flagged as body status declarations.  Unclosed fences consume the rest of the
+    file (fail-closed).  The function works line-by-line to avoid catastrophic
+    backtracking on malformed input.
+    """
+    out: list[str] = []
+    in_fence = False
+    fence_char: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not in_fence and (stripped.startswith("```") or stripped.startswith("~~~")):
+            in_fence = True
+            fence_char = stripped[:3]
+            out.append(" ")  # replace the fence opener line itself
+            continue
+        if in_fence:
+            if fence_char and stripped.startswith(fence_char):
+                # closing fence
+                in_fence = False
+                fence_char = None
+                out.append(" ")  # replace the fence closer line
+                continue
+            else:
+                # content inside fence → skip
+                continue
+        out.append(line)
+    return "\n".join(out)
 
 
 def _load_baseline() -> frozenset[str]:
