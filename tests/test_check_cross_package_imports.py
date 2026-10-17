@@ -445,3 +445,110 @@ class TestMutationBoundaries:
             "from thing.nope import load\n"
         )
         assert [f.target for f in _scan(check, workspace, body)] == ["thing.nope"]
+
+
+@pytest.fixture
+def backends(tmp_path: Path) -> Path:
+    """A `packages/` dir with one flat backend and one that is itself a package.
+
+    The two shapes the real tree has: hive-conductor's `backend/` sits on
+    `sys.path` with no `__init__.py`; Turing's `backend/` is a package.
+    """
+    packages = tmp_path / "packages"
+    flat = packages / "app" / "backend"
+    (flat / "routes").mkdir(parents=True)
+    (flat / "main.py").write_text("", encoding="utf-8")
+    (flat / "routes" / "__init__.py").write_text("", encoding="utf-8")
+    (flat / "routes" / "chat.py").write_text("", encoding="utf-8")
+    (flat / "tests").mkdir()
+    (flat / "tests" / "test_main.py").write_text("", encoding="utf-8")
+    (flat / "data").mkdir()
+    (flat / "data" / "seed.json").write_text("{}", encoding="utf-8")
+    (flat / "__pycache__").mkdir()
+    (flat / "__pycache__" / "main.cpython-312.py").write_text("", encoding="utf-8")
+    pkg = packages / "other" / "backend"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "config.py").write_text("", encoding="utf-8")
+    return packages
+
+
+TODAY = frozenset({"app/backend/main.py", "app/backend/tests/"})
+
+
+class TestFlatBackendModules:
+    """P0.6 (#1046). New backend code goes in a package; the flat set only shrinks."""
+
+    def test_the_measured_entries_are_exactly_the_flat_ones(self, check, backends):
+        """Packages, data-only dirs, caches and a package backend's modules are
+        not flat; a module on `sys.path` and a package-less test dir are."""
+        assert check.flat_backend_entries(backends) == set(TODAY)
+        assert check.check_flat_backends(backends, TODAY) == ([], [])
+
+    def test_a_new_top_level_module_fails(self, check, backends):
+        (backends / "app" / "backend" / "state.py").write_text("", encoding="utf-8")
+        assert check.check_flat_backends(backends, TODAY) == (["app/backend/state.py"], [])
+
+    def test_a_new_package_less_directory_of_modules_fails(self, check, backends):
+        loose = backends / "app" / "backend" / "middleware"
+        loose.mkdir()
+        (loose / "auth.py").write_text("", encoding="utf-8")
+        assert check.check_flat_backends(backends, TODAY) == (["app/backend/middleware/"], [])
+
+    def test_a_new_module_inside_a_package_passes(self, check, backends):
+        (backends / "app" / "backend" / "routes" / "workspace.py").write_text("", encoding="utf-8")
+        new_pkg = backends / "app" / "backend" / "app_workspace"
+        new_pkg.mkdir()
+        (new_pkg / "__init__.py").write_text("", encoding="utf-8")
+        (new_pkg / "agents.py").write_text("", encoding="utf-8")
+        (backends / "other" / "backend" / "state.py").write_text("", encoding="utf-8")
+        assert check.check_flat_backends(backends, TODAY) == ([], [])
+
+    def test_a_deleted_tolerated_module_is_stale(self, check, backends):
+        (backends / "app" / "backend" / "main.py").unlink()
+        assert check.check_flat_backends(backends, TODAY) == ([], ["app/backend/main.py"])
+
+    def test_a_tolerated_directory_made_into_a_package_is_stale(self, check, backends):
+        (backends / "app" / "backend" / "tests" / "__init__.py").write_text("", encoding="utf-8")
+        assert check.check_flat_backends(backends, TODAY) == ([], ["app/backend/tests/"])
+
+    @staticmethod
+    def _only_flat_check(check, backends: Path, monkeypatch, tolerated: frozenset[str]):
+        """Point `main` at `backends`, with an import scan that finds nothing."""
+        clean = backends / "app" / "backend" / "main.py"
+        monkeypatch.setattr(check, "PACKAGES", backends)
+        monkeypatch.setattr(check, "REPO_ROOT", backends.parent)
+        monkeypatch.setattr(check, "source_roots", lambda: {"thing": backends})
+        monkeypatch.setattr(check, "source_files", lambda: [clean])
+        monkeypatch.setattr(check, "TOLERATED_FLAT_BACKEND", tolerated)
+
+    def test_main_passes_when_nothing_is_new_or_stale(self, check, backends, monkeypatch, capsys):
+        self._only_flat_check(check, backends, monkeypatch, TODAY)
+        assert check.main() == 0
+        assert "no new flat modules" in capsys.readouterr().out
+
+    def test_main_reports_a_new_flat_module(self, check, backends, monkeypatch, capsys):
+        (backends / "app" / "backend" / "config.py").write_text("", encoding="utf-8")
+        self._only_flat_check(check, backends, monkeypatch, TODAY)
+        assert check.main() == 1
+        out = capsys.readouterr().out
+        assert "packages/app/backend/config.py" in out
+        assert "__init__.py" in out
+
+    def test_main_reports_a_stale_entry(self, check, backends, monkeypatch, capsys):
+        self._only_flat_check(check, backends, monkeypatch, TODAY | {"app/backend/gone.py"})
+        assert check.main() == 1
+        out = capsys.readouterr().out
+        assert "packages/app/backend/gone.py" in out
+        assert "TOLERATED_FLAT_BACKEND" in out
+
+    def test_the_repository_passes_today(self, check):
+        assert check.check_flat_backends(check.PACKAGES, check.TOLERATED_FLAT_BACKEND) == (
+            [],
+            [],
+        )
+
+    def test_the_conductor_backend_is_measured(self, check):
+        """A glob that stopped matching would report a clean tree by measuring
+        nothing, and the stale check would then fail every entry -- so pin it."""
+        assert "hive-conductor/backend/main.py" in check.flat_backend_entries(check.PACKAGES)

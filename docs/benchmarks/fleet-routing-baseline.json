@@ -1,0 +1,1569 @@
+{
+  "benchmark": "heterogeneous-fleet-routing",
+  "issue": "934",
+  "epic": "905",
+  "mode": "all-scenarios",
+  "config": {
+    "seed": "fleet-bench-v1",
+    "tasks_per_class": 400
+  },
+  "portability": {
+    "model_egress_rows": 20,
+    "approved_gateway_present": true,
+    "new_direct_callers_added": 0
+  },
+  "scenarios": {
+    "all-available": {
+      "benchmark": "heterogeneous-fleet-routing",
+      "issue": "934",
+      "epic": "905",
+      "seam": {
+        "router": "maistro.providers.router.CostAwareRouter (shipped, unmodified)",
+        "registry": "maistro.providers.registry.InMemoryProviderRegistry",
+        "availability": "InMemoryProviderRegistry.mark_unavailable (ADR-038 outage seam)",
+        "cost": "maistro.providers.types.compute_cost_cents",
+        "note": "selection and outage/failover ride production seams only; outcomes are a fixed deterministic simulator over (task, model) pairs because the repository records no per-task routing telemetry; provider pressure is a seed-independent observable-condition schedule"
+      },
+      "config": {
+        "seed": "fleet-bench-v1",
+        "pressure_seed": "fleet-bench-pressure-v1",
+        "tasks_per_class": 400,
+        "corpus_size": 2400,
+        "scenario": "all-available",
+        "task_classes": [
+          "chat",
+          "classification",
+          "extraction",
+          "summarization",
+          "code_repair",
+          "planning"
+        ],
+        "local_concurrency": 1,
+        "hosted_concurrency": 16,
+        "utility_weights": {
+          "success": "+1.0 / failure -0.25",
+          "cost_cents": 0.05,
+          "latency_ms": 0.0002
+        }
+      },
+      "fleet_catalog": [
+        {
+          "name": "claude-3-opus",
+          "provider": "anthropic",
+          "cost_per_1k_input": 0.15,
+          "cost_per_1k_output": 0.75,
+          "latency_p50_ms": 800,
+          "tier": "powerful",
+          "reasoning_capable": true,
+          "max_tokens": 200000,
+          "fallback_to": [
+            "gpt-4-turbo"
+          ]
+        },
+        {
+          "name": "gpt-4-turbo",
+          "provider": "openai",
+          "cost_per_1k_input": 0.03,
+          "cost_per_1k_output": 0.06,
+          "latency_p50_ms": 1200,
+          "tier": "powerful",
+          "reasoning_capable": false,
+          "max_tokens": 32768,
+          "fallback_to": [
+            "gpt-4o-mini"
+          ]
+        },
+        {
+          "name": "mistral-large",
+          "provider": "mistral",
+          "cost_per_1k_input": 0.02,
+          "cost_per_1k_output": 0.06,
+          "latency_p50_ms": 900,
+          "tier": "powerful",
+          "reasoning_capable": false,
+          "max_tokens": 32768,
+          "fallback_to": []
+        },
+        {
+          "name": "gpt-4o-mini",
+          "provider": "openai",
+          "cost_per_1k_input": 0.005,
+          "cost_per_1k_output": 0.015,
+          "latency_p50_ms": 600,
+          "tier": "balanced",
+          "reasoning_capable": false,
+          "max_tokens": 16384,
+          "fallback_to": [
+            "gpt-3.5-turbo"
+          ]
+        },
+        {
+          "name": "gpt-3.5-turbo",
+          "provider": "openai",
+          "cost_per_1k_input": 0.001,
+          "cost_per_1k_output": 0.002,
+          "latency_p50_ms": 400,
+          "tier": "fast",
+          "reasoning_capable": false,
+          "max_tokens": 4096,
+          "fallback_to": []
+        },
+        {
+          "name": "local-llama",
+          "provider": "local",
+          "cost_per_1k_input": 0.0,
+          "cost_per_1k_output": 0.0,
+          "latency_p50_ms": 2500,
+          "tier": "fast",
+          "reasoning_capable": false,
+          "max_tokens": 8192,
+          "fallback_to": []
+        },
+        {
+          "name": "local-qwen-14b",
+          "provider": "local",
+          "cost_per_1k_input": 0.0,
+          "cost_per_1k_output": 0.0,
+          "latency_p50_ms": 6000,
+          "tier": "balanced",
+          "reasoning_capable": true,
+          "max_tokens": 16384,
+          "fallback_to": []
+        }
+      ],
+      "policies": [
+        {
+          "policy": "hosted-only",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.3720833333333333,
+          "cost_cents_total": 2.747,
+          "cost_cents_per_task": 0.001145,
+          "cost_cents_per_success": 0.003076,
+          "latency_p50_ms": 400.0,
+          "latency_p95_ms": 512.2,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": 0.1337,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.5054,
+          "makespan_ms": 60979.6,
+          "tasks_per_sec_corpus": 39.3575,
+          "success_throughput_per_sec": 14.6443,
+          "local_executor_busy_fraction": 0.0,
+          "hosted_fleet_utilization": 1.0,
+          "local_executors_to_match_hosted": 0,
+          "model_shares": {
+            "gpt-3.5-turbo": 1.0
+          },
+          "provider_shares": {
+            "openai": 1.0
+          },
+          "model_hhi": 1.0,
+          "provider_hhi": 1.0,
+          "failure_modes": {
+            "capacity": 1213,
+            "ok": 893,
+            "quality_fail": 294
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        },
+        {
+          "policy": "local-only",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.49041666666666667,
+          "cost_cents_total": 0.0,
+          "cost_cents_per_task": 0.0,
+          "cost_cents_per_success": 0.0,
+          "latency_p50_ms": 2500.0,
+          "latency_p95_ms": 3315.1,
+          "deadline_miss_rate": 0.2988,
+          "mean_utility": -0.1542,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.3046,
+          "makespan_ms": 6206359.0,
+          "tasks_per_sec_corpus": 0.3867,
+          "success_throughput_per_sec": 0.1896,
+          "local_executor_busy_fraction": 1.0,
+          "hosted_fleet_utilization": 0.0,
+          "local_executors_to_match_hosted": 0,
+          "model_shares": {
+            "local-llama": 1.0
+          },
+          "provider_shares": {
+            "local": 1.0
+          },
+          "model_hhi": 1.0,
+          "provider_hhi": 1.0,
+          "failure_modes": {
+            "capacity": 731,
+            "ok": 1177,
+            "quality_fail": 492
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        },
+        {
+          "policy": "mixed-shipped",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.3720833333333333,
+          "cost_cents_total": 2.747,
+          "cost_cents_per_task": 0.001145,
+          "cost_cents_per_success": 0.003076,
+          "latency_p50_ms": 400.0,
+          "latency_p95_ms": 512.2,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": 0.1337,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.5054,
+          "makespan_ms": 60979.6,
+          "tasks_per_sec_corpus": 39.3575,
+          "success_throughput_per_sec": 14.6443,
+          "local_executor_busy_fraction": 0.0,
+          "hosted_fleet_utilization": 1.0,
+          "local_executors_to_match_hosted": 0,
+          "model_shares": {
+            "gpt-3.5-turbo": 1.0
+          },
+          "provider_shares": {
+            "openai": 1.0
+          },
+          "model_hhi": 1.0,
+          "provider_hhi": 1.0,
+          "failure_modes": {
+            "capacity": 1213,
+            "ok": 893,
+            "quality_fail": 294
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        },
+        {
+          "policy": "mixed-local-first",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.8208333333333333,
+          "cost_cents_total": 1018.2415,
+          "cost_cents_per_task": 0.424267,
+          "cost_cents_per_success": 0.516874,
+          "latency_p50_ms": 2016.0,
+          "latency_p95_ms": 6840.3,
+          "deadline_miss_rate": 0.3717,
+          "mean_utility": 0.3158,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.0979,
+          "makespan_ms": 4463781.8,
+          "tasks_per_sec_corpus": 0.5377,
+          "success_throughput_per_sec": 0.4413,
+          "local_executor_busy_fraction": 1.0,
+          "hosted_fleet_utilization": 0.0113,
+          "local_executors_to_match_hosted": 89,
+          "model_shares": {
+            "claude-3-opus": 0.2679,
+            "gpt-3.5-turbo": 0.0979,
+            "gpt-4o-mini": 0.0754,
+            "local-llama": 0.4713,
+            "local-qwen-14b": 0.0875
+          },
+          "provider_shares": {
+            "anthropic": 0.2679,
+            "local": 0.5587,
+            "openai": 0.1733
+          },
+          "model_hhi": 0.3168,
+          "provider_hhi": 0.414,
+          "failure_modes": {
+            "capacity": 235,
+            "ok": 1970,
+            "quality_fail": 195
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        },
+        {
+          "policy": "oracle",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.9975,
+          "cost_cents_total": 977.6083,
+          "cost_cents_per_task": 0.407337,
+          "cost_cents_per_success": 0.408358,
+          "latency_p50_ms": 613.4,
+          "latency_p95_ms": 1381.3,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": 0.8388,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.0,
+          "makespan_ms": 103285.5,
+          "tasks_per_sec_corpus": 23.2366,
+          "success_throughput_per_sec": 23.1785,
+          "local_executor_busy_fraction": 0.0,
+          "hosted_fleet_utilization": 1.0,
+          "local_executors_to_match_hosted": 0,
+          "model_shares": {
+            "claude-3-opus": 0.0883,
+            "gpt-3.5-turbo": 0.3508,
+            "gpt-4-turbo": 0.025,
+            "gpt-4o-mini": 0.385,
+            "mistral-large": 0.1508
+          },
+          "provider_shares": {
+            "anthropic": 0.0883,
+            "mistral": 0.1508,
+            "openai": 0.7608
+          },
+          "model_hhi": 0.3025,
+          "provider_hhi": 0.6094,
+          "failure_modes": {
+            "ok": 2394,
+            "quality_fail": 6
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        }
+      ],
+      "comparisons_vs_hosted_only": {
+        "local-only": {
+          "delta_success_rate": 0.1183,
+          "delta_cost_total_cents": -2.747,
+          "delta_latency_p95_ms": 2802.9,
+          "delta_mean_utility": -0.2879,
+          "delta_utility_vs_single_attempt_oracle": -0.993,
+          "delta_tasks_per_sec": -38.9708
+        },
+        "mixed-shipped": {
+          "delta_success_rate": 0.0,
+          "delta_cost_total_cents": 0.0,
+          "delta_latency_p95_ms": 0.0,
+          "delta_mean_utility": 0.0,
+          "delta_utility_vs_single_attempt_oracle": -0.7051,
+          "delta_tasks_per_sec": 0.0
+        },
+        "mixed-local-first": {
+          "delta_success_rate": 0.4487,
+          "delta_cost_total_cents": 1015.4945,
+          "delta_latency_p95_ms": 6328.1,
+          "delta_mean_utility": 0.1821,
+          "delta_utility_vs_single_attempt_oracle": -0.523,
+          "delta_tasks_per_sec": -38.8198
+        },
+        "oracle": {
+          "delta_success_rate": 0.6254,
+          "delta_cost_total_cents": 974.8613,
+          "delta_latency_p95_ms": 869.1,
+          "delta_mean_utility": 0.7051,
+          "delta_utility_vs_single_attempt_oracle": 0.0,
+          "delta_tasks_per_sec": -16.1209
+        }
+      },
+      "stability_flip_rate_under_jitter": {
+        "hosted-only": 0.0,
+        "local-only": 0.0,
+        "mixed-shipped": 0.0,
+        "mixed-local-first": 0.0075
+      },
+      "leakage_violations": {
+        "hosted-only": 0,
+        "local-only": 0,
+        "mixed-shipped": 0,
+        "mixed-local-first": 0
+      },
+      "leakage_positive_control_oracle_changes": 828,
+      "portability": {
+        "model_egress_rows": 20,
+        "approved_gateway_present": true,
+        "new_direct_callers_added": 0
+      }
+    },
+    "local-outage": {
+      "benchmark": "heterogeneous-fleet-routing",
+      "issue": "934",
+      "epic": "905",
+      "seam": {
+        "router": "maistro.providers.router.CostAwareRouter (shipped, unmodified)",
+        "registry": "maistro.providers.registry.InMemoryProviderRegistry",
+        "availability": "InMemoryProviderRegistry.mark_unavailable (ADR-038 outage seam)",
+        "cost": "maistro.providers.types.compute_cost_cents",
+        "note": "selection and outage/failover ride production seams only; outcomes are a fixed deterministic simulator over (task, model) pairs because the repository records no per-task routing telemetry; provider pressure is a seed-independent observable-condition schedule"
+      },
+      "config": {
+        "seed": "fleet-bench-v1",
+        "pressure_seed": "fleet-bench-pressure-v1",
+        "tasks_per_class": 400,
+        "corpus_size": 2400,
+        "scenario": "local-outage",
+        "task_classes": [
+          "chat",
+          "classification",
+          "extraction",
+          "summarization",
+          "code_repair",
+          "planning"
+        ],
+        "local_concurrency": 1,
+        "hosted_concurrency": 16,
+        "utility_weights": {
+          "success": "+1.0 / failure -0.25",
+          "cost_cents": 0.05,
+          "latency_ms": 0.0002
+        }
+      },
+      "fleet_catalog": [
+        {
+          "name": "claude-3-opus",
+          "provider": "anthropic",
+          "cost_per_1k_input": 0.15,
+          "cost_per_1k_output": 0.75,
+          "latency_p50_ms": 800,
+          "tier": "powerful",
+          "reasoning_capable": true,
+          "max_tokens": 200000,
+          "fallback_to": [
+            "gpt-4-turbo"
+          ]
+        },
+        {
+          "name": "gpt-4-turbo",
+          "provider": "openai",
+          "cost_per_1k_input": 0.03,
+          "cost_per_1k_output": 0.06,
+          "latency_p50_ms": 1200,
+          "tier": "powerful",
+          "reasoning_capable": false,
+          "max_tokens": 32768,
+          "fallback_to": [
+            "gpt-4o-mini"
+          ]
+        },
+        {
+          "name": "mistral-large",
+          "provider": "mistral",
+          "cost_per_1k_input": 0.02,
+          "cost_per_1k_output": 0.06,
+          "latency_p50_ms": 900,
+          "tier": "powerful",
+          "reasoning_capable": false,
+          "max_tokens": 32768,
+          "fallback_to": []
+        },
+        {
+          "name": "gpt-4o-mini",
+          "provider": "openai",
+          "cost_per_1k_input": 0.005,
+          "cost_per_1k_output": 0.015,
+          "latency_p50_ms": 600,
+          "tier": "balanced",
+          "reasoning_capable": false,
+          "max_tokens": 16384,
+          "fallback_to": [
+            "gpt-3.5-turbo"
+          ]
+        },
+        {
+          "name": "gpt-3.5-turbo",
+          "provider": "openai",
+          "cost_per_1k_input": 0.001,
+          "cost_per_1k_output": 0.002,
+          "latency_p50_ms": 400,
+          "tier": "fast",
+          "reasoning_capable": false,
+          "max_tokens": 4096,
+          "fallback_to": []
+        },
+        {
+          "name": "local-llama",
+          "provider": "local",
+          "cost_per_1k_input": 0.0,
+          "cost_per_1k_output": 0.0,
+          "latency_p50_ms": 2500,
+          "tier": "fast",
+          "reasoning_capable": false,
+          "max_tokens": 8192,
+          "fallback_to": []
+        },
+        {
+          "name": "local-qwen-14b",
+          "provider": "local",
+          "cost_per_1k_input": 0.0,
+          "cost_per_1k_output": 0.0,
+          "latency_p50_ms": 6000,
+          "tier": "balanced",
+          "reasoning_capable": true,
+          "max_tokens": 16384,
+          "fallback_to": []
+        }
+      ],
+      "policies": [
+        {
+          "policy": "hosted-only",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.3720833333333333,
+          "cost_cents_total": 2.747,
+          "cost_cents_per_task": 0.001145,
+          "cost_cents_per_success": 0.003076,
+          "latency_p50_ms": 400.0,
+          "latency_p95_ms": 512.2,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": 0.1337,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.5054,
+          "makespan_ms": 60979.6,
+          "tasks_per_sec_corpus": 39.3575,
+          "success_throughput_per_sec": 14.6443,
+          "local_executor_busy_fraction": 0.0,
+          "hosted_fleet_utilization": 1.0,
+          "local_executors_to_match_hosted": 0,
+          "model_shares": {
+            "gpt-3.5-turbo": 1.0
+          },
+          "provider_shares": {
+            "openai": 1.0
+          },
+          "model_hhi": 1.0,
+          "provider_hhi": 1.0,
+          "failure_modes": {
+            "capacity": 1213,
+            "ok": 893,
+            "quality_fail": 294
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        },
+        {
+          "policy": "local-only",
+          "routed": 0,
+          "route_failures": 2400,
+          "success_rate": 0.0,
+          "cost_cents_total": 0.0,
+          "cost_cents_per_task": 0.0,
+          "cost_cents_per_success": 0.0,
+          "latency_p50_ms": 0.0,
+          "latency_p95_ms": 0.0,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": -0.25,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 0.0,
+          "residual_observable_failure_rate": 0.0,
+          "makespan_ms": 1.0,
+          "tasks_per_sec_corpus": 0.0,
+          "success_throughput_per_sec": 0.0,
+          "local_executor_busy_fraction": 0.0,
+          "hosted_fleet_utilization": 0.0,
+          "local_executors_to_match_hosted": 0,
+          "model_shares": {},
+          "provider_shares": {},
+          "model_hhi": 0,
+          "provider_hhi": 0,
+          "failure_modes": {},
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        },
+        {
+          "policy": "mixed-shipped",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.3720833333333333,
+          "cost_cents_total": 2.747,
+          "cost_cents_per_task": 0.001145,
+          "cost_cents_per_success": 0.003076,
+          "latency_p50_ms": 400.0,
+          "latency_p95_ms": 512.2,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": 0.1337,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.5054,
+          "makespan_ms": 60979.6,
+          "tasks_per_sec_corpus": 39.3575,
+          "success_throughput_per_sec": 14.6443,
+          "local_executor_busy_fraction": 0.0,
+          "hosted_fleet_utilization": 1.0,
+          "local_executors_to_match_hosted": 0,
+          "model_shares": {
+            "gpt-3.5-turbo": 1.0
+          },
+          "provider_shares": {
+            "openai": 1.0
+          },
+          "model_hhi": 1.0,
+          "provider_hhi": 1.0,
+          "failure_modes": {
+            "capacity": 1213,
+            "ok": 893,
+            "quality_fail": 294
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        },
+        {
+          "policy": "mixed-local-first",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.8295833333333333,
+          "cost_cents_total": 1041.3986,
+          "cost_cents_per_task": 0.433916,
+          "cost_cents_per_success": 0.523053,
+          "latency_p50_ms": 532.7,
+          "latency_p95_ms": 1080.9,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": 0.6416,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.0979,
+          "makespan_ms": 92792.6,
+          "tasks_per_sec_corpus": 25.8641,
+          "success_throughput_per_sec": 21.4565,
+          "local_executor_busy_fraction": 0.0,
+          "hosted_fleet_utilization": 1.0,
+          "local_executors_to_match_hosted": 0,
+          "model_shares": {
+            "claude-3-opus": 0.2679,
+            "gpt-3.5-turbo": 0.4733,
+            "gpt-4o-mini": 0.2587
+          },
+          "provider_shares": {
+            "anthropic": 0.2679,
+            "openai": 0.7321
+          },
+          "model_hhi": 0.3628,
+          "provider_hhi": 0.6077,
+          "failure_modes": {
+            "capacity": 235,
+            "ok": 1991,
+            "quality_fail": 174
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        },
+        {
+          "policy": "oracle",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.9975,
+          "cost_cents_total": 977.6083,
+          "cost_cents_per_task": 0.407337,
+          "cost_cents_per_success": 0.408358,
+          "latency_p50_ms": 613.4,
+          "latency_p95_ms": 1381.3,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": 0.8388,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.0,
+          "makespan_ms": 103285.5,
+          "tasks_per_sec_corpus": 23.2366,
+          "success_throughput_per_sec": 23.1785,
+          "local_executor_busy_fraction": 0.0,
+          "hosted_fleet_utilization": 1.0,
+          "local_executors_to_match_hosted": 0,
+          "model_shares": {
+            "claude-3-opus": 0.0883,
+            "gpt-3.5-turbo": 0.3508,
+            "gpt-4-turbo": 0.025,
+            "gpt-4o-mini": 0.385,
+            "mistral-large": 0.1508
+          },
+          "provider_shares": {
+            "anthropic": 0.0883,
+            "mistral": 0.1508,
+            "openai": 0.7608
+          },
+          "model_hhi": 0.3025,
+          "provider_hhi": 0.6094,
+          "failure_modes": {
+            "ok": 2394,
+            "quality_fail": 6
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        }
+      ],
+      "comparisons_vs_hosted_only": {
+        "local-only": {
+          "delta_success_rate": -0.3721,
+          "delta_cost_total_cents": -2.747,
+          "delta_latency_p95_ms": -512.2,
+          "delta_mean_utility": -0.3837,
+          "delta_utility_vs_single_attempt_oracle": -1.0888,
+          "delta_tasks_per_sec": -39.3575
+        },
+        "mixed-shipped": {
+          "delta_success_rate": 0.0,
+          "delta_cost_total_cents": 0.0,
+          "delta_latency_p95_ms": 0.0,
+          "delta_mean_utility": 0.0,
+          "delta_utility_vs_single_attempt_oracle": -0.7051,
+          "delta_tasks_per_sec": 0.0
+        },
+        "mixed-local-first": {
+          "delta_success_rate": 0.4575,
+          "delta_cost_total_cents": 1038.6516,
+          "delta_latency_p95_ms": 568.7,
+          "delta_mean_utility": 0.5079,
+          "delta_utility_vs_single_attempt_oracle": -0.1972,
+          "delta_tasks_per_sec": -13.4934
+        },
+        "oracle": {
+          "delta_success_rate": 0.6254,
+          "delta_cost_total_cents": 974.8613,
+          "delta_latency_p95_ms": 869.1,
+          "delta_mean_utility": 0.7051,
+          "delta_utility_vs_single_attempt_oracle": 0.0,
+          "delta_tasks_per_sec": -16.1209
+        }
+      },
+      "stability_flip_rate_under_jitter": {
+        "hosted-only": 0.0,
+        "local-only": 0.0,
+        "mixed-shipped": 0.0,
+        "mixed-local-first": 0.0088
+      },
+      "leakage_violations": {
+        "hosted-only": 0,
+        "local-only": 0,
+        "mixed-shipped": 0,
+        "mixed-local-first": 0
+      },
+      "leakage_positive_control_oracle_changes": 828,
+      "portability": {
+        "model_egress_rows": 20,
+        "approved_gateway_present": true,
+        "new_direct_callers_added": 0
+      }
+    },
+    "hosted-outage": {
+      "benchmark": "heterogeneous-fleet-routing",
+      "issue": "934",
+      "epic": "905",
+      "seam": {
+        "router": "maistro.providers.router.CostAwareRouter (shipped, unmodified)",
+        "registry": "maistro.providers.registry.InMemoryProviderRegistry",
+        "availability": "InMemoryProviderRegistry.mark_unavailable (ADR-038 outage seam)",
+        "cost": "maistro.providers.types.compute_cost_cents",
+        "note": "selection and outage/failover ride production seams only; outcomes are a fixed deterministic simulator over (task, model) pairs because the repository records no per-task routing telemetry; provider pressure is a seed-independent observable-condition schedule"
+      },
+      "config": {
+        "seed": "fleet-bench-v1",
+        "pressure_seed": "fleet-bench-pressure-v1",
+        "tasks_per_class": 400,
+        "corpus_size": 2400,
+        "scenario": "hosted-outage",
+        "task_classes": [
+          "chat",
+          "classification",
+          "extraction",
+          "summarization",
+          "code_repair",
+          "planning"
+        ],
+        "local_concurrency": 1,
+        "hosted_concurrency": 16,
+        "utility_weights": {
+          "success": "+1.0 / failure -0.25",
+          "cost_cents": 0.05,
+          "latency_ms": 0.0002
+        }
+      },
+      "fleet_catalog": [
+        {
+          "name": "claude-3-opus",
+          "provider": "anthropic",
+          "cost_per_1k_input": 0.15,
+          "cost_per_1k_output": 0.75,
+          "latency_p50_ms": 800,
+          "tier": "powerful",
+          "reasoning_capable": true,
+          "max_tokens": 200000,
+          "fallback_to": [
+            "gpt-4-turbo"
+          ]
+        },
+        {
+          "name": "gpt-4-turbo",
+          "provider": "openai",
+          "cost_per_1k_input": 0.03,
+          "cost_per_1k_output": 0.06,
+          "latency_p50_ms": 1200,
+          "tier": "powerful",
+          "reasoning_capable": false,
+          "max_tokens": 32768,
+          "fallback_to": [
+            "gpt-4o-mini"
+          ]
+        },
+        {
+          "name": "mistral-large",
+          "provider": "mistral",
+          "cost_per_1k_input": 0.02,
+          "cost_per_1k_output": 0.06,
+          "latency_p50_ms": 900,
+          "tier": "powerful",
+          "reasoning_capable": false,
+          "max_tokens": 32768,
+          "fallback_to": []
+        },
+        {
+          "name": "gpt-4o-mini",
+          "provider": "openai",
+          "cost_per_1k_input": 0.005,
+          "cost_per_1k_output": 0.015,
+          "latency_p50_ms": 600,
+          "tier": "balanced",
+          "reasoning_capable": false,
+          "max_tokens": 16384,
+          "fallback_to": [
+            "gpt-3.5-turbo"
+          ]
+        },
+        {
+          "name": "gpt-3.5-turbo",
+          "provider": "openai",
+          "cost_per_1k_input": 0.001,
+          "cost_per_1k_output": 0.002,
+          "latency_p50_ms": 400,
+          "tier": "fast",
+          "reasoning_capable": false,
+          "max_tokens": 4096,
+          "fallback_to": []
+        },
+        {
+          "name": "local-llama",
+          "provider": "local",
+          "cost_per_1k_input": 0.0,
+          "cost_per_1k_output": 0.0,
+          "latency_p50_ms": 2500,
+          "tier": "fast",
+          "reasoning_capable": false,
+          "max_tokens": 8192,
+          "fallback_to": []
+        },
+        {
+          "name": "local-qwen-14b",
+          "provider": "local",
+          "cost_per_1k_input": 0.0,
+          "cost_per_1k_output": 0.0,
+          "latency_p50_ms": 6000,
+          "tier": "balanced",
+          "reasoning_capable": true,
+          "max_tokens": 16384,
+          "fallback_to": []
+        }
+      ],
+      "policies": [
+        {
+          "policy": "hosted-only",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.3720833333333333,
+          "cost_cents_total": 2.747,
+          "cost_cents_per_task": 0.001145,
+          "cost_cents_per_success": 0.003076,
+          "latency_p50_ms": 400.0,
+          "latency_p95_ms": 512.2,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": 0.1337,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.5054,
+          "makespan_ms": 60979.6,
+          "tasks_per_sec_corpus": 39.3575,
+          "success_throughput_per_sec": 14.6443,
+          "local_executor_busy_fraction": 0.0,
+          "hosted_fleet_utilization": 1.0,
+          "local_executors_to_match_hosted": 0,
+          "model_shares": {
+            "gpt-3.5-turbo": 1.0
+          },
+          "provider_shares": {
+            "openai": 1.0
+          },
+          "model_hhi": 1.0,
+          "provider_hhi": 1.0,
+          "failure_modes": {
+            "capacity": 1213,
+            "ok": 893,
+            "quality_fail": 294
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        },
+        {
+          "policy": "local-only",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.49041666666666667,
+          "cost_cents_total": 0.0,
+          "cost_cents_per_task": 0.0,
+          "cost_cents_per_success": 0.0,
+          "latency_p50_ms": 2500.0,
+          "latency_p95_ms": 3315.1,
+          "deadline_miss_rate": 0.2988,
+          "mean_utility": -0.1542,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.3046,
+          "makespan_ms": 6206359.0,
+          "tasks_per_sec_corpus": 0.3867,
+          "success_throughput_per_sec": 0.1896,
+          "local_executor_busy_fraction": 1.0,
+          "hosted_fleet_utilization": 0.0,
+          "local_executors_to_match_hosted": 0,
+          "model_shares": {
+            "local-llama": 1.0
+          },
+          "provider_shares": {
+            "local": 1.0
+          },
+          "model_hhi": 1.0,
+          "provider_hhi": 1.0,
+          "failure_modes": {
+            "capacity": 731,
+            "ok": 1177,
+            "quality_fail": 492
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        },
+        {
+          "policy": "mixed-shipped",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.3720833333333333,
+          "cost_cents_total": 2.747,
+          "cost_cents_per_task": 0.001145,
+          "cost_cents_per_success": 0.003076,
+          "latency_p50_ms": 400.0,
+          "latency_p95_ms": 512.2,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": 0.1337,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.5054,
+          "makespan_ms": 60979.6,
+          "tasks_per_sec_corpus": 39.3575,
+          "success_throughput_per_sec": 14.6443,
+          "local_executor_busy_fraction": 0.0,
+          "hosted_fleet_utilization": 1.0,
+          "local_executors_to_match_hosted": 0,
+          "model_shares": {
+            "gpt-3.5-turbo": 1.0
+          },
+          "provider_shares": {
+            "openai": 1.0
+          },
+          "model_hhi": 1.0,
+          "provider_hhi": 1.0,
+          "failure_modes": {
+            "capacity": 1213,
+            "ok": 893,
+            "quality_fail": 294
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        },
+        {
+          "policy": "mixed-local-first",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.7729166666666667,
+          "cost_cents_total": 16.2137,
+          "cost_cents_per_task": 0.006756,
+          "cost_cents_per_success": 0.008741,
+          "latency_p50_ms": 2812.4,
+          "latency_p95_ms": 8276.1,
+          "deadline_miss_rate": 0.4167,
+          "mean_utility": -0.0079,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.1146,
+          "makespan_ms": 8425392.1,
+          "tasks_per_sec_corpus": 0.2849,
+          "success_throughput_per_sec": 0.2202,
+          "local_executor_busy_fraction": 1.0,
+          "hosted_fleet_utilization": 0.0019,
+          "local_executors_to_match_hosted": 521,
+          "model_shares": {
+            "gpt-3.5-turbo": 0.1146,
+            "gpt-4-turbo": 0.0063,
+            "gpt-4o-mini": 0.0754,
+            "local-llama": 0.4713,
+            "local-qwen-14b": 0.3325
+          },
+          "provider_shares": {
+            "local": 0.8037,
+            "openai": 0.1963
+          },
+          "model_hhi": 0.3515,
+          "provider_hhi": 0.6845,
+          "failure_modes": {
+            "capacity": 275,
+            "ok": 1855,
+            "quality_fail": 270
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        },
+        {
+          "policy": "oracle",
+          "routed": 2316,
+          "route_failures": 84,
+          "success_rate": 0.9579166666666666,
+          "cost_cents_total": 198.2858,
+          "cost_cents_per_task": 0.082619,
+          "cost_cents_per_success": 0.086249,
+          "latency_p50_ms": 592.7,
+          "latency_p95_ms": 1380.2,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": 0.8088,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.0,
+          "makespan_ms": 97492.4,
+          "tasks_per_sec_corpus": 24.6173,
+          "success_throughput_per_sec": 23.5813,
+          "local_executor_busy_fraction": 0.5526,
+          "hosted_fleet_utilization": 1.0,
+          "local_executors_to_match_hosted": 1,
+          "model_shares": {
+            "gpt-3.5-turbo": 0.3529,
+            "gpt-4-turbo": 0.0454,
+            "gpt-4o-mini": 0.39,
+            "local-llama": 0.0017,
+            "local-qwen-14b": 0.0033,
+            "mistral-large": 0.1717
+          },
+          "provider_shares": {
+            "local": 0.005,
+            "mistral": 0.1717,
+            "openai": 0.7883
+          },
+          "model_hhi": 0.3082,
+          "provider_hhi": 0.651,
+          "failure_modes": {
+            "ok": 2299,
+            "quality_fail": 17
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        }
+      ],
+      "comparisons_vs_hosted_only": {
+        "local-only": {
+          "delta_success_rate": 0.1183,
+          "delta_cost_total_cents": -2.747,
+          "delta_latency_p95_ms": 2802.9,
+          "delta_mean_utility": -0.2879,
+          "delta_utility_vs_single_attempt_oracle": -0.963,
+          "delta_tasks_per_sec": -38.9708
+        },
+        "mixed-shipped": {
+          "delta_success_rate": 0.0,
+          "delta_cost_total_cents": 0.0,
+          "delta_latency_p95_ms": 0.0,
+          "delta_mean_utility": 0.0,
+          "delta_utility_vs_single_attempt_oracle": -0.6751,
+          "delta_tasks_per_sec": 0.0
+        },
+        "mixed-local-first": {
+          "delta_success_rate": 0.4008,
+          "delta_cost_total_cents": 13.4667,
+          "delta_latency_p95_ms": 7763.9,
+          "delta_mean_utility": -0.1416,
+          "delta_utility_vs_single_attempt_oracle": -0.8167,
+          "delta_tasks_per_sec": -39.0726
+        },
+        "oracle": {
+          "delta_success_rate": 0.5858,
+          "delta_cost_total_cents": 195.5388,
+          "delta_latency_p95_ms": 868.0,
+          "delta_mean_utility": 0.6751,
+          "delta_utility_vs_single_attempt_oracle": 0.0,
+          "delta_tasks_per_sec": -14.7402
+        }
+      },
+      "stability_flip_rate_under_jitter": {
+        "hosted-only": 0.0,
+        "local-only": 0.0,
+        "mixed-shipped": 0.0,
+        "mixed-local-first": 0.0083
+      },
+      "leakage_violations": {
+        "hosted-only": 0,
+        "local-only": 0,
+        "mixed-shipped": 0,
+        "mixed-local-first": 0
+      },
+      "leakage_positive_control_oracle_changes": 811,
+      "portability": {
+        "model_egress_rows": 20,
+        "approved_gateway_present": true,
+        "new_direct_callers_added": 0
+      }
+    },
+    "capacity-pressure": {
+      "benchmark": "heterogeneous-fleet-routing",
+      "issue": "934",
+      "epic": "905",
+      "seam": {
+        "router": "maistro.providers.router.CostAwareRouter (shipped, unmodified)",
+        "registry": "maistro.providers.registry.InMemoryProviderRegistry",
+        "availability": "InMemoryProviderRegistry.mark_unavailable (ADR-038 outage seam)",
+        "cost": "maistro.providers.types.compute_cost_cents",
+        "note": "selection and outage/failover ride production seams only; outcomes are a fixed deterministic simulator over (task, model) pairs because the repository records no per-task routing telemetry; provider pressure is a seed-independent observable-condition schedule"
+      },
+      "config": {
+        "seed": "fleet-bench-v1",
+        "pressure_seed": "fleet-bench-pressure-v1",
+        "tasks_per_class": 400,
+        "corpus_size": 2400,
+        "scenario": "capacity-pressure",
+        "task_classes": [
+          "chat",
+          "classification",
+          "extraction",
+          "summarization",
+          "code_repair",
+          "planning"
+        ],
+        "local_concurrency": 1,
+        "hosted_concurrency": 16,
+        "utility_weights": {
+          "success": "+1.0 / failure -0.25",
+          "cost_cents": 0.05,
+          "latency_ms": 0.0002
+        }
+      },
+      "fleet_catalog": [
+        {
+          "name": "claude-3-opus",
+          "provider": "anthropic",
+          "cost_per_1k_input": 0.15,
+          "cost_per_1k_output": 0.75,
+          "latency_p50_ms": 800,
+          "tier": "powerful",
+          "reasoning_capable": true,
+          "max_tokens": 200000,
+          "fallback_to": [
+            "gpt-4-turbo"
+          ]
+        },
+        {
+          "name": "gpt-4-turbo",
+          "provider": "openai",
+          "cost_per_1k_input": 0.03,
+          "cost_per_1k_output": 0.06,
+          "latency_p50_ms": 1200,
+          "tier": "powerful",
+          "reasoning_capable": false,
+          "max_tokens": 32768,
+          "fallback_to": [
+            "gpt-4o-mini"
+          ]
+        },
+        {
+          "name": "mistral-large",
+          "provider": "mistral",
+          "cost_per_1k_input": 0.02,
+          "cost_per_1k_output": 0.06,
+          "latency_p50_ms": 900,
+          "tier": "powerful",
+          "reasoning_capable": false,
+          "max_tokens": 32768,
+          "fallback_to": []
+        },
+        {
+          "name": "gpt-4o-mini",
+          "provider": "openai",
+          "cost_per_1k_input": 0.005,
+          "cost_per_1k_output": 0.015,
+          "latency_p50_ms": 600,
+          "tier": "balanced",
+          "reasoning_capable": false,
+          "max_tokens": 16384,
+          "fallback_to": [
+            "gpt-3.5-turbo"
+          ]
+        },
+        {
+          "name": "gpt-3.5-turbo",
+          "provider": "openai",
+          "cost_per_1k_input": 0.001,
+          "cost_per_1k_output": 0.002,
+          "latency_p50_ms": 400,
+          "tier": "fast",
+          "reasoning_capable": false,
+          "max_tokens": 4096,
+          "fallback_to": []
+        },
+        {
+          "name": "local-llama",
+          "provider": "local",
+          "cost_per_1k_input": 0.0,
+          "cost_per_1k_output": 0.0,
+          "latency_p50_ms": 2500,
+          "tier": "fast",
+          "reasoning_capable": false,
+          "max_tokens": 8192,
+          "fallback_to": []
+        },
+        {
+          "name": "local-qwen-14b",
+          "provider": "local",
+          "cost_per_1k_input": 0.0,
+          "cost_per_1k_output": 0.0,
+          "latency_p50_ms": 6000,
+          "tier": "balanced",
+          "reasoning_capable": true,
+          "max_tokens": 16384,
+          "fallback_to": []
+        }
+      ],
+      "policies": [
+        {
+          "policy": "hosted-only",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.23541666666666666,
+          "cost_cents_total": 1.7174,
+          "cost_cents_per_task": 0.000716,
+          "cost_cents_per_success": 0.00304,
+          "latency_p50_ms": 400.0,
+          "latency_p95_ms": 496.1,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": -0.0258,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.6846,
+          "makespan_ms": 52502.4,
+          "tasks_per_sec_corpus": 45.7122,
+          "success_throughput_per_sec": 10.7614,
+          "local_executor_busy_fraction": 0.0,
+          "hosted_fleet_utilization": 1.0,
+          "local_executors_to_match_hosted": 0,
+          "model_shares": {
+            "gpt-3.5-turbo": 1.0
+          },
+          "provider_shares": {
+            "openai": 1.0
+          },
+          "model_hhi": 1.0,
+          "provider_hhi": 1.0,
+          "failure_modes": {
+            "capacity": 1213,
+            "ok": 565,
+            "quality_fail": 192,
+            "rate_limited": 430
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        },
+        {
+          "policy": "local-only",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.49041666666666667,
+          "cost_cents_total": 0.0,
+          "cost_cents_per_task": 0.0,
+          "cost_cents_per_success": 0.0,
+          "latency_p50_ms": 2500.0,
+          "latency_p95_ms": 3315.1,
+          "deadline_miss_rate": 0.2988,
+          "mean_utility": -0.1542,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.3046,
+          "makespan_ms": 6206359.0,
+          "tasks_per_sec_corpus": 0.3867,
+          "success_throughput_per_sec": 0.1896,
+          "local_executor_busy_fraction": 1.0,
+          "hosted_fleet_utilization": 0.0,
+          "local_executors_to_match_hosted": 0,
+          "model_shares": {
+            "local-llama": 1.0
+          },
+          "provider_shares": {
+            "local": 1.0
+          },
+          "model_hhi": 1.0,
+          "provider_hhi": 1.0,
+          "failure_modes": {
+            "capacity": 731,
+            "ok": 1177,
+            "quality_fail": 492
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        },
+        {
+          "policy": "mixed-shipped",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.23541666666666666,
+          "cost_cents_total": 1.7174,
+          "cost_cents_per_task": 0.000716,
+          "cost_cents_per_success": 0.00304,
+          "latency_p50_ms": 400.0,
+          "latency_p95_ms": 496.1,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": -0.0258,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.6846,
+          "makespan_ms": 52502.4,
+          "tasks_per_sec_corpus": 45.7122,
+          "success_throughput_per_sec": 10.7614,
+          "local_executor_busy_fraction": 0.0,
+          "hosted_fleet_utilization": 1.0,
+          "local_executors_to_match_hosted": 0,
+          "model_shares": {
+            "gpt-3.5-turbo": 1.0
+          },
+          "provider_shares": {
+            "openai": 1.0
+          },
+          "model_hhi": 1.0,
+          "provider_hhi": 1.0,
+          "failure_modes": {
+            "capacity": 1213,
+            "ok": 565,
+            "quality_fail": 192,
+            "rate_limited": 430
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        },
+        {
+          "policy": "mixed-local-first",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.7220833333333333,
+          "cost_cents_total": 680.8677,
+          "cost_cents_per_task": 0.283695,
+          "cost_cents_per_success": 0.392884,
+          "latency_p50_ms": 2016.0,
+          "latency_p95_ms": 6840.3,
+          "deadline_miss_rate": 0.3717,
+          "mean_utility": 0.1779,
+          "escalated_rate": 0.1138,
+          "attempts_per_task": 1.1138,
+          "residual_observable_failure_rate": 0.1842,
+          "makespan_ms": 4463781.8,
+          "tasks_per_sec_corpus": 0.5377,
+          "success_throughput_per_sec": 0.3882,
+          "local_executor_busy_fraction": 1.0,
+          "hosted_fleet_utilization": 0.0101,
+          "local_executors_to_match_hosted": 100,
+          "model_shares": {
+            "claude-3-opus": 0.1767,
+            "gpt-3.5-turbo": 0.2117,
+            "gpt-4o-mini": 0.0529,
+            "local-llama": 0.4713,
+            "local-qwen-14b": 0.0875
+          },
+          "provider_shares": {
+            "anthropic": 0.1767,
+            "local": 0.5587,
+            "openai": 0.2646
+          },
+          "model_hhi": 0.3085,
+          "provider_hhi": 0.4134,
+          "failure_modes": {
+            "capacity": 409,
+            "ok": 1733,
+            "quality_fail": 225,
+            "rate_limited": 33
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        },
+        {
+          "policy": "oracle",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.9683333333333334,
+          "cost_cents_total": 973.0337,
+          "cost_cents_per_task": 0.405431,
+          "cost_cents_per_success": 0.418689,
+          "latency_p50_ms": 706.3,
+          "latency_p95_ms": 1490.9,
+          "deadline_miss_rate": 0.0025,
+          "mean_utility": 0.7844,
+          "escalated_rate": 0.0,
+          "attempts_per_task": 1.0,
+          "residual_observable_failure_rate": 0.0304,
+          "makespan_ms": 110319.0,
+          "tasks_per_sec_corpus": 21.7551,
+          "success_throughput_per_sec": 21.0662,
+          "local_executor_busy_fraction": 0.9416,
+          "hosted_fleet_utilization": 1.0,
+          "local_executors_to_match_hosted": 1,
+          "model_shares": {
+            "claude-3-opus": 0.1608,
+            "gpt-3.5-turbo": 0.2279,
+            "gpt-4-turbo": 0.065,
+            "gpt-4o-mini": 0.3508,
+            "local-llama": 0.0075,
+            "local-qwen-14b": 0.0042,
+            "mistral-large": 0.1837
+          },
+          "provider_shares": {
+            "anthropic": 0.1608,
+            "local": 0.0117,
+            "mistral": 0.1837,
+            "openai": 0.6438
+          },
+          "model_hhi": 0.239,
+          "provider_hhi": 0.4742,
+          "failure_modes": {
+            "ok": 2324,
+            "quality_fail": 3,
+            "rate_limited": 73
+          },
+          "operational_complexity": {
+            "registry_entries_in_catalog": 7,
+            "providers_in_catalog": 4,
+            "local_entries": 2,
+            "extra_local_processes": 1
+          }
+        }
+      ],
+      "comparisons_vs_hosted_only": {
+        "local-only": {
+          "delta_success_rate": 0.255,
+          "delta_cost_total_cents": -1.7174,
+          "delta_latency_p95_ms": 2819.0,
+          "delta_mean_utility": -0.1284,
+          "delta_utility_vs_single_attempt_oracle": -0.9386,
+          "delta_tasks_per_sec": -45.3255
+        },
+        "mixed-shipped": {
+          "delta_success_rate": 0.0,
+          "delta_cost_total_cents": 0.0,
+          "delta_latency_p95_ms": 0.0,
+          "delta_mean_utility": 0.0,
+          "delta_utility_vs_single_attempt_oracle": -0.8102,
+          "delta_tasks_per_sec": 0.0
+        },
+        "mixed-local-first": {
+          "delta_success_rate": 0.4867,
+          "delta_cost_total_cents": 679.1503,
+          "delta_latency_p95_ms": 6344.2,
+          "delta_mean_utility": 0.2037,
+          "delta_utility_vs_single_attempt_oracle": -0.6065,
+          "delta_tasks_per_sec": -45.1745
+        },
+        "oracle": {
+          "delta_success_rate": 0.7329,
+          "delta_cost_total_cents": 971.3163,
+          "delta_latency_p95_ms": 994.8,
+          "delta_mean_utility": 0.8102,
+          "delta_utility_vs_single_attempt_oracle": 0.0,
+          "delta_tasks_per_sec": -23.9571
+        }
+      },
+      "stability_flip_rate_under_jitter": {
+        "hosted-only": 0.0,
+        "local-only": 0.0,
+        "mixed-shipped": 0.0,
+        "mixed-local-first": 0.0075
+      },
+      "leakage_violations": {
+        "hosted-only": 0,
+        "local-only": 0,
+        "mixed-shipped": 0,
+        "mixed-local-first": 0
+      },
+      "leakage_positive_control_oracle_changes": 741,
+      "portability": {
+        "model_egress_rows": 20,
+        "approved_gateway_present": true,
+        "new_direct_callers_added": 0
+      }
+    }
+  }
+}
