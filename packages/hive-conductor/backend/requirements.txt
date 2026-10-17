@@ -1,9 +1,9 @@
 pyyaml>=6.0.0,<7
 fastapi>=0.115.0,<1
 uvicorn[standard]>=0.32.0,<1
-pydantic>=2.0.0,<3
+pydantic>=2.4.0,<3
 pydantic-settings>=2.0.0,<3
-python-multipart>=0.0.9,<1
+python-multipart>=0.0.31,<1
 httpx>=0.27.0,<1
 # langfuse was listed here and imported nowhere. The Langfuse integration
 # is backend/adapters/telemetry_langfuse.py, which talks OTLP to a Langfuse
@@ -25,12 +25,23 @@ bcrypt>=4.0.0,<6
 cryptography>=50.0.0,<51
 # maistro-core's OAuth module imports PyJWT at import time; hive-conductor
 # consumes core via sys.path, so core's deps must be restated here (#839).
-pyjwt[crypto]>=2.10,<3
+# Kept in step with core's floor: 2.14 is the first release fixing
+# CVE-2026-102274, and this file is installed without the workspace lockfile.
+pyjwt[crypto]>=2.14,<3
+# The backend imports maistro.identity through its auth wiring. The CI backend
+# suite uses the system interpreter after installing this file, so the core
+# identity extra must be restated here rather than relying on the uv workspace
+# environment (which already carries it). These versions are the cp312/cp313
+# wheel set used by the shipped Python 3.13 image; update them with the image
+# import smoke test, not as an unlocked transitive refresh.
+bip-utils==2.12.1
+coincurve==21.0.0
+pynacl==1.6.2
 # Transitive consumers may otherwise resolve 1.1.x. Trivy blocks 1.1.2 for
 # GHSA-6v7p-g79w-8964; 1.2.1 is the first fixed release.
 msgpack>=1.2.1,<2
 structlog>=24.1.0,<26
-pytest>=8.0.0,<10
+pytest>=9.0.3,<10
 pytest-asyncio>=0.25,<2
 pytest-bdd>=8.0.0,<9
 hypothesis>=6.0.0,<7
@@ -41,3 +52,26 @@ sqlalchemy[asyncio]>=2.0.0,<3
 # ran the security scanner on stdlib `re` with no timeout support at all —
 # the exact degraded mode the conditional fallback was deleted for hiding.
 regex>=2024.5.15,<2027
+# Same reason, for the embedded Container on a configured DATABASE_URL (#37):
+# `maistro.persistence` imports asyncpg at import time (core hard dep), and a
+# `sqlite:` URL puts it on core's SQLite stores, which import aiosqlite (core's
+# `sqlite` extra).
+asyncpg>=0.30,<1
+aiosqlite>=0.20,<1
+# The scheduler's configured Container imports maistro.identity during startup;
+# this backend installs maistro-core through sys.path rather than its identity
+# extra, so keep the identity runtime dependency explicit for Python 3.12 CI.
+# The shipped Conductor image is CPython 3.13.15 with the pinned wheel set
+# above; Python 3.14 remains unsupported (no cp314 coincurve wheel), and this
+# marker keeps that boundary enforced outside the image too. See
+# docs/security/CONDUCTOR-IDENTITY-SUPPORT-MATRIX.md.
+bip-utils>=2.9,<3; python_version < "3.14"
+# maistro-core's `sqlite` extra, and its hard `asyncpg` dependency, restated
+# for the same sys.path reason: a `sqlite:` DATABASE_URL (the homelab
+# single-instance backend) makes create_container() import aiosqlite and then
+# maistro.persistence, which imports asyncpg unconditionally. The canonical
+# recovery cadence tests (#62) boot exactly that Container, and the CI backend
+# step installs only this file. The image already has asyncpg via its
+# maistro-core install; restating it here costs the image nothing.
+aiosqlite>=0.20,<1
+asyncpg>=0.30,<1

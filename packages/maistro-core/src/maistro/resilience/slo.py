@@ -20,6 +20,7 @@ lag the budget it reports.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import time
 from collections import deque
@@ -36,6 +37,11 @@ maistro_slo_remaining_budget_seconds = registry.gauge(
     "maistro_slo_remaining_budget_seconds",
     "Unspent error budget per SLO (ADR-038; labels: service_key, slo)",
 )
+
+
+def _service_key_label(service_key: str) -> str:
+    """Return an opaque, fixed-width label instead of publishing key material."""
+    return hashlib.sha256(service_key.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +72,8 @@ class SloDefinition:
     carries whatever a product ROADMAP declares.
     """
 
+    # This is the configured service credential, not a user- or tenant-facing
+    # identifier. `publish` emits only its opaque digest as a metric label.
     service_key: str
     slo: str
     target: float
@@ -196,7 +204,7 @@ class ErrorBudget:
         remaining = self.remaining_seconds(now=now)
         maistro_slo_remaining_budget_seconds.set(
             remaining,
-            service_key=self.definition.service_key,
+            service_key=_service_key_label(self.definition.service_key),
             slo=self.definition.slo,
         )
         return remaining

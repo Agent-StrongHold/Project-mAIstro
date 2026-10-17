@@ -32,7 +32,7 @@ logger = logging.getLogger("maistro.sentinel")
 
 if TYPE_CHECKING:
     from maistro.security._types import AuditLog, AuthContext, PermissionTable
-    from maistro.security.warden.detector import Warden
+    from maistro.security.warden.detector import Warden, WardenContext
 
 
 def check_permission(
@@ -340,6 +340,7 @@ class Sentinel:
             await self._log_audit(
                 boundary="pre_call",
                 user_id=auth.user_id,
+                org_id=auth.org_id,
                 team_id=auth.team_id,
                 tool_name=tool_name,
                 verdict="denied",
@@ -354,6 +355,7 @@ class Sentinel:
             await self._log_audit(
                 boundary="pre_call",
                 user_id=auth.user_id,
+                org_id=auth.org_id,
                 team_id=auth.team_id,
                 tool_name=tool_name,
                 verdict="denied",
@@ -376,6 +378,7 @@ class Sentinel:
         await self._log_audit(
             boundary="pre_call",
             user_id=auth.user_id,
+            org_id=auth.org_id,
             team_id=auth.team_id,
             tool_name=tool_name,
             verdict="allowed" if verdict.allowed else "denied",
@@ -391,9 +394,11 @@ class Sentinel:
         tool_name: str,
         result: str,
         auth: AuthContext,
+        *,
+        context: list[WardenContext] | None = None,
     ) -> str:
-        """Return the sanitized tool result, or the established refusal text."""
-        outcome = await self.process_output(tool_name, result, auth)
+        """Return sanitized output after scanning its bounded prior context."""
+        outcome = await self.process_output(tool_name, result, auth, context=context)
         if outcome.blocked:
             return "[Tool result blocked by Warden -- contained injection attempt]"
         return outcome.sanitized_text
@@ -403,6 +408,8 @@ class Sentinel:
         tool_name: str,
         result: str,
         auth: AuthContext,
+        *,
+        context: list[WardenContext] | None = None,
     ) -> GateResult:
         """Apply the post-call policy and return its structured security outcome.
 
@@ -416,7 +423,8 @@ class Sentinel:
 
         # SECURITY-REVIEW: agent/tool output is untrusted until Warden and PII
         # processing complete; do not log or persist ``result`` before this gate.
-        warden_verdict = await self._warden.scan(processed, "tool_result")
+        scan_kwargs = {"context": context} if context else {}
+        warden_verdict = await self._warden.scan(processed, "tool_result", **scan_kwargs)
         if not warden_verdict.clean:
             violations.append(
                 Violation(
@@ -434,6 +442,7 @@ class Sentinel:
             await self._log_audit(
                 boundary="post_call",
                 user_id=auth.user_id,
+                org_id=auth.org_id,
                 team_id=auth.team_id,
                 tool_name=tool_name,
                 verdict="flagged",
@@ -463,6 +472,7 @@ class Sentinel:
         await self._log_audit(
             boundary="post_call",
             user_id=auth.user_id,
+            org_id=auth.org_id,
             team_id=auth.team_id,
             tool_name=tool_name,
             verdict="clean" if not violations else "flagged",
@@ -522,6 +532,7 @@ class Sentinel:
         *,
         boundary: str,
         user_id: str,
+        org_id: str = "",
         team_id: str = "",
         tool_name: str,
         verdict: str,
@@ -538,6 +549,7 @@ class Sentinel:
                 AuditEntry(
                     boundary=boundary,
                     user_id=user_id,
+                    org_id=org_id,
                     team_id=team_id,
                     tool_name=tool_name,
                     verdict=verdict,

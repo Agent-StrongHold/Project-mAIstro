@@ -141,14 +141,11 @@ five are in.
   but `maistro.identity` cannot import or generate, `setup.py` fails the
   request (503 with an actionable detail) **before creating any account** —
   completing setup without the mnemonic would lock the one-shot endpoint
-  behind its 409 guard with no later provisioning step. The operator retries
-  after repairing the dependency, or deselects the module. Installing the
-  `identity` extra in the hive-conductor image is blocked for now: the
-  Chainguard base is Python 3.14 and `coincurve` (via `bip-utils`) publishes
-  no cp314 wheels (21.0.0 caps at cp313) while its source build is broken
-  against current cffi — restoring in-image identity moves to Phase 3 (pin a
-  3.13 wheel-building stage, or pick up coincurve's cp314 wheels when
-  released).
+  behind its 409 guard with no later provisioning step. The shipped
+  hive-conductor image is the supported identity profile: it pins CPython
+  3.13.15 and the tested `bip-utils`/`coincurve`/`pynacl` wheel set. A no-crypto
+  setup remains supported as an explicit alternative and does not advertise
+  seed-dependent controls. See the [Conductor identity support matrix](../security/CONDUCTOR-IDENTITY-SUPPORT-MATRIX.md).
 
 ### Phase 1 — wizard collects credentials and entropy
 

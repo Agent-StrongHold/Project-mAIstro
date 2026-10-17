@@ -3,17 +3,17 @@ id: SPEC-182
 title: A2A delegation broker — implementation
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-05-29
 accepted: null
 implemented: null
-substrate:
-  - maistro-engine#ADR-058
+substrate: []
 implements:
   - maistro-engine#ADR-058
 related:
   - maistro-engine#SPEC-008
   - maistro-engine#SPEC-181
+  - maistro-engine#ADR-058
 contracts:
   - boundary
   - behavioral
@@ -28,11 +28,15 @@ history:
   - status: Proposed
     date: 2026-05-29
   - status: Accepted
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-182: A2A delegation broker — implementation
 
-Implements [ADR-058](../adr/ADR-058-a2a-delegation-protocol.md). Builds on the delegation execution-bridge fix in PR #39 (`fix/agents-delegation`).
+Relates to [ADR-058](../adr/ADR-058-a2a-delegation-protocol.md). ADR-058 remains Proposed and is retained as design context only; it is not shipped authority for this SPEC. Builds on the delegation execution-bridge fix in PR #39 (`fix/agents-delegation`).
 
 > **Implementation status (2026-07-02):** Phases 1-2 are implemented
 > (`a2a/__init__.py` export surface, lifecycle/log/metadata fixes,
@@ -43,7 +47,7 @@ Implements [ADR-058](../adr/ADR-058-a2a-delegation-protocol.md). Builds on the d
 
 ## Context
 
-The `maistro.a2a` scaffold exists but is unexported and unwired (empty `__init__.py`), and delegation intent (`ReasoningResult.delegate_to`) dead-ends. ADR-058 defines one protocol with two transports (local, federated) behind an `A2ABroker`, with a `DelegationBudget` loop-guard and SSRF-safe egress.
+The `maistro.a2a` scaffold exists but is unexported and unwired (empty `__init__.py`), and delegation intent (`ReasoningResult.delegate_to`) dead-ends. ADR-058 sketches one protocol with two transports (local, federated) behind an `A2ABroker`, with a `DelegationBudget` loop-guard and SSRF-safe egress; the operative authority for shipped delegation behavior is this SPEC.
 
 ## Decision (target)
 

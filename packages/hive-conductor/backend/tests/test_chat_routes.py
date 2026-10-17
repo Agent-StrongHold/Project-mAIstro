@@ -21,6 +21,9 @@ if str(_BACKEND) not in sys.path:
 
 import stores  # noqa: E402
 
+# Model-reaching turns are admitted as canonical chat Runs (#1037).
+pytestmark = pytest.mark.usefixtures("chat_run_spine")
+
 
 def _clear(store) -> None:
     for key in list(store.keys()):

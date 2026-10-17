@@ -23,13 +23,50 @@ The checked-in rollout record currently says:
 | Branch | `develop` |
 | Merge method | `SQUASH` |
 | Max entries building | 3 |
-| PRs merged per group | 1 |
+| PRs merged per group | 3 |
 | Minimum merge group | 1 |
-| Minimum wait | 0 minutes |
+| Minimum wait | 2 minutes |
 | Grouping | `ALLGREEN` |
 | Check response timeout | 60 minutes |
 
-One PR per merge group was deliberate for rollout. Widening grouping was intended to require a separate reviewed change after real queue behavior was measured.
+One PR per merge group was deliberate for rollout, and widening grouping was
+intended to require a separate reviewed change once real queue behavior was
+measured. That reviewed change is this batching posture: a single verification
+cycle now covers up to three compatible candidates, and a group forms once
+either three candidates wait or the two-minute wait elapses with at least one
+present. `scripts/check-required-checks.py` enforces the batching bounds (1–3
+per group; waits limited to 0, 2, 3, or 5 minutes), pins `ALLGREEN` grouping,
+and fails closed on anything else.
+
+How a group actually fails, read off the Actions API rather than assumed:
+GitHub builds one entry branch per queued PR, `gh-readonly-queue/develop/
+pr-N-<sha>`, on top of the entry ahead of it — the trailing SHA is that
+entry's head, or the develop head at the front of the queue — and every entry
+runs the full required set on its own tree. Under `ALLGREEN` a failing entry
+is ejected and the entries behind it are rebuilt without it, so one bad
+candidate costs the PRs behind it one rebuild, not their place in the queue.
+`ALLGREEN` is what makes that safe: `HEADGREEN` would land every member on
+the strength of the head entry alone, which is why the gate pins it.
+
+Two consequences follow for the tooling around the queue:
+
+- **Failed heads are quarantined, not re-queued.** The enqueue controller
+  (`scripts/check-enqueue-merge-queue.py`, every 30 minutes and after each
+  Gates Ran completion) used to re-request any PR whose exact head was still
+  policy-green — including a head that had just failed inside the queue,
+  which then dragged each new group through a rebuild. It now reads the
+  recent merge-group run history, attributes each failed entry to its own
+  tree or to a failed entry ahead of it via the branch-name chain, and holds
+  any head whose own entry failed after that head's `gates-ran` first went
+  green (the earliest moment a queue entry for it could exist). A new push or
+  a human enqueue lifts the hold; the bot never does. If the history cannot
+  be read, the controller refuses every admission rather than guess.
+- **The latency measurement attributes rebuilds.** `measure-merge-latency.py`
+  keys every candidate to its own `pr-N` (each grouped PR has its own entry
+  and run set, so batching omits none) and now walks the same chain to report
+  how many dequeued candidates were rebuilt behind another PR's failure — the
+  share of the retry multiplier the batch itself pays, which is the
+  before/after figure this posture change should move.
 
 ## Live ruleset read-back
 
@@ -48,7 +85,7 @@ The active default-branch ruleset named `Pr merge`, read back on 2026-08-30, rep
 | Grouping | `ALLGREEN` |
 | Check response timeout | 60 minutes |
 
-This differs from the bootstrap file's `3`/`1` build/group limits. That is configuration drift to reconcile explicitly; it is **not** evidence that the queue is inactive. The live ruleset is the authority for whether GitHub currently serializes merges.
+This differs from the bootstrap file's `3`/`3` build/group limits. That is configuration drift to reconcile explicitly; it is **not** evidence that the queue is inactive. The live ruleset is the authority for whether GitHub currently serializes merges.
 
 The same read-back shows `gates-ran` among the required contexts and strict freshness still enabled. It does not currently list `autonomous-merge-admissibility` among those required contexts, so the older rollout checklist's desired protection alignment should not be described as completed merely because the queue itself is live.
 
@@ -94,7 +131,7 @@ Together those facts prove that `develop` merge freshness is queue-owned today. 
 
 Queue activation and configuration parity are separate questions. The following are still worth reconciling in their own reviewed changes:
 
-- decide whether the live `10`/`10` build/group limits are intentional, then update `.github/merge-queue.json` or restore the reviewed `3`/`1` live settings;
+- decide whether the live `10`/`10` build/group limits are intentional, then update `.github/merge-queue.json` or restore the reviewed `3`/`3` live settings;
 - reconcile the live required-status set with the checked-in required-check contract, including the intended status of `autonomous-merge-admissibility`; and
 - keep strict freshness unless a separate reviewed protection change demonstrates that relaxing it preserves the same merge-boundary guarantees.
 

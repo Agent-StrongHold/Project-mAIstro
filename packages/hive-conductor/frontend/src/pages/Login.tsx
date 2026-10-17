@@ -206,7 +206,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
               background: mode === "login" ? "var(--accent)" : "transparent",
               color: mode === "login" ? "var(--paper)" : "var(--ink)",
               fontFamily: "var(--mono)",
-              fontSize: 10,
+              fontSize: 12,
             }}
             onClick={() => switchMode("login")}
           >
@@ -222,7 +222,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
               background: mode === "signup" ? "var(--accent)" : "transparent",
               color: mode === "signup" ? "var(--paper)" : "var(--ink)",
               fontFamily: "var(--mono)",
-              fontSize: 10,
+              fontSize: 12,
             }}
             onClick={() => switchMode("signup")}
           >
@@ -238,7 +238,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
               border: "1px solid var(--danger)",
               borderRadius: 4,
               fontFamily: "var(--mono)",
-              fontSize: 9,
+              fontSize: 12,
               color: "var(--danger)",
             }}
           >
@@ -321,7 +321,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
               <div
                 style={{
                   fontFamily: "var(--mono)",
-                  fontSize: 9,
+                  fontSize: 12,
                   color: "var(--pencil)",
                   lineHeight: 1.4,
                 }}

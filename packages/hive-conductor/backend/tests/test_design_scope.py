@@ -23,6 +23,13 @@ if str(_BACKEND) not in sys.path:
 from fastapi import HTTPException  # noqa: E402
 from routes import design as design_routes  # noqa: E402
 
+from maistro_design.types import (  # noqa: E402
+    ArtifactKind,
+    ArtifactNode,
+    DesignOutput,
+    OutputFormat,
+)
+
 pytestmark = [pytest.mark.contract("boundary")]
 
 
@@ -98,6 +105,48 @@ class TestTheRoutesPassItDown:
         await design_routes.get_design_project("p-1", _Request(org_id="org-7"))
         assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
 
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_fetching_a_persisted_output_returns_its_content_and_provenance(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        output = DesignOutput(
+            root=ArtifactNode(
+                key="prompt-stack",
+                kind=ArtifactKind.FILE,
+                format=OutputFormat.MARKDOWN,
+                value="prepared prompt",
+            ),
+            metadata={"production_stage": "prompt_preparation", "visual_generation": False},
+            run_id="run-1",
+            node_run_id="node-1",
+            attempt_id="attempt-1",
+        )
+
+        class _Project:
+            outputs: ClassVar[list[DesignOutput]] = [output]
+
+            @staticmethod
+            def to_dict() -> dict[str, Any]:
+                return {"id": "p-1"}
+
+        store = _Store(project=_Project())
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: store)
+        answer = await design_routes.get_design_project("p-1", _Request(org_id="org-7"))
+
+        assert answer["outputs"] == [
+            {
+                "format": "markdown",
+                "content": "prepared prompt",
+                "url": None,
+                "trust_tier": "t3",
+                "metadata": {"production_stage": "prompt_preparation", "visual_generation": False},
+                "artifact_kind": "file",
+                "run_id": "run-1",
+                "node_run_id": "node-1",
+                "attempt_id": "attempt-1",
+            }
+        ]
+
     @pytest.mark.ac("SPEC-083026-6bc5/AC-3")
     async def test_a_project_outside_the_scope_is_a_404_not_a_403(
         self, ready: None, monkeypatch: pytest.MonkeyPatch
@@ -120,11 +169,43 @@ class TestTheRoutesPassItDown:
         assert raised.value.status_code == 503
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_listing_without_persistence_is_a_503_not_an_empty_project(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: None)
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.list_design_projects(_Request())
+        assert raised.value.status_code == 503
+        assert "persistence unavailable" in str(raised.value.detail).lower()
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_listing_with_an_uninitialized_store_is_a_503_not_a_500(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def missing_store() -> Any:
+            raise RuntimeError("DesignProjectStore not initialized")
+
+        monkeypatch.setattr(design_routes, "get_design_store", missing_store)
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.list_design_projects(_Request())
+        assert raised.value.status_code == 503
+        assert "not initialized" in str(raised.value.detail)
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_rendering_without_persistence_is_a_503_not_a_500(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: None)
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_render_job("p-1", _Request())
+        assert raised.value.status_code == 503
+        assert "persistence unavailable" in str(raised.value.detail).lower()
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
     async def test_rendering_a_project_carries_the_scope(
         self, ready: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Rendering returns the project's content, so a render route that
-        never asked whose it was is the same leak as the fetch route."""
+        """Rendering must not disclose a project outside the caller's scope."""
         store = _Store(project=None)
         monkeypatch.setattr(design_routes, "get_design_store", lambda: store)
         with pytest.raises(HTTPException) as raised:
@@ -132,21 +213,81 @@ class TestTheRoutesPassItDown:
         assert raised.value.status_code == 404
         assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
 
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_rendering_an_in_scope_project_is_disabled_until_canvas_is_connected(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = _Store(project=object())
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: store)
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_render_job("p-1", _Request(org_id="org-7"))
+        assert raised.value.status_code == 501
+        assert "canonical Canvas rendering seam" in str(raised.value.detail)
+        assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_polling_a_render_job_is_disabled_until_canvas_is_connected(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = _Store(project=object())
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: store)
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.get_render_job_status("p-1", "job-1", _Request(org_id="org-7"))
+        assert raised.value.status_code == 501
+        assert "canonical Canvas rendering seam" in str(raised.value.detail)
+        assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-7")
+    async def test_polling_a_render_job_cannot_probe_a_project_outside_the_scope(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A disabled capability is not an id probe: an unknown or out-of-scope
+        project id answers the same scoped 404, and the existence check runs
+        with the caller's scope, exactly as render creation does."""
+        store = _Store(project=None)
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: store)
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.get_render_job_status("p-1", "job-1", _Request(org_id="org-7"))
+        assert raised.value.status_code == 404
+        assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-7")
+    async def test_a_failing_store_read_while_polling_is_an_honest_500(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the project itself cannot be read there is no truthful job
+        state to report: the failure is explicit, never a fabricated
+        pending/completed status for a job that does not exist."""
+
+        class _BrokenStore:
+            @staticmethod
+            async def get(project_id: str, *, org_id: str) -> Any:
+                raise RuntimeError("row read failed")
+
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: _BrokenStore())
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.get_render_job_status("p-1", "job-1", _Request(org_id="org-7"))
+        assert raised.value.status_code == 500
+        assert "Render job status unavailable" in str(raised.value.detail)
+
     @pytest.mark.ac("SPEC-083026-6bc5/AC-2")
     async def test_rendering_does_not_create_a_local_job_lifecycle(
         self, ready: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Merged boundary from #52: neither render route may hand back a
+        process-local job object; both answer with the explicit unavailable
+        error of the merged seam contract instead."""
+
         class _Project:
             outputs: ClassVar[list[Any]] = []
 
         monkeypatch.setattr(design_routes, "get_design_store", lambda: _Store(project=_Project()))
-        monkeypatch.setattr(design_routes, "get_design_canonical_execution", lambda: object())
         with pytest.raises(HTTPException) as raised:
             await design_routes.create_render_job("p-1", _Request(org_id="org-7"))
         assert raised.value.status_code == 501
-        assert "canonical execution" in str(raised.value.detail)
+        assert "canonical Canvas rendering seam" in str(raised.value.detail)
         with pytest.raises(HTTPException) as polled:
-            await design_routes.get_render_job_status("p-1", "job-1")
+            await design_routes.get_render_job_status("p-1", "job-1", _Request(org_id="org-7"))
         assert polled.value.status_code == 501
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-2")
@@ -199,6 +340,7 @@ class TestTheRoutesPassItDown:
                 return await operation()
 
         monkeypatch.setattr(design_routes, "get_design_engine", lambda: _Engine())
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: object())
         monkeypatch.setattr(design_routes, "get_design_canonical_execution", lambda: _Canonical())
         answer = await design_routes.create_design_project(
             _Request(org_id="org-7", user={"id": "user-1"}), object()
@@ -217,6 +359,78 @@ class TestTheRoutesPassItDown:
             )
         assert raised.value.status_code == 503
         assert "canonical execution spine" in str(raised.value.detail)
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_creation_is_unavailable_without_an_authenticated_principal(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The canonical spine records who asked; an anonymous request must
+        not fall back to a fabricated actor identity."""
+        monkeypatch.setattr(
+            design_routes, "get_design_canonical_execution", lambda: object()
+        )
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_design_project(_Request(org_id="org-7"), object())
+        assert raised.value.status_code == 401
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_creating_without_persistence_is_unavailable_before_engine_runs(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        called = False
+
+        class _Engine:
+            @staticmethod
+            async def generate(*a: Any, **k: Any) -> Any:
+                nonlocal called
+                called = True
+                raise AssertionError("must not prepare a project without persistence")
+
+        class _Canonical:
+            @staticmethod
+            async def generate(*, operation: Any, **_: Any) -> Any:
+                return await operation()
+
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: None)
+        monkeypatch.setattr(design_routes, "get_design_engine", lambda: _Engine())
+        monkeypatch.setattr(design_routes, "get_design_canonical_execution", lambda: _Canonical())
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_design_project(
+                _Request(org_id="org-7", user={"id": "user-1"}), object()
+            )
+        assert raised.value.status_code == 503
+        assert "persistence unavailable" in str(raised.value.detail).lower()
+        assert called is False
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_an_unexpected_preparation_failure_is_an_honest_500_not_generation_language(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A crash inside preparation stays a 500 whose message names
+        preparation. The engine assembles and persists a prompt stack; it does
+        not generate visuals, so even its failures must not read as a
+        generation that ran."""
+
+        class _Engine:
+            @staticmethod
+            async def generate(*a: Any, **k: Any) -> Any:
+                raise RuntimeError("prompt assembler exploded")
+
+        class _Canonical:
+            @staticmethod
+            async def generate(*, operation: Any, **_: Any) -> Any:
+                return await operation()
+
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: object())
+        monkeypatch.setattr(design_routes, "get_design_engine", lambda: _Engine())
+        monkeypatch.setattr(design_routes, "get_design_canonical_execution", lambda: _Canonical())
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_design_project(
+                _Request(org_id="org-7", user={"id": "user-1"}), object()
+            )
+        assert raised.value.status_code == 500
+        assert "Project preparation failed" in str(raised.value.detail)
+        assert "Generation failed" not in str(raised.value.detail)
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-2")
     async def test_creating_a_project_with_a_blank_request_scope_is_refused(
