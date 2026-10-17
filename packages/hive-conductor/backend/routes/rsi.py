@@ -8,6 +8,7 @@ Greenfield mode (entry B, benchmark tournament) is scaffolded.
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from pathlib import Path
 from typing import Any, Literal
@@ -17,6 +18,7 @@ from pydantic import BaseModel, ConfigDict
 from services import rsi_execution_policy
 
 router = APIRouter(tags=["rsi"])
+logger = logging.getLogger("hive.rsi.routes")
 
 
 class StartRunBody(BaseModel):
@@ -187,8 +189,12 @@ async def start_run(body: StartRunBody) -> dict:
         repo = rsi_execution_policy.resolve_repo(body.repo_path)
         profile = rsi_execution_policy.resolve_test_profile(body.test_profile)
         isolation = rsi_execution_policy.require_isolation()
-    except rsi_execution_policy.RsiPolicyError as refusal:
-        raise HTTPException(status_code=400, detail=str(refusal)) from refusal
+    except rsi_execution_policy.RsiPolicyError:
+        logger.exception("RSI execution policy rejected a run")
+        raise HTTPException(
+            status_code=400,
+            detail="RSI execution policy rejected the run; check repository and test profile",
+        ) from None
 
     config = {
         "repo_path": str(repo),

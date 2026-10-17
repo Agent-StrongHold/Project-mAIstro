@@ -44,7 +44,7 @@ class TestTheExploit:
         )
 
         assert response.status_code == 400
-        assert "not beneath an authorized root" in response.json()["detail"]
+        assert "RSI execution policy rejected" in response.json()["detail"]
 
     def test_a_shell_command_is_refused(self, admin_client, tmp_path: Path) -> None:
         """The payload writes a canary. The assertion is that it does not
@@ -97,7 +97,7 @@ class TestTheExploit:
         )
 
         assert response.status_code == 400
-        assert "unknown test profile" in response.json()["detail"]
+        assert "RSI execution policy rejected" in response.json()["detail"]
 
 
 class TestPathContainment:

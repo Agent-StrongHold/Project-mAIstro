@@ -84,13 +84,40 @@ async def execute_dag(dag_data: dict, **kwargs: Any) -> dict[str, Any]:
     return result
 
 
+def public_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Copy a canonical result for public transport and Recent Runs storage.
+
+    Failed-node responses are exception diagnostics, not model output. Keep
+    the canonical record unchanged while HTTP, WS and reconnect/SSE views
+    share the same safe failure text.
+    """
+    projected = {
+        **result,
+        "node_results": {
+            node_id: (
+                node
+                if node.get("success")
+                else {**node, "response": "DAG node failed; see server logs"}
+            )
+            for node_id, node in result.get("node_results", {}).items()
+        },
+    }
+    if result.get("error") or result.get("status") != "completed":
+        projected["error"] = "DAG execution failed; see server logs"
+    return projected
+
+
 def _node_frames(result: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
             "status": "node_complete",
             "node_id": node_id,
             "role": node_result.get("role", "worker"),
-            "response": node_result.get("response", ""),
+            "response": (
+                node_result.get("response", "")
+                if node_result.get("success")
+                else "DAG node failed; see server logs"
+            ),
             "success": bool(node_result.get("success")),
             "run_id": result.get("run_id"),
         }
@@ -156,7 +183,11 @@ def _live_node_frame(event: dict[str, Any]) -> dict[str, Any]:
         "status": "node_complete",
         "node_id": event.get("node_id"),
         "role": event.get("role", "worker"),
-        "response": event.get("response", ""),
+        "response": (
+            event.get("response", "")
+            if event.get("kind") == "node_completed"
+            else "DAG node failed; see server logs"
+        ),
         "success": event.get("kind") == "node_completed",
         "run_id": event.get("run_id"),
     }
@@ -186,6 +217,8 @@ class _LiveSink:
         self.seq_by_node: dict[str, int | None] = {}
 
     async def __call__(self, event: dict[str, Any]) -> None:
+        if event.get("kind") == "node_failed":
+            event = {**event, "response": "DAG node failed; see server logs"}
         run_id = str(event.get("run_id") or "")
         if run_id:
             self.run_id = run_id
@@ -282,7 +315,7 @@ async def _reconciled_frames(
     (#1183).
     """
     if on_result is not None:
-        await on_result(result)
+        await on_result(public_result(result))
     run_id = str(result.get("run_id") or fallback_run_id)
     if missed_live_frames:
         # Explicit discontinuity marker (#1183): live frames were lost to a
@@ -312,10 +345,11 @@ def _completed_terminal(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _failed_terminal(result: dict[str, Any], exc: CanonicalDagExecutionError) -> dict[str, Any]:
+    logger.warning("Canonical DAG Run failed: run_id=%s", result.get("run_id"), exc_info=exc)
     return {
         "status": result.get("status", "failed"),
         "run_id": result.get("run_id"),
-        "error": str(exc),
+        "error": "DAG execution failed; see server logs",
     }
 
 
@@ -339,7 +373,7 @@ async def _replay_stream(
         terminal = _completed_terminal(result)
 
     if on_result is not None:
-        await on_result(result)
+        await on_result(public_result(result))
     for frame in _node_frames(result):
         yield frame
     yield terminal

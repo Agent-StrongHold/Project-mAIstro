@@ -226,8 +226,14 @@ def test_run_dag_canonical_failure_stays_failed(
         "status": "failed",
         "run_id": "run-failed-1",
         "cycles": 1,
-        "node_results": {"n1": {"role": "worker", "success": False, "response": "node failed"}},
-        "error": "node failed",
+        "node_results": {
+            "n1": {
+                "role": "worker",
+                "success": False,
+                "response": "postgresql://operator:private-password@internal-db/private/path",
+            }
+        },
+        "error": "postgresql://operator:private-password@internal-db/private/path",
     }
 
     async def fail(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
@@ -242,7 +248,8 @@ def test_run_dag_canonical_failure_stays_failed(
     assert body["status"] == "failed"
     assert body["execution_id"] == "run-failed-1"
     assert body["run_id"] == "run-failed-1"
-    assert "node failed" in body["error"]
+    assert body["error"] == "DAG execution failed; see server logs"
+    assert "private-password" not in response.text
 
     from services.dag_run_store import get_dag_run_store
 

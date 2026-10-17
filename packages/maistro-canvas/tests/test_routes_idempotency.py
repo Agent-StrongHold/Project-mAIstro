@@ -215,3 +215,19 @@ async def test_conflicting_retry_after_terminal_is_409_not_500(
     )
 
     assert conflicting.status_code == 409, conflicting.text
+
+
+async def test_integrity_error_does_not_expose_internal_diagnostics(harness, monkeypatch):
+    from maistro.runs.store import RunIntegrityError
+
+    secret = "postgresql://operator:private-password@internal-db/private/path"
+
+    async def fail(*args, **kwargs):
+        raise RunIntegrityError(secret)
+
+    monkeypatch.setattr(CanvasExecutor, "start_job", fail)
+    client, _ = harness
+    response = client.post("/api/canvas/canvas-1/layers/layer-1/generate", json={"prompt": "safe"})
+    assert response.status_code == 409
+    assert response.json()["code"] == "IDEMPOTENCY_KEY_CONFLICT"
+    assert secret not in response.text

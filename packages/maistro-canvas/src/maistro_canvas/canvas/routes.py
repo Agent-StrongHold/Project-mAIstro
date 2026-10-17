@@ -608,7 +608,7 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
             RefineNoSourceError,
         ) as exc:
             return _error(exc)
-        except RunIntegrityError as exc:
+        except RunIntegrityError:
             # A same idempotency key retried with different inputs, once the
             # earlier operation is no longer active to answer the in-flight
             # check above. A deterministic 409, not the generic 500 this
@@ -616,9 +616,13 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
             # as -- `RunIntegrityError` is a core canonical-execution error,
             # not one of the Canvas domain errors `_error()`/
             # `_ERROR_STATUS_MAP` above know how to translate.
+            logger.warning("Canvas generation admission conflict", exc_info=True)
             return JSONResponse(
                 status_code=409,
-                content={"code": "IDEMPOTENCY_KEY_CONFLICT", "detail": str(exc)},
+                content={
+                    "code": "IDEMPOTENCY_KEY_CONFLICT",
+                    "detail": "idempotency key conflicts with an existing operation",
+                },
             )
 
         return JSONResponse(

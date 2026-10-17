@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 from services.request_principal import optional_actor_id
 
 router = APIRouter(tags=["evolution"])
+logger = logging.getLogger("hive.evolution.routes")
 
 
 def _actor_principal_id(request: Request) -> str | None:
@@ -23,7 +26,13 @@ def evolution_status() -> dict:
         from services.evolution import get_evolution_service
 
         svc = get_evolution_service()
-        return svc.status()
+        status = dict(svc.status())
+        # Stored diagnostics can contain provider credentials and local paths.
+        if status.get("last_error"):
+            status["last_error"] = "evolution cycle failed; see server logs"
+        if status.get("availability_reason"):
+            status["availability_reason"] = "evolution execution unavailable; see server logs"
+        return status
     except RuntimeError:
         return {
             "running": False,
@@ -174,27 +183,44 @@ async def trigger_cycle(request: Request) -> dict:
         svc = get_evolution_service()
         run_id = await svc._run_one_cycle(actor_principal_id=_actor_principal_id(request))
         return {"status": "completed", "cycle_count": svc.cycle_count, "run_id": run_id}
-    except EvolutionServiceNotStarted as exc:
+    except EvolutionServiceNotStarted:
+        logger.warning("Evolution service is not started", exc_info=True)
         raise HTTPException(
             status_code=503,
             detail={
                 "code": "evolution_unavailable",
                 "availability": "unavailable",
-                "message": str(exc),
+                "message": "evolution execution unavailable; see server logs",
             },
         ) from None
     except EvolutionUnavailableError as exc:
+        logger.warning("Evolution execution unavailable", exc_info=True)
         raise HTTPException(
             status_code=503,
             detail={
                 "code": "evolution_unavailable",
                 "availability": exc.availability,
-                "message": str(exc),
+                "message": "evolution execution unavailable; see server logs",
             },
         ) from None
     except CanonicalEvolutionRunError as exc:
         # The Run was admitted and durably terminalized; this is execution
         # failure, not service availability failure. Preserve its identity.
-        raise HTTPException(status_code=500, detail=exc.as_detail()) from None
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        logger.warning("Canonical evolution Run failed: run_id=%s", exc.run_id, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "canonical_run_failed",
+                "run_id": exc.run_id,
+                "status": exc.status.value,
+                "diagnostic": "evolution cycle failed; see server logs",
+                "message": "evolution cycle failed; see server logs",
+            },
+        ) from None
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Evolution cycle failed before completion")
+        raise HTTPException(
+            status_code=500, detail="evolution cycle failed; see server logs"
+        ) from None
