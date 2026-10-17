@@ -35,6 +35,7 @@ async def wire_goal_store(
     conn: Any,
     *,
     pg_pool: Any = None,
+    require_postgres: bool = False,
 ) -> GoalStore:
     """Return the Goal store on the deployment's selected database backend.
 
@@ -50,6 +51,8 @@ async def wire_goal_store(
 
         await ensure_goal_schema(pg_pool)
         return PgGoalStore(pg_pool)
+    if require_postgres:
+        raise RuntimeError("Canonical Goal storage requires PostgreSQL; refusing fallback")
     if conn is not None:
         from maistro.goals.sqlite_store import SqliteGoalStore
 
