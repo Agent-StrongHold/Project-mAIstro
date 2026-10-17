@@ -398,3 +398,21 @@ gate also remains blocked solely because the leaf is intentionally unreachable.
 No contract, ledger, grant, or artificial-consumer change was made by this
 verification; the parent integration still needs the real consumer and prior
 trusted-base authorization.
+
+## CI-repair verification at assigned head (`fd4f4b288418`)
+
+The required CI-argv Vulture command was executed with
+`RATCHET_BASE_REV=ac7370141e8e61bd6f352bca35ed0b505104aadb`; it exits **1**
+only because the trusted base authorizes none of the five required
+`AdmissionAssessment` identities at `admission_identity.py:515-520`. The
+candidate ledger remains exact (1,327 scan findings and 1,327 ledger rows),
+so the permitted per-identity amendment is already present and there is no
+additional row to add or remove. The checker itself confirms that a candidate
+update cannot authorize this debt.
+
+Focused validation at this head is green: mypy succeeds, 79 contract tests
+pass, and the recorded core-suite inventory is 16,439 node IDs. The
+reachability and ratchet-provenance commands remain red on the single
+intentionally unwired `maistro.runs.admission_identity` module. A real parent
+#1845 consumer and a separately landed trusted-base authorization are required;
+this leaf cannot validly add either a fake consumer or a self-grant.
