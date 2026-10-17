@@ -103,6 +103,13 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 from maistro.observability.metrics import registry
 from maistro.tasks.models import TaskCreate
 from maistro.types.errors import ConfigError
+from maistro.tasks.admission_codec import (
+    AdmissionRecordV2,
+    LegacyAdmissionRecord,
+    AdmissionRowDecodeError,
+    decode_admission_header,
+    decode_admission_record,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
@@ -1087,10 +1094,11 @@ class SqliteTaskIdempotencyStore(_ClaimFlow):
             return changed
 
 
-def _row_of(row: Any) -> AdmissionRecord:
-    """One positional row — the columns in each SELECT's order, ``scope_key``
-    first — as its record. Indexed, not mapped: both drivers hand positionals
-    here, and the select spells its column order directly above the call."""
+def _row_of(row: Any) -> AdmissionRecord | None:
+    """Decode the admission row into an AdmissionRecord using the admission codec.
+
+    If the row cannot be decoded, return None.
+    """
     return AdmissionRecord(
         claim_token=row[1],
         fingerprint=row[2],
