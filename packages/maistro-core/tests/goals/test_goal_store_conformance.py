@@ -605,3 +605,20 @@ async def _refusal_of(awaitable):
     except GoalNotVisible as refused:
         return refused
     raise AssertionError("expected GoalNotVisible")
+
+@pytest.mark.parametrize("invalid_agent_id", ["", " ", "  agent", "agent  "])
+async def test_scoped_reassignment_rejects_invalid_owner(scoped, invalid_agent_id: str) -> None:
+    store, seam = scoped
+    goal = await seam.create_goal(
+        principal_id="alice", workspace_id="ws-1", project_id="prj-1",
+        agent_id="original", draft=_draft(),
+    )
+    with pytest.raises(ValueError, match="agent_id"):
+        await seam.reassign_agent(
+            goal.goal_id, invalid_agent_id, principal_id="alice",
+            expected_revision=goal.current_revision, actor="alice",
+        )
+    unchanged = await store.get_goal(goal.goal_id)
+    assert unchanged is not None
+    assert unchanged.agent_id == "original"
+    assert await store.list_goal_transitions(goal.goal_id) == []
