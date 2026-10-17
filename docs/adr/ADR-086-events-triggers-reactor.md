@@ -64,6 +64,37 @@ This event log + trigger + reactor stack is the **substrate for proactive automa
 tasks (ADR-046) and proactive producers are expressed as triggers firing recipes, so they inherit
 at-least-once delivery, idempotency, and crash-replay for free.
 
+> **Amended 2026-09-15 (#1163): a durable consumer's resume position is owned by a leased,
+> fenced cursor and never persisted past an id the log has not committed.** The replay cursor
+> the reactor's legacy-event bridge (`Container.process_durable_events`) resumes from used to be
+> a process-local integer, so every restart replayed the whole retained log. It is now a row in
+> a `ConsumerCursorStore` (`maistro.events.consumer_cursor`; in-memory, SQLite and PostgreSQL
+> twins, table `consumer_cursors`, Alembic revision `036_consumer_cursors`), keyed by a fixed
+> consumer id, with these semantics:
+>
+> - **Ownership.** One consumer id owns one position. The bridge is the single consumer today
+>   (`legacy-event-bridge`); a second consumer of the same log takes its own id and cursor.
+> - **Lease.** Before ticking, a replica `claim`s the cursor with a holder id; the claim returns
+>   the position to resume from or `None` while another holder's lease is live, in which case the
+>   replica skips the tick rather than repeating work the holder already covers. The same holder
+>   renews by claiming again; a lapsed lease can be taken over.
+> - **Fencing.** Every `advance` carries the fencing token its claim returned. A token the store
+>   no longer recognises — the lease was taken over — is refused, and the write is additionally
+>   monotonic (`GREATEST`/`MAX`), so a stale or reordered write cannot move the position back.
+> - **Settled before persisted.** The position is written only after every event up to it has a
+>   terminal invocation on every matching trigger; a crash between processing and the write costs
+>   a replay of already-idempotent work and never skips an event still in flight.
+> - **Gap policy.** PostgreSQL hands out `event_log.id` before the appending transaction
+>   commits, so a lower id can be invisible while a higher one is readable. The bridge processes
+>   what it can see but persists its position only up to the first id the log skipped, and holds
+>   there until the id appears or a grace window (`durable_event_hole_grace_s`, default 60 s)
+>   lapses, after which the hole is treated as an append that aborted and the position moves on.
+>   Handler work is never delayed by a hole; only the persisted resume point is.
+>
+> None of this changes the correctness contract above: the cursor is a resume *optimisation*,
+> and `InvocationStore`'s `(trigger_id, event_id)` claim remains what makes redelivery safe
+> (ADR-082426-82c7, "the occurrence is the claim, not the cursor").
+
 ## Acceptance criteria
 
 - [ ] The event bus delivers each event to its handlers at least once; redelivery is possible and

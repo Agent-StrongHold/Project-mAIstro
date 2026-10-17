@@ -20,7 +20,14 @@ guarantee, not application logic — `ON CONFLICT DO NOTHING` against a composit
 primary key — and `tests/events/test_durable_store_conformance.py` runs
 concurrent writers against a real server rather than asserting it in a comment.
 
-All three take an `asyncpg.Pool` rather than opening their own, matching
+`PgConsumerCursorStore` (#1163) answers the analogous question for the
+legacy-bridge replay cursor: `Container.durable_event_cursor` used to be a
+plain process-local `int`, so a restart always replayed the whole retained
+log. See `events.consumer_cursor` for the full rationale; this module only
+adds the PostgreSQL twin, sharing the same schema-bootstrap/advisory-lock
+path as the other two stores.
+
+All four take an `asyncpg.Pool` rather than opening their own, matching
 `persistence/pg_*` and letting the container own connection lifetime.
 """
 
@@ -28,8 +35,11 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from typing import TYPE_CHECKING, Any
 
+from maistro.events.consumer_cursor import DEFAULT_LEASE_SECONDS as CURSOR_DEFAULT_LEASE_SECONDS
+from maistro.events.consumer_cursor import CursorLease
 from maistro.events.durable_log import LoggedEvent
 from maistro.events.invocations import (
     DEFAULT_LEASE_SECONDS,
@@ -86,6 +96,14 @@ CREATE TABLE IF NOT EXISTS handler_invocations (
     PRIMARY KEY (trigger_id, event_id)
 );
 CREATE INDEX IF NOT EXISTS idx_invocations_event ON handler_invocations(event_id);
+
+CREATE TABLE IF NOT EXISTS consumer_cursors (
+    consumer_id TEXT PRIMARY KEY,
+    position BIGINT NOT NULL DEFAULT 0,
+    holder TEXT NOT NULL DEFAULT '',
+    fencing_token TEXT NOT NULL DEFAULT '',
+    lease_expires_at DOUBLE PRECISION NOT NULL DEFAULT 0
+);
 """
 
 
@@ -96,7 +114,7 @@ _SCHEMA_LOCK_KEY = 0x6D61_6973  # "mais"
 
 
 async def ensure_event_schema(pool: asyncpg.Pool) -> None:
-    """Create all three tables. Idempotent, and safe to call concurrently.
+    """Create all four tables. Idempotent, and safe to call concurrently.
 
     `CREATE TABLE IF NOT EXISTS` is idempotent but **not** serialised: two
     workers that both observe the table as absent can both run the DDL, and one
@@ -375,6 +393,66 @@ class PgInvocationStore:
         return [_row_to_invocation(r) for r in rows]
 
 
+class PgConsumerCursorStore:
+    """PostgreSQL-backed `ConsumerCursorStore` (#1163).
+
+    Same claim/advance shape as `PgInvocationStore.claim`: `claim` is one
+    upsert whose `WHERE` clause is the exclusion test (a row held by a
+    still-live different holder matches nothing and returns nothing), and
+    the `CASE` on `fencing_token` keeps a same-holder renewal's token stable.
+    `advance` is a plain update guarded by that token, with `GREATEST` as a
+    second, independent defence against a stale write moving the position
+    backwards.
+    """
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def ensure_schema(self) -> None:
+        await ensure_event_schema(self._pool)
+
+    async def claim(
+        self,
+        consumer_id: str,
+        *,
+        holder: str,
+        lease_seconds: float = CURSOR_DEFAULT_LEASE_SECONDS,
+    ) -> CursorLease | None:
+        now = time.time()
+        new_token = uuid.uuid4().hex
+        row = await self._pool.fetchrow(
+            """INSERT INTO consumer_cursors
+               (consumer_id, position, holder, fencing_token, lease_expires_at)
+               VALUES ($1, 0, $2, $3, $4)
+               ON CONFLICT (consumer_id) DO UPDATE SET
+                 holder = EXCLUDED.holder,
+                 fencing_token = CASE WHEN consumer_cursors.holder = EXCLUDED.holder
+                                       THEN consumer_cursors.fencing_token
+                                       ELSE EXCLUDED.fencing_token END,
+                 lease_expires_at = EXCLUDED.lease_expires_at
+               WHERE consumer_cursors.lease_expires_at <= $5
+                  OR consumer_cursors.holder = $2
+               RETURNING consumer_id, position, fencing_token, lease_expires_at""",
+            consumer_id,
+            holder,
+            new_token,
+            now + lease_seconds,
+            now,
+        )
+        return _row_to_cursor_lease(row) if row is not None else None
+
+    async def advance(self, consumer_id: str, *, fencing_token: str, position: int) -> bool:
+        row = await self._pool.fetchrow(
+            """UPDATE consumer_cursors SET position = GREATEST(position, $1)
+               WHERE consumer_id = $2 AND fencing_token = $3
+               RETURNING consumer_id""",
+            position,
+            consumer_id,
+            fencing_token,
+        )
+        return row is not None
+
+
 def _row_to_event(row: Any) -> LoggedEvent:
     payload = row["payload"]
     return LoggedEvent(
@@ -410,4 +488,12 @@ def _row_to_invocation(row: Any) -> HandlerInvocation:
         last_error=row["last_error"] or "",
         created_at=float(row["created_at"]),
         lease_expires_at=float(row["lease_expires_at"] or 0),
+    )
+
+
+def _row_to_cursor_lease(row: Any) -> CursorLease:
+    return CursorLease(
+        position=int(row["position"]),
+        fencing_token=row["fencing_token"],
+        expires_at=float(row["lease_expires_at"] or 0),
     )

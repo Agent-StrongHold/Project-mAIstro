@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from fastapi import HTTPException, status
 
-from maistro.workspaces import WorkspaceMembership, WorkspaceNotFound, WorkspaceStore
+from maistro.workspaces import (
+    WorkspaceAction,
+    WorkspaceAuthorizationDenied,
+    WorkspaceAuthorizer,
+    WorkspaceMembership,
+    WorkspaceStore,
+)
 from maistro_server.api.principal import AuthenticatedPrincipal
 
 _workspace_store: WorkspaceStore | None = None
@@ -30,22 +36,33 @@ def user_id(auth: AuthenticatedPrincipal | None) -> str:
     return auth.user_id if auth is not None else "dev"
 
 
+async def _require(
+    store: WorkspaceStore,
+    workspace_id: str,
+    requester_user_id: str,
+    action: WorkspaceAction,
+) -> WorkspaceMembership:
+    try:
+        return await WorkspaceAuthorizer(store).require(requester_user_id, workspace_id, action)
+    except WorkspaceAuthorizationDenied as exc:
+        if exc.membership is not None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Workspace owner permission required",
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace not found",
+        ) from exc
+
+
 async def require_workspace_membership(
     store: WorkspaceStore,
     workspace_id: str,
     requester_user_id: str,
 ) -> WorkspaceMembership:
     """Require membership without disclosing Workspace existence to outsiders."""
-    try:
-        membership = await store.get_membership(workspace_id, user_id=requester_user_id)
-    except WorkspaceNotFound as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Workspace not found",
-        ) from exc
-    if membership is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
-    return membership
+    return await _require(store, workspace_id, requester_user_id, WorkspaceAction.VIEW)
 
 
 async def require_workspace_owner(
@@ -54,13 +71,7 @@ async def require_workspace_owner(
     requester_user_id: str,
 ) -> WorkspaceMembership:
     """Require the canonical Workspace OWNER role."""
-    membership = await require_workspace_membership(store, workspace_id, requester_user_id)
-    if not membership.can_administer:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Workspace owner permission required",
-        )
-    return membership
+    return await _require(store, workspace_id, requester_user_id, WorkspaceAction.ADMINISTER)
 
 
 __all__ = [

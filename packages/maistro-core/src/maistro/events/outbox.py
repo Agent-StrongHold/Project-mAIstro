@@ -33,11 +33,17 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from maistro.events.envelope import EventEnvelope, EventStore, correlated
+from maistro.events.envelope import (
+    EventEnvelope,
+    EventStore,
+    correlated,
+    reconstruct_persisted_event,
+)
 from maistro.observability.correlation import detached_execution_context
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -130,31 +136,33 @@ class SqliteEventOutbox:
         that the drain's statements would not fit. Each statement below is a
         module literal; nothing caller-influenced ever reaches ``execute``.
         """
-        await self._conn.executescript(_TABLE_SCHEMA)
-        cursor = await self._conn.execute("PRAGMA table_info(canonical_event_outbox)")
-        present = {str(row[1]) for row in await cursor.fetchall()}
-        if "stream_id" not in present:
-            await self._conn.execute(
-                "ALTER TABLE canonical_event_outbox ADD COLUMN stream_id TEXT NOT NULL DEFAULT ''"
-            )
-        if "attempts" not in present:
-            await self._conn.execute(
-                "ALTER TABLE canonical_event_outbox ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"
-            )
-        if "last_error" not in present:
-            await self._conn.execute(
-                "ALTER TABLE canonical_event_outbox ADD COLUMN last_error TEXT NOT NULL DEFAULT ''"
-            )
-        if "next_attempt_at" not in present:
-            await self._conn.execute(
-                "ALTER TABLE canonical_event_outbox "
-                "ADD COLUMN next_attempt_at REAL NOT NULL DEFAULT 0"
-            )
-        if "failed_at" not in present:
-            await self._conn.execute("ALTER TABLE canonical_event_outbox ADD COLUMN failed_at REAL")
-        await self._conn.executescript(_INDEX_SCHEMA)
-        await self._conn.commit()
-        await self._backfill_stream_ids()
+        async with serialized_schema_upgrade(self._conn):
+            await execute_schema_script(self._conn, _TABLE_SCHEMA)
+            cursor = await self._conn.execute("PRAGMA table_info(canonical_event_outbox)")
+            present = {str(row[1]) for row in await cursor.fetchall()}
+            if "stream_id" not in present:
+                await self._conn.execute(
+                    "ALTER TABLE canonical_event_outbox ADD COLUMN stream_id TEXT NOT NULL DEFAULT ''"
+                )
+            if "attempts" not in present:
+                await self._conn.execute(
+                    "ALTER TABLE canonical_event_outbox ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"
+                )
+            if "last_error" not in present:
+                await self._conn.execute(
+                    "ALTER TABLE canonical_event_outbox ADD COLUMN last_error TEXT NOT NULL DEFAULT ''"
+                )
+            if "next_attempt_at" not in present:
+                await self._conn.execute(
+                    "ALTER TABLE canonical_event_outbox "
+                    "ADD COLUMN next_attempt_at REAL NOT NULL DEFAULT 0"
+                )
+            if "failed_at" not in present:
+                await self._conn.execute(
+                    "ALTER TABLE canonical_event_outbox ADD COLUMN failed_at REAL"
+                )
+            await execute_schema_script(self._conn, _INDEX_SCHEMA)
+            await self._backfill_stream_ids()
 
     async def _backfill_stream_ids(self) -> None:
         """Derive ``stream_id`` for rows staged before the column existed.
@@ -170,15 +178,13 @@ class SqliteEventOutbox:
         rows = await cursor.fetchall()
         for outbox_id, event_json in rows:
             try:
-                stream_id = EventEnvelope(**json.loads(str(event_json))).stream_id
+                stream_id = reconstruct_persisted_event(**json.loads(str(event_json))).stream_id
             except (TypeError, ValueError, KeyError):
                 continue
             await self._conn.execute(
                 "UPDATE canonical_event_outbox SET stream_id = ? WHERE outbox_id = ?",
                 (stream_id, int(outbox_id)),
             )
-        if rows:
-            await self._conn.commit()
 
     async def stage(self, event: EventEnvelope) -> int:
         """Stage ``event`` in the caller's current transaction.
@@ -195,7 +201,15 @@ class SqliteEventOutbox:
         # publisher that execution has ended -- so the ids would either be lost
         # or, worse, taken from whatever unrelated execution the publisher was
         # running under (Codex, #707).
-        serialized = json.dumps(correlated(event).to_dict(), sort_keys=True)
+        event = correlated(event)
+        # `replace()` with no field changes still re-invokes `__post_init__`,
+        # revalidating `payload`/`provenance` against whatever they hold *right
+        # now*. Freezing the dataclass only blocks attribute rebinding, not
+        # dict mutation, so a caller can mutate either field in place after
+        # constructing a valid envelope and before staging it -- this closes
+        # that gap without duplicating the bound check here (Codex, #1164).
+        event = replace(event)
+        serialized = json.dumps(event.to_dict(), sort_keys=True)
         # The stream is stored so the drain can hold a stream's rows back behind
         # a retrying head without re-parsing every envelope to find it.
         await self._conn.execute(
@@ -264,7 +278,7 @@ class SqliteEventOutbox:
             if stream in blocked_streams:
                 continue
             try:
-                event = EventEnvelope(**json.loads(str(event_json)))
+                event = reconstruct_persisted_event(**json.loads(str(event_json)))
                 # Detached: the publisher is not the producer. Whatever execution it
                 # happens to be running under has nothing to do with an event staged
                 # in another one, and `append` would otherwise fill this event's

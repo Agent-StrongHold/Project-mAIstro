@@ -1,10 +1,45 @@
 from __future__ import annotations
 
+import pytest
+
 
 def test_health_is_public(client):
     r = client.get("/health")
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
+
+
+def test_readiness_reports_the_configured_service_identity(client):
+    r = client.get("/health/ready")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["service_identity"] == "turing-internal"
+
+
+def test_readiness_reports_unavailable_without_a_governed_identity(client, monkeypatch):
+    from maistro.auth import ServiceKeyRegistry
+
+    from ..main import app
+
+    monkeypatch.setattr(app.state, "turing_service_registry", ServiceKeyRegistry())
+    r = client.get("/health/ready")
+    assert r.status_code == 503
+    body = r.json()
+    assert body["status"] == "unavailable"
+    assert "not configured" in body["reason"]
+    # The reason names configuration state, never key material.
+    assert "test-turing-service-key" not in body["reason"]
+
+
+def test_retired_default_credential_cannot_authenticate(client):
+    # The key this deployment used to ship as a built-in fallback must be
+    # rejected on the wire when it is not the explicitly configured key.
+    retired = "sk-svc-turing-dev-" + "internal"
+    r = client.get("/v1/state/snapshot", headers={"X-Service-Key": retired})
+    assert r.status_code == 401
+    r = client.get("/v1/state/snapshot", headers={"Authorization": f"Bearer {retired}"})
+    assert r.status_code == 401
 
 
 def test_unauthenticated_v1_rejected(client):
@@ -31,3 +66,33 @@ def test_service_key_authenticates(turing_service_client):
     r = turing_service_client.get("/v1/auth/whoami")
     assert r.status_code == 200
     assert r.json()["authenticated"] is False
+
+
+def test_app_uses_injected_canonical_security_composition() -> None:
+    from maistro.security.composition import build_canonical_security_dependencies
+
+    from ..main import create_app
+    from ..security import TuringInboundSecurity
+    from ..state import get_state
+
+    dependencies = build_canonical_security_dependencies()
+    security = TuringInboundSecurity(
+        warden=dependencies.warden,
+        audit_log=dependencies.audit_log,
+    )
+    isolated_app = create_app(inbound_security=security)
+
+    assert isolated_app.state.turing_security is security
+    assert get_state().inbound_security is security
+
+
+def test_backend_startup_requires_service_key(monkeypatch):
+    """An unset key must fail startup instead of enabling a public credential."""
+    from ..config import build_registry
+    from ..main import create_app
+
+    monkeypatch.delenv("TURING_SERVICE_KEY", raising=False)
+    build_registry.cache_clear()
+
+    with pytest.raises(RuntimeError, match="TURING_SERVICE_KEY must be set"):
+        create_app()

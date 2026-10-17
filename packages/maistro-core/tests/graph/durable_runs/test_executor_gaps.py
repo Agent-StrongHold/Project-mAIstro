@@ -7,25 +7,29 @@ from typing import Any, ClassVar
 import pytest
 from pydantic import BaseModel
 
-from maistro.graph.definitions import Graph
+from maistro.graph.definitions import Graph, Node
 from maistro.graph.durable_runs import InMemoryDurableRunStore, RunStatus
+from maistro.graph.durable_runs.attempt_executor import _walk
 from maistro.graph.durable_runs.executor import (
     _build_ctx,
     _ensure_frontier_node_runs,
     _entry_node,
     _mark_completed,
     _mark_failed,
+    _may_revisit_after,
     _next_node,
     _node_spec,
-    _walk,
     resume_durable_graph,
 )
-from maistro.graph.nodes import BaseNode, NodeContext
+from maistro.graph.execution_state import GraphExecutionState
+from maistro.graph.nodes import BaseNode, NodeContext, ReplaySemantics
 from maistro.graph.nodes.base import NodeResult
 from maistro.runs.lifecycle import transition_node_run
-from maistro.runs.model import NodeRun
+from maistro.runs.model import Attempt, NodeRun
+from maistro.runtime import PythonExecutionRuntime
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
-from .._canonical_helpers import durable_record, graph_from_dag
+from .._canonical_helpers import completed_node_run, durable_record, graph_from_dag
 
 
 class _EchoIn(BaseModel):
@@ -58,6 +62,7 @@ def _record_for(
     status: RunStatus = RunStatus.RUNNING,
     active_node_id: str | None = None,
     node_runs: tuple[NodeRun, ...] = (),
+    attempts: tuple[Attempt, ...] = (),
     blackboard_snapshot: dict[str, Any] | None = None,
     version: int = 1,
 ):  # type: ignore[no-untyped-def]
@@ -72,6 +77,7 @@ def _record_for(
         status=status,
         active_node_id=active_node_id,
         node_runs=node_runs,
+        attempts=attempts,
         blackboard_snapshot=blackboard_snapshot,
         version=version,
     )
@@ -229,7 +235,13 @@ class TestStepBudgetExhaustion:
             active_node_id="n1",
         )
         await store.create(record)
-        result = await _walk(record, store=store, node_resolver=_resolver, max_steps=8)
+        result = await _walk(
+            record,
+            store=store,
+            node_resolver=_resolver,
+            runtime=PythonExecutionRuntime(),
+            max_steps=8,
+        )
         assert result.status is RunStatus.FAILED
         assert result.run.error is not None
         assert result.run.error.startswith("StepBudgetExhausted:")
@@ -245,8 +257,39 @@ class TestStepBudgetExhaustion:
         }
         record = _record_for("r-done", dag=dag, active_node_id="n1")
         await store.create(record)
-        result = await _walk(record, store=store, node_resolver=_resolver, max_steps=8)
+        result = await _walk(
+            record,
+            store=store,
+            node_resolver=_resolver,
+            runtime=PythonExecutionRuntime(),
+            max_steps=8,
+        )
         assert result.status is RunStatus.COMPLETED
+
+    async def test_public_entry_point_honors_an_explicit_max_steps_override(self) -> None:
+        """#1067 defect 3: a caller with its own domain-derived step bound can supply one.
+
+        ``run_durable_graph``/``resume_durable_graph`` used to hardcode 256
+        with no way for a caller (e.g. Builders, whose own iteration policy
+        might allow -- or refuse -- more) to derive and pass its own bound.
+        """
+        from maistro.graph.durable_runs.attempt_executor import run_durable_graph
+
+        store = InMemoryDurableRunStore()
+        graph = graph_from_dag(self._cycle_dag())
+
+        result = await run_durable_graph(
+            graph,
+            store=store,
+            node_resolver=_resolver,
+            max_steps=3,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+
+        assert result.run.status is RunStatus.FAILED
+        assert result.run.error is not None
+        assert result.run.error.startswith("StepBudgetExhausted:")
+        assert "max_steps=3" in result.run.error
 
 
 class TestCanonicalNodeRunPersistence:
@@ -274,11 +317,12 @@ class TestCanonicalNodeRunPersistence:
         existing = NodeRun(run_id="r1", node_id="n1", ordinal=1)
         existing = transition_node_run(existing, RunStatus.QUEUED)
         existing = transition_node_run(existing, RunStatus.RUNNING)
-        existing = transition_node_run(existing, RunStatus.COMPLETED, result={"text": "old"})
+        existing, attempt = completed_node_run(existing, result={"text": "old"})
         record = _record_for(
             "r1",
             active_node_id="n1",
             node_runs=(existing,),
+            attempts=(attempt,),
         )
         store = InMemoryDurableRunStore()
         await store.create(record)
@@ -340,3 +384,65 @@ class TestCheckpointVersionAndErrors:
             store=store,
         )
         assert result.run.error == "X: short"
+
+
+def test_effect_key_retry_requires_a_logical_node_identity() -> None:
+    """``EFFECT_KEY`` is a contract, not a label (#1194): without a logical
+    Run/node identity the effect key could never be stable, so the node is
+    not safe to revisit -- even with a retry budget left."""
+
+    class _Effect(BaseNode[BaseModel, BaseModel]):
+        kind: ClassVar[str] = "test.gaps.unbounded"
+        kind_category: ClassVar[str] = "sync.transform"
+        input_schema: ClassVar[type[BaseModel]] = BaseModel
+        output_schema: ClassVar[type[BaseModel]] = BaseModel
+        replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
+
+        async def _execute(self, inputs: BaseModel, ctx: NodeContext) -> BaseModel:
+            raise NotImplementedError
+
+    graph = Graph(
+        graph_id="gaps-graph",
+        workspace_id="ws-1",
+        project_id="project-1",
+        name="Effect identity",
+        nodes=[Node(node_id="effect-1", node_type=_Effect.kind, policies={"max_attempts": 3})],
+    )
+    failed = NodeResult(success=False, error_code="RuntimeException", error_message="boom")
+
+    # No concrete logical key at execution time: the fold cannot prove replay
+    # safety, so the node is not revisited even with budget left.
+    unbound = _FrontierItem_for(
+        graph=graph,
+        ctx=NodeContext(run_id="", dag_id="gaps-graph", node_id=""),
+        result=failed,
+        effect_key=None,
+    )
+    assert _may_revisit_after(GraphExecutionState(run_id="run-1"), unbound) is False
+
+    # A concrete logical key (Run/node/input identity, not a physical visit)
+    # makes the revisit a reconciliation rather than a blind re-execution.
+    bound = _FrontierItem_for(
+        graph=graph,
+        ctx=NodeContext(run_id="run-1", dag_id="gaps-graph", node_id="effect-1"),
+        result=failed,
+        effect_key="agent.delegate_remote:run-1:effect-1:abc123",
+    )
+    assert _may_revisit_after(GraphExecutionState(run_id="run-1"), bound) is True
+
+
+def _FrontierItem_for(
+    *, graph: Graph, ctx: NodeContext, result: NodeResult, effect_key: str | None
+) -> Any:
+    from maistro.graph.durable_runs.executor import _FrontierItem
+    from maistro.runs.model import NodeRun as _NodeRun
+
+    return _FrontierItem(
+        node_id=ctx.node_id or "effect-1",
+        spec=graph.nodes[0],
+        node_run=_NodeRun(run_id="run-1", node_id=ctx.node_id or "effect-1", ordinal=1),
+        ctx=ctx,
+        result=result,
+        replay_semantics=ReplaySemantics.EFFECT_KEY,
+        effect_key=effect_key,
+    )

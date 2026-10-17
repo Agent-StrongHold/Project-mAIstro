@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from maistro.config.settings import SandboxSettings
 from maistro.tools.sandbox.microvm import (
     MicroVMConfig,
@@ -63,10 +65,14 @@ async def test_plain_async_function_is_a_valid_launcher():
         seen.append(spec)
         return (7, "fn-launcher")
 
-    sandbox = MicroVMSandbox(launch, workspace="/tmp/maistro-workspace/t4")
+    workspace = "/tmp/maistro-workspace/t4"
+    sandbox = MicroVMSandbox(launch, workspace=workspace)
     code, out = await sandbox.exec("echo hi")
     assert (code, out) == (7, "fn-launcher")
-    assert seen[-1].workspace == "/tmp/maistro-workspace/t4"
+    # `validate_workspace_path` resolves symlinks, so the spec carries the real
+    # path (macOS resolves `/tmp` -> `/private/tmp`). Resolve both sides rather
+    # than hardcoding either platform's spelling.
+    assert seen[-1].workspace == str(Path(workspace).resolve())
 
 
 def test_config_from_settings_parses_memory_and_network():

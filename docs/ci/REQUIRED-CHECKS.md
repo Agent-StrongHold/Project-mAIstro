@@ -35,11 +35,19 @@ would wait for a context that can never report where merge enforcement looks.
 Publishing the aggregate verdict onto the triggering candidate SHA keeps the
 judge protected while putting the result exactly where GitHub evaluates it.
 
-`gates-ran` is stricter than GitHub's raw required-check semantics. On ordinary
-PRs it still requires real execution evidence from every specialized CI leg. On
-a `develop` merge group, those specialized contexts are replaced in the
-execution-evidence set by the unconditional `integration-scope` aggregate,
-which verifies every classifier-selected specialized leg succeeded. Main
+`gates-ran` is stricter than GitHub's raw required-check semantics. Pull-request
+and develop-merge-group candidates are path-scoped by one policy (#1351):
+`scripts/ci_merge_group_scope.py` classifies the measured changed files, ci.yml
+runs each specialized job only when its leg is selected (the postgres matrix is
+the documented exception — GitHub evaluates job-level `if` before expanding the
+matrix, so a skipped matrix cannot report its concrete names), and
+`integration-scope` waits only for the selected legs. `gates-ran` judges the
+candidate with the same classifier and the same measured file set, so a
+specialized check reported `skipped` is acceptable exactly when the producers
+scoped it off, and a skip in scope still blocks. On a `develop` merge group,
+the specialized contexts are additionally replaced in the execution-evidence
+set by the unconditional `integration-scope` aggregate, which verifies every
+classifier-selected specialized leg succeeded. Protected pushes and main
 promotions retain their existing full specialized and release-tier check set.
 
 For merge groups, the initial trusted resolver is intentionally **develop-only**.
@@ -60,8 +68,14 @@ merge_group:
 
 `scripts/check-required-checks.py` enforces this from the checked-in
 `.github/branch-protection.json` required set. It also reads
-`.github/merge-queue.json` and pins the initial queue to `SQUASH` with one PR per
-merge group. A future required check cannot silently become PR-only while the
+`.github/merge-queue.json` and pins the queue to `SQUASH` and `ALLGREEN`
+grouping (every grouped candidate must pass its own checks; `HEADGREEN` would
+land a whole group on the head entry alone), with batching of at most three
+PRs per merge group, a positive minimum group no larger than the maximum, and
+a group wait limited to reviewed values (0, 2, 3, or 5 minutes).
+Anything else — including non-integer or unreviewed values — fails closed, so
+widening the queue further means editing this gate in the same reviewed change
+that edits the queue file. A future required check cannot silently become PR-only while the
 queue waits forever for an `Expected` context.
 
 Synthetic aggregate contexts such as `gates-ran` are covered by their trusted
@@ -85,6 +99,7 @@ wait forever for an `Expected` result.
 
 | Workflow | Check name | Runs on |
 |---|---|---|
+| CI | `Compliance registry` | every PR |
 | CI | `docker-build` | every PR |
 | CI | `durable-events` | every PR |
 | CI | `hive-conductor-e2e` | every PR |
@@ -103,6 +118,7 @@ wait forever for an `Expected` result.
 | CodeQL Advanced | `Analyze (actions)` | base `main` |
 | CodeQL Advanced | `Analyze (javascript-typescript)` | base `main` |
 | CodeQL Advanced | `Analyze (python)` | base `main` |
+| DevSkim | `DevSkim` | base `develop` |
 | Formal Conformance | `formal-conformance` | every PR |
 | Gate C | `Gate C — canonical clean install` | every PR |
 | Integration Scope | `integration-scope` | every PR |
@@ -124,6 +140,11 @@ wait forever for an `Expected` result.
 `Analyze (actions)`, `Analyze (javascript-typescript)`, `Analyze (python)`, and
 `Container scan + SBOM + cosign` are required on `main` only. They do not report
 as real executed checks on a `develop`-based PR or develop merge group.
+
+`DevSkim` is a documented advisory check for `develop`-based PRs. It is
+intentionally excluded from both protected required-check sets until the owner
+promotes it into the merge contract; its base-coupled workflow scope remains
+listed in the generated table above.
 
 ## Draft pull requests
 

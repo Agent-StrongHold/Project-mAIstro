@@ -35,8 +35,13 @@ from maistro_evolve.population import PopulationStore
 from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineGenome
 
 
-def _genome(genome_id: str, approved: bool = True) -> PipelineGenome:
-    return PipelineGenome(
+def _genome(genome_id: str, approved: bool = True, fitness: float = 0.9) -> PipelineGenome:
+    """A genome carrying governed-promotion-eligible evidence (#854): repeated
+    independent samples, stable spread, objective-stamped and current, so the
+    audit-trail properties below exercise real promotion transitions rather
+    than vacuous policy rejections. ``fitness`` rises per successive genome so
+    each new promotion beats the incumbent by the declared margin."""
+    g = PipelineGenome(
         id=genome_id,
         name=genome_id,
         topology=DAGTopology(
@@ -59,10 +64,23 @@ def _genome(genome_id: str, approved: bool = True) -> PipelineGenome:
             use_scout=False,
         ),
         eval_weights=EvalWeights(),
+        # #853: promotion additionally fails closed on measured capability
+        # evidence — a genome with no benchmark scores cannot be promoted at
+        # all. These models audit the promote/rollback *trail*, so their
+        # fixtures must be legitimately promotable: one passing benchmark
+        # score above the hard-gate floor supplies exactly that.
+        eval_scores={"proxy_ifeval": 0.9},
         created_at=datetime.now(UTC).isoformat(),
         updated_at=datetime.now(UTC).isoformat(),
         approved_for_promotion=approved,
     )
+    g.fitness_score = fitness
+    g.eval_scores = {"proxy_ifeval": 0.8}
+    g.harness_params["eval_samples"] = {"proxy_ifeval": 2}
+    g.harness_params["eval_history"] = {"proxy_ifeval": [0.79, 0.81]}
+    g.harness_params["objective_version"] = "objective-test"
+    g.harness_params["evidence_cycle"] = 1
+    return g
 
 
 class _RecordingSink:
@@ -124,8 +142,12 @@ def test_every_active_genome_change_has_a_gapless_audit_trail(fail_every, op_cou
             try:
                 if do_promote:
                     genome_id = f"g-{next_id}"
+                    # Strictly increasing fitness: under the #854 governed
+                    # contract each new promotion must beat the incumbent by
+                    # the declared margin, so the audit-trail properties stay
+                    # exercised over real transitions.
+                    store.add(_genome(genome_id, fitness=0.5 + 0.1 * next_id))
                     next_id += 1
-                    store.add(_genome(genome_id))
                     await store.promote_audited(genome_id, trail)
                 else:
                     await store.rollback_audited(trail)
@@ -177,8 +199,10 @@ class AuditedSelfModificationMachine(RuleBasedStateMachine):
     @rule(target=GenomeIds)
     def add_and_promote(self):
         genome_id = f"g-{self.next_id}"
+        # Strictly increasing fitness — each promotion must beat the incumbent
+        # by the governed margin (#854) to land at all.
+        self.store.add(_genome(genome_id, fitness=0.5 + 0.1 * self.next_id))
         self.next_id += 1
-        self.store.add(_genome(genome_id))
         self._run(self.store.promote_audited(genome_id, self.trail))
         self.known_ids.append(genome_id)
         return genome_id
@@ -267,9 +291,10 @@ def test_a_state_change_without_an_audit_record_cannot_land():
 
 
 def test_a_rejected_promotion_is_audited_as_an_attempt_without_a_commit():
-    """Rejection angle (#342): the approval gate refusing a genome is itself
-    an auditable outcome — the attempt is recorded, no commit entry ever
-    appears, and the state never moves."""
+    """Rejection angle (#342, extended by #854): a refused promotion is itself
+    an auditable outcome — the attempt is recorded, the governed rejection is
+    recorded with its reasons, no commit entry ever appears, and the state
+    never moves."""
     import asyncio
 
     store = PopulationStore()
@@ -280,7 +305,11 @@ def test_a_rejected_promotion_is_audited_as_an_attempt_without_a_commit():
         asyncio.run(store.promote_audited("g-unapproved", trail))
 
     events = [(e.event, e.genome_id) for e in trail.entries]
-    assert events == [("promotion_attempt", "g-unapproved")]
+    assert events == [
+        ("promotion_attempt", "g-unapproved"),
+        ("promotion_rejected", "g-unapproved"),
+    ]
+    assert "not approved for promotion" in trail.entries[-1].detail
     assert _active_genome_id(store) is None
 
 

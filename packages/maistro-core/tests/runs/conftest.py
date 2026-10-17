@@ -9,18 +9,32 @@ slightly different".
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 import aiosqlite
 import pytest
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.concurrency import RunConcurrencyLimits
 from maistro.runs.store import InMemoryRunStore
 
 WORKSPACE = "workspace-1"
 
 
+@pytest.fixture
+def spine_concurrency_limits() -> RunConcurrencyLimits:
+    """The governed root-Run ceilings `spine` enforces (#1182).
+
+    The shipped baselines. A module that seeds a backlog larger than the
+    ceilings to test something else overrides this fixture.
+    """
+    return RunConcurrencyLimits()
+
+
 @pytest.fixture(params=["memory", "sqlite", "postgres"])
-async def spine(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
+async def spine(
+    request: pytest.FixtureRequest, pg_pool: Any, spine_concurrency_limits: RunConcurrencyLimits
+) -> Any:
     """A (run_store, project_id) pair on each backend, isolated per test."""
     if request.param == "postgres":
         if pg_pool is None:
@@ -36,7 +50,13 @@ async def spine(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         project = await projects.create(
             workspace_id=workspace, parent_project_id=root.project_id, name="Durable"
         )
-        yield PgRunStore(pg_pool, project_store=projects), workspace, project.project_id
+        yield (
+            PgRunStore(
+                pg_pool, project_store=projects, concurrency_limits=spine_concurrency_limits
+            ),
+            workspace,
+            project.project_id,
+        )
         return
 
     projects = InMemoryProjectScopeStore()
@@ -45,18 +65,103 @@ async def spine(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         workspace_id=WORKSPACE, parent_project_id=root.project_id, name="Durable"
     )
     if request.param == "memory":
-        yield InMemoryRunStore(project_store=projects), WORKSPACE, project.project_id
+        yield (
+            InMemoryRunStore(project_store=projects, concurrency_limits=spine_concurrency_limits),
+            WORKSPACE,
+            project.project_id,
+        )
         return
 
     from maistro.runs.sqlite_store import SqliteRunStore
 
     conn = await aiosqlite.connect(":memory:")
-    store = SqliteRunStore(conn, project_store=projects)
+    store = SqliteRunStore(
+        conn, project_store=projects, concurrency_limits=spine_concurrency_limits
+    )
     await store.ensure_schema()
     try:
         yield store, WORKSPACE, project.project_id
     finally:
         await conn.close()
+
+
+@pytest.fixture(params=["memory", "sqlite", "postgres"])
+async def schedule_spine(request: pytest.FixtureRequest, pg_pool: Any, tmp_path: Any) -> Any:
+    """Claim-capable durable stores for schedule-consumer acceptance tests.
+
+    The ordinary conformance spine deliberately exposes the base RunStore
+    contract. Schedule execution additionally requires the atomic consumer
+    claim capability, so this fixture uses the production claiming variants
+    without changing what unrelated conformance tests exercise.
+    """
+    from maistro.runs.consumer_claim import (
+        ClaimingInMemoryRunStore,
+        ClaimingPgRunStore,
+        ClaimingSqliteRunStore,
+    )
+
+    if request.param == "postgres":
+        if pg_pool is None:
+            pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+        from maistro.projects.pg_scope_store import PgProjectScopeStore
+
+        workspace = f"{WORKSPACE}-schedule-{request.node.name}-{uuid4().hex}"
+        projects = PgProjectScopeStore(pg_pool)
+        root = await projects.create_root(workspace)
+        project = await projects.create(
+            workspace_id=workspace, parent_project_id=root.project_id, name="Schedule"
+        )
+
+        async def reopen() -> Any:
+            """Return a fresh store object, as a restarted worker would use."""
+            return ClaimingPgRunStore(pg_pool, project_store=projects)
+
+        yield (
+            ClaimingPgRunStore(pg_pool, project_store=projects),
+            workspace,
+            project.project_id,
+            reopen,
+        )
+        return
+
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root(f"{WORKSPACE}-schedule")
+    project = await projects.create(
+        workspace_id=f"{WORKSPACE}-schedule", parent_project_id=root.project_id, name="Schedule"
+    )
+    if request.param == "memory":
+        store = ClaimingInMemoryRunStore(project_store=projects)
+
+        async def reopen() -> Any:
+            # In-memory persistence has no process restart to model; retain the
+            # store so this leg still exercises the canonical recovery seam.
+            return store
+
+        yield store, f"{WORKSPACE}-schedule", project.project_id, reopen
+        return
+
+    # Use a file-backed database so this leg can close and reopen its
+    # connection, rather than accidentally proving recovery only on :memory:.
+    db_path = tmp_path / "schedule.sqlite3"
+    conn = await aiosqlite.connect(str(db_path))
+    # Build the same SQLite project/run schema as `spine`, but expose the
+    # atomic claim implementation used by the production execution wiring.
+    store = ClaimingSqliteRunStore(conn, project_store=projects)
+    await store.ensure_schema()
+    current_conn = conn
+
+    async def reopen() -> Any:
+        nonlocal current_conn
+        await current_conn.close()
+        current_conn = await aiosqlite.connect(str(db_path))
+        restarted = ClaimingSqliteRunStore(current_conn, project_store=projects)
+        await restarted.ensure_schema()
+        return restarted
+
+    try:
+        yield store, f"{WORKSPACE}-schedule", project.project_id, reopen
+    finally:
+        await current_conn.close()
 
 
 @pytest.fixture

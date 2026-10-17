@@ -11,7 +11,6 @@ they're posted).
 
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel, Field
@@ -21,7 +20,8 @@ from .base import (
     PAUSE_AWAITING_HUMAN_APPROVAL,
     BaseNode,
     NodeContext,
-    now_utc,
+    ReplaySemantics,
+    hitl_resume_at,
     pause_until,
 )
 
@@ -53,7 +53,7 @@ class HumanApproveDraftNode(BaseNode[ApproveDraftIn, ApproveDraftOut]):
     input_schema: ClassVar[type[BaseModel]] = ApproveDraftIn
     output_schema: ClassVar[type[BaseModel]] = ApproveDraftOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Human: approve a draft"
     description: ClassVar[str] = (
@@ -82,7 +82,7 @@ class HumanApproveDraftNode(BaseNode[ApproveDraftIn, ApproveDraftOut]):
                     timed_out=bool(resumed.get("timed_out", False)),
                 )
 
-        resume_at = now_utc() + timedelta(seconds=inputs.timeout_seconds)
+        resume_at = hitl_resume_at(ctx, inputs.timeout_seconds, resumed=resumed)
         pause_until(
             PAUSE_AWAITING_HUMAN_APPROVAL,
             resume_at=resume_at,

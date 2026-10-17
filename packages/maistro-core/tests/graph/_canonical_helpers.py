@@ -7,15 +7,50 @@ from datetime import UTC, datetime
 from typing import Any
 
 from maistro.graph.definitions import Edge, Graph, Node
-from maistro.graph.durable_runs import resume_durable_graph, run_durable_graph
+from maistro.graph.durable_runs import (
+    HitlAuthorization,
+    resume_durable_graph,
+    run_durable_graph,
+)
 from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes.base import BaseNode
-from maistro.runs.lifecycle import transition_run
-from maistro.runs.model import GraphSnapshot, NodeRun, Run, RunStatus
+from maistro.runs.lifecycle import transition_node_run, transition_run
+from maistro.runs.model import (
+    AcceptedNodeOutcome,
+    Attempt,
+    AttemptResult,
+    AttemptStatus,
+    GraphSnapshot,
+    NodeRun,
+    Run,
+    RunStatus,
+)
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 LegacyResolver = Callable[[str, dict[str, Any]], BaseNode[Any, Any]]
+
+
+async def _allow_test_hitl_membership(_principal: str, _workspace_id: str) -> bool:
+    return True
+
+
+def hitl_authorization() -> HitlAuthorization:
+    """Explicit test principal covering the canonical fixture Workspaces."""
+    return HitlAuthorization(
+        effective_principal="test-hitl-operator",
+        workspace_ids=frozenset(
+            {
+                "test-workspace",
+                "ws-canonical-store",
+                "ws-canonical",
+                "ws-hitl-deadline",
+                "ws-hitl-canonical-deadline",
+            }
+        ),
+        membership_check=_allow_test_hitl_membership,
+    )
 
 
 def graph_from_dag(
@@ -144,7 +179,7 @@ async def run_legacy_dag_fixture(
         store=store,
         node_resolver=resolver,
         inputs=inputs,
-        actor_principal_id=user_id,
+        actor_principal_id=user_id or DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         run_id=run_id,
     )
 
@@ -177,7 +212,7 @@ def run_at_status(
         workspace_id=graph.workspace_id,
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
-        actor_principal_id=actor_principal_id,
+        actor_principal_id=actor_principal_id or DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     if status is RunStatus.CREATED:
         return run
@@ -201,6 +236,7 @@ def durable_record(
     status: RunStatus = RunStatus.RUNNING,
     active_node_id: str | None = None,
     node_runs: tuple[NodeRun, ...] = (),
+    attempts: tuple[Attempt, ...] = (),
     project_id: str = "test-project",
     workspace_id: str = "test-workspace",
     metadata: dict[str, Any] | None = None,
@@ -222,6 +258,7 @@ def durable_record(
         run=run,
         graph_state=state,
         node_runs=node_runs,
+        attempts=attempts,
         resume_at=resume_at,
         version=version,
     )
@@ -229,3 +266,27 @@ def durable_record(
 
 def now_utc() -> datetime:
     return datetime.now(UTC)
+
+
+def completed_node_run(node_run: NodeRun, *, result: Any = None) -> tuple[NodeRun, Attempt]:
+    """Build explicit accepted physical evidence for pure traversal fixtures.
+
+    These fixtures exercise routing/ordinal algorithms, not physical execution.
+    Store conformance tests must instead create their Attempts through the store.
+    """
+    attempt = Attempt(
+        node_run_id=node_run.node_run_id,
+        ordinal=1,
+        status=AttemptStatus.COMPLETED,
+        result=result,
+        finished_at=datetime.now(UTC),
+    )
+    outcome = AcceptedNodeOutcome(
+        node_run_id=node_run.node_run_id,
+        attempt_result=AttemptResult.from_attempt(attempt),
+        result=result,
+    )
+    return (
+        transition_node_run(node_run, RunStatus.COMPLETED, result=result, accepted_outcome=outcome),
+        attempt,
+    )

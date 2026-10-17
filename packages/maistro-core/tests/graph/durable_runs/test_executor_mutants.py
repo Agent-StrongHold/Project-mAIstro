@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+import pytest
 from pydantic import BaseModel
 
 from maistro.graph.definitions import Graph
 from maistro.graph.durable_runs import InMemoryDurableRunStore, RunStatus
+from maistro.graph.durable_runs.attempt_executor import _walk
 from maistro.graph.durable_runs.executor import (
     _actually_spawned,
     _build_ctx,
@@ -16,7 +18,6 @@ from maistro.graph.durable_runs.executor import (
     _maybe_increment_synth_depth,
     _new_run,
     _result_output,
-    _walk,
     run_durable_graph,
 )
 from maistro.graph.nodes import BaseNode, NodeContext
@@ -24,8 +25,10 @@ from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
 from maistro.graph.nodes.base import NodeResult
 from maistro.runs.lifecycle import transition_node_run
 from maistro.runs.model import NodeRun
+from maistro.runtime import PythonExecutionRuntime
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
-from .._canonical_helpers import durable_record, graph_from_dag
+from .._canonical_helpers import completed_node_run, durable_record, graph_from_dag
 
 
 class _In(BaseModel):
@@ -103,26 +106,36 @@ class TestStepBudget:
             active_node_id="n1",
         )
         await store.create(record)
-        result = await _walk(record, store=store, node_resolver=_resolver, max_steps=3)
+        result = await _walk(
+            record,
+            store=store,
+            node_resolver=_resolver,
+            runtime=PythonExecutionRuntime(),
+            max_steps=3,
+        )
         assert result.status is RunStatus.FAILED
         assert _CountingNode.runs == 3
         assert result.run.error is not None
         assert "max_steps=3" in result.run.error
 
-    async def test_default_step_budget_is_256(self) -> None:
-        _CountingNode.runs = 0
+    async def test_default_step_budget_is_256(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The preceding test executes the physical walker to exhaustion. This
+        # test pins default forwarding without persisting 256 growing histories
+        # just to observe a default argument.
+        from maistro.graph.durable_runs import attempt_executor
+
+        seen: list[int] = []
+
+        async def capture_budget(record: Any, **kwargs: Any) -> Any:
+            seen.append(kwargs["max_steps"])
+            return record
+
+        monkeypatch.setattr(attempt_executor, "_walk_until_settled", capture_budget)
         store = InMemoryDurableRunStore()
-        record = durable_record(
-            _cycle_dag(),
-            run_id="r-default",
-            active_node_id="n1",
-        )
+        record = durable_record(_cycle_dag(), run_id="r-default", active_node_id="n1")
         await store.create(record)
-        result = await _walk(record, store=store, node_resolver=_resolver)
-        assert result.status is RunStatus.FAILED
-        assert _CountingNode.runs == 256
-        assert result.run.error is not None
-        assert "max_steps=256" in result.run.error
+        await _walk(record, store=store, node_resolver=_resolver, runtime=PythonExecutionRuntime())
+        assert seen == [256]
 
 
 class TestCanonicalNodeRunCreation:
@@ -168,12 +181,13 @@ class TestCanonicalNodeRunCreation:
         node_run = NodeRun(run_id="r-repeat", node_id="n1", ordinal=1)
         node_run = transition_node_run(node_run, RunStatus.QUEUED)
         node_run = transition_node_run(node_run, RunStatus.RUNNING)
-        node_run = transition_node_run(node_run, RunStatus.COMPLETED, result={"text": "old"})
+        node_run, attempt = completed_node_run(node_run, result={"text": "old"})
         record = durable_record(
             {"id": "one", "nodes": [{"id": "n1", "kind": _EchoNode.kind}], "edges": []},
             run_id="r-repeat",
             active_node_id="n1",
             node_runs=(node_run,),
+            attempts=(attempt,),
         )
         store = InMemoryDurableRunStore()
         await store.create(record)
@@ -235,8 +249,9 @@ class TestSynthDepth:
             {"objective": "nested work"},
             _build_ctx(updated, "n1"),
         )
-        assert nested.output.success is False
-        assert "recursion depth cap reached" in nested.output.error
+        assert nested.status == "failed"
+        assert nested.error_code == "SynthDagFailed"
+        assert "recursion depth cap reached" in (nested.error_message or "")
 
     def test_refused_synth_does_not_count_as_spawn(self) -> None:
         result = NodeResult(success=True, output=_SynthOut(success=False, dispatched=False))
@@ -245,6 +260,14 @@ class TestSynthDepth:
     def test_dispatched_failed_synth_counts_as_spawn(self) -> None:
         result = NodeResult(success=True, output=_SynthOut(success=False, dispatched=True))
         assert _actually_spawned("agent.synth_dag", result) is True
+
+    def test_failed_synth_whose_child_ran_counts_as_spawn(self) -> None:
+        result = NodeResult(success=False, status="failed", metadata={"dispatched": True})
+        assert _actually_spawned("agent.synth_dag", result) is True
+
+    def test_failed_synth_that_dispatched_nothing_does_not_count_as_spawn(self) -> None:
+        result = NodeResult(success=False, status="failed")
+        assert _actually_spawned("agent.synth_dag", result) is False
 
     def test_success_without_dispatch_does_not_count_as_spawn(self) -> None:
         result = NodeResult(success=True, output=_SynthOut(success=True, dispatched=False))
@@ -277,7 +300,11 @@ class TestInitialInputsAndIdentity:
         assert _initial_inputs(record) == {"text": "hi"}
 
     def test_generated_canonical_run_id_is_full_uuid_hex(self) -> None:
-        run = _new_run(_one_node_graph(), run_id=None, actor_principal_id=None)
+        run = _new_run(
+            _one_node_graph(),
+            run_id=None,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
         assert len(run.run_id) == 32
         int(run.run_id, 16)
 
@@ -293,6 +320,7 @@ class TestInitialInputsAndIdentity:
             store=store,
             node_resolver=_resolver,
             inputs={"text": "hi"},
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         assert result.status is RunStatus.COMPLETED
         assert result.run.result == {"text": "hi"}

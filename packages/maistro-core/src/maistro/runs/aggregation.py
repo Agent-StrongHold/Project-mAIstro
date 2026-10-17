@@ -28,16 +28,22 @@ RUN_TERMINAL_PRECEDENCE: tuple[RunStatus, ...] = (
 def derive_run_terminal_status(
     node_runs: Sequence[NodeRun],
     *,
-    work_owed: bool = False,
+    work_owed: bool,
 ) -> RunStatus | None:
     """Derive one terminal Run status when the complete logical frontier is terminal.
 
-    ``work_owed`` is deliberately supplied by the caller. A generic Run store can
-    see NodeRuns but cannot know that a conditional Graph branch was not selected;
-    GraphExecutionState can. Keeping that fact outside the fold prevents the spine
-    from treating an absent NodeRun as an intentionally skipped branch. If the
-    authoritative caller says no work is owed and there are no NodeRuns at all,
-    the empty logical frontier is successfully complete.
+    ``work_owed`` is deliberately supplied by the caller, with no default: a
+    generic Run store can see NodeRuns but cannot know that a conditional Graph
+    branch was not selected; GraphExecutionState can. Keeping that fact outside
+    the fold prevents the spine from treating an absent NodeRun as an
+    intentionally skipped branch. A permissive default here previously let an
+    empty NodeRun collection derive `COMPLETED` whenever a caller forgot to pass
+    the argument — "no observations yet" is not the same fact as "no work was
+    ever owed," and only the caller that actually tracked traversal/routing
+    state can tell them apart (#1188). If the authoritative caller says no work
+    is owed and there are no NodeRuns at all, the empty logical frontier is
+    successfully complete; if work is owed, an empty frontier is never
+    terminal, no matter how it got that way.
     """
     if work_owed:
         return None

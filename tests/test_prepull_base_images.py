@@ -15,7 +15,9 @@ accounted for.
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -30,14 +32,18 @@ COMPOSE_FILE = ROOT / "packages" / "hive-conductor" / "docker-compose.test.yml"
 #: The Dockerfiles `docker-build` actually builds, and so the ones the pre-pull
 #: step is given. Kept beside the assertion that they are covered, rather than
 #: only in the workflow, so a change to one without the other fails here.
-BUILT_DOCKERFILES = ("Dockerfile", "packages/hive-conductor/Dockerfile")
+BUILT_DOCKERFILES = (
+    "Dockerfile",
+    "packages/hive-conductor/Dockerfile",
+    "Dockerfile.rsi-runner",
+)
 
 #: The Dockerfiles `packages/hive-conductor/docker-compose.test.yml` builds
 #: (the `hive`, `api-tests` and `e2e-tests` services). This is the coverage a
 #: live develop protected push found missing: `hive-conductor-e2e` and
 #: `hive-conductor-e2e-ui` run `docker compose --build` directly, never call
 #: this script, and one failed outright on the exact registry-reset signature
-#: #204 exists to survive -- `cgr.dev/chainguard/python:latest: ... connection
+#: #204 exists to survive -- `python:3.13.15-slim-bookworm: ... connection
 #: reset by peer`.
 COMPOSE_DOCKERFILES = (
     "packages/hive-conductor/Dockerfile",
@@ -161,12 +167,95 @@ def test_every_shipped_from_line_is_accounted_for() -> None:
 
 
 def test_the_built_dockerfiles_are_the_ones_the_workflow_builds() -> None:
-    """`BUILT_DOCKERFILES` above must match `ci.yml`, or this test guards nothing."""
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
-    job = workflow.split("docker-build:", 1)[1].split("\n  workflow-lint:", 1)[0]
+    """Check actual pre-pull arguments and ordering, not mentions anywhere in CI.
 
-    for name in BUILT_DOCKERFILES:
-        assert name in job, f"{name} is not built by ci.yml's docker-build job"
+    The old test checked only that two hand-listed Dockerfiles appeared in the
+    job. It stayed green while the RSI canary built a third Dockerfile with
+    neither its Python base nor its external uv COPY source pre-pulled.
+    """
+    workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
+    commands = [
+        (index, shlex.split(line, comments=True))
+        for index, step in enumerate(workflow["jobs"]["docker-build"]["steps"])
+        for line in step.get("run", "").replace("\\\n", " ").splitlines()
+    ]
+    [(pull_index, pull_command)] = [
+        (index, command)
+        for index, command in commands
+        if command and command[0] == "scripts/prepull-base-images.sh"
+    ]
+    assert set(pull_command[1:]) == set(BUILT_DOCKERFILES)
+
+    # Derive the daemon-build inputs independently of BUILT_DOCKERFILES. This
+    # catches deleting a Dockerfile from both the tuple and the pre-pull step.
+    daemon_builds = [
+        (index, command)
+        for index, command in commands
+        if any(command[i : i + 2] == ["docker", "build"] for i in range(len(command) - 1))
+    ]
+    assert daemon_builds, "the dual-builder canary must still exercise docker build"
+    for index, command in daemon_builds:
+        dockerfile = command[command.index("-f") + 1] if "-f" in command else "Dockerfile"
+        assert dockerfile in pull_command[1:], f"{dockerfile} is built without retried pulls"
+        assert pull_index < index, f"{dockerfile} is built before its retried pulls"
+
+
+@pytest.mark.parametrize("failures", [1, 99], ids=["transient-429", "persistent-429"])
+def test_rsi_canary_sources_keep_the_bounded_fetch_only_retry(
+    tmp_path: Path, failures: int
+) -> None:
+    """Both pinned canary sources use the existing three-attempt pull contract."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls, count = tmp_path / "calls", tmp_path / "count"
+    count.write_text("0")
+    docker = bin_dir / "docker"
+    docker.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        'printf "%s\\n" "$*" >> "$CALLS"\n'
+        '[[ "$1" == pull ]] || exit 97\n'
+        'if [[ "$2" == ghcr.io/astral-sh/uv:* ]]; then\n'
+        '  n=$(cat "$COUNT"); n=$((n + 1)); echo "$n" > "$COUNT"\n'
+        "  if (( n <= FAILURES )); then\n"
+        '    echo "toomanyrequests: 429 Too Many Requests" >&2; exit 1\n'
+        "  fi\n"
+        "fi\n"
+    )
+    docker.chmod(0o755)
+    sleep = bin_dir / "sleep"
+    sleep.write_text('#!/usr/bin/env bash\nprintf "sleep %s\\n" "$*" >> "$CALLS"\n')
+    sleep.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "CALLS": str(calls),
+        "COUNT": str(count),
+        "FAILURES": str(failures),
+    }
+    env.pop("PREPULL_ATTEMPTS", None)
+    result = subprocess.run(
+        [str(SCRIPT), "Dockerfile.rsi-runner"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    log = calls.read_text().splitlines()
+    assert count.read_text().strip() == str(min(failures + 1, 3))
+    assert [line for line in log if line.startswith("sleep ")] == (
+        ["sleep 5"] if failures == 1 else ["sleep 5", "sleep 10"]
+    )
+    assert all(line.startswith(("pull ", "sleep ")) for line in log)
+    if failures == 1:
+        assert result.returncode == 0, result.stderr
+        assert {line.removeprefix("pull ") for line in log if line.startswith("pull ")} == set(
+            _list("Dockerfile.rsi-runner")
+        )
+    else:
+        assert result.returncode == 1
+        assert "could not pull ghcr.io/astral-sh/uv:" in result.stderr
+        assert "after 3 attempts" in result.stderr
 
 
 def test_every_compose_from_line_is_accounted_for() -> None:

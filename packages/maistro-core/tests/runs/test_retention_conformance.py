@@ -24,11 +24,25 @@ import pytest
 
 from maistro.graph import Graph, Node
 from maistro.runs.model import AttemptStatus, RunStatus
-from maistro.runs.store import DEFAULT_PURGE_BATCH, is_purgeable
+from maistro.runs.retention_scope import WorkspaceRetentionScope
+from maistro.runs.store import DEFAULT_PURGE_BATCH, PurgeOutcome, is_purgeable
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 EXPIRED = NOW - timedelta(seconds=1)
 FUTURE = NOW + timedelta(days=7)
+
+
+def _scope(spine: Any) -> WorkspaceRetentionScope:
+    """The purge scope naming the spine fixture's own Workspace.
+
+    Derived from the fixture, never a module constant: the PostgreSQL leg
+    isolates tests by Workspace — the id embeds the test name — so a static
+    scope would match nothing there and every purge would be a silent no-op
+    while the assertions still ran (#1175's whole lesson, in miniature).
+    """
+    _store, workspace, _project_id = spine
+    return WorkspaceRetentionScope(workspace_id=workspace)
 
 
 def _graph(workspace: str, project_id: str, *, node_ids: tuple[str, ...] = ("node-1",)) -> Graph:
@@ -42,7 +56,11 @@ def _graph(workspace: str, project_id: str, *, node_ids: tuple[str, ...] = ("nod
 
 async def _run(spine: Any, *, expires_at: datetime | None) -> Any:
     store, workspace, project_id = spine
-    return await store.create_run(_graph(workspace, project_id), retention_expires_at=expires_at)
+    return await store.create_run(
+        _graph(workspace, project_id),
+        retention_expires_at=expires_at,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
 
 async def _terminal_run(spine: Any, *, expires_at: datetime | None) -> Any:
@@ -72,7 +90,9 @@ async def test_no_deadline_is_the_default(spine: Any) -> None:
     the default has to be the setting that changes nothing."""
     store, workspace, project_id = spine
 
-    run = await store.create_run(_graph(workspace, project_id))
+    run = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     reloaded = await store.get_run(run.run_id)
     assert reloaded is not None
@@ -98,9 +118,9 @@ async def test_an_expired_terminal_run_is_purged(spine: Any) -> None:
     store, _workspace, _project_id = spine
     run = await _terminal_run(spine, expires_at=EXPIRED)
 
-    purged = await store.purge_expired_runs(now=NOW)
+    purged = await store.purge_expired_runs(_scope(spine), now=NOW)
 
-    assert purged == 1
+    assert purged.runs == 1
     assert await store.get_run(run.run_id) is None
 
 
@@ -108,9 +128,9 @@ async def test_an_unexpired_terminal_run_survives(spine: Any) -> None:
     store, _workspace, _project_id = spine
     run = await _terminal_run(spine, expires_at=FUTURE)
 
-    purged = await store.purge_expired_runs(now=NOW)
+    purged = await store.purge_expired_runs(_scope(spine), now=NOW)
 
-    assert purged == 0
+    assert purged.runs == 0
     assert await store.get_run(run.run_id) is not None
 
 
@@ -118,9 +138,9 @@ async def test_a_run_with_no_deadline_is_never_purged(spine: Any) -> None:
     store, _workspace, _project_id = spine
     run = await _terminal_run(spine, expires_at=None)
 
-    purged = await store.purge_expired_runs(now=NOW)
+    purged = await store.purge_expired_runs(_scope(spine), now=NOW)
 
-    assert purged == 0
+    assert purged.runs == 0
     assert await store.get_run(run.run_id) is not None
 
 
@@ -138,9 +158,9 @@ async def test_a_live_run_past_its_deadline_is_not_purged(spine: Any, status: Ru
             break
         run = await store.transition_run(run.run_id, step)
 
-    purged = await store.purge_expired_runs(now=NOW)
+    purged = await store.purge_expired_runs(_scope(spine), now=NOW)
 
-    assert purged == 0
+    assert purged.runs == 0
     assert await store.get_run(run.run_id) is not None
 
 
@@ -160,7 +180,7 @@ async def test_purging_a_run_takes_its_node_runs_and_attempts(spine: Any) -> Non
     # regardless of where the children stopped.
     await store.transition_run(run.run_id, RunStatus.COMPLETED)
 
-    assert await store.purge_expired_runs(now=NOW) == 1
+    assert (await store.purge_expired_runs(_scope(spine), now=NOW)).runs == 1
 
     assert await store.get_run(run.run_id) is None
     assert await store.get_node_run(node_run.node_run_id) is None
@@ -174,11 +194,15 @@ async def test_a_parent_run_is_not_purged_while_a_child_exists(spine: Any) -> No
     skipped rather than attempted and failed."""
     store, workspace, project_id = spine
     parent = await _terminal_run(spine, expires_at=EXPIRED)
-    await store.create_run(_graph(workspace, project_id), parent_run_id=parent.run_id)
+    await store.create_run(
+        _graph(workspace, project_id),
+        parent_run_id=parent.run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
-    purged = await store.purge_expired_runs(now=NOW)
+    purged = await store.purge_expired_runs(_scope(spine), now=NOW)
 
-    assert purged == 0
+    assert purged.runs == 0
     assert await store.get_run(parent.run_id) is not None
 
 
@@ -192,12 +216,13 @@ async def test_a_run_whose_node_run_a_child_descends_from_is_not_purged(spine: A
         _graph(workspace, project_id),
         parent_run_id=parent.run_id,
         parent_node_run_id=node_run.node_run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     await store.transition_run(parent.run_id, RunStatus.COMPLETED)
 
-    purged = await store.purge_expired_runs(now=NOW)
+    purged = await store.purge_expired_runs(_scope(spine), now=NOW)
 
-    assert purged == 0
+    assert purged.runs == 0
     assert await store.get_run(parent.run_id) is not None
 
 
@@ -209,9 +234,9 @@ async def test_the_batch_limit_is_honoured(spine: Any) -> None:
     for _ in range(5):
         await _terminal_run(spine, expires_at=EXPIRED)
 
-    first = await store.purge_expired_runs(now=NOW, limit=2)
+    first = await store.purge_expired_runs(_scope(spine), now=NOW, limit=2)
 
-    assert first == 2
+    assert first.runs == 2
 
 
 async def test_repeated_sweeps_drain_a_backlog(spine: Any) -> None:
@@ -223,8 +248,8 @@ async def test_repeated_sweeps_drain_a_backlog(spine: Any) -> None:
 
     total = 0
     for _ in range(10):
-        swept = await store.purge_expired_runs(now=NOW, limit=2)
-        total += swept
+        swept = await store.purge_expired_runs(_scope(spine), now=NOW, limit=2)
+        total += swept.runs
         if swept == 0:
             break
 
@@ -237,13 +262,13 @@ async def test_a_non_positive_limit_is_refused(spine: Any) -> None:
     store, _workspace, _project_id = spine
 
     with pytest.raises(ValueError):
-        await store.purge_expired_runs(now=NOW, limit=0)
+        await store.purge_expired_runs(_scope(spine), now=NOW, limit=0)
 
 
 async def test_a_sweep_with_nothing_to_do_reports_nothing(spine: Any) -> None:
     store, _workspace, _project_id = spine
 
-    assert await store.purge_expired_runs(now=NOW) == 0
+    assert (await store.purge_expired_runs(_scope(spine), now=NOW)).runs == 0
 
 
 async def test_the_sweep_defaults_to_now(spine: Any) -> None:
@@ -252,7 +277,7 @@ async def test_the_sweep_defaults_to_now(spine: Any) -> None:
     store, _workspace, _project_id = spine
     run = await _terminal_run(spine, expires_at=datetime.now(UTC) - timedelta(hours=1))
 
-    assert await store.purge_expired_runs() == 1
+    assert (await store.purge_expired_runs(_scope(spine))).runs == 1
     assert await store.get_run(run.run_id) is None
 
 
@@ -265,16 +290,16 @@ async def test_concurrent_sweeps_do_not_double_count(spine: Any) -> None:
         await _terminal_run(spine, expires_at=EXPIRED)
 
     results = await asyncio.gather(
-        store.purge_expired_runs(now=NOW, limit=6),
-        store.purge_expired_runs(now=NOW, limit=6),
+        store.purge_expired_runs(_scope(spine), now=NOW, limit=6),
+        store.purge_expired_runs(_scope(spine), now=NOW, limit=6),
         return_exceptions=True,
     )
-    swept = [r for r in results if isinstance(r, int)]
+    swept = [r.runs for r in results if isinstance(r, PurgeOutcome)]
 
     # Whatever the split, the total cannot exceed what existed — a store that
     # reported 6 + 6 would be counting rows it did not delete.
     assert sum(swept) <= 6
-    assert await store.purge_expired_runs(now=NOW) == 6 - sum(swept)
+    assert (await store.purge_expired_runs(_scope(spine), now=NOW)).runs == 6 - sum(swept)
 
 
 # ── the predicate itself ──────────────────────────────────────────
@@ -295,6 +320,7 @@ def test_is_purgeable_needs_all_three_conditions() -> None:
             status=status,
             finished_at=NOW if status is RunStatus.COMPLETED else None,
             retention_expires_at=expires_at,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
     assert is_purgeable(_make(RunStatus.COMPLETED, EXPIRED), NOW)

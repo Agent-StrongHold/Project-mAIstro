@@ -4,17 +4,23 @@ Product-facing terms on the left, internal/technical terms on the right.
 External docs, UI, and user-facing APIs use product terms. Internal code comments
 and architecture docs may use either.
 
+**v1.0 product:** **Workspaces** replaces the legacy Conductor page tree. Cutover:
+[WORKSPACE-CUTOVER-PLAN.md](../architecture/WORKSPACE-CUTOVER-PLAN.md). Release contract:
+[ROADMAP.md](../../ROADMAP.md).
+
 ## Product ↔ Internal mapping
 
 | Product term | Internal term | Notes |
 |--------------|---------------|-------|
+| **Workspace** | Workspace | Scoped product context (goals, backlog, agent, memory) |
+| **Workspaces** (product) | `packages/hive-conductor` | v1.0 default UI; replaces legacy Conductor routes |
 | **Workflow** | DAG | A directed acyclic graph of steps |
 | **Step** | Node | A single unit of work in a workflow |
 | **Transition** / Dependency | Edge | Connection between steps |
 | **Worker** | Agent | An autonomous executor with a role |
 | **Skill** | Capability / Tool | Something a worker can do |
 | **Workflow Run** | DAG Run | A single execution of a workflow |
-| **Hive Conductor** | — | The UI/BFF layer (dashboard + chat) |
+| **Hive Conductor** | — | Internal name for the UI/BFF layer (legacy label; package `hive-conductor`) |
 | **Hive Swarm** | — | The collective of workers executing workflows |
 
 ## Package names
@@ -36,5 +42,7 @@ and architecture docs may use either.
    product terms.
 3. **Never mix** in a single user-facing context: don't say "this DAG has 3 Steps"
    or "the Workflow's nodes." Pick one vocabulary per surface.
-4. **Hive Conductor** is always the UI layer. It does not "conduct" execution in
-   production — it conducts the *user experience* of managing the swarm.
+4. **Workspaces** is the user-facing product name for v1.0. **Hive Conductor** is the
+   historical/internal label for the same UI/BFF package (`hive-conductor`).
+5. The UI/BFF does not execute work in production — `maistro-server` and the canonical
+   Run spine do. The UI conducts the *user experience* of managing the swarm.
