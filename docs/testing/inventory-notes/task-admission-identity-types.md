@@ -774,3 +774,87 @@ checklist: the five banked rows are the scan-exact, lane-authorized CI-repair
 banking amendment — they remove nothing, grant nothing, and green no gate.
 Stack left unmerged; no push; writer handoff only, never integration approval.
 No inventory delta (stays +79). (Refs #1851)
+
+## CI-repair revalidation — 2026-10-17 (`88b032872717`, job `c2731ec4e79248cab`)
+
+Assigned repair of the merge-queue evaluation at the exact branch head
+`88b032872717ec54061385fec7960b3bb6d8633a` (base `ab8b3737fa64` still equals
+`origin/develop`; merge-base re-verified this round); worktree found clean at
+the assigned head. Driver battery check-0..4 all rc=0 (`uv sync --locked
+--extra dev`, `ruff check .`, `ruff format --check .`, focused pytest 79
+passed, core suite inventory ok at 16,439). All four failing gates were
+re-derived by direct execution at this tree; no source, test, or ledger
+change was warranted (see decomposition), so this is a note-only commit
+(inventory delta stays `packages/maistro-core/tests: +79`).
+
+1. `exact-debt-ledger` (`vulture-ratchet.yml`): its three steps were each
+   re-run — `check-ratchet-provenance.py` rc=1 solely via
+   `check-reachability-provenance.py: trusted-base gate returned 1` (the
+   unwired module; lifecycle violations 0 == 0), `check-shipped-surface-truth.py`
+   rc=0, and `check-vulture-baseline.py packages/*/src --min-confidence 60
+   --exclude '*/third_party/*'` rc=1 at CI's exact argv with: `unclassified:
+   0`, `never_allowlist: 0`, no candidate-bookkeeping block → banking half
+   green (1,327 scan == 1,327 ledger; the five rows verified inside the
+   `pydantic-declarative-field` rule the scan itself classifies them under);
+   authorization half red on exactly `admission_identity.py:515-520`
+   `MISMATCH`/`REPLAYED`/`TAKEOVER`/`REPLACE_EXPIRED`/`LEGACY_UNRESOLVED`,
+   message "New Vulture debt is not authorized by the trusted base … land a
+   reviewed grant first." "Fix what is genuinely dead": none qualifies — the
+   five are verbatim members of the issue's fixed six-member
+   `AdmissionAssessment` contract (exact pairs re-read at
+   `admission_identity.py:508-520`; pinned by the contract test asserting the
+   ordered six-tuple), consumed in-leaf only by tests; deletion/rename is
+   issue-prohibited and already tried+reverted on this branch (`b811e6978`,
+   `a813787ac` → `36372888d`). "Remove identities your fix eliminated": this
+   round's fix eliminates none, so no row changes; the lane-instructed
+   amendment for reviewed retained identities is already present and
+   scan-exact. Authorization loads from the merge base
+   (`load_authorizations(RATCHET, base=trusted_ref.base_sha)`), and
+   `origin/develop:quality/ratchet-authorizations.json` carries no
+   `admission_identity` grant — the two-merge wall; a branch-side grant is
+   inert by construction and issue-prohibited.
+2. `Quality gate (Pillars 1–4, 7, 8)`: its `reachability ratchet` step
+   (`quality.yml:1089-1090`) re-run → rc=1 with exactly 1 NEWLY UNREACHABLE
+   (`maistro.runs.admission_identity`, 170/1402); the in-job
+   `check-reachability-dispositions.py` (49 groups/169 modules) and
+   `check-promotion-surface.py` both rc=0. The remedy the gate itself
+   suggests (a `quality/reachability-baseline.json` entry) is issue-prohibited
+   for this leaf; that file remains a 0-line diff vs base.
+3. `test` (`ci.yml`): the reachability subset re-run at CI env
+   (`REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 RATCHET_BASE_REV=origin/develop`):
+   `pytest tests/test_reachability_baseline_identity.py
+   tests/test_check_reachability.py -q` → exactly **3 failed / 36 passed**,
+   every failure emitting `::error title=New unreachable
+   modules::maistro.runs.admission_identity`.
+4. `Coverage gate`: root cause one hop downstream, re-confirmed by reading
+   `quality.yml` — its `--source=scripts` producer runs `pytest tests/ …`
+   under `set -euo pipefail`, which contains the same three failing files, so
+   the producer aborts before `coverage.xml`; the full-stack producer itself
+   remains not locally reproducible (service stack), as recorded in prior
+   rounds.
+
+Focused leaf commands re-executed green at this head: pytest 79 passed; the
+issue's 12 named tests present exactly once each (grep-verified); ruff
+check + `ruff format --check` clean on both leaf files; `mypy
+packages/maistro-core/src/maistro/runs/admission_identity.py` Success;
+`check-suite-inventory.py --suite packages/maistro-core/tests` ok (16,439,
+matches the recorded inventory). Scope re-proven: branch diff vs base is
+exactly the 4 in-scope files (+1,683/-0); zero tracked importers of
+`admission_identity` outside module+test; `runs/__init__.py` has no admission
+reference; `quality/ratchet-authorizations.json`,
+`quality/reachability-baseline.json`, and
+`quality/reachability-dispositions.json` all 0-line diffs vs base.
+
+Conclusion (unchanged, now proven at `88b032872717`): the leaf satisfies all
+of its own acceptance criteria; the four red merge-queue gates are the exact
+merge blocker the issue mandates reporting ("report implementation/test
+readiness plus the explicit merge blocker and leave the stack unmerged"), and
+decompose to two structural facts — the intentionally unwired leaf and the
+five banked-but-ungranted retained enum identities — whose only resolutions
+are the owner-landed develop grants (two-merge rule) and the #1845
+real-consumer integration head, both outside this leaf's legal action space.
+Issue-checklist reconciliation stands: the five retained baseline entries are
+the scan-exact CI-repair-round banking amendment authorized by the lane brief;
+they add no grant, no waiver, no reachability entry, and green no gate by
+themselves. Stack left unmerged; no push; writer handoff only, never
+integration approval. No inventory delta (stays +79). (Refs #1851)
