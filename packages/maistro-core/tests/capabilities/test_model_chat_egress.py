@@ -277,6 +277,72 @@ async def test_pinned_unavailable_model_refuses_without_fallback() -> None:
     assert "does not fall back" in provider.reason
 
 
+@pytest.mark.parametrize("alias", ["", "slow-model", "gateway-only-alias"])
+@pytest.mark.parametrize("pin", ["unregistered-pin", "fast-model"])
+async def test_binding_pin_refuses_before_setup_and_gateway(
+    monkeypatch: pytest.MonkeyPatch, alias: str, pin: str
+) -> None:
+    """A pin is registry authority, never an unregistered request alias (#56)."""
+    from unittest.mock import AsyncMock
+
+    effects = _effects()
+    registry = _registry()
+    registry.mark_unavailable("fast-model")
+    router = CostAwareRouter(registry)
+    select = AsyncMock(side_effect=AssertionError("a pin must not use the router"))
+    monkeypatch.setattr(router, "select", select)
+    # A successful fake terminal makes the pre-fix failure safe and meaningful:
+    # before the repair this actually dispatches instead of refusing.
+    dispatch = AsyncMock(return_value=_OK_BODY)
+    monkeypatch.setattr("maistro.capabilities.model_chat.execute_model_chat", dispatch)
+    setup = AsyncMock()
+    binding = _binding(provider_name=pin)
+    egress = ModelChatEgress(
+        effects,
+        registry=registry,
+        router=router,
+        endpoint=GatewayEndpoint(base_url="https://gateway.invalid"),
+    )
+
+    reason = r"register.*ProviderRegistry" if pin == "unregistered-pin" else "does not fall back"
+    with pytest.raises(CapabilityUnavailable, match=reason):
+        await egress.complete(
+            binding=binding,
+            run_id="pin-run",
+            node_run_id="pin-node",
+            attempt_id="pin-attempt",
+            effect_key="unknown-pin",
+            request=ModelChatRequest(model=alias, messages=[]),
+            setup=setup,
+        )
+
+    select.assert_not_called()
+    setup.assert_not_called()
+    dispatch.assert_not_called()
+    assert (
+        await effects.invocation_store.list_effect(
+            run_id="pin-run",
+            node_run_id="pin-node",
+            binding_id=binding.binding_id,
+            effect_key="unknown-pin",
+        )
+        == []
+    )
+
+
+async def test_unavailable_request_alias_is_not_described_as_a_binding_pin() -> None:
+    registry = _registry()
+    registry.mark_unavailable("fast-model")
+    resolve = resolve_model_chat_provider(registry, CostAwareRouter(registry), alias="fast-model")
+
+    result = await resolve(_binding())
+
+    assert isinstance(result, Unavailable)
+    assert "request alias" in result.reason
+    assert "pinned" not in result.reason
+    assert "does not fall back" in result.reason
+
+
 async def test_unregistered_alias_still_reaches_gateway_with_absent_cost(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
