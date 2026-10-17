@@ -1006,3 +1006,46 @@ whose only resolutions are owner-landed develop grants (two-merge rule) and the
 #1845 real-consumer integration head, both outside this leaf's legal action
 space. Stack left unmerged; no push; writer handoff only, never integration
 approval. No inventory delta (stays +79). (Refs #1851)
+
+## Round-196 re-execution at the CI-evaluated head (job 0af3e3ffb220)
+
+Prior dispatch e8f16fbc completed all five deterministic checks rc=0 but died on
+a provider timeout before recording a verdict; this round re-executed every
+load-bearing check itself at `6071146c18ff` (clean tree, unchanged surfaces)
+and confirmed each standing claim firsthand, not on trust:
+
+- Focused pytest `test_root_admission_identity.py -q` → 79 passed (0.96s).
+- ruff check + ruff format --check on both leaf files → clean.
+- `mypy packages/maistro-core/src/maistro/runs/admission_identity.py` → Success.
+- Full `check-suite-inventory.py` → rc=0, 17 suites, 31,323 collected ==
+  unique, 0 dupes; recorded delta stays +79 (no inventory change this round).
+- CI-exact `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → rc=1 on authorization only: banking GREEN
+  (1,322 reviewed → 1,327 findings), all 5 enum identities banked and
+  unauthorized from trusted base `ab8b3737` (two-merge wall; no grant exists to
+  land from this leaf).
+- `check-reachability.py` → rc=1, exactly one NEWLY UNREACHABLE module:
+  `maistro.runs.admission_identity`.
+- `check-reachability-dispositions.py` → rc=0; `check-promotion-surface.py` →
+  rc=0.
+- Unwired-module test trio reproduced live: `test_check_reachability.py` +
+  `test_reachability_baseline_identity.py` (+ `test_no_placeholder_modules.py`)
+  → 3 failed / 40 passed, each failure naming `maistro.runs.admission_identity`
+  as an extra item absent from the committed baseline.
+- Structural audit re-run: zero production importers of the module;
+  `runs/__init__.py` 0-line diff vs base; `idempotency.py`, `store.py`,
+  `store_boundary.py`, `model.py` 0-line diffs; #1841 anchors verified at
+  `store_boundary.py:56`, `store.py:550/:507/:576/:1299/:1340`,
+  `model.py:306/:335-336`; `quality/` diff vs base is exactly +5/-0 rows on
+  `vulture-baseline.json` and 0 lines on `ratchet-authorizations.json` /
+  `reachability-baseline.json`.
+- Coverage gate root cause re-confirmed by workflow read:
+  `quality.yml:713-714` producer runs `pytest tests/` (which contains the three
+  failing reachability files) with `--source=scripts`; same single root cause,
+  no independent coverage defect.
+
+No code change, no ledger change, and no inventory change resulted from this
+round: every criterion re-passed and every red gate decomposes to the two
+already-documented structural facts (unwired leaf; banked-but-unauthorized
+retained enum identities). Conclusion unchanged; stack left unmerged; writer
+handoff only. (Refs #1851)
