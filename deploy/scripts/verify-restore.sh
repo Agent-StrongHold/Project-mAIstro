@@ -95,13 +95,25 @@ docker run -d --name "${SCRATCH_NAME}" \
   -e POSTGRES_DB="${PG_DB}" \
   "${PG_IMAGE}" >/dev/null
 
+# Readiness must be probed over TCP. The image's entrypoint initialises the
+# cluster under a temporary server bound to the unix socket only
+# (`listen_addresses=''`) and that server answers socket `pg_isready` before
+# it is stopped and the real server starts — a probe landing there would let
+# the pg_restore below race the temp→final restart and report a false
+# RESTORE failure (observed in CI as psql exit 2, "connection went bad", in
+# the characterisation module that drives this script; see
+# tests/test_restore_oracle_characterization.py::_wait_ready). The temporary
+# server never listens on TCP, so `-h 127.0.0.1` is only answerable by the
+# final server; `-d` names the database this script actually restores into,
+# per the #689 probe rule that a probe must not pass on an answer the
+# workload could not have meant.
 for _ in $(seq 1 60); do
-  if docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1; then
+  if docker exec "${SCRATCH_NAME}" pg_isready -h 127.0.0.1 -U "${PG_USER}" -d "${PG_DB}" >/dev/null 2>&1; then
     break
   fi
   sleep 1
 done
-docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1 \
+docker exec "${SCRATCH_NAME}" pg_isready -h 127.0.0.1 -U "${PG_USER}" -d "${PG_DB}" >/dev/null 2>&1 \
   || fail_verifier "scratch postgres did not become ready"
 
 # ── 3. Restore the custom-format archive ─────────────────────────────────────

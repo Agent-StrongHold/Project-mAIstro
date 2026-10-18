@@ -107,13 +107,51 @@ def _bash(script: str) -> subprocess.CompletedProcess[str]:
     return _run(["bash", "-c", script])
 
 
+def _psql_ready_probe(container: str) -> subprocess.CompletedProcess[bytes]:
+    """One authenticated readiness query, over TCP, against `container`."""
+    return subprocess.run(
+        [
+            "docker",
+            "exec",
+            container,
+            "psql",
+            "-h",
+            "127.0.0.1",
+            "-X",
+            "-Atq",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-U",
+            PG_USER,
+            "-d",
+            PG_DB,
+            "-c",
+            "SELECT 1;",
+        ],
+        capture_output=True,
+    )
+
+
 def _wait_ready(container: str) -> None:
+    """Wait until the container's *final* server executes an authenticated query.
+
+    A socket `pg_isready` probe is not sufficient here. The official image's
+    entrypoint initialises the cluster under a temporary server bound to the
+    unix socket only (`listen_addresses=''`), and that server answers
+    `pg_isready` — and even authenticated `psql` queries — before it is
+    stopped and the real server starts. A probe landing in that window reports
+    ready, and the fixture's first statement then races the temp→final
+    restart: observed in CI (coverage-gate root producer, run 39130160694) as
+    `docker exec … psql … CREATE TABLE …` exiting 2 — "connection to the
+    server went bad" — which errored all four characterisation tests through
+    the module fixture. The temporary server never listens on TCP, so a probe
+    over `-h 127.0.0.1` stays unanswered until the server this module actually
+    talks to is accepting connections; `psql -c 'SELECT 1'` (rather than
+    `pg_isready`) also proves authentication and execution, which is what the
+    statements after this call need.
+    """
     for _ in range(60):
-        probe = subprocess.run(
-            ["docker", "exec", container, "pg_isready", "-U", PG_USER],
-            capture_output=True,
-        )
-        if probe.returncode == 0:
+        if _psql_ready_probe(container).returncode == 0:
             return
         time.sleep(1)
     pytest.fail(f"characterization PostgreSQL {container} did not become ready")

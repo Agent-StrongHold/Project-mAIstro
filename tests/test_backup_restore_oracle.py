@@ -164,6 +164,45 @@ def test_security_defaults_preserved_no_restrict_key() -> None:
         assert "--restrict-key" not in code, f"{path.name} must not set --restrict-key"
 
 
+def test_container_readiness_probes_require_the_final_server() -> None:
+    """Readiness must be probed over TCP, which the init server cannot answer.
+
+    The image's entrypoint initialises the cluster under a temporary server
+    bound to the unix socket only (`listen_addresses=''`). That server answers
+    a socket `pg_isready` — and even an authenticated socket `psql` query —
+    before it is stopped and the real server starts, so a socket probe can
+    report ready while the first real statement races the restart and dies
+    with psql exit 2, "connection went bad". That is not hypothetical: it
+    errored all four live characterisation tests through the module fixture in
+    the coverage gate's root producer (CI run 39130160694), reding a PR whose
+    diff was two test files. A probe over `-h 127.0.0.1` stays unanswered
+    until the final server listens, which is the server every consumer of the
+    readiness signal actually talks to.
+
+    Pinned on both live-container readiness paths: the drill script's scratch
+    server (its two `pg_isready` calls in the shell) and the characterisation
+    fixture (its Python probe). The fixture's probe is additionally an
+    authenticated `SELECT 1`, which the shell probes do not need — pg_isready
+    never authenticates — but which proves the fixture can run statements
+    before it starts issuing them.
+    """
+    verify = _read(VERIFY_SH)
+    assert verify.count("pg_isready -h 127.0.0.1") == 2, (
+        "verify-restore.sh must probe scratch readiness over TCP: a socket probe is "
+        "answered by the entrypoint's temporary init server and races the restart "
+        "(psql exit 2 in CI run 39130160694)"
+    )
+    characterization = _read(REPO / "tests" / "test_restore_oracle_characterization.py")
+    assert '"-h",\n            "127.0.0.1",' in characterization, (
+        "the characterization fixture's readiness probe must target TCP "
+        "(-h 127.0.0.1): the temporary init server answers socket probes"
+    )
+    assert '"-c",\n            "SELECT 1;"' in characterization, (
+        "the characterization fixture's readiness probe must execute a query, "
+        "not merely confirm the server is accepting connections"
+    )
+
+
 # ── Fail-before: the old scripts violate every pinned property ───────────────
 
 
