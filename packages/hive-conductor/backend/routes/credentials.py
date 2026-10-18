@@ -11,6 +11,7 @@ import stores
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from services import user_credentials as cred_svc
+from services.request_principal import require_actor_id
 
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
@@ -114,11 +115,7 @@ def _models_url(endpoint: GatewayEndpoint) -> str:
 
 
 def _user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    uid = user.get("id")
-    if not uid:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return str(uid)
+    return require_actor_id(request)
 
 
 class SetCredentialBody(BaseModel):
