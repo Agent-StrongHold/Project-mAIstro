@@ -284,7 +284,13 @@ def test_dag_node_runtime_refuses_partial_composition(monkeypatch: pytest.Monkey
     monkeypatch.setattr(
         hive_config,
         "get_settings",
-        lambda: SimpleNamespace(litellm_api_base=None, litellm_api_key=None),
+        lambda: SimpleNamespace(
+            litellm_api_base=None,
+            litellm_api_key=None,
+            # The effective-key contract (#1824) also reads the deployment's
+            # own model key off settings; the stand-in models the real shape.
+            maistro_llm_api_key=None,
+        ),
     )
     # Any missing collaborator refuses the composition.
     assert dag_node_runtime(SimpleNamespace(capability_effects=effects)) is None

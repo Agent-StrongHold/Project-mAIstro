@@ -194,6 +194,24 @@ def _router_api_key() -> str:
     return os.getenv("ROUTER_API_KEY", "")
 
 
+def _gateway_credential(settings: Settings) -> str:
+    """The credential the deployment's gateway actually authenticates (#1824).
+
+    The bundled proxy authenticates with its master key; an external gateway
+    (LITELLM_BASE_URL pointed off-stack) authenticates with the key the
+    operator states for it, `LITELLM_API_KEY` — the same derivation the
+    shipped compose file applies when it fills the containers' environment:
+    `LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY}}`. Server
+    construction used to read only the bundled `LITELLM_MASTER_KEY` setting,
+    so a stack switched to an external gateway kept presenting the bundled
+    proxy's key to it and every governed call came back 401. The physical key
+    registered as the scoped `model.chat` gateway credential and the one the
+    roster-facing endpoint carries are resolved here, once, together — the
+    two doors cannot disagree (and neither value is ever logged).
+    """
+    return os.getenv("LITELLM_API_KEY") or settings.litellm.master_key
+
+
 def _agents_dir() -> str:
     """`agents_dir`, from the same place, for the same reason."""
     yaml_config = settings_module.get_yaml_config()
@@ -221,7 +239,7 @@ def _agent_config(settings: Settings) -> AgentConfig:
     return AgentConfig(
         router_api_key=_router_api_key(),
         litellm_url=settings.litellm.base_url,
-        litellm_key=settings.litellm.master_key,
+        litellm_key=_gateway_credential(settings),
         agents_dir=_agents_dir(),
         database_url=resolve_database_url(),
         workspace_id=settings.workspace_id,
@@ -311,7 +329,7 @@ async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, Model
         router=container.llm_router,
         endpoint=GatewayEndpoint(
             base_url=settings.litellm.base_url,
-            api_key=settings.litellm.master_key,
+            api_key=_gateway_credential(settings),
         ),
     )
     # `Container.agents` is typed `dict[str, Agent]`, and `Agent` is a concrete
@@ -351,6 +369,51 @@ async def _drain_queue_singleton() -> None:
         await logger.awarning("task_receipt_drain_on_shutdown_failed", exc_info=True)
 
 
+def _load_documented_yaml_config() -> None:
+    """Load + validate the documented YAML config in this worker (#1824).
+
+    The shipped entrypoint (``entrypoint.py``) serializes migrations, then
+    ``os.execvp``s into uvicorn — so any YAML singleton loaded before the exec
+    is lost with the parent process. The uvicorn worker that builds the
+    Container is therefore the place the documented configuration must be
+    loaded, and it must happen before the first consumer (``_validate_startup``
+    and ``_agent_config`` both read the singleton).
+
+    Failure semantics, per the parser contract in ``maistro.config.loader``:
+    a missing file loads as the empty, fail-closed configuration (no model
+    Bindings, no grants — the pinned ``_load_raw_yaml`` contract), while a
+    malformed or type-invalid *explicit* configuration propagates as a
+    startup failure BEFORE any Container is built or model call can be
+    dispatched. It is never caught into empty/default success. The surfaced
+    message is sanitized — file path and failure class only — because YAML
+    and pydantic error strings can echo offending input, which for a config
+    file can be secret material; the chained cause keeps the detail for
+    operators reading tracebacks.
+    """
+    from maistro.config.loader import load_yaml_config
+
+    config_path = os.getenv("MAISTRO_CONFIG", "config/maistro.yaml")
+    try:
+        config = load_yaml_config()
+    except Exception as exc:
+        logger.error(
+            "yaml_config_invalid",
+            path=config_path,
+            error=type(exc).__name__,
+            detail="refusing startup before container/model dispatch",
+        )
+        raise RuntimeError(
+            f"Documented configuration {config_path!r} failed to load or validate "
+            f"({type(exc).__name__}); startup refused before any model dispatch."
+        ) from exc
+    logger.info(
+        "yaml_config_loaded",
+        path=config_path,
+        model_bindings=len(config.model_bindings),
+        permission_preset=config.security.permission_preset or "none",
+    )
+
+
 @asynccontextmanager
 async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start/stop the background task runner with the app lifecycle."""
@@ -359,6 +422,14 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Configure structured logging (JSON in production, console in debug)
     settings = get_settings()
     configure_logging(debug=settings.debug, json_output=not settings.debug)
+
+    # Load the documented YAML configuration in THIS worker, before anything
+    # consumes it (#1824): `_validate_startup` reads `ROUTER_API_KEY` through
+    # the singleton via `_router_api_key()`, and `_agent_config` reads
+    # `model_bindings` / security grants through it. Loading only in the
+    # entrypoint parent cannot work — `os.execvp` replaces that process — and
+    # tests injecting the singleton do not prove the shipped path.
+    _load_documented_yaml_config()
 
     # Fail-fast startup validation
     _validate_startup(settings)

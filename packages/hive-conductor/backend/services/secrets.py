@@ -78,6 +78,53 @@ def litellm_api_key(settings: Settings, *, required: bool = False) -> str | None
     )
 
 
+def effective_llm_gateway_key(settings: Settings) -> str | None:
+    """The one effective model-gateway credential (#1824).
+
+    Every runtime consumer that needs "the key the deployment's model egress
+    authenticates with" reads it through this contract instead of assembling
+    its own alias chain, so the embedded runtime's legacy client, the
+    canonical governed egress endpoint and any future consumer cannot drift
+    onto different credentials.
+
+    Effective-key precedence matrix (first non-empty wins; an empty string at
+    any layer is *unset* and falls through, so a blanked variable never
+    shadows a configured one):
+
+    1. vault[``MAISTRO_LLM_API_KEY``] -- the deployment's own model key,
+       stated in the conductor vault (SPEC-003 vault-first);
+    2. ``Settings.maistro_llm_api_key`` -- the same name from the process
+       environment / ``.env`` via pydantic-settings;
+    3. vault[``LITELLM_API_KEY``];
+    4. ``Settings.litellm_api_key`` -- env ``LITELLM_API_KEY`` / ``.env``
+       (what the shipped compose file derives from ``LITELLM_MASTER_KEY``);
+    5. bare-env proxy aliases ``LITELLM_PROXY_KEY`` then
+       ``LITELLM_MASTER_KEY`` -- the supported LiteLLM proxy spellings some
+       deployments state directly (they exist so a stack that only knows the
+       proxy's own key still reaches the bundled gateway);
+    6. ``None`` -- absent model configuration. Callers treat this as
+       fail-closed: no credential is registered or dispatched, never a
+       placeholder key.
+
+    Conflicting values are resolved by this order -- the maistro-scoped key
+    outranks the gateway aliases because it is the key this deployment
+    intentionally named for its own model authority, while the aliases are
+    compatibility fallbacks. Returns ``None`` (never ``""``) when nothing is
+    configured, so callers can distinguish "unset" from a real empty value.
+    """
+    key = maistro_llm_api_key(settings)
+    if key:
+        return key
+    key = litellm_api_key(settings)
+    if key:
+        return key
+    for alias in ("LITELLM_PROXY_KEY", "LITELLM_MASTER_KEY"):
+        key = os.environ.get(alias)
+        if key:
+            return key
+    return None
+
+
 def maistro_llm_api_key(settings: Settings, *, required: bool = False) -> str | None:
     return resolve_secret(
         "MAISTRO_LLM_API_KEY",
