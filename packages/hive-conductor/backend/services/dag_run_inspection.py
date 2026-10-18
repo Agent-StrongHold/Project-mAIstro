@@ -55,6 +55,24 @@ async def _readable_canonical_runs(run_ids: list[str], user_id: str) -> dict[str
         return {}
 
 
+def _goal_context_identity(run: Any) -> dict[str, Any] | None:
+    """The #458 Goal context a readable canonical Run records, verbatim (#65).
+
+    The Goal-centric view (services.goal_inspection) reads this same context
+    through this module's `canonical_runs_for`; relaying the recorded
+    identity here lets the run surface link back to that view with no second
+    read and no id translation. Identity only: status and control stay the
+    seam's own, and a run whose provenance names no Goal relays nothing at
+    all — absence, not an invented default.
+    """
+    from maistro.runs.goal_context import goal_context_of
+
+    context = goal_context_of(getattr(run, "provenance", None))
+    if context is None:
+        return None
+    return {"goal_id": context.goal_id, "goal_revision": context.goal_revision}
+
+
 def _overlay(record: dict[str, Any], run: Any) -> dict[str, Any]:
     # No readable canonical Run -- none recorded, or one outside the caller's
     # Workspaces (#1152) -- leaves the projection row as it is.
@@ -66,6 +84,7 @@ def _overlay(record: dict[str, Any], run: Any) -> dict[str, Any]:
     if run.workspace_id != str(record.get("workspace_id") or ""):
         return record
     creative = _creative_run_provenance(run)
+    goal_context = _goal_context_identity(run)
     return {
         **record,
         # Canonical lifecycle truth replaces the projection row's wholesale
@@ -82,6 +101,7 @@ def _overlay(record: dict[str, Any], run: Any) -> dict[str, Any]:
         "error": run.error,
         "finished_at": (run.finished_at.timestamp() if run.finished_at is not None else None),
         **({"creative_provenance": creative} if creative else {}),
+        **({"goal_context": goal_context} if goal_context else {}),
     }
 
 

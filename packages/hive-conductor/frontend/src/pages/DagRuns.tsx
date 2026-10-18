@@ -12,7 +12,7 @@
 // duration_ms, tool result preview). Day 9 ships this read-only view;
 // Day 13 will overlay eval-judge scores on each node.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { apiGet } from "../lib/api";
 
 type EventType = "pm_node_started" | "pm_node_completed" | "pm_node_failed";
@@ -36,6 +36,12 @@ interface RunSummary {
 
 interface RunDetail extends RunSummary {
   events: DagEvent[];
+  // The #458 Goal context a goal-driven Run records, relayed verbatim by the
+  // /v1/dag-runs seam; absent when the Run records none (#65). An inline
+  // member on purpose: the typed-client ratchet banks this page's hand-typed
+  // declarations by line, so the round-trip link adds no new one and moves
+  // no banked row.
+  goal_context?: { goal_id: string; goal_revision: string };
 }
 
 // Hard-laid topology — matches graph/pm_domain.PM_GRAPH_CONFIG.
@@ -100,6 +106,7 @@ export default function DagRuns() {
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   // List recent runs.
   const loadRuns = useCallback(async () => {
@@ -238,6 +245,40 @@ export default function DagRuns() {
         </aside>
 
         <section style={{ flex: 1 }}>
+          {detail && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 12,
+                marginBottom: 8,
+                flexWrap: "wrap",
+              }}
+            >
+              <span style={{ fontFamily: "monospace", fontSize: 13 }}>{detail.id}</span>
+              {/* Round trip (#65): this run arrived from the Goal view's
+                  history; the recorded Goal context links straight back. The
+                  strings are the seam's own — no id translation. */}
+              {detail.goal_context && (
+                <button
+                  onClick={() =>
+                    navigate(`/goals?goal=${encodeURIComponent(detail.goal_context!.goal_id)}`)
+                  }
+                  style={{
+                    cursor: "pointer",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: 6,
+                    background: "white",
+                    padding: "3px 10px",
+                    fontSize: 12,
+                  }}
+                  title="Open the Goal this run executes toward"
+                >
+                  Goal: {detail.goal_context.goal_id} · revision {detail.goal_context.goal_revision}
+                </button>
+              )}
+            </div>
+          )}
           <svg
             width={width}
             height={height}

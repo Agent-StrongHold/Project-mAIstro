@@ -279,6 +279,48 @@ async def test_run_identity_and_status_are_the_run_seams_truth(
     assert {row["status"] for row in view["runs"]} == {"cancelled", "running"}
 
 
+async def test_the_seam_relays_the_recorded_goal_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The run seam relays the Goal identity a goal-driven Run records, and
+    the round trip needs no translation: the ids on the run detail are the
+    exact strings the Goal view groups that same run under. A run whose
+    provenance names no Goal relays no goal_context at all — absence, not an
+    invented default (#65; the Goal -> Run -> Goal navigation contract)."""
+    from services.dag_run_inspection import visible_run_detail
+
+    from maistro.runs import RunStatus
+    from maistro.runs.goal_context import GOAL_ID_KEY, GOAL_REVISION_KEY
+
+    goal_id = _next_id("goal")
+    revision = "r9-roundtrip"
+    scene, run_ids = await _goal_scene(
+        monkeypatch, goal_id=goal_id, statuses=[RunStatus.COMPLETED], revision=revision
+    )
+    plain_projection_id = await scene.add_goal_run(
+        goal_id=_next_id("unamed"),
+        status=RunStatus.COMPLETED,
+        provenance={"unrelated": "projection-only row"},
+    )
+
+    detail = await visible_run_detail(_USER_ID, run_ids[0])
+    assert detail is not None
+    assert detail["goal_context"] == {"goal_id": goal_id, "goal_revision": revision}
+
+    plain = await visible_run_detail(_USER_ID, plain_projection_id)
+    assert plain is not None
+    assert "goal_context" not in plain
+
+    # And the same two strings the Goal view groups this run by — read here
+    # through the goal provenance the view itself consumes — so linking back
+    # from the run surface lands on exactly this Goal's history.
+    view = (await _views_for(goal_id))[0]
+    row = next(row for row in view["runs"] if row["run_id"] == run_ids[0])
+    assert row["goal_revision"] == detail["goal_context"]["goal_revision"]
+    assert view["goal_id"] == detail["goal_context"][GOAL_ID_KEY]
+    assert detail["goal_context"][GOAL_REVISION_KEY] == revision
+
+
 # ─── evidence is not a verdict ───────────────────────────────────────────────
 
 
@@ -336,6 +378,51 @@ async def test_waiting_human_pause_is_distinguishable(
     assert human["execution_disposition"] == "waiting_human"
     assert parked["execution_disposition"] == "waiting"
     assert human["execution_disposition"] != parked["execution_disposition"]
+
+
+async def test_hitl_pause_provenance_stays_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run parked at the HITL fence stays visible in its Goal's history as
+    waiting-human, with the admission's own record of the pause riding
+    through verbatim and its identity exactly what the run seam answers —
+    the pause is execution evidence the reader can trace, never something a
+    Goal-side projection reclassifies or drops (#65: HITL provenance is
+    visible)."""
+    from services.dag_run_inspection import visible_run_detail
+
+    from maistro.runs import RunStatus
+    from maistro.runs.goal_context import GOAL_ID_KEY
+
+    goal_id = _next_id("goal")
+    scene = await _make_scene(monkeypatch)
+    projection_id = await scene.add_goal_run(
+        goal_id=goal_id,
+        status=RunStatus.PAUSED,
+        provenance_extra={
+            "pause": {"waiting_on": "human_review", "requested_by": "reviewer-7"},
+        },
+    )
+
+    view = (await _views_for(goal_id))[0]
+    assert view["execution_disposition"] == "waiting_human"
+    row = next(row for row in view["runs"] if row["run_id"] == projection_id)
+    assert row["status"] == "paused"
+    # The recorded context of the pause rides through untouched: same keys,
+    # same values, nothing summarized away.
+    assert row["provenance"]["pause"] == {
+        "waiting_on": "human_review",
+        "requested_by": "reviewer-7",
+    }
+    assert row["provenance"][GOAL_ID_KEY] == goal_id
+    # And the row is the seam's own answer for that run, so tracing the pause
+    # to its execution (detail, attempts, events) is the same door everyone
+    # else uses — no Goal-side copy of the run.
+    through_the_seam = await visible_run_detail(_USER_ID, projection_id)
+    assert through_the_seam is not None
+    assert row["run_id"] == through_the_seam["id"]
+    assert row["status"] == through_the_seam["status"]
+    assert through_the_seam["goal_context"]["goal_id"] == goal_id
 
 
 # ─── fail-closed Goal context ────────────────────────────────────────────────
