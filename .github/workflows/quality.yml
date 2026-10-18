@@ -839,9 +839,11 @@ jobs:
       # reach 0.
       #
       # This step's unique value after #1682 is the module-rank and
-      # project-average axes: check-radon-baseline.py now carries the same
-      # 139 blocks as a per-identity ledger, which is strictly stronger than
-      # a count for the per-block axis.
+      # project-average axes: check-radon-baseline.py carries the same blocks
+      # as a per-identity ledger, which is strictly stronger than a count for
+      # the per-block axis. tests/test_complexity_gate_scope.py pins
+      # XENON_BASELINE to the ledger's length, so the two instruments cannot
+      # drift apart silently.
       - name: xenon (per-function ≤ B; per-module ≤ B; project avg ≤ A — ratchet)
         env:
           # 77 -> 140 when the scope widened from maistro-core to every shipped
@@ -861,11 +863,21 @@ jobs:
           # scan does not watch *until this PR lands* -- which is the argument
           # for landing it rather than refreshing the number again.
           #
-          # 145 is the same number check-radon-baseline.py now carries, and that
+          # 145 -> 143: the Boy Scout wave after this landed (the M4-A8/#115
+          # refactors, then the M5-B rounds) fixed LocalRsiLoop._fitness_decision
+          # and LocalRsiLoop.export_promotions outright and re-pinned six more
+          # rows lower; the ledger followed every improvement down and this
+          # ceiling follows the ledger. Re-measured 2026-10-18 at 31d891a561df:
+          # 143 xenon block identities matching the ledger's 143 entries
+          # one-for-one, rank for rank.
+          #
+          # 143 is the same number check-radon-baseline.py carries, and that
           # is the point: the two tools measure the same blocks over the same
           # scope, so a divergence between this count and the ledger's length is
           # itself a signal that one of them stopped looking.
-          XENON_BASELINE: 145
+          # tests/test_complexity_gate_scope.py pins the two together so the
+          # next improvement lowers both in the same PR.
+          XENON_BASELINE: 143
           # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in
           # silence; widening the scope surfaced one.
