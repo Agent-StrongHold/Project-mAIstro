@@ -198,3 +198,27 @@ Residual on #57: issue #847 remains open (its strategy/schema/argument
 adversarial coverage largely landed here and in prior rounds, but closure is
 an issue action this lane cannot take); `BuildersLearningStrategy` shell and
 GitHub effects remain #847's outstanding scope.
+
+## Re-verification round (2026-10-18, head daf58eec3)
+
+No code changed: the assigned head re-validated green on every deterministic
+battery, executed fresh this round (not inherited from prior claims):
+
+- Gates exit 0: vulture (ledger 1322 -> 1318, no new debt), model-egress
+  (20 callers, governed seam absent from the census), direct-effects
+  (51 sites, all dispositioned; 4 TOOL_EFFECT as provider backends),
+  reachability + dispositions, radon (137 blocks), promotion-surface,
+  convergence-matrix, durable-tables, ratchet-provenance,
+  shipped-surface-truth, suite-inventory (17/17), backlog.
+- `ruff check` + `ruff format --check` clean; mypy 7-package CI set Success
+  (902 files).
+- maistro-core 15380 passed / 1073 skipped / 3 xfailed; hive-conductor
+  backend 3666 passed / 20 skipped; gate tests 74 passed; bootstrap command
+  contract 40 passed.
+- Criteria 1-11 re-checked against production code (wired constructor at
+  `services/governed_tools.py`, bridge passes it at
+  `adapters/maistro_core.py:255`, chat/legacy seams migrated, legacy
+  no-NodeContext branch refused) and against the tests named above.
+- Criterion 12 remains the sole open item: closing #847 is an owner/integrator
+  action outside this lane's authority; #847's own residual scope
+  (`BuildersLearningStrategy` shell/GitHub bypass) is not landed here.
