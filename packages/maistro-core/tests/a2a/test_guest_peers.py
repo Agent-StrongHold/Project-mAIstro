@@ -6,6 +6,8 @@ import json
 import subprocess
 import sys
 import time
+from datetime import date, datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,7 @@ from maistro.a2a.guest_peers import (
     InMemoryAuditLogger,
     PeerTrust,
 )
+from maistro.a2a.inbound import canonicalize_inbound, scan_inbound
 from maistro.http import set_test_transport
 from maistro.security._types import WardenVerdict
 from maistro.security.outbound import (
@@ -851,3 +854,83 @@ async def test_delegate_rejects_idempotency_key_diverging_from_context(
     assert "idempotency_key" in (refused.error or "")
     assert "body" not in sent, "nothing reached the peer"
     assert "refused" in audit.entries[-1]["detail"]
+
+
+# --- canonical inbound representation (maistro.a2a.inbound) ----------------
+
+
+class _Flavor(Enum):
+    MINT = "mint"
+
+
+class _Modelish:
+    """Stands in for any payload value carrying its own JSON projection."""
+
+    def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+        return {"projected": mode}
+
+
+class _Opaque:
+    """A value with no unambiguous JSON form at all."""
+
+
+async def test_canonical_representation_encodes_rich_value_types() -> None:
+    """Enums, timestamps and self-projecting values survive canonicalization.
+
+    The scanned text is the peer-visible truth: each encoded value appears in
+    its unambiguous JSON form, under sorted keys, so Warden judges exactly
+    what a downstream consumer would act on.
+    """
+    warden = _RecordingWarden()
+    verdict = await scan_inbound(
+        warden,
+        {
+            "flavor": _Flavor.MINT,
+            "when": datetime(2026, 1, 2, 3, 4, 5),
+            "day": date(2026, 1, 2),
+            "model": _Modelish(),
+        },
+    )
+
+    assert verdict.clean is True
+    scanned = warden.contents[0]
+    assert '"day":"2026-01-02"' in scanned
+    assert '"flavor":"mint"' in scanned
+    assert '"model":{"projected":"json"}' in scanned
+    assert '"when":"2026-01-02T03:04:05"' in scanned
+    # Keys are sorted: the canonical form is deterministic across senders.
+    assert scanned == canonicalize_inbound(
+        {
+            "when": datetime(2026, 1, 2, 3, 4, 5),
+            "model": _Modelish(),
+            "flavor": _Flavor.MINT,
+            "day": date(2026, 1, 2),
+        }
+    )
+
+
+async def test_unserializable_payload_fails_closed_without_reaching_the_scanner() -> None:
+    """A value json cannot represent is an ingress refusal, not a scan."""
+    warden = _RecordingWarden()
+
+    verdict = await scan_inbound(warden, {"payload": _Opaque()})
+
+    assert verdict.clean is False
+    assert verdict.blocked is True
+    assert verdict.flags == ("warden_unavailable",)
+    # The scanner saw nothing: there is no canonical text to judge.
+    assert warden.contents == []
+
+
+async def test_scanner_failure_fails_closed() -> None:
+    class _ExplodingWarden:
+        policy_version = "exploding"
+
+        async def scan(self, content: str, boundary: str) -> WardenVerdict:
+            raise RuntimeError("scanner backend down")
+
+    verdict = await scan_inbound(_ExplodingWarden(), {"answer": "looks harmless"})
+
+    assert verdict.clean is False
+    assert verdict.blocked is True
+    assert verdict.flags == ("warden_unavailable",)
