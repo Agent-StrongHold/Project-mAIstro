@@ -43,7 +43,16 @@
 # Schema inventory of the 'public' schema: one pipe-separated row per column,
 # ordered so the file diffs stably. Column defaults are inlined (empty when
 # NULL) so every record has the same field count.
-ORACLE_SCHEMA_SQL="SELECT table_name || '|' || column_name || '|' || data_type || '|' || is_nullable || '|' || coalesce(column_default, '') FROM information_schema.columns WHERE table_schema = 'public' ORDER BY table_name, ordinal_position;"
+#
+# The type is read from pg_catalog with format_type(atttypid, atttypmod), NOT
+# from the information_schema data_type view: that view collapses arrays to
+# 'ARRAY' and every non-built-in type (domains, extensions such as pgvector)
+# to 'USER-DEFINED', hiding the type modifier entirely — so restoring a
+# vector(1536) column as vector(768) would record identical evidence and the
+# drill would PASS for an incompatible schema. format_type renders the full
+# identity instead: 'vector(1536)', 'numeric(10,2)', 'text[]', the underlying
+# type of a domain.
+ORACLE_SCHEMA_SQL="SELECT c.relname || '|' || a.attname || '|' || pg_catalog.format_type(a.atttypid, a.atttypmod) || '|' || CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END || '|' || coalesce(pg_catalog.pg_get_expr(ad.adbin, ad.adrelid), '') FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid = a.attrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum WHERE n.nspname = 'public' AND a.attnum > 0 AND NOT a.attisdropped ORDER BY c.relname, a.attnum;"
 
 # Exact per-table row counts of the 'public' schema, as 'table=count', ordered
 # by table name. count(*) runs per table so the numbers are exact (unlike the
@@ -70,6 +79,11 @@ oracle_psql_coproc() { oracle_psql "$@"; }
 oracle_begin_snapshot() {
   oracle_require_psql || return 1
   coproc ORACLE_TX { oracle_psql_coproc -X -Atq -v ON_ERROR_STOP=1; }
+  # Capture the coprocess PID immediately: bash unsets the transient
+  # ORACLE_TX_PID variable once the coprocess is reaped, which can happen
+  # right after oracle_end_snapshot closes its stdin; callers run under
+  # set -u, so wait must use this saved copy instead of the special var.
+  ORACLE_TX_PID_SAVED="${ORACLE_TX_PID}"
   local snap
   if ! printf 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SELECT pg_export_snapshot();\n' \
       >&"${ORACLE_TX[1]}"; then
@@ -107,6 +121,6 @@ oracle_end_snapshot() {
     rc=1
   fi
   eval "exec ${ORACLE_TX[1]}>&-" 2>/dev/null || true
-  wait "${ORACLE_TX_PID}" 2>/dev/null || rc=1
+  wait "${ORACLE_TX_PID_SAVED}" 2>/dev/null || rc=1
   return "${rc}"
 }

@@ -48,15 +48,17 @@ def _read(path: Path) -> str:
 
 
 def _pre_change_script(name: str) -> str:
-    """The pre-#1881 version of a deploy script, straight from git HEAD."""
-    out = subprocess.run(
-        ["git", "show", f"HEAD:deploy/scripts/{name}"],
-        cwd=REPO,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return out.stdout
+    """The pre-#1881 version of a deploy script, from a checked-in fixture.
+
+    Deliberately not read from git: on a committed checkout `HEAD:<path>`
+    already returns the post-change blob, and resolving a true base revision
+    is fragile under CI's shallow fetches. The fixtures under
+    tests/fixtures/pre-1881/ are pinned baseline copies, so the fail-before
+    assertions run against the actual old scripts.
+    """
+    fixture = REPO / "tests" / "fixtures" / "pre-1881" / name
+    assert fixture.exists(), f"missing pre-change baseline fixture: {fixture}"
+    return _read(fixture)
 
 
 def _bash_n(path: Path) -> None:
@@ -77,6 +79,15 @@ def test_oracle_definitions_are_single_sourced() -> None:
     lib = _read(ORACLE_LIB)
     assert "ORACLE_SCHEMA_SQL=" in lib
     assert "ORACLE_ROWCOUNTS_SQL=" in lib
+    # The schema inventory must record the fully formatted column type
+    # (format_type keeps typmods, arrays, and domains). information_schema
+    # collapses arrays to 'ARRAY' and pgvector/user-defined types to
+    # 'USER-DEFINED', so a restore swapping vector(1536) for vector(768)
+    # would otherwise produce identical evidence and report PASS.
+    assert "format_type(" in lib, "schema SQL must use pg_catalog.format_type(atttypid, atttypmod)"
+    assert "information_schema.columns" not in lib, (
+        "schema SQL must not use the collapsed data_type view"
+    )
     for script in (BACKUP_SH, VERIFY_SH):
         text = _read(script)
         assert "pg-semantic-oracle.sh" in text, f"{script.name} must source the shared oracle"

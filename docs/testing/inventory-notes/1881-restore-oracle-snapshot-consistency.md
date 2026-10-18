@@ -24,10 +24,14 @@ evidence queries in `deploy/scripts/pg-semantic-oracle.sh`, verifies restored se
 
 `tests/test_backup_restore_oracle.py` (always on): pins the fix's structure —
 single-sourced oracle definitions, snapshot binding in the producer, semantic
-comparison in the consumer, distinct failure classes, no `--restrict-key` invocation,
+comparison in the consumer (schema types recorded via `pg_catalog.format_type`,
+so typmods like `vector(1536)` vs `vector(768)` are distinguishable), distinct
+failure classes, no `--restrict-key` invocation,
 docs no longer claiming the retired "bit-for-bit via pg_dump hash" property. Each
-structural property is also asserted to fail against the pre-#1881 scripts read from
-`git show HEAD:...`, so the tests cannot pass vacuously against the replaced behavior.
+structural property is also asserted to fail against the pre-#1881 scripts, pinned
+as fixtures under `tests/fixtures/pre-1881/` (not `git show HEAD:...`: on a
+committed checkout that already returns the post-change blob), so the tests cannot
+pass vacuously against the replaced behavior.
 
 `tests/test_restore_oracle_characterization.py` (integration, skipped without Docker):
 live characterization on the production image (pgvector/pgvector:pg17) in throwaway
