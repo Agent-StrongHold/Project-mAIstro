@@ -549,6 +549,96 @@ async def test_run_settlement_lost_after_the_last_node_run_commits(
     assert await spine.recovery.run_store.list_attempts(node_run_id) == history
 
 
+# ── successful runtime, failed physical completion write ───────────
+
+
+async def test_lost_success_write_preserves_live_ownership_then_parks(
+    spine: _Spine, recovery_container: Container, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ordinary store failure must not make a FAILED Run over live work.
+
+    Unlike the committed-success replay above, this output never reaches the
+    canonical Attempt. Recovery may reclaim and park, but cannot reconstruct
+    success. This proves durable ownership/recoverability, NOT preservation of
+    the uncommitted Graph result or permission to retry the node.
+    """
+    graph = spine.graph(_Step.kind, name="successful runtime, lost completion")
+    run_id = await _admit(spine, graph)
+    step = _Step()
+    execute = AsyncMock(wraps=step._execute)
+    monkeypatch.setattr(step, "_execute", execute)
+    transition = spine.walker.run_store.transition_attempt
+    lost_results: list[Any] = []
+
+    async def fail_completion(attempt_id: str, target: AttemptStatus, **kwargs: Any) -> Any:
+        if target is AttemptStatus.COMPLETED:
+            lost_results.append(kwargs["result"])
+            raise OSError("injected completion write failure before commit")
+        return await transition(attempt_id, target, **kwargs)
+
+    monkeypatch.setattr(spine.walker.run_store, "transition_attempt", fail_completion)
+    record = await run_durable_graph(
+        graph,
+        store=spine.walker.durable(),
+        node_resolver=lambda _node_id, _graph: step,
+        run_id=run_id,
+        run_store=spine.walker.run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    execute.assert_awaited_once()
+    assert len(lost_results) == 1  # No inline retry of the terminal write.
+    assert lost_results[0].success
+    assert lost_results[0].model_dump(mode="json")["output"] == {"text": "done"}
+    assert record.run.status is RunStatus.RUNNING
+
+    # Read committed truth through the independent recovery pool, not the
+    # walker's return/projection. No result or accepted success was persisted.
+    run = await spine.recovery.run_store.get_run(run_id)
+    assert run is not None and run.status is RunStatus.RUNNING and run.error is None
+    [node] = await spine.recovery.run_store.list_node_runs(run_id)
+    assert node.status is RunStatus.RUNNING and node.accepted_outcome is None
+    [attempt] = await spine.recovery.run_store.list_attempts(node.node_run_id)
+    assert attempt.status is AttemptStatus.RUNNING and attempt.result is None
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+    continuation = await spine.recovery.continuations.get(run_id)
+    assert continuation is not None and continuation.status is RunStatus.RUNNING
+
+    # Boundary clocks are derived from persisted ownership, never a sleep or
+    # machine-speed threshold. The live tick must be completely read-only.
+    assert (
+        await recovery_container.recover_abandoned_attempts(
+            now=lease.expires_at - timedelta(microseconds=1), limit=1
+        )
+        == 0
+    )
+    assert await spine.recovery.run_store.get_run(run_id) == run
+    assert await spine.recovery.run_store.list_node_runs(run_id) == [node]
+    assert await spine.recovery.run_store.list_attempts(node.node_run_id) == [attempt]
+
+    assert await recovery_container.recover_abandoned_attempts(now=lease.expires_at, limit=1) == 1
+    [reclaimed] = await spine.recovery.run_store.list_attempts(node.node_run_id)
+    assert reclaimed.status is AttemptStatus.CANCELLED
+    assert reclaimed.result is None
+    assert reclaimed.execution_lease == lease
+    assert (reclaimed.attempt_id, reclaimed.node_run_id, reclaimed.ordinal) == (
+        attempt.attempt_id,
+        attempt.node_run_id,
+        attempt.ordinal,
+    )
+    parked = await spine.recovery.run_store.get_run(run_id)
+    assert parked is not None and parked.status is RunStatus.WAITING
+    [parked_node] = await spine.recovery.run_store.list_node_runs(run_id)
+    assert parked_node.status is RunStatus.WAITING and parked_node.accepted_outcome is None
+    assert parked.result is None and parked_node.result is None
+    assert await recovery_container.recover_abandoned_attempts(now=lease.expires_at, limit=1) == 0
+    assert await spine.recovery.run_store.get_run(run_id) == parked
+    assert await spine.recovery.run_store.list_node_runs(run_id) == [parked_node]
+    assert await spine.recovery.run_store.list_attempts(node.node_run_id) == [reclaimed]
+    assert await spine.recovery.continuations.get(run_id) == continuation
+    execute.assert_awaited_once()
+
+
 # ── the frontier whose checkpoint never landed ─────────────────────
 
 
