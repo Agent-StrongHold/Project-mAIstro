@@ -62,3 +62,37 @@ No existing tests were removed or weakened; the five are static reads of
 `scripts/check-radon-baseline.py`, `quality/radon-baseline.json` and
 `.github/workflows/quality.yml`, so no suite runtime is added beyond
 collection.
+
+## Independent verification record (2026-10-18, head `cff35e317db1`)
+
+Executed locally against the assigned head, merge base `ce2048cd2430`
+(= `origin/develop`, confirmed via read-only API the same day):
+
+| Check (CI-exact invocation) | Result |
+|---|---|
+| `pytest tests/test_complexity_gate_scope.py` | 5 passed |
+| `pytest tests/test_ci_quality_split.py` | 96 passed |
+| `ruff check .` / `ruff format --check .` | clean |
+| xenon (workflow step args, `-i third_party`, ten roots) | 139 block / 0 module / 0 average; 139 identities match the 139 ledger rows one-for-one, rank for rank |
+| interrogate — all 13 floors incl. the new `-f 73 packages/maistro-ext-sdk/src` | 13/13 exit 0 |
+| `check-suite-inventory.py` | ok, 17 suites |
+| `check-ratchet-provenance.py` (all ratchets) | exit 0 |
+| `check-shipped-surface-truth.py` | exit 0 |
+| `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | exit 0 |
+| `check-radon-baseline.py` | **exit 1** |
+
+The one failure is the documented two-merge state, now proven rather than
+asserted: `develop`'s `quality/ratchet-authorizations.json` contains **zero**
+`maistro-ext-sdk` grants, so the two identities this branch banks
+(`...manifest.py::_validate_least_authority@14`,
+`...ranges.py::VersionRange.satisfied_by@12`) are unauthorized on the trusted
+base and the gate prints "Land a grant keyed as
+'<qualified-block>@<new-complexity>' first". This branch needs **no code
+change**: the unblock is a grants-only PR carrying exactly those two
+authorization entries (verbatim keys/values from this branch's copy, which is
+inert), merged to `develop` **before** this branch; after that merge the
+trusted base carries the grants and this branch's radon ratchet passes with
+the gate output `137 -> 139`, the grants consumed. The other acceptance
+surfaces (scan scope, xenon's three axes, interrogate floors, ledger/ceiling
+parity) are verified above and pinned by the five tests this note's delta
+records.
