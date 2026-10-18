@@ -480,7 +480,7 @@ def test_recovery_md_uses_the_resolved_front_end_when_present(tmp_path: Path) ->
     result = _run(
         tmp_path,
         plan,
-        'COMPOSE_CMD=(podman compose)\nwrite_recovery_md\n',
+        "COMPOSE_CMD=(podman compose)\nwrite_recovery_md\n",
     )
     assert result.returncode == 0, result.stderr
     recovery = (plan / "RECOVERY.md").read_text(encoding="utf-8")

@@ -151,6 +151,17 @@ containers remain out of the installer's schema (see *Safe defaults*);
 rootless host containers are not an agent sandbox backend (#81 owns that
 contract).
 
+**Evidence:** the Linux/WSL2 rows are exercised end to end from ordinary
+host accounts — rootless Podman (zero-admin after the one-time package
+install) through install, health, restart-from-a-new-login, ownership
+checks, and teardown, plus the Docker-Engine boundary (selected runtime
+inaccessible to the account → actionable failure, never a silent switch
+even with a working Podman on the same host). Sanitized transcripts,
+including the three actionable mid-install failures the runs surfaced:
+[`runtime-selection-evidence-1820.md`](runtime-selection-evidence-1820.md).
+The macOS rows and the Windows-side elevation choreography of `get.ps1`
+remain design claims (no such host in the lane); see *Not exercised* there.
+
 **Interruption/retry and ownership:** installer state (`.maistro-install/`,
 `.env`, plan artifacts, named volumes) is created by and owned by the invoking
 account; re-running `./install.sh` after an interrupted install resumes
