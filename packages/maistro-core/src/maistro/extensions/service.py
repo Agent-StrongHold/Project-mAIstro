@@ -24,12 +24,14 @@ workspace scope, extension id and version, and a reason.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
+from maistro.extensions.attribution import ExtensionAttribution
 from maistro.extensions.authority import AuthorityBaseline, compute_authority_delta
 from maistro.extensions.compatibility import CompatibilityPolicy, evaluate_compatibility
 from maistro.extensions.manifest import (
@@ -56,6 +58,8 @@ from maistro.extensions.types import (
     TrustClaim,
     UnknownInstall,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
@@ -470,6 +474,16 @@ class ExtensionInstallService:
             now=self._clock(),
         )
         await self._store.set_active(record)
+        # M9-I1 (#976): the one log line per activation names the exact package
+        # (version, publisher, both digests) and the canonical install/scope
+        # linkage, so every effect of this extension is traceable to the
+        # identity that produced it — including after upgrade or removal.
+        attribution = ExtensionAttribution.from_governed_install(record)
+        logger.info(
+            "extension active: %s",
+            attribution.describe(),
+            extra=attribution.to_log_fields(),
+        )
         return record
 
     # -- maintenance ---------------------------------------------------------

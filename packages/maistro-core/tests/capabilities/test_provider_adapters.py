@@ -1984,3 +1984,75 @@ async def test_end_to_end_reference_proof_bootstrap_to_decoded_evidence(
     assert decoded.describe() == "acme.models 2.3.1 (publisher 'acme', package aaaaaaaaaaaa\u2026)"
     # the canonical caller identity on the same row attributes *who* ran it
     assert (stored.workspace_id, stored.run_id, stored.attempt_id) == ("ws1", "run-e2e", "att-e2e")
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("#976/AC-1")
+async def test_terminal_invocation_event_carries_the_extension_in_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The canonical audit event of an extension-mediated effect names the package.
+
+    The attribution rides in the envelope's ``provenance`` (under the fixed
+    ``extension`` key), beside the canonical correlation fields — never in
+    them — so event evidence is traceable to the exact package without a
+    registry lookup and without a parallel correlation identity.
+    """
+
+    captured = _CapturedGateway(_acme_response())
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: captured.client())
+    catalog, store = await _catalog_with(AcmeAdapter(_declaring_spec()))
+    effects = _effects()
+
+    loaded = await bootstrap_provider_adapters(
+        _ConfigShim([_adapter_config()]), effects, store, catalog
+    )
+    await _egress(effects, catalog, store).complete(
+        binding=loaded[0],
+        run_id="run-ev",
+        node_run_id="nr-ev",
+        attempt_id="att-ev",
+        effect_key="test:event-provenance",
+        request=ModelChatRequest(model="acme-mini", messages=[{"role": "user", "content": "h"}]),
+    )
+
+    events = await effects.event_store.list_stream("workspace:ws1")
+    terminal = [e for e in events if e.type == "capability.invocation.completed"]
+    assert terminal, [e.type for e in events]
+    event = terminal[-1]
+    # canonical correlation fields are untouched and remain the authority
+    assert event.run_id == "run-ev"
+    assert event.correlation_id == "run-ev"
+    assert event.invocation_id != ""
+    assert not hasattr(event, "extension_id") and "extension_id" not in event.__dict__
+    # the extension identity is provenance, decoded fail-closed
+    decoded = attribution_from_payload(event.provenance["extension"])
+    assert decoded.extension_id == "acme.models"
+    assert decoded.version == "2.3.1"
+    assert decoded.publisher == "acme"
+
+
+@pytest.mark.ac("#976/AC-3")
+async def test_undeclared_binding_emits_no_extension_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A legacy binding claims no identity it never declared."""
+
+    captured = _CapturedGateway(_acme_response())
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: captured.client())
+    catalog, store = await _catalog_with(AcmeAdapter(_spec()))
+    effects = _effects()
+
+    await _egress(effects, catalog, store).complete(
+        binding=_binding(),
+        run_id="run-legacy",
+        node_run_id="nr-legacy",
+        attempt_id="att-legacy",
+        effect_key="test:no-provenance",
+        request=ModelChatRequest(model="acme-mini", messages=[{"role": "user", "content": "h"}]),
+    )
+
+    events = await effects.event_store.list_stream("workspace:ws1")
+    terminal = [e for e in events if e.type == "capability.invocation.completed"]
+    assert terminal
+    assert "extension" not in terminal[-1].provenance

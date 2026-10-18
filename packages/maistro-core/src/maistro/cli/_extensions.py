@@ -16,6 +16,7 @@ made, and these commands never rewrite it.
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -24,6 +25,7 @@ from rich.console import Console
 from rich.table import Table
 from typer import Argument, Exit, Typer
 
+from maistro.extensions.attribution import ExtensionAttribution
 from maistro.extensions.resolution import LockFormatError, LockState
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 
@@ -213,6 +215,14 @@ def extensions_show(
         console.print(f"  package:       sha256:{record.identity.package_sha256}")
         console.print(f"  manifest:      sha256:{record.identity.manifest_sha256}")
         console.print(f"  signature:     {_short_digest(record.signature)}")
+        # M9-I1 (#976): the canonical attribution evidence this install's
+        # effects carry in telemetry — the same version-tagged payload that
+        # rides in Binding snapshots, log fields, and Event provenance.
+        attribution = ExtensionAttribution.from_install_record(record)
+        console.print(f"  attribution:   {attribution.describe()}")
+        console.print(
+            f"  attribution payload: {json.dumps(attribution.to_payload(), sort_keys=True)}"
+        )
         console.print(f"  catalog:       {record.provenance.catalog_url}")
         console.print(
             f"  catalog snap:  sha256:{record.provenance.catalog_snapshot_sha256} "

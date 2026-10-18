@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -29,7 +30,37 @@ from maistro.capabilities.invocation import (
 )
 from maistro.capabilities.slots.approval import ApprovalRequest
 from maistro.events.envelope import EventEnvelope, EventStore
+from maistro.extensions.attribution import InvalidAttribution, attribution_from_payload
 from maistro.policy.types import Decision, PolicyVerdict
+
+logger = logging.getLogger(__name__)
+
+
+def _extension_provenance(binding: Binding | ResolvedBinding) -> dict[str, Any]:
+    """The declared extension attribution on this binding, as Event provenance.
+
+    M9-I1 (#976): a wiring that carries an extension package identity (an
+    adapter Binding bootstrapped from a declaring spec) rides into the terminal
+    audit event under ``provenance["extension"]`` — beside the canonical
+    caller/Workspace/Run/NodeRun/Attempt/Invocation fields, never inside the
+    correlation namespace. The fragment is decoded fail-soft: telemetry
+    enrichment must never break the effect ledger, so a missing or malformed
+    payload omits the fragment (with a warning) instead of failing the event.
+    """
+
+    raw = binding.config.get("extension_attribution")
+    if raw is None:
+        return {}
+    try:
+        return attribution_from_payload(raw).provenance_payload()
+    except InvalidAttribution as exc:
+        logger.warning(
+            "binding %s carries a malformed extension attribution; "
+            "omitting it from event provenance: %s",
+            binding.binding_id,
+            exc,
+        )
+        return {}
 
 
 @dataclass(frozen=True)
@@ -595,6 +626,7 @@ class GovernedInvocationExecutionService:
                 correlation_id=invocation.run_id,
                 causation_id=causation_id,
                 source="maistro.capabilities",
+                provenance=_extension_provenance(binding),
                 payload={
                     "binding_id": invocation.binding.binding_id,
                     "capability": invocation.binding.capability,

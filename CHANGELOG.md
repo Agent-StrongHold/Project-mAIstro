@@ -25,6 +25,25 @@ or placeholder-only section.
 
 ### Added
 
+- **Extension attribution evidence: identity, version, publisher, and provenance
+  through canonical telemetry (#976).** `maistro.extensions` now ships the
+  version-tagged `ExtensionAttribution` payload — the exact extension name,
+  strict-semver version, publisher, and package/manifest SHA-256 digests behind
+  one effect, plus its install/org/Workspace/catalog linkage — constructible
+  from B1 install records and governed B2 installs, and decodable fail-closed
+  from stored evidence with no registry, store, or installed package consulted
+  (historical evidence stays readable across upgrades and removal). Provider
+  adapter packages may declare the same identity on `ProviderAdapterSpec`
+  (all four fields or none; strict semver and digest shape enforced at
+  registration): `bootstrap_provider_adapters` snapshots the payload into the
+  wired `model.chat` Binding, governed adapter calls log canonical
+  `extension_*` identity fields, adapter errors name the failing version and
+  publisher, and durable Invocation evidence carries the attribution beside —
+  never instead of — the canonical caller/Workspace/Run/NodeRun/Attempt/
+  Invocation ids. Attribution is provenance only: the canonical correlation
+  namespace rejects extension-defined ids, and the Event envelope's existing
+  provenance redaction applies to the fragment.
+
 - **Third-party provider adapter SDK with canonical routing and usage semantics (#961).**
   An out-of-tree provider package implements the `ProviderAdapter` normalization
   protocol over a declarative `ProviderAdapterSpec` and registers through
