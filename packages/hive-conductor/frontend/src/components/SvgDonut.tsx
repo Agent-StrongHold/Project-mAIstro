@@ -32,7 +32,7 @@ export function SvgDonut({ segments, size = 120 }: { segments: Segment[]; size?:
 
   return (
     <div style={{ position: "relative", display: "inline-block" }}>
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-label="Donut chart">
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Donut chart">
         {arcs.map(a => (
           <path
             key={a.i}
