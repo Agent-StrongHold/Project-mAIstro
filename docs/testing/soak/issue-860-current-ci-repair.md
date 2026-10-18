@@ -1,6 +1,75 @@
 # Issue #860 — current CI repair
 
-## Latest checkpoint — job `27b7f154657b40dfa0a812d7ec490fd5`
+## Latest checkpoint — job `183093a77cb644059d715b2b14859b2e`
+
+Frozen scope: issue #860 only, writer in `/home/dev/Git/wt/auto-860` on
+`auto-860`; starting HEAD `9aa9f323275dd779ef88e5012115f8663afc925a`,
+supplied base `ce2048cd2430bf99a5896b229fd1999976dc07dd`. Both resolved;
+tree initially clean, no merge conflict or salvage needed. Read the supplied
+issue body and prior result from the dispatch snapshot, not live GitHub.
+No driver `check-*.log` files were supplied. This checkpoint preserves the
+existing report rather than adding another historical report file.
+
+### Fresh validation (1200-second command timeouts)
+
+Logs are in the job directory above, with `check-*-worker` names.
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: **PASS**, 1322 reviewed identities / 1322 findings. Checker-selected base `2f56be40ad24`. No unbanked identity exists; the permitted ledger amendment is not warranted.
+- `uv run ruff check .`: **PASS**. `uv run ruff format --check .`: **PASS**, 3306 files.
+- `uv run pytest tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py -x -q`: **93 passed**, 2.86 seconds, no skips. These exercise the real HTTP router/admission and limiter seams, with ASGI/mocked transports; they are not a deployment soak.
+- `uv run python scripts/check-suite-inventory.py --suite tests`: **FAIL**, expected 5353, collected 5354. No collection errors or duplicate evidence. Provenance remains **UNRESOLVED** after bounded inspection; do not bank an unexplained +1.
+- `uv run pytest tests/test_soak_promotion_gates.py --collect-only -q`: **84 collected**. Its existing notes account for all 84: promotion gates +2, replica probes +27 (including missing/null drain), rate evidence +5, process sampling +6, admission +12, boot hygiene +4, sustained admission +9, receipt reads +7, strict booleans +12. Boot-contract F10 and gitleaks tests also already have inventory notes. None justifies a speculative additional delta.
+- `uv run python scripts/check-deployment-claims.py`: **PASS**; component existence only, not deployed behavior.
+- Inline `uv run python` imported the current runner and evaluated `evidence/m3a-round30-shakedown.json`: **rejected** for `sustain_duration` and `exact_rc_artifact`; 420.08 seconds. Saved output in `check-evidence-worker.json`. Current `preflight_artifact_check()` explicitly returns `ok=false`, host-uvicorn-preflight. No new soak was attempted.
+
+### Acceptance and architectural reconciliation
+
+Read repository instructions, documentation authority map, ADR-081 (Proposed),
+ADR-085 (Accepted), ADR-081626-f383 (Accepted), and ADR-082526-b36a (Accepted).
+The later renewal/reclaim contract extends the earlier fencing ADR; the earlier
+reclaim deferral is not a waiver of recovery proof. Preserve
+`Goal -> Graph -> Run -> NodeRun -> Attempt`; no alternate execution or auth path.
+ADR-085 requires principal-keyed limiting, not evidence of shared replica state.
+
+Production installs `RateLimitMiddleware` in `main.py:648`; its constructor in
+`api/rate_limit.py:93` creates an independent in-memory limiter. Executed
+`test_replica_selection_has_an_independent_production_allowance` gives the same
+identity `[200,200,429]` on each instance (authenticated and pre-auth). The
+N-times-limit policy at `api/rate_limit.py:32-37` does not establish #860's
+stronger replica-selection-resistance requirement. No policy waiver introduced.
+
+| Acceptance criterion | Fresh evidence / disposition |
+| --- | --- |
+| Representative RC profile | **UNVERIFIED**: `m3a-load-profile.md:167-183` explicitly lacks users/Workspaces, Graph fan-out, successful model/tool calls, Canvas and Goal/background workloads. |
+| At least two production replicas | Boot-contract tests pass; deployed exact-RC replicas **UNVERIFIED**. |
+| Sustained saturation, growth, reclaim, retries and leaks | **UNVERIFIED**: sampler tests pass, but the evaluated preflight lasts only 420.08 seconds. |
+| No duplicate physical work / Goal reconciliation | **UNVERIFIED**: admission and receipt tests do not execute physical work; profile lines 215-218 explicitly distinguish the cancelled schedule probe from reconciliation/fencing proof. |
+| Rate/security/degraded non-bypass | Independent replica allowances reproduced above; aggregate non-bypass **NOT PROVEN**. Full deployed security/degraded behavior **UNVERIFIED**. |
+| Required telemetry and thresholds | **UNVERIFIED** under production load; driver-loop lag is not application-loop lag (profile line 180). |
+| Active-work kill/restart with drain/fencing/recovery | **UNVERIFIED**: gate and cleanup tests are not deployed active-work recovery. |
+| Long-running exact RC/configuration soak | **NOT MET** by evaluated evidence. `run_soak.py:744-755` rejects its own topology; reference Compose at `deploy/docker-compose.prod.yml:11-12` still calls for image pinning. |
+| Findings filed/reclassified | Local disposition recorded here; external filing/reclassification **UNVERIFIED**. GitHub mutations prohibited and not performed. |
+| Machine/human evidence bound to exact promoted hashes | **UNVERIFIED** for the RC; historical preflight JSON is not promoted-image/configuration evidence. |
+
+### Disposition
+
+**BLOCKED; no integration approval.** Only this existing checkpoint changes.
+No source, tests, inventory, ledger, grant, runtime config or historical raw
+evidence edits are justified by this round. No new tests, hence no inventory delta.
+The prior block was not a develop-sync conflict. Docker unavailability is not
+claimed: a repeat short preflight cannot repair the missing production oracle
+or designate an immutable RC.
+
+Next: resolve the unexplained root-suite identity delta, designate the RC image
+and configuration, reconcile replica-selection rate semantics, complete the
+representative physical-work/application-telemetry probes, then run at least
+14400 seconds on that unchanged production artifact including active-work recovery.
+Progress: checked 1 issue, done 0 acceptance-complete, skipped 0 issues,
+errors 1 validation command (inventory). Local checkpoint commit is handoff only.
+
+---
+
+## Historical checkpoint — job `27b7f154657b40dfa0a812d7ec490fd5`
 
 Frozen scope: #860 only, `auto-860`, clean starting HEAD
 `eb78ed089d8dd14f639d143cad4d5a428ca84a0d`; supplied base
