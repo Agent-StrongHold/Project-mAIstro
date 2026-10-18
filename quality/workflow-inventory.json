@@ -51,6 +51,15 @@
       "rationale": "On-demand apisec ethicalcheck DAST probe against a deployed target; dispatch-only because it needs operator-supplied target input."
     },
     {
+      "id": "cross-product-parity-strict",
+      "file": ".github/workflows/cross-product-parity-strict.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": [
+            "workflow_dispatch"
+      ],
+      "rationale": "Manual-only M1-closeout invocation of the #459 cross-product parity suite (MAISTRO_PARITY_STRICT=1 turns every dependency blocker into a failure). Dispatch-only because it is an on-demand closeout measurement that fails today on the CONDUCTOR_INSPECTION blocker (#1036), so it is deliberately outside the PR check contract (#459, PR #1641)."
+    },
+    {
       "id": "formal-conformance-nightly",
       "file": ".github/workflows/formal-conformance-nightly.yml",
       "disposition": "ACTIVE",

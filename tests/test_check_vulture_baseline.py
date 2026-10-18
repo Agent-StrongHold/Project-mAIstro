@@ -12,6 +12,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -188,3 +189,49 @@ def test_update_refuses_unbankable_findings(gate, monkeypatch, tmp_path, capsys)
     assert gate.main(["--update", "pkg"]) == 1
     assert "refused" in capsys.readouterr().err
     assert baseline_path.read_text(encoding="utf-8") == before
+
+
+def test_trusted_run_names_the_installed_analyzer_version(gate, monkeypatch, tmp_path, capsys):
+    """#319: the provenance record carries the analyzer's observed version."""
+    findings = [
+        _finding(gate, "pkg/routes.py", "unused function 'get_thing'"),
+        _finding(gate, "pkg/models.py", "unused attribute 'field_a'"),
+    ]
+    assert _run_main(gate, monkeypatch, tmp_path, RULES, findings) == 0
+    out = capsys.readouterr().out
+    import importlib.metadata
+
+    assert f"(tool version: {importlib.metadata.version('vulture')})" in out
+
+
+def test_a_version_that_cannot_be_resolved_fails_the_run(gate, monkeypatch, tmp_path, capsys):
+    """No vulture in this interpreter is a non-passing state, not 'unknown'."""
+    baseline_path = _baseline_with(tmp_path, RULES)
+    monkeypatch.setattr(gate, "BASELINE", baseline_path)
+    monkeypatch.setattr(gate, "_load_baseline", lambda *args, **kwargs: _payload([dict(RULES[0])]))
+    monkeypatch.setattr(gate, "_run_vulture", lambda args: [])
+
+    real = gate._provenance()
+
+    def refusing(_name: str) -> str:
+        raise real.RatchetProvenanceError(
+            "distribution 'vulture' is not installed in this interpreter"
+        )
+
+    monkeypatch.setattr(
+        gate,
+        "_provenance",
+        lambda: SimpleNamespace(
+            RatchetProvenanceError=real.RatchetProvenanceError,
+            Baseline=real.Baseline,
+            Provenance=real.Provenance,
+            installed_distribution_version=refusing,
+            resolve_baseline=real.resolve_baseline,
+            require_measurement=real.require_measurement,
+            require_metric_version=real.require_metric_version,
+            load_authorizations=lambda *_args, **_kwargs: {},
+        ),
+    )
+
+    assert gate.main(["pkg"]) == 1
+    assert "not installed in this interpreter" in capsys.readouterr().err

@@ -351,6 +351,7 @@ def test_main_rejects_an_unledgered_literal_source_fixture(
         require_metric_version=lambda *_args, **_kwargs: None,
         load_authorizations=lambda *_args, **_kwargs: {},
         head_sha=lambda *_args, **_kwargs: "fixture",
+        bundled_implementation_fingerprint=lambda *_args, **_kwargs: "bundled-sha256:fake",
     )
     monkeypatch.setattr(gate, "_provenance", lambda: provenance)
 

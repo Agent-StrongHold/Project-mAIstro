@@ -123,12 +123,14 @@ async def test_resume_refuses_a_demonstrably_live_attempt() -> None:
     _Work.calls = 0
     store = InMemoryDurableRunStore()
     await store.create(_crashed_record("live-run", lease_expires_in=timedelta(minutes=5)))
+    before = await store.get("live-run")
 
     with pytest.raises(ValueError, match="live execution lease"):
         await resume_durable_graph("live-run", store=store, node_resolver=_resolver)
 
     untouched = await store.get("live-run")
     assert untouched is not None
+    assert untouched == before
     assert untouched.attempts[0].status is AttemptStatus.RUNNING
     assert untouched.node_runs[0].status is RunStatus.RUNNING
     assert _Work.calls == 0
