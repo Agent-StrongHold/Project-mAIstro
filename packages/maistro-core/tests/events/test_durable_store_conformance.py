@@ -779,6 +779,48 @@ class TestDeliveryReceiptContract:
         )
         assert retrying is not None
 
+    async def test_success_settles_never_bypass_begin_dispatch(self, invocations):
+        """Acknowledged evidence alone cannot terminal-settle a receipt that
+        never began dispatch: zero attempts and no marker would strand the key
+        settled-for-cursor with nothing ever sent (#1060 §3)."""
+        identity = _identity()
+        claimed = await invocations.claim("t1", 1, delivery=identity)
+        assert claimed is not None
+        with pytest.raises(ValueError):
+            await invocations.settle(
+                "t1",
+                1,
+                claim_token=claimed.claim_token,
+                expected_revision=claimed.revision,
+                status=InvocationStatus.SUCCESS,
+                outcome=HandlerCallOutcome(DeliveryDisposition.ACKNOWLEDGED),
+            )
+        # The rejected settlement changes nothing; the claim still holds.
+        current = await invocations.get("t1", 1)
+        assert current is not None
+        assert current.status is InvocationStatus.PENDING
+        assert current.claim_token == claimed.claim_token
+        # After the permission step, the same settlement succeeds.
+        begun = await invocations.begin_dispatch(
+            "t1",
+            1,
+            claim_token=claimed.claim_token,
+            expected_revision=claimed.revision,
+            delivery=identity,
+        )
+        assert begun is not None
+        settled = await invocations.settle(
+            "t1",
+            1,
+            claim_token=begun.claim_token,
+            expected_revision=begun.revision,
+            status=InvocationStatus.SUCCESS,
+            outcome=HandlerCallOutcome(DeliveryDisposition.ACKNOWLEDGED),
+        )
+        assert settled is not None
+        assert settled.status is InvocationStatus.SUCCESS
+        assert settled.attempts == 1
+
     async def test_uncertainty_bearing_retrying_needs_a_safe_contract(self, invocations):
         unsafe = _identity(safety=ReplaySafety.UNPROVEN, ref="")
         claimed, begun = await _claim_and_begin(invocations, unsafe)

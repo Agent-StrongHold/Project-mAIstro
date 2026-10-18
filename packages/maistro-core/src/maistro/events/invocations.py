@@ -21,7 +21,9 @@ The writer protocol is ``claim`` / ``begin_dispatch`` / ``settle``:
 - ``begin_dispatch`` is the sole budget-consuming permission to call. Repeated
   worker death and lease takeover cannot evade ``MAX_ATTEMPTS``.
 - ``settle`` records the current call's outcome under revision fencing and
-  validates the structural/evidence invariants below. Stale ownership returns
+  validates the structural/evidence invariants below (SUCCESS additionally
+  requires ``begin_dispatch``'s in-flight marker, so the acknowledged path can
+  never bypass the sole send-permission step). Stale ownership returns
   ``None`` and changes nothing.
 
 Statuses: ``pending``/``retrying`` hold the cursor; ``success``/``failed``/
@@ -310,7 +312,9 @@ class InvocationStore(Protocol):
         expiry, but a takeover or intervening resolution makes this ``None``
         with no changes. Validates target status in
         success/failed/retrying/unknown and the structural evidence invariants
-        (SUCCESS requires acknowledgment; FAILED requires no inherited
+        claiming, and the evidence invariants
+        (SUCCESS requires an in-flight dispatch marker — ``begin_dispatch`` —
+        plus acknowledgment; FAILED requires no inherited
         uncertainty plus explicit absence; RETRYING respects the attempt cap
         and is uncertainty-bearing only for idempotent/read_only receipts;
         UNKNOWN carries explicit uncertainty/refusal). Indeterminate evidence
@@ -363,9 +367,14 @@ def _is_uncertainty_bearing(receipt: HandlerInvocation, disposition: DeliveryDis
     return receipt.uncertain_prior_dispatch or disposition is DeliveryDisposition.INDETERMINATE
 
 
-def _validate_success(disposition: DeliveryDisposition) -> None:
+def _validate_success(receipt: HandlerInvocation, disposition: DeliveryDisposition) -> None:
     if disposition is not DeliveryDisposition.ACKNOWLEDGED:
         raise ValueError("SUCCESS requires acknowledged evidence")
+    # Acknowledged evidence for a call that was never permitted would let a
+    # receipt terminal-settle with zero attempts and no dispatch marker,
+    # unreclaimable despite nothing ever having been sent (#1060 §3).
+    if receipt.dispatch_started_at is None:
+        raise ValueError("SUCCESS requires an in-flight dispatch marker from begin_dispatch")
 
 
 def _validate_failed(
@@ -400,7 +409,7 @@ def validate_settle(
         raise ValueError(f"settle target status {status!r} is not a delivery status")
     disposition = outcome.disposition
     if status is InvocationStatus.SUCCESS:
-        _validate_success(disposition)
+        _validate_success(receipt, disposition)
         return
     if disposition is DeliveryDisposition.ACKNOWLEDGED:
         raise ValueError(f"acknowledged evidence cannot settle {status!r}")
