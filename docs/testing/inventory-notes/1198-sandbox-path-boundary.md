@@ -25,6 +25,16 @@ writable mount and cleans up its workdir; inside a real sandbox
 writable, and an authorized extra mount is usable and lands on its
 authorized host root.
 
+Round-3 correction (round-4 audit): the round-3 paragraph below claims the
+suite-inventory gate was re-run green. That was wrong for the root `tests/`
+suite: at `41d2a73d7` it collected 5210 nodes against an expected 5260 (the
+develop-side content the first sync brought was never fully recorded), and the
+second sync merge (`201c7ea22`, develop `2f56be40ad`) left a residual +1 in
+`tests/` — recorded with node-ID evidence in
+[1198-develop-sync-suite-delta.md](1198-develop-sync-suite-delta.md). No
+#1198 test moved; the drift is entirely develop-side content merged in. All
+other 16 suites matched.
+
 Round-3 (develop sync + repair): merged `origin/develop` (`ab8b3737f`) into
 `auto-1198`, resolving the `bubblewrap.py` conflict so writable binds go
 through `authorized_host_mounts` while develop's `read_paths` profile feature
