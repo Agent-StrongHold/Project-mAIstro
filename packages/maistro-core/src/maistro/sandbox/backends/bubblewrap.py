@@ -248,12 +248,16 @@ class BubblewrapSandboxBackend:
         if lock is None:
             return
         async with lock:
-            entry = self._instances.pop(instance.id, None)
+            entry = self._instances.get(instance.id)
             if entry is None:
                 self._file_locks.pop(instance.id, None)
                 return
             _config, workdir, workdir_fd = entry
-            for pending in self._inflight_transfers.pop(instance.id, set()):
+            # A snapshot: the cancelling transfer's deregistration may remove
+            # entries while we wait, and a destroy that is itself cancelled
+            # must leave the registry intact so the retry waits the same
+            # workers out again.
+            for pending in list(self._inflight_transfers.get(instance.id, ())):
                 try:
                     await asyncio.wrap_future(pending)
                 except asyncio.CancelledError:
@@ -269,9 +273,13 @@ class BubblewrapSandboxBackend:
                     # in later teardowns); its error is teardown noise, not a
                     # reason to leave the instance half-destroyed.
                     pass
-            # Every in-flight descriptor-relative transfer has finished. File
-            # transfers and execution also hold the same lock, so nothing else
-            # can be using the workdir across these two steps.
+            # Every in-flight descriptor-relative transfer has finished, so
+            # the instance can leave the live maps. From here no new transfer
+            # can start (the lock is held; _require would refuse anyway).
+            self._instances.pop(instance.id, None)
+            self._inflight_transfers.pop(instance.id, None)
+            # File transfers and execution also hold the same lock, so nothing
+            # else can be using the workdir across these two steps.
             os.close(workdir_fd)
             await asyncio.to_thread(shutil.rmtree, workdir, True)
             self._file_locks.pop(instance.id, None)

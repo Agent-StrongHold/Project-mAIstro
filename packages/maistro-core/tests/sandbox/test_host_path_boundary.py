@@ -488,3 +488,39 @@ async def test_cancellation_during_read_is_waited_out_by_teardown(
     assert not backend._file_locks
     with pytest.raises(KeyError):
         await backend.read_file(instance, "result")
+
+
+async def test_cancelling_teardown_mid_wait_keeps_the_contract_repairable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancelling destroy itself while it waits out a transfer closes nothing:
+    the descriptor stays live for the still-blocked worker, and an idempotent
+    retry waits the same worker out before finishing teardown."""
+    backend = _backend(tmp_path)
+    instance = await backend.spawn(config=SandboxConfig())
+    worker = _BlockedTransferWorker("write")
+    monkeypatch.setattr(bubblewrap_module, "write_beneath", worker)
+
+    await _start_blocked_transfer(backend, instance, worker, write=True)
+
+    _config, workdir, workdir_fd = backend._require(instance)
+    workdir_inode = os.stat(workdir).st_ino
+
+    destroy_task = asyncio.create_task(backend.destroy(instance))
+    await asyncio.sleep(0.05)  # reach the wait
+    destroy_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await destroy_task
+    # Nothing was torn down: the worker still holds a live descriptor that
+    # still resolves to the checked workdir.
+    assert os.fstat(workdir_fd).st_ino == workdir_inode
+    assert workdir.exists()
+
+    retry = asyncio.create_task(backend.destroy(instance))
+    await asyncio.sleep(0.05)
+    assert not retry.done()  # the retry is waiting out the same worker
+    worker.release.set()
+    await retry
+    assert worker.error is None  # the abandoned write completed untouched
+    assert not workdir.exists()
+    assert not backend._file_locks
