@@ -66,12 +66,44 @@ following the build and the script-side half pins the boot order.
 
 ## Validation on this head
 
-Built the engine image from this tree (`maistro-engine:test`, image id
-`sha256:f7f47670a84f954d9b10b0cc6c2d1c72137e81085e028f8e66c73d577f7734f8`)
-and ran the full smoke against it: PASS (probe, control, boot, migration,
-restart durability, authenticated create/read, PostgreSQL row, 401 refusal).
-A canvas-less variant built from a stripped Dockerfile fails the probe test
-with `ModuleNotFoundError: No module named 'maistro_canvas'` while the
-control-detection test still passes — the regression the static and
-artifact layers exist to catch. Suite: `tests/` 4508 → 4515 (+7); ruff check
-and format clean.
+Re-validated on the develop-synced head (merge of origin/develop
+`9a4b0c5cc` resolved cleanly, commit `47a63e397`) by rebuilding the artifact
+and re-running every layer:
+
+- Built `maistro-engine:test` from this tree (image id
+  `sha256:ee98c889803fc31521e9a72f858d1e0d23b3d5271f3f8d535d69726fce20a817`)
+  and ran `scripts/smoke-engine-canvas.sh` against it: PASS — import probe on
+  image contents only (`--network=none`, no mounts; printed
+  `maistro-canvas 0.9.0 PgCanvasStore`), Canvas-less control failed the probe
+  as expected, boot through the shipped entrypoint (`python -m
+  maistro_server.entrypoint` → `alembic upgrade head` → uvicorn) on a clean
+  PostgreSQL 18 volume with the `alembic_version` row verified, no
+  `canvas_store_unavailable` in the logs, authenticated create/read through
+  `/v2/canvas` with the row verified in PostgreSQL, unauthenticated create
+  refused; smoke printed the tested image id and repo digests.
+- `MAISTRO_ENGINE_IMAGE=maistro-engine:test uv run pytest
+  tests/test_engine_canvas_packaging.py` → 6 passed, 1 skipped (the skipped
+  case is the full smoke, executed directly above).
+- Regression direction proven on a Canvas-less artifact
+  (`maistro-engine:nocanvas`, verified to fail the probe with
+  `ModuleNotFoundError: No module named 'maistro_canvas'`):
+  `MAISTRO_ENGINE_IMAGE=maistro-engine:nocanvas ...` →
+  `test_built_engine_image_imports_the_canvas_store` FAILED with "the built
+  engine image cannot import the Canvas store on its own contents — the
+  #1825 omission is back" while the control-detection test still passed and
+  this workspace has every package installed — the workspace cannot mask a
+  Canvas-less artifact. An earlier stripped-Dockerfile build (image id
+  `sha256:f7f47670a84f954d9b10b0cc6c2d1c72137e81085e028f8e66c73d577f7734f8`)
+  had shown the same PASS/FAIL pair.
+- Static gates on this head: `uv run ruff check .` and
+  `uv run ruff format --check .` clean; `pytest
+  tests/test_engine_canvas_packaging.py tests/test_distribution_contract.py`
+  → 9 passed, 3 skipped; `scripts/check-suite-inventory.py --suite tests/`
+  → ok (5511 nodes, matches the recorded inventory);
+  `scripts/check-test-duplicates.py` → ok; `scripts/check-image-inventory.py`
+  → OK. (`scripts/check-suite-inventory.py` without `--suite` reports 9
+  pre-existing collection errors in `extensions/reference-greeter` and
+  `packages/maistro-ext-harness` — `ModuleNotFoundError: No module named
+  'maistro_ext_harness'` under the local dev sync, untouched by this
+  branch's root-`tests/` change; CI runs the gate after a full workspace
+  install.)
