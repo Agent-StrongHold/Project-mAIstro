@@ -36,6 +36,8 @@ from typing import Any, Protocol
 
 from fastapi import HTTPException
 
+from services.request_principal import require_actor_id
+
 #: The `user_id` a record written before #312 carries. Not a sentinel anyone
 #: writes deliberately — it is the field default, which is exactly why it must
 #: never compare equal to a real owner.
@@ -66,18 +68,12 @@ def owner_of(request: Any) -> Owner:
     """The principal `AuthMiddleware` attached, or 401.
 
     The middleware rejects an unauthenticated `/v1/` request before any handler
-    runs, so reaching here without `request.state.user` means the route escaped
+    runs, so reaching here without `request.state.principal` means the route escaped
     it — a new public prefix, a router mounted outside `/v1/`. Failing closed
     keeps that mistake from silently handing one caller's records to whoever
     asks first.
     """
-    user = getattr(request.state, "user", None)
-    if not isinstance(user, dict):
-        raise HTTPException(status_code=401, detail="Authentication required")
-    user_id = str(user.get("id") or "")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return Owner(id=user_id)
+    return Owner(id=require_actor_id(request))
 
 
 class OwnedStore:

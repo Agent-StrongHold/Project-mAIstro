@@ -32,6 +32,9 @@ from maistro.projects.scope import (
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
+    from maistro.workspaces.store import WorkspaceStore
+
+if TYPE_CHECKING:
     import aiosqlite
 
 #: Passes the leaf-first Project purge may take before it gives up. A Workspace
@@ -99,6 +102,7 @@ class SqliteProjectScopeStore:
 
         self._conn = conn
         self._owns_runs: Callable[[str], Awaitable[bool]] | None = None
+        self._workspace_store: WorkspaceStore | None = None
         # One connection, so this orders same-process writers; `BEGIN
         # IMMEDIATE` is what protects a second process sharing this file.
         # Every writer takes it through `_serialized_write` (#1147, #1148,
@@ -109,10 +113,23 @@ class SqliteProjectScopeStore:
         # transaction" the moment their awaits interleaved.
         self._write_lock = asyncio.Lock()
 
+    def bind_workspace_store(self, workspace_store: WorkspaceStore) -> None:
+        self._workspace_store = workspace_store
+
     def set_run_owner(self, owns_runs: Callable[[str], Awaitable[bool]]) -> None:
         """Register the predicate `delete()` consults for Run ownership."""
 
         self._owns_runs = owns_runs
+
+    async def _require_project_view(self, project: Project, principal_id: str) -> None:
+        from maistro.workspaces.store_boundary import is_blank_principal, require_project_view
+
+        workspace_store = self._workspace_store
+        if workspace_store is None:
+            raise ProjectScopeDenied("Project not found")
+        if is_blank_principal(principal_id):
+            raise ProjectScopeDenied("Project not found")
+        await require_project_view(project, workspace_store, principal_id)
 
     @asynccontextmanager
     async def _serialized_write(self) -> AsyncIterator[None]:
@@ -304,14 +321,19 @@ class SqliteProjectScopeStore:
         await self._insert_project(project)
         return project
 
-    async def get(self, project_id: str) -> Project | None:
+    async def get(self, project_id: str, *, principal_id: str | None = None) -> Project | None:
         """Load a Project by ID, or return ``None`` when absent."""
 
         row = await self._fetchone(
             "SELECT payload FROM canonical_projects WHERE project_id = ?",
             (project_id,),
         )
-        return Project.model_validate_json(row[0]) if row is not None else None
+        if row is None:
+            return None
+        project = Project.model_validate_json(row[0])
+        if principal_id is not None:
+            await self._require_project_view(project, principal_id)
+        return project
 
     async def lineage(self, project_id: str) -> list[Project]:
         """Load validated ancestry ordered from Root Project to target."""
@@ -393,10 +415,13 @@ class SqliteProjectScopeStore:
         project_id: str,
         *,
         defaults: dict[str, Any],
+        principal_id: str | None = None,
     ) -> Project:
         """Replace a Project's defaults and persist its update timestamp."""
 
         project = await self._require(project_id)
+        if principal_id is not None:
+            await self._require_project_view(project, principal_id)
         updated = project.model_copy(
             deep=True,
             update={"defaults": dict(defaults), "updated_at": datetime.now(UTC)},

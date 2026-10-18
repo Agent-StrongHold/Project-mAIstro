@@ -25,10 +25,28 @@ from maistro.tasks.admission import WorkspaceRoutingAdmitter
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.graph.durable_runs.continuation import GraphContinuationStore
 
-__all__ = ["wire_chat_admission", "wire_execution_spine"]
-
+__all__ = ["spine_is_migrated", "wire_chat_admission", "wire_execution_spine"]
 
 logger = logging.getLogger(__name__)
+
+
+def _wire_admission_coordinator(pg_pool: Any, run_store: RunStore) -> Any:
+    """The atomic task-admission coordinator on the PG spine, else None (#1845).
+
+    One per process: it owns the shared pool and the Run store's
+    connection-owned insert callback, so the queue's admission binding and the
+    canonical Run insert commit together. Tiers without a PostgreSQL pool (or a
+    Run store without the connection-owned insert) keep the legacy two-commit
+    path — the coordinator is deliberately not faked onto backends whose
+    transactions cannot carry it.
+    """
+    insert = getattr(run_store, "insert_prepared_run", None)
+    if pg_pool is None or insert is None:
+        return None
+    from maistro.tasks.pg_admission import PgRootAdmissionCoordinator
+
+    return PgRootAdmissionCoordinator(pg_pool, insert_run=insert)
+
 
 #: Tables the PostgreSQL spine needs before it may be selected. Defined here
 #: rather than in `container` because the import runs that way: `container`
@@ -42,8 +60,15 @@ SPINE_PG_TABLES: Final = (
 )
 
 
-async def _spine_is_migrated(pg_pool: Any) -> bool:
+async def spine_is_migrated(pg_pool: Any) -> bool:
     """Whether this pool's database actually has the spine's tables.
+
+    Public because the admission-claim tier must ask the spine's exact
+    question before landing on the pool (#1176): claims selected by
+    ``pg_pool is not None`` alone can outlive the Runs they name — a pool the
+    spine refused gets claims beside an ephemeral spine, and a restart-retry
+    then replays a receipt whose Run died. Same probe, same answer, one
+    definition: the tiers cannot drift apart on which pool is durable.
 
     A pool reached here two ways, and only one of them has been checked. The
     URL path runs `_require_postgres_schema` at startup and refuses an
@@ -116,7 +141,7 @@ async def _pg_schedule_store(pg_pool: Any) -> ScheduleStore:
     for, which is a far worse failure than the one being guarded against.
 
     Falling back is warned about rather than silent, for the same reason
-    `_spine_is_migrated` warns: a durable pool that ends up with ephemeral
+    `spine_is_migrated` warns: a durable pool that ends up with ephemeral
     schedules is the shape of #122, and saying so is the whole difference.
     """
     if await pg_pool.fetchval("SELECT to_regclass($1) IS NOT NULL", "public.schedules"):
@@ -228,7 +253,7 @@ async def wire_execution_spine(
     template_store: GraphTemplateStore
     schedule_store: ScheduleStore
     continuation_store: GraphContinuationStore
-    if pg_pool is not None and await _spine_is_migrated(pg_pool):
+    if pg_pool is not None and await spine_is_migrated(pg_pool):
         # No ensure_schema: these tables come from `alembic/versions/012` and
         # `014`. A store that quietly created its own tables would be a second
         # schema owner and a second thing to keep in step — which is why the
@@ -307,6 +332,7 @@ async def wire_execution_spine(
         project_scope_store,
         default_workspace_id=workspace_id,
         intents=intents,
+        coordinator=_wire_admission_coordinator(pg_pool, run_store),
     )
     # Priming the default Workspace is what keeps the eager-Root guarantee in
     # the docstring above true for the case every deployment has. Workspaces a
@@ -354,7 +380,7 @@ async def wire_node_template_store(
     The backend order is the spine's own, so a Workspace's Runs and the
     NodeTemplates they instantiate land in one database.
     """
-    if pg_pool is not None and await _spine_is_migrated(pg_pool):
+    if pg_pool is not None and await spine_is_migrated(pg_pool):
         return await _pg_node_template_store(pg_pool)
     if conn is not None:
         from maistro.graph.sqlite_templates import SqliteNodeTemplateStore
