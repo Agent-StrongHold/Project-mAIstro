@@ -2418,7 +2418,12 @@ async def create_container(
     # with a warning.
     # The authorized `goal_reader` seam is derived on
     # the Container from this store and the Workspace store.
-    goal_store = await wire_goal_store(db_pool, pg_pool=pg_pool)
+    goal_store = await wire_goal_store(
+        db_pool,
+        pg_pool=pg_pool,
+        require_postgres=config.database_url.startswith(("postgresql:", "postgres:"))
+        or supplied_pg_pool is not None,
+    )
     working_log = await _wire_working_memory_backend(db_pool)
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     # Same backend the spine just chose (#1176): claims beside the Runs they

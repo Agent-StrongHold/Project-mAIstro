@@ -37,6 +37,7 @@ owns the PostgreSQL tables; the SQLite twin carries its own DDL, and
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from typing import Any
 
@@ -605,3 +606,88 @@ async def _refusal_of(awaitable):
     except GoalNotVisible as refused:
         return refused
     raise AssertionError("expected GoalNotVisible")
+
+@pytest.mark.parametrize("invalid_agent_id", ["", " ", "  agent", "agent  "])
+async def test_scoped_reassignment_rejects_invalid_owner(scoped, invalid_agent_id: str) -> None:
+    store, seam = scoped
+    goal = await seam.create_goal(
+        principal_id="alice", workspace_id="ws-1", project_id="prj-1",
+        agent_id="original", draft=_draft(),
+    )
+    with pytest.raises(ValueError, match="agent_id"):
+        await seam.reassign_agent(
+            goal.goal_id, invalid_agent_id, principal_id="alice",
+            expected_revision=goal.current_revision, actor="alice",
+        )
+    unchanged = await store.get_goal(goal.goal_id)
+    assert unchanged is not None
+    assert unchanged.agent_id == "original"
+    assert await store.list_goal_transitions(goal.goal_id) == []
+
+async def test_pg_reassignment_keeps_columns_payload_and_history_consistent(backend) -> None:
+    if not isinstance(backend, _PostgresBackend):
+        pytest.skip("PostgreSQL-specific canonical row consistency proof")
+    store = await backend.store()
+    goal = await _goal(backend)
+    updated = await store.reassign_agent(
+        goal.goal_id, "agent-new", expected_revision=goal.current_revision, actor="operator"
+    )
+    async with backend._pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT agent_id, payload FROM canonical_goals WHERE goal_id = $1", goal.goal_id
+        )
+        history = await conn.fetch(
+            "SELECT payload FROM canonical_goal_transitions WHERE goal_id = $1 ORDER BY seq",
+            goal.goal_id,
+        )
+    assert row is not None
+    assert row["agent_id"] == updated.agent_id == "agent-new"
+    assert json.loads(row["payload"])["agent_id"] == row["agent_id"]
+    assert len(history) == 1
+    assert json.loads(history[0]["payload"])["from_agent_id"] == "agent-7"
+    assert json.loads(history[0]["payload"])["to_agent_id"] == row["agent_id"]
+
+async def test_pg_concurrent_reassignment_has_one_consistent_winner(backend) -> None:
+    if not isinstance(backend, _PostgresBackend):
+        pytest.skip("PostgreSQL-only concurrency proof")
+    store = await backend.store()
+    goal = await _goal(backend)
+    results = await asyncio.gather(
+        store.reassign_agent(goal.goal_id, "agent-a", expected_revision=1, actor="operator"),
+        store.reassign_agent(goal.goal_id, "agent-b", expected_revision=1, actor="operator"),
+        return_exceptions=True,
+    )
+    successes = [value for value in results if isinstance(value, Goal)]
+    failures = [value for value in results if isinstance(value, Exception)]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert isinstance(failures[0], (GoalRevisionConflict, GoalTransitionError))
+    async with backend._pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT agent_id, payload FROM canonical_goals WHERE goal_id = $1", goal.goal_id
+        )
+        history = await conn.fetch(
+            "SELECT payload FROM canonical_goal_transitions WHERE goal_id = $1", goal.goal_id
+        )
+    assert row is not None
+    assert row["agent_id"] == successes[0].agent_id
+    assert row["payload"]["agent_id"] == row["agent_id"]
+    assert len(history) == 1
+    assert json.loads(history[0]["payload"])["to_agent_id"] == row["agent_id"]
+
+async def test_pg_sequential_reassignment_records_both_owner_changes(backend) -> None:
+    if not isinstance(backend, _PostgresBackend):
+        pytest.skip("PostgreSQL-only sequential reassignment proof")
+    store = await backend.store()
+    goal = await _goal(backend)
+    await store.reassign_agent(
+        goal.goal_id, "agent-first", expected_revision=1, actor="operator"
+    )
+    await store.reassign_agent(
+        goal.goal_id, "agent-second", expected_revision=1, actor="operator"
+    )
+    current = await store.get_goal(goal.goal_id)
+    assert current is not None and current.agent_id == "agent-second"
+    history = await store.list_goal_transitions(goal.goal_id)
+    assert len(history) == 2
+    assert [record.to_agent_id for record in history] == ["agent-first", "agent-second"]
