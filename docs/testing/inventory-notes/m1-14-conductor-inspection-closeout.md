@@ -24,17 +24,23 @@ boundary is reviewed content, not an implicit fallback.
 
 ## Real cross-product producer → spine → Conductor observer
 
-`test_a_run_from_the_producer_seam_is_inspectable_by_canonical_id` replaces
-source-probe-only parity evidence for the Conductor-observer half of the
-cross-product requirement: a Run created and executed through the real
-canonical producer seam (`RunExecutionService.create_run`/`execute_node` with
-`PythonExecutionRuntime` over a real scoped `InMemoryRunStore` — the same
-handoff surface Builders/schedule/Evolve adapters use) is listed and
-inspected by `dag_run_inspection` under the same canonical run id — canonical
-status/result overlaid onto the projection row, NodeRun and Attempt evidence
-filed in the same spine — and is invisible to an observer outside the
-producing Workspace. The full strict #459 closeout (real stores across every
-product boundary, zero abstentions) remains owned by #459.
+The Conductor-observer half of the cross-product requirement is proven
+against real execution, in two parts (both in
+`test_canonical_run_inspection.py`):
+
+- `test_a_projectionless_canonical_run_is_inspectable_and_controllable_by_id`
+  needs no projection row at all: a Run created through the real canonical
+  producer seam (`RunExecutionService.create_run` with
+  `PythonExecutionRuntime` over a real scoped `InMemoryRunStore` — the same
+  handoff surface Builders/schedule/Evolve adapters use) is inspectable and
+  controllable by its canonical id through `dag_run_inspection` and the
+  public cancel route, which fences the canonical Run without ever writing
+  a projection row; recent-list discovery stays projection-gated by design
+  and a foreign observer gets the non-disclosing refusal.
+- `test_a_stale_projection_row_overlays_canonical_truth_and_stays_scoped`
+  covers the row-bearing page: canonical status/result overlaid onto the
+  stale projection row, NodeRun/Attempt evidence filed in the same spine,
+  no visibility outside the producing Workspace.
 
 ## Not resolved in this round (owned elsewhere, recorded for the verifier)
 

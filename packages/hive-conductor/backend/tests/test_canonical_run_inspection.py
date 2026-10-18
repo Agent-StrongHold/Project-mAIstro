@@ -2,10 +2,11 @@
 
 Developed against the merged canonical seam set: the Conductor reads run
 truth through its projection page plus the scoped canonical overlay
-(`ScopedRunReader`), so a run created by any producer through the canonical
-`RunExecutionService` seam is inspectable under the same canonical ids, and
-a bridge-less standalone keeps only presentation reads with no terminal
-authority (ADR-082826-d9f5).
+(`ScopedRunReader`), and by canonical id a Run with no projection row at
+all is answered directly from the canonical spine -- inspectable and
+controllable by the same id any producer's Run carries. A bridge-less
+standalone keeps only presentation reads with no terminal authority
+(ADR-082826-d9f5).
 """
 
 from __future__ import annotations
@@ -66,19 +67,117 @@ def _point_engine_at(
     )
 
 
-async def test_a_run_from_the_producer_seam_is_inspectable_by_canonical_id(
+async def test_a_projectionless_canonical_run_is_inspectable_and_controllable_by_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Cross-product producer -> canonical spine -> Conductor observer.
+    """Cross-product producer -> canonical spine -> Conductor observer (#1036).
 
-    A Run created and executed through the real canonical producer seam
-    (`RunExecutionService.create_run`/`execute_node` over a real scoped
-    `InMemoryRunStore` -- the same handoff surface Builders/schedule/Evolve
-    adapters use) is listable and inspectable by the Conductor under the same
-    canonical run id, with the canonical lifecycle truth overlaid onto the
-    projection row and the NodeRun/Attempt evidence the spine holds; an
-    observer outside the producing Workspace sees nothing (#1036 cross-product
-    parity).
+    A Run created through the real canonical producer seam
+    (`RunExecutionService.create_run` over a real scoped `InMemoryRunStore` --
+    the same handoff surface Builders/schedule/Evolve adapters use) that never
+    recorded a Conductor projection row is still inspectable and controllable
+    by its canonical id: detail answers from the Run itself, the cancel route
+    cancels through the canonical spine without writing a projection row, and
+    a foreign observer gets the identical non-disclosing refusal a missing id
+    gets. Recent-list discovery stays projection-gated by design (#1036's
+    read-contract boundary reserves that for the scoped store capability).
+    """
+    from routes.dag_runs import cancel_run as cancel_route
+    from services.dag_run_inspection import (
+        can_inspect_run,
+        list_visible_runs,
+        visible_run_detail,
+        visible_run_ids,
+    )
+    from services.dag_run_store import get_dag_run_store
+    from services.workspace_authority import canonical_store_for_tests
+
+    from maistro.graph import Graph, Node
+    from maistro.runs import InMemoryRunStore, RunExecutionService, RunStatus
+    from maistro.runs.scoped_reads import ScopedRunReader
+    from maistro.runtime import PythonExecutionRuntime
+
+    view = await _owned_workspace()
+    workspaces = canonical_store_for_tests()
+    projects = workspaces.project_store
+    store = InMemoryRunStore(project_store=projects)
+    service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())
+
+    root = await projects.root_for_workspace(view.id)
+    project = await projects.create(
+        workspace_id=view.id,
+        parent_project_id=root.project_id,
+        name="Cross-product",
+    )
+    graph = Graph(
+        workspace_id=view.id,
+        project_id=project.project_id,
+        name="producer",
+        nodes=[Node(node_id="node-1", node_type="agent", name="Producer node")],
+    )
+    run = await service.create_run(
+        graph,
+        actor_principal_id=_USER_ID,
+        provenance={"producer": "non-conductor product adapter"},
+    )
+
+    # The producer never recorded a Conductor projection row, and nothing in
+    # this test creates one: every answer below comes from the canonical seam.
+    assert get_dag_run_store().get_run(run.run_id) is None
+
+    _point_engine_at(monkeypatch, store, ScopedRunReader(store, workspaces, projects))
+
+    # By canonical id, the Run itself is the answer: canonical identity,
+    # lifecycle truth, and the caller's scope -- no projection row required.
+    detail = await visible_run_detail(_USER_ID, run.run_id)
+    assert detail is not None
+    assert detail["id"] == detail["canonical_run_id"] == run.run_id
+    assert detail["status"] == "created"
+    assert detail["workspace_id"] == view.id
+    assert detail["result"] is None
+    assert detail["finished_at"] is None
+    # No event history is fabricated for a run this store never recorded:
+    # the projection event-history gap is named, not filled (#1036).
+    assert detail["events"] == []
+    assert await can_inspect_run(_USER_ID, run.run_id)
+    assert await visible_run_ids(_USER_ID, [run.run_id, "no-such-run"]) == {run.run_id}
+
+    # Control delegates through the canonical seam by the same id (#1169
+    # authority): the fence lands on the canonical Run, and the projection
+    # store never gains a row for it -- cancellation is not a projection edit.
+    response = await cancel_route(run.run_id, _ScopedRequest(_USER_ID))
+    assert response == {"run_id": run.run_id, "status": "cancelled", "cancelled": True}
+    cancelled = await store.get_run(run.run_id)
+    assert cancelled is not None and cancelled.status is RunStatus.CANCELLED
+    assert cancelled.finished_at is not None
+    assert get_dag_run_store().get_run(run.run_id) is None
+
+    # Recent-list discovery stays projection-gated: the run is absent from
+    # the page by design while the by-id seam answers for it.
+    listed = await list_visible_runs(_USER_ID, limit=25)
+    assert all(row["id"] != run.run_id for row in listed)
+
+    # Foreign and random ids get the identical non-disclosing refusal --
+    # detail, stream admission and the batch verdict reader all agree.
+    assert await visible_run_detail(_FOREIGN_USER, run.run_id) is None
+    assert await visible_run_detail(_USER_ID, "no-such-run") is None
+    assert not await can_inspect_run(_FOREIGN_USER, run.run_id)
+    assert not await can_inspect_run(_USER_ID, "no-such-run")
+    assert await visible_run_ids(_FOREIGN_USER, [run.run_id]) == set()
+
+
+async def test_a_stale_projection_row_overlays_canonical_truth_and_stays_scoped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The projection page overlays canonical lifecycle truth (#1877).
+
+    When a Conductor projection row exists and names a canonical Run the
+    caller may read, list and detail serve the Run's status/result -- not
+    the row's stale "running" -- with the NodeRun/Attempt evidence filed in
+    the same spine, and an observer outside the producing Workspace sees
+    nothing. The row here plays its real role: presentation history the
+    canonical Run overrides, never the discovery mechanism for another
+    producer's Run (that is the projectionless by-id test above).
     """
     from services.dag_run_inspection import list_visible_runs, visible_run_detail
     from services.dag_run_store import get_dag_run_store
