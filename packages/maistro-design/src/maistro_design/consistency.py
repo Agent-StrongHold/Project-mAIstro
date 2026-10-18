@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
@@ -1062,7 +1063,7 @@ def _check_locked_decisions(
 
 
 def _dimension_results(
-    findings: tuple[ConsistencyFinding, ...],
+    findings: Sequence[ConsistencyFinding],
 ) -> tuple[DimensionResult, ...]:
     """One verdict per dimension, evaluated or not.
 
