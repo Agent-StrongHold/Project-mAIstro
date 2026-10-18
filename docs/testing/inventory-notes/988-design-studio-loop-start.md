@@ -99,3 +99,33 @@ the page's legitimate mount-time `GET /v1/design/projects` listing
 counts invocations (POST) only, which is what the #987 invariant means. The
 status line also rendered `cause ?? message`, which permanently shadowed the
 restore/mint outcome message once the loop was open; it now shows both.
+
+## Verification round (independent, CI-shaped harness)
+
+Re-proven from scratch in the same worktree with a harness matching the CI
+`hive-conductor-e2e-ui` shape rather than the earlier pg-backed one: frontend
+rebuilt (`npm run build` → tsc both configs + vite, clean), backend run
+DB-less (in-memory stores, the `docker-compose.test.yml` hive env: no
+`DATABASE_URL`) via the worktree venv on 127.0.0.1:18990, serving that dist.
+
+- Contract test `3 passed`; ruff check + format clean on it;
+  `tsc --noEmit` clean; `eslint DesignStudio.tsx --max-warnings 0` clean.
+- `design-studio-loop-start.spec.ts` → `3 passed`;
+  `design-studio-truthfulness.spec.ts` + `design-studio-keyboard.spec.ts` →
+  `9 passed`; backend suite still collects 2946 nodes (ledger sums: baseline +
+  this note's +3).
+- Negative controls re-proven in a fresh synthetic tree outside the repo with
+  the real scanner module: clean copy passes; `DesignRun` type declaration, a
+  `hive_design_loop` `localStorage.setItem`, an object-literal
+  `[{ path: "/book" }]` beside a JSX `/game` route in App.tsx, and an
+  `Atelier.tsx` page are each caught. Scope note taken from the module's own
+  docstring: comment-stripping guards the `DesignRun` identifier scan only —
+  the storage-key scan reads raw text, so it can false-positive on a comment
+  quoting a forbidden call (fail-noisy direction only; the real tree passes).
+- Live server, no stubs anywhere: authenticated `POST /v1/auth/login` then
+  `GET` on all four canonical surfaces → `404` on every one; `/openapi.json`
+  lists none of `/v1/goals`, `/v1/creative-briefs`, `/v1/design/packs`,
+  `/v1/runs`. An ad-hoc no-interception journey (removed after the run) then
+  showed the real page against that real server: all four surfaces report
+  `unavailable` with `HTTP 404 from /v1/goals` visible, the start control
+  stays disabled past a 2.5 s wait, and zero mint POSTs fire.
