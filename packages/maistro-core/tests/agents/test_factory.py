@@ -731,56 +731,48 @@ class TestTheBuiltinRow:
 
 
 class TestGovernedLlmClientComposition:
-    def test_any_absent_authority_means_no_wrapping(self) -> None:
-        """Fail-closed composition (#718): the factory wraps nothing when any
-        of the four effect/model authorities is missing -- a half-wrapped
-        client would silently route some strategies around the canonical
-        Invocation path."""
+    def test_explicit_library_client_is_preserved_without_governed_composition(self) -> None:
         from maistro.agents.factory import _governed_llm_client
 
-        authorities = (object(), object(), object(), object())
-        for missing in range(4):
-            args = list(authorities)
-            args[missing] = None
-            assert _governed_llm_client(args[0], args[1], args[2], args[3], "ws", "p") is None, (
-                f"authority #{missing} absent must refuse composition"
-            )
+        llm = object()
+        assert _governed_llm_client(llm, None) is llm
 
-    def test_full_authority_set_composes_a_governed_client(self) -> None:
+    def test_admitted_calls_compose_a_governed_client(self) -> None:
         from maistro.agents.factory import _governed_llm_client
         from maistro.capabilities.model_chat import GovernedLLMClient
 
-        client = _governed_llm_client(object(), object(), object(), object(), "ws-1", "p-1")
+        calls = object()
+        client = _governed_llm_client(object(), calls)
         assert isinstance(client, GovernedLLMClient)
+        assert client._calls is calls
+
+    def test_matching_governed_client_is_shared_without_reconstruction(self) -> None:
+        from maistro.agents.factory import _governed_llm_client
+        from maistro.capabilities.model_chat import GovernedLLMClient
+
+        calls = object()
+        client = GovernedLLMClient(calls)
+        assert _governed_llm_client(client, calls) is client
+
+    def test_conflicting_governed_authorities_refuse_composition(self) -> None:
+        from maistro.agents.factory import _governed_llm_client
+        from maistro.capabilities.model_chat import GovernedLLMClient
+
+        with pytest.raises(ConfigError, match="different admitted model calls"):
+            _governed_llm_client(GovernedLLMClient(object()), object())
 
 
 class TestCreateAgentsGovernedPath:
-    async def test_full_authority_set_wraps_every_agent(self, tmp_path: Path) -> None:
-        """create_agents replaces the injected client with the governed one (#718).
-
-        This is the composition line the hive-conductor bridge and the server
-        chat door rely on: supply all four effect/model authorities and every
-        built agent's LLM is the canonical Binding->Invocation client, not
-        the caller's bare ``llm``.
-        """
-        from maistro.capabilities.effect_context import new_in_memory_effect_context
+    async def test_configured_admitted_calls_wrap_every_agent(self, tmp_path: Path) -> None:
+        """An explicit admitted-call authority replaces the bare injected client."""
         from maistro.capabilities.model_chat import GovernedLLMClient
-        from maistro.providers.registry import InMemoryProviderRegistry
-        from maistro.providers.router import CostAwareRouter
 
         (tmp_path / "PREAMBLE.md").write_text("# Shared preamble for {{agent_name}}")
         _write_agent_dir(tmp_path, "scribe")
-        registry = InMemoryProviderRegistry()
-        bare_llm = object()
-        kwargs = _create_agents_kwargs(
-            tmp_path,
-            llm=bare_llm,
-            capability_effects=new_in_memory_effect_context(),
-            provider_registry=registry,
-            llm_router=CostAwareRouter(registry),
-            model_endpoint=object(),
-        )
+        calls = object()
+        kwargs = _create_agents_kwargs(tmp_path, llm=object(), admitted_calls=calls)
 
         agents = await create_agents(**kwargs)
 
         assert isinstance(agents["scribe"]._llm, GovernedLLMClient)
+        assert agents["scribe"]._llm._calls is calls

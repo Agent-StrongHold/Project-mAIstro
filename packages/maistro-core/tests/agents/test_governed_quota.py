@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import httpx
+import pytest
+from tests._admitted_model_fixture import setup
 
 from maistro.agents.base import Agent
 from maistro.agents.strategies.direct import DirectStrategy
@@ -12,15 +14,8 @@ from maistro.capabilities.effect_context import (
     new_in_memory_effect_context,
 )
 from maistro.capabilities.model_chat import GovernedLLMClient
-from maistro.capabilities.providers.llm_gateway import (
-    DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
-    MODEL_GATEWAY_CREDENTIAL_PROVIDER,
-    GatewayEndpoint,
-)
-from maistro.credentials.types import CredentialRecord
 from maistro.observability.correlation import bind_execution_context
 from maistro.providers.registry import InMemoryProviderRegistry
-from maistro.providers.router import CostAwareRouter
 from maistro.providers.types import ModelMetadata
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog
@@ -68,8 +63,10 @@ def _patch_gateway(monkeypatch: Any) -> None:
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
 
 
+@pytest.mark.parametrize("turn_id", ["run-agent-1", "domain-turn-different-from-run", None])
 async def test_agent_completion_uses_canonical_invocation_quota_hook(
     monkeypatch: Any,
+    turn_id: str | None,
 ) -> None:
     _patch_gateway(monkeypatch)
     tracker = InMemoryQuotaTracker()
@@ -80,19 +77,6 @@ async def test_agent_completion_uses_canonical_invocation_quota_hook(
         # Since #846 an omitted policy evaluator fails closed, so this fixture
         # names the explicit M1 baseline like the production container does.
         policy_evaluator=binding_scope_policy,
-    )
-    # Binding-scoped credential routing (#1091): the governed call refuses
-    # before any HTTP unless the credential the Binding authorizes exists in
-    # its Workspace/Project scope. Register the deployment's default gateway
-    # key exactly as bootstrap_model_bindings does in production.
-    effects.credentials.add(
-        workspace_id="ws-agent",
-        project_id="agent-runtime",
-        record=CredentialRecord(
-            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
-            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
-            api_key="test-litellm-key",
-        ),
     )
     registry = InMemoryProviderRegistry(
         models=[
@@ -105,13 +89,10 @@ async def test_agent_completion_uses_canonical_invocation_quota_hook(
             )
         ]
     )
-    llm = GovernedLLMClient(
-        effects,
-        registry=registry,
-        router=CostAwareRouter(registry),
-        endpoint=GatewayEndpoint(base_url="http://gateway"),
-        workspace_id="ws-agent",
-    )
+    s = await setup(effects=effects, registry=registry)
+    llm = GovernedLLMClient(s.calls)
+    if turn_id == "run-agent-1":
+        turn_id = s.identity[0]
     agent = Agent(
         AgentIdentity(name="writer", model="fast-model"),
         DirectStrategy(),
@@ -124,17 +105,17 @@ async def test_agent_completion_uses_canonical_invocation_quota_hook(
     # #1827: the governed client reads its Run/NodeRun/Attempt identity from
     # the correlation context canonical execution binds (RunExecutionService
     # for run_id, AttemptExecutionService.execute_claimed for the other two).
-    # Bind a complete context whose run matches the turn_id Agent.handle
-    # supplies, exactly as a node execution would.
+    # A domain turn id may differ from the canonical Run. The Agent must
+    # leave canonical identity adoption to its client, not substitute that id.
     with bind_execution_context(
-        run_id="run-agent-1",
-        node_run_id="node-agent-1",
-        attempt_id="attempt-agent-1",
+        run_id=s.identity[0],
+        node_run_id=s.identity[1],
+        attempt_id=s.identity[2],
     ):
         response = await agent.handle(
             [{"role": "user", "content": "say hello"}],
             SimpleNamespace(user_id="u1", org_id="o1", team_id="t1"),
-            turn_id="run-agent-1",
+            turn_id=turn_id,
         )
 
     assert response.content == "governed"

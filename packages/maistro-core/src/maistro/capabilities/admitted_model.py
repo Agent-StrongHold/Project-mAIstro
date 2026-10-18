@@ -66,7 +66,11 @@ class AdmittedModelCalls:
         )
 
     async def _authorize(
-        self, identity: tuple[str, str, str] | None, binding_id: str
+        self,
+        identity: tuple[str, str, str] | None,
+        binding_id: str,
+        *,
+        required_workspace_id: str | None = None,
     ) -> tuple[Binding, str, tuple[str, str, str]]:
         from maistro.runs.store import RunIntegrityError
         from maistro.runs.store_boundary import require_admitted_actor
@@ -82,6 +86,8 @@ class AdmittedModelCalls:
             raise RunIntegrityError("model call execution records belong to different executions")
         _require_running(run, node, attempt)
         _require_scope(run)
+        if required_workspace_id is not None and run.workspace_id != required_workspace_id:
+            raise RunIntegrityError("Agent definition workspace does not match its admitted Run")
         actor = require_admitted_actor(run.actor_principal_id)
         binding = await self._binding(
             binding_id,
@@ -135,8 +141,11 @@ class AdmittedModelCalls:
         identity: tuple[str, str, str] | None = None,
         binding_id: str = "",
         timeout_s: float | None = None,
+        required_workspace_id: str | None = None,
     ) -> ModelCallResult:
-        binding, actor, selected = await self._authorize(identity, binding_id)
+        binding, actor, selected = await self._authorize(
+            identity, binding_id, required_workspace_id=required_workspace_id
+        )
         return await self._with_timeout(timeout_s).complete(
             binding=binding,
             run_id=selected[0],

@@ -48,7 +48,8 @@ class GatewayEndpoint(BaseModel):
     """Where the one approved model Provider sends traffic; secrets stay here.
 
     ``base_url`` is the gateway root (a ``/v1`` suffix is appended when absent,
-    matching the shipped LiteLLM gateway convention). The API key never enters
+    matching the shipped LiteLLM gateway convention). Callers holding a complete
+    API base set ``base_url_is_api_base=True`` to retain its exact path. The API key never enters
     a Binding, Invocation request, or persisted result. Governed production
     model egress replaces ``api_key`` with the scoped credential selected from
     the resolved Binding before it crosses the physical executor seam.
@@ -59,11 +60,14 @@ class GatewayEndpoint(BaseModel):
     base_url: str
     api_key: str = ""
     timeout_s: float = 120.0
+    # Explicit API bases already include the operator's complete routing path.
+    # Root callers retain the shipped LiteLLM /v1 convention by default.
+    base_url_is_api_base: bool = False
 
     @property
     def _base(self) -> str:
         base = self.base_url.rstrip("/")
-        return base if base.endswith("/v1") else base + "/v1"
+        return base if self.base_url_is_api_base or base.endswith("/v1") else base + "/v1"
 
     def authorization_header(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}

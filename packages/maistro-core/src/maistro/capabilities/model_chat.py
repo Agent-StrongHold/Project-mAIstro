@@ -34,7 +34,6 @@ from maistro.capabilities.invocation import (
 )
 from maistro.capabilities.model_chat_stream import StreamDelivery, stream_model_call
 from maistro.capabilities.providers.llm_gateway import (
-    DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
     MODEL_CHAT_CAPABILITY,
     GatewayEndpoint,
     LlmGatewayProvider,
@@ -54,6 +53,7 @@ from maistro.providers.types import (
 from maistro.quota.usage_report import reported_usage
 
 if TYPE_CHECKING:
+    from maistro.capabilities.admitted_model import AdmittedModelCalls
     from maistro.capabilities.effect_context import CapabilityEffectContext
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
 
@@ -140,7 +140,8 @@ class GovernedLLMClient:
     """LLMClient adapter that sends every completion through ModelChatEgress.
 
     Agent strategies keep their existing LLMClient shape, while the actual
-    provider call has one canonical Binding/Invocation authority. ``set_turn``
+    provider call resolves persisted execution and operator-declared Binding authority
+    through the shared AdmittedModelCalls adapter. ``set_turn``
     is a small runtime context seam used by Agent.handle; it does not dispatch
     or own a second ledger.
 
@@ -155,24 +156,26 @@ class GovernedLLMClient:
     """
 
     def __init__(
-        self,
-        effects: CapabilityEffectContext,
-        *,
-        registry: LLMProviderRegistry,
-        router: LLMRouter,
-        endpoint: GatewayEndpoint,
-        workspace_id: str,
-        project_id: str = "agent-runtime",
+        self, admitted_calls: AdmittedModelCalls, *, workspace_id: str | None = None
     ) -> None:
-        self._egress = ModelChatEgress(effects, registry=registry, router=router, endpoint=endpoint)
+        self._calls = admitted_calls
+        # A definition's Workspace narrows admitted authority; it supplies none.
         self._workspace_id = workspace_id
-        self._project_id = project_id
         self._turn: ContextVar[tuple[str, str, str] | None] = ContextVar(
             "governed_llm_turn", default=None
         )
         self._sequence: ContextVar[int] = ContextVar("governed_llm_sequence", default=0)
+        self._effect_scope: ContextVar[tuple[str, int] | None] = ContextVar(
+            "governed_llm_effect_scope", default=None
+        )
 
-    def set_turn(self, run_id: str | None = None, *, agent_name: str = "") -> None:
+    def set_turn(
+        self,
+        run_id: str | None = None,
+        *,
+        agent_name: str = "",
+        delegation_depth: int = 0,
+    ) -> None:
         """Bind correlation identity for the next turn from canonical execution.
 
         Stores exactly the (run_id, node_run_id, attempt_id) triple the
@@ -180,9 +183,9 @@ class GovernedLLMClient:
         any of the three is missing or blank, raises
         :class:`maistro.runs.store.RunIntegrityError` instead of minting a
         synthetic identity. A supplied ``run_id`` must equal the bound one —
-        it is checked, never substituted. ``agent_name`` is accepted for
-        compatibility with the ``Agent`` turn seam and cannot manufacture a
-        node id.
+        it is checked, never substituted. ``agent_name`` and the existing
+        delegation depth distinguish logical model effects inside one Attempt;
+        neither can manufacture or replace canonical execution identity.
 
         Failure-atomic: any previously stored turn is dropped *before*
         validation, so a rejected ``set_turn`` cannot leave an earlier valid
@@ -195,7 +198,7 @@ class GovernedLLMClient:
         # import a cycle.
         from maistro.runs.store import RunIntegrityError
 
-        del agent_name  # compatibility only; it cannot manufacture identity
+        self._effect_scope.set(None)
         self._turn.set(None)
         self._sequence.set(0)
         context = current_execution_context()
@@ -217,8 +220,19 @@ class GovernedLLMClient:
                 f"run_id {bound[0]!r}; the bound identity is never replaced"
             )
         self._turn.set(bound)
+        if agent_name:
+            self._effect_scope.set((agent_name, delegation_depth))
+
+    def set_agent_turn(self, *, agent_name: str, delegation_depth: int) -> None:
+        """Opt into Agent tail-delegation effect scoping without new identity.
+
+        Agent uses this optional hook so clients with the older ``set_turn``
+        signature still receive only their existing ``agent_name`` argument.
+        """
+        self.set_turn(agent_name=agent_name, delegation_depth=delegation_depth)
 
     def clear_turn(self) -> None:
+        self._effect_scope.set(None)
         self._turn.set(None)
         self._sequence.set(0)
 
@@ -261,28 +275,22 @@ class GovernedLLMClient:
         request = ModelChatRequest(
             model=model,
             messages=[dict(message) for message in messages],
-            temperature=0.7 if temperature is None else temperature,
+            temperature=temperature,
             max_tokens=max_tokens,
             tools=[dict(tool) for tool in tools] if tools else None,
             tool_choice=tool_choice,
         )
-        result = await self._egress.complete(
-            binding=Binding(
-                workspace_id=self._workspace_id,
-                project_id=self._project_id,
-                capability=MODEL_CHAT_CAPABILITY,
-                # Bind-scoped credential routing (#1091) refuses a Binding
-                # that names no credential: authorize the deployment's
-                # registered default gateway key. Acquire still fails closed
-                # unless that ref exists in exactly this Workspace/Project
-                # scope, so naming it widens nothing.
-                credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
-            ),
-            run_id=run_id,
-            node_run_id=node_run_id,
-            attempt_id=attempt_id,
-            effect_key=f"agent-llm-{self._sequence.get()}",
+        scope = self._effect_scope.get()
+        effect_key = (
+            f"agent-llm:{scope[0]}:{scope[1]}:{self._sequence.get()}"
+            if scope is not None
+            else f"agent-llm-{self._sequence.get()}"
+        )
+        result = await self._calls.complete(
+            identity=(run_id, node_run_id, attempt_id),
+            effect_key=effect_key,
             request=request,
+            required_workspace_id=self._workspace_id,
         )
         return result.body
 

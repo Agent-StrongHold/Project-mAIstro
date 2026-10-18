@@ -391,3 +391,29 @@ async def test_pin_preflight_reads_configured_authority_without_dispatch() -> No
     s.calls._binding_ids = ("pinned",)
     assert await s.calls.pinned_model(identity=s.identity) == "operator-pin"
     assert s.sent == []
+
+
+@pytest.mark.parametrize("required_workspace", ["workspace", None, "foreign", "", " "])
+async def test_definition_workspace_can_only_narrow_persisted_authority(required_workspace) -> None:
+    s = await setup()
+    if required_workspace in (None, "workspace"):
+        result = await s.calls.complete(
+            request=request(),
+            effect_key="turn",
+            identity=s.identity,
+            required_workspace_id=required_workspace,
+        )
+        invocation = await s.effects.invocation_store.get(result.invocation_id)
+        assert invocation.workspace_id == "workspace"
+        assert invocation.project_id == s.project_id
+        assert invocation.actor_id == "admitted-actor"
+        assert len(s.sent) == 1
+    else:
+        with pytest.raises(RunIntegrityError, match="definition workspace"):
+            await s.calls.complete(
+                request=request(),
+                effect_key="turn",
+                identity=s.identity,
+                required_workspace_id=required_workspace,
+            )
+        assert s.sent == []

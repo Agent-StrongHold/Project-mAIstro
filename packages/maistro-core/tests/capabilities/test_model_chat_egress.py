@@ -1220,25 +1220,11 @@ async def test_client_complete_adopts_bound_context_or_refuses(
         quota_tracker=tracker,
         policy_evaluator=binding_scope_policy,
     )
-    effects.credentials.add(
-        workspace_id="ws1",
-        project_id="p1",
-        record=CredentialRecord(
-            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
-            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
-            api_key="test-litellm-key",
-        ),
-    )
-    registry = _registry()
+    from tests._admitted_model_fixture import setup
+
+    s = await setup(effects=effects, registry=_registry())
     _patch_gateway(monkeypatch, _OK_BODY)
-    client = GovernedLLMClient(
-        effects,
-        registry=registry,
-        router=CostAwareRouter(registry),
-        endpoint=GatewayEndpoint(base_url="http://gw:4000"),
-        workspace_id="ws1",
-        project_id="p1",
-    )
+    client = GovernedLLMClient(s.calls)
 
     # No canonical context in scope: refuse with zero egress.
     with detached_execution_context(), pytest.raises(RunIntegrityError):
@@ -1249,9 +1235,9 @@ async def test_client_complete_adopts_bound_context_or_refuses(
     # set_turn: the usage the fake gateway reported still reaches the quota
     # ledger, under the canonical identity the execution bound.
     with bind_execution_context(
-        run_id="run-adopt",
-        node_run_id="node-adopt",
-        attempt_id="attempt-adopt",
+        run_id=s.identity[0],
+        node_run_id=s.identity[1],
+        attempt_id=s.identity[2],
     ):
         body = await client.complete([{"role": "user", "content": "hello"}], "fast-model")
 

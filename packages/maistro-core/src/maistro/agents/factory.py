@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from sqlalchemy.exc import SQLAlchemyError
@@ -33,6 +33,9 @@ from maistro.agents.strategies.direct import DirectStrategy
 from maistro.runs.task_kinds import DIRECT_SUBMISSION_AGENT
 from maistro.types.agent import AgentIdentity
 from maistro.types.errors import ConfigError
+
+if TYPE_CHECKING:
+    from maistro.capabilities.admitted_model import AdmittedModelCalls
 
 logger = logging.getLogger("maistro.agents.factory")
 
@@ -512,38 +515,22 @@ async def _seed_agent_directory(
     )
 
 
-def _governed_llm_client(
-    capability_effects: Any,
-    provider_registry: Any,
-    llm_router: Any,
-    model_endpoint: Any,
-    workspace_id: str,
-    project_id: str,
-) -> Any | None:
-    """The canonical model client for every strategy, or None.
+def _governed_llm_client(llm: Any, admitted_calls: AdmittedModelCalls | None) -> Any:
+    """Reuse the configured runtime client or wrap its admitted-call authority.
 
-    One wrapper at the factory boundary keeps all Agent strategies on their
-    existing LLMClient protocol while routing production model effects through
-    the canonical Binding -> Invocation path (#718). Tests and legacy callers
-    that do not supply the full effect authority set retain their injected
-    client: any absent authority means the governed path cannot be composed
-    fail-closed, so nothing is wrapped rather than half of it.
+    Standalone library callers may supply their own LLMClient explicitly. A
+    production composition supplies its canonical AdmittedModelCalls, never
+    an incomplete set of stores that silently falls back to a raw client.
     """
-    if any(
-        value is None
-        for value in (capability_effects, provider_registry, llm_router, model_endpoint)
-    ):
-        return None
+    if admitted_calls is None:
+        return llm
     from maistro.capabilities.model_chat import GovernedLLMClient
 
-    return GovernedLLMClient(
-        capability_effects,
-        registry=provider_registry,
-        router=llm_router,
-        endpoint=model_endpoint,
-        workspace_id=workspace_id,
-        project_id=project_id,
-    )
+    if isinstance(llm, GovernedLLMClient):
+        if llm._calls is not admitted_calls:
+            raise ConfigError("Agent client has different admitted model calls than the factory")
+        return llm
+    return GovernedLLMClient(admitted_calls)
 
 
 async def create_agents(
@@ -569,25 +556,11 @@ async def create_agents(
     tool_registry: Any = None,
     a2a_delegator: Any = None,
     require_agents: bool = False,
-    capability_effects: Any = None,
-    provider_registry: Any = None,
-    llm_router: Any = None,
-    model_endpoint: Any = None,
-    workspace_id: str = "default",
-    project_id: str = "agent-runtime",
+    admitted_calls: AdmittedModelCalls | None = None,
 ) -> dict[str, Agent]:
     _register_custom_strategies()
 
-    governed = _governed_llm_client(
-        capability_effects,
-        provider_registry,
-        llm_router,
-        model_endpoint,
-        workspace_id,
-        project_id,
-    )
-    if governed is not None:
-        llm = governed
+    llm = _governed_llm_client(llm, admitted_calls)
 
     deps = {
         "llm": llm,

@@ -12,17 +12,6 @@
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
-    "packages/hive-conductor/backend/adapters/maistro_core.py::_HttpOpenAILLMClient.complete::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/hive-conductor/backend/adapters/maistro_core.py",
-      "qualname": "_HttpOpenAILLMClient.complete",
-      "line": 83,
-      "category": "MODEL_EFFECT",
-      "entry_point": "openai-compatible-http",
-      "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
-    },
     "packages/hive-conductor/backend/routes/widgets.py::widget_jira::PM_POLLING_EFFECT:pm-polling-http#1": {
       "path": "packages/hive-conductor/backend/routes/widgets.py",
       "qualname": "widget_jira",
