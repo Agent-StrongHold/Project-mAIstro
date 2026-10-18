@@ -42,6 +42,7 @@ from tests.cross_product_parity.harness import (
     assert_ontology_identity_projection,
     dependency_assessment,
     execute_closeout,
+    parity_mode,
     execute_scenario_sync,
     open_durable_profile,
     require_dependencies,
@@ -499,6 +500,34 @@ def test_strict_mode_turns_synthetic_unavailable_dependency_into_a_failure(
 
     with pytest.raises(DependencyUnavailable, match="synthetic unavailable dependency"):
         dependency_assessment(synthetic)
+
+
+def test_conflicting_strict_and_mode_env_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review: MAISTRO_PARITY_STRICT=1 must not be silently downgraded.
+
+    The two spellings name one strict concept, so inheriting
+    ``MAISTRO_PARITY_MODE=development`` alongside ``MAISTRO_PARITY_STRICT=1``
+    is a configuration error and must fail loudly instead of selecting
+    development mode (which would return blockers for callers to early-return
+    past rather than raising).
+    """
+    monkeypatch.setenv("MAISTRO_PARITY_STRICT", "1")
+    monkeypatch.setenv("MAISTRO_PARITY_MODE", "development")
+
+    with pytest.raises(ValueError, match="conflicts"):
+        parity_mode()
+
+
+def test_strict_spelling_agrees_with_explicit_m1_closeout_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The run-m1-closeout.py combination stays a valid strict invocation."""
+    monkeypatch.setenv("MAISTRO_PARITY_STRICT", "1")
+    monkeypatch.setenv("MAISTRO_PARITY_MODE", "m1-closeout")
+
+    assert parity_mode() is ParityMode.M1_CLOSEOUT
 
 
 def test_non_strict_mode_still_reports_named_blockers(

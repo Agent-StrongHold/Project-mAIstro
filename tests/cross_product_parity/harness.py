@@ -412,16 +412,29 @@ class CloseoutReport:
 def parity_mode(value: str | None = None) -> ParityMode:
     """Resolve the explicit mode switch used by the closeout invocation.
 
-    ``MAISTRO_PARITY_MODE`` wins when set; otherwise the equivalent
-    ``MAISTRO_PARITY_STRICT=1`` spelling selects M1 closeout mode; otherwise
-    development mode reports named blockers without failing closed.
+    ``MAISTRO_PARITY_MODE`` selects the mode when set; otherwise the
+    equivalent ``MAISTRO_PARITY_STRICT=1`` spelling selects M1 closeout mode;
+    otherwise development mode reports named blockers without failing closed.
+
+    Codex review (PR #1789 follow-up): the two spellings name one concept, so
+    they must agree. ``MAISTRO_PARITY_STRICT=1`` combined with an explicit
+    ``MAISTRO_PARITY_MODE`` other than ``m1-closeout`` is rejected instead of
+    silently downgrading the fail-closed flag.
     """
     if value is None:
         raw = os.environ.get(_MODE_ENV_VAR)
+        strict = os.environ.get(_STRICT_ENV_VAR) == "1"
         if raw is None:
-            if os.environ.get(_STRICT_ENV_VAR) == "1":
+            if strict:
                 return ParityMode.M1_CLOSEOUT
             raw = "development"
+        elif strict and raw != ParityMode.M1_CLOSEOUT.value:
+            allowed = ", ".join(item.value for item in ParityMode)
+            raise ValueError(
+                f"{_STRICT_ENV_VAR}=1 conflicts with {_MODE_ENV_VAR}={raw!r}: "
+                "the strict spelling selects m1-closeout, so an explicit "
+                f"{_MODE_ENV_VAR} must also be m1-closeout (allowed: {allowed})"
+            )
     else:
         raw = value
     try:
