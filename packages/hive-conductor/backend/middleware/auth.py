@@ -1,7 +1,7 @@
 """Auth middleware — session cookies, role-based access, task-scoped elevation.
 
 Public paths (setup, login, health, static) bypass auth.
-Admin is a break-glass role; ordinary users receive task-scoped elevation.
+Admin role is blocked from /v1/chat/ routes (break-glass only).
 Protected ops require elevation bound to a task — permissions die with the task.
 """
 
@@ -54,6 +54,10 @@ _PUBLIC_EXACT = frozenset(
         "/favicon.ico",
     }
 )
+
+# Admin break-glass separation (#336): the admin account is deliberately
+# blocked from chat so it can never become the daily driver.
+_ADMIN_CHAT_BLOCKED = ("/v1/chat/",)
 
 # Generated from the shared policy inventory. Do not add route permissions here.
 _PROTECTED_OPS: dict[str, dict[str, str]] = protected_ops_by_method()
@@ -179,6 +183,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
             request.state.user = user
 
+            if user["role"] == "admin" and self._is_chat(path):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "Admin account cannot use chat. Use your daily user account."
+                    },
+                )
+
             # Persona-level feedback aggregates raw entries across all
             # workspaces using that persona. A normal workspace member may not
             # inspect other workspaces' user ids, comments, or identifiers.
@@ -225,6 +237,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if _matches_public_prefix(request.url.path, _VOICE_PREFIX):
             return voice_identity.principal_for(authorization)
         return None
+
+    def _is_chat(self, path: str) -> bool:
+        return any(path.startswith(p) for p in _ADMIN_CHAT_BLOCKED)
 
     def _required_permission(self, request: Request) -> str | None:
         method_perms = _PROTECTED_OPS.get(request.method, {})

@@ -161,13 +161,14 @@ def test_whoami_unauthenticated() -> None:
     assert r.json()["authenticated"] is False
 
 
-def test_admin_can_use_chat() -> None:
+def test_admin_blocked_from_chat() -> None:
     c = _login("testadmin", "adminpass")
     r = c.post(
         "/v1/chat/complete",
         json={"messages": [{"role": "user", "content": "ping"}]},
     )
-    assert r.status_code == 200
+    assert r.status_code == 403
+    assert "daily user" in r.json()["detail"].lower() or "admin" in r.json()["detail"].lower()
 
 
 def test_user_can_chat() -> None:

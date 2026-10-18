@@ -1,22 +1,26 @@
 import { test, expect } from "@playwright/test";
 
+// Selectors mirror the shipped wizard (src/pages/Setup.tsx): five steps —
+// Hive, Hardware, Accounts, Modules, Confirm — where the Accounts step
+// requires the admin and daily-user credentials before "next" enables.
+// Provisioning ends with an auto-login as the DAILY USER, so the post-setup
+// assertions below run as that role, not as the break-glass admin (#336).
+
+const ADMIN_PASSWORD = "break-glass-passphrase-1";
+const USER_PASSWORD = "daily-driver-passphrase-1";
+
 test.describe("Setup Wizard", () => {
   test("shows setup wizard on first boot", async ({ page }) => {
     await page.goto("/");
-    await expect(page.locator("text=Hive Conductor Setup")).toBeVisible({ timeout: 10000 });
-    await expect(page.locator("text=First boot")).toBeVisible();
+    await expect(page.locator("text=First boot")).toBeVisible({ timeout: 10000 });
+    await expect(page.locator("text=Hive").first()).toBeVisible();
   });
 
-  test("step indicators show 4 steps", async ({ page }) => {
+  test("step indicators show all five steps", async ({ page }) => {
     await page.goto("/");
-    // The four step labels are the assertion; a `.page-header + div > div`
-    // locator was built here for a count check that was never written. It is
-    // not restored as `toHaveCount(4)` because that selector also matches the
-    // header's own children, so the count it would assert is unverified.
-    await expect(page.locator("text=Hive")).toBeVisible();
-    await expect(page.locator("text=Hardware")).toBeVisible();
-    await expect(page.locator("text=Modules")).toBeVisible();
-    await expect(page.locator("text=Confirm")).toBeVisible();
+    for (const step of ["Hive", "Hardware", "Accounts", "Modules", "Confirm"]) {
+      await expect(page.getByText(step).first()).toBeVisible();
+    }
   });
 
   test("can type conductor name and proceed", async ({ page }) => {
@@ -35,29 +39,47 @@ test.describe("Setup Wizard", () => {
     await expect(page.locator("text=Pick your hardware tier")).toBeVisible();
     await page.locator("text=Beast").click();
     await page.locator("button", { hasText: "next" }).click();
+    await expect(page.locator("text=Create user accounts")).toBeVisible();
+  });
+
+  test("accounts step requires credentials before proceeding", async ({ page }) => {
+    await page.goto("/");
+    await page.locator('input[placeholder="Hive Conductor"]').fill("Test Hive");
+    await page.locator("button", { hasText: "next" }).click();
+    await page.locator("text=Beast").click();
+    await page.locator("button", { hasText: "next" }).click();
+    await expect(page.locator("text=Create user accounts")).toBeVisible();
+    // The wizard demands both credentials itself: next stays disabled until
+    // the admin password, the daily username, and the daily password land.
+    const next = page.locator("button", { hasText: "next" });
+    await expect(next).toBeDisabled();
+    await page.getByRole("textbox", { name: "Admin password" }).fill(ADMIN_PASSWORD);
+    await page.getByRole("textbox", { name: "Daily user username" }).fill("user");
+    await expect(next).toBeDisabled();
+    await page.getByRole("textbox", { name: "Daily user password" }).fill(USER_PASSWORD);
+    await expect(next).toBeEnabled();
+    await next.click();
     await expect(page.locator("text=Optional modules")).toBeVisible();
   });
 
-  test("can toggle modules and proceed", async ({ page }) => {
+  test("can complete setup and unlock the hive as the daily user", async ({ page }) => {
     await page.goto("/");
     await page.locator('input[placeholder="Hive Conductor"]').fill("Test Hive");
     await page.locator("button", { hasText: "next" }).click();
     await page.locator("text=Beast").click();
     await page.locator("button", { hasText: "next" }).click();
-    await expect(page.locator("text=Crypto Identity")).toBeVisible();
-    await page.locator("text=Home Automation").click();
+    await page.getByRole("textbox", { name: "Admin password" }).fill(ADMIN_PASSWORD);
+    await page.getByRole("textbox", { name: "Daily user username" }).fill("user");
+    await page.getByRole("textbox", { name: "Daily user password" }).fill(USER_PASSWORD);
+    await page.locator("button", { hasText: "next" }).click();
+    await expect(page.locator("text=Optional modules")).toBeVisible();
     await page.locator("button", { hasText: "next" }).click();
     await expect(page.locator("text=Confirm configuration")).toBeVisible();
-  });
-
-  test("can complete setup and unlock the hive", async ({ page }) => {
-    await page.goto("/");
-    await page.locator('input[placeholder="Hive Conductor"]').fill("Test Hive");
-    await page.locator("button", { hasText: "next" }).click();
-    await page.locator("text=Beast").click();
-    await page.locator("button", { hasText: "next" }).click();
-    await page.locator("button", { hasText: "next" }).click();
     await page.locator("button", { hasText: "launch the hive" }).click();
-    await page.waitForURL(/\/(chat)?/, { timeout: 15000 });
+    // Setup auto-logs-in as the daily user and redirects to the app index:
+    // the chat surface must be reachable for that account, never a 403 wall.
+    await expect(page.locator("text=Hive Conductor").first()).toBeVisible({
+      timeout: 15000,
+    });
   });
 });

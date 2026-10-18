@@ -7,7 +7,7 @@ a handler returns is invisible until there are two people's data in the store.
 
 So every test here has both. `alice` is the conftest `testuser`; `bob` is a
 second ordinary account this module creates, because the only other seeded
-account is the admin, whose break-glass session may reach the `/v1/chat/` surface.
+account is the admin, and the admin is refused the whole `/v1/chat/` surface.
 """
 
 from __future__ import annotations
@@ -243,10 +243,12 @@ class TestTheWelcomeSeedIsPerUser:
         assert len(first) == len(second) == 1
 
 
-class TestAdminBreakGlassChat:
-    def test_the_admin_role_can_reach_chat_sessions(self, admin_client: Any) -> None:
-        """Break-glass admin sessions are not blocked by daily-user policy."""
-        assert admin_client.get("/v1/chat/sessions").status_code == 200
+class TestTheAdminIsNotAnExceptionHere:
+    def test_the_admin_role_cannot_reach_chat_at_all(self, admin_client: Any) -> None:
+        """Why `Owner` carries no role: the middleware settles the admin
+        question before a handler runs, so there is no admin-sees-everything
+        branch in the ownership check to get wrong."""
+        assert admin_client.get("/v1/chat/sessions").status_code == 403
 
 
 class TestTheChecklistCountsChatsYouWrote:

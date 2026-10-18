@@ -1,7 +1,5 @@
 """Adversarial path-matching tests for AuthMiddleware (middleware/auth.py).
 
-The middleware contract is exercised here, including the break-glass admin chat path.
-
 Two sibling-prefix-confusion bugs were found and fixed here:
 
 1. ``_PUBLIC_PREFIXES`` used unguarded ``str.startswith()`` for
@@ -282,14 +280,13 @@ class TestProtectedOpsPermissionMatrix:
         assert r.status_code == 403
 
 
-class TestAdminBreakGlassChat:
-    def test_admin_can_use_chat_without_sharing_daily_credentials(self) -> None:
-        """Break-glass remains a distinct admin session, but is not a dead end."""
+class TestAdminBlockedFromChat:
+    def test_admin_cannot_use_chat(self) -> None:
         c = TestClient(app)
         r = c.post("/v1/auth/login", json={"username": "testadmin", "password": "adminpass"})
         assert r.status_code == 200, r.text
         r2 = c.post("/v1/chat/message", json={"message": "hi"})
-        assert r2.status_code != 403
+        assert r2.status_code == 403
 
     def test_regular_user_not_blocked_from_chat_path(self) -> None:
         c = _login()
