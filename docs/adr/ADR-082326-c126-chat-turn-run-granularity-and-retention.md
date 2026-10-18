@@ -3,8 +3,9 @@ id: ADR-082326-c126
 title: "Chat turn Run granularity and retention"
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Accepted
 created: 2026-08-23
+accepted: 2026-09-27
 substrate:
   - maistro-engine#ADR-081226-a66b
 implements: []
@@ -16,6 +17,15 @@ blocked-by: []
 contracts:
   - behavioral
 tests: []
+ac-modules:
+  AC-1: maistro.runs.chat_admission
+  AC-2: maistro.runs.chat_admission
+  AC-3: maistro.container
+history:
+  - status: Proposed
+    date: 2026-08-23
+  - status: Accepted
+    date: 2026-09-27
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
@@ -58,19 +68,67 @@ travels in the Run's provenance, so "every Run in this conversation" is a query
 against existing data rather than a second kind of Run with different rules.
 
 **A chat turn's Run is terminal when the turn is.** It is admitted `QUEUED`,
-moved to `RUNNING` before dispatch, and terminalized `COMPLETED` or `FAILED`
-when the turn ends, including when it ends by raising. A turn refused by the
-Gate still gets a `COMPLETED` Run whose answer records the refusal: the turn
-happened and was answered, and that is the audit trail worth having.
+moved to `RUNNING` before dispatch, and terminalized `COMPLETED`, `FAILED` or
+`CANCELLED` when the turn ends, including when it ends by raising. A turn
+refused by the Gate still gets a `COMPLETED` Run whose answer records the
+refusal: the turn happened and was answered, and that is the audit trail worth
+having.
+
+`CANCELLED` is a third outcome and not a kind of failure. A client that
+disconnects, or a task the server cancels, raises `asyncio.CancelledError`
+through the turn, and `Container._close_chat_run` closes that Run as
+`RunStatus.CANCELLED` rather than `FAILED` -- pinned by
+`test_cancelled_turn_observes_cancelled_run_without_false_terminalization_warning`.
+The distinction is what makes the spine readable: a `FAILED` chat Run means the
+turn was attempted and did not succeed, which is worth alerting on, while a
+`CANCELLED` one means nobody is waiting for the answer any more, which is not.
+Recording a disconnect as a failure would put every closed browser tab into the
+same bucket as a broken provider call. A cancelled closure carries neither a
+result nor an error, and `_close_chat_run` refuses one that tries to.
 
 **Retention is bounded by the admitter, not by the store.** `ChatRunAdmitter`
 keeps a window of the last `MAX_RETAINED_CHAT_RUNS` (500) Runs it admitted, and
-deletes the oldest *terminal* ones as it overflows. This is enforced where the
-pressure is created, so the bound holds on any store rather than only on the one
-that happens to prune. A non-terminal Run in the window is skipped rather than
-deleted: work in flight keeps its identity however old it is, and a window full
-of live Runs grows rather than eating them, which is the same failure the
-store's own bound already chooses and for the same reason.
+deletes the oldest ones as it overflows — terminal Runs, and stalled
+non-terminal ones with nothing left living in them *(amended 2026-09-26, see
+below)*. Admission sweeps when a new Run arrives, and the canonical chat
+execution seam invokes the same sweep after terminalizing a turn; the latter
+closes the otherwise-unbounded final burst that has no subsequent admission.
+This is enforced where the pressure is created, so the bound holds on any store
+rather than only on the one that happens to prune.
+
+**A stalled turn may not hold the window open** *(amended 2026-09-26, repair
+round on #131's retention bound)*. The window originally skipped every
+non-terminal Run, on the reasoning that work in flight keeps its identity
+however old it is. The reasoning was right about work in flight and wrong
+about the test it chose: a Run's status alone cannot tell a live turn from a
+dead one. A turn whose executor never came — a stranded admission with no
+Attempt (#338), an Attempt whose lease lapsed, a finished Attempt under a Run
+nobody closed — stays non-terminal forever, so a window that shields every
+non-terminal Run grows without limit exactly when the process is misbehaving,
+which is when it must not. The window now reads the liveness signals the spine
+already trusts instead of the status byte. A non-terminal Run past the window
+is forgotten unless something could still be living in it: it is dispatch-
+pending (the seam admitted it and has not settled its dispatch), still
+CREATED/QUEUED (mid-admission, which the admission path compensates itself),
+or holds an Attempt inside its lease — the chat executor leases every Attempt
+it creates and renews it while the turn runs (#1170), and
+`recover_abandoned_attempts` already reclaims on exactly that lease's expiry,
+so a live turn is never evicted, and the live population is bounded by how
+many turns can be in flight at once, not by the window. The dispatch-pending
+mark is seam bookkeeping, not a new authority: `route_request` sets it between
+its Run's QUEUED and RUNNING transitions (so no sweep ever observes the
+RUNNING, Attempt-less, unshielded moment), releases it when the turn closes —
+including the refused, cancelled, and dispatch-unrecorded exits — and a
+process death clears it with the window that reads it. Two costs are accepted
+and named. First, an admission-only caller of `_admit_chat_turn` — one that
+admits without intending to dispatch — leaves its Runs unshielded, so an
+abandoned admission is evictable at the next turn rather than kept; that is
+the policy working, since nothing will ever terminalize such a Run. Second,
+every non-terminal Run left CREATED/QUEUED by a caller that neither finishes
+nor compensates its admission is shielded until it terminalizes; the shipped
+seam compensates its own admission failures on the spot (#338), so the shape
+is reachable only by a caller that abandons admission half-done, which is the
+caller's contract to close.
 
 **And the store's own bound is source-aware.** The admitter's window alone does
 not deliver "chat volume cannot evict task Runs", because the store's bound runs
@@ -83,10 +141,18 @@ behind a receipt a caller still holds; a chat Run's job is to be followable for
 a while after its turn. Ordering the eviction by that difference is what makes
 the guarantee real rather than asserted.
 
-**A turn is never refused for want of a Run.** If admission fails, the turn is
-answered anyway and the response simply carries no `run_id`. The chat path has
-no receipt to fall back on, so refusing would convert "this process cannot
-record the turn" into "this process cannot answer".
+**A turn that cannot get its Run is refused, retryably** *(amended 2026-09-23,
+owner decision on #1108; supersedes #223 AC4)*. Every answered turn has a
+canonical Run, NodeRun and Attempt. If no chat admitter is wired, admission
+fails, or the spine fails before the dispatch, the turn raises
+`ChatTurnRefused` — HTTP doors answer `503` with `Retry-After` — and nothing
+reaches the model; a Run admission already persisted is cancelled rather than
+stranded. The original rule ("a turn is never refused for want of a Run",
+answering with no `run_id`) traded governance for availability, and the owner
+chose governance: an ungoverned answer is not a degraded mode. A spine failure
+*after* the dispatch is different — the answer exists, so it is returned once
+and the Run is left open for recovery (`ChatDispatchUnrecorded`), never
+redispatched.
 
 **The turn's answer is on the Run, bounded.** A completed turn records its
 `finish_reason` and the first `MAX_RECORDED_ANSWER_CHARS` of the assistant's
@@ -106,8 +172,7 @@ agent went on to do: a canonical record that contradicts what happened, which is
 worse than one that admits the agent was not yet chosen.
 
 **`run_id` is additive on the response.** The OpenAI-compatible shape a caller
-parses is unchanged; `run_id` sits alongside `choices` and is absent when no
-chat admitter is wired.
+parses is unchanged; `run_id` sits alongside `choices` on every answered turn.
 
 ## Consequences
 
@@ -131,6 +196,9 @@ chat admitter is wired.
   does. That is what makes the node executable rather than a decorative record,
   but it is user content in a durable store, and the tight retention window
   above is part of the mitigation rather than an accident.
+- Since the 2026-09-23 amendment, a store or project outage that blocks
+  admission is a chat outage (retryable 503) rather than unrecorded answers.
+  That is the chosen cost: an answer outside the governed path is not offered.
 - `RunStore` grew `delete_run`. A store with no way to forget a Run cannot
   implement any retention policy, so this is a gap being closed rather than a
   concession — but every implementation now owes it, including the PostgreSQL
@@ -143,12 +211,41 @@ chat admitter is wired.
   elsewhere, and today there is nowhere: binding it needs the Conduit to report
   its selection, which is #142. Recording nothing is the honest interim state,
   not a complete one.
-- 500 is a judgement, not a measurement. It is small enough that a busy process
-  holds well under a megabyte of chat Runs and large enough that a `run_id`
-  handed to a caller still resolves minutes later.
+- 500 is a judgement, not a measurement: it is large enough that a `run_id`
+  handed to a caller still resolves minutes later. What it is *not* is a bound
+  on memory, and an earlier draft of this ADR claimed it was -- that a busy
+  process would hold "well under a megabyte". That was wrong, and worth
+  recording as wrong rather than quietly deleting.
+
+  The window bounds the **count** of retained chat Runs, never their size. Each
+  Run holds the user's message twice -- once in the Graph description and once
+  in the node parameters -- plus the answer. So the byte ceiling is set by
+  whatever caps a single message, and that differs by entry point:
+
+  - Over HTTP, `max_request_body_bytes` (1,048,576, and operator-tunable via
+    `MAISTRO_MAX_REQUEST_BODY_BYTES`) caps the body. A full-size turn is
+    therefore on the order of two megabytes retained, and 500 of them is
+    **hundreds of megabytes, not a megabyte**.
+  - A direct in-process caller of `route_request` passes no HTTP body and has
+    **no equivalent cap**, so the retained size is unbounded in principle.
+
+  Neither is a reason to change 500, which is a resolution window and does its
+  job. It is a reason not to read it as a memory bound. Bounding the bytes
+  needs a message-length limit on the core path, or storing the message once
+  instead of twice; both are follow-ups this ADR does not claim.
 
 ### Neutral
 - Nothing about chat *routing* changes here. The turn still goes through
   `Conduit.route_request()` exactly as before; the Run is admitted around it.
 - The task path is untouched: its Runs are not swept by this window, and its
   retention remains the store's own bound plus the receipt's.
+
+## Acceptance criteria
+
+- [x] **AC-1** Two chat turns in one session are two Runs, and both carry that
+  `session_id`. A Run is a turn, not a conversation.
+- [x] **AC-2** Completed chat Runs past the admitter window are deleted, oldest
+  first, and the number retained stays within `max_retained`.
+- [x] **AC-3** `Container.route_request` returns a `run_id` correlated to
+  `session_id` and `request_id`, and a finished burst is swept without waiting
+  for another admission.

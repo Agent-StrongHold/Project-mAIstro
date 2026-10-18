@@ -8,7 +8,14 @@ from datetime import UTC, datetime
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.graph.definitions import Graph
@@ -33,6 +40,33 @@ def _validate_finished_at(
         raise ValueError(f"terminal {subject} requires finished_at")
     if not terminal and finished_at is not None:
         raise ValueError(f"non-terminal {subject} cannot have finished_at")
+
+
+# Unannotated return, deliberately: pydantic derives the serialization-mode
+# JSON schema for a model with a wrap serializer from that serializer's return
+# annotation, so ``-> dict[str, Any]`` collapses Attempt's serialization schema
+# to ``{"type": "object", "additionalProperties": true}`` and hides every
+# field from schema consumers. Unannotated, pydantic keeps the declared fields;
+# mypy strict's no-untyped-def is suppressed for exactly this one site.
+def _serialize_attempt_without_unknown_cause(  # type: ignore[no-untyped-def]
+    self: Attempt,
+    handler: SerializerFunctionWrapHandler,
+):
+    """Omit exactly one serialized key -- the unknown cancellation cause.
+
+    Every pre-existing Attempt has ``cancellation_cause`` unknown, and the
+    stores persist whole-model dumps, so a serializer that emitted
+    ``"cancellation_cause": null`` would change the persisted payload of
+    every record in flight before any writer produces the field. Delegating
+    to the default handler and dropping this one key keeps those payloads
+    byte-identical to the pre-field shape while a non-null cause serializes
+    normally, in every dump mode (`model_dump`, `model_dump(mode="json")`,
+    `model_dump_json`, and nested under other models).
+    """
+    payload: dict[str, Any] = handler(self)
+    if self.cancellation_cause is None:
+        payload.pop("cancellation_cause", None)
+    return payload
 
 
 class _FrozenDict(dict[Any, Any]):
@@ -282,6 +316,15 @@ class Run(BaseModel):
     #: default so that task Runs, graph Runs and every Run recorded before this
     #: field existed keep exactly the retention they already had.
     retention_expires_at: datetime | None = None
+    #: The Goal this Run works on, bound at admission as immutable provenance
+    #: (#1572): `goal_id` names the canonical Goal (`maistro.goals`) and
+    #: `goal_revision` pins the exact desired state the Run was admitted
+    #: against. Historical Runs keep the revision they used — a later revision
+    #: supersedes but never rewrites them — and neither field is writable after
+    #: admission: no store API takes them, so only ``create_run`` sets them.
+    #: ``None`` on both is a Run with no Goal; exactly one set is invalid.
+    goal_id: str | None = None  # noqa: V107
+    goal_revision: int | None = Field(default=None, ge=1)  # noqa: V107
     result: Any | None = None
     error: str | None = None
 
@@ -289,9 +332,18 @@ class Run(BaseModel):
     def _validate_run(self) -> Run:
         _require_non_empty(self.workspace_id, "workspace_id")
         _require_non_empty(self.project_id, "project_id")
+        if self.actor_principal_id is None or not self.actor_principal_id.strip():
+            raise ValueError("actor_principal_id is required")
         self._validate_scope_identity()
         if self.parent_run_id == self.run_id:
             raise ValueError("Run cannot be its own parent")
+        if (self.goal_id is None) != (self.goal_revision is None):
+            raise ValueError(
+                "Run Goal binding must be paired: goal_id and goal_revision are "
+                "set or cleared together"
+            )
+        if self.goal_id is not None and not self.goal_id.strip():
+            raise ValueError("goal_id must be a non-empty string when bound")
         _validate_finished_at(
             terminal=self.status in TERMINAL_RUN_STATUSES,
             finished_at=self.finished_at,
@@ -471,6 +523,24 @@ class Attempt(BaseModel):
     result: Any | None = None
     error: str | None = None
     metrics: dict[str, Any] = Field(default_factory=dict)
+    #: Why this Attempt is CANCELLED, when it is (#232/#1884): `REQUESTED` says
+    #: someone stopped the work and the NodeRun is terminal; `RECOVERED` says a
+    #: process died and a fresh Attempt is owed. Staged as unknown (`None`) for
+    #: every existing record: no production writer sets it yet, and this unit
+    #: deliberately adds none -- the writers, recovery predicates and store
+    #: protocols that will produce it are later leaves. `None` therefore means
+    #: "not recorded", which is what every pre-existing CANCELLED Attempt is.
+    #:
+    #: The shape deliberately accepts future writer outputs this unit does not
+    #: authorize: RECOVERED with any lease state (expired reclaim, leaseless
+    #: orphan recovery, or an owned-CANCELLED compensation retaining a live
+    #: lease) validates here; whether a writer may produce those combinations
+    #: is a writer-leaf decision, not a model-shape one.
+    #:
+    #: `frozen=True` is a shape guard on ordinary attribute assignment only. It
+    #: does not constrain `model_copy(update=...)`, `model_validate`, or any
+    #: persistence path, and it establishes no durable writer authority.
+    cancellation_cause: CancellationCause | None = Field(default=None, frozen=True)
 
     @model_validator(mode="after")
     def _validate_attempt(self) -> Attempt:
@@ -480,11 +550,116 @@ class Attempt(BaseModel):
                 raise ValueError("ExecutionLease.attempt_id must match Attempt.attempt_id")
             if self.execution_lease.node_run_id != self.node_run_id:
                 raise ValueError("ExecutionLease.node_run_id must match Attempt.node_run_id")
+        if self.cancellation_cause is not None:
+            if self.status is not AttemptStatus.CANCELLED:
+                raise ValueError(
+                    f"cancellation_cause requires status CANCELLED, not {self.status.value}"
+                )
+            if self.finished_at is None:
+                raise ValueError("cancellation_cause requires finished_at")
         _validate_finished_at(
             terminal=self.status in TERMINAL_ATTEMPT_STATUSES,
             finished_at=self.finished_at,
             subject="Attempt",
         )
+        return self
+
+    # Bound as a class-body assignment rather than decorated: pydantic
+    # dispatches it, no code calls it by name, and a decorated ``def`` is
+    # exactly the shape the vulture ratchet reads as dead code (every
+    # pydantic-dispatched validator here needed a reviewed ledger row). The
+    # module-level handler's name is referenced below, so nothing new is
+    # banked for this one.
+    _serialize_attempt = model_serializer(mode="wrap")(_serialize_attempt_without_unknown_cause)
+
+
+class EvalMethod(StrEnum):
+    """How one rubric dimension was scored (M7-A3).
+
+    Not a lifecycle: this names the *method* that produced one score record,
+    never a state any piece of work moves through, so it deliberately stays
+    out of the execution-lifecycles vocabulary (`scripts/check-execution-lifecycles.py`).
+
+    ``DETERMINISTIC`` methods run in-process with no judge (same spirit as
+    persona ``RubricEval.score``). ``MODEL_JUDGE`` methods name the model that
+    scored. ``HUMAN`` methods wait on the HITL fence and name the person who
+    eventually scored.
+    """
+
+    DETERMINISTIC = "deterministic"
+    MODEL_JUDGE = "model_judge"
+    HUMAN = "human"
+
+
+class EvalJudge(BaseModel):
+    """Identity of whatever scored one dimension, when that is a model or a person.
+
+    A deterministic method has no judge; a model-judge or human record without
+    one could not be audited, so `RunEvalScore` refuses that shape.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, ser_json_inf_nan="constants")
+
+    kind: EvalMethod
+    identity: str
+
+    @model_validator(mode="after")
+    def _validate_judge(self) -> EvalJudge:
+        if self.kind is EvalMethod.DETERMINISTIC:
+            raise ValueError("a deterministic eval has no judge")
+        _require_non_empty(self.identity, "EvalJudge.identity")
+        return self
+
+
+class RunEvalScore(BaseModel):
+    """One scored rubric dimension, recorded onto the Run that produced the artifact.
+
+    Eval is Run evidence (M7-A3), not a sidecar and not a second execution
+    identity: the record names the producing `Run`, the `NodeRun` whose work it
+    scores, and the physical `Attempt` whose evidence it scored, plus the exact
+    Goal and Rubric revisions that were applied. Records are append-only —
+    re-evaluating a dimension appends another record and never rewrites or
+    deletes a prior one, so a failed eval stays queryable after the retry that
+    supersedes it.
+    """
+
+    model_config = ConfigDict(extra="forbid", ser_json_inf_nan="constants")
+
+    eval_id: str = Field(default_factory=_id)
+    run_id: str
+    node_run_id: str
+    attempt_id: str
+    goal_id: str
+    goal_revision: int = Field(ge=1)
+    rubric_id: str
+    rubric_revision: int = Field(ge=1)
+    dimension_id: str
+    raw_score: float = Field(allow_inf_nan=False)
+    passed: bool
+    method: EvalMethod
+    evidence_pointers: list[str] = Field(default_factory=list)
+    judge: EvalJudge | None = None
+    #: Method-specific detail — criterion-level results, judge transcript
+    #: references, whatever the method recorded. Evidence, not state.
+    detail: dict[str, Any] = Field(default_factory=dict)
+    scored_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def _validate_eval_score(self) -> RunEvalScore:
+        _require_non_empty(self.run_id, "run_id")
+        _require_non_empty(self.node_run_id, "node_run_id")
+        _require_non_empty(self.attempt_id, "attempt_id")
+        _require_non_empty(self.goal_id, "goal_id")
+        _require_non_empty(self.rubric_id, "rubric_id")
+        _require_non_empty(self.dimension_id, "dimension_id")
+        if self.method is EvalMethod.DETERMINISTIC:
+            if self.judge is not None:
+                raise ValueError("a deterministic eval score cannot name a judge")
+        else:
+            if self.judge is None:
+                raise ValueError(f"a {self.method.value} eval score must name its judge")
+            if self.judge.kind is not self.method:
+                raise ValueError("EvalJudge.kind must match the scoring method")
         return self
 
 
@@ -498,10 +673,13 @@ __all__ = [
     "AttemptResult",
     "AttemptStatus",
     "CancellationCause",
+    "EvalJudge",
+    "EvalMethod",
     "ExecutionLease",
     "GraphSnapshot",
     "NodeRun",
     "Run",
+    "RunEvalScore",
     "RunStatus",
     "evidence_values_equal",
 ]
