@@ -139,6 +139,22 @@ def governed_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "http://gateway.test")
     monkeypatch.setenv("MAISTRO_LLM_API_KEY", "test-gateway-key")
 
+    # `_endpoint()` resolves the deployment credential through the cached
+    # `get_settings()` singleton (the #1824 effective-key contract). A real
+    # Settings rebuild inside this transient env window would bake
+    # `http://gateway.test` into the process-wide cache, and the singleton
+    # would keep claiming a configured gateway after monkeypatch reverts the
+    # variables — flipping later unconfigured-deployment tests (the canonical
+    # DAG spine tests in test_graph_runner.py among them) onto the governed
+    # egress. Clear the cache on both sides of the window so this module's
+    # env statement dies with the test, same seam
+    # test_runtime_wires_container_authorities uses.
+    import config
+
+    config.get_settings.cache_clear()
+    yield
+    config.get_settings.cache_clear()
+
 
 def _install_container(monkeypatch: pytest.MonkeyPatch, tracker: _RecordingTracker, spine) -> Any:
     """Wire `canonical_dag_runner._container` to a Container stand-in.

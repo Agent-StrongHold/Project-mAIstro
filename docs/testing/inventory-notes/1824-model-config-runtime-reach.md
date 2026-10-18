@@ -61,6 +61,81 @@ for stub fidelity / cache hygiene, not for behavior:
   governed `_endpoint` reads on the canonical DAG path.
 
 The `tests/` suite drift this merge reports (`expected 5260, collected 5261`)
-is inherited from develop's tip, not introduced here: `tests/`,
-`baseline.json`, `pyproject.toml` and the root conftest are byte-identical to
-develop, and develop collects the same 5261.
+is inherited, not introduced by #1824: no #1824 surface touches `tests/`, and
+this note's own deltas target `packages/hive-conductor/backend/tests` and
+`packages/maistro-server/tests` only. The drift has two carried components,
+now recorded: the #1881 oracle files (`1881-restore-oracle-snapshot-consistency.md`,
++19, merged from `2f56be40a`) and PR #1993's sentinel registry-parity node
+(`auto-1824-carried-1993-sentinel-registry-parity.md`, +1) whose delta was
+lost when develop's tip (`c2a22e55d`) rewrote the history the branch merged —
+develop tip collects 5241 for `tests/`, this branch 5261. (The original text
+of this paragraph claimed `tests/` was byte-identical to develop; that was
+true against `2f56be40a` and false after develop's rewrite — corrected here.)
+
+## Isolation repair: the `governed_env` settings window closes its cache
+
+Correction to the reconciliation claim above: one of those develop-side
+repairs *did* leave a behavioral cross-file effect — an order-dependent test
+isolation regression, not a production behavior change. The
+`governed_env` fixture in `test_legacy_dag_governed_quota.py` (branch-added
+suite) set `MAISTRO_LLM_BASE_URL`/`MAISTRO_LLM_API_KEY` without closing the
+`config.get_settings()` lru-cache window. When a preceding file left the
+cache empty (e.g. `test_runtime_wires_container_authorities`, whose
+`finally: cache_clear()` is itself the documented seam), the governed DAG run
+inside the window rebuilt the process-wide Settings singleton from the
+transient env — and the singleton kept `litellm_api_base='http://gateway.test'`
+after monkeypatch reverted the variables. The next readers then saw a
+"configured" gateway: `dag_node_runtime` composed a governed runtime for the
+canonical DAG spine tests in `test_graph_runner.py`, whose
+`canonical_graph_spine` context deliberately carries no policy evaluator, so
+the node's model call crossed the governed egress and was refused with
+"capability invocation policy unavailable" — two spine tests failed
+(`test_execute_dag_builds_config_and_returns_shape`,
+`test_execute_dag_entry_node_fallback_to_first_node`) whenever
+`test_governed_model_consumers.py` + `test_legacy_dag_governed_quota.py` ran
+before them, while each file alone passed and the full-suite order masked the
+pair.
+
+Repair (test-only, in `test_legacy_dag_governed_quota.py`): `governed_env`
+now brackets the transient env window with `config.get_settings.cache_clear()`
+on both sides — the same seam `test_runtime_wires_container_authorities` and
+`test_effective_gateway_key.py` already document. No node IDs added, removed
+or renamed; the front-matter deltas are unchanged. Verified: the exact
+previously-failing quartet order
+(`test_governed_model_consumers.py test_legacy_dag_governed_quota.py
+test_provider_pin_registration.py test_graph_runner.py`) passes 51/51, and the
+reverse orders (quota-first, graph-runner-first) pass unchanged.
+
+Residual (pre-existing on develop, out of this branch's surfaces):
+`test_dag_model_tools.py` sets the same gateway env in a yield fixture without
+patching or clearing the settings cache — the identical latent hazard, dormant
+today because the cache is populated when it runs.
+
+## Exact-debt-ledger repair (this CI-repair round)
+
+Two ledgers recorded the pre-#1824 deadness of code this issue makes live;
+both were pruned per each file's own protocol, not weakened:
+
+- `quality/vulture-baseline.json`: removed the one stale row
+  `maistro.config.loader::unused function 'load_yaml_config'` (618 → 617
+  findings). `maistro_server/main.py`'s worker startup now calls the function
+  (the #1824 boundary-3 change), so vulture no longer reports it unused.
+- `quality/reachability-baseline.json` + `reachability-dispositions.json`:
+  removed `maistro.config.loader` from the unreachable set (169 → 168) and its
+  `config-loader` CONNECT disposition group. The worker startup import gives
+  the module a production entry point; the baseline's own `_comment` requires
+  pruning entries that become reachable, and the dispositions checker rejects
+  a group naming a module outside the baseline. Consequence carried through:
+  the `Shared contracts and config` row of
+  `docs/architecture/CONVERGENCE-MATRIX.md` moves `few` → `none` (0 of 85
+  modules unreachable), per the checker's census.
+
+Verified: `check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` → OK (169 → 168 shrink is the allowed direction);
+`check-reachability.py`, `check-reachability-provenance.py`,
+`check-reachability-dispositions.py`, `check-reachability-dispositions-provenance.py`,
+`check-ac-state.py`, `check-promotion-surface.py`, `check-convergence-matrix.py`,
+`check-test-duplicates.py`, `check-suite-inventory.py` all exit 0; the four
+reachability-baseline identity tests pass (they failed at the round's starting
+head `0485b254d` and pass on develop tip — the drift was the branch's own
+ revived module).
