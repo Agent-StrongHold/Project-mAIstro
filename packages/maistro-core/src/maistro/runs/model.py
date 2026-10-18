@@ -42,10 +42,16 @@ def _validate_finished_at(
         raise ValueError(f"non-terminal {subject} cannot have finished_at")
 
 
-def _serialize_attempt_without_unknown_cause(
+# Unannotated return, deliberately: pydantic derives the serialization-mode
+# JSON schema for a model with a wrap serializer from that serializer's return
+# annotation, so ``-> dict[str, Any]`` collapses Attempt's serialization schema
+# to ``{"type": "object", "additionalProperties": true}`` and hides every
+# field from schema consumers. Unannotated, pydantic keeps the declared fields;
+# mypy strict's no-untyped-def is suppressed for exactly this one site.
+def _serialize_attempt_without_unknown_cause(  # type: ignore[no-untyped-def]
     self: Attempt,
     handler: SerializerFunctionWrapHandler,
-) -> dict[str, Any]:
+):
     """Omit exactly one serialized key -- the unknown cancellation cause.
 
     Every pre-existing Attempt has ``cancellation_cause`` unknown, and the
@@ -310,6 +316,15 @@ class Run(BaseModel):
     #: default so that task Runs, graph Runs and every Run recorded before this
     #: field existed keep exactly the retention they already had.
     retention_expires_at: datetime | None = None
+    #: The Goal this Run works on, bound at admission as immutable provenance
+    #: (#1572): `goal_id` names the canonical Goal (`maistro.goals`) and
+    #: `goal_revision` pins the exact desired state the Run was admitted
+    #: against. Historical Runs keep the revision they used — a later revision
+    #: supersedes but never rewrites them — and neither field is writable after
+    #: admission: no store API takes them, so only ``create_run`` sets them.
+    #: ``None`` on both is a Run with no Goal; exactly one set is invalid.
+    goal_id: str | None = None  # noqa: V107
+    goal_revision: int | None = Field(default=None, ge=1)  # noqa: V107
     result: Any | None = None
     error: str | None = None
 
@@ -322,6 +337,13 @@ class Run(BaseModel):
         self._validate_scope_identity()
         if self.parent_run_id == self.run_id:
             raise ValueError("Run cannot be its own parent")
+        if (self.goal_id is None) != (self.goal_revision is None):
+            raise ValueError(
+                "Run Goal binding must be paired: goal_id and goal_revision are "
+                "set or cleared together"
+            )
+        if self.goal_id is not None and not self.goal_id.strip():
+            raise ValueError("goal_id must be a non-empty string when bound")
         _validate_finished_at(
             terminal=self.status in TERMINAL_RUN_STATUSES,
             finished_at=self.finished_at,

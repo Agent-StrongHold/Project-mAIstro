@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.embeddings import (
     EMBEDDING_WEIGHT,
@@ -223,9 +225,22 @@ async def test_mark_used_delegates_to_inner_store() -> None:
 async def test_check_auto_promotions_delegates_to_inner_store() -> None:
     inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     hybrid = HybridLearningStore(inner)
-    await hybrid.store(Learning(trigger_keys=["x"], learning="x", hit_count=10))
+    # Promotion requires validation evidence since M4-B3: a Run-sourced
+    # learning whose recorded outcome is a success is promotable; one without
+    # any evidence is not, however often it was hit.
+    evidential = Learning(
+        trigger_keys=["x"],
+        learning="x",
+        hit_count=10,
+        run_id="run-1",
+        confidence=1.0,
+        evaluation_ids=["eval-1"],
+    )
+    bare = Learning(trigger_keys=["y"], learning="y", hit_count=10)
+    await hybrid.store(evidential)
+    await hybrid.store(bare)
     promoted = await hybrid.check_auto_promotions(threshold=5)
-    assert len(promoted) == 1
+    assert [lr.id for lr in promoted] == [evidential.id]
 
 
 async def test_get_promoted_delegates_to_inner_store() -> None:
@@ -234,6 +249,38 @@ async def test_get_promoted_delegates_to_inner_store() -> None:
     await hybrid.store(Learning(trigger_keys=["x"], learning="x", hit_count=10, status="promoted"))
     promoted = await hybrid.get_promoted()
     assert len(promoted) == 1
+
+
+async def test_promote_learning_delegates_to_inner_store() -> None:
+    """The Gauntlet's per-candidate promotion seam (M4-B2) forwards verbatim.
+
+    The wrapper adds search ranking, not promotion policy, so the verdict's
+    provenance must reach the inner store exactly as given and come back
+    attached to the promoted learning.
+    """
+    inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    hybrid = HybridLearningStore(inner)
+    lid = await hybrid.store(Learning(trigger_keys=["x"], learning="x", run_id="run-1"))
+
+    promoted = await hybrid.promote_learning(
+        lid,
+        org_id="",
+        validated_by="independent-trials",
+        evaluator_version="1.4.2",
+        validated_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        validation_run_ids=("run-eval-1", "run-eval-2"),
+        validation_content_hash="deadbeef",
+    )
+
+    assert promoted is not None
+    assert promoted.status == "promoted"
+    assert promoted.validated_by == "independent-trials"
+    assert promoted.validated_evaluator_version == "1.4.2"
+    assert promoted.validated_at == datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    assert promoted.validation_run_ids == ["run-eval-1", "run-eval-2"]
+    assert promoted.validation_content_hash == "deadbeef"
+    # And it reads back as promoted through the wrapper too.
+    assert [lr.id for lr in await hybrid.get_promoted()] == [lid]
 
 
 def test_weight_constants_have_expected_values() -> None:

@@ -65,6 +65,7 @@ def pack_graph_template(pack: DomainPack, *, workspace_id: str) -> GraphTemplate
         edges=edges,
         metadata={
             "pack_id": pack.pack_id.value,
+            "pack_version": pack.version,
             "entry_node": shape.entry_node,
             "artifact_kinds": list(pack.artifact_kinds),
             "execute_backends": sorted(backend.value for backend in pack.execute_backends),

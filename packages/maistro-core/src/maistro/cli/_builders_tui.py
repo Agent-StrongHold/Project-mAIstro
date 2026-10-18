@@ -13,7 +13,7 @@ Flow:
 from __future__ import annotations
 
 # mypy: disable-error-code="misc,untyped-decorator,unused-ignore"
-import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -39,12 +39,30 @@ from maistro.cli._builders_sessions import (
     make_session_id,
     record_session,
 )
+from maistro.tools.git.server import ClonePolicyError, git_clone, validate_clone_source
 
 _GIT_URL_PREFIXES = ("http://", "https://", "git@", "ssh://")
-_BUILDERS_CACHE_DIR = Path.home() / ".maistro" / "builders_repos"
+# Candidate source must pass through `git_clone`, whose workspace containment
+# and digest verification are the one #404 clone authority. Keep the UI cache
+# under that approved root instead of maintaining a second raw-git path.
+_BUILDERS_CACHE_DIR = Path(tempfile.gettempdir()) / "maistro-workspace" / "builders_repos"
 
 
 def _is_git_url(repo: str) -> bool:
+    # `git://` is rejected before classification (#404): the protocol is
+    # unauthenticated and unencrypted, so a clone from it is candidate source
+    # an attacker could substitute on-path. The `.endswith(".git")` catch-all
+    # below would otherwise wave `git://host/repo.git` straight through, and
+    # git parses remote schemes case-insensitively (RFC 3986), so the check is
+    # case-insensitive too.
+    #
+    # Classification is not acceptance: a URL classified here still has to
+    # pass `validate_clone_source` in `_open_repo` before any subprocess —
+    # the same verdict as the MCP git tool, so `http://` (unauthenticated
+    # transport), off-allowlist hosts, scp-style spellings and `-`-prefixed
+    # flag strings are refused on every surface, not just this one.
+    if repo.lower().startswith("git://"):
+        return False
     return repo.startswith(_GIT_URL_PREFIXES) or repo.endswith(".git")
 
 
@@ -284,18 +302,41 @@ class BuildersApp(App[None]):
         session_id = make_session_id(repo)
 
         try:
+            if repo.lower().startswith("git://"):
+                # Same verdict as the MCP git server (#404): name the policy,
+                # don't fall through to "Not a directory" and leave the
+                # operator guessing why a URL was treated as a path.
+                recent.update(
+                    "\n  [red]Blocked: git:// is unauthenticated transport — "
+                    "use https:// or ssh:// (#404)[/red]"
+                )
+                return
             if _is_git_url(repo):
+                # Same source policy as the MCP git tool (#404): one verdict,
+                # every surface. Classification above only says "this is a
+                # URL"; only https/ssh to an allowlisted host (or a verified
+                # local path) may become candidate source the coding agent
+                # will read and execute.
+                try:
+                    validate_clone_source(repo)
+                except ClonePolicyError as exc:
+                    recent.update(
+                        f"\n  [red]Blocked: {exc.message}[/red]"
+                        f"\n  [dim]{exc.suggested_action}[/dim]"
+                    )
+                    return
                 recent.update(f"\n  [dim]Cloning {repo}…[/dim]")
                 work_dir = _BUILDERS_CACHE_DIR / session_id
                 work_dir.parent.mkdir(parents=True, exist_ok=True)
-                result = subprocess.run(
-                    ["git", "clone", "--depth", "1", repo, str(work_dir)],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
-                if result.returncode != 0:
-                    recent.update(f"\n  [red]Clone failed: {result.stderr.strip()[:300]}[/red]")
+                # `git_clone` resolves an omitted digest to the vetted
+                # remote's HEAD then proves the checkout matches it. Reusing
+                # it here prevents this UI from becoming an unpinned raw-git
+                # source path beside the MCP and RSI surfaces.
+                result = await git_clone(repo, str(work_dir), timeout=120)
+                if not result["success"]:
+                    recent.update(
+                        f"\n  [red]Clone failed: {str(result.get('stdout', ''))[:300]}[/red]"
+                    )
                     return
             else:
                 work_dir = Path(repo).expanduser().resolve()
