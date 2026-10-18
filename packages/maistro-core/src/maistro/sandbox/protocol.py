@@ -22,10 +22,15 @@ from maistro.tools.sandbox._capture import (
     clamped_output_limit as clamped_output_limit,
 )
 
-if TYPE_CHECKING:
-    # Annotation-only: a runtime import here would close the cycle
-    # protocol -> fence -> runs -> graph -> capabilities -> opencode ->
-    # tools/sandbox.microvm -> capture -> protocol.
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    # Imported lazily: `maistro.sandbox.fence` reaches `maistro.runs.model`, whose
+    # package import runs execution wiring through `maistro.runtime` ->
+    # `maistro.extensions` -> `maistro.extensions.isolation` -> this module. A
+    # module-level import here closes that cycle whenever `maistro.sandbox`
+    # itself is the entry point (#970 follow-up). Equally, a runtime import
+    # would close protocol -> fence -> runs -> graph -> capabilities ->
+    # opencode -> tools/sandbox.microvm -> capture -> protocol. `SandboxFence`
+    # is annotation only, and the module is `from __future__ import annotations`.
     from maistro.sandbox.fence import SandboxFence
 
 # Type alias for clarity
@@ -77,6 +82,10 @@ class SandboxConfig:
     max_processes: int = 128
     network: bool = False
     writable_paths: list[str] = field(default_factory=list)
+    #: Host paths bound read-only into the sandbox, beyond the backend's
+    #: standard system binds. Mounts, never copies: the workload reads the
+    #: host files in place, and cannot write them.
+    read_paths: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     min_isolation: IsolationTier = "container"
     #: The egress grant this sandbox runs under. Default-deny (#77), and

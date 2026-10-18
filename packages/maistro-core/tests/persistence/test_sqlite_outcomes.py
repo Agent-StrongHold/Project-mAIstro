@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 import aiosqlite
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
 from maistro.types.memory import Outcome
 
@@ -16,7 +17,7 @@ from maistro.types.memory import Outcome
 @pytest.fixture
 async def store() -> AsyncIterator[SqliteOutcomeStore]:
     conn = await aiosqlite.connect(":memory:")
-    s = SqliteOutcomeStore(conn)
+    s = SqliteOutcomeStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await s.ensure_schema()
     yield s
     await conn.close()
