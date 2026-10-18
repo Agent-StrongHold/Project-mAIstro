@@ -16,6 +16,8 @@ import os
 import stat
 from pathlib import Path
 
+import pytest
+
 from maistro.sandbox.protocol import DEFAULT_MAX_OUTPUT_BYTES
 from maistro_bootstrap.builders.container_sandbox import ContainerBuilderSandbox
 
@@ -63,3 +65,46 @@ def test_exec_under_the_limit_is_verbatim(tmp_path: Path, monkeypatch) -> None:
 
     code, out = sandbox._exec(["echo", "modest"])
     assert (code, out) == (0, "modest\n")
+
+
+# -- read_file: bounded but ERRORING, never truncating (#1197 review) -------
+
+
+def _sandbox_whose_cat_emits(tmp_path: Path, monkeypatch, body: str):
+    bin_dir = tmp_path / "bin-cat"
+    bin_dir.mkdir()
+    fake = bin_dir / "docker"
+    escaped = body.replace("'", "'\\''")
+    fake.write_text(f"#!/bin/sh\nprintf '%s' '{escaped}'\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
+    sandbox = ContainerBuilderSandbox(tmp_path)
+    sandbox._cid = "fakecid"
+    return sandbox
+
+
+def test_read_file_under_the_limit_is_verbatim(tmp_path: Path, monkeypatch) -> None:
+    sandbox = _sandbox_whose_cat_emits(tmp_path, monkeypatch, "modest file body")
+    assert sandbox.read_file("note.txt") == "modest file body"
+
+
+def test_read_file_over_limit_errors_without_truncation_notice(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An over-limit file must raise, not return "prefix + notice" as content."""
+    sandbox = _sandbox_whose_cat_emits(tmp_path, monkeypatch, "o" * 3000000)
+
+    with pytest.raises(ValueError, match="exceeds the sandbox read bound"):
+        sandbox.read_file("big.txt")
+
+
+def test_edit_file_refuses_oversized_file_before_any_write(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The P1 scenario: a match inside the retained prefix must not let
+    edit_file write the truncated text back and destroy the file's tail."""
+    body = "original " + "x" * 3000000
+    sandbox = _sandbox_whose_cat_emits(tmp_path, monkeypatch, body)
+
+    with pytest.raises(ValueError, match="exceeds the sandbox read bound"):
+        sandbox.edit_file("big.txt", "original", "EDITED")

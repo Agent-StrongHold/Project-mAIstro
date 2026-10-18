@@ -353,10 +353,28 @@ class ContainerBuilderSandbox:
     # -- BuilderSandbox protocol --------------------------------------------
 
     def read_file(self, path: str) -> str:
-        rc, out = self._exec(["cat", self._safe(path)])
-        if rc != 0:
+        # File transfer deliberately does NOT reuse the command-output
+        # truncation contract (review of #1197): `cat` through the truncating
+        # `_exec` would return "prefix + notice" as if it were the whole file,
+        # and edit_file would then write that string back — permanently
+        # destroying everything past the bound. Same host-side bound, but the
+        # contract ERRORS on overflow instead of truncating: the caller gets
+        # the whole file or an exception, never a doctored view.
+        run = run_bounded(
+            ["docker", *self._exec_prefix(), self._require_cid(), "cat", self._safe(path)],
+            limit=self._output_limit,
+            timeout=_DEFAULT_TIMEOUT,
+        )
+        if run.exit_code != 0:
             raise FileNotFoundError(path)
-        return out
+        if run.timed_out:
+            raise RuntimeError(f"timed out reading {path!r} from the sandbox container")
+        if run.stdout.truncated:
+            raise ValueError(
+                f"{path} exceeds the sandbox read bound ({self._output_limit} bytes); "
+                "read it in chunks with run_command instead."
+            )
+        return run.stdout.data.decode(errors="replace")
 
     def write_file(self, path: str, content: str) -> None:
         target = self._safe(path)
