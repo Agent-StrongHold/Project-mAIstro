@@ -81,6 +81,70 @@ The plan includes a best-effort `environment` report with:
 - Docker and Podman command/daemon probes.
 - KVM device and Hyper-V/WSL hints for sandbox and VM choices.
 
+## Host Python and uv bootstrap (#1821)
+
+The installer's host bootstrap never uses pip. One shared contract —
+`scripts/bootstrap-runtime.sh`, sourced by `install.sh` and by `get.sh`'s
+legacy-`.env` migration — resolves the toolchain in a fixed order:
+
+1. **uv first.** A compatible existing installation is reused (on `PATH`, or
+   in `$UV_INSTALL_DIR`, `~/.local/bin`, `~/.cargo/bin`, or
+   `/opt/homebrew/bin` when this shell predates the rc files). Otherwise uv
+   is installed with its official standalone installer from `astral.sh` — a
+   shell script, so a host with neither Python nor pip can still bootstrap —
+   into a user-owned directory. Nothing is elevated, and PEP 668
+   externally-managed interpreters can never block or break this path because
+   pip is never invoked.
+2. **Helper interpreter second.** The installer's own helpers (the
+   `scripts/secret_env.py` paths and inline validation snippets) run on the
+   first host interpreter meeting the 3.11 helper floor (`python3`, `python`,
+   then `py -3`). If none qualifies, the interpreter uv provisions is used.
+3. **Package interpreter, separately.** The wizard runs
+   `packages/maistro-bootstrap`, whose `requires-python` is `>= 3.12`. That
+   requirement is validated by `ensure_package_python` immediately before the
+   wizard starts, against the interpreter uv actually resolves — which is
+   then executed and re-checked against the floor rather than trusted. A
+   3.11 helper interpreter is therefore never reported as satisfying package
+   execution: the helper floor and the package floor are two distinct
+   constants (`MAISTRO_HELPER_PYTHON_FLOOR` / `MAISTRO_PACKAGE_PYTHON_FLOOR`),
+   and the tests pin the package floor to the package's own `pyproject.toml`.
+
+Everything resolved this way is owned by the initiating account, is on the
+running process's `PATH` immediately (the install itself never needs a fresh
+shell), and is preserved on re-runs — an existing compatible uv is adopted,
+not duplicated. Downloads land in a scratch directory that is removed on
+failure, and every failure (network, unwritable destination, failed
+provisioning) stops with an actionable message before any existing data is
+altered.
+
+### Version and provenance policy
+
+uv is installed only from the official `astral.sh` channel:
+
+- default: latest release (`https://astral.sh/uv/install.sh`),
+- `MAISTRO_UV_VERSION=0.9.5` pins one release
+  (`https://astral.sh/uv/0.9.5/install.sh`),
+- `MAISTRO_UV_INSTALLER_URL` replaces the URL entirely (mirrors, air-gapped
+  hosts),
+- `MAISTRO_UV_NO_MODIFY_PATH=1` forwards the official installer's
+  no-rc-file mode for hosts where shell start-up files must not change. The
+  installer itself never edits rc files either way; for new shells, PATH
+  handling is the official installer's documented, idempotent, clearly
+  marked block.
+
+### What each supported platform promises
+
+| Platform | Outcome with no Python and no uv |
+|---|---|
+| Linux x86_64/aarch64 (glibc; Debian/Ubuntu and Fedora-class) with `curl` and the standard userland the official installer drives (`cat`, `awk`, `tar`, `gzip`, `mv`, `sha256sum`) | Reaches the wizard: uv and a Python >= 3.12 interpreter are provisioned user-owned — no pip, no elevation in this stage. Verified on a real restricted-PATH account: astral.sh install, uv 0.13.1 into `~/.local/bin` (uid-owned), uv-provisioned interpreter floor-probed and immediately usable, fresh login shell resolves uv via the installer's `.profile` → `~/.local/bin/env` block (idempotent). |
+| macOS x86_64/arm64 | Same as Linux (same standalone installer channel). |
+| Windows via `get.ps1` → WSL2 | The handoff lands inside the WSL2 distro, where the Linux contract applies; any distro Python meeting the floors is reused, otherwise uv provisions one. |
+| Everything else (musl without usable uv binaries, no `curl`, blocked egress, unwritable `$HOME`) | Explicit prerequisite boundary: the installer fails before mutating anything, naming the missing prerequisite (`curl`, network access, or a manual Python >= 3.12). |
+
+The legacy-`.env` migration in `get.sh` runs `scripts/secret_env.py` before
+`install.sh` initializes; it resolves its interpreter through this same
+contract, or fails before either `.env` file is touched.
+
 ## Safe defaults
 
 Defaults are intentionally conservative:
