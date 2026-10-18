@@ -35,6 +35,7 @@ from datetime import UTC, datetime
 
 from maistro.observability.logging import configure_logging
 from maistro.providers.types import ModelMetadata
+from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro_rsi.campaign import (
     ArmPolicy,
     CampaignCeilings,
@@ -209,6 +210,11 @@ async def _run_campaign(args: argparse.Namespace) -> int:
 
     pricing_table = _load_pricing(args.pricing) if args.pricing else {}
     run_id = args.run_id or f"campaign-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}"
+    # The shipped composition dispatches against a quota ledger: every
+    # completed Invocation is charged exactly once (identity-keyed) through
+    # the canonical recorder, so a real CLI run exercises the same accounting
+    # guarantee the library seam promises — dispatching with no ledger at all
+    # would leave the campaign's calls charged nowhere.
     report = await run_campaign(
         run_id=run_id,
         pool=pool,
@@ -216,6 +222,7 @@ async def _run_campaign(args: argparse.Namespace) -> int:
         ceilings=ceilings,
         make_model_call=lambda arm: gateway_model_call(arm.model, timeout=args.timeout),
         pricing=lambda arm: pricing_table.get(arm.model),
+        quota_tracker=InMemoryQuotaTracker(),
         workspace_id="rsi-campaign",
         project_id=run_id,
     )

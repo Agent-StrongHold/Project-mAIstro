@@ -96,10 +96,16 @@ class CampaignCeilings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    max_spend_usd: float | None = Field(default=None, gt=0)
+    #: The float ceilings also refuse non-finite values: ``inf`` (which the
+    #: CLI's argparse layer happily parses out of ``--max-seconds inf``) is
+    #: greater than zero, so it would pass a bare ``gt=0`` and read as a
+    #: bounded axis whose stop condition can never fire — a campaign
+    #: admitted on it as the sole ceiling would run the whole pool. NaN
+    #: fails every comparison the same way. Bounded means reachable.
+    max_spend_usd: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     max_total_tokens: int | None = Field(default=None, gt=0)
     max_model_calls: int | None = Field(default=None, gt=0)
-    max_wall_clock_s: float | None = Field(default=None, gt=0)
+    max_wall_clock_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     max_objectives: int | None = Field(default=None, gt=0)
     allowed_paths: tuple[NonEmptyStr, ...] = ()
 
@@ -440,6 +446,20 @@ class BudgetState:
                 return StopReason(ceiling=ceiling, observed=observed, limit=limit)
         return None
 
+    def wall_clock_stop(self) -> StopReason | None:
+        """The wall-clock stop once the ceiling has already expired.
+
+        Lives beside the ceilings it enforces so the expiry test and the
+        stop it reports read the same limit; the dispatch seam raises the
+        returned stop when an in-flight request is cancelled at the
+        remaining budget, instead of re-deriving the comparison (and its
+        ``None`` handling) at the raise site.
+        """
+        limit = self.ceilings.max_wall_clock_s
+        if limit is not None and self.elapsed_s >= limit:
+            return StopReason(ceiling="max_wall_clock_s", observed=self.elapsed_s, limit=limit)
+        return None
+
     def admit_call(self) -> None:
         """Mechanical pre-dispatch gate inside the invocation seam."""
         stop = self.cached_stop or self.stop_reason()
@@ -454,6 +474,29 @@ class BudgetState:
 
 
 # -- recorded dispatch -------------------------------------------------------
+
+
+async def _terminalize_unknown(
+    store: InMemoryInvocationStore, invocation: Invocation, error: str
+) -> None:
+    """Terminalize an ambiguous dispatch as ``UNKNOWN``.
+
+    A cancellation, timeout, connection loss, or arbitrary provider error
+    does not prove the external effect was unapplied, so the row is never
+    the safe-to-retry ``FAILED`` — canonical terminalization reserves that
+    status for ``EffectNotApplied`` (``CapabilityEffectContext
+    ._run_provider``). The store assigns the new revision on save (OCC);
+    sending a pre-incremented one would be stale.
+    """
+    await store.save(
+        invocation.model_copy(
+            update={
+                "status": InvocationStatus.UNKNOWN,
+                "error": error,
+                "finished_at": _utc_now(),
+            }
+        )
+    )
 
 
 async def _recorded_call(
@@ -517,14 +560,10 @@ async def _recorded_call(
     except asyncio.CancelledError:
         # Cancellation leaves the external outcome ambiguous; mark UNKNOWN so
         # the row is terminal and never reads as safe-to-retry FAILED.
-        await store.save(
-            invocation.model_copy(
-                update={
-                    "status": InvocationStatus.UNKNOWN,
-                    "error": "provider invocation cancelled with unknown external outcome",
-                    "finished_at": _utc_now(),
-                }
-            )
+        await _terminalize_unknown(
+            store,
+            invocation,
+            "provider invocation cancelled with unknown external outcome",
         )
         raise
     except TimeoutError as exc:
@@ -535,26 +574,10 @@ async def _recorded_call(
         # on the clock rather than recording an intervention. A transport
         # timeout of its own raises its own error type; if one surfaces as a
         # builtin TimeoutError while budget remains, it re-raises unchanged.
-        expired = (
-            budget.remaining_wall_clock_s() is not None and budget.remaining_wall_clock_s() <= 0.0
-        )
-        await store.save(
-            invocation.model_copy(
-                update={
-                    "status": InvocationStatus.UNKNOWN,
-                    "error": str(exc) or type(exc).__name__,
-                    "finished_at": _utc_now(),
-                }
-            )
-        )
-        if expired:
-            raise BudgetExhausted(
-                StopReason(
-                    ceiling="max_wall_clock_s",
-                    observed=budget.elapsed_s,
-                    limit=float(budget.ceilings.max_wall_clock_s),
-                )
-            ) from exc
+        await _terminalize_unknown(store, invocation, str(exc) or type(exc).__name__)
+        stop = budget.wall_clock_stop()
+        if stop is not None:
+            raise BudgetExhausted(stop) from exc
         raise
     except Exception as exc:
         # Audit evidence only: a timeout, connection loss, or provider error
@@ -564,17 +587,8 @@ async def _recorded_call(
         # was already consumed at admission (admit_call). A refused or failed
         # dispatch has no measured usage, and charging an unreported-request
         # marker would fabricate token/spend evidence (the #717/#718
-        # anti-pattern). The store assigns the new revision on save (OCC);
-        # sending a pre-incremented one is stale.
-        await store.save(
-            invocation.model_copy(
-                update={
-                    "status": InvocationStatus.UNKNOWN,
-                    "error": str(exc) or type(exc).__name__,
-                    "finished_at": _utc_now(),
-                }
-            )
-        )
+        # anti-pattern).
+        await _terminalize_unknown(store, invocation, str(exc) or type(exc).__name__)
         raise
     # Absent provider usage stays None on the Invocation: the canonical
     # recorder keys "reported" off usage-is-not-None, so a zero-filled row

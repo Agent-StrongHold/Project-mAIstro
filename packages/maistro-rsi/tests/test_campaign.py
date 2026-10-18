@@ -201,6 +201,25 @@ class TestCampaignCeilings:
         with pytest.raises(ValidationError):
             CampaignCeilings(**{field: 0})
 
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("max_spend_usd", float("inf")),
+            ("max_spend_usd", float("nan")),
+            ("max_wall_clock_s", float("inf")),
+            ("max_wall_clock_s", float("nan")),
+        ],
+    )
+    def test_non_finite_ceilings_are_refused(self, field: str, value: float):
+        """ceiling-2b: an infinite (or NaN) float ceiling is bounded in name
+        only — ``inf`` is greater than zero, so it would pass a bare ``gt=0``
+        and read as a bounded axis whose stop condition can never fire, with
+        the campaign admitted to run the whole pool (argparse hands
+        ``--max-seconds inf`` straight through as ``float('inf')``). Bounded
+        means reachable, so the model refuses non-finite values outright."""
+        with pytest.raises(ValidationError):
+            CampaignCeilings(**{field: value})
+
     def test_empty_allowed_path_is_refused(self):
         with pytest.raises(ValidationError, match="at least 1 character"):
             CampaignCeilings(allowed_paths=("src/", ""))
@@ -498,6 +517,49 @@ class TestMechanicalStops:
         assert invocation.status is InvocationStatus.UNKNOWN
         assert invocation.error == "TimeoutError"
         assert invocation.finished_at is not None
+
+    async def test_transport_timeout_with_budget_remaining_is_not_a_mechanical_stop(self):
+        """stop-4c: the degenerate path — a transport's own TimeoutError
+        raised while wall-clock budget *remains* (e.g. a provider-side
+        connection timeout under a 60s ceiling) re-raises unchanged: it
+        records an intervention and the walk continues, and only a real clock
+        expiry surfaces as the designed mechanical stop."""
+        calls = _per_model_calls(
+            {
+                "frontier/max": _scripted_call(
+                    {
+                        "Cover alpha and beta": TimeoutError("connection timed out"),
+                        "Cover gamma": _answered("gamma"),
+                    }
+                ),
+                "free/mini": _scripted_call(
+                    {
+                        "Cover alpha and beta": _answered("alpha beta"),
+                        "Cover gamma": _answered("gamma"),
+                    }
+                ),
+            }
+        )
+        store = InMemoryInvocationStore()
+        report = await _run(
+            _two_objective_pool(),
+            CampaignCeilings(max_model_calls=8),
+            arms=[ArmPolicy(arm_id="frontier", model="frontier/max")],
+            make_model_call=calls,
+            store=store,
+        )
+        frontier = report.arms[0]
+        assert frontier.attempts == 2  # the walk continued past the failure
+        assert frontier.interventions == 1
+        (failed,) = [rec for rec in frontier.attempts_log if rec.objective_id == "obj-1"]
+        assert failed.intervention is True
+        assert failed.intervention_reason == "connection timed out"
+        assert frontier.verified_progress == 1  # obj-2 still scored
+        assert frontier.stop_reason is None  # no ceiling fired: not a stop
+        by_status = {invocation.status: invocation for invocation in store._items.values()}
+        assert InvocationStatus.UNKNOWN in by_status
+        assert by_status[InvocationStatus.UNKNOWN].error == "connection timed out"
+        assert InvocationStatus.COMPLETED in by_status
 
     async def test_stops_at_objective_ceiling(self):
         """stop-5: max_objectives bounds how much of the pool an arm walks."""
@@ -1012,6 +1074,19 @@ class TestCampaignCli:
         with pytest.raises(ValueError, match="at least one explicit ceiling"):
             _campaign_ceilings(args)
 
+    def test_cli_ceilings_refuse_an_infinite_ceiling(self):
+        """cli-6: ``--max-seconds inf`` parses to ``float('inf')`` at the
+        argparse layer, so the ceilings model — not the parser — must refuse
+        it: an admitted infinity would read as a bounded campaign whose stop
+        can never fire."""
+        from maistro_rsi.campaign_cli import _campaign_ceilings
+
+        args = self._parse(
+            "--objective-pool", "p.json", "--frontier-model", "m", "--max-seconds", "inf"
+        )
+        with pytest.raises(ValidationError, match="should be a finite number"):
+            _campaign_ceilings(args)
+
     def test_cli_ceilings_carry_every_axis(self):
         from maistro_rsi.campaign_cli import _campaign_ceilings
 
@@ -1096,6 +1171,74 @@ class TestCampaignCli:
             "gateway_model_call",
             lambda model, *, timeout: per_model[model],
         )
+
+    async def test_campaign_run_charges_a_quota_ledger(self, monkeypatch, tmp_path):
+        """cli-7: the shipped composition wires a quota ledger into the
+        canonical recorder, so real CLI dispatches are charged exactly once
+        per Invocation identity — not only to the usage log that dies with
+        the process. The tracker the CLI builds is observed through the same
+        ``record_invocation`` seam the recorder calls."""
+        import maistro_rsi.campaign_cli as cli_module
+
+        charged: list[tuple[str, str, int, int]] = []
+
+        class ChargingTracker(InMemoryQuotaTracker):
+            async def record_invocation(
+                self,
+                invocation_id: str,
+                provider: str,
+                billing_cycle: str,
+                input_tokens: int,
+                output_tokens: int,
+                usage_reported: bool,
+            ) -> dict[str, object]:
+                charged.append((invocation_id, provider, input_tokens, output_tokens))
+                return await super().record_invocation(
+                    invocation_id,
+                    provider,
+                    billing_cycle,
+                    input_tokens,
+                    output_tokens,
+                    usage_reported,
+                )
+
+        monkeypatch.setattr(cli_module, "InMemoryQuotaTracker", ChargingTracker)
+        self._gateway_env(monkeypatch, base_url="http://gateway.local", api_key="key-test")
+        self._scripted_gateway(
+            monkeypatch,
+            {
+                "frontier/max": _scripted_call({"Cover alpha": _answered("alpha")}),
+                "free/mini": _scripted_call({"Cover alpha": _answered("alpha free")}),
+            },
+        )
+        pool_file = tmp_path / "pool.json"
+        pool_file.write_text(
+            json.dumps(
+                {
+                    "objectives": [
+                        {"objective_id": "obj-1", "task": "Cover alpha", "keywords": ["alpha"]}
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        args = self._parse(
+            "--objective-pool",
+            str(pool_file),
+            "--frontier-model",
+            "frontier/max",
+            "--baseline-model",
+            "free/mini",
+            "--max-model-calls",
+            "4",
+        )
+        assert await cli_module._run_campaign(args) == 0
+        # Two arms x one objective: every completed Invocation hit the ledger
+        # exactly once, with the tokens the provider reported.
+        assert len(charged) == 2
+        assert len({invocation_id for invocation_id, _, _, _ in charged}) == 2
+        assert {provider for _, provider, _, _ in charged} == {"frontier/max", "free/mini"}
+        assert all(inp == 10 and out == 5 for _, _, inp, out in charged)
 
     async def test_campaign_run_dispatches_writes_and_renders(self, monkeypatch, tmp_path, capsys):
         """cli-1: with a configured gateway the CLI dispatches through the

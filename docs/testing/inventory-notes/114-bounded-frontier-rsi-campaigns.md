@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +60
+  packages/maistro-rsi/tests: +67
 ---
 
 # Bounded frontier-model RSI campaigns (M5-B, #114)
@@ -125,3 +125,49 @@ duplicate extension-identity guard staged in
 back to the committed HEAD versions (the develop merge had already landed the
 guard plus `test_pack_id_colliding_with_an_active_extension_is_refused`), so
 `maistro-core` counts are untouched.
+
+## Repair round (2026-10-18, CI repair at a9778ba49: radon + mypy)
+
+Delta on this suite moves +60 → +67: seven more tests land in
+`test_campaign.py`, closing the two P1 review findings still open after the
+previous round plus the two red CI jobs at the merge-queue evaluation:
+
+- **Non-finite ceilings refused (ceiling-2b, 4 parametrized cases + cli-6)** —
+  `CampaignCeilings` now declares `allow_inf_nan=False` on both float axes:
+  `inf` passes a bare `gt=0`, so `--max-seconds inf` (which argparse parses
+  straight through) read as a bounded campaign whose stop condition can never
+  fire — exactly the unenforceable admission the issue's "stops mechanically"
+  criterion forbids. The model-level cases pin inf/NaN refusal on both axes;
+  the CLI case pins the argparse hand-off (`_campaign_ceilings` refuses).
+- **Transport timeout vs. clock expiry (stop-4c, 1 test)** — the degenerate
+  path of the in-flight wall-clock enforcement: a transport's own
+  `TimeoutError` raised while wall-clock budget *remains* re-raises unchanged
+  (intervention, walk continues, no ceiling reported), distinguishing it from
+  the stop-4b clock expiry. Pins the refactored handler's branch both ways.
+- **CLI charges a quota ledger (cli-7, 1 test)** — the shipped
+  `maistro-rsi-campaign` composition now wires `InMemoryQuotaTracker()` into
+  `run_campaign`, so real CLI dispatches are charged exactly once per
+  Invocation identity through the canonical recorder instead of only to a
+  usage log that dies with the process; the test observes the tracker through
+  the same `record_invocation` seam the recorder calls (2 arms × 1 objective,
+  distinct ids, reported tokens intact).
+
+No test was removed; one existing behavior is re-homed, count-neutral: the
+wall-clock expiry test and stop reason now flow through
+`BudgetState.wall_clock_stop()` (which also lets mypy narrow the limit), and
+the three ambiguous-outcome terminalizations share one
+`_terminalize_unknown` helper — the extraction that brings
+`_recorded_call` from radon C(11) back to B, closing the unbaselined new
+block the Quality / Radon gate failed on (no baseline edit needed: the block
+is new on this branch, so removing the finding is the fix, not banking it).
+The same restructure fixed the two mypy `[operator]`/`[arg-type]` errors on
+`budget.remaining_wall_clock_s()` / `ceilings.max_wall_clock_s` that failed
+the lint-and-type-check job (re-run locally with CI's exact package list:
+`Success: no issues found in 1060 source files`).
+
+Re-run gates locally, all with CI-exact arguments: `ruff check .` /
+`ruff format --check .` clean; `check-radon-baseline.py` 137→137 (no new or
+regressed blocks); `check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` 1322→1322;
+`check-promotion-surface.py` ok; `check-reachability.py` ok;
+`pytest packages/maistro-rsi/tests -q` 1691 passed, 4 skipped.
