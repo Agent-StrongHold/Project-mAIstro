@@ -1076,6 +1076,8 @@ async def test_cross_workspace_run_link_cannot_relocate_a_goal(
     goal_id = _next_id("goal")
     correct_projection = await scene.add_goal_run(goal_id=goal_id, workspace_id=other.id)
     canonical_id = _canonical_of(scene, correct_projection)
+    node_run = await scene.store.create_node_run(canonical_id, node_id="n")
+    attempt = await scene.store.create_attempt(node_run.node_run_id, runtime_id="test-runtime")
     corrupt_projection = await scene.seed_projection(canonical_id, scene.view.id)
 
     # The shared Run overlay already refuses to attribute canonical Goal facts
@@ -1083,6 +1085,21 @@ async def test_cross_workspace_run_link_cannot_relocate_a_goal(
     run_response = authed_client.get(f"/v1/dag-runs/{corrupt_projection}")
     assert run_response.status_code == 200
     assert "goal_context" not in run_response.json()
+    assert "node_runs" not in run_response.json(), (
+        "a rejected canonical link must not reappear as physical execution evidence"
+    )
+
+    # The same physical evidence remains reachable under its real Run and
+    # Workspace, both through the legitimate projection and the canonical id.
+    for run_id in (correct_projection, canonical_id):
+        physical = authed_client.get(f"/v1/dag-runs/{run_id}")
+        if canonical_owner == "user":
+            assert physical.status_code == 200
+            children = physical.json()["node_runs"]
+            assert [child["node_run_id"] for child in children] == [node_run.node_run_id]
+            assert [item["attempt_id"] for item in children[0]["attempts"]] == [attempt.attempt_id]
+        else:
+            assert physical.status_code == 404
 
     wrong_scope = f"/v1/workspaces/{scene.view.id}/goals"
     listed = authed_client.get(wrong_scope)
