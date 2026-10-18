@@ -940,24 +940,46 @@ sync_env_file() {
     fi
 }
 
-# Locate a Compose v2 front-end and set COMPOSE_CMD. Returns 1 if none is
-# present. This only checks the CLI; daemon readiness is verified separately.
+# Locate a Compose v2 front-end for ONE runtime and set COMPOSE_CMD (#1820).
+# Returns 1 when that runtime has no working Compose v2 front-end. This only
+# checks the CLI; daemon/engine readiness is verified separately.
 # Deliberately no `docker-compose`/`podman-compose` fallback (#407): those are
 # Compose v1-generation engines the stack's conditional `depends_on` schema
 # breaks on, and a front-end the full stack has not been tested with must
 # never be advertised as one.
+runtime_compose_cmd() {
+    local rt="$1"
+    command -v "$rt" >/dev/null 2>&1 || return 1
+    "$rt" compose version >/dev/null 2>&1 || return 1
+    COMPOSE_CMD=("$rt" compose)
+}
+
+# Locate a Compose v2 front-end and set COMPOSE_CMD. Returns 1 if none is
+# present. This only checks the CLI; daemon readiness is verified separately.
+#
+# #1820: the persisted selection (delivery.json `container_runtime`, written
+# by the wizard's plan builder; overridable by MAISTRO_CONTAINER_RUNTIME when
+# no plan pins one) is honored here. An explicit docker/podman selection
+# probes ONLY that CLI: with both CLIs installed, a working selected Podman
+# used to lose to this function's docker-first probe even when the Docker
+# daemon was inaccessible. A selection can narrow the probe; it can never be
+# silently switched to the other runtime.
 detect_compose_cmd() {
-    if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-        COMPOSE_CMD=(docker compose)
+    local selected
+    selected="$(selected_container_runtime)"
+    case "$selected" in
+        docker | podman)
+            runtime_compose_cmd "$selected"
+            return
+            ;;
+    esac
+    # Unselected (auto, or a plan written before #1820): the documented,
+    # tested probe order — Docker first, then Podman. Both CLIs present means
+    # Docker compose, by policy.
+    if runtime_compose_cmd docker; then
         return 0
     fi
-
-    if command -v podman >/dev/null 2>&1 && podman compose version >/dev/null 2>&1; then
-        COMPOSE_CMD=(podman compose)
-        return 0
-    fi
-
-    return 1
+    runtime_compose_cmd podman
 }
 
 # First dotted-numeric token in the selected front-end's `version` output, if
@@ -1015,6 +1037,37 @@ ensure_compose_supported() {
 # True when the docker CLI exists and the daemon answers.
 docker_daemon_ready() {
     command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
+}
+
+# True when Podman answers for the invoking account (#1820): `podman info`
+# proves the same thing for Podman's rootless store that `docker info` proves
+# for the Docker daemon — this account, unprivileged, can operate it.
+podman_runtime_ready() {
+    command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1
+}
+
+# True when the SELECTED front-end's engine answers (#1820). Runtime
+# access validation uses the selected runtime — a Docker check must never
+# stand in for a Podman one, or vice versa.
+selected_runtime_ready() {
+    case "${COMPOSE_CMD[0]:-}" in
+        docker) docker_daemon_ready ;;
+        podman) podman_runtime_ready ;;
+        *) return 1 ;;
+    esac
+}
+
+# Platform-phrased remedy for a selected runtime with no working Compose v2
+# front-end (#1820).
+selected_runtime_install_hint() {
+    case "$1" in
+        podman)
+            echo "Install Podman and a Compose v2 provider — Fedora/RHEL: 'sudo dnf install podman podman-compose'; Debian/Ubuntu: 'sudo apt-get install -y podman podman-compose' (or provide Docker's compose plugin so 'podman compose' can use it); macOS: 'brew install podman && podman machine init && podman machine start'. Then re-run ./install.sh."
+            ;;
+        *)
+            echo "$(compose_upgrade_instructions) Then re-run ./install.sh."
+            ;;
+    esac
 }
 
 # Numeric dotted-version comparison: true when $1 >= $2. Pure bash on purpose —
@@ -1312,23 +1365,53 @@ bootstrap_apt_docker_runtime() {
 }
 
 ensure_compose_runtime() {
+    local selected
+    selected="$(selected_container_runtime)"
+
     if detect_compose_cmd; then
-        # On macOS a docker CLI can exist with the daemon stopped; bring it up.
-        if is_macos && [[ "${COMPOSE_CMD[0]}" == "docker" ]] && ! docker_daemon_ready; then
-            bootstrap_macos_runtime
-        elif [[ "${COMPOSE_CMD[0]}" == "docker" ]] && ! is_macos && ! docker_daemon_ready; then
-            bootstrap_apt_docker_runtime
+        # Only a docker front-end has a daemon to bring up here; the platform
+        # bootstraps exist for a docker selection or an unselected auto. They
+        # are never offered as a way to satisfy a podman selection (#1820).
+        if [[ "${COMPOSE_CMD[0]}" == "docker" ]] && ! docker_daemon_ready; then
+            if is_macos; then
+                bootstrap_macos_runtime
+            else
+                bootstrap_apt_docker_runtime
+            fi
+        fi
+        # Access validation uses the selected runtime (#1820): after any
+        # bootstrap, the invoking account must actually be able to operate it.
+        # Package installation alone (sudo apt-get install docker.io) does not
+        # grant that — daemon/socket access for this account is checked here,
+        # and its absence is a recoverable prerequisite report, not a silent
+        # switch to the other runtime.
+        if ! selected_runtime_ready; then
+            fail "The container runtime ${COMPOSE_CMD[0]} is installed but does not answer as this account. The installer never switches to another runtime to proceed. Start it (or fix its socket permissions for this user), then re-run ./install.sh."
         fi
         ok "Compose runtime: ${COMPOSE_CMD[*]}"
         return
     fi
 
+    # An explicit selection with no working Compose v2 front-end fails here,
+    # naming the selection and its remedy (#1820): bootstrapping the OTHER
+    # runtime is exactly the silent switch the selection forbids.
+    case "$selected" in
+        docker | podman)
+            fail "The selected container runtime ($selected) has no working Compose v2 front-end. $(selected_runtime_install_hint "$selected")"
+            ;;
+    esac
+
+    # Unselected (auto): the documented bootstrap order decides what may be
+    # installed — the macOS runtime picker, else Docker Engine via apt.
     if is_macos; then
         bootstrap_macos_runtime
     else
         bootstrap_apt_docker_runtime
     fi
     if detect_compose_cmd; then
+        if ! selected_runtime_ready; then
+            fail "The container runtime ${COMPOSE_CMD[0]} is installed but does not answer as this account. The installer never switches to another runtime to proceed. Start it (or fix its socket permissions for this user), then re-run ./install.sh."
+        fi
         ok "Compose runtime: ${COMPOSE_CMD[*]}"
         return
     fi
@@ -1387,6 +1470,41 @@ delivery_mode() {
     local f="$PLAN_DIR/delivery.json"
     [[ -f "$f" ]] || return 0
     grep -o '"mode"[[:space:]]*:[[:space:]]*"[a-z_]*"' "$f" | head -1 | grep -o '[a-z_]*"$' | tr -d '"'
+}
+
+# The container runtime selection this install must honor (#1820).
+# Precedence, first match wins:
+#   1. the persisted plan (delivery.json `container_runtime`) — the wizard
+#      resolved the answers once; every later re-run honors what was chosen
+#      rather than re-probing, so recovery/upgrade name the same front-end;
+#   2. an explicit MAISTRO_CONTAINER_RUNTIME pin (docker|podman) — the escape
+#      hatch for wizardless (MAISTRO_SKIP_WIZARD=1) runs, where no plan exists;
+#   3. auto — the documented, tested docker-then-podman probe order.
+# A plan never gets silently overruled by ambient state, and an unknown token
+# degrades to auto with a warning instead of inventing a selection.
+selected_container_runtime() {
+    local f="$PLAN_DIR/delivery.json" v override
+    if [[ -f "$f" ]]; then
+        v="$(grep -o '"container_runtime"[[:space:]]*:[[:space:]]*"[a-z]*"' "$f" | head -1 | grep -o '[a-z]*"$' | tr -d '"')"
+        case "$v" in
+            docker | podman)
+                echo "$v"
+                return 0
+                ;;
+        esac
+    fi
+    override="${MAISTRO_CONTAINER_RUNTIME:-}"
+    case "$override" in
+        docker | podman)
+            echo "$override"
+            return 0
+            ;;
+        auto | "") ;;
+        *)
+            warn "Ignoring unknown MAISTRO_CONTAINER_RUNTIME='$override' (use 'docker', 'podman', or 'auto')."
+            ;;
+    esac
+    echo "auto"
 }
 
 # Effective delivery mode the stack actually uses: image_pull only when the
@@ -1681,6 +1799,19 @@ run_with_timeout() {
     return "$rc"
 }
 
+# #1820: these are Docker-runtime validations (engine API floor, macOS
+# credential-helper deadlock, docker.sock discovery). Under a Podman selection
+# they must not run: validating the UNSELECTED docker engine would fail an
+# install on an unrelated old Docker daemon, and a docker.sock mapping is
+# meaningless for Podman's rootless store. Lifted verbatim by
+# tests/test_install_runtime_selection.py.
+docker_only_preflight_checks() {
+    [[ "${COMPOSE_CMD[0]:-}" == "docker" ]] || return 0
+    ensure_docker_engine_supported
+    check_docker_credential_helper
+    record_docker_sock
+}
+
 start_engine() {
     if [[ "$START_STACK" == "0" || "$START_STACK" == "false" ]]; then
         warn "Skipping compose start because --no-start or MAISTRO_START_STACK=0 was set."
@@ -1688,9 +1819,7 @@ start_engine() {
     fi
 
     ensure_compose_runtime
-    ensure_docker_engine_supported
-    check_docker_credential_helper
-    record_docker_sock
+    docker_only_preflight_checks
     # compose_files first: report_arch reads the image list from the same
     # file set `up` will use, so an addon's images are checked too — and
     # ensure_compose_supported feature-probes that same set before anything
@@ -1972,6 +2101,7 @@ writing no install manifest. 'maistro upgrade' will fall back to detection."
   "revision": "$rev",
   "image_tag": "$MAISTRO_IMAGE_TAG",
   "delivery_mode": "$(effective_delivery_mode)",
+  "container_runtime": "$(selected_container_runtime)",
   "source_url": "$source_url",
   "plan_dir": "$PLAN_DIR",
   "installed_at": "$ts"

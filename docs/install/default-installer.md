@@ -95,6 +95,68 @@ Defaults are intentionally conservative:
 
 Operators may select the `developer` sandbox profile for local iteration, but `unsafe_host` is intentionally not in the schema or wizard; users who want unsupported options can build from source instead of using the default installer. Crypto choices are explicit: `distributed_identity_root` is default, `no_crypto` removes the identity root for constrained demos, and `full_all_crypto` is reserved for downstream installers that enable the complete DID/VC and wallet-capable surface behind policy gates.
 
+## Container runtime selection and host privilege (#1820)
+
+The installer resolves **one** effective host runtime and honors it everywhere:
+the compose front-end it starts the stack with, the readiness and access
+probes, the install manifest, and every generated recovery/upgrade command
+(Makefile, `RECOVERY.md`, entrypoint hints). A selected runtime is never
+silently switched when it is unavailable — the install fails naming the
+selection and its remedy.
+
+### Selection and precedence
+
+1. **Explicit answer.** `container_runtime: docker | podman` in the answers
+   (or the wizard) is authoritative. `plan.py::effective_runtime` resolves it
+   untouched and writes it into the materialized `delivery.json`.
+2. **Persisted plan wins on re-runs.** install.sh reads
+   `delivery.json`'s `container_runtime` — the wizard's resolution — so a
+   later `./install.sh` re-run honors what was installed instead of re-probing.
+3. **`MAISTRO_CONTAINER_RUNTIME=docker|podman`** pins the runtime only when
+   no plan selects one (e.g. `MAISTRO_SKIP_WIZARD=1` runs). An unknown value
+   is ignored with a warning and falls through to `auto`.
+4. **`auto` policy (documented, tested).** The Podman-oriented deployment tier
+   (`deployment_tier: local_podman`) resolves to podman; every other tier
+   resolves to docker. The shell probe order for `auto` is docker first, then
+   podman — the same order in every generated artifact.
+
+An explicit selection with no working Compose v2 front-end fails the install
+with a runtime-specific remedy; it never installs or probes the *other*
+runtime to proceed. Docker-only validations (engine API floor, the macOS
+credential-helper deadlock probe, docker.sock discovery) run only when the
+effective front-end is docker — a Podman install is never failed by an
+unrelated old Docker daemon on the same host, and access readiness is
+validated with the selected runtime's own `info` command (`docker info` /
+`podman info`) as the invoking account.
+
+### Supported OS / runtime / privilege matrix
+
+Host privilege, container-runtime privilege, and application identity are
+three different boundaries; none proves the others. The installer's tested
+promise per platform:
+
+| Platform | Runtime | Zero-administrator install? | Boundary |
+|---|---|---|---|
+| Linux (apt/dnf) | Podman (rootless) | Yes, **if podman is already installed** | Rootless podman runs entirely as the invoking account; the installer verifies `podman info` as that account. Installing the podman *package* needs one-time admin. |
+| Linux (apt/dnf) | Docker Engine | No — one-time admin prerequisite | `sudo apt-get install` is confirmed before mutation. The installer never silently adds the invoking user to the docker group (root-equivalent); if the daemon socket is inaccessible to the account afterwards, it reports the prerequisite and stops. |
+| macOS | Colima + docker CLI | Yes | Homebrew and the Colima VM run user-scoped; no admin prompt. |
+| macOS | Docker Desktop | No — one-time admin prerequisite | Its privileged helper and first-run setup require administrator approval. |
+| Windows (WSL2, via get.ps1) | Docker or Podman inside the distro | No — one-time admin prerequisite | Enabling the WSL2/Virtual Machine Platform Windows features needs elevation, requested once, before any Linux-side mutation. |
+
+**Unsupported combinations:** running the Linux install fully as root
+(`sudo ./install.sh`) is not a supported profile — installer state and
+credentials must stay owned by the ordinary account that operates the stack.
+Mounting a privileged host docker.sock into containers and privileged
+containers remain out of the installer's schema (see *Safe defaults*);
+rootless host containers are not an agent sandbox backend (#81 owns that
+contract).
+
+**Interruption/retry and ownership:** installer state (`.maistro-install/`,
+`.env`, plan artifacts, named volumes) is created by and owned by the invoking
+account; re-running `./install.sh` after an interrupted install resumes
+idempotently under the same account, and runtime selections persist through
+the retry because the plan is re-read, not re-probed.
+
 ## Generated outputs
 
 The install plan exposes `generated_artifacts` for downstream curl/web installers to materialize:
