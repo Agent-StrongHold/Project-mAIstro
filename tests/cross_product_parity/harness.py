@@ -20,6 +20,20 @@ from pathlib import Path
 from typing import Any, Final
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[2]
+_STRICT_ENV_VAR: Final = "MAISTRO_PARITY_STRICT"
+_MODE_ENV_VAR: Final = "MAISTRO_PARITY_MODE"
+
+
+def _strict_mode_enabled() -> bool:
+    """True when the fail-closed M1 closeout mode is selected.
+
+    One strict concept, two spellings: ``MAISTRO_PARITY_MODE=m1-closeout`` is
+    the explicit closeout invocation switch (scripts/run-m1-closeout.py) and
+    ``MAISTRO_PARITY_STRICT=1`` is the equivalent env spelling kept so existing
+    strict invocations and ``dependency_assessment``'s fail-closed contract
+    agree on a single mode authority.
+    """
+    return parity_mode() is ParityMode.M1_CLOSEOUT
 
 
 class DependencyUnavailable(AssertionError):
@@ -185,6 +199,88 @@ GOLDEN_BASELINES = Dependency(
     ),
 )
 
+# A dependency's source-level seam landing is necessary but not sufficient for a
+# scenario to count as executed: #459's own scenarios 1-3 currently activate into
+# import/source-token checks rather than a real Run created and observed through
+# the landed seam, and scenario 6 currently feeds #463's own fixture example back
+# into itself rather than a converged product's observation. Each of these stays a
+# named, permanently-evidenced blocker -- probing for a marker/rewrite that does
+# not exist yet -- so strict mode cannot go green on that scaffold once the named
+# dependency above it lands. Implementing the real scenario clears the blocker by
+# construction: the marker only exists once real assertions replace the scaffold.
+_TEST_SUITE_PATH = "tests/cross_product_parity/test_cross_product_parity.py"
+
+REAL_BUILDERS_CONDUCTOR_SCENARIO = Dependency(
+    key="Builders->Conductor real executed scenario",
+    issue=459,
+    pr=None,
+    description=(
+        "Scenario 1 must create a real canonical Run through Builders' executor and "
+        "observe it through Conductor's landed inspection seam; import/source-token "
+        "checks alone do not exercise the real product path."
+    ),
+    probes=(
+        SourceProbe(
+            _TEST_SUITE_PATH,
+            required_tokens=("REAL_SCENARIO_EVIDENCE: builders-conductor",),
+        ),
+    ),
+)
+
+REAL_SCHEDULE_CONDUCTOR_SCENARIO = Dependency(
+    key="schedule fire->Conductor real executed scenario",
+    issue=459,
+    pr=None,
+    description=(
+        "Scenario 2 must admit a real schedule occurrence and observe its canonical "
+        "Run through Conductor's landed inspection seam; source-token checks alone "
+        "do not exercise the real product path."
+    ),
+    probes=(
+        SourceProbe(
+            _TEST_SUITE_PATH,
+            required_tokens=("REAL_SCENARIO_EVIDENCE: schedule-conductor",),
+        ),
+    ),
+)
+
+REAL_EVOLVE_CONDUCTOR_SCENARIO = Dependency(
+    key="Evolve->Conductor real executed scenario",
+    issue=459,
+    pr=None,
+    description=(
+        "Scenario 3 must run a real Evolve cycle and observe its canonical Run "
+        "through Conductor's landed inspection seam; source-token checks alone do "
+        "not exercise the real product path."
+    ),
+    probes=(
+        SourceProbe(
+            _TEST_SUITE_PATH,
+            required_tokens=("REAL_SCENARIO_EVIDENCE: evolve-conductor",),
+        ),
+    ),
+)
+
+REAL_GOLDEN_PRODUCT_OBSERVATION = Dependency(
+    key="#463 golden fixtures checked against a real product observation",
+    issue=459,
+    pr=None,
+    description=(
+        "Scenario 6 must feed a converged product's own observation to the #463 "
+        "matcher; feeding the fixture's own example_observation back at itself "
+        "only proves oracle wiring, not product behavior."
+    ),
+    probes=(
+        SourceProbe(
+            _TEST_SUITE_PATH,
+            forbidden_tokens=(
+                'assert_matches_golden("builders", "retry_keeps_logical_run", '
+                'scenario["example_observation"])',
+            ),
+        ),
+    ),
+)
+
 _DEPENDENCY_LIST: Final = (
     BUILDERS,
     EVOLVE,
@@ -192,17 +288,20 @@ _DEPENDENCY_LIST: Final = (
     CONDUCTOR_INSPECTION,
     ONTOLOGY,
     GOLDEN_BASELINES,
+    REAL_BUILDERS_CONDUCTOR_SCENARIO,
+    REAL_SCHEDULE_CONDUCTOR_SCENARIO,
+    REAL_EVOLVE_CONDUCTOR_SCENARIO,
+    REAL_GOLDEN_PRODUCT_OBSERVATION,
 )
 DEPENDENCIES: Final = {dependency.key: dependency for dependency in _DEPENDENCY_LIST}
 
 
-def dependency_assessment(*dependencies: Dependency) -> DependencyAssessment:
-    """Return an assertion-backed dependency state for an executable scenario.
+def _assess_dependencies(*dependencies: Dependency) -> DependencyAssessment:
+    """Non-raising dependency state; the strict wrapper adds the fail-closed raise.
 
-    A blocked scenario is only accepted when every blocker is tied to a named
-    issue/PR and a concrete missing/legacy source seam. This is intentionally
-    not a pytest skip or expected-failure mechanism. Once the probes pass the
-    caller must execute the scenario's real assertions.
+    ``execute_scenario`` must see the raw blockers so strict closeout evidence
+    can name them per scenario (EXECUTED/PASSED or FAILED per required
+    scenario) instead of short-circuiting before any evidence is emitted.
     """
     blockers: list[str] = []
     for dependency in dependencies:
@@ -221,6 +320,26 @@ def dependency_assessment(*dependencies: Dependency) -> DependencyAssessment:
 
     assessment = DependencyAssessment(ready=not blockers, blockers=tuple(blockers))
     assert assessment.ready is (not assessment.blockers)
+    return assessment
+
+
+def dependency_assessment(*dependencies: Dependency) -> DependencyAssessment:
+    """Return an assertion-backed dependency state for an executable scenario.
+
+    A blocked scenario is only accepted when every blocker is tied to a named
+    issue/PR and a concrete missing/legacy source seam. This is intentionally
+    not a pytest skip or expected-failure mechanism. Once the probes pass the
+    caller must execute the scenario's real assertions.
+
+    Under strict M1 closeout mode (``MAISTRO_PARITY_MODE=m1-closeout`` or the
+    equivalent ``MAISTRO_PARITY_STRICT=1`` spelling) a blocker is not a named,
+    evidence-backed state to report and continue past: it raises
+    ``DependencyUnavailable`` instead, so a scenario that only proved its
+    dependency missing cannot register as a pass.
+    """
+    assessment = _assess_dependencies(*dependencies)
+    if assessment.blockers and _strict_mode_enabled():
+        raise DependencyUnavailable(" | ".join(assessment.blockers))
     return assessment
 
 
@@ -291,13 +410,25 @@ class CloseoutReport:
 
 
 def parity_mode(value: str | None = None) -> ParityMode:
-    """Resolve the explicit mode switch used by the closeout invocation."""
-    raw = value if value is not None else os.environ.get("MAISTRO_PARITY_MODE", "development")
+    """Resolve the explicit mode switch used by the closeout invocation.
+
+    ``MAISTRO_PARITY_MODE`` wins when set; otherwise the equivalent
+    ``MAISTRO_PARITY_STRICT=1`` spelling selects M1 closeout mode; otherwise
+    development mode reports named blockers without failing closed.
+    """
+    if value is None:
+        raw = os.environ.get(_MODE_ENV_VAR)
+        if raw is None:
+            if os.environ.get(_STRICT_ENV_VAR) == "1":
+                return ParityMode.M1_CLOSEOUT
+            raw = "development"
+    else:
+        raw = value
     try:
         return ParityMode(raw)
     except ValueError as exc:
         allowed = ", ".join(item.value for item in ParityMode)
-        raise ValueError(f"MAISTRO_PARITY_MODE must be one of: {allowed}") from exc
+        raise ValueError(f"{_MODE_ENV_VAR} must be one of: {allowed}") from exc
 
 
 def _emit_evidence(evidence: ScenarioEvidence) -> None:
@@ -311,9 +442,14 @@ async def execute_scenario(
     mode: ParityMode | None = None,
     raise_on_failure: bool = True,
 ) -> ScenarioEvidence:
-    """Run one scenario, converting every strict abstention into a failure."""
+    """Run one scenario, converting every strict abstention into a failure.
+
+    Uses the non-raising dependency assessment so the blocker evidence is
+    emitted here with the scenario's own name; the strict raise stays this
+    function's job.
+    """
     selected_mode = mode or parity_mode()
-    assessment = dependency_assessment(*scenario.dependencies)
+    assessment = _assess_dependencies(*scenario.dependencies)
     if assessment.blockers:
         status = "FAILED" if selected_mode is ParityMode.M1_CLOSEOUT else "BLOCKED"
         evidence = ScenarioEvidence(

@@ -33,9 +33,13 @@ fallback is exactly the hole this closes.
 
 from __future__ import annotations
 
+import hashlib
+import importlib.metadata
 import json
 import os
 import subprocess
+import sys
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -147,9 +151,34 @@ def _merge_group_event_base(payload: dict[str, Any]) -> str | None:
     return None if not base_sha or _is_null_sha(base_sha) else base_sha
 
 
+_PROTECTED_PUSH_REFS = frozenset(
+    {"refs/heads/develop", "refs/heads/integration", "refs/heads/main"}
+)
+
+
 def _push_event_base(payload: dict[str, Any]) -> str | None:
+    """Use the candidate's integration base for topic-branch pushes.
+
+    A topic push's ``before`` is the previous tip of the candidate branch. It
+    can therefore already contain the candidate's own AC-state note, while a
+    pull-request event for the same candidate resolves the merge base with the
+    target branch. That event-keyed difference lets the candidate's note count
+    as an independent superseding landing. Protected-branch pushes are the
+    exception: their parent is the actual revision being replaced and must
+    remain the base for the merge-time guard.
+
+    GitHub always supplies ``ref`` in a push payload. Keeping the ``before``
+    fallback when a synthetic/local payload omits it preserves the resolver's
+    useful fail-soft behavior outside Actions.
+    """
     before = str(payload.get("before", "")).strip()
-    return None if not before or _is_null_sha(before) else before
+    if not before or _is_null_sha(before):
+        return None
+    ref = os.environ.get("GITHUB_REF", "").strip() or str(payload.get("ref", "")).strip()
+    if not ref or ref in _PROTECTED_PUSH_REFS:
+        return before
+    base_ref = os.environ.get("GITHUB_BASE_REF", "").strip() or "develop"
+    return f"origin/{base_ref}"
 
 
 def _github_event_base() -> str | None:
@@ -158,7 +187,9 @@ def _github_event_base() -> str | None:
     Pull requests use the current target ref rather than the historical base
     SHA carried by a long-lived PR event. GitHub's synthetic merge is therefore
     judged against the target tree it is actually integrating into. Merge
-    groups name their immutable base SHA directly; pushes compare to ``before``.
+    groups name their immutable base SHA directly; topic-branch pushes use the
+    same ``origin/develop`` integration base, while protected-branch pushes
+    compare to ``before`` because that is the revision they replace.
     """
     event_name = os.environ.get("GITHUB_EVENT_NAME", "").strip()
     event_path = os.environ.get("GITHUB_EVENT_PATH", "").strip()
@@ -389,18 +420,133 @@ def head_sha(root: Path = ROOT) -> str | None:
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
+#: Prefix identifying a bounded bundled-implementation identity (#319). The
+#: digest covers exactly the source files named in the manifest -- it is a
+#: fingerprint of the analyzer implementation, not an attestation about any
+#: other part of the execution environment.
+BUNDLED_FINGERPRINT_PREFIX = "bundled-sha256:"
+
+
+def bundled_implementation_fingerprint(root: Path, relative_paths: Iterable[str]) -> str:
+    """``bundled-sha256:<digest>`` over the actual source files a gate executes.
+
+    Many ratchets ship their own scanner inside this repository. The honest
+    implementation identity for those is not a version constant somebody
+    forgets to bump, and not this interpreter's Python version, but the bytes
+    of the scanner itself: an uncommitted edit to a delegated analyzer changes
+    the verdict, so it must change the identity too (#319).
+
+    The manifest is the caller's explicit, bounded list of repository-relative
+    paths, sorted and de-duplicated here so call-site order never matters.
+    Each entry contributes its relative path and its bytes, each
+    length-framed, so no file's content can impersonate another entry's
+    framing. Only relative paths and bytes are hashed -- never the root -- so
+    the identity is deterministic across checkouts and machines.
+
+    Refused as a non-passing state rather than degraded to some placeholder
+    identity: an empty manifest, a path outside ``root``, a missing file, and
+    an unreadable one.
+    """
+    manifest = sorted(dict.fromkeys(str(path) for path in relative_paths))
+    if not manifest:
+        raise RatchetProvenanceError(
+            "bundled implementation fingerprint: no analyzer source files were named. "
+            "An analyzer that cannot name its implementation has no version to report."
+        )
+    resolved_root = root.resolve()
+    digest = hashlib.sha256()
+    for rel in manifest:
+        resolved = (root / rel).resolve()
+        try:
+            resolved.relative_to(resolved_root)
+        except ValueError as exc:
+            raise RatchetProvenanceError(
+                f"bundled implementation fingerprint: {rel} is outside {root}, so it "
+                "cannot be part of this repository's bundled implementation"
+            ) from exc
+        if not resolved.is_file():
+            raise RatchetProvenanceError(
+                f"bundled implementation fingerprint: {rel} is missing. The manifest "
+                "names an analyzer file this checkout does not contain."
+            )
+        try:
+            data = resolved.read_bytes()
+        except OSError as exc:
+            raise RatchetProvenanceError(
+                f"bundled implementation fingerprint: {rel} could not be read: {exc}"
+            ) from exc
+        name = rel.encode("utf-8")
+        digest.update(len(name).to_bytes(8, "big"))
+        digest.update(name)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return f"{BUNDLED_FINGERPRINT_PREFIX}{digest.hexdigest()}"
+
+
+def installed_distribution_version(distribution: str) -> str:
+    """The installed version of ``distribution`` observed in *this* interpreter.
+
+    For analyzers this repository does not bundle (radon, vulture), the gate
+    executes ``sys.executable -m <tool>`` in this same process's interpreter,
+    so the version that matters is the one installed there -- observed through
+    ``importlib.metadata`` in that same interpreter. A lockfile's *declared*
+    version says what some resolution once wanted, not what will actually
+    run, and is deliberately never consulted.
+
+    Known limitation, stated rather than papered over: distribution metadata
+    describes the installed distribution, not the specific module ``-m``
+    imports. A ``sys.path`` entry shadowing, say, ``radon`` with a different
+    file would still be reported under the distribution's version. This is a
+    metadata observation, not a binary attestation of the executed code.
+
+    A missing or blank version is refused as a non-passing state: there is no
+    ``unknown`` or default fallback to silently report instead.
+    """
+    try:
+        version = importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError as exc:
+        raise RatchetProvenanceError(
+            f"distribution {distribution!r} is not installed in this interpreter "
+            f"({sys.executable or 'python'}); its analyzer version cannot be "
+            "attested from a lockfile"
+        ) from exc
+    if not version.strip():
+        raise RatchetProvenanceError(
+            f"distribution {distribution!r} reports a blank version; there is no "
+            "'unknown' fallback to report instead"
+        )
+    return version
+
+
 @dataclass(frozen=True)
 class Provenance:
-    """What a ratchet must state about how it reached its verdict (#319 DoD)."""
+    """What a ratchet must state about how it reached its verdict (#319 DoD).
+
+    ``tool_version`` names the *implementation identity* that performed the
+    measurement -- a ``bundled-sha256:`` fingerprint for the scanners shipped
+    in this repository, or an installed distribution version for the external
+    analyzers executed with this interpreter. It is distinct from
+    ``metric_definition_version``, which versions the *question* being asked.
+    """
 
     ratchet: str
     baseline: Baseline
     tool: str
+    tool_version: str
     metric_definition_version: str
     old_value: Any
     new_value: Any
     candidate_sha: str | None = None
     authorizations: tuple[str, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.tool_version, str) or not self.tool_version.strip():
+            raise RatchetProvenanceError(
+                "Provenance requires a non-empty tool_version naming the analyzer "
+                "implementation that measured this verdict (#319). A missing or "
+                "blank version is a reporting failure -- there is no 'unknown' "
+                "or default fallback."
+            )
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -409,6 +555,7 @@ class Provenance:
             "base_sha": self.baseline.base_sha,
             "candidate_sha": self.candidate_sha,
             "tool": self.tool,
+            "tool_version": self.tool_version,
             "metric_definition_version": self.metric_definition_version,
             "old_value": self.old_value,
             "new_value": self.new_value,
@@ -427,7 +574,9 @@ class Provenance:
             else "worktree (no base revision available -- NOT a monotonicity check)"
         )
         lines = [
-            f"ratchet: {self.ratchet}  [{self.tool}, metric v{self.metric_definition_version}]",
+            f"ratchet: {self.ratchet}  "
+            f"[{self.tool} (tool version: {self.tool_version}), "
+            f"metric v{self.metric_definition_version}]",
             f"  baseline: {where}"
             + (
                 " -- ledger absent there, so nothing is tolerated yet"
@@ -529,12 +678,15 @@ def require_metric_version(
 __all__ = [
     "AUTHORIZATIONS",
     "BASE_REV_ENV",
+    "BUNDLED_FINGERPRINT_PREFIX",
     "DEFAULT_BASE_REV",
     "Baseline",
     "Provenance",
     "RatchetProvenanceError",
     "SelfReferentialBaseline",
+    "bundled_implementation_fingerprint",
     "head_sha",
+    "installed_distribution_version",
     "load_authorizations",
     "require_measurement",
     "require_metric_version",

@@ -1,7 +1,8 @@
 """Security subsystem type definitions.
 
-Ported from Stronghold types/security.py and types/auth.py.
-org_id stripped for single-tenant maistro-engine.
+Ported from Stronghold types/security.py and types/auth.py. ``AuditEntry`` is
+imported from the canonical persisted security types module so Sentinel and
+both durable audit stores exchange the same record shape.
 """
 
 from __future__ import annotations
@@ -9,6 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
+
+from maistro.types.security import AuditEntry as AuditEntry
+from maistro.types.security import Violation as Violation
 
 
 class IdentityKind(StrEnum):
@@ -23,15 +27,28 @@ class AuthContext:
     user_id: str = ""
     username: str = ""
     roles: frozenset[str] = field(default_factory=frozenset)
+    # Soft scope carried with the authenticated principal. These are optional
+    # for legacy callers, but scoped prompt reads never use an absent value.
+    org_id: str = ""
     team_id: str = ""
+    project_id: str = ""
     kind: IdentityKind = IdentityKind.USER
     auth_method: str = ""
     on_behalf_of: str = ""
 
     def can_use_tool(self, tool_name: str, permission_table: PermissionTable) -> bool:
+        """Fail-closed permission lookup (ADR-072726-0d6b, implemented for #1165).
+
+        An absent entry DENIES: absence of an explicit permission decision must
+        not grant tool authority, so an omitted or empty deployment table can
+        never authorize every tool. The permissive compatibility mode (allow on
+        miss) is not reachable through this primitive -- it exists only as an
+        explicit ``Sentinel(allow_on_miss=True)`` construction, intended for
+        non-production/test/demo wiring, and no configuration surface arms it.
+        """
         allowed_roles = permission_table.get(tool_name)
         if allowed_roles is None:
-            return True
+            return False
         return bool(self.roles & allowed_roles)
 
 
@@ -42,6 +59,17 @@ SYSTEM_AUTH = AuthContext(
     kind=IdentityKind.SYSTEM,
     auth_method="system",
 )
+
+#: The identity a request that carried none is evaluated as (#1165 review).
+#:
+#: Role-less, so a fail-closed permission table denies it every tool: an
+#: absent identity is not a grant. The Agent tool seam denies ``auth=None``
+#: outright, so routing an identity-free turn as this principal lets the
+#: operator's table decide instead. ``user_id`` stays empty on purpose -- the strike paths key on
+#: it and skip when it is empty, exactly as they did for ``auth=None``, and
+#: `Container.route_request` refuses to arm strike tracking without a real
+#: identity in the first place.
+ANONYMOUS_AUTH = AuthContext(username="anonymous", auth_method="anonymous")
 
 PermissionTable = dict[str, frozenset[str]]
 
@@ -70,32 +98,11 @@ class WardenVerdict:
 
 
 @dataclass
-class Violation:
-    boundary: str
-    rule: str
-    severity: str
-    detail: str = ""
-    repair_action: str | None = None
-
-
-@dataclass
 class SentinelVerdict:
     allowed: bool = True
     repaired: bool = False
     repaired_data: dict[str, Any] | None = None
     violations: tuple[Violation, ...] = ()
-
-
-@dataclass
-class AuditEntry:
-    boundary: str
-    user_id: str
-    team_id: str = ""
-    tool_name: str = ""
-    verdict: str = ""
-    violations: tuple[Violation, ...] = ()
-    detail: str = ""
-    agent_id: str = ""
 
 
 @dataclass

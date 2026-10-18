@@ -5,6 +5,12 @@ Development parity tests may report named dependency blockers. This invocation i
 for a closure candidate only: every required scenario must execute a real
 producer and observer/control boundary, and the pytest process must fail for an
 unavailable or abstaining seam.
+
+Both strict spellings are set so the whole suite is fail-closed in one mode
+authority: ``MAISTRO_PARITY_MODE=m1-closeout`` drives the closeout machinery's
+EXECUTED/PASSED-or-FAILED evidence, and ``MAISTRO_PARITY_STRICT=1`` (the
+equivalent spelling understood by ``dependency_assessment``) makes every
+early-return blocker raise instead of reporting green.
 """
 
 from __future__ import annotations
@@ -17,6 +23,7 @@ import sys
 def main() -> int:
     env = os.environ.copy()
     env["MAISTRO_PARITY_MODE"] = "m1-closeout"
+    env["MAISTRO_PARITY_STRICT"] = "1"
     command = [
         sys.executable,
         "-m",

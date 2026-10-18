@@ -95,7 +95,7 @@ criteria below.
 
 No dedicated protocol-conformance test file was located; conformance is
 exercised indirectly via the concrete store test suites
-(`tests/memory/learnings/test_learning_store.py`,
+(`packages/maistro-core/tests/memory/learnings/test_learning_store.py`,
 `packages/maistro-core/tests/memory/...`).
 
 ## Open questions

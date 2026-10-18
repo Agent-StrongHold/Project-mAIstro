@@ -37,16 +37,18 @@ is also required live on both branches; because it is produced by
 
 | Branch | PR | Approvals | Linear history | Force-push | Deletion | Required checks |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `develop` | yes | **0** | yes | no | no | **17** |
-| `main` | yes | **1** | no | no | no | **29** |
+| `develop` | yes | **0** | yes | no | no | **19** |
+| `main` | yes | **1** | no | no | no | **31** |
 
 | Check | `develop` | `main` |
 |---|:--:|:--:|
 | `Analyze (actions)` | ○ | ● |
 | `Analyze (javascript-typescript)` | ○ | ● |
 | `Analyze (python)` | ○ | ● |
+| `Compliance registry` | ● | ● |
 | `Container scan + SBOM + cosign` | ○ | ● |
 | `Coverage gate (publish-set floor + diff coverage)` | ● | ● |
+| `DevSkim` | adv | ○ |
 | `Gate C — canonical clean install` | ● | ● |
 | `Quality gate (Pillars 1–4, 7, 8)` | ● | ● |
 | `SAST (bandit + semgrep + gitleaks)` | ● | ● |
@@ -56,6 +58,7 @@ is also required live on both branches; because it is produced by
 | `coverage (MinIO)` | ● | ● |
 | `coverage (PostgreSQL)` | ● | ● |
 | `coverage (no services)` | ● | ● |
+| `cross-product-parity` | ● | ● |
 | `docker-build` | adv | ● |
 | `durable-events` | adv | ● |
 | `exact-debt-ledger` | ● | ● |
@@ -77,8 +80,10 @@ is also required live on both branches; because it is produced by
 <!-- /protection:tables -->
 
 ○ means the check cannot report as a real executed check on that PR base and
-therefore must not be required there. The CodeQL matrix and container image scan
-are intentionally main-only.
+therefore must not be required there. `adv` means the workflow reports on that
+base but is deliberately advisory; `DevSkim` remains outside both required sets
+until the owner promotes it into the merge contract. The CodeQL matrix and
+container image scan are intentionally main-only.
 
 ## Review and bypass model
 

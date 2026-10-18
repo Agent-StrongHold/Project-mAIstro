@@ -17,6 +17,9 @@ from maistro.graph.traversal_commit import (
 )
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Attempt, NodeRun, Run, RunStatus
 
+# A claim is distinct from the ordinary WAITING timer stored in resume_at.
+RECOVERY_CLAIM_UNTIL_KEY = "recovery_claim_until"
+
 
 def _validate_node_run_links(run: Run, node_runs: tuple[NodeRun, ...]) -> set[str]:
     if any(node_run.run_id != run.run_id for node_run in node_runs):

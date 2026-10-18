@@ -8,6 +8,7 @@ missing seam as a failure. No missing product behavior is recreated here.
 
 from __future__ import annotations
 
+import importlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -15,12 +16,17 @@ from pathlib import Path
 import pytest
 
 from maistro.graph.definitions import Graph, Node
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from tests.cross_product_parity.harness import (
     BUILDERS,
     CONDUCTOR_INSPECTION,
     EVOLVE,
     GOLDEN_BASELINES,
     ONTOLOGY,
+    REAL_BUILDERS_CONDUCTOR_SCENARIO,
+    REAL_EVOLVE_CONDUCTOR_SCENARIO,
+    REAL_GOLDEN_PRODUCT_OBSERVATION,
+    REAL_SCHEDULE_CONDUCTOR_SCENARIO,
     SCHEDULER,
     CloseoutFailure,
     Dependency,
@@ -34,6 +40,7 @@ from tests.cross_product_parity.harness import (
     assert_identity_projection,
     assert_matches_golden,
     assert_ontology_identity_projection,
+    dependency_assessment,
     execute_closeout,
     execute_scenario_sync,
     open_durable_profile,
@@ -112,6 +119,7 @@ async def test_cross_product_parity_profile_is_real_sqlite_and_survives_restart(
     run = await first.run_store.create_run(
         graph,
         provenance={"admission_source": "m1-459-harness"},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     first_project_id = first.project_id
     await first.close()
@@ -172,21 +180,106 @@ def test_second_run_id_mapping_and_private_terminal_state_are_rejected() -> None
 
 
 def test_builders_created_work_has_public_conductor_inspection_seams() -> None:
-    """Scenario 1: strict mode must execute the real Builders boundary."""
+    """Scenario 1 activation contract for Builders -> Conductor parity.
+
+    ``REAL_BUILDERS_CONDUCTOR_SCENARIO`` stays an evidenced blocker even once
+    ``CONDUCTOR_INSPECTION`` lands: the assertions below only check that the
+    import/source seams exist, not that a real Run was created and observed
+    through them, so this scenario cannot be trusted as closure evidence until
+    that dependency's own marker lands alongside real executable assertions.
+    """
+    dependency = dependency_assessment(
+        BUILDERS, CONDUCTOR_INSPECTION, REAL_BUILDERS_CONDUCTOR_SCENARIO
+    )
+    if not dependency.ready:
+        assert dependency.blockers
+        return
+
+    builders_execution = importlib.import_module("maistro.builders.graph_executor")
+    executor = builders_execution.CanonicalGraphPipelineExecutor
+    assert executor.__name__ == "CanonicalGraphPipelineExecutor"
+    route_source = (
+        Path(__file__).resolve().parents[2]
+        / "packages"
+        / "hive-conductor"
+        / "backend"
+        / "routes"
+        / "dag_runs.py"
+    ).read_text(encoding="utf-8")
+    assert "from services.dag_run_store import get_dag_run_store" not in route_source
+    assert "run_store" in route_source
+
+
+def test_builders_required_scenario_emits_strict_closeout_evidence() -> None:
+    """Scenario 1 through the closeout machinery (#1069).
+
+    Development mode records the abstaining scaffold as BLOCKED with its named
+    blockers; the strict closeout job turns the same evidence into a FAILED
+    machine-readable record and a suite failure, so a source-ready seam can
+    never masquerade as an executed producer -> observer scenario.
+    """
     evidence = execute_scenario_sync(BUILDERS_SCENARIO)
     if evidence.status == "BLOCKED":
         assert evidence.blockers or evidence.error
 
 
 def test_schedule_fire_has_canonical_admission_and_shared_inspection_seams() -> None:
-    """Scenario 2: strict mode must fire and inspect a real schedule occurrence."""
+    """Scenario 2 activation contract for the live schedule fire path.
+
+    See ``REAL_SCHEDULE_CONDUCTOR_SCENARIO`` in harness.py: source-token checks
+    alone do not prove a real schedule occurrence was observed through Conductor.
+    """
+    dependency = dependency_assessment(
+        SCHEDULER, CONDUCTOR_INSPECTION, REAL_SCHEDULE_CONDUCTOR_SCENARIO
+    )
+    if not dependency.ready:
+        assert dependency.blockers
+        return
+
+    scheduler_source = (
+        Path(__file__).resolve().parents[2]
+        / "packages"
+        / "hive-conductor"
+        / "backend"
+        / "services"
+        / "scheduler.py"
+    ).read_text(encoding="utf-8")
+    assert "ScheduleRunAdmitter" in scheduler_source
+    assert "_canonical_admitter" in scheduler_source
+
+
+def test_schedule_required_scenario_emits_strict_closeout_evidence() -> None:
+    """Scenario 2 through the closeout machinery (#1069); see scenario 1."""
     evidence = execute_scenario_sync(SCHEDULER_SCENARIO)
     if evidence.status == "BLOCKED":
         assert evidence.blockers or evidence.error
 
 
 def test_evolve_has_canonical_run_identity_and_shared_inspection_seams() -> None:
-    """Scenario 3: strict mode must execute and observe a real Evolve cycle."""
+    """Scenario 3 activation contract for the shipped Evolve cycle path.
+
+    See ``REAL_EVOLVE_CONDUCTOR_SCENARIO`` in harness.py: source-token checks
+    alone do not prove a real Evolve cycle was observed through Conductor.
+    """
+    dependency = dependency_assessment(EVOLVE, CONDUCTOR_INSPECTION, REAL_EVOLVE_CONDUCTOR_SCENARIO)
+    if not dependency.ready:
+        assert dependency.blockers
+        return
+
+    evolution_source = (
+        Path(__file__).resolve().parents[2]
+        / "packages"
+        / "hive-conductor"
+        / "backend"
+        / "services"
+        / "evolution.py"
+    ).read_text(encoding="utf-8")
+    assert "run_canonical_evolution_cycle" in evolution_source
+    assert "last_run_id" in evolution_source
+
+
+def test_evolve_required_scenario_emits_strict_closeout_evidence() -> None:
+    """Scenario 3 through the closeout machinery (#1069); see scenario 1."""
     evidence = execute_scenario_sync(EVOLVE_SCENARIO)
     if evidence.status == "BLOCKED":
         assert evidence.blockers or evidence.error
@@ -213,7 +306,29 @@ def test_shared_identity_contract_consumes_executable_ontology() -> None:
 
 
 def test_463_golden_fixtures_are_consumed_as_independent_oracle() -> None:
-    """Scenario 6 only passes after a real product observation reaches #463."""
+    """Scenario 6 consumes, rather than duplicates, the locked #463 matcher.
+
+    ``REAL_GOLDEN_PRODUCT_OBSERVATION`` keeps this an evidenced blocker until a
+    converged product's own observation replaces the fixture's own
+    ``example_observation`` below -- feeding a fixture its own example only
+    proves oracle wiring, not product behavior (#459).
+    """
+    dependency = dependency_assessment(GOLDEN_BASELINES, REAL_GOLDEN_PRODUCT_OBSERVATION)
+    if not dependency.ready:
+        assert dependency.blockers
+        return
+
+    # The fixture's own example is only an oracle wiring proof. Product
+    # observations replace it in the executable scenarios after their active
+    # dependencies land; the expectations remain owned by #463.
+    from tests.cross_product_parity.harness import load_golden_scenario
+
+    scenario, _ = load_golden_scenario("builders", "retry_keeps_logical_run")
+    assert_matches_golden("builders", "retry_keeps_logical_run", scenario["example_observation"])
+
+
+def test_golden_real_observation_emits_strict_closeout_evidence() -> None:
+    """Scenario 6 through the closeout machinery (#1069); see scenario 1."""
     evidence = execute_scenario_sync(GOLDEN_SCENARIO)
     if evidence.status == "BLOCKED":
         assert evidence.error or evidence.blockers
@@ -307,3 +422,80 @@ def test_dependency_handling_contains_no_test_suppression_escape_hatch() -> None
     )
     for token in forbidden:
         assert token not in source
+
+
+def test_strict_mode_turns_synthetic_unavailable_dependency_into_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M1 closeout mode (#459): a blocker cannot register as a pass.
+
+    ``dependency_assessment`` normally reports an unavailable dependency as a
+    named blocker so development-mode scenarios can assert it and return.
+    Under ``MAISTRO_PARITY_STRICT=1`` the same unavailable dependency must
+    instead raise, so a strict-closeout scenario that only proved its
+    dependency missing fails the suite rather than passing it.
+    """
+    monkeypatch.setenv("MAISTRO_PARITY_STRICT", "1")
+    synthetic = Dependency(
+        key="synthetic unavailable dependency",
+        issue=1036,
+        pr=None,
+        description="A SourceProbe pointed at a path that does not exist.",
+        probes=(SourceProbe("tests/cross_product_parity/__does_not_exist__.py"),),
+    )
+
+    with pytest.raises(DependencyUnavailable, match="synthetic unavailable dependency"):
+        dependency_assessment(synthetic)
+
+
+def test_non_strict_mode_still_reports_named_blockers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Development mode (#459) keeps naming blockers instead of failing closed."""
+    monkeypatch.delenv("MAISTRO_PARITY_STRICT", raising=False)
+    monkeypatch.delenv("MAISTRO_PARITY_MODE", raising=False)
+    synthetic = Dependency(
+        key="synthetic unavailable dependency",
+        issue=1036,
+        pr=None,
+        description="A SourceProbe pointed at a path that does not exist.",
+        probes=(SourceProbe("tests/cross_product_parity/__does_not_exist__.py"),),
+    )
+
+    assessment = dependency_assessment(synthetic)
+
+    assert not assessment.ready
+    assert len(assessment.blockers) == 1
+    assert "synthetic unavailable dependency" in assessment.blockers[0]
+    assert "issue #1036" in assessment.blockers[0]
+
+
+def test_scaffold_only_scenarios_stay_blocked_until_real_execution_lands() -> None:
+    """A source-probe-only scenario must not read as M1 closure evidence.
+
+    Codex review (PR #1641): once a scenario's named product dependency lands,
+    an import/source-token check alone is not proof the scenario executed a
+    real cross-product Run through the product's own path. Each of scenarios
+    1, 2, 3 and 6 carries its own permanent, evidence-backed blocker
+    (``REAL_*`` in harness.py) precisely so the compound
+    ``dependency_assessment`` call stays unavailable -- and strict mode stays
+    red -- until that scaffold is replaced with a real execution.
+    """
+    for dependency in (
+        REAL_BUILDERS_CONDUCTOR_SCENARIO,
+        REAL_SCHEDULE_CONDUCTOR_SCENARIO,
+        REAL_EVOLVE_CONDUCTOR_SCENARIO,
+        REAL_GOLDEN_PRODUCT_OBSERVATION,
+    ):
+        assert not dependency.available(), (
+            f"{dependency.key} reads as available -- its scaffold-only scenario "
+            "would now pass as if it were real execution evidence"
+        )
+
+    # Scenario 6 concretely, right now: GOLDEN_BASELINES alone is already
+    # satisfied on this branch, so REAL_GOLDEN_PRODUCT_OBSERVATION is the only
+    # thing keeping that scenario from reading as closure evidence. Checked via
+    # `.available()`, not `dependency_assessment()`, so this assertion holds
+    # regardless of MAISTRO_PARITY_STRICT in the ambient test environment.
+    assert GOLDEN_BASELINES.available()
+    assert not REAL_GOLDEN_PRODUCT_OBSERVATION.available()

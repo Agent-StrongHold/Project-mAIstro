@@ -202,6 +202,9 @@ class TestGitHubWebhookFunctionality:
         assert "Add auth" in task.description
         assert "#42" in task.description
         assert task.workspace == "/repos/org/repo"
+        assert task.user_id == "system"
+        assert task.service_principal_id == "github-webhook"
+        assert task.actor_kind == "system"
 
     def test_issue_opened_creates_task(self, app_with_webhook_secret: str) -> None:
         client = _client()
@@ -299,6 +302,9 @@ class TestCIWebhookFunctionality:
         assert task is not None
         assert "org/repo" in task.description
         assert "main" in task.description
+        assert task.user_id == "system"
+        assert task.service_principal_id == "ci-webhook"
+        assert task.actor_kind == "system"
 
     def test_success_ignored(self, app_with_webhook_secret: str) -> None:
         response = _post_ci(_client(), {"status": "success", "repository": "org/repo"})

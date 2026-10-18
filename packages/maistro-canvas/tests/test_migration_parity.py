@@ -35,7 +35,27 @@ class _SingleJobStore:
         self.job = deepcopy(claimed)
         return deepcopy(self.job)
 
-    async def update_job(self, job: GenerationJobRecord, *, org_id: str) -> GenerationJobRecord:
+    async def update_job(
+        self,
+        job: GenerationJobRecord,
+        *,
+        org_id: str,
+        expected_leased_by: str | None = None,
+        expected_attempts: int | None = None,
+        expected_status: str | None = None,
+    ) -> GenerationJobRecord:
+        fences = {
+            "leased_by": expected_leased_by,
+            "attempts": expected_attempts,
+            "status": expected_status,
+        }
+        for field, expected in fences.items():
+            if expected is not None and getattr(self.job, field) != expected:
+                from maistro_canvas.types import JobLeaseLostError
+
+                raise JobLeaseLostError(
+                    f"job {job.id!r} fenced write refused: {field}={expected!r}"
+                )
         self.job = deepcopy(job)
         return deepcopy(self.job)
 

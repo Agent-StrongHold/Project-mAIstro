@@ -15,16 +15,28 @@ import json
 import os
 import random
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import structlog
 from pydantic import ValidationError
 
-from maistro.agents.circuit_breaker import CircuitOpenError, llm_circuit
+from maistro.agents.circuit_breaker import (
+    CircuitOpenError,
+    DomainCircuitBank,
+    FailureDomain,
+    llm_circuits,
+    resolve_failure_domain,
+)
 from maistro.agents.prompts import CONDUCTOR_SYSTEM
 from maistro.agents.types import ConductorOutput, LLMProviderError, PlanOutput, SubTask
+from maistro.capabilities.binding import Binding
+from maistro.capabilities.model_chat import ModelChatEgress, ModelChatRequest
+from maistro.capabilities.providers.llm_gateway import (
+    DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+    MODEL_CHAT_CAPABILITY,
+)
 from maistro.config.model_resolver import resolve_model
 from maistro.config.models import DEFAULT_TIERS, Tier, TierConfig
 from maistro.config.settings import get_settings
@@ -32,7 +44,14 @@ from maistro.constants import DESCRIPTION_LOG_PREVIEW_LEN
 from maistro.http import shared_client
 from maistro.observability.metrics import llm_errors_total, llm_requests_total
 from maistro.observability.tracing import trace_agent
+from maistro.providers.errors import ModelNotFoundError
+from maistro.quota.default_tracker import get_default_quota_tracker
+from maistro.quota.usage_log import get_default_usage_log
+from maistro.quota.usage_report import reported_usage
 from maistro.tasks.models import TaskCreate
+
+if TYPE_CHECKING:
+    from maistro.providers.protocols import LLMRouter
 
 OnResponseHook = Callable[[dict[str, Any], httpx.Response], None]
 
@@ -93,21 +112,145 @@ def build_conductor(
     )
 
 
+async def _governed_completion(
+    call: ConductorCall,
+    user_prompt: str,
+    max_tokens: int,
+    governed_egress: ModelChatEgress,
+    invocation_identity: tuple[str, str, str] | None,
+    invocation_number: int,
+    workspace_id: str,
+    project_id: str,
+) -> str:
+    """Run one conductor completion across canonical Binding -> Invocation (#718).
+
+    The Binding names the deployment's registered default gateway key:
+    Binding-scoped credential routing (#1091) refuses a Binding that names no
+    credential, and acquire still fails closed unless that ref exists in
+    exactly this Workspace/Project scope, so naming it widens nothing.
+    """
+    run_id, node_run_id, attempt_id = invocation_identity or (
+        f"conductor-run-{id(call)}",
+        "conductor-node",
+        "conductor-attempt",
+    )
+    result = await governed_egress.complete(
+        binding=Binding(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            capability=MODEL_CHAT_CAPABILITY,
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+        ),
+        run_id=run_id,
+        node_run_id=node_run_id,
+        attempt_id=attempt_id,
+        effect_key=f"conductor-llm-{invocation_number}",
+        request=ModelChatRequest(
+            model=call.model,
+            messages=[
+                {"role": "system", "content": call.system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+        ),
+    )
+    body = result.body
+    choices = body.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise LLMProviderError("conductor: governed gateway returned no choices")
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        raise LLMProviderError("conductor: governed gateway returned no content")
+    return content
+
+
+async def _record_ungoverned_fallback_usage(model: str, data: dict[str, Any]) -> bool:
+    """Record one raw-gateway call's usage evidence on the process usage log.
+
+    #718: the canonical recording path is Invocation terminalization, and the
+    production server crosses it via ``governed_egress``. A composition that
+    crosses no canonical authority (e.g. a demo bridge with no egress) still
+    leaves evidence here — actual tokens when the gateway reported usage, an
+    explicit ``usage_reported=False`` marker when it did not. Never a silent
+    zero, and never a fabricated Invocation identity: the event carries
+    provider provenance only.
+
+    When the process registered a quota ledger (the Container composition
+    root sets the process default), the same evidence also reaches that
+    ledger — reported tokens as usage, a missing report as an unreported
+    marker — so a process that carries a ledger can never present complete
+    quota percentages while omitting this call class. The ledger write is
+    isolated: a failing ledger must not take down a call that already
+    succeeded.
+
+    Returns whether the gateway reported usage, for the caller's log line.
+    """
+    reported = reported_usage(data)
+    input_tokens, output_tokens = reported or (0, 0)
+    get_default_usage_log().record(
+        model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        provider=model,
+        usage_reported=reported is not None,
+    )
+    tracker = get_default_quota_tracker()
+    if tracker is not None:
+        # Same billing-cycle default as CanonicalInvocationUsageRecorder, so
+        # ungoverned evidence lands in the provider/cycle rows the ledger's
+        # readers already reconcile. This call has no Invocation identity by
+        # construction (egress was None), so it never charges through
+        # ``record_invocation`` — usage tokens via the event-log path, a
+        # missing report via the unreported marker.
+        try:
+            if reported is not None:
+                await tracker.record_usage(model, "monthly", input_tokens, output_tokens)
+            else:
+                record_unreported = getattr(tracker, "record_unreported", None)
+                if record_unreported is not None:
+                    await record_unreported(model, "monthly")
+        except Exception:
+            await logger.awarning(
+                "conductor_ungoverned_quota_ledger_write_failed", model=model, exc_info=True
+            )
+    return reported is not None
+
+
 async def _call_gateway(
     call: ConductorCall,
     user_prompt: str,
     max_tokens: int,
     timeout: float,
     on_response: OnResponseHook | None = None,
+    governed_egress: ModelChatEgress | None = None,
+    invocation_identity: tuple[str, str, str] | None = None,
+    invocation_number: int = 0,
+    workspace_id: str = "default",
+    project_id: str = "agent-runtime",
 ) -> str:
     """POST one chat-completion to the OpenAI-compatible gateway; return the message content.
 
-    `on_response`, if given, is invoked with the parsed body and the raw response
-    right before `content` is returned — the same seam `pm_llm_call.maistro_llm_call`
-    exposes for `maistro.quota.recorder` to hook into. Optional and additive; a
-    failing hook is logged and swallowed since instrumentation on an already-
-    successful call must never turn into a failure the caller has to handle.
+    The production server supplies ``governed_egress`` so this call crosses
+    canonical Binding -> Invocation. Without it, the raw HTTP fallback below
+    still records usage evidence on the process usage log (#718) — an
+    explicitly marked ungoverned call, never invisible usage. ``on_response``
+    is retained only for legacy callers that have not migrated to that
+    authority.
     """
+    if governed_egress is not None:
+        return await _governed_completion(
+            call,
+            user_prompt,
+            max_tokens,
+            governed_egress,
+            invocation_identity,
+            invocation_number,
+            workspace_id,
+            project_id,
+        )
+
     if not call.base_url:
         raise LLMProviderError(
             "conductor: no gateway base_url configured (set MAISTRO_LLM_BASE_URL)"
@@ -127,6 +270,17 @@ async def _call_gateway(
         resp = await client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
+    # This physical call crossed no canonical Invocation authority, so the
+    # canonical recorder never sees it. Record its usage evidence on the
+    # process usage log and the process default quota ledger (when one is
+    # registered) and say so loudly: an ungoverned call class must stay
+    # visible instead of silently shrinking the quota ledger (#718).
+    usage_reported = await _record_ungoverned_fallback_usage(call.model, data)
+    await logger.awarning(
+        "conductor_ungoverned_llm_call",
+        model=call.model,
+        usage_reported=usage_reported,
+    )
     if on_response is not None:
         try:
             on_response(data, resp)
@@ -139,7 +293,8 @@ def _is_retryable(exc: Exception) -> bool:
     """Check if an exception represents a transient failure worth retrying."""
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
         return True
-    if isinstance(exc, httpx.ConnectError):
+    # A connect timeout at the gateway is as transient as a refused one.
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in _RETRYABLE_STATUS_CODES
@@ -153,31 +308,128 @@ def _parse_json_output(raw: str) -> ConductorOutput:
     return ConductorOutput.model_validate(data)
 
 
+def conductor_failure_domain(call: ConductorCall) -> FailureDomain:
+    """The failure domain one conductor gateway call depends on (#1203).
+
+    Scoped to what can fail independently: the sanitized gateway endpoint x
+    the upstream routing target the model string names — never one global
+    process flag.
+    """
+    return resolve_failure_domain(model=call.model, base_url=call.base_url)
+
+
+async def _admitted_fallback_call(
+    call: ConductorCall,
+    circuits: DomainCircuitBank,
+    router: LLMRouter,
+) -> ConductorCall | None:
+    """First fallback-chain candidate whose failure domain admits traffic.
+
+    The chain comes from the router's registry-declared ``fallback_to`` edges
+    (ADR-079), so fallback stays inside canonical routing configuration — it
+    never widens what the call may touch, and quota recording continues on
+    the same ``on_response`` seam. ``None`` when no candidate is admitting.
+    """
+    try:
+        chain = await router.fallback_chain(call.model)
+    except ModelNotFoundError:
+        return None
+    for candidate in chain:
+        if candidate.name == call.model:
+            continue
+        candidate_domain = resolve_failure_domain(
+            model=candidate.name, base_url=call.base_url, provider=candidate.provider
+        )
+        if circuits.admit(candidate_domain):
+            return replace(call, model=candidate.name)
+    return None
+
+
+async def _admit_call(
+    call: ConductorCall,
+    bank: DomainCircuitBank,
+    router: LLMRouter | None,
+) -> tuple[ConductorCall, FailureDomain]:
+    """Resolve the (call, domain) pair allowed to proceed to the gateway.
+
+    Returns the original call when its failure domain admits traffic, or the
+    first router-declared fallback candidate whose own domain admits it.
+    Raises :class:`CircuitOpenError` when still blocked; the re-check also
+    absorbs the race where the domain recovered while the fallback chain was
+    resolving — in that case the original call simply proceeds. The raised
+    error names the blocking breaker (gateway first) and fails fast.
+    """
+    domain = conductor_failure_domain(call)
+    if bank.admit(domain):
+        return call, domain
+    fallback_call: ConductorCall | None = None
+    if router is not None:
+        fallback_call = await _admitted_fallback_call(call, bank, router)
+    if fallback_call is not None:
+        return fallback_call, conductor_failure_domain(fallback_call)
+    if not bank.admit(domain):
+        raise CircuitOpenError(bank.blocking_breaker(domain) or bank.breaker(domain))
+    return call, domain
+
+
 async def _run_with_retry(
     call: ConductorCall,
     prompt: str,
     tier_config: TierConfig,
     max_tokens: int,
     on_response: OnResponseHook | None = None,
+    governed_egress: ModelChatEgress | None = None,
+    invocation_identity: tuple[str, str, str] | None = None,
+    workspace_id: str = "default",
+    project_id: str = "agent-runtime",
+    circuits: DomainCircuitBank | None = None,
+    router: LLMRouter | None = None,
 ) -> ConductorOutput:
-    """Call the gateway with timeout and retry logic for transient failures."""
-    if not llm_circuit.allow_request():
-        raise CircuitOpenError(llm_circuit)
+    """Call the gateway with timeout and retry logic for transient failures.
+
+    Circuit scope (#1203, ADR-038): breaker state is keyed to the call's
+    failure domain — gateway endpoint x upstream provider — so one flaky
+    provider cannot open a breaker that blocks unrelated healthy providers.
+    A gateway-level breaker intentionally represents failure of the shared
+    endpoint itself (connection refused → every provider behind it blocked).
+
+    When the current model's domain is blocked and a ``router`` is supplied,
+    admission falls forward through the router's declared fallback chain to
+    the first candidate whose own domain admits traffic. Without a router the
+    blocked call fails with :class:`CircuitOpenError`, as before.
+    """
+    bank = circuits if circuits is not None else llm_circuits
+    call, domain = await _admit_call(call, bank, router)
 
     last_exc: Exception | None = None
+    shared_failure = False
 
     for attempt in range(tier_config.max_llm_retries):
         try:
             llm_requests_total.inc()
             raw = await asyncio.wait_for(
-                _call_gateway(call, prompt, max_tokens, tier_config.timeout, on_response),
+                _call_gateway(
+                    call,
+                    prompt,
+                    max_tokens,
+                    tier_config.timeout,
+                    on_response,
+                    governed_egress,
+                    invocation_identity,
+                    attempt,
+                    workspace_id,
+                    project_id,
+                ),
                 timeout=tier_config.timeout,
             )
             result = _parse_json_output(raw)
-            llm_circuit.record_success()
+            bank.record_success(domain)
             return result
         except TimeoutError as exc:
+            # A slow response is routed-upstream evidence, not proof the shared
+            # endpoint died — a dead gateway refuses connections instead.
             last_exc = exc
+            shared_failure = False
             await logger.awarning(
                 "llm_timeout",
                 attempt=attempt + 1,
@@ -187,6 +439,10 @@ async def _run_with_retry(
         except Exception as exc:
             if _is_retryable(exc):
                 last_exc = exc
+                # Both connect failures are shared-endpoint evidence: the
+                # TCP/TLS handshake to the gateway never completed, so no
+                # routed upstream could be at fault.
+                shared_failure = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
                 await logger.awarning(
                     "llm_transient_error",
                     attempt=attempt + 1,
@@ -194,11 +450,13 @@ async def _run_with_retry(
                     error=str(exc),
                 )
             else:
-                llm_circuit.record_failure()
+                # A non-retryable response came from the routed upstream, not
+                # from the shared endpoint — scope it to this provider only.
+                bank.record_failure(domain)
                 llm_errors_total.inc(error_type="non_retryable")
                 raise
 
-        llm_circuit.record_failure()
+        bank.record_failure(domain, shared=shared_failure)
         llm_errors_total.inc(error_type="retryable")
 
         # Exponential backoff with jitter before retry
@@ -212,7 +470,16 @@ async def _run_with_retry(
 
 
 @trace_agent("conductor")
-async def run_task(task: TaskCreate, on_response: OnResponseHook | None = None) -> ConductorOutput:
+async def run_task(
+    task: TaskCreate,
+    on_response: OnResponseHook | None = None,
+    *,
+    governed_egress: ModelChatEgress | None = None,
+    invocation_identity: tuple[str, str, str] | None = None,
+    workspace_id: str = "default",
+    project_id: str = "agent-runtime",
+    router: LLMRouter | None = None,
+) -> ConductorOutput:
     """Execute a full engineering task through the conductor pipeline.
 
     This is the main entry point for task execution. It:
@@ -221,8 +488,14 @@ async def run_task(task: TaskCreate, on_response: OnResponseHook | None = None) 
     3. Runs the agent with timeout and retry logic
     4. Returns structured output
 
-    `on_response`, if given, is forwarded to `_call_gateway` on every retry attempt —
-    the same additive quota-recording seam `pm_llm_call.maistro_llm_call` exposes.
+    ``governed_egress`` is forwarded on every physical retry, and each retry
+    gets its own canonical Invocation effect key. ``on_response`` remains a
+    compatibility hook for legacy callers only.
+
+    `router`, if given, lets a provider-scoped circuit block (#1203) fall
+    forward through the router's declared fallback chain to a healthy
+    candidate instead of failing; without one a blocked domain raises
+    `CircuitOpenError`.
 
     If maistro_dry_run is set in settings, returns a mock result without calling any LLM.
     """
@@ -270,7 +543,16 @@ async def run_task(task: TaskCreate, on_response: OnResponseHook | None = None) 
     )
 
     result = await _run_with_retry(
-        call, prompt, tier_config, max_tokens=max_tokens, on_response=on_response
+        call,
+        prompt,
+        tier_config,
+        max_tokens=max_tokens,
+        on_response=on_response,
+        governed_egress=governed_egress,
+        invocation_identity=invocation_identity,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        router=router,
     )
     await logger.ainfo("conductor_complete", success=result.success)
     return result
