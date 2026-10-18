@@ -814,6 +814,46 @@
       "effect_owner": "hitl store settles the cancelled pause"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/home.py",
+      "method": "PUT",
+      "route": "/{workspace_id}/home/layout",
+      "handler": "save_home_layout",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists the Workspace's durable Home layout with optimistic-concurrency revision; viewer members are refused",
+      "effect_owner": "stores.home_layouts"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/home.py",
+      "method": "POST",
+      "route": "/{workspace_id}/home/regions/{region_id}/pin",
+      "handler": "pin_home_region",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists one region's pinned flag; presentation only, the referenced resource is neither copied nor forked",
+      "effect_owner": "stores.home_layouts"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/home.py",
+      "method": "POST",
+      "route": "/{workspace_id}/home/adaptive/dismiss",
+      "handler": "dismiss_home_adaptive",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records a counted, backend-side adaptive dismissal as negative reinforcement; viewer members are refused",
+      "effect_owner": "stores.home_adaptive_dismissals"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/home.py",
+      "method": "POST",
+      "route": "/{workspace_id}/home/adaptive/compose",
+      "handler": "compose_home_adaptive",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists the Agent's composition of the unpinned space; the service refuses pinned writes to Agent and API alike",
+      "effect_owner": "stores.home_layouts"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/install.py",
       "method": "POST",
       "route": "/session",

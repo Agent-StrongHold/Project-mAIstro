@@ -1,0 +1,41 @@
+name: Cross-product parity (strict)
+
+# Manual-only: the #459 M1-closeout invocation of the cross-product parity
+# suite. Development mode (ci.yml's `cross-product-parity` job) accepts a
+# named, assertion-backed dependency blocker and lets the scenario return;
+# MAISTRO_PARITY_STRICT=1 turns every remaining blocker into a failure
+# instead, per #459's two-mode evidence rule.
+#
+# It is expected to fail today on the CONDUCTOR_INSPECTION blocker (#1036)
+# and is deliberately its own workflow rather than a job in ci.yml: a job
+# gated `if: github.event_name == 'workflow_dispatch'` inside a workflow
+# that also has a `pull_request:` trigger is still reachable from a PR by
+# `scripts/check-required-checks.py`'s generator (it does not parse job-level
+# `if:` conditions), so it would be mislabeled "every PR" in
+# docs/ci/REQUIRED-CHECKS.md despite never running there. A workflow with
+# only `workflow_dispatch:` has no PR trigger for that generator to find, so
+# it is correctly absent from the PR check contract instead of needing an
+# advisory entry to excuse a label that was never true.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cross-product-parity-strict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - run: uv sync --locked --extra dev
+      - name: Cross-product spine parity suite (#459, M1 closeout / strict mode)
+        run: uv run pytest tests/cross_product_parity -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+          MAISTRO_PARITY_STRICT: "1"
