@@ -31,3 +31,16 @@ canonical RUNNING reconciliation sweep and the `attempt_executor` active-Attempt
 (`_frontier_has_active_attempt`); that guard's own regression pin lives in
 `tests/graph/durable_runs/test_frontier_active_attempt_guard.py`
 (see `1151-frontier-active-attempt-guard.md`).
+
+This drop closes the lane's persistence-failure acceptance criterion through the
+recovery path, not by an in-line retry: `packages/maistro-core/src/maistro/runs/execution.py`
+is byte-identical to develop, and the criterion "persistence failure after successful
+runtime execution does not silently discard the result, bypass node retry policy, or
+leave an unrecoverable RUNNING Attempt" is what the #1288 contract tests already prove
+on this tree — the answered turn is returned to the caller exactly once and logged,
+the model is never asked again, and `recover_abandoned_attempts` reclaims the expired
+lease and settles the stranded Attempt/NodeRun (executed at this head: the whole
+`TestAPostDispatchRecordingFailureIsNeverRedispatched` class, 18 passed). PR #2153's
+summary bullet claiming an idempotent terminal-write retry in `runs/execution.py` is
+therefore stale branch history, not a description of this tree; correcting that body
+is a GitHub-side edit outside worker authority and remains for the integrator.
