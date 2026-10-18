@@ -85,6 +85,19 @@ types, non-CANCELLED typed causes and extra fields rejected after decode.
   leaf's 36. (Without the bootstrap extra the two extension suites fail to
   collect — an environment gap, not drift; CI installs them.)
 
+- Verification round (`b7c3bee8`, head `23f112446`, independent of the
+  authoring rounds): all five issue commands re-executed — codec suite **36
+  passed, 0 skipped**; P1a model suite **34 passed**; ruff check / format on
+  the leaf pass; `scripts/check-suite-inventory.py` ok (17 suites, core
+  16396 = 16360 + 36, collected without extra flags this time); collected
+  IDs re-dumped and byte-identical to the list above; `git diff
+  --name-status` vs `ab8b3737` shows the two leaf files, both `A` — no
+  production delta. Two mutations re-applied and re-verified live at this
+  head: unconditional cause pop → **20 failed** (exactly the typed rows);
+  `encode_evidence` non-finite → `None` → **3 failed** (exactly the
+  non-finite node); both production files restored byte-identical (`git
+  diff` clean after each).
+
 ## Mutation evidence (each mutation applied, run, then restored byte-identical)
 
 Independently re-verified this round at the synced head `44f16b483` (all 36
