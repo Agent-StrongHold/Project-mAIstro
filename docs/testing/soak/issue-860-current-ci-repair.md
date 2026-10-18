@@ -857,3 +857,68 @@ Only this existing handoff changed; it preserves all prior work.
 
 Progress: checked 1 issue, done 0, skipped 0, errors 1 (root inventory);
 next: resolve the identified prerequisites, not another shakedown-only round.
+
+## Repair checkpoint 814019d2 — starting head 8c8b92a79232
+
+**BLOCKED — fresh validation handoff, not a completed repair.** Scope was frozen
+at issue #860 in the assigned `auto-860` worktree; the initial tree was clean.
+The supplied dispatch snapshot and previous result were inspected. There were
+no driver `check-*.log` files in this job directory. No GitHub mutation, merge,
+source/configuration change, test addition, ledger amendment or inventory-count
+adjustment was made. Only this existing report changes.
+
+### Locally executed evidence
+
+Logs reside in `/home/dev/maistro/jobs/814019d21cc3493abacf836490b41fbc/`.
+These results were executed again, not copied from the previous checkpoint.
+
+| Command | Outcome / log |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1322 reviewed identities, 1322 findings, zero unclassified; `local-vulture.log`. No unbanked identity exists to justify the requested conditional ledger repair. |
+| `uv run ruff check .` | PASS; `local-ruff-check.log` |
+| `uv run ruff format --check .` | PASS: 3306 files; `local-ruff-format.log` |
+| `uv run pytest tests/test_soak_promotion_gates.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py -x -q` | 85 passed; `local-focused-pytest.log` |
+| `uv run pytest packages/maistro-server/tests -x -q` | 566 passed, 8 skipped, 22 deprecation warnings; `local-server-pytest.log`. Skips are not production evidence. |
+| `uv run python scripts/check-suite-inventory.py --suite tests` | FAIL: expected 5353, collected 5354; no duplicate evidence; `local-inventory.log` |
+| `uv run python scripts/check-deployment-claims.py` | PASS (structural only); `local-check-deployment-claims.log` |
+| `uv run python scripts/check-execution-lifecycles.py` | PASS: 19 classified/discovered lifecycles; `local-check-execution-lifecycles.log` |
+| `uv run python -` importing the current driver and asserting the round-30 evidence failures | PASS as a negative check: `sustain_duration` and `exact_rc_artifact` fail; 420.08 seconds; current runner declares `host-uvicorn-preflight`, not the production artifact; `local-evidence-evaluation.log` |
+
+Inventory provenance remains **UNRESOLVED** after bounded review of the merged
+base diff and existing overlap/strict-boolean notes. The observed +1 alone does
+not identify an intentional test addition; no unexplained delta was recorded.
+No tests changed in this checkpoint, so no new inventory note is required.
+
+### Acceptance disposition (all ten criteria)
+
+| Criterion | Executed evidence or explicit limitation |
+| --- | --- |
+| Representative users/Workspaces and workload | **UNVERIFIED**: profile lines 167–183 still exclude required representative surfaces; no new workload run. |
+| At least two supported production replicas | **UNVERIFIED for exact RC**: two-instance ASGI tests execute production middleware, not deployed replicas. |
+| Sustained saturation/reclaim/retry/leak observations | **UNVERIFIED**: evaluator confirms only 420.08 seconds in the selected historical artifact; no long-window run here. |
+| Admission, Goal reconciliation and no duplicate physical work | **UNVERIFIED**: focused admission tests pass, but profile lines 215–218 explicitly distinguish an occurrence admission/cancellation probe from physical Attempt fencing. |
+| Rate/security/degraded behavior cannot be bypassed by replica selection | **FAILED**: executed `test_replica_selection_has_an_independent_production_allowance` observes `[200, 200, 429]` on each replica for the same authenticated and pre-auth identities. Production `api/rate_limit.py:32–37` documents independent budgets. |
+| Required metrics with thresholds | **UNVERIFIED**: sampler regressions pass; profile lines 179–183 still distinguish driver-loop lag from application-loop latency and disclaim worker/pool/reclaim coverage. |
+| Active-work kill/restart with drain/fencing/recovery | **UNVERIFIED**: no deployed replica killed/restarted in this checkpoint; evaluator booleans cannot prove physical-work recovery. |
+| Long-running exact RC artifact/configuration | **NOT MET**: current evaluator rejects the historical duration and artifact; `run_soak.py:744–755` always declares the host runner non-RC. No immutable promotion target supplied. |
+| Findings filed/reclassified before promotion | **UNVERIFIED**: local findings recorded, no remote filing/reclassification performed or claimed. |
+| Machine/human evidence bound to promoted hashes | **UNVERIFIED**: round-30 JSON identifies historical head `c4f45b309`, not this candidate or an exact promoted image/configuration. |
+
+### Architecture and next action
+
+Reachability was rechecked: `maistro_server/main.py:648` installs the tested
+limiter and lines 735/755 mount the task router. Accepted ADR-085's per-principal
+contract does not waive the replica-selection criterion. Accepted
+ADR-081226-69ee and ADR-081226-a66b preserve the canonical Graph/Run/NodeRun/Attempt
+model; ADR-081626-f383 explicitly does not authorize implicit expiry takeover.
+No alternate scheduler, execution authority or authorization path was introduced.
+ADR-082526-547c requires explanatory additive inventory accounting, not banking
+an unattributed difference.
+
+Next: attribute the inventory +1, resolve replica-independent enforcement at the
+existing security boundary, designate the immutable RC/configuration and run the
+representative production workload with physical Attempt correlation for the
+required long window. A ledger edit or longer host preflight cannot substitute.
+
+Progress: checked 1 issue, done 0, skipped 0, errors 1 validation gate (inventory).
+This local commit preserves the evidence and unresolved prerequisites only.
