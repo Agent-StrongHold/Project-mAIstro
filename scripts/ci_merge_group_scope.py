@@ -87,8 +87,17 @@ def _classify_path(path: str, out: dict[str, bool]) -> None:
         out["strike_ladder"] = True
     if hive or server or core or _under(path, "docker-compose.yml", "docker-compose", "tests/e2e"):
         out["hive_e2e"] = True
-    if _under(path, "packages") and (
-        path.endswith("pyproject.toml") or "/src/" in path or path.endswith("/__init__.py") or hive
+    # The floor-install gate lives inside the wheel-imports job, so a change
+    # to the gate script itself must fire that leg — otherwise a PR touching
+    # only the gate skips its own end-to-end validation at the merge-queue SHA.
+    if path == "scripts/verify-minimum-dependencies.py" or (
+        _under(path, "packages")
+        and (
+            path.endswith("pyproject.toml")
+            or "/src/" in path
+            or path.endswith("/__init__.py")
+            or hive
+        )
     ):
         out["wheel_imports"] = True
     if (

@@ -396,7 +396,10 @@ PAUSE_RESUME_CONDITIONS: dict[str, str] = {
     PAUSE_AWAITING_HUMAN_REVIEW: RESUME_ON_ANSWER,
     PAUSE_AWAITING_ROLE_DELEGATE: RESUME_ON_ANSWER,
     PAUSE_AWAITING_REMOTE_DELEGATION: RESUME_ON_ANSWER,
-    PAUSE_AWAITING_HARNESS: RESUME_ON_ANSWER,
+    # The node checkpoints a canonical dispatch receipt and observation ordinal
+    # before polling. Timer re-entry observes that same effect; it never repeats
+    # the dispatch or manufactures a human/system answer (#1192).
+    PAUSE_AWAITING_HARNESS: RESUME_ON_ELAPSED,
     PAUSE_WAITING_ON_JIRA_SUBTASKS: RESUME_ON_ELAPSED,
     # Reconciliation is the polling half of a delegation whose transport
     # acceptance is unknown: re-entering re-reads the receipt sources (the

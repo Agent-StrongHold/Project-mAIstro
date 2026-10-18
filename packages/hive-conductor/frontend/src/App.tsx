@@ -199,7 +199,12 @@ function AppRoutes() {
                   <Route path="mcp" element={<MCP />} />
                   <Route path="topology" element={<Topology />} />
                   <Route path="optimizer" element={<OptimizationInbox />} />
-                  <Route path="optimization-inbox" element={<OptimizationInbox />} />
+                  {/* #1417: /optimization-inbox is an alias, not a second
+                      surface -- it redirects to the canonical /optimizer so
+                      a direct hit lands on the one nav-linked destination
+                      instead of rendering the same page with no active nav
+                      entry. */}
+                  <Route path="optimization-inbox" element={<Navigate to="/optimizer" replace />} />
                   <Route path="messages" element={<MessageBoard />} />
                   <Route path="quotas" element={<Quotas />} />
                   <Route path="audit" element={<AuditLog />} />
