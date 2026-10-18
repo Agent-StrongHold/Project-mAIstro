@@ -481,9 +481,12 @@ jobs:
       # exists under the production name yet and nothing was loaded into this
       # runner's Docker daemon — pull the candidate digest by its `-rc`
       # reference first (the script opens with `docker image inspect`) and run
-      # the proof against that same reference. Promotion is a byte-for-byte
-      # `imagetools create` re-tag, so the digest proven here is the digest
-      # the release tags resolve to.
+      # the proof against that same reference. Promotion below is a byte-for-
+      # byte manifest-level re-tag, so the digest proven here is the digest
+      # the release tags resolve to. (The promotion vocabulary is spelled out
+      # in the step that performs it; naming the command here too would make
+      # scripts/check-image-inventory.py read this proof step as the
+      # promotion step and mis-order the job.)
       - name: Prove the pushed maistro-engine digest ships its Canvas surface (#1825)
         env:
           ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}

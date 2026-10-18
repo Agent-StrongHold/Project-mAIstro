@@ -140,8 +140,11 @@ def test_the_workflows_still_run_the_canvas_smoke() -> None:
         "ci.yml no longer proves the built engine image ships its Canvas surface"
     )
     release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    # The release build is push-only into the `-rc` quarantine repo, so the
+    # exact digest is proved via its `-rc` reference; promotion re-tags that
+    # same digest, so this is still the digest the release tags resolve to.
     assert (
-        'scripts/smoke-engine-canvas.sh "${IMAGE_NAMESPACE}/maistro-engine@${ENGINE_DIGEST}"'
+        'scripts/smoke-engine-canvas.sh "${IMAGE_NAMESPACE}/maistro-engine-rc@${ENGINE_DIGEST}"'
         in release
     ), (
         "release.yml no longer consumes the Canvas proof against the exact "
