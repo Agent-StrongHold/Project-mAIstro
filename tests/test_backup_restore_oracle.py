@@ -223,3 +223,55 @@ def test_oracle_lib_refuses_to_run_without_oracle_psql() -> None:
         check=True,
     )
     assert "REFUSED" in out.stdout, out.stdout + out.stderr
+
+
+# ── Coprocess lifecycle: a dead psql session must fail cleanly ───────────────
+# CI regression: when the snapshot-export psql dies, bash reaps the coprocess
+# and unsets the whole ORACLE_TX array; the pre-fix oracle_end_snapshot then
+# aborted backup.sh under set -u with "ORACLE_TX[1]: unbound variable"
+# (the `test` and Coverage gate jobs at 0f84314dcf51). These run the REAL lib
+# against fake oracle_psql() doubles — no Docker, no PostgreSQL.
+
+
+def _run_lib_probe(body: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-c", f"set -euo pipefail\nsource {ORACLE_LIB}\n{body}"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+
+def test_oracle_end_snapshot_survives_a_dead_session() -> None:
+    """A psql that exits before COMMIT must give oracle_end_snapshot a clean,
+    distinct failure — never a bash unbound-variable abort of the caller."""
+    out = _run_lib_probe(
+        # An oracle_psql that dies immediately, printing nothing.
+        "oracle_psql() { :; }\n"
+        "oracle_begin_snapshot 2>/dev/null || true\n"
+        "if oracle_end_snapshot 2>end.err; then echo END_OK; else echo END_FAILED; fi\n"
+        'if grep -q "unbound variable" end.err; then echo UNBOUND_CRASH; else echo NO_CRASH; fi\n'
+        "rm -f end.err\n"
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "END_FAILED" in out.stdout and "NO_CRASH" in out.stdout, out.stdout + out.stderr
+    assert "unbound variable" not in out.stderr, out.stderr
+
+
+def test_oracle_begin_snapshot_rejects_a_garbage_snapshot_id() -> None:
+    """A session echoing anything but a snapshot id (stub output, a banner) must
+    fail begin_snapshot with a distinct message — the id is interpolated into
+    SET TRANSACTION SNAPSHOT '<id>', so garbage must not flow into SQL."""
+    out = _run_lib_probe(
+        # A session that echoes non-id garbage (a stub, a banner) and stays
+        # alive reading stdin, so the write/read race always resolves the
+        # same way and the id validation is what rejects the garbage.
+        'oracle_psql() { echo "fixture data"; cat; }\n'
+        "if oracle_begin_snapshot 2>begin.err; then echo BEGAN; else echo BEGIN_FAILED; fi\n"
+        'if grep -q "not a PostgreSQL snapshot id" begin.err; then echo REJECTED; else echo ACCEPTED; fi\n'
+        "rm -f begin.err\n"
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "BEGIN_FAILED" in out.stdout and "REJECTED" in out.stdout, out.stdout + out.stderr
+    assert "unbound variable" not in out.stderr, out.stderr

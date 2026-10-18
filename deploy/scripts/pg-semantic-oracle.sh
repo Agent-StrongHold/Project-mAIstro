@@ -84,16 +84,41 @@ oracle_begin_snapshot() {
   # right after oracle_end_snapshot closes its stdin; callers run under
   # set -u, so wait must use this saved copy instead of the special var.
   ORACLE_TX_PID_SAVED="${ORACLE_TX_PID}"
-  local snap
-  if ! printf 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SELECT pg_export_snapshot();\n' \
+  # Everything below races a psql that may die at any moment, so:
+  #   * writes into the coprocess pipe can hit a reader-less pipe; at SIGPIPE's
+  #     default disposition that KILLS the sourcing script mid-drill instead of
+  #     surfacing as a plain EPIPE this library can report — ignore SIGPIPE for
+  #     the duration of the session (restored on every exit path);
+  #   * when bash reaps the dead coprocess it unsets the whole ORACLE_TX
+  #     array, so every fd reference must be guarded: touching ORACLE_TX[n]
+  #     under set -u would abort the caller with "ORACLE_TX[1]: unbound
+  #     variable" instead of this library's own clean failure.
+  trap '' PIPE
+  local snap msg
+  if [[ -z "${ORACLE_TX[1]-}" ]] \
+    || ! printf 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SELECT pg_export_snapshot();\n' \
       >&"${ORACLE_TX[1]}"; then
-    echo "[pg-semantic-oracle] FAIL: could not talk to the snapshot-export session" >&2
+    msg="could not talk to the snapshot-export session"
+  elif [[ -z "${ORACLE_TX[0]-}" ]] \
+    || ! read -t 30 -r snap <&"${ORACLE_TX[0]}" || [[ -z "${snap}" ]]; then
+    msg="pg_export_snapshot() returned no snapshot id (is oracle_psql_coproc line-buffered?)"
+  elif [[ ! "${snap}" =~ ^[0-9A-Za-z][0-9A-Za-z:.-]{1,63}$ ]]; then
+    # The id is interpolated into SET TRANSACTION SNAPSHOT '<id>' and handed
+    # to pg_dump --snapshot=<id>, so a session that answers with anything
+    # else — an error banner, a wrapper script's output — must fail HERE with
+    # a distinct message rather than flow garbage (or a quote) into SQL and
+    # the dump command. Real ids are dash-separated hex fields such as
+    # 00000003-000001AF-1; the guard accepts that shape and rejects
+    # whitespace and shell/SQL metacharacters.
+    msg="pg_export_snapshot() returned \"${snap}\", which is not a PostgreSQL snapshot id"
+  fi
+  if [[ -n "${msg:-}" ]]; then
+    echo "[pg-semantic-oracle] FAIL: ${msg}" >&2
+    oracle_end_snapshot || true
+    trap - PIPE
     return 1
   fi
-  if ! read -t 30 -r snap <&"${ORACLE_TX[0]}" || [[ -z "${snap}" ]]; then
-    echo "[pg-semantic-oracle] FAIL: pg_export_snapshot() returned no snapshot id (is oracle_psql_coproc line-buffered?)" >&2
-    return 1
-  fi
+  trap - PIPE
   # Consumed by the caller (see the function's comment about the main shell).
   # shellcheck disable=SC2034
   ORACLE_SNAPSHOT="${snap}"
@@ -115,12 +140,31 @@ oracle_collect_evidence() {
 }
 
 # End the snapshot-exporting transaction opened by oracle_begin_snapshot.
+# Tolerates a session that already died: when bash reaps a dead coprocess it
+# unsets the whole ORACLE_TX array, so the fds are gone exactly when the
+# exported snapshot is. That must surface as this library's failure return —
+# not as an "ORACLE_TX[1]: unbound variable" abort of the sourcing script
+# under set -u.
 oracle_end_snapshot() {
   local rc=0
-  if ! printf 'COMMIT;\n' >&"${ORACLE_TX[1]}"; then
+  # Same SIGPIPE race as oracle_begin_snapshot: the COMMIT write can lose
+  # against a session that just died.
+  trap '' PIPE
+  if [[ -z "${ORACLE_TX_PID_SAVED:-}" ]]; then
+    echo "[pg-semantic-oracle] FAIL: oracle_end_snapshot called before oracle_begin_snapshot" >&2
+    trap - PIPE
+    return 1
+  fi
+  if [[ -n "${ORACLE_TX[1]-}" ]]; then
+    if ! printf 'COMMIT;\n' >&"${ORACLE_TX[1]}"; then
+      rc=1
+    fi
+    eval "exec ${ORACLE_TX[1]}>&-" 2>/dev/null || true
+  else
+    echo "[pg-semantic-oracle] FAIL: snapshot-export session exited before COMMIT" >&2
     rc=1
   fi
-  eval "exec ${ORACLE_TX[1]}>&-" 2>/dev/null || true
   wait "${ORACLE_TX_PID_SAVED}" 2>/dev/null || rc=1
+  trap - PIPE
   return "${rc}"
 }

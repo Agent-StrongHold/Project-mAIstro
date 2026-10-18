@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +17
+  tests/: +19
 ---
 # 1881 — restore-verification oracle made snapshot-consistent and dump-byte-independent
 
@@ -41,3 +41,18 @@ archive + evidence agree and the restore matches the snapshot's counts; (3) the 
 `verify-restore.sh` passes end-to-end on artifacts produced by the real oracle library;
 (4) semantic loss (dropped table; tampered evidence) is rejected as SEMANTIC FAIL.
 Known limits: the oracle proves structure and cardinality, not cell-level content.
+
+## CI-repair round at 0f84314dcf51 (2026-10-18)
+
+CI's `test` and `coverage-gate` jobs failed on the pre-existing
+`tests/test_backup_permissions.py`: its docker stub exited the snapshot-export psql
+session instantly, bash reaped the coprocess and unset the `ORACLE_TX` array, and the
+oracle library aborted backup.sh under `set -u` (`ORACLE_TX[1]: unbound variable`).
+Repaired on three fronts, +2 tests: the library now treats a dead session and a
+garbage "snapshot id" (the id is interpolated into `SET TRANSACTION SNAPSHOT '<id>'`)
+as its own clean failure classes; the two new always-on behavioral tests in
+`test_backup_restore_oracle.py` run the real lib against fake `oracle_psql()` doubles;
+and the permission test's stub now speaks the one-session protocol so the real
+backup.sh completes end-to-end in the stub environment, with its artifact-inventory
+assertion updated to the #1881 contract (dump/provenance/schema/rowcounts + sha256
+car + deployed ref) while keeping every permission assertion (dir 0700, files 0600).
