@@ -35,6 +35,7 @@ import os
 import shutil
 import subprocess
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -108,15 +109,64 @@ def _bash(script: str) -> subprocess.CompletedProcess[str]:
 
 
 def _wait_ready(container: str) -> None:
-    for _ in range(60):
+    """Wait until the server answers SQL on the target database.
+
+    `pg_isready` alone is not readiness for this image: the official
+    postgres entrypoint runs a temporary server during init that accepts
+    connections *before* the `maistro` database exists, then stops it and
+    starts the real server. A poll landing inside that window returns 0 and
+    the first statement races the restart — seen live as CI run 39144525906,
+    where all four tests of this module errored at the fixture line with
+    `psql ... returned non-zero exit status 2` (connection went bad) after
+    `pg_isready` had passed. Probing the statement path itself closes the
+    window: the probe only succeeds once the real server is answering SQL
+    on the target database, so there is no earlier state it can mistake for
+    readiness. Budget and container-state diagnostics mirror the hardened
+    `verify-restore.sh` loop (120 probes at 1s; a container that has exited
+    can never become ready, and its logs are the only evidence that failure
+    class can offer).
+    """
+    deadline = time.monotonic() + 120.0
+    while True:
         probe = subprocess.run(
-            ["docker", "exec", container, "pg_isready", "-U", PG_USER],
+            [
+                "docker",
+                "exec",
+                container,
+                "psql",
+                "-X",
+                "-Atq",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-U",
+                PG_USER,
+                "-d",
+                PG_DB,
+                "-c",
+                "SELECT 1;",
+            ],
             capture_output=True,
         )
         if probe.returncode == 0:
             return
+        state = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", container],
+            capture_output=True,
+            text=True,
+        )
+        if state.returncode != 0 or state.stdout.strip() != "true":
+            logs = subprocess.run(["docker", "logs", container], capture_output=True, text=True)
+            pytest.fail(
+                f"characterization PostgreSQL {container} exited before answering SQL; "
+                f"its logs:\n{logs.stdout}\n{logs.stderr}"
+            )
+        if time.monotonic() >= deadline:
+            last_error = probe.stderr.decode(errors="replace").strip()[-400:]
+            pytest.fail(
+                f"characterization PostgreSQL {container} never answered SQL within 120s "
+                f"(last probe: {last_error})"
+            )
         time.sleep(1)
-    pytest.fail(f"characterization PostgreSQL {container} did not become ready")
 
 
 def _source_lib() -> str:
@@ -403,3 +453,95 @@ def test_semantic_loss_is_rejected(
     proc = _run_drill(tmp_path, "backup")
     assert proc.returncode != 0, "tampered evidence must fail the drill"
     assert "SEMANTIC FAIL" in proc.stderr, f"{proc.stdout}\n{proc.stderr}"
+
+
+# --- readiness wait itself ----------------------------------------------------
+#
+# The four characterizations above exercise `_wait_ready` only on a healthy
+# image; these two pin the wait's *decision rule*, because that rule is what
+# CI run 39144525906 proved wrong in the old pg_isready-only version: the
+# socket ping answers 0 during the official image's temporary initdb phase,
+# while the statement path it fronts still fails. Both fakes drive the
+# module's `subprocess.run` directly — no container needed.
+
+
+class _FakeCompleted:
+    """Shape `subprocess.run(..., capture_output=True)` consumers read here."""
+
+    def __init__(self, returncode: int, stdout: str = "", stderr: bytes = b"") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_wait_ready_concludes_on_the_statement_path_not_pg_isready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pg_isready answering 0 must never end the wait by itself.
+
+    Regression for CI run 39144525906: the socket ping reported ready while
+    the image's temporary initdb server was still up, the fixture's first
+    statement raced the restart, and all four characterizations errored with
+    psql exit 2. The wait may only conclude when a statement succeeds against
+    the target database — even while pg_isready keeps saying ready."""
+    from tests.test_restore_oracle_characterization import _wait_ready
+
+    seen: Counter[str] = Counter()
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> _FakeCompleted:
+        argv = " ".join(str(part) for part in cmd)
+        if "inspect" in argv:
+            seen["inspect"] += 1
+            return _FakeCompleted(0, stdout="true\n")
+        if "psql" in argv:
+            seen["psql"] += 1
+            if seen["psql"] < 3:
+                return _FakeCompleted(
+                    2,
+                    stderr=b"psql: error: FATAL: the database system is starting up\n",
+                )
+            return _FakeCompleted(0)  # real server answering SQL
+        # The old implementation polled pg_isready here and concluded on its
+        # rc — the exact defect (run 39144525906). Any socket-ping command
+        # reaching the fake means the wait is trusting the wrong probe again.
+        raise AssertionError(f"unexpected readiness command: {argv}")
+
+    monkeypatch.setattr("tests.test_restore_oracle_characterization.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "tests.test_restore_oracle_characterization.time.sleep", lambda _seconds: None
+    )
+
+    _wait_ready("container")  # must return, not fail, and only via the statement path
+
+    assert seen["psql"] == 3, "two failed probes must not end the wait; the third succeeds"
+
+
+def test_wait_ready_fails_fast_with_logs_when_the_container_exited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A container that has exited can never become ready: say so with its
+    logs immediately, mirroring the hardened verify-restore.sh loop, instead
+    of burning the budget on probes that cannot succeed."""
+    from tests.test_restore_oracle_characterization import _wait_ready
+
+    probes: Counter[str] = Counter()
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> _FakeCompleted:
+        argv = " ".join(str(part) for part in cmd)
+        if "psql" in argv:
+            probes["psql"] += 1
+            return _FakeCompleted(2, stderr=b"psql: error: connection to server was lost\n")
+        if "inspect" in argv:
+            probes["inspect"] += 1
+            return _FakeCompleted(0, stdout="false\n")  # exited: initdb crashed
+        if "logs" in argv:
+            probes["logs"] += 1
+            return _FakeCompleted(0, stdout="postgres: initdb failed: no space left\n")
+        raise AssertionError(f"unexpected command: {argv}")
+
+    monkeypatch.setattr("tests.test_restore_oracle_characterization.subprocess.run", fake_run)
+
+    with pytest.raises(pytest.fail.Exception, match="exited before answering SQL"):
+        _wait_ready("container")
+
+    assert probes == {"psql": 1, "inspect": 1, "logs": 1}
