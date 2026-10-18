@@ -2281,15 +2281,15 @@ export interface paths {
          *     answers "what is this Run doing", and answers nothing for a person who
          *     does not yet know which Run is blocked on them.
          *
-         *     `limit` bounds *pending items* returned, not a fixed prefix of the
-         *     PAUSED Runs in the store (#1109). Machine-only pauses and pauses outside
-         *     `project_id` carry no items, so filtering a single fixed-size page after
-         *     the fact could return an empty answer forever even while real human work
-         *     sits durably PAUSED further back in the ordering. Instead this pages the
-         *     store's PAUSED listing with an advancing keyset cursor and keeps reading
-         *     until it has enough items, the store runs out of PAUSED Runs, or it has
-         *     inspected `_MAX_PENDING_SCAN_RECORDS` records — the same bounded-scan
-         *     contract `expire_hitl_pauses` uses (#1056).
+         *     `limit` bounds *pending items* returned (#1109), and human eligibility is
+         *     decided by the store's pause-kind projection *before* that limit: the
+         *     query only ever reads PAUSED Runs whose durable frontier declares a human
+         *     pause, so machine-only pauses and pauses outside `project_id` cannot
+         *     occupy a page that real human work behind them needs — there is no
+         *     prefix, eligible or otherwise, that a repeated request rereads forever.
+         *     What remains is bounded by the same contract as `expire_hitl_pauses`
+         *     (#1056): each scope walk stops at `bounded_limit` items,
+         *     `MAX_PENDING_SCAN_RECORDS` projected rows, or the end of the projection.
          */
         get: operations["list_pending_human_work_v1_hitl_pending_get"];
         put?: never;

@@ -7,9 +7,12 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapp
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from maistro.runs.model import RunStatus
 
 if TYPE_CHECKING:
+    from .fair_scan import ScanPage
     from .protocol import DurableRunStore
     from .types import DurableRunRecord
 
@@ -298,6 +301,32 @@ def _deadline_from_pause(
     return deadline.astimezone(UTC)
 
 
+def has_active_hitl_pause(
+    active_node_ids: Collection[str],
+    metadata: Mapping[str, object],
+) -> bool:
+    """Whether any active frontier node carries a durable human pause entry.
+
+    This is the pause-kind projection behind the pending-discovery index
+    (#1109): unlike :func:`earliest_hitl_deadline_from_state`, it does not
+    require a deadline, so a human pause without one is still queryable. The
+    projection is a candidate filter only — callers revalidate against the
+    canonical record and its PAUSED NodeRuns before disclosing anything.
+    """
+    pauses_raw = metadata.get("pauses", {})
+    pauses = pauses_raw if isinstance(pauses_raw, Mapping) else {}
+    for node_id in active_node_ids:
+        pause_raw = pauses.get(node_id)
+        if isinstance(pause_raw, Mapping) and pause_raw.get("kind") == "hitl":
+            return True
+    return False
+
+
+def record_has_hitl_pause(record: DurableRunRecord) -> bool:
+    """Whether the record's durable frontier holds at least one human pause."""
+    return has_active_hitl_pause(record.graph_state.active_node_ids, record.graph_state.metadata)
+
+
 def earliest_hitl_deadline_from_state(
     active_node_ids: Collection[str],
     metadata: Mapping[str, object],
@@ -334,6 +363,155 @@ def earliest_hitl_deadline(record: DurableRunRecord) -> datetime | None:
         record.graph_state.metadata,
         run_id=record.run_id,
     )
+
+
+def pending_hitl_node_ids(record: DurableRunRecord) -> tuple[str, ...]:
+    """The frontier nodes waiting on a person, per canonical state.
+
+    A durable human pause on a PAUSED NodeRun — the same predicate the
+    discovery door discloses under: the projected row only nominates a
+    candidate, and this re-derives eligibility from the record itself, so a
+    degraded or stale projection can nominate but never disclose. Several
+    nodes may wait independently on one Run; each is returned individually.
+    """
+    pauses_raw = record.graph_state.metadata.get("pauses")
+    if not isinstance(pauses_raw, Mapping):
+        return ()
+    paused_nodes = {
+        node_run.node_id for node_run in record.node_runs if node_run.status is RunStatus.PAUSED
+    }
+    pending: list[str] = []
+    for node_id, pause in pauses_raw.items():
+        if str(node_id) not in paused_nodes:
+            continue
+        if isinstance(pause, Mapping) and pause.get("kind") == "hitl":
+            pending.append(str(node_id))
+    return tuple(pending)
+
+
+#: Ceiling on projected records one pending-discovery scope walk inspects,
+#: independent of how many turn out to carry human work. With the pause-kind
+#: projection (#1109) the store pages only rows whose durable frontier
+#: declares a human pause, so this is a defensive bound on degraded rows, not
+#: the thing that stands between a person and their work.
+MAX_PENDING_SCAN_RECORDS = 2000
+
+#: Minimum rows requested per page, regardless of how small the caller's item
+#: target is, so a small target does not force one projected row per round
+#: trip.
+PENDING_SCAN_PAGE_SIZE = 100
+
+
+@dataclass(frozen=True)
+class PendingHitlScan:
+    """What one bounded pending-discovery walk read (#1109).
+
+    ``records`` are the projected, membership-revalidated records still
+    carrying pending human work at read time. ``exhausted`` says whether the
+    walk ended because the projection ran out (True) rather than because the
+    inspection ceiling or the item limit stopped it with ordering left — the
+    caller's signal that a later read may find more. The store reports its
+    own progress separately (:class:`ScanPage`), so a page that assembles to
+    nothing eligible — foreign-workspace rows on a Workspace-wide walk, or a
+    stale projected row — advances the walk instead of reading as the end.
+    """
+
+    records: tuple[DurableRunRecord, ...] = ()
+    exhausted: bool = False
+
+
+async def _admit_pending_items(
+    page: ScanPage[DurableRunRecord, Any],
+    authorization: HitlAuthorization,
+    found: list[DurableRunRecord],
+    items: int,
+    limit: int,
+) -> tuple[int, bool]:
+    """Admit one page's records that still carry live, permitted human work.
+
+    A record joins ``found`` only when canonical state still shows a pending
+    human pause — a projected row canonical state disqualifies carries
+    nothing a revocation could withhold and spends only its place in the
+    page — and the caller's authorization still permits its Workspace (#364).
+    Returns the running item total and whether the item limit stopped the
+    walk mid-page, unread remainder and all.
+    """
+    for record in page.items:
+        node_ids = pending_hitl_node_ids(record)
+        if not node_ids:
+            continue
+        if not await authorization.permits(record.run.workspace_id):
+            continue
+        found.append(record)
+        items += len(node_ids)
+        if items >= limit:
+            return items, True
+    return items, False
+
+
+async def pending_hitl_records(
+    store: DurableRunStore,
+    *,
+    authorization: HitlAuthorization,
+    workspace_id: str,
+    project_id: str | None,
+    limit: int,
+) -> PendingHitlScan:
+    """One authorized scope's pending human pauses, bounded (#1109).
+
+    ``limit`` bounds pending *items* (a Run can wait on a person at several
+    nodes), not a prefix of the PAUSED Runs in the store. The walk pages the
+    store's pause-kind projection — human eligibility decided before any page
+    is cut, so machine-only pauses and other Projects' work cannot occupy a
+    page that real human work behind them needs — and revalidates live
+    membership per item-carrying record before including it: the caller's
+    Workspace-id snapshot is a candidate page, never the disclosure decision
+    (#364).
+
+    ``project_id`` narrows the walk to one Project; ``None`` walks the whole
+    Workspace. The store's index cannot carry Workspace scope, so the store
+    filters it from each assembled page and keeps paging — a page that
+    assembles to nothing eligible moves ``resume_after`` past the foreign
+    rows instead of ending the walk, which is what keeps this Workspace's
+    work behind another tenant's readable. Rows beyond the store's per-call
+    inspection ceiling are the one thing that can still stop a Workspace-wide
+    walk short, and the returned ``exhausted`` says so honestly.
+
+    The walk stops at ``limit`` items, ``MAX_PENDING_SCAN_RECORDS`` inspected
+    rows, or the end of the projection — the same bounded-scan contract
+    ``expire_hitl_pauses`` uses (#1056). No scan position is consumed, so a
+    repeated request — or one that starts after a restart — cannot make a
+    pending item unreachable.
+    """
+    if limit <= 0 or not authorization.workspace_ids:
+        return PendingHitlScan()
+    cursor: tuple[str, str] | None = None
+    inspected = 0
+    items = 0
+    found: list[DurableRunRecord] = []
+    while items < limit and inspected < MAX_PENDING_SCAN_RECORDS:
+        page_size = min(
+            max(limit, PENDING_SCAN_PAGE_SIZE),
+            MAX_PENDING_SCAN_RECORDS - inspected,
+        )
+        page = await store.list_hitl_paused(
+            limit=page_size,
+            project_id=project_id,
+            workspace_id=workspace_id,
+            after=cursor,
+        )
+        inspected += page.inspected or 0
+        if page.resume_after is not None:
+            cursor = page.resume_after
+        items, filled = await _admit_pending_items(page, authorization, found, items, limit)
+        if filled:
+            # The item limit stopped the walk with ordering left — including
+            # any unread remainder of this page — so a later read may find
+            # more, whatever the page's own exhaustion said.
+            break
+        if page.exhausted:
+            return PendingHitlScan(records=tuple(found), exhausted=True)
+    return PendingHitlScan(records=tuple(found))
 
 
 async def _due_candidates(
@@ -455,15 +633,22 @@ async def expire_hitl_pauses(
 
 
 __all__ = [
+    "MAX_PENDING_SCAN_RECORDS",
+    "PENDING_SCAN_PAGE_SIZE",
     "HitlAuthorization",
     "HitlAuthorizationRequired",
     "HitlDeadlineElapsed",
     "HitlDeadlinePending",
     "HitlDelegationEvidence",
     "HitlSettlementError",
+    "PendingHitlScan",
     "earliest_hitl_deadline",
     "expire_hitl_pauses",
+    "has_active_hitl_pause",
     "hitl_deadline",
     "hitl_pause",
+    "pending_hitl_node_ids",
+    "pending_hitl_records",
+    "record_has_hitl_pause",
     "settlement_time",
 ]
