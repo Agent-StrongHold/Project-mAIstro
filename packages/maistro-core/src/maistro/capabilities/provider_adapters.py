@@ -62,7 +62,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
 from maistro.credentials.types import CredentialRecord
-from maistro.extensions.attribution import ExtensionAttribution
 from maistro.providers.types import ModelMetadata, ModelTier
 
 if TYPE_CHECKING:
@@ -70,6 +69,7 @@ if TYPE_CHECKING:
 
     from maistro.capabilities.effect_context import CapabilityEffectContext
     from maistro.capabilities.providers.llm_gateway import ModelChatRequest
+    from maistro.extensions.attribution import ExtensionAttribution
     from maistro.providers.registry import InMemoryProviderRegistry
     from maistro.types.config import AdapterInstanceConfig, AgentConfig
 
@@ -385,6 +385,13 @@ class ProviderAdapterSpec(BaseModel):
         """
         if not self.version:
             return None
+        # Imported here, not at module level: this module is imported by
+        # ``maistro.capabilities.__init__``, and ``maistro.extensions``'
+        # package ``__init__`` pulls ``isolation → sandbox → runs → graph``,
+        # whose ``harness_executor`` re-enters the still partially-initialized
+        # ``maistro.capabilities`` (import cycle, #976 sync).
+        from maistro.extensions.attribution import ExtensionAttribution
+
         return ExtensionAttribution(
             extension_id=self.adapter_id,
             version=self.version,
