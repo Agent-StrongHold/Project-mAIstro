@@ -18,8 +18,6 @@ from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import uuid4
 
-from uuid import uuid4
-
 from maistro.sqlite_schema import serialized_schema_upgrade
 
 
@@ -34,7 +32,6 @@ class HandlerDeliveryContract(StrEnum):
 
     AT_LEAST_ONCE_IDEMPOTENT = "at_least_once_idempotent"
     UNSAFE = "unsafe"
-
 
 
 if TYPE_CHECKING:
