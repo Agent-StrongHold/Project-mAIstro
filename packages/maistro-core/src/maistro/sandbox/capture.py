@@ -123,6 +123,75 @@ async def _collect_streams(
     return captures[0], captures[1]
 
 
+async def _race_termination(
+    process: asyncio.subprocess.Process,
+    streams_done: asyncio.Task[tuple[_StreamCapture, _StreamCapture]],
+    overflow_task: asyncio.Task[bool],
+    *,
+    timeout_s: float,
+) -> tuple[bool, bool]:
+    """Wait until the streams finish, a stream overflows, or the clock runs out.
+
+    Returns ``(timed_out, output_limit_exceeded)``. Overflow wins over the
+    other two when they race in the same event-loop turn: the retained-prefix
+    flags on the captures are the authoritative record either way. A stop is
+    acted on here, before the stream collection below, so no stream keeps
+    filling a host pipe while we wait.
+    """
+    done, _pending = await asyncio.wait(
+        (streams_done, overflow_task),
+        timeout=max(timeout_s, 0),
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    output_limit_exceeded = overflow_task in done
+    timed_out = not output_limit_exceeded and streams_done not in done
+    if output_limit_exceeded or timed_out:
+        await _terminate(process)
+    return timed_out, output_limit_exceeded
+
+
+async def _reap_process(
+    process: asyncio.subprocess.Process,
+    *,
+    started: float,
+    timeout_s: float,
+    timed_out: bool,
+    output_limit_exceeded: bool,
+) -> tuple[bool, bool]:
+    """Settle the child's exit after the capture outcome is known.
+
+    A natural completion gets the unspent slice of the wall-clock budget;
+    a termination path gets one bounded reap so an unkillable descendant
+    cannot turn a bounded capture into an unbounded executor wait.
+    """
+    if timed_out or output_limit_exceeded:
+        with suppress(TimeoutError):
+            await asyncio.wait_for(process.wait(), timeout=_TERMINATION_WAIT_S)
+        return timed_out, output_limit_exceeded
+    remaining = max(timeout_s - (asyncio.get_running_loop().time() - started), 0)
+    try:
+        await asyncio.wait_for(process.wait(), timeout=remaining)
+    except TimeoutError:
+        timed_out = True
+        await _terminate(process)
+    return timed_out, output_limit_exceeded
+
+
+async def _cancel_capture_tasks(*tasks: asyncio.Task[object]) -> None:
+    """Cancel every helper task and absorb their outcomes."""
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _dispose_overflow(overflow_task: asyncio.Task[bool]) -> None:
+    """Retire the overflow waiter; it may still be pending at return time."""
+    if not overflow_task.done():
+        overflow_task.cancel()
+    await asyncio.gather(overflow_task, return_exceptions=True)
+
+
 async def capture_process(
     process: asyncio.subprocess.Process,
     *,
@@ -147,49 +216,28 @@ async def capture_process(
     streams_done = asyncio.create_task(_wait_for_streams(stdout_task, stderr_task))
     overflow_task = asyncio.create_task(overflow.wait())
     started = asyncio.get_running_loop().time()
-    timed_out = False
-    output_limit_exceeded = False
-
     try:
-        done, _pending = await asyncio.wait(
-            (streams_done, overflow_task),
-            timeout=max(timeout_s, 0),
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if overflow_task in done:
-            output_limit_exceeded = True
+        try:
+            timed_out, output_limit_exceeded = await _race_termination(
+                process, streams_done, overflow_task, timeout_s=timeout_s
+            )
+            stdout_capture, stderr_capture = await _collect_streams(stdout_task, stderr_task)
+            timed_out, output_limit_exceeded = await _reap_process(
+                process,
+                started=started,
+                timeout_s=timeout_s,
+                timed_out=timed_out,
+                output_limit_exceeded=output_limit_exceeded,
+            )
+        except asyncio.CancelledError:
+            # Cancellation must not leave a workload running under its own
+            # timeout: kill first, settle the helper tasks, then re-raise so
+            # the executor regains control immediately.
             await _terminate(process)
-        elif streams_done not in done:
-            timed_out = True
-            await _terminate(process)
-
-        stdout_capture, stderr_capture = await _collect_streams(stdout_task, stderr_task)
-
-        if not timed_out and not output_limit_exceeded:
-            remaining = max(timeout_s - (asyncio.get_running_loop().time() - started), 0)
-            try:
-                await asyncio.wait_for(process.wait(), timeout=remaining)
-            except TimeoutError:
-                timed_out = True
-                await _terminate(process)
-        else:
-            # `_terminate` already waited once; do not turn an unusual
-            # unkillable descendant into an unbounded executor wait.
-            with suppress(TimeoutError):
-                await asyncio.wait_for(process.wait(), timeout=_TERMINATION_WAIT_S)
-    except asyncio.CancelledError:
-        await _terminate(process)
-        for task in (stdout_task, stderr_task, streams_done, overflow_task):
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(
-            stdout_task, stderr_task, streams_done, overflow_task, return_exceptions=True
-        )
-        raise
+            await _cancel_capture_tasks(stdout_task, stderr_task, streams_done, overflow_task)
+            raise
     finally:
-        if not overflow_task.done():
-            overflow_task.cancel()
-        await asyncio.gather(overflow_task, return_exceptions=True)
+        await _dispose_overflow(overflow_task)
         _close_transport(process)
 
     # A stream may finish in the same event-loop turn as the overflow event;

@@ -141,6 +141,33 @@ async def test_a_busy_loop_is_killed_by_the_cpu_budget(sandbox) -> None:
 
 
 @requires_bwrap
+async def test_unbounded_output_cannot_exhaust_the_host(sandbox) -> None:
+    """Output exhaustion against the production backend (#1197, #80 conformance).
+
+    The sandbox's CPU/address-space/file budgets do not bound bytes flowing
+    into host-owned pipes, so capture itself must: a `yes`-style workload
+    flooding both streams at once is terminated at the host-selected limit,
+    the retained prefix stays within the per-stream policy, and the result
+    reports truncation and the stable overflow exit code instead of pretending
+    the strings are the complete output.
+    """
+    from maistro.sandbox import DEFAULT_OUTPUT_CAPTURE_BYTES
+
+    result = await run(
+        sandbox,
+        "while :; do printf 'o%.0s' $(seq 1 4096); printf 'e%.0s' $(seq 1 4096) >&2; done",
+        timeout_s=10,
+    )
+
+    assert result.exit_code == 125  # OUTPUT_LIMIT_EXIT_CODE: host policy, not the workload's
+    assert result.output_limit_exceeded is True
+    assert result.timed_out is False
+    assert result.stdout_truncated or result.stderr_truncated
+    assert result.stdout_bytes_retained <= DEFAULT_OUTPUT_CAPTURE_BYTES
+    assert result.stderr_bytes_retained <= DEFAULT_OUTPUT_CAPTURE_BYTES
+
+
+@requires_bwrap
 async def test_ordinary_work_still_runs_under_all_of_them(sandbox) -> None:
     """The limits are only worth having if they do not break the sandbox for
     the work it exists to run."""

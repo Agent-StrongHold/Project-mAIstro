@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 import sys
+import time
 
 import pytest
 
@@ -116,6 +119,65 @@ class TestExec:
 
         assert config.max_stdout_bytes == MAX_OUTPUT_CAPTURE_BYTES
         assert config.max_stderr_bytes == MAX_OUTPUT_CAPTURE_BYTES
+
+    async def test_cancelling_exec_kills_the_workload_without_wedging(self) -> None:
+        """Cancellation during a live exec regains control and kills the child (#1197).
+
+        `capture_process` treats CancelledError as "terminate the process group,
+        then re-raise". Without that handler a cancelled `exec` would return a
+        task result while a workload kept running under its own timeout, or the
+        await would never settle at all. The child here is silent so the cancel
+        lands while capture is mid-wait rather than after an overflow kill.
+        """
+
+        def live_probe_children() -> list[int]:
+            """Live (non-zombie) children of this process carrying the marker."""
+            mine = os.getpid()
+            found: list[int] = []
+            for entry in os.listdir("/proc"):
+                if not entry.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{entry}/stat", "rb") as stat:
+                        # Fields after the comm name; field 2 is ppid.
+                        ppid = int(stat.read().rsplit(b")", 1)[1].split()[1])
+                    if ppid != mine:
+                        continue
+                    with open(f"/proc/{entry}/cmdline", "rb") as cmdline:
+                        argv = cmdline.read()
+                except (FileNotFoundError, ProcessLookupError, IndexError, ValueError):
+                    continue  # raced with exit; a zombie's cmdline is empty anyway
+                if b"maistro-1197-cancel-probe" in argv:
+                    found.append(int(entry))
+            return found
+
+        backend = FakeSandboxBackend()
+        config = SandboxConfig(max_stdout_bytes=1024, max_stderr_bytes=1024)
+        instance = await backend.spawn(config=config)
+        script = "import time; time.sleep(60)  # maistro-1197-cancel-probe"
+
+        task = asyncio.create_task(
+            backend.exec(instance, [sys.executable, "-c", script], timeout_s=30)
+        )
+        for _ in range(50):
+            if live_probe_children():
+                break
+            await asyncio.sleep(0.05)
+        assert live_probe_children(), "child never started; probe invalid"
+        assert not task.done()
+
+        started = time.monotonic()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The executor regains control promptly instead of waiting out the
+        # workload's own 30s timeout.
+        assert time.monotonic() - started < 5.0
+        # And the cancelled workload is dead, not orphaned until its timeout.
+        deadline = time.monotonic() + 3.0
+        while live_probe_children() and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        assert live_probe_children() == []
 
 
 class TestWriteReadFile:
