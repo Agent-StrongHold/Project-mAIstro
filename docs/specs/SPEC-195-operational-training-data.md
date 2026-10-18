@@ -14,12 +14,8 @@ implements: []
 related:
   - maistro-engine#SPEC-194
   - maistro-engine#SPEC-175
-contracts:
-  - boundary
-  - behavioral
-tests:
-  - packages/maistro-core/tests/training/test_collector.py
-  - packages/maistro-core/tests/training/test_exemplar_library.py
+contracts: []
+tests: []
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
@@ -200,6 +196,14 @@ earlier**: it captures the full candidate slate *during* a task, not just the fi
 outcome. Both are needed; they are not duplicates.
 
 ## Reference bundle
+
+Test-evidence disposition (#812): front matter cited
+`packages/maistro-core/tests/training/test_collector.py` and
+`.../test_exemplar_library.py` — neither exists; no `maistro.training`
+module has landed. Those were planned tests, not proof; removed until they
+exist. Front matter declares no contracts for the same reason: a contract
+kind is a promise cross-checked against marker-carrying tests, so it is
+re-declared together with the tests that carry it.
 
 Reference implementation in git history at `d6603c9^`,
 path `potential-dead-code/code-worth-implementing-from-Conductor/snapshot/`:

@@ -121,6 +121,27 @@ jobs:
           # diff gate measures execution paths nothing ran.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
+      # The sandbox suites measured here (core's tools/sandbox, evolve's
+      # swebench/sandbox_exec) really run `docker run python:3.12-slim`.
+      # On a cold runner the first such test pays the registry pull inside its
+      # own 30s pytest-timeout budget, and when the registry stalls the test
+      # dies as a timeout that has nothing to do with the code under test
+      # (#965 repair: `coverage (no services)` red at 538676f7 with the event
+      # loop parked in selector.poll behind an unbounded `docker run`). This
+      # is the #204 pattern — fetch the external image once, with retries, so
+      # per-test budgets measure code, not registry latency.
+      - name: Pre-pull sandbox image (retry transient registry faults)
+        run: |
+          for attempt in 1 2 3; do
+            if docker pull python:3.12-slim; then
+              exit 0
+            fi
+            echo "::warning::docker pull python:3.12-slim failed (attempt $attempt/3); retrying" >&2
+            sleep $((attempt * 5))
+          done
+          echo "::error::could not pull python:3.12-slim after 3 attempts" >&2
+          exit 1
+
       # ----- Pillar 1: coverage (line + branch ≥95% on touched files) -----
       # C2/#287: measured over the PyPI publish set (core, canvas, evolve, rsi,
       # bootstrap — the PyPI publish set),
@@ -132,6 +153,18 @@ jobs:
       # config when another package's tests configure structlog first) — the
       # same cross-package state-pollution risk ci.yml's `test` job already
       # avoids by giving every package its own pytest step.
+      #
+      # This job is the ONLY executor of these five suites (#654). ci.yml's
+      # `test` job no longer re-runs them on the same SHA: both checks are
+      # independently required by the PR ruleset, so the second execution was
+      # duplicate computation, not independent evidence. The partition — these
+      # five run exactly once, here, under `coverage run`; `test` keeps
+      # server, Turing, design, the extension suites, the root integration
+      # tree, Hive, the frontends, the cross-suite leakage proof, and the
+      # suite-inventory check — is enforced by
+      # tests/test_unit_suite_execution_partition.py. Service-backed variants
+      # (coverage (MinIO), coverage (PostgreSQL), ci.yml's postgres and
+      # object-storage jobs) are distinct evidence and stay.
       - name: pytest with coverage (line + branch)
         env:
           PYTHONPATH: >-
@@ -369,9 +402,27 @@ jobs:
       # its suite joins this producer by that same rule: elsewhere its
       # PostgreSQL legs skip and the store scores as untested code.
       #
+      # `memory/user_model` joins for that same reason (#1047):
+      # PostgresUserModelStore is PG-only, needs the migrated chain's
+      # user-model tables (056 after two develop-collision re-parents; 054
+      # when written), and without a producer here the diff gate scores the
+      # new store as untested code while its conformance cases pass in the
+      # `postgres` job.
+      #
       # The claim-driven `task_idempotency` purge (#325) is one file, not the
       # whole `tasks` suite: its PostgreSQL legs, including the renewed-claim
-      # race, are the only ones under `tasks` that need a server.
+      # race, are the only ones under `tasks` that need a server. The atomic
+      # task-admission proof joins it: its one-commit Run/binding test cannot
+      # run in the no-service producer, so excluding it would score the new PG
+      # seam from fake-pool paths only.
+      #
+      # `backlog` joins by that same rule (#102): `backlog/pg_store.py` is a
+      # PostgreSQL store whose conformance and cutover suites are parametrised
+      # over memory/sqlite/postgres and gate the PostgreSQL leg on
+      # MAISTRO_TEST_PG_DSN. Without a producer here the leg skipped and the
+      # diff gate scored the new store's 238 changed lines at 25.6% while the
+      # same arcs passed against a real server in the `postgres` job — the
+      # exact shape #231 documented for scheduling.
       - name: Apply the chain, then the suites that need a schema (under coverage)
         run: |
           uv run alembic upgrade head
@@ -384,9 +435,34 @@ jobs:
             packages/maistro-core/tests/graph \
             packages/maistro-core/tests/projects \
             packages/maistro-core/tests/workspaces \
+            packages/maistro-core/tests/goals \
             packages/maistro-core/tests/scheduling \
             packages/maistro-core/tests/tasks/test_idempotency_purge_driven.py \
-            packages/maistro-core/tests/security/test_elevation_durable.py -v --tb=short
+            packages/maistro-core/tests/tasks/test_pg_admission_atomicity_live.py \
+            packages/maistro-core/tests/security/test_elevation_durable.py \
+            packages/maistro-core/tests/memory/user_model \
+            packages/maistro-core/tests/quota -v --tb=short
+          # The backlog suite runs as its own invocation, not appended to the
+          # list above (#102). Its `test_backlog_stores_import_no_rsi` pins the
+          # #82 exit condition — importing the work-source substrate must not
+          # import RSI — by asserting on `sys.modules`, which is process-global:
+          # one shared pytest process with the container-wiring suites ahead of
+          # it reads as a violation no import of its own caused. Same shape as
+          # the structlog pollution that split the publish-set producers into
+          # per-package invocations in the first place.
+          uv run coverage run --append --branch \
+            --source=packages/maistro-core/src/maistro \
+            -m pytest packages/maistro-core/tests/backlog -v --tb=short
+          # `tests/quota` is here for the same reason the canvas lane below is:
+          # test_pg_invocation_quota_boundary.py gates all three of its tests on
+          # MAISTRO_TEST_PG_DSN and skips without it, so in `coverage (no
+          # services)` PgInvocationQuota contributes nothing. Without a producer
+          # here the diff gate scored 176 changed lines in pg_invocation_quota.py
+          # at 23% -- untested code by the measurement, covered by tests that
+          # pass against a real server. The rest of tests/quota is fast and
+          # service-free; it runs twice rather than splitting one directory
+          # across two jobs by filename, which is the kind of split that goes
+          # stale the next time a file is added (#1196/#718).
           # The canvas org-scope lane (#857) put PostgresAssetStore and the
           # PgCanvasStore job/composite writers behind MAISTRO_TEST_PG_DSN.
           # Their suites are dual-leg: the PostgreSQL half skips in
@@ -563,8 +639,33 @@ jobs:
           # without naming that file here the module's changed lines measure
           # 0% in this producer and the diff-coverage gate fails on tests
           # that exist and pass but were never pointed at this --source.
+          # The same holds for the #813 walk/disposition logic in
+          # maistro_registry.cli: its tests live in the root suite's
+          # tests/tools/registry/test_cli.py, and the root producer measures
+          # --source=scripts only, so cli.py's changed lines scored 0% here
+          # until that file was named in this producer's pytest args too.
+          # Same shape as #812 (merged from develop): the CLI's
+          # cited-test-path lint and the validator's test-evidence debts are
+          # exercised by root tests under tests/tools/registry/ (this
+          # package's own suite has no cli or validator cases), so those two
+          # files are named here or the changed lines measure 0% and the
+          # diff-coverage gate rejects the commit.
           uv run coverage run --append --branch --source=packages/maistro-registry/src/maistro_registry \
-            -m pytest packages/maistro-registry/tests tests/test_check_citation_status.py --timeout=30 -q
+            -m pytest packages/maistro-registry/tests tests/test_check_citation_status.py \
+              tests/tools/registry/test_cli.py tests/tools/registry/test_validator.py --timeout=30 -q
+          # The extension host harness (#974) joins the measured set: it is
+          # the code third-party CI executes, so an unmeasured change there
+          # would be indistinguishable from a tested one. Its suite needs no
+          # services (stdlib-only runtime), so this producer cannot flake on
+          # infrastructure the job does not have.
+          uv run coverage run --append --branch --source=packages/maistro-ext-harness/src/maistro_ext_harness \
+            -m pytest packages/maistro-ext-harness/tests --timeout=30 -q
+          # maistro-ext-sdk joins the measured set with #949: the manifest
+          # contract an external author codes against is exactly the tree
+          # where an uncovered bug bites hardest, and nothing else runs its
+          # suite under coverage.
+          uv run coverage run --append --branch --source=packages/maistro-ext-sdk/src/maistro_ext_sdk \
+            -m pytest packages/maistro-ext-sdk/tests --timeout=30 -q
           # hive-conductor's pytest-bdd is declared in that workspace member's
           # OWN `dev` extra, and `--all-extras` includes every optional
           # dependency of the ROOT project only — not of each member. So the
@@ -595,8 +696,22 @@ jobs:
           #
           # Its PostgreSQL-dependent legs skip in this job, which has no server.
           # That is fine for this --source: no gate script needs a database.
+          #
+          # The #981 lifecycle-proof test is named here for the same reason
+          # tests/test_check_citation_status.py is named in the registry
+          # producer above: the suite that exercises a measured scripts/ file
+          # lives in a package suite this producer would otherwise never run,
+          # so the file's changed lines would measure 0% and the diff-coverage
+          # gate would fail on evidence that exists and passes.
+          #
+          # tests/test_model_check_consumer_claim.py is named for #884 (M8-A4):
+          # it is in tests/ so this producer would run it anyway, but naming
+          # it also roots scripts/model_check_consumer_claim.py for
+          # scripts/check-reachability.py, which matches tooling call paths by
+          # literal filename in workflow text — the same reason the
+          # outcome-routing bench has its own workflow.
           uv run coverage run --append --branch --source=scripts \
-            -m pytest tests/ --timeout=30 -q
+            -m pytest tests/ tests/test_model_check_consumer_claim.py packages/maistro-core/tests/extensions/test_lifecycle_proof.py --timeout=30 -q
           uv run coverage xml -o coverage.xml
 
       # ----- Pillar 1b: diff coverage (the lines this candidate added) -----
@@ -894,6 +1009,7 @@ jobs:
             -i third_party \
             packages/maistro-bootstrap/src packages/maistro-canvas/src \
             packages/maistro-core/src packages/maistro-design/src \
+            packages/maistro-ext-sdk/src \
             packages/maistro-evolve/src packages/maistro-registry/src \
             packages/maistro-rsi/src packages/maistro-server/src \
             packages/maistro-turing/src > xenon.log 2>&1 || true # the exit code is re-derived from xenon.log below
@@ -972,6 +1088,227 @@ jobs:
       # This ratchet closes that blind spot at module granularity.
       - name: reachability ratchet (built-but-never-wired modules)
         run: uv run python scripts/check-reachability.py
+
+      # The installed-workspace proof validator (#1878) is release tooling, and
+      # the ratchet above counts a scripts/ module as wired only when a
+      # workflow names its file — so this step is its call path, not an
+      # ornament. It exercises the real CLI end to end, which the in-process
+      # tests in tests/release/test_installed_workspace_proof_schema.py cannot:
+      # a synthetic, correctly hashed envelope is valid structural evidence but
+      # must fail closeout with SYNTHETIC_NOT_CLOSEOUT, asserted here through
+      # actual process exit codes. This checks envelope form only; it never
+      # asserts that a run occurred or that evidence is authentic.
+      - name: installed proof envelope validator fails closed via CLI (#1878)
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          uv run python - "$tmp" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          bundle = root / "bundle"
+          bundle.mkdir(parents=True)
+
+          profile_id = "ci-reviewed-profile-1878"
+          commit = "b" * 40  # shape-conformant stand-in; envelope form, not authenticity
+          artifact = hashlib.sha256(
+              b"maistro installed-workspace proof envelope conformance"
+          ).hexdigest()
+
+          payloads = {
+              "install.log": b"synthetic install log (CI conformance, #1878)\n",
+              "effective-config.json": b'{"synthetic": true}\n',
+              "execution.json": b'{"synthetic": true}\n',
+              "restart.json": b'{"synthetic": true}\n',
+              "isolation.json": b'{"synthetic": true}\n',
+              "junit.xml": b"<testsuites synthetic='true' />\n",
+          }
+          profile = {
+              "schema_version": 1,
+              "profile_id": profile_id,
+              "browser_login_applicable": False,
+          }
+          (root / "reviewed-profile.json").write_text(json.dumps(profile, indent=2) + "\n")
+
+          def dump(doc):
+              return (json.dumps(doc, indent=2) + "\n").encode()
+
+          results = {
+              "schema_version": 1,
+              "candidate_sha256": artifact,
+              "profile_id": profile_id,
+              "scenarios": [
+                  {
+                      "id": family,
+                      "outcome": "PASS",
+                      "reason_code": None,
+                      "evidence_paths": ["install.log"],
+                  }
+                  for family in ("INSTALL", "EXECUTE", "RESTART", "ISOLATE", "FAIL-CLOSED")
+              ],
+              "subchecks": [
+                  {
+                      "id": "BROWSER_LOGIN",
+                      "outcome": "NOT_APPLICABLE",
+                      "reason_code": "browser-login-not-applicable",
+                      "evidence_paths": [],
+                  }
+              ],
+          }
+          on_disk = {**payloads, "results.json": dump(results)}
+          manifest = {
+              "schema_version": 1,
+              "evidence_kind": "synthetic",
+              "candidate": {"commit": commit, "artifact_sha256": artifact},
+              "profile_id": profile_id,
+              "files": [
+                  {"path": name, "sha256": hashlib.sha256(data).hexdigest()}
+                  for name, data in sorted(on_disk.items())
+              ],
+          }
+          for name, data in on_disk.items():
+              (bundle / name).write_bytes(data)
+          (bundle / "manifest.json").write_bytes(dump(manifest))
+          print(f"synthetic bundle written to {bundle}")
+          PY
+          uv run python scripts/validate-installed-workspace-proof.py \
+            --bundle "$tmp/bundle" --profile "$tmp/reviewed-profile.json" \
+            --mode structural > "$tmp/structural-report.json"
+          grep -q '"valid": true' "$tmp/structural-report.json"
+          if uv run python scripts/validate-installed-workspace-proof.py \
+              --bundle "$tmp/bundle" --profile "$tmp/reviewed-profile.json" \
+              --mode closeout > "$tmp/closeout-report.json"; then
+            echo "::error::synthetic envelope passed closeout — validator is not fail-closed"
+            exit 1
+          fi
+          grep -q "SYNTHETIC_NOT_CLOSEOUT" "$tmp/closeout-report.json" || {
+            echo "::error::closeout failed without SYNTHETIC_NOT_CLOSEOUT:"
+            cat "$tmp/closeout-report.json"
+            exit 1
+          }
+          echo "installed proof envelope validator fails closed: structural exit 0, closeout exit 1 (SYNTHETIC_NOT_CLOSEOUT)"
+
+      # The selected-model-call validator (#1879) is release tooling, and the
+      # ratchet above counts a scripts/ module as wired only when a workflow
+      # names its file — so this step is its call path, not an ornament. It
+      # exercises the real CLI end to end, which the in-process tests in
+      # tests/release/test_installed_workspace_request_chain.py cannot: a
+      # synthetic, fully consistent selected-call document passes while a
+      # dispatch spliced onto a foreign Invocation fails with the first
+      # ordered join code, asserted through actual process exit codes. This
+      # checks record consistency only; it never asserts that a model call
+      # occurred or that any evidence is authentic.
+      - name: selected model-call validator fails closed via CLI (#1879)
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          uv run python - "$tmp" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          doc = {
+              "schema_version": 1,
+              "evidence_kind": "synthetic",
+              "request": {
+                  "request_id": "req-ci-1879",
+                  "run_id": "run-ci-1879",
+                  "workspace_id": "ws-ci-1879",
+                  "project_id": "proj-ci-1879",
+                  "actor_principal_id": "principal-ci-1879",
+                  "agent_id": "agent-ci-1879",
+              },
+              "run": {
+                  "run_id": "run-ci-1879",
+                  "workspace_id": "ws-ci-1879",
+                  "project_id": "proj-ci-1879",
+                  "actor_principal_id": "principal-ci-1879",
+              },
+              "node_run": {
+                  "node_run_id": "nr-ci-1879",
+                  "run_id": "run-ci-1879",
+                  "node_id": "node-ci-1879",
+              },
+              "attempt": {
+                  "attempt_id": "att-ci-1879",
+                  "node_run_id": "nr-ci-1879",
+                  "ordinal": 1,
+              },
+              "invocation": {
+                  "invocation_id": "inv-ci-1879",
+                  "run_id": "run-ci-1879",
+                  "node_run_id": "nr-ci-1879",
+                  "attempt_id": "att-ci-1879",
+                  "workspace_id": "ws-ci-1879",
+                  "project_id": "proj-ci-1879",
+                  "effect_key": "effect-ci-1879",
+                  "logical_effect": True,
+                  "status": "completed",
+                  "binding": {
+                      "binding_id": "bind-ci-1879",
+                      "workspace_id": "ws-ci-1879",
+                      "project_id": "proj-ci-1879",
+                      "capability": "model.chat",
+                      "provider_name": "synthetic-provider",
+                  },
+                  "usage": {
+                      "units": "tokens",
+                      "input_units": 11,
+                      "output_units": 7,
+                      "cost_cents": None,
+                      "model": "synthetic-model",
+                      "model_version": "synthetic-model-2026-01-01",
+                      "provider": "synthetic-provider",
+                  },
+              },
+              "dispatch": {
+                  "dispatch_id": "disp-ci-1879",
+                  "invocation_id": "inv-ci-1879",
+                  "provider_name": "synthetic-provider",
+                  "requested_model": "synthetic-model",
+                  "provider_request_id": None,
+                  "response_kind": "provider",
+                  "result_present": True,
+                  "usage_provenance": {"source": "reported", "evidence_ref": "usage.json"},
+              },
+              "expected_model": {
+                  "provider_name": "synthetic-provider",
+                  "requested_model": "synthetic-model",
+              },
+          }
+          (root / "call.json").write_text(json.dumps(doc, indent=2) + "\n")
+          # Splice the dispatch onto a foreign Invocation: the first ordered
+          # join failure must be DISPATCH_LINK_MISMATCH, nothing else.
+          spliced = json.loads(json.dumps(doc))
+          spliced["dispatch"]["invocation_id"] = "inv-other"
+          (root / "spliced.json").write_text(json.dumps(spliced, indent=2) + "\n")
+          print(f"synthetic selected-call documents written to {root}")
+          PY
+          uv run python scripts/installed_workspace_proof_contract.py \
+            "$tmp/call.json" > "$tmp/valid-report.json"
+          grep -q '"valid": true' "$tmp/valid-report.json"
+          if uv run python scripts/installed_workspace_proof_contract.py \
+              "$tmp/spliced.json" > "$tmp/spliced-report.json"; then
+            echo "::error::spliced selected-call document passed — validator is not fail-closed"
+            exit 1
+          fi
+          grep -q "DISPATCH_LINK_MISMATCH" "$tmp/spliced-report.json" || {
+            echo "::error::spliced document failed without DISPATCH_LINK_MISMATCH:"
+            cat "$tmp/spliced-report.json"
+            exit 1
+          }
+          echo "selected model-call validator fails closed: valid document exit 0, spliced dispatch exit 1 (DISPATCH_LINK_MISMATCH)"
+
+      # Credential authority is checked against the same reachable module graph;
+      # a renamed unscoped store must fail before it can become a route dependency.
+      - name: credential authority (reachable stores are classified and scoped)
+        run: uv run python scripts/check-credential-authority.py
 
       # Credential authority is checked against the same reachable module graph;
       # a renamed unscoped store must fail before it can become a route dependency.
@@ -1209,6 +1546,13 @@ jobs:
       # enforceable meanwhile is that the set of direct callers cannot grow.
       - name: model egress (the direct-caller set may only shrink)
         run: uv run python scripts/check-model-egress.py
+
+      # M1-D (#1613): foreign harnesses are admitted as governed graph nodes —
+      # Provider -> Binding -> Invocation. A product module that references
+      # OpenClaw/Pi and performs its own HTTP/subprocess transport is a raw
+      # side door: same harness, no Binding, no Invocation, no parent Run.
+      - name: foreign-harness egress (OpenClaw/Pi transport stays inside the Provider boundary)
+        run: uv run python scripts/check-foreign-harness-egress.py
 
       - name: Architecture fitness functions
         env:
