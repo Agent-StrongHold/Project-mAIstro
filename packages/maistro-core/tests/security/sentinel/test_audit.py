@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 
 import pytest
 
 from maistro.security._types import AuditEntry
 from maistro.security.sentinel.audit import InMemoryAuditLog
 from maistro.security.sentinel.signing import AuditSignatureError, AuditSigner
+
+
+def _without_proof(entry: AuditEntry) -> AuditEntry:
+    """Strip the ADR-073 proof fields so a retained record compares equal to
+    the entry the caller passed to ``log``. Records are frozen, and the store
+    attaches the proof to the retained copy, not the caller's object."""
+    return replace(entry, signature="", signing_key_id="", proof_type="")
 
 
 class TestInMemoryAuditLog:
@@ -18,7 +26,7 @@ class TestInMemoryAuditLog:
         entry = AuditEntry(boundary="tool_call", user_id="u1")
         await log.log(entry)
         entries = await log.get_entries()
-        assert entries == [entry]
+        assert [_without_proof(e) for e in entries] == [entry]
 
     @pytest.mark.asyncio
     async def test_get_entries_returns_reverse_chronological(self) -> None:
@@ -28,7 +36,7 @@ class TestInMemoryAuditLog:
         await log.log(first)
         await log.log(second)
         entries = await log.get_entries()
-        assert entries == [second, first]
+        assert [_without_proof(e) for e in entries] == [second, first]
 
     @pytest.mark.asyncio
     async def test_filters_by_user_id(self) -> None:
@@ -38,7 +46,7 @@ class TestInMemoryAuditLog:
         await log.log(e1)
         await log.log(e2)
         entries = await log.get_entries(user_id="u1")
-        assert entries == [e1]
+        assert [_without_proof(e) for e in entries] == [e1]
 
     @pytest.mark.asyncio
     async def test_filters_by_agent_id(self) -> None:
@@ -48,7 +56,32 @@ class TestInMemoryAuditLog:
         await log.log(e1)
         await log.log(e2)
         entries = await log.get_entries(agent_id="a1")
-        assert entries == [e1]
+        assert [_without_proof(e) for e in entries] == [e1]
+
+    @pytest.mark.asyncio
+    async def test_filters_by_org_id(self) -> None:
+        log = InMemoryAuditLog()
+        e1 = AuditEntry(boundary="b", user_id="u1", org_id="org-a")
+        e2 = AuditEntry(boundary="b", user_id="u1", org_id="org-b")
+        await log.log(e1)
+        await log.log(e2)
+        entries = await log.get_entries(org_id="org-a")
+        assert [_without_proof(e) for e in entries] == [e1]
+
+    @pytest.mark.asyncio
+    async def test_default_read_is_system_scope_only(self) -> None:
+        log = InMemoryAuditLog()
+        tenant = AuditEntry(boundary="tenant", user_id="u1", org_id="org-a")
+        system = AuditEntry(boundary="system", user_id="u1")
+        await log.log(tenant)
+        await log.log(system)
+
+        assert [_without_proof(e) for e in await log.get_entries()] == [system]
+
+    @pytest.mark.asyncio
+    async def test_rejects_ambiguous_scope(self) -> None:
+        with pytest.raises(ValueError, match="pass '' for an unscoped read"):
+            await InMemoryAuditLog().get_entries(org_id=None)  # type: ignore[arg-type]
 
     @pytest.mark.asyncio
     async def test_respects_limit(self) -> None:
@@ -76,8 +109,11 @@ class TestInMemoryAuditLog:
         assert stored.signing_key_id == log.signer.key_id
         assert log.verify(stored)
 
-        stored.detail = "forged"
-        assert not log.verify(stored)
+        # Records are frozen: tampering is modeled the way the durable stores
+        # model it (see test_sqlite/test_pg_audit) — a replaced copy of the
+        # retained row whose decision bytes differ.
+        forged = replace(stored, detail="forged")
+        assert not log.verify(forged)
 
     @pytest.mark.asyncio
     async def test_a_different_key_cannot_verify_a_decision(self) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from maistro.persistence.audit_pages import AuditPage, make_page, page_query
 from maistro.security.sentinel.signing import AuditSigner
 from maistro.types.security import AuditEntry
 
@@ -15,6 +16,7 @@ _ALLOWED_FILTER_COLUMNS: frozenset[str] = frozenset(
     {
         "user_id",
         "agent_id",
+        "org_id",
     }
 )
 
@@ -45,12 +47,13 @@ class PgAuditLog:
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO audit_log
-                   (boundary, user_id, team_id, agent_id,
+                   (boundary, user_id, org_id, team_id, agent_id,
                     tool_name, verdict, detail, trace_id, request_id,
-                   signature, signing_key_id, proof_type)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)""",
+                    signature, signing_key_id, proof_type)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)""",
                 entry.boundary,
                 entry.user_id,
+                getattr(entry, "org_id", "") or "",
                 getattr(entry, "team_id", ""),
                 entry.agent_id,
                 getattr(entry, "tool_name", "") or "",
@@ -63,6 +66,29 @@ class PgAuditLog:
                 signed.proof_type,
             )
 
+    async def get_page(
+        self,
+        *,
+        org_id: str = "",
+        user_id: str | None = None,
+        boundary: str | None = None,
+        denied: bool | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> AuditPage:
+        query, params = page_query(
+            org_id=org_id,
+            user_id=user_id,
+            boundary=boundary,
+            denied=denied,
+            limit=limit,
+            cursor=cursor,
+            postgres=True,
+        )
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+        return make_page(rows, limit)
+
     async def get_entries(
         self,
         *,
@@ -71,7 +97,16 @@ class PgAuditLog:
         org_id: str = "",
         limit: int = 100,
     ) -> list[AuditEntry]:
-        """Retrieve audit entries with optional filtering."""
+        """Retrieve audit entries with optional filtering.
+
+        ``org_id`` is always an exact SQL predicate. The empty string is the
+        explicit system/unscoped scope and therefore reads only system rows;
+        this adapter never turns an omitted scope into an all-organization
+        read. A caller that needs a tenant read must pass its non-empty org id.
+        """
+        if org_id is None:
+            raise ValueError("org_id cannot be None; pass '' for an unscoped read")
+
         conditions: list[str] = []
         params: list[Any] = []
         idx = 1
@@ -81,6 +116,7 @@ class PgAuditLog:
             filters.append(("user_id", user_id))
         if agent_id:
             filters.append(("agent_id", agent_id))
+        filters.append(("org_id", org_id))
 
         for col, value in filters:
             if col not in _ALLOWED_FILTER_COLUMNS:
@@ -101,6 +137,7 @@ class PgAuditLog:
                 timestamp=r["timestamp"],
                 boundary=r.get("boundary", ""),
                 user_id=r.get("user_id", ""),
+                org_id=r.get("org_id", ""),
                 team_id=r.get("team_id", ""),
                 agent_id=r.get("agent_id", ""),
                 tool_name=r.get("tool_name"),
