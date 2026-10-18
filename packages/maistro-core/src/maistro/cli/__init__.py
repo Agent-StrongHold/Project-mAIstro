@@ -10,7 +10,6 @@ Subcommands:
     maistro fixtures         Seed the M7-A13 book/game pack fixtures
     maistro security         Rotate the credential master key, revoke sessions
     maistro archive          Read durable graph runs from before the convergence
-<<<<<<< HEAD
     maistro extensions       Inspect install records; preflight contract compat
     maistro extension        Scaffold and author extension packages
     maistro conformance      Run the shared extension conformance suite
