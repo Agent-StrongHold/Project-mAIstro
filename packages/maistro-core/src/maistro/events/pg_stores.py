@@ -120,7 +120,7 @@ _SCHEMA_LOCK_KEY = 0x6D61_6973  # "mais"
 
 
 async def ensure_event_schema(pool: asyncpg.Pool) -> None:
-    """Create all four tables. Idempotent, and safe to call concurrently.
+    """Create all five tables. Idempotent, and safe to call concurrently.
 
     `CREATE TABLE IF NOT EXISTS` is idempotent but **not** serialised: two
     workers that both observe the table as absent can both run the DDL, and one
@@ -133,7 +133,7 @@ async def ensure_event_schema(pool: asyncpg.Pool) -> None:
     transaction ends, including by crash, so a worker killed mid-bootstrap does
     not lock the rest out.
 
-    Migration 004 remains the real path for a managed deployment; this is what
+    Migrations 004, 036 and 064 remain the real path for a managed deployment; this is what
     lets tests and single-command dev runs work without one.
     """
     async with pool.acquire() as conn, conn.transaction():
