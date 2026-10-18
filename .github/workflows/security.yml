@@ -216,13 +216,13 @@ jobs:
         run: |
           docker run --rm --entrypoint python \
             "hive-conductor:pr-${CANDIDATE_TAG}" \
-            -c "import importlib.metadata as m, sys; from packaging.version import Version; assert sys.version_info[:3] == (3, 13, 15), sys.version; assert m.version('bip-utils') == '2.12.1', m.version('bip-utils'); assert m.version('coincurve') == '21.0.0', m.version('coincurve'); assert m.version('pynacl') == '1.6.2', m.version('pynacl'); assert Version(m.version('msgpack')) >= Version('1.2.1'), m.version('msgpack'); assert Version(m.version('setuptools')) >= Version('78.1.1'), m.version('setuptools'); from maistro.identity import ConductorSeed; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero(); print('identity=operational python='+sys.version.split()[0]+' bip-utils='+m.version('bip-utils')+' coincurve='+m.version('coincurve')+' pynacl='+m.version('pynacl'))"
+            -c "import importlib.metadata as m, sys; from packaging.version import Version; assert sys.version_info[:3] == (3, 13, 15), sys.version; assert m.version('bip-utils') == '2.12.2', m.version('bip-utils'); assert m.version('coincurve') == '21.0.0', m.version('coincurve'); assert m.version('pynacl') == '1.6.2', m.version('pynacl'); assert Version(m.version('msgpack')) >= Version('1.2.1'), m.version('msgpack'); assert Version(m.version('setuptools')) >= Version('78.1.1'), m.version('setuptools'); from maistro.identity import ConductorSeed; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero(); print('identity=operational python='+sys.version.split()[0]+' bip-utils='+m.version('bip-utils')+' coincurve='+m.version('coincurve')+' pynacl='+m.version('pynacl'))"
 
       - name: Verify live observability extra in Conductor image
         run: |
           docker run --rm --entrypoint python \
             "hive-conductor-observability:pr-${CANDIDATE_TAG}" \
-            -c "import importlib.metadata as m, sys; assert sys.version_info[:3] == (3, 13, 15), sys.version; assert m.version('bip-utils') == '2.12.1', m.version('bip-utils'); assert m.version('coincurve') == '21.0.0', m.version('coincurve'); assert m.version('pynacl') == '1.6.2', m.version('pynacl'); import opentelemetry, opentelemetry.sdk, opentelemetry.exporter.otlp; from maistro.identity import ConductorSeed; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero(); print('observability=importable identity=operational python='+sys.version.split()[0])"
+            -c "import importlib.metadata as m, sys; assert sys.version_info[:3] == (3, 13, 15), sys.version; assert m.version('bip-utils') == '2.12.2', m.version('bip-utils'); assert m.version('coincurve') == '21.0.0', m.version('coincurve'); assert m.version('pynacl') == '1.6.2', m.version('pynacl'); import opentelemetry, opentelemetry.sdk, opentelemetry.exporter.otlp; from maistro.identity import ConductorSeed; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero(); print('observability=importable identity=operational python='+sys.version.split()[0])"
 
       - name: Trivy scan (HIGH/CRITICAL only)
         # The step above verifies the versions of the packages installed into
@@ -306,6 +306,56 @@ jobs:
         with:
           name: sboms-${{ env.CANDIDATE_TAG }}
           path: sbom-*.json
+
+      # #348: the scans above audit a dependency set. Every Python image now
+      # installs from `uv export --locked` + `--require-hashes`, so the shipped
+      # set IS the locked set by construction — this step proves it from the
+      # outside, on the built images: dump each image's installed distributions
+      # from its own interpreter and compare them name==version against the
+      # export of the same uv.lock the image was built from. A package in the
+      # image the lock does not name, a locked pin the image does not carry,
+      # or a version skew is a red build — the SBOM above and the lock below
+      # can no longer silently describe different sets.
+      - name: Install uv + Python (reconcile tooling)
+        uses: ./.github/actions/setup-uv
+      - name: Reconcile installed packages to uv.lock
+        run: |
+          set -euo pipefail
+          uv export --locked --package maistro-server \
+            --extra identity --extra observability --no-dev --no-emit-workspace \
+            --format requirements-txt --output-file /tmp/expected-engine.txt
+          python scripts/check-image-lock-reconciliation.py \
+            --image "maistro-engine:pr-${CANDIDATE_TAG}" \
+            --expected-file /tmp/expected-engine.txt \
+            --member maistro-core==0.9.0 --member maistro-server==0.9.0
+
+          uv export --locked --package hive-conductor \
+            --no-dev --no-emit-workspace \
+            --format requirements-txt --output-file /tmp/expected-hive.txt
+          python scripts/check-image-lock-reconciliation.py \
+            --image "hive-conductor:pr-${CANDIDATE_TAG}" \
+            --expected-file /tmp/expected-hive.txt \
+            --member maistro-core==0.9.0 --member maistro-bootstrap==0.9.0 \
+            --member maistro-canvas==0.9.0 --member maistro-design==0.9.0 \
+            --member maistro-evolve==0.9.0 --member setuptools==84.0.0
+
+          uv export --locked --package maistro-server \
+            --extra identity --extra observability --extra browser \
+            --no-dev --no-emit-workspace \
+            --format requirements-txt --output-file /tmp/expected-research.txt
+          python scripts/check-image-lock-reconciliation.py \
+            --image "maistro-engine-research:pr-${CANDIDATE_TAG}" \
+            --expected-file /tmp/expected-research.txt \
+            --member maistro-core==0.9.0 --member maistro-server==0.9.0
+
+          uv export --locked --extra rsi-fitness --no-emit-workspace \
+            --format requirements-txt --output-file /tmp/expected-rsi.txt
+          python scripts/check-image-lock-reconciliation.py \
+            --image "maistro-rsi-runner:pr-${CANDIDATE_TAG}" \
+            --python /workspace/.venv/bin/python \
+            --expected-file /tmp/expected-rsi.txt \
+            --member maistro-workspace==0.9.0 --member maistro-core==0.9.0 \
+            --member maistro-canvas==0.9.0 --member maistro-registry==0.9.0
 
       - name: Install uv + Python
         uses: ./.github/actions/setup-uv

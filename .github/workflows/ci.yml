@@ -1113,6 +1113,43 @@ jobs:
           --load --cache-from type=gha,scope=rsi-runner
           --cache-to type=gha,scope=rsi-runner,mode=max .
 
+  # #348: "CI rebuilds twice and compares dependency manifests". The maistro
+  # engine image installs its entire Python set from `uv export --locked` +
+  # `--require-hashes` — no resolution anywhere — so two INDEPENDENT cold
+  # builds of the same commit must produce byte-identical dependency
+  # manifests. (docker-build above deliberately tag-aliases its second engine
+  # reference; that proves the release command's shape, not reproducibility.)
+  # This job builds twice with --no-cache, dumps every installed distribution
+  # from each image's own interpreter, and diffs. Any drift — a base image
+  # moved, a wheel replaced, a transitive re-resolved — is a red build.
+  docker-rebuild-compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: crazy-max/ghaction-github-runtime@v4
+      - name: Rebuild maistro-engine (1st, no cache)
+        run: >-
+          scripts/buildx-build-retry.sh --
+          -f Dockerfile -t maistro-engine:rebuild-a --no-cache --load .
+      - name: Rebuild maistro-engine (2nd, no cache)
+        run: >-
+          scripts/buildx-build-retry.sh --
+          -f Dockerfile -t maistro-engine:rebuild-b --no-cache --load .
+      - name: Compare dependency manifests
+        run: |
+          set -euo pipefail
+          DUMP_CMD='import importlib.metadata as m; print(*sorted(d.metadata["Name"]+"=="+d.version for d in m.distributions()), sep="\n")'
+          docker run --rm --entrypoint /app/venv/bin/python maistro-engine:rebuild-a -c "$DUMP_CMD" > /tmp/manifest-a.txt
+          docker run --rm --entrypoint /app/venv/bin/python maistro-engine:rebuild-b -c "$DUMP_CMD" > /tmp/manifest-b.txt
+          if diff -u /tmp/manifest-a.txt /tmp/manifest-b.txt; then
+            echo "OK: two independent rebuilds produced identical dependency manifests ($(wc -l < /tmp/manifest-a.txt) distributions)"
+          else
+            echo "::error::the two rebuilds shipped different dependency sets" >&2
+            exit 1
+          fi
+
   workflow-lint:
     outputs:
       postgres: ${{ steps.scope.outputs.postgres }}

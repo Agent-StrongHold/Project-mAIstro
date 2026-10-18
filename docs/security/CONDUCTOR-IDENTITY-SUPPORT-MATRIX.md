@@ -4,7 +4,7 @@ Status: supported in the shipped Conductor image.
 
 The Conductor image uses CPython `3.13.15` and installs the engine's
 `maistro-core[identity]` extra. Its native identity wheel contract is pinned to
-`bip-utils==2.12.1`, `coincurve==21.0.0`, and `pynacl==1.6.2`. `coincurve`
+`bip-utils==2.12.2`, `coincurve==21.0.0`, and `pynacl==1.6.2`. `coincurve`
 21.0.0 publishes the Linux `cp313` wheels required by the image; Python 3.14
 is not a supported Conductor image runtime until a compatible wheel set is
 verified.

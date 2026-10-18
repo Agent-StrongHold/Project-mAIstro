@@ -42,36 +42,53 @@ RUN apk add --no-cache git && \
 # ---- builder: self-contained venv (has shell/pip) ----
 FROM python:3.13.15-slim-bookworm AS pybuild
 WORKDIR /app
-ENV PATH="/app/venv/bin:$PATH"
-RUN python -m venv /app/venv
-# Install the maistro library packages (non-editable) so the venv is fully
-# self-contained — nothing from these source trees is needed at runtime.
-# maistro-design/-evolve back the conductor's design + evolution routes;
-# routes/design.py imports maistro_design at module load (unguarded), so the
-# app will not boot without it. maistro-canvas is a hard dep of maistro-design.
-COPY packages/maistro-core /packages/maistro-core
-COPY packages/maistro-bootstrap /packages/maistro-bootstrap
-COPY packages/maistro-canvas /packages/maistro-canvas
-COPY packages/maistro-design /packages/maistro-design
-COPY packages/maistro-evolve /packages/maistro-evolve
-# Pin the identity wheel set as one install contract. The explicit pins make a
-# dependency refresh fail at review time rather than selecting a new native
-# extension without a corresponding CPython/wheel check.
-ARG BIP_UTILS_VERSION=2.12.1
+# uv is pinned to the release that generated the committed uv.lock: `uv export
+# --locked` (below) is version-sensitive, and a floating installer is exactly
+# the kind of unexamined resolution this image must not do (#348).
+COPY --from=ghcr.io/astral-sh/uv:0.12.20 /uv /usr/local/bin/uv
+ENV PATH="/app/venv/bin:$PATH" \
+    UV_LINK_MODE=copy
+# The lock covers the whole workspace, so uv needs every member's
+# pyproject.toml to verify `--locked` (lock-vs-pyproject drift fails the
+# build). Only the five members the image installs end up in the venv; the
+# other members are build-time metadata and never reach the runtime stage.
+COPY pyproject.toml uv.lock README.md ./
+COPY packages/ packages/
+# Install the exact locked requirement set for this image's dependency contract
+# (hive-conductor over maistro-core[bcrypt,identity] + design/evolve/bootstrap
+# + canvas), then the workspace members themselves, non-editable, --no-deps:
+#   --locked   fails the build if uv.lock is out of date with any
+#              pyproject.toml — lock drift is a red build, not a silent
+#              re-resolution;
+#   --require-hashes
+#              every downloaded artifact is verified against the lock's
+#              hashes, so an unresolvable locked artifact fails the build
+#              instead of silently substituting whatever the index serves.
+# This replaces the previous `pip install /packages/... -r
+# backend/requirements.txt`, which re-resolved every transitive at build time
+# from range floors while the scanners audited the lock (#348). The identity
+# wheel contract below is unchanged in kind and now enforced by the lock
+# itself: the lock's bip-utils/coincurve/pynacl pins ARE the contract, the ARGs
+# assert them, and the smoke test at the end of this stage fails the build on
+# any mismatch. backend/requirements.txt remains the CI test resolution (the
+# backend suite installs only that file); the shipped image no longer reads it,
+# so the test tools it carried (pytest, hypothesis) also leave the image.
+# setuptools stays an EXACT pin (the lock's own setuptools version, satisfying
+# the >= 78.1.1 security floor) — a pin, not a resolution.
+ARG BIP_UTILS_VERSION=2.12.2
 ARG COINCURVE_VERSION=21.0.0
 ARG PYNACL_VERSION=1.6.2
-RUN pip install --no-cache-dir \
-    "/packages/maistro-core[identity]" \
-    "bip-utils==${BIP_UTILS_VERSION}" \
-    "coincurve==${COINCURVE_VERSION}" \
-    "pynacl==${PYNACL_VERSION}" \
-    /packages/maistro-bootstrap \
-    /packages/maistro-canvas \
-    /packages/maistro-design \
-    /packages/maistro-evolve
-COPY packages/hive-conductor/backend/requirements.txt /app/backend/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt && \
-    pip install --no-cache-dir "setuptools>=78.1.1"
+RUN uv export --locked --package hive-conductor \
+      --no-dev --no-emit-workspace \
+      --format requirements-txt --output-file /tmp/lock-requirements.txt \
+ && uv venv --python 3.13 /app/venv \
+ && uv pip install --python /app/venv/bin/python \
+      --require-hashes --no-cache -r /tmp/lock-requirements.txt \
+ && uv pip install --python /app/venv/bin/python --no-deps --no-cache \
+      ./packages/maistro-core ./packages/maistro-bootstrap ./packages/maistro-canvas \
+      ./packages/maistro-design ./packages/maistro-evolve \
+ && uv pip install --python /app/venv/bin/python --no-cache "setuptools==84.0.0" \
+ && uv pip check --python /app/venv/bin/python
 # Tracing is opt-in at build time, and this is the door (#668).
 #
 # `backend/adapters/telemetry_langfuse.py` speaks OTLP using the OpenTelemetry
@@ -86,8 +103,16 @@ RUN pip install --no-cache-dir -r /app/backend/requirements.txt && \
 #
 #     docker build --build-arg INSTALL_OBSERVABILITY=1 ...
 ARG INSTALL_OBSERVABILITY=0
+# Same lock discipline as the base install: the observability profile is a
+# second `uv export --locked` of the SAME package (its `[observability]`
+# extra), so the exporter dists are the locked, hash-verified pins too (#348).
 RUN if [ "$INSTALL_OBSERVABILITY" = "1" ]; then \
-        pip install --no-cache-dir "/packages/maistro-core[observability]"; \
+        uv export --locked --package hive-conductor --extra observability \
+          --no-dev --no-emit-workspace \
+          --format requirements-txt --output-file /tmp/lock-requirements-otel.txt \
+        && uv pip install --python /app/venv/bin/python --require-hashes --no-cache \
+             -r /tmp/lock-requirements-otel.txt \
+        && uv pip check --python /app/venv/bin/python; \
     fi
 # The image build is the first contract test: exercise the same identity import
 # and derivation that setup uses, and fail if a native wheel was not selected.

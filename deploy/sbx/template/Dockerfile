@@ -20,19 +20,41 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git gh python3 python3-venv python-is-python3 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# uv is pinned to the release that generated the committed uv.lock (#348).
+COPY --from=ghcr.io/astral-sh/uv:0.12.20 /uv /usr/local/bin/uv
+ENV UV_LINK_MODE=copy
 
-# Install the maistro packages from this repo's source, system-wide so they
-# are on the builders _SAFE_ENV PATH. pytest/ruff are what the agent's
-# run_tests/run_lint tools invoke.
+# Install the maistro packages from this repo's LOCK, system-wide so they
+# are on the builders _SAFE_ENV PATH (#348). Previously this was
+# `uv pip install --system <source paths> "fastmcp>=2.0" pytest ruff`, which
+# re-resolved every transitive at build time — the sandbox where agent-authored
+# code runs shipped whichever snapshot PyPI served that day.
+#
+# The export selects the workspace root (dev dependency group included:
+# pytest/ruff are what the agent's run_tests/run_lint tools invoke, and the
+# sibling Dockerfile.tests image warms its cache from the same locked group)
+# plus maistro-rsi/-evolve/-bootstrap so their closures (typer/rich/fastmcp)
+# are locked too. `--no-emit-workspace` keeps third-party pins only, every line
+# carrying hashes; the workspace members are installed from the copied sources
+# with --no-deps — a local wheel build, not a dependency resolution.
+#   --locked          fails the build on lock-vs-pyproject drift;
+#   --require-hashes  fails the build on an unresolvable locked artifact.
+COPY pyproject.toml uv.lock README.md /opt/maistro-engine/
 COPY packages/ /opt/maistro-engine/packages/
-RUN uv pip install --system --break-system-packages \
-    /opt/maistro-engine/packages/maistro-core \
-    /opt/maistro-engine/packages/maistro-bootstrap \
-    /opt/maistro-engine/packages/maistro-evolve \
-    /opt/maistro-engine/packages/maistro-rsi \
-    "fastmcp>=2.0" \
-    pytest ruff
+RUN cd /opt/maistro-engine \
+    && uv export --locked \
+        --package maistro-workspace \
+        --package maistro-rsi --package maistro-evolve --package maistro-bootstrap \
+        --no-emit-workspace \
+        --format requirements-txt --output-file /tmp/lock-requirements.txt \
+    && uv pip install --system --break-system-packages \
+        --require-hashes --no-cache -r /tmp/lock-requirements.txt \
+    && uv pip install --system --break-system-packages --no-deps --no-cache \
+        /opt/maistro-engine/packages/maistro-core \
+        /opt/maistro-engine/packages/maistro-bootstrap \
+        /opt/maistro-engine/packages/maistro-evolve \
+        /opt/maistro-engine/packages/maistro-rsi \
+    && uv pip check --system
 
 # Preseeded images for the PRIVATE docker daemon: loaded at first boot by the
 # kit's sbx-setup.sh. Baking tars (rather than pulling at runtime) is what

@@ -80,6 +80,13 @@ dependencies = [
     # routes/install.py imports maistro_bootstrap lazily; the shipped image
     # installs it today, so the wheel declares what the deployment carries.
     "maistro-bootstrap>=0.9.0,<2",
+    # Not imported by backend/, carried because the shipped image has always
+    # carried it as a pinned security floor: Trivy blocks 1.1.2 for
+    # GHSA-6v7p-g79w-8964 and security.yml asserts >= 1.2.1 inside the built
+    # image. backend/requirements.txt restates this for its own CI resolution;
+    # with the image installing from uv.lock (#348), this declaration is what
+    # puts msgpack in the locked closure the image actually installs.
+    "msgpack>=1.2.1,<2",
 ]
 
 # `backend/adapters/telemetry_langfuse.py` exports spans to a Langfuse OTLP

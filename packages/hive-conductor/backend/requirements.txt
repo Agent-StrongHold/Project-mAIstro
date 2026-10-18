@@ -34,7 +34,7 @@ pyjwt[crypto]>=2.14,<3
 # environment (which already carries it). These versions are the cp312/cp313
 # wheel set used by the shipped Python 3.13 image; update them with the image
 # import smoke test, not as an unlocked transitive refresh.
-bip-utils==2.12.1
+bip-utils==2.12.2
 coincurve==21.0.0
 pynacl==1.6.2
 # Transitive consumers may otherwise resolve 1.1.x. Trivy blocks 1.1.2 for
