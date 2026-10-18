@@ -82,3 +82,23 @@ Executed from a clean checkout of the exact head, develop base `ab8b3737`:
   to the base blob; `backup.sh` fixture is the issue-cited `6454aac` blob, and the
   fail-before assertions (`--snapshot=` absent, `.sql` present) hold for the base blob
   too, so the fail-before property is not fixture-dependent.
+
+### Hosted-CI follow-up at d58eeea05 (same day, handoff for the repair round)
+
+The required `test` job went red at this head — NOT on the old failure: the named
+root lane passed in CI (`tests/test_restore_oracle_characterization.py` 4/4 PASSED in
+the dedicated `tests/ --ignore=tests/tools/registry` step), and the red moved to the
+"trees pass in one process" step, where the module-scoped `pg_source_container`
+fixture errored all four characterization tests: `docker exec … psql … CREATE TABLE`
+returned exit 2. Root cause, reproduced locally against pgvector/pgvector:pg17 with
+fast polling: the postgres image's initdb **temporary server** accepts connections
+on the unix socket before the real server (and `POSTGRES_DB`) exists, so a green
+`pg_isready -U maistro` does not imply `psql -d maistro` can run — first-green
+pg_isready followed immediately by CREATE TABLE yields
+`psql: error: … FATAL: database "maistro" does not exist` (exit 2, the CI
+signature). `_wait_ready` (tests/test_restore_oracle_characterization.py) gates on
+pg_isready alone; repair shape: gate readiness on a real query against the target
+DB (loop `psql -X -Atq -c 'SELECT 1'` until green). The same latent pg_isready-only
+race exists in `deploy/scripts/verify-restore.sh`'s scratch-readiness loop
+(pre-existing pattern; on a slow init it would surface as a spurious VERIFIER FAIL)
+— the same one-line hardening applies there.
