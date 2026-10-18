@@ -4703,6 +4703,146 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/workspaces/{workspace_id}/home/adaptive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Home Adaptive
+         * @description What the unpinned space could show, each candidate with its evidence.
+         */
+        get: operations["get_home_adaptive_v1_workspaces__workspace_id__home_adaptive_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspace_id}/home/adaptive/compose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Compose Home Adaptive
+         * @description The Agent's write path: fill the unpinned space, leave pinned space alone.
+         *
+         *     The same service function the Workspace Agent's chat tool calls — no
+         *     browser/UI automation anywhere in the Agent's path to its own Home.
+         */
+        post: operations["compose_home_adaptive_v1_workspaces__workspace_id__home_adaptive_compose_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspace_id}/home/adaptive/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss Home Adaptive
+         * @description Record "not this" for one adaptive candidate — backend-side, counted.
+         *
+         *     This is the negative-reinforcement record: not client-only state, and the
+         *     same store the Workspace Agent tool writes, so a dismissal through chat
+         *     and a dismissal through the API land in the same place.
+         */
+        post: operations["dismiss_home_adaptive_v1_workspaces__workspace_id__home_adaptive_dismiss_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspace_id}/home/layout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Home Layout
+         * @description The Workspace's stored Home layout, or the default composition.
+         *
+         *     `effective` rather than `load`: a Workspace that never saved is offered the
+         *     default (nothing pinned — the Agent may compose all of it) without being
+         *     persisted on a read, exactly like the dashboard's preset.
+         */
+        get: operations["get_home_layout_v1_workspaces__workspace_id__home_layout_get"];
+        /**
+         * Save Home Layout
+         * @description Store the user's full Home layout, or say it was not stored.
+         *
+         *     Only the failures with an answer of their own are caught, and each names
+         *     what it is — the same discipline `PUT /v1/dashboard/layout` holds.
+         */
+        put: operations["save_home_layout_v1_workspaces__workspace_id__home_layout_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspace_id}/home/projections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Home Projections
+         * @description Compact projections over canonical services, read at call time.
+         */
+        get: operations["get_home_projections_v1_workspaces__workspace_id__home_projections_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspace_id}/home/regions/{region_id}/pin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pin Home Region
+         * @description Pin or unpin one region. Presentation only: the referenced resource is
+         *     neither copied nor forked by this operation, and the same service function
+         *     serves the UI, the direct API and the Workspace Agent tool.
+         */
+        post: operations["pin_home_region_v1_workspaces__workspace_id__home_regions__region_id__pin_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/workspaces/{workspace_id}/members": {
         parameters: {
             query?: never;
@@ -4767,6 +4907,24 @@ export interface components {
             check: "image_alt_text" | "html_lang_declared";
             /** Constraint Id */
             constraint_id: string;
+        };
+        /**
+         * AdaptiveComposeBody
+         * @description The Agent's composition of the unpinned space. No `pinned` field: the
+         *     Agent cannot pin, so the wire shape does not offer it.
+         */
+        AdaptiveComposeBody: {
+            /** Expectedrevision */
+            expectedRevision?: number | null;
+            /** Regions */
+            regions?: components["schemas"]["HomeRegionBody"][];
+        };
+        /** AdaptiveDismissBody */
+        AdaptiveDismissBody: {
+            /** Itemid */
+            itemId: string;
+            /** Itemtype */
+            itemType: string;
         };
         /** AddEdgeBody */
         AddEdgeBody: {
@@ -5986,6 +6144,47 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** HomeLayoutBody */
+        HomeLayoutBody: {
+            /** Expectedrevision */
+            expectedRevision?: number | null;
+            /** Regions */
+            regions?: components["schemas"]["HomeRegionBody"][];
+        };
+        /**
+         * HomeRegionBody
+         * @description One region on the wire. Mirrors `services.home_layouts.HomeRegion`.
+         */
+        HomeRegionBody: {
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /**
+             * Pinned
+             * @default false
+             */
+            pinned: boolean;
+            /**
+             * Position
+             * @default 0
+             */
+            position: number;
+            /** Reason */
+            reason?: string | null;
+            /** Resource Id */
+            resource_id?: string | null;
+            /**
+             * Resource Type
+             * @default none
+             */
+            resource_type: string;
+            /**
+             * Size
+             * @default 1
+             */
+            size: string;
+        };
         /** HumanAnswer */
         HumanAnswer: {
             [key: string]: unknown;
@@ -6473,6 +6672,13 @@ export interface components {
             };
             /** Ready */
             ready: boolean;
+        };
+        /** RegionPinBody */
+        RegionPinBody: {
+            /** Expectedrevision */
+            expectedRevision?: number | null;
+            /** Pinned */
+            pinned: boolean;
         };
         /** RegisterBody */
         RegisterBody: {
@@ -15957,6 +16163,254 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PersonaFeedback"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_home_adaptive_v1_workspaces__workspace_id__home_adaptive_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    compose_home_adaptive_v1_workspaces__workspace_id__home_adaptive_compose_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdaptiveComposeBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dismiss_home_adaptive_v1_workspaces__workspace_id__home_adaptive_dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdaptiveDismissBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_home_layout_v1_workspaces__workspace_id__home_layout_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_home_layout_v1_workspaces__workspace_id__home_layout_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HomeLayoutBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_home_projections_v1_workspaces__workspace_id__home_projections_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pin_home_region_v1_workspaces__workspace_id__home_regions__region_id__pin_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                region_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegionPinBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */

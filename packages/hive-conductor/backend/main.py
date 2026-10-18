@@ -40,6 +40,7 @@ from routes import (
     harness,
     health,
     hitl,
+    home,
     install,
     mcp,
     memory,
@@ -384,6 +385,10 @@ def create_app() -> FastAPI:
     app.include_router(backlog.router)
     app.include_router(workspaces.router, prefix="/v1/workspaces")
     app.include_router(attention.router, prefix="/v1/workspaces")
+    # Workspace Home (#1048): same /v1/workspaces prefix as Attention, so the
+    # route-permissions registry's existing entry covers it — no new prefix,
+    # no new exemption.
+    app.include_router(home.router, prefix="/v1/workspaces")
     app.include_router(mcp.router, prefix="/v1/mcp")
     app.include_router(cli.router, prefix="/v1/cli")
     app.include_router(containers.router, prefix="/v1/containers")
