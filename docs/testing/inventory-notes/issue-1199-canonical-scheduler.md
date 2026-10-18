@@ -76,3 +76,14 @@ Merged-head (cbcaa5c28) re-validation, all commands run first-party:
 - gates: `check-suite-inventory.py` ok, `check-test-duplicates.py` ok,
   `check-diff-coverage.py --base 1a2e12656` ok (0 changed files measured),
   ruff check and format clean.
+
+CI repair at the merged head (49e60c36), first-party: the merge-queue
+coverage (no services) job red on
+`test_cross_process_peer_injection_refused_by_canonical_warden` — the
+`_PEER_SERVER` child made the port file visible before the port bytes were
+flushed and a parent poll read `''` (`int('')` ValueError), taking
+down `coverage-gate` and `gates-ran` with it. See
+[issue-1199-coverage-port-file-race.md](issue-1199-coverage-port-file-race.md)
+for the CI-log-derived root cause, the atomic-publish + tolerant-poll fix, and
+the regression proof (new test reproduces the exact CI error against the
+unfixed helper, then passes; a2a directory 281 passed).
