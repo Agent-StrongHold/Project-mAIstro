@@ -1271,15 +1271,15 @@ async def _tool_memory_add(
 async def _tool_web_search(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
-    """Search the live web."""
+    """Search the live web through the governed tool Invocation seam (#57)."""
     query = args.get("query", "")
     if not query:
         return {"error": "query is required"}
     max_results = args.get("max_results", 5)
     try:
-        from services.tool_executor import web_search as _web_search
+        from services.governed_tools import governed_web_search
 
-        return await _web_search(query, max_results=max_results)
+        return await governed_web_search(query, max_results=max_results)
     except Exception as e:
         return {"error": f"web_search failed: {e}"}
 
@@ -1287,15 +1287,15 @@ async def _tool_web_search(
 async def _tool_browse_url(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
-    """Fetch and summarize a URL."""
+    """Fetch and summarize a URL through the governed tool Invocation seam (#57)."""
     url = args.get("url", "")
     if not url:
         return {"error": "url is required"}
     task = args.get("task", "Extract key facts and quotes")
     try:
-        from services.tool_executor import browse_url as _browse_url
+        from services.governed_tools import governed_browse_url
 
-        return await _browse_url(url, task)
+        return await governed_browse_url(url, task)
     except Exception as e:
         return {"error": f"browse_url failed: {e}"}
 

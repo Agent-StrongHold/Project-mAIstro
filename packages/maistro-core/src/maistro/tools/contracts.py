@@ -327,6 +327,7 @@ class GovernedToolExecutor:
         context: ToolInvocationContext,
         arguments: dict[str, Any],
         expected_evidence: Any,
+        effect_scope: str = "",
     ) -> Any:
         reversibility = self._contracts.reversibility_of(contract.name)
         request = {
@@ -344,12 +345,19 @@ class GovernedToolExecutor:
         # A high-impact contract is persisted before dispatch, including the
         # exact arguments and pre-state digest. The Invocation id/provider are
         # filled by the canonical lifecycle service once its Binding resolves.
+        # ``effect_scope`` is the caller's logical tool-call identity (for
+        # example the provider ToolCall id): it distinguishes two logical
+        # calls with identical arguments inside one Attempt while the argument
+        # digest below still binds the exact materialized arguments to the
+        # evidence. Recovery of the same logical call replays, as on the
+        # model seam.
+        scope_segment = f"{effect_scope}:" if effect_scope else ""
         return await self._effects.invocations.invoke(
             binding=binding,
             run_id=context.run_id,
             node_run_id=context.node_run_id,
             attempt_id=context.attempt_id,
-            effect_key=f"tool:{contract.name}:{canonical_digest(arguments)}",
+            effect_key=f"tool:{contract.name}:{scope_segment}{canonical_digest(arguments)}",
             request=request,
             resolver=resolver,
             executor=execute_provider,
@@ -395,11 +403,19 @@ class GovernedToolExecutor:
         *,
         context: ToolInvocationContext,
         authorized_tools: frozenset[str] | set[str] | tuple[str, ...],
+        effect_scope: str = "",
     ) -> Any:
+        """Admit and execute one tool call at the canonical boundary.
+
+        ``effect_scope`` optionally carries the caller's logical identity for
+        this call (e.g. the provider ToolCall id). It only distinguishes
+        logical calls; it cannot widen authorization or detach the recorded
+        evidence from the exact materialized arguments.
+        """
         contract, binding = await self._admit_call(tool_name, arguments, context, authorized_tools)
         expected_evidence = self._expected_evidence(contract, arguments)
         invocation = await self._invoke_admitted(
-            contract, binding, context, arguments, expected_evidence
+            contract, binding, context, arguments, expected_evidence, effect_scope=effect_scope
         )
         return await self._settle_observation(contract, invocation)
 

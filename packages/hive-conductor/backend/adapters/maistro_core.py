@@ -252,7 +252,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # against hive's real tool functions instead of silently refusing via
         # react's un-guarded branch. ADR-082526-3ca6: the runtime that owns
         # the agents owns their delegation dependencies.
-        tool_executor=admitted_tool_executor(admitted_calls),
+        tool_executor=admitted_tool_executor(admitted_calls, container=container),
         # Project the same roster allow-lists into the Container-owned A2A
         # receipt service. Without this, construction was wired but every
         # in-process delegation still refused as "no capabilities" (#147).

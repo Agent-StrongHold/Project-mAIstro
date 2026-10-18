@@ -122,3 +122,52 @@ still passes. No production code changed in this round; no test counts
 changed (40 passed in the file locally, 111 across the six core/bootstrap
 suites touched by the branch). `check-suite-inventory.py` reports 17/17
 suites matching at this head.
+
+## Production wiring round (2026-10-18)
+
+Closed the verifier's criteria 1-2 and 10 gaps: the governed tool seam now has
+a shipped constructor and the six `TOOL_EFFECT` inventory sites no longer sit
+on `MIGRATE_TO_GOVERNED_INVOCATION`:
+
+- **`services/governed_tools.py` (new)** is the production wiring: host-owned
+  `ToolContractRegistry` for `web_search`/`browse_url`/`clarify` (schemas,
+  `internal` ADR-050 tiers, one `hive.tool` capability), a workspace-scoped
+  immutable Binding registered through `register_boot_binding`, a fail-closed
+  `live_tool_context()` that re-reads the Run/NodeRun/Attempt from the store
+  (the `AdmittedModelCalls` pattern), and the late-bound provider backend.
+- **Boot Agent tools** (`admitted_tool_executor`, bridge now passes the
+  container) execute through `GovernedToolExecutor`: the tool effect itself
+  becomes a canonical Invocation carrying the registry tier as an admission
+  fact, with the model sub-effect nested as before.
+- **Chat web tools** (`_tool_web_search`/`_tool_browse_url`) call the governed
+  helpers; their direct `services.tool_executor` call sites are gone from the
+  inventory.
+- **Legacy DAG tool nodes**: the no-NodeContext compatibility branch -- the one
+  remaining path that executed shipped tool effects with no Invocation at all
+  -- is retired (fails the node); compat tests now supply canonical identity,
+  and a new test pins the refusal.
+- **`GovernedToolExecutor.execute` gained `effect_scope`**: the caller's
+  logical tool-call identity (ToolCall id et al.) so two logical calls with
+  identical arguments inside one Attempt are distinct effects while a retry of
+  the same call replays; the scope cannot widen authorization and the argument
+  digest still binds the evidence. Without it the boot seam would have
+  falsely deduplicated distinct ToolCalls.
+- Ledger: the two chat `TOOL_EFFECT` sites left the inventory; the legacy and
+  BrowserClient sites and the new backend sites are
+  `INTENTIONAL_LIBRARY/INFRASTRUCTURE` owner #57 with provider-backend
+  rationales (the `execute_model_chat` arrangement). Two gate tests prove a
+  newly introduced raw `web_search`/`BrowserClient` call site is rejected by
+  the direct-effect audit (criterion 11).
+- CONVERGENCE-MATRIX and the reachability disposition now describe the shipped
+  constructor instead of claiming test-only wiring.
+
+Validation this round: full hive-conductor backend suite 3666 passed / 20
+skipped; maistro-core tools+effect-context suites pass; ruff check/format
+clean; mypy (7-package CI set) clean; vulture (exit 0, no new debt), radon
+(137 blocks, no regressions), promotion surface, direct-effects, reachability
+x4, and suite-inventory gates all pass.
+
+Residual on #57: issue #847 remains open (its strategy/schema/argument
+adversarial coverage largely landed here and in prior rounds, but closure is
+an issue action this lane cannot take); `BuildersLearningStrategy` shell and
+GitHub effects remain #847's outstanding scope.

@@ -23,7 +23,59 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 
+def _compat_ctx(*, run: str = "run-compat", node: str = "n1") -> NodeContext:
+    """Minimal canonical identity for the compat tool-node surface.
+
+    #57 retired the no-identity branch: a tool effect executes only beneath a
+    canonical Invocation, so these tests supply the identity the production
+    path always provides.
+    """
+    return NodeContext(
+        run_id=run,
+        dag_id="dag-1",
+        node_id=node,
+        node_run_id=f"{run}-nr",
+        attempt_id=f"{run}-a",
+        workspace_id="ws-1",
+        project_id="proj-1",
+    )
+
+
 # --- tool-node dispatch --------------------------------------------------------
+
+
+async def test_a_tool_node_without_canonical_identity_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retired direct-effect bypass: no NodeContext, no execution (#57).
+
+    Before #57 this branch ran the raw tool with no Invocation at all; it must
+    now fail the node rather than execute an un-governed external effect.
+    """
+    import services.legacy_dag_node as adapter
+    import services.tool_executor as tools
+
+    called = False
+
+    async def fake_search(query: str, *, max_results: int = 5) -> dict[str, Any]:
+        nonlocal called
+        called = True
+        return {"query": query}
+
+    monkeypatch.setattr(tools, "web_search", fake_search)
+    results: dict[str, dict[str, Any]] = {}
+
+    await adapter._run_tool_node(
+        {"id": "n1", "role": "worker", "tool": "web_search"},
+        "n1",
+        {},
+        results,
+        "task",
+    )
+
+    assert called is False
+    assert results["n1"]["success"] is False
+    assert "requires NodeContext" in results["n1"]["response"]
 
 
 async def test_an_unknown_tool_fails_the_node_without_raising(
@@ -42,6 +94,7 @@ async def test_an_unknown_tool_fails_the_node_without_raising(
         {},
         results,
         "task",
+        ctx=_compat_ctx(),
     )
 
     assert results["n1"]["success"] is False
@@ -56,7 +109,9 @@ async def test_web_search_iterates_over_a_parent_json_field(
 
     seen: list[tuple[str, int]] = []
 
-    async def fake_search(query: str, *, max_results: int = 5) -> dict[str, Any]:
+    async def fake_search(
+        query: str, *, max_results: int = 5, model_call: Any = None
+    ) -> dict[str, Any]:
         seen.append((query, max_results))
         return {"query": query}
 
@@ -71,6 +126,7 @@ async def test_web_search_iterates_over_a_parent_json_field(
         {"n1": {"src"}},
         results,
         "task",
+        ctx=_compat_ctx(run="run-iterate"),
     )
 
     assert [query for query, _ in seen] == ["alpha", "beta"]
@@ -88,7 +144,9 @@ async def test_web_search_falls_back_to_the_task_when_iteration_data_is_malforme
 
     seen: list[str] = []
 
-    async def fake_search(query: str, *, max_results: int = 5) -> dict[str, Any]:
+    async def fake_search(
+        query: str, *, max_results: int = 5, model_call: Any = None
+    ) -> dict[str, Any]:
         seen.append(query)
         return {"query": query}
 
@@ -101,6 +159,7 @@ async def test_web_search_falls_back_to_the_task_when_iteration_data_is_malforme
         {"n1": {"src"}},
         results,
         "the task text",
+        ctx=_compat_ctx(run="run-malformed"),
     )
 
     assert seen == ["the task text"]
@@ -115,7 +174,9 @@ async def test_web_search_templated_queries_from_the_task_input(
 
     seen: list[str] = []
 
-    async def fake_search(query: str, *, max_results: int = 5) -> dict[str, Any]:
+    async def fake_search(
+        query: str, *, max_results: int = 5, model_call: Any = None
+    ) -> dict[str, Any]:
         seen.append(query)
         return {"query": query}
 
@@ -131,6 +192,7 @@ async def test_web_search_templated_queries_from_the_task_input(
         {},
         {},
         "read the label",
+        ctx=_compat_ctx(run="run-templated"),
     )
 
     assert seen == ["site:docs read the label"]
@@ -142,7 +204,9 @@ async def test_clarify_renders_each_question_with_its_answer(
     import services.legacy_dag_node as adapter
     import services.tool_executor as tools
 
-    async def fake_clarify(questions: list[str], context: dict[str, Any]) -> dict[str, str]:
+    async def fake_clarify(
+        questions: list[str], context: dict[str, Any], *, model_call: Any = None
+    ) -> dict[str, str]:
         return {str(index + 1): f"answer {index + 1}" for index in range(len(questions))}
 
     monkeypatch.setattr(tools, "clarify", fake_clarify)
@@ -154,6 +218,7 @@ async def test_clarify_renders_each_question_with_its_answer(
         {},
         results,
         "task",
+        ctx=_compat_ctx(run="run-clarify"),
     )
 
     assert results["n1"]["success"] is True
@@ -179,6 +244,7 @@ async def test_browse_url_returns_the_extractor_payload_as_json(
         {},
         results,
         "task",
+        ctx=_compat_ctx(run="run-browse"),
     )
 
     assert results["n1"]["success"] is True
@@ -348,7 +414,14 @@ async def test_a_generic_tool_result_is_json_encoded(
     monkeypatch.setattr(tools, "TOOLS", {"custom": fake_tool})
     results: dict[str, dict[str, Any]] = {}
 
-    await adapter._run_tool_node({"id": "n1", "tool": "custom"}, "n1", {}, results, "the task")
+    await adapter._run_tool_node(
+        {"id": "n1", "tool": "custom"},
+        "n1",
+        {},
+        results,
+        "the task",
+        ctx=_compat_ctx(run="run-generic"),
+    )
 
     assert results["n1"] == {
         "role": "worker",
@@ -369,7 +442,14 @@ async def test_a_failing_tool_becomes_a_failed_node_result(
     monkeypatch.setattr(tools, "TOOLS", {"custom": boom})
     results: dict[str, dict[str, Any]] = {}
 
-    await adapter._run_tool_node({"id": "n1", "tool": "custom"}, "n1", {}, results, "task")
+    await adapter._run_tool_node(
+        {"id": "n1", "tool": "custom"},
+        "n1",
+        {},
+        results,
+        "task",
+        ctx=_compat_ctx(run="run-failing"),
+    )
 
     assert results["n1"]["success"] is False
     assert "Tool error" in results["n1"]["response"]
@@ -400,6 +480,7 @@ async def test_run_llm_node_dispatches_a_tool_node_without_touching_the_llm(
         "task",
         on_response=None,
         llm_builder=_unexpected_builder,
+        ctx=_compat_ctx(run="run-llm-dispatch"),
     )
 
     assert results["n1"]["success"] is True

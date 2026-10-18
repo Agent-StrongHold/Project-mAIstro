@@ -296,7 +296,14 @@ async def test_revocation_is_checked_before_completed_replay(runtime):
     first = await runtime.invoke()
     assert await runtime.invoke() == first
     assert len(runtime.sent) == 1
-    await runtime.owner.capability_effects.bindings.revoke(_BINDING)
+    # Since #57 the boot tool effect is itself a canonical Invocation, so the
+    # replay authority -- and the revocation that must outrank it -- is the
+    # governed tool Binding the effect actually uses. Revoking it refuses the
+    # next logical call instead of replaying the recorded outcome; revoking
+    # only the model Binding cannot resurrect a new model effect either,
+    # because the replay serves the recorded result without re-egress.
+    tool_binding = f"hive-tool:{_WORKSPACE}:{runtime.project_id}"
+    await runtime.owner.capability_effects.bindings.revoke(tool_binding)
     with pytest.raises(BindingResolutionError):
         await runtime.invoke()
     assert len(runtime.sent) == 1

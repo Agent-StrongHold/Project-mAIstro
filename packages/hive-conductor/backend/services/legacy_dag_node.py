@@ -437,10 +437,12 @@ async def _run_tool_node(
             )
             response = str(invocation.result or "")
         else:
-            # Compatibility helper callers without a NodeContext predate the
-            # canonical execution path and have no durable effect identity.
-            # Canonical production execution always supplies NodeContext above.
-            response = await _call_tool_node(node, nid, inbound, results, task_desc)
+            # Retired (#57): executing a shipped tool effect with no canonical
+            # identity was the direct-effect bypass this issue closes. The
+            # canonical production path (LegacyConductorNode) always supplies
+            # NodeContext; a caller that cannot is refused rather than run
+            # ungoverned.
+            raise RuntimeError("governed legacy tool call requires NodeContext identity")
         results[nid] = {"role": role, "response": response, "success": True}
     except Exception as exc:
         logger.error("Tool node %s failed: %s", nid, exc)

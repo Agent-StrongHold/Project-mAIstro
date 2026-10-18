@@ -255,3 +255,67 @@ def test_high_impact_contract_without_expected_effect_fails_closed() -> None:
         expected_post_state=lambda _args: {},
         observed_post_state=lambda _result: {},
     )
+
+
+@pytest.mark.asyncio
+async def test_effect_scope_distinguishes_logical_calls_without_widening() -> None:
+    """Two logical tool calls with identical arguments are distinct effects;
+    a retry of the same logical scope replays the recorded outcome.
+
+    The scope cannot widen authorization: an unlisted name is still refused
+    whatever scope is supplied, and the argument digest still binds the
+    recorded evidence to the exact materialized arguments (#57).
+    """
+    # The composition contract requires an explicit policy evaluator: a bare
+    # context is an unavailable authority, not an implicit ALLOW (#846).
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    await effects.bindings.put(_binding())
+    registry = _registry(observed={"ticket_count": 1})
+    calls: list[str] = []
+
+    async def backend(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        calls.append(arguments["title"])
+        return {"title": arguments["title"]}
+
+    async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> Binding:
+        return _binding()
+
+    executor = GovernedToolExecutor(
+        effects=effects,
+        contracts=registry,
+        binding_for=binding_for,
+        backend=backend,
+    )
+    arguments = {"title": "same title"}
+    first = await executor.execute(
+        "create_ticket",
+        dict(arguments),
+        context=_CONTEXT,
+        authorized_tools=frozenset({"create_ticket"}),
+        effect_scope="call-1",
+    )
+    second = await executor.execute(
+        "create_ticket",
+        dict(arguments),
+        context=_CONTEXT,
+        authorized_tools=frozenset({"create_ticket"}),
+        effect_scope="call-2",
+    )
+    replay = await executor.execute(
+        "create_ticket",
+        dict(arguments),
+        context=_CONTEXT,
+        authorized_tools=frozenset({"create_ticket"}),
+        effect_scope="call-1",
+    )
+    assert first == second == replay
+    assert calls == ["same title", "same title"]
+
+    with pytest.raises(ToolNotAuthorized):
+        await executor.execute(
+            "undeclared",
+            {},
+            context=_CONTEXT,
+            authorized_tools=frozenset({"create_ticket"}),
+            effect_scope="call-3",
+        )
