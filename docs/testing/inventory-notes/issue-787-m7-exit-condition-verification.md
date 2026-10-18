@@ -5,8 +5,10 @@ design process`). Round 2: the branch was synced to the assigned develop base
 `ab8b3737fa64f8d840f421ef87ca506c509444ff` (clean merge; the M7 leaf PRs
 #1676/#1678/#1680/#1681/#1691/#1698 landed on develop between rounds), and
 every exit condition was re-verified against reachable tree behavior and real
-test runs at the merged head. No tests were added, removed, or moved by this
-note; it records a verification pass only.
+test runs at the merged head. Round 3 (this head, `ce51d6260`): an
+independent pass re-ran the full battery and reproduced every number below
+(see "Round 3 reproduction" at the end). No tests were added, removed, or
+moved by this note; it records verification passes only.
 
 #787 is a milestone tracker. Its body delegates all implementation to the
 live hierarchy: #788 (initiative) → #789 (epic) → leaves #790–#796, each with
@@ -121,6 +123,43 @@ state; it does not re-own leaf scope on the milestone branch.
 - `uv run pytest packages/maistro-core/tests/fitness/test_no_second_design_product.py
    packages/maistro-core/tests/test_cli_pack_fixtures.py -q` — 16 passed.
 
+## Round 3 reproduction (head `ce51d626098df0d7f83df8a6780b8592dd390a08`,
+independent pass, all commands re-executed)
+
+- `uv sync --locked --extra dev` — resolved (fresh worktree venv; design
+  imports resolve via pytest `pythonpath`, matching CI job setup).
+- `uv run ruff check .` — All checks passed. `uv run ruff format --check .`
+  — 3297 files already formatted.
+- `uv run pytest packages/maistro-core/tests/ontology -q` — **63 passed**.
+- `MAISTRO_TEST_PG_DSN=postgresql://maistro:test@127.0.0.1:18787/maistro
+  uv run pytest packages/maistro-core/tests/runs/test_eval_on_run.py -q`
+  against a fresh `pgvector/pgvector:pg18` container (port 18787) after
+  `DATABASE_URL=… uv run alembic upgrade head` (chain up to revision 063,
+  canonical Goal store) — **34 passed, 0 skipped**. Without the DSN the same
+  file gives 23 passed, 11 skipped (Postgres legs), confirming the legs are
+  real.
+- `uv run pytest packages/maistro-design/tests -q` — **572 passed,
+  1 skipped**.
+- `uv run pytest packages/maistro-core/tests/graph/seeds/test_pack_fixtures.py
+  packages/hive-conductor/backend/tests/test_pack_fixture_run_list.py
+  packages/hive-conductor/backend/tests/test_design_packs_route.py -q` —
+  **14 passed**.
+- `uv run pytest packages/maistro-core/tests/fitness/test_no_second_design_product.py
+  packages/maistro-core/tests/test_cli_pack_fixtures.py -q` — **16 passed**.
+- `uv run python scripts/check-suite-inventory.py` — ok, 17 suites match the
+  recorded inventory (this docs-only note changes no suite identity).
+- Spot-checks of the negative claims: `grep -rn FenceDecision packages/*/src`
+  → 0 hits; `grep -rn 'RunEvalScore|record_eval_score|eval_summary'
+  packages/maistro-evolve/src packages/maistro-rsi/src` → 0 hits;
+  `git log c5e070d97..ab8b3737f` contains no #794/#795/#796 commit;
+  `pack_fixtures.py::_complete_node` (lines 291–332) walks
+  QUEUED → RUNNING → COMPLETED and never enters WAITING, so the book
+  fixture's accept fence remains nonconforming fixture data (exit 4 evidence
+  correction above stands at this head).
+
+Every count matches the round-2 run exactly; the evidence pack is
+reproducible at this head.
+
 ## Conclusion
 
 Round 1 (at c5e070d) found all six runtime exits absent. At the synced
@@ -132,3 +171,5 @@ map + eval-authority guard) are absent, and exit 5's live #795 proof is not
 shipped. Remaining owners are leaves #794, #795, #796 under #789/#788; the
 contract ADRs (ADR-092926-7a01, ADR-093026-7a90) remain Proposed with
 AC-7/8/9/10 unproven until those leaves land. #787 itself stays open.
+Round 3 changed none of this: it reproduced the same numbers at the same
+head and confirmed the two absence claims by fresh grep/log/read evidence.
