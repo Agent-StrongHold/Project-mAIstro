@@ -265,6 +265,24 @@ class GoalReconciler:
         decision = await self._policy.decide(facts)
         outcome.decided = True
 
+        await self._admit_planned(goal_id, claim, decision, outcome, at)
+        await self._settle(goal_id, claim, decision, outcome, at)
+
+        await self._store.mark_wakes_dispatched([w.wake_id for w in wakes], now=at)
+
+    async def _admit_planned(
+        self,
+        goal_id: str,
+        claim: GoalClaim,
+        decision: PolicyDecision,
+        outcome: ReconciliationOutcome,
+        at: datetime,
+    ) -> None:
+        """Admit each planned action under the claim's fence.
+
+        A duplicate decision key (replayed Event, restart replay) resolves to
+        the already-recorded admission instead of filing a second one.
+        """
         for planned in decision.admissions:
             admission, created = await self._store.admit(
                 goal_id,
@@ -284,13 +302,20 @@ class GoalReconciler:
                     admission.admission_id, physical_ref=physical_ref, now=at
                 )
 
+    async def _settle(
+        self,
+        goal_id: str,
+        claim: GoalClaim,
+        decision: PolicyDecision,
+        outcome: ReconciliationOutcome,
+        at: datetime,
+    ) -> None:
+        """Finish the Goal or park it until a relevant state change wakes it."""
         if decision.complete:
             await self._store.finish_goal(goal_id, fencing_token=claim.fencing_token, now=at)
             outcome.completed = True
         else:
             await self._sleep(goal_id, claim, decision, at, outcome)
-
-        await self._store.mark_wakes_dispatched([w.wake_id for w in wakes], now=at)
 
     async def _repair_open(
         self, goal_id: str, claim: GoalClaim, at: datetime

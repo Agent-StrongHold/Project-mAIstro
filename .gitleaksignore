@@ -105,3 +105,12 @@ b5c22a358a8b0a0fb064e89eb6b4eba6855b58c2:.gitleaksignore:generic-api-key:54
 # request WITHOUT a key is refused). Fingerprint scoped to the introducing
 # commit, path, rule and line; later edits to the file are still scanned.
 13e8d307574e3c7e634caf181f49c3b37767e9ab:scripts/smoke-engine-canvas.sh:generic-api-key:153
+
+# test_goal_reconciliation.py: a PlannedAdmission constructor call whose
+# keyword argument names a decision key variable and whose correlation
+# value is a synthetic in-test event label. No credential exists on the
+# line — the generic-api-key rule matches the `key,` keyword prefix without
+# regard to what follows. Recorded here rather than renaming the test's
+# keyword away from the domain term. Fingerprint scoped to the introducing
+# commit, path, rule and line; later edits to the file are still scanned.
+28aec3787d0b3e6393a6c6dc8bb1b6b622631aaf:packages/maistro-core/tests/goals/test_goal_reconciliation.py:generic-api-key:787

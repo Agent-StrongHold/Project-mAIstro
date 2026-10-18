@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -28,9 +29,19 @@ from maistro.goals.reconciliation import (
     StaleGoalFence,
     WakeReason,
 )
-from maistro.goals.reconciliation.model import GoalFacts
-from maistro.goals.reconciliation.store import GoalCancelled, GoalDeadlinePassed, _check_gates
-from maistro.goals.reconciliation.wiring import EventWakeBridge, wake_reason_for_event
+from maistro.goals.reconciliation.model import GoalFacts, coerce_datetime
+from maistro.goals.reconciliation.store import (
+    GoalBudgetExhausted,
+    GoalCancelled,
+    GoalDeadlinePassed,
+    GoalReconciliationError,
+    _check_gates,
+)
+from maistro.goals.reconciliation.wiring import (
+    EventWakeBridge,
+    goal_id_of_event,
+    wake_reason_for_event,
+)
 
 T0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
@@ -813,3 +824,264 @@ class TestFailoverKeepsOneLineage:
         # execution across failover.
         assert admitter.calls == [key]
         assert (await store.get_goal(goal.goal_id)).runs_admitted == 1
+
+
+# ---------------------------------------------------------------------------
+# Degenerate paths — unknown ids, double settlement, stale fences, bad
+# postures, and coercion. Every guard runs on both store twins.
+# ---------------------------------------------------------------------------
+
+
+class TestStoreGuardsAndDegeneratePaths:
+    async def test_create_goal_duplicate_refused(self, store: Any) -> None:
+        await store.ensure_schema()
+        await store.create_goal(make_goal())
+        with pytest.raises(GoalReconciliationError, match="already exists"):
+            await store.create_goal(make_goal())
+
+    async def test_record_wake_unknown_goal_refused(self, store: Any) -> None:
+        await store.ensure_schema()
+        with pytest.raises(GoalReconciliationError, match="unknown Goal"):
+            await store.record_wake(
+                "missing", reason=WakeReason.GOAL_REVISION, correlation_id="e-1", now=T0
+            )
+
+    async def test_complete_admission_unknown_id_is_false(self, store: Any) -> None:
+        await store.ensure_schema()
+        await store.create_goal(make_goal())
+        assert await store.complete_admission("no-such-admission", physical_ref="run-1") is False
+
+    async def test_complete_admission_twice_settles_once(self, store: Any) -> None:
+        await store.ensure_schema()
+        await store.create_goal(make_goal())
+        claim = await store.claim("g-1", holder="a", ttl=timedelta(seconds=30), now=T0)
+        assert claim is not None
+        admission, _ = await store.admit(
+            "g-1", fencing_token=claim.fencing_token, decision_key="dec-1", now=T0
+        )
+        assert (
+            await store.complete_admission(admission.admission_id, physical_ref="run-1", now=T0)
+            is True
+        )
+        # A crash replay of the same settlement must not restamp or double-count.
+        assert (
+            await store.complete_admission(admission.admission_id, physical_ref="run-2", now=T0)
+            is False
+        )
+        view = await store.reconciliation_view("g-1")
+        assert view is not None and view["open_admissions"] == 0
+
+    async def test_pending_wakes_without_goal_filter_returns_all(self, store: Any) -> None:
+        await store.ensure_schema()
+        for goal_id in ("g-1", "g-2"):
+            await store.create_goal(make_goal(goal_id=goal_id))
+            await store.record_wake(
+                goal_id, reason=WakeReason.GOAL_REVISION, correlation_id=f"e-{goal_id}", now=T0
+            )
+        assert {w.goal_id for w in await store.pending_wakes()} == {"g-1", "g-2"}
+
+    async def test_mark_wakes_dispatched_ignores_unknown_and_already_dispatched(
+        self, store: Any
+    ) -> None:
+        await store.ensure_schema()
+        await store.create_goal(make_goal())
+        wake = await store.record_wake(
+            "g-1", reason=WakeReason.GOAL_REVISION, correlation_id="e-1", now=T0
+        )
+        assert wake is not None
+        assert await store.mark_wakes_dispatched(["missing"], now=T0) == 0
+        assert await store.mark_wakes_dispatched([wake.wake_id], now=T0) == 1
+        # A redelivery must not re-mark an already-dispatched wake.
+        assert await store.mark_wakes_dispatched([wake.wake_id], now=T0) == 0
+        assert await store.pending_wakes("g-1") == []
+
+    async def test_sleep_goal_refuses_non_sleeping_status(self, store: Any) -> None:
+        await store.ensure_schema()
+        await store.create_goal(make_goal())
+        claim = await store.claim("g-1", holder="a", ttl=timedelta(seconds=30), now=T0)
+        assert claim is not None
+        with pytest.raises(GoalReconciliationError, match="sleeping status"):
+            await store.sleep_goal(
+                "g-1", status=GoalStatus.READY, fencing_token=claim.fencing_token, now=T0
+            )
+
+    async def test_sleep_goal_after_fence_loss_refused(self, store: Any) -> None:
+        await store.ensure_schema()
+        await store.create_goal(make_goal())
+        lapsed = await store.claim("g-1", holder="a", ttl=timedelta(seconds=1), now=T0)
+        assert lapsed is not None
+        takeover = await store.claim(
+            "g-1", holder="b", ttl=timedelta(seconds=30), now=T0 + timedelta(seconds=2)
+        )
+        assert takeover is not None and takeover.fence_epoch > lapsed.fence_epoch
+        with pytest.raises(StaleGoalFence):
+            await store.sleep_goal(
+                "g-1",
+                status=GoalStatus.DORMANT,
+                fencing_token=lapsed.fencing_token,
+                awake_after=T0 + timedelta(seconds=2),
+                now=T0 + timedelta(seconds=2),
+            )
+
+    async def test_finish_goal_after_fence_loss_refused(self, store: Any) -> None:
+        await store.ensure_schema()
+        await store.create_goal(make_goal())
+        lapsed = await store.claim("g-1", holder="a", ttl=timedelta(seconds=1), now=T0)
+        assert lapsed is not None
+        takeover = await store.claim(
+            "g-1", holder="b", ttl=timedelta(seconds=30), now=T0 + timedelta(seconds=2)
+        )
+        assert takeover is not None
+        with pytest.raises(StaleGoalFence):
+            await store.finish_goal(
+                "g-1", fencing_token=lapsed.fencing_token, now=T0 + timedelta(seconds=2)
+            )
+        goal = await store.get_goal("g-1")
+        assert goal is not None and goal.status is not GoalStatus.SETTLED
+
+    async def test_reconciliation_view_of_unknown_goal_is_none(self, store: Any) -> None:
+        await store.ensure_schema()
+        assert await store.reconciliation_view("missing") is None
+
+    async def test_reconciliation_view_unclaimed_goal_has_no_claim(self, store: Any) -> None:
+        await store.ensure_schema()
+        await store.create_goal(make_goal())
+        view = await store.reconciliation_view("g-1")
+        assert view is not None
+        assert view["claim"] is None
+        assert view["pending_wakes"] == 0
+
+    async def test_unknown_goal_lookup_refused(self) -> None:
+        store = InMemoryGoalStore()
+        with pytest.raises(GoalReconciliationError, match="unknown Goal"):
+            store._require_goal("missing")
+
+
+class TestCheckGatesRefusals:
+    """Each Goal-level stop condition fences admission on its own."""
+
+    def test_withdrawn_goal_refused(self) -> None:
+        withdrawn = make_goal().model_copy(update={"status": GoalStatus.WITHDRAWN})
+        with pytest.raises(GoalCancelled, match="cancelled"):
+            _check_gates(withdrawn, T0)
+
+    def test_deadline_passed_goal_refused(self) -> None:
+        with pytest.raises(GoalDeadlinePassed, match="deadline passed"):
+            _check_gates(make_goal(deadline_at=T0 - timedelta(seconds=1)), T0)
+
+    def test_budget_exhausted_goal_refused(self) -> None:
+        with pytest.raises(GoalBudgetExhausted, match="budget exhausted"):
+            _check_gates(make_goal(budget_max_runs=1, runs_admitted=1), T0)
+
+
+class TestSqliteDegeneratePaths:
+    async def test_reclaim_expired_survives_goal_row_deleted_under_it(self, tmp_path: Any) -> None:
+        """A claim whose Goal row vanished (torn external surgery) reclaims safely."""
+        import aiosqlite
+
+        path = str(tmp_path / "goals.db")
+        conn = await aiosqlite.connect(path)
+        try:
+            sqlite_store = SqliteGoalStore(conn)
+            await sqlite_store.ensure_schema()
+            await sqlite_store.create_goal(make_goal())
+            claim = await sqlite_store.claim("g-1", holder="a", ttl=timedelta(seconds=1), now=T0)
+            assert claim is not None
+            await conn.execute("DELETE FROM goals WHERE goal_id = 'g-1'")
+            await conn.commit()
+            woken = await sqlite_store.reclaim_expired(T0 + timedelta(seconds=2), limit=16)
+            assert woken == []
+        finally:
+            await conn.close()
+
+
+class TestReconcilerGuardPaths:
+    async def test_goal_vanishing_after_claim_records_reconciliation_error(self) -> None:
+        """A torn restart can drop the Goal row between claim and pass."""
+
+        class VanishingGoalStore(InMemoryGoalStore):
+            async def get_goal(self, goal_id: str) -> Goal | None:
+                goal = await super().get_goal(goal_id)
+                if goal is not None and goal.goal_id == "g-vanish":
+                    return None
+                return goal
+
+        store = VanishingGoalStore()
+        await store.create_goal(make_goal(goal_id="g-vanish"))
+        reconciler = GoalReconciler(store, run_policy(), holder="h")
+        outcome = await reconciler.reconcile("g-vanish", now=T0)
+        assert outcome.claimed and not outcome.decided
+        assert outcome.error is not None and "unknown Goal" in outcome.error
+
+    async def test_goal_settled_between_claim_and_pass_decides_nothing(self) -> None:
+        """A terminal transition landing mid-pass ends the pass without a decision."""
+
+        class SettlingAfterClaimStore(InMemoryGoalStore):
+            async def claim(self, goal_id: str, **kwargs: Any) -> Any:
+                claim = await super().claim(goal_id, **kwargs)
+                if claim is not None:
+                    await self.finish_goal(goal_id, fencing_token=claim.fencing_token, now=T0)
+                return claim
+
+        store = SettlingAfterClaimStore()
+        await store.create_goal(make_goal())
+        policy = run_policy()
+        reconciler = GoalReconciler(store, policy, holder="h")
+        outcome = await reconciler.reconcile("g-1", now=T0)
+        assert outcome.claimed
+        assert not outcome.decided and outcome.admissions == [] and outcome.error is None
+        assert policy.calls == 0
+
+    async def test_fence_lost_mid_pass_records_stale_fence_and_skips(self) -> None:
+        """A newer epoch taking the fence mid-pass makes the pass harmless."""
+
+        class FenceRotatingStore(InMemoryGoalStore):
+            async def claim(self, goal_id: str, **kwargs: Any) -> Any:
+                claim = await super().claim(goal_id, **kwargs)
+                if claim is not None:
+                    # The same holder re-claims (epoch + 1, new token): the
+                    # token the reconciler came in with is now stale.
+                    await super().claim(goal_id, **kwargs)
+                return claim
+
+        store = FenceRotatingStore()
+        await store.create_goal(make_goal())
+        admitter = StubAdmitter()
+        reconciler = GoalReconciler(store, run_policy(), holder="h", admitter=admitter)
+        outcome = await reconciler.reconcile("g-1", now=T0)
+        assert outcome.claimed
+        assert outcome.error is not None and outcome.error.startswith("stale fence")
+        assert outcome.admissions == [] and admitter.calls == []
+
+    async def test_repair_open_without_admitter_or_pending_is_noop(self) -> None:
+        store = InMemoryGoalStore()
+        await store.create_goal(make_goal())
+        bare = GoalReconciler(store, run_policy(), holder="h")
+        assert await bare._repair_open("g-1", claim=None, at=T0) == []
+
+        fenced = GoalReconciler(store, run_policy(), holder="h", admitter=StubAdmitter())
+        claim = await store.claim("g-1", holder="h", ttl=timedelta(seconds=30), now=T0)
+        assert claim is not None
+        assert await fenced._repair_open("g-1", claim, T0) == []
+
+
+class TestModelAndWiringEdges:
+    def test_coerce_datetime_accepts_both_stored_shapes(self) -> None:
+        assert coerce_datetime(T0) is T0
+        assert coerce_datetime("2026-01-01T12:00:00+00:00") == T0
+
+    def test_goal_id_of_event_ignores_unsuitable_payloads(self) -> None:
+        assert goal_id_of_event(make_event("goal.changed", "g-1", "e-1")) == "g-1"
+        assert goal_id_of_event(make_event("goal.changed", None, "e-2")) is None
+        unshaped = SimpleNamespace(
+            type="goal.changed", payload=None, event_id="e-3", workspace_id="ws-1"
+        )
+        assert goal_id_of_event(unshaped) is None
+        non_string = SimpleNamespace(
+            type="goal.changed", payload={"goal_id": 42}, event_id="e-4", workspace_id="ws-1"
+        )
+        assert goal_id_of_event(non_string) is None
+        blank = SimpleNamespace(
+            type="goal.changed", payload={"goal_id": ""}, event_id="e-5", workspace_id="ws-1"
+        )
+        assert goal_id_of_event(blank) is None

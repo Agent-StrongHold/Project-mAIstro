@@ -20,6 +20,7 @@ artifacts (``physical_ref``), they do not create or own Runs.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -478,7 +479,6 @@ class InMemoryGoalStore:
             goal = self._goals.get(goal_id)
             if goal is None:
                 return None
-            claim = self._claims.get(goal_id)
             wakes = [w for w in self._wakes.values() if w.goal_id == goal_id]
             admissions = [a for a in self._admissions.values() if a.goal_id == goal_id]
             return {
@@ -490,17 +490,22 @@ class InMemoryGoalStore:
                 "deadline_at": goal.deadline_at,
                 "awake_after": goal.awake_after,
                 "blocked_reason": goal.blocked_reason,
-                "claim": {
-                    "holder": claim.holder,
-                    "fence_epoch": claim.fence_epoch,
-                    "expires_at": claim.expires_at,
-                }
-                if claim
-                else None,
-                "pending_wakes": sum(1 for w in wakes if w.dispatched_at is None),
-                "open_admissions": sum(1 for a in admissions if a.completed_at is None),
+                "claim": self._claim_view(goal_id),
+                "pending_wakes": _open_count(wakes, "dispatched_at"),
+                "open_admissions": _open_count(admissions, "completed_at"),
                 "admissions_total": len(admissions),
             }
+
+    def _claim_view(self, goal_id: str) -> dict[str, object] | None:
+        """The current claim projection, or ``None`` when the Goal is unclaimed."""
+        claim = self._claims.get(goal_id)
+        if claim is None:
+            return None
+        return {
+            "holder": claim.holder,
+            "fence_epoch": claim.fence_epoch,
+            "expires_at": claim.expires_at,
+        }
 
     # -- internals ---------------------------------------------------------
 
@@ -528,6 +533,11 @@ class InMemoryGoalStore:
             raise GoalBudgetExhausted(
                 f"Goal {goal.goal_id!r} budget exhausted ({goal.runs_admitted}/{goal.budget_max_runs})"
             )
+
+
+def _open_count(items: list[Any], done_at: str) -> int:
+    """How many recorded facts still lack their terminal timestamp."""
+    return sum(1 for item in items if getattr(item, done_at) is None)
 
 
 def uuid_hex() -> str:
@@ -593,6 +603,19 @@ _GOAL_COLUMNS = (
     "goal_id, workspace_id, project_id, owning_agent_id, revision, status, runs_admitted,"
     " budget_max_runs, deadline_at, stop_condition, blocked_reason, awake_after,"
     " cancelled_reason, created_at, updated_at"
+)
+
+# The bounded-sweep query as a module constant: the column list is the
+# code-owned _GOAL_COLUMNS constant and every value is bound, so the string
+# formatting bandit's B608 flags is structurally incapable of carrying data.
+_DUE_GOALS_SQL_TEMPLATE = (
+    "SELECT {columns} FROM goals\n"
+    "WHERE status NOT IN ('withdrawn', 'settled')\n"
+    "  AND awake_after IS NOT NULL AND awake_after <= ?\n"
+    "ORDER BY awake_after LIMIT ?"
+)
+_DUE_GOALS_SQL = _DUE_GOALS_SQL_TEMPLATE.format(  # nosec B608 — `{columns}` takes only the module constant _GOAL_COLUMNS, never data; now/limit are bound
+    columns=_GOAL_COLUMNS
 )
 
 
@@ -669,16 +692,20 @@ class SqliteGoalStore:
             await execute_schema_script(self._conn, _GOALS_SCHEMA)
 
     async def create_goal(self, goal: Goal) -> Goal:
-        await self._conn.execute(
-            f"INSERT INTO goals ({_GOAL_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            _goal_params(goal),
-        )
+        try:
+            await self._conn.execute(
+                f"INSERT INTO goals ({_GOAL_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",  # nosec B608 — column list is the module constant _GOAL_COLUMNS, never data; values are bound
+                _goal_params(goal),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise GoalReconciliationError(f"Goal {goal.goal_id!r} already exists") from exc
         await self._conn.commit()
         return goal
 
     async def get_goal(self, goal_id: str) -> Goal | None:
         async with self._conn.execute(
-            f"SELECT {_GOAL_COLUMNS} FROM goals WHERE goal_id = ?", (goal_id,)
+            f"SELECT {_GOAL_COLUMNS} FROM goals WHERE goal_id = ?",  # nosec B608 — column list is the module constant _GOAL_COLUMNS; goal_id is bound
+            (goal_id,),
         ) as cursor:
             row = await cursor.fetchone()
         return _goal_from_row(row) if row else None
@@ -697,17 +724,14 @@ class SqliteGoalStore:
 
     async def non_terminal_goals(self) -> list[Goal]:
         async with self._conn.execute(
-            f"SELECT {_GOAL_COLUMNS} FROM goals WHERE status NOT IN ('withdrawn', 'settled')"
+            f"SELECT {_GOAL_COLUMNS} FROM goals WHERE status NOT IN ('withdrawn', 'settled')"  # nosec B608 — column list is the module constant _GOAL_COLUMNS; no data interpolated
         ) as cursor:
             rows = await cursor.fetchall()
         return [_goal_from_row(row) for row in rows]
 
     async def due_goals(self, now: datetime, limit: int) -> list[Goal]:
         async with self._conn.execute(
-            f"""SELECT {_GOAL_COLUMNS} FROM goals
-                WHERE status NOT IN ('withdrawn', 'settled')
-                  AND awake_after IS NOT NULL AND awake_after <= ?
-                ORDER BY awake_after LIMIT ?""",
+            _DUE_GOALS_SQL,
             (_iso(now), limit),
         ) as cursor:
             rows = await cursor.fetchall()
@@ -760,6 +784,29 @@ class SqliteGoalStore:
         await self._conn.commit()
         return wake if cursor.rowcount else None
 
+    @staticmethod
+    def _claim_blocked(existing: GoalClaim | None, holder: str, at: datetime) -> bool:
+        """Whether another live holder owns the fence, so the caller skips instead."""
+        return existing is not None and not existing.lapsed(at) and existing.holder != holder
+
+    @staticmethod
+    def _next_claim(
+        existing: GoalClaim | None,
+        *,
+        goal_id: str,
+        holder: str,
+        at: datetime,
+        ttl: timedelta | None,
+    ) -> GoalClaim:
+        """Build the claim that takes the fence, advancing the epoch when re-claiming."""
+        return GoalClaim(
+            goal_id=goal_id,
+            holder=holder,
+            fence_epoch=(existing.fence_epoch + 1) if existing else 1,
+            acquired_at=at,
+            expires_at=at + (ttl or default_lease_ttl()),
+        )
+
     async def claim(
         self,
         goal_id: str,
@@ -787,16 +834,10 @@ class SqliteGoalStore:
                 return None
             at = now or _utcnow()
             existing = await self._read_claim_locked(goal_id)
-            if existing is not None and not existing.lapsed(at) and existing.holder != holder:
+            if self._claim_blocked(existing, holder, at):
                 await self._conn.commit()
                 return None
-            claim = GoalClaim(
-                goal_id=goal_id,
-                holder=holder,
-                fence_epoch=(existing.fence_epoch + 1) if existing else 1,
-                acquired_at=at,
-                expires_at=at + (ttl or default_lease_ttl()),
-            )
+            claim = self._next_claim(existing, goal_id=goal_id, holder=holder, at=at, ttl=ttl)
             await self._conn.execute(
                 """INSERT INTO goal_claims (goal_id, holder, fence_epoch, fencing_token, acquired_at, expires_at)
                    VALUES (?,?,?,?,?,?)
@@ -872,7 +913,8 @@ class SqliteGoalStore:
         await self._conn.execute("BEGIN IMMEDIATE")
         try:
             async with self._conn.execute(
-                f"SELECT {_GOAL_COLUMNS} FROM goals WHERE goal_id = ?", (goal_id,)
+                f"SELECT {_GOAL_COLUMNS} FROM goals WHERE goal_id = ?",  # nosec B608 — column list is the module constant _GOAL_COLUMNS; goal_id is bound
+                (goal_id,),
             ) as cursor:
                 row = await cursor.fetchone()
             if row is None:

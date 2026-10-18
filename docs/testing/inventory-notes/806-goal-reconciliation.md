@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +72
+  packages/maistro-core/tests: +105
 ---
 # 806-goal-reconciliation
 
@@ -83,3 +83,55 @@ ab8b3737 (none touching the goals package or any resolved file — verified
 empty diff before merging); merged as bd4dd5f5d. Final tree re-verified:
 `packages/maistro-core/tests` 16495 collected, 15419 passed, 1073
 skipped, 3 xfailed, 0 failed; all gates and ruff/mypy re-run green.
+
+## 2026-10-18 CI-repair round (+33 node IDs, all additions; note delta now +105)
+
+Repair of the CI failures at 4746e7d7, driven by local gate runs at the
+develop-synced tree (3df0fba97):
+
+- 33 new mechanics node IDs close the diff-coverage branch-arc gaps the
+  coverage gate named (`model.py` 50% of 2 changed arcs, `store.py` 77.9%
+  of 86). The additions are the degenerate paths, not more happy path:
+  duplicate `create_goal` refusal, unknown-goal `record_wake`/admit/claim
+  refusals, `complete_admission` double-settlement returning False,
+  `pending_wakes` without a goal filter, `mark_wakes_dispatched` ignoring
+  unknown and already-dispatched ids, `sleep_goal` refusing a non-sleeping
+  posture, stale-fence refusal after lease takeover for both `sleep_goal`
+  and `finish_goal`, `reconciliation_view` of unknown/unclaimed Goals, the
+  three `_check_gates` refusals unit-pinned, the SQLite
+  `reclaim_expired` surviving a Goal row deleted under a lapsed claim,
+  reconciler guard paths (Goal row vanishing between claim and pass, a
+  Goal settling mid-pass deciding nothing, a newer fence epoch making the
+  pass harmless with zero admissions, `_repair_open` no-ops), plus
+  `coerce_datetime`'s stored-text shape and `goal_id_of_event` ignoring
+  non-dict/non-string/blank payloads.
+- Twin-parity fix found by the new duplicate-create test: the SQLite
+  `create_goal` raised a raw `sqlite3.IntegrityError` where the in-memory
+  twin raises `GoalReconciliationError`; the SQLite twin now maps the
+  UNIQUE violation to the same domain error.
+- Bandit B608 (strict zero Medium+) on the SQLite twin's f-string column
+  list: every site interpolates only the code-owned `_GOAL_COLUMNS`
+  constant with values bound via `?`; annotated `# nosec B608` per the
+  `runs/sqlite_store.py` precedent, and the multiline sweep query moved to
+  a module constant. Radon ratchet: the three new C-grade blocks
+  (`reconciliation_view`, `SqliteGoalStore.claim`, `GoalReconciler._pass`)
+  were refactored under the threshold by behavior-preserving extraction
+  (`_claim_view`, `_open_count`, `_claim_blocked`, `_next_claim`,
+  `_admit_planned`, `_settle`); ratchet back to 137 == base. Gitleaks: the
+  `PlannedAdmission(... decision_key=key ...)` constructor line tripped
+  generic-api-key; recorded commit-scoped in `.gitleaksignore` with a
+  paraphrased rationale.
+- Re-verified at this round's HEAD: goals package 154 passed / 22 skipped
+  (Postgres-gated skips); `packages/maistro-core/tests` 15,489 passed /
+  1,076 skipped / 3 xfailed; check-diff-coverage ok (every measured changed
+  file ≥ 90% lines / 80% branch arcs vs origin/develop); publish-set floor
+  92% ≥ 87 on the five no-services producers; ruff check/format, mypy (906
+  files), check-radon-baseline, bandit Medium+ = 0, semgrep (goals +
+  tests), gitleaks (develop..HEAD), check-ratchet-provenance,
+  check-shipped-surface-truth, and check-suite-inventory all green. The
+  vulture exact-debt-ledger banks this package's 13 reviewed retained
+  identities in `quality/vulture-baseline.json` (+13/−1 stale
+  `graph/harness.py::dispatched_at` row); the identities are exercised by
+  the tests in this note, and the gate's remaining "not authorized by the
+  trusted base" step needs the reviewed grant landed on develop first
+  (two-merge rule), which no candidate edit can self-approve.
