@@ -26,7 +26,7 @@ from maistro.graph.policies import resolve_max_cycles, resolve_node_timeout_s
 from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, AgentRole
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
 from maistro.runs.recovery_events import CanonicalEventStoreSink, CanonicalRecoveryEventSink
-from services.dag_agents import _container, get_run_store
+from services.dag_agents import _container, require_graph_execution_spine
 from services.dag_execution_scope import DagExecutionScope, DagWorkspaceSelectionError
 from services.governed_model import dag_node_runtime
 from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
@@ -356,7 +356,7 @@ async def resolve_execution_scope(
     (#1174). This is the resolver `execute_dag` itself uses -- a second call,
     never a second mapping.
     """
-    resolved_workspace, resolved_project, _ = await _scope(
+    resolved_workspace, resolved_project = await _scope(
         dag_data,
         scope=scope,
         workspace_id=workspace_id,
@@ -371,7 +371,7 @@ async def _scope(
     scope: DagExecutionScope | None,
     workspace_id: str | None,
     project_id: str | None,
-) -> tuple[str, str, Any]:
+) -> tuple[str, str]:
     del dag_data
     if scope is None:
         raise DagWorkspaceSelectionError("authorized DAG execution scope is required")
@@ -379,12 +379,7 @@ async def _scope(
         raise DagWorkspaceSelectionError("workspace_id does not match authorized scope")
     if project_id is not None and project_id != scope.project_id:
         raise DagWorkspaceSelectionError("project_id does not match authorized scope")
-    container = _container()
-    return (
-        scope.workspace_id,
-        scope.project_id,
-        container.run_store if container is not None else None,
-    )
+    return scope.workspace_id, scope.project_id
 
 
 def _node_env(
@@ -609,9 +604,9 @@ async def execute_dag(
     Like ``on_event`` it is a presentation seam: a raising sink is suppressed
     and logged, because the canonical Run is already admitted at that point
     and aborting execution over a projection write would strand it QUEUED for
-    recovery while the caller is told the DAG failed. No canonical store (no
-    admission) means the sink never fires and the projection row keeps its
-    honest empty correlation.
+    recovery while the caller is told the DAG failed. Missing canonical authority
+    refuses execution before admission, so the sink never fires and the
+    projection row keeps its honest empty correlation.
     """
     if scope is None:
         # Keep the user parameter only as a consistency check for old callers;
@@ -620,12 +615,15 @@ async def execute_dag(
     if user_id and user_id != scope.user_id:
         raise DagWorkspaceSelectionError("user_id does not match authorized scope")
     user_id = scope.user_id
-    resolved_workspace, resolved_project, canonical_run_store = await _scope(
+    resolved_workspace, resolved_project = await _scope(
         dag_data,
         scope=scope,
         workspace_id=workspace_id,
         project_id=project_id,
     )
+    container = _container()
+    require_graph_execution_spine(container)
+    canonical_run_store = container.run_store
     graph = graph_from_legacy_dag(
         dag_data,
         workspace_id=resolved_workspace,
@@ -645,30 +643,26 @@ async def execute_dag(
         **budget,
     }
 
-    admitted_run_id = None
-    if canonical_run_store is not None:
-        admitted = await canonical_run_store.create_run(
-            graph,
-            initial_status=RunStatus.QUEUED,
-            actor_principal_id=user_id or None,
-            provenance=provenance,
-        )
-        admitted_run_id = admitted.run_id
-        if on_admitted is not None:
-            try:
-                await on_admitted(admitted_run_id)
-            except Exception:
-                logger.warning(
-                    "dag_admission_sink_failed run_id=%s dag_id=%s",
-                    admitted_run_id,
-                    dag_data.get("id", ""),
-                    exc_info=True,
-                )
+    admitted = await canonical_run_store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=user_id or None,
+        provenance=provenance,
+    )
+    admitted_run_id = admitted.run_id
+    if on_admitted is not None:
+        try:
+            await on_admitted(admitted_run_id)
+        except Exception:
+            logger.warning(
+                "dag_admission_sink_failed run_id=%s dag_id=%s",
+                admitted_run_id,
+                dag_data.get("id", ""),
+                exc_info=True,
+            )
 
     def _build_resolver() -> Any:
-        # One Container read per execution: the effect authority and the
-        # governed model runtime (#718) come from the same live composition.
-        container = _container()
+        # Effects and traversal use the same Container captured before admission.
         return _resolver(
             raw_by_id,
             task_desc=task_desc,
@@ -687,7 +681,7 @@ async def execute_dag(
 
     record = await run_durable_graph(
         graph,
-        store=get_run_store(),
+        store=container.graph_run_store,
         node_resolver=_build_resolver(),
         actor_principal_id=user_id or None,
         run_id=admitted_run_id,
