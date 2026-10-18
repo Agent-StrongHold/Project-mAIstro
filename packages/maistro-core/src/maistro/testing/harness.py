@@ -7,6 +7,7 @@ from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry
 from maistro.classifier.engine import ClassifierEngine
 from maistro.container import Container
+from maistro.goals.store import InMemoryGoalStore
 from maistro.graph.events import GraphEvent
 from maistro.graph.run import GraphRun
 from maistro.graph.types import (
@@ -180,6 +181,7 @@ def create_test_environment(
         intent_registry=intent_registry,
         audit_log=audit_log,
         capabilities=capabilities,
+        goal_reconciliation_store=InMemoryGoalStore(),
     )
 
     if agents:

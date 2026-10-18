@@ -35,6 +35,7 @@ from maistro.events.consumer_cursor import (
     DEFAULT_HOLE_GRACE_SECONDS,
     LEGACY_BRIDGE_CONSUMER_ID,
 )
+from maistro.goals.wiring import wire_goal_reconciliation
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
@@ -109,6 +110,8 @@ if TYPE_CHECKING:
     from maistro.events.invocations import InvocationStore
     from maistro.events.processing import HandlerCaller
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
+    from maistro.goals.reconciler import ReconciliationPolicy
+    from maistro.goals.store import GoalReconciliationStore
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
         AgentIdentity as LifecycleIdentity,
@@ -364,6 +367,13 @@ class Container:
     # `durable_event_hole_grace_s` seconds, then treats it as aborted.
     _durable_event_holes: dict[int, float] = field(default_factory=dict)
     durable_event_hole_grace_s: float = DEFAULT_HOLE_GRACE_SECONDS
+    # Goal reconciliation control plane (M3 #806): the one durable store of
+    # Goal rows, claim/lease fences, wake facts and admissions, plus the
+    # #805-owned decision policy. `None` until #805 composes one: without a
+    # policy the Container still reclaims lapsed leases (`sweep_goal_leases`)
+    # but never decides, so no admission semantics are invented here.
+    goal_reconciliation_store: GoalReconciliationStore = None  # type: ignore[assignment]
+    goal_reconciliation_policy: ReconciliationPolicy | None = None
     # LLM provider registry + cost-aware router (SPEC-070226-cb8d).
     provider_registry: LLMProviderRegistry = None  # type: ignore[assignment]
     llm_router: LLMRouter = None  # type: ignore[assignment]
@@ -1082,6 +1092,52 @@ class Container:
         age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
         oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
         return reclaimed
+
+    async def sweep_goal_leases(self, *, now: datetime | None = None, limit: int = 16) -> int:
+        """Tick Goal claim/lease recovery (M3 #806). Returns how many reclaimed.
+
+        The fourth tick beside `process_durable_events`,
+        `recover_abandoned_attempts` and `execute_admitted_runs`, and the
+        same shape: bounded, idempotent, operator-scheduled, never
+        self-starting (ADR-019). A Goal claim whose holder stopped renewing
+        it is released and the Goal is marked due for the bounded safety
+        sweep, so a dead reconciler's fence cannot pin a Goal forever.
+
+        Deliberately policy-free: lease reclamation is pure fence mechanics,
+        so it runs with or without a `goal_reconciliation_policy` — exactly
+        like `recover_abandoned_attempts` needs no retry policy to settle a
+        lapsed Attempt lease.
+        """
+        reclaimed = await self.goal_reconciliation_store.reclaim_expired(
+            now if now is not None else datetime.now(UTC), limit
+        )
+        return len(reclaimed)
+
+    async def reconcile_goals(self, *, now: datetime | None = None, limit: int = 16) -> int:
+        """Tick the Goal reconciliation sweep (M3 #806). Returns passes decided.
+
+        Runs the bounded sweep — lapsed leases, missed wakes, due sleeps —
+        under the #805-owned `goal_reconciliation_policy`. Without a policy
+        this returns 0 and decides nothing: the mechanics never invent what a
+        reconciliation decision means, so activation is composition, not a
+        default. Wakes recorded meanwhile stay durable pending facts, and
+        `sweep_goal_leases` keeps the fences honest regardless.
+        """
+        if self.goal_reconciliation_policy is None:
+            return 0
+        from maistro.goals import GoalReconciler
+
+        reconciler = GoalReconciler(
+            self.goal_reconciliation_store,
+            self.goal_reconciliation_policy,
+            # The same process identity that holds the durable-event cursor
+            # lease: one identity per Container for every cross-process fence.
+            holder=self._durable_events_holder,
+        )
+        outcomes = await reconciler.sweep(
+            now if now is not None else datetime.now(UTC), limit=limit
+        )
+        return sum(1 for outcome in outcomes if outcome.decided)
 
     async def _reclaim_abandoned_attempts(self, *, now: datetime | None, limit: int) -> int:
         """Settle Attempts whose lease lapsed; the recovery half of the tick."""
@@ -1986,6 +2042,10 @@ async def create_container(
     # reconcile, or the tiers cannot answer a restart the same way.
     task_idempotency = await wire_task_idempotency(db_pool, pg_pool=pg_pool)
     schedule_admitter = _wire_schedule_admission(run_store, graph_template_store, schedule_store)
+    # The backend the spine just chose (#1176 pattern): the Goal control plane
+    # lives beside the Runs it reconciles, so a restart answers from the same
+    # database the Runs do (M3 #806).
+    goal_reconciliation_store = await wire_goal_reconciliation(pg_pool=pg_pool, db_pool=db_pool)
     chat_admitter = wire_chat_admission(
         run_store,
         project_scope_store,
@@ -2243,6 +2303,7 @@ async def create_container(
         invocation_store=invocation_store,
         handler_caller=handler_caller,
         consumer_cursor_store=consumer_cursor_store,
+        goal_reconciliation_store=goal_reconciliation_store,
         provider_registry=provider_registry,
         llm_router=llm_router,
         record_store=record_store,

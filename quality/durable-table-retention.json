@@ -916,6 +916,54 @@
       "deletion_path": null,
       "issue": "#325",
       "notes": "No DELETE, and restore full-scans the table. Wired into production by Container._wire_sqlite_backend (#1204), whose snapshot/restore are idempotent by event identity; retention itself stays open on #325."
+    },
+    {
+      "table": "goals",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/store.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#806",
+      "notes": "One canonical Goal row per goal_id; terminal postures (settled/withdrawn) keep the row for lineage inspection. Retention follows the Goal lifecycle decision tracked on #806."
+    },
+    {
+      "table": "goal_claims",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/store.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#806",
+      "notes": "At most one claim/lease row per Goal; released on pass end, reclaim, cancel or settle."
+    },
+    {
+      "table": "goal_wakes",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/store.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#806",
+      "notes": "Deduplicated wakeup facts; dispatched facts are control metadata kept for inspection. Bounded sweep reads only undispatched rows."
+    },
+    {
+      "table": "goal_admissions",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/store.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#806",
+      "notes": "Idempotent admission records naming canonical artifacts; the lineage record for restart convergence and audit."
     }
   ]
 }
