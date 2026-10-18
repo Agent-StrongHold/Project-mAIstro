@@ -35,7 +35,7 @@ RUN apk add --no-cache git && \
     git clone --branch "v${AGE_VERSION}" --depth 1 https://github.com/FiloSottile/age.git /src/age && \
     cd /src/age && \
     test "$(git rev-parse --short=7 HEAD)" = "${AGE_COMMIT_SHORT}" && \
-    go get golang.org/x/crypto@v0.52.0 && \
+    go get golang.org/x/crypto@v0.55.0 && \
     mkdir -p /out && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/age ./cmd/age && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/age-keygen ./cmd/age-keygen

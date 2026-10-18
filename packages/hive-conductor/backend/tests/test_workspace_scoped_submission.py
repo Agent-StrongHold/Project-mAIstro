@@ -223,6 +223,79 @@ async def test_the_http_backend_still_accepts_an_unscoped_submission(monkeypatch
     assert posted["url"].endswith("/tasks")
 
 
+# --- request correlation (#1063) -------------------------------------------
+
+
+class _FakeResponse:
+    status_code = 202
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return {
+            "task": {
+                "task_id": "t-1",
+                "status": "queued",
+                "description": "d",
+                "workspace": "/tmp/maistro-workspace",  # nosec B108
+                "tier": 2,
+                "created_at": "2026-01-01T00:00:00Z",
+            }
+        }
+
+
+class _CapturingClient:
+    def __init__(self, sink: dict[str, Any]) -> None:
+        self._sink = sink
+
+    async def __aenter__(self) -> _CapturingClient:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def post(self, url: str, **kwargs: Any) -> _FakeResponse:
+        self._sink["headers"] = kwargs.get("headers", {})
+        return _FakeResponse()
+
+
+async def test_the_http_backend_forwards_the_bound_request_id(monkeypatch) -> None:
+    """Correlation metadata only, never authorization/scope (#1063): the id
+    RequestIDMiddleware already bound reaches maistro-server's own
+    RequestIDMiddleware unsigned, the same way it reaches this process's logs."""
+    import adapters.task_backend as backend_mod
+
+    from maistro.observability.correlation import bind_execution_context
+    from maistro.tasks.models import TaskCreate
+
+    sink: dict[str, Any] = {}
+    monkeypatch.setattr(backend_mod, "shared_client", lambda **kw: _CapturingClient(sink))
+    backend = backend_mod.MaistroServerTaskBackend(base_url="http://tasks.invalid", api_key=None)
+
+    with bind_execution_context(request_id="req-abc123"):
+        await backend.submit(TaskCreate(description="d"), user_id="u")
+
+    assert sink["headers"]["X-Request-ID"] == "req-abc123"
+
+
+async def test_the_http_backend_omits_the_header_with_no_request_in_scope(monkeypatch) -> None:
+    """No fabricated id: a caller outside any bound execution (a background
+    job that has not minted its own correlation root) sends nothing rather
+    than inventing a value maistro-server would treat as a real client id."""
+    import adapters.task_backend as backend_mod
+
+    from maistro.tasks.models import TaskCreate
+
+    sink: dict[str, Any] = {}
+    monkeypatch.setattr(backend_mod, "shared_client", lambda **kw: _CapturingClient(sink))
+    backend = backend_mod.MaistroServerTaskBackend(base_url="http://tasks.invalid", api_key=None)
+
+    await backend.submit(TaskCreate(description="d"), user_id="u")
+
+    assert "X-Request-ID" not in sink["headers"]
+
+
 # --- review findings ------------------------------------------------------
 
 

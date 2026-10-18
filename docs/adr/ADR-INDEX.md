@@ -15,7 +15,7 @@ Turing / deferred-to-vN) and **`DECISION-BACKLOG.md`** (in-scope but not yet dec
   field is absent on an Accepted/Superseded ADR) · **Last Modified** git last-commit (Central time).
 
 | ID | Ver | Status | Created | Accepted | Last Modified | Summary |
-|----|-----|--------|---------|----------|---------------|---------|
+| ---- | ----- | -------- | --------- | ---------- | --------------- | --------- |
 | ADR-001 | v3 | Superseded | 2026-04-26 | 2026-04-26† | 2026-05-29 17:48 CDT | Original branching strategy (integration as PR base) — superseded by ADR-095. |
 | ADR-002 | v2 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Per-port spec-first workflow: a written spec precedes code for each port. |
 | ADR-003 | v3 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Agent-runtime gap analysis — roadmap mapping archived-branch work to future ADRs. |
@@ -98,6 +98,7 @@ Turing / deferred-to-vN) and **`DECISION-BACKLOG.md`** (in-scope but not yet dec
 | ADR-070426-9f47 | v1 | Proposed | 2026-07-04 | — | 2026-07-04 | Autonoetic self-model threat model — guardrail invariants G1–G18 as mandatory AC for the turing migration. |
 | ADR-070426-e9da | v1 | Proposed | 2026-07-04 | — | 2026-07-04 | Header-based CSRF defense (`X-Maistro-Request`) for hive-conductor's cookie-authenticated mutations; docs-only, flags the conftest fixture update as acceptance-blocking. |
 | ADR-070426-ac56 | v1 | Proposed | 2026-07-04 | — | 2026-07-04 | Wire `CostAwareRouter.fallback_chain()` into the conductor's retry loop for cross-model fallback; docs-only, DI change deferred to SPEC-280. |
+| ADR-091226-1341 | v1 | Accepted | 2026-09-12 | 2026-09-12 | 2026-09-12 12:11 CDT | Gates Ran evaluates path-scoped execution evidence from measured changed files; ambiguous scope fails closed. |
 
 *Turing-specific ADRs (autonoetic self-model) are tracked as a separate set — see `OUT-OF-SCOPE.md`
 §Turing and `DECISION-BACKLOG.md` §Turing. ADR-061 (maistro-design-package) and ADR-100 (its

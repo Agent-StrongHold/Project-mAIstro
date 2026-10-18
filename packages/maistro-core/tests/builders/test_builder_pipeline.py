@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from maistro.builders.contracts import RunRequest, RunResult, RunStatus, WorkerName
-from maistro.builders.graph import PipelineGraph, RunContext
+from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
 from maistro.builders.pipeline import (
     BUILDER_PIPELINE,
     BuilderPipeline,
@@ -13,6 +13,13 @@ from maistro.builders.pipeline import (
     StageStatus,
 )
 from maistro.builders.runtime import BuildersRuntime
+from maistro.graph.durable_runs import (
+    CanonicalDurableRunStore,
+    InMemoryGraphContinuationStore,
+)
+from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.model import RunStatus as CanonicalRunStatus
+from maistro.runs.store import InMemoryRunStore
 
 
 class ScriptedDispatcher:
@@ -53,6 +60,77 @@ def test_default_pipeline_review_gates_back_to_implement() -> None:
     assert review.gate is not None
     assert review.revise_target == "implement"
     assert review.gate_exhausted == "continue"
+
+
+@pytest.mark.asyncio
+async def test_builder_pipeline_records_canonical_run_and_stage_attempts() -> None:
+    project_store = InMemoryProjectScopeStore()
+    workspace_id = "builders-pipeline-test"
+    await project_store.create_root(workspace_id)
+    project = await project_store.root_for_workspace(workspace_id)
+    run_store = InMemoryRunStore(project_store=project_store)
+    durable_store = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
+    dispatcher = ScriptedDispatcher({"spec": "spec ready"})
+    pipeline = BuilderPipeline(
+        dispatcher,
+        nodes=[
+            PipelineNode(name="spec", agent_name="planner", prompt_template="{title}"),
+            PipelineNode(
+                name="optional-review",
+                agent_name="auditor",
+                prompt_template="review",
+                depends_on=("spec",),
+                skip_if=lambda _ctx: True,
+            ),
+        ],
+        run_store=run_store,
+        durable_store=durable_store,
+        workspace_id=workspace_id,
+        project_id=project.project_id,
+    )
+
+    run = await pipeline.execute(issue_number=734, title="Builders", repo="acme/widget")
+
+    assert run.status == "completed"
+    assert run.canonical_run_id is not None
+    stored = await run_store.get_run(run.canonical_run_id)
+    assert stored is not None
+    assert stored.status is CanonicalRunStatus.COMPLETED
+    node_runs = await run_store.list_node_runs(run.canonical_run_id)
+    assert [node_run.node_id for node_run in node_runs] == [
+        "builders-stage:spec",
+        "builders-stage:optional-review",
+    ]
+    attempts = [
+        attempt
+        for node_run in node_runs
+        for attempt in await run_store.list_attempts(node_run.node_run_id)
+    ]
+    assert len(attempts) == 2
+    assert run.skipped_stages == ["optional-review"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_custom_graph_returns_legacy_receipt_without_admission() -> None:
+    dispatcher = ScriptedDispatcher({"code": "should not run"})
+    pipeline = BuilderPipeline(
+        dispatcher,
+        nodes=[
+            PipelineNode(
+                name="code",
+                agent_name="mason",
+                prompt_template="code",
+                depends_on=("missing",),
+            )
+        ],
+    )
+
+    run = await pipeline.execute(issue_number=734, title="Builders", repo="acme/widget")
+
+    assert run.status == "invalid graph: Node 'code' depends on undeclared node 'missing'"
+    assert run.canonical_run_id is None
+    assert all(stage.status is StageStatus.PENDING for stage in run.stages)
+    assert dispatcher.prompts == {}
 
 
 @pytest.mark.asyncio

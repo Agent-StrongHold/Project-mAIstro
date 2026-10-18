@@ -29,6 +29,7 @@ import math
 import resource
 import shutil
 import time
+from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
@@ -73,6 +74,13 @@ def resource_limits(config: SandboxConfig) -> dict[int, tuple[int, int]]:
     because it costs nothing and is enforced wherever the process is not
     privileged -- but not claimed as a guarantee. See
     docs/security/SANDBOX-SUPPORT-MATRIX.md.
+
+    Applied in `exec` -- and, through the same hook, in the Tier-3 capability
+    probe (#1235) -- via `preexec_fn`, which runs between `fork` and `exec` and
+    so lands on `bwrap` itself; every process in the sandbox inherits it. The
+    probe shares the budgets because detection is an *evidence* mechanism: a
+    tier the spawn cannot reproduce is exactly the false claim this subsystem
+    refuses to make.
     """
     memory_bytes = max(config.memory_mb, 1) * 1024 * 1024
     file_bytes = max(config.max_file_mb, 1) * 1024 * 1024
@@ -87,6 +95,28 @@ def resource_limits(config: SandboxConfig) -> dict[int, tuple[int, int]]:
         resource.RLIMIT_CPU: (cpu_budget, cpu_budget),
         resource.RLIMIT_NPROC: (processes, processes),
     }
+
+
+def preexec_for(limits: dict[int, tuple[int, int]]) -> Callable[[], None]:
+    """The fork-time hook that pins `limits` onto the child process.
+
+    There is no bwrap flag for an rlimit and no way to set one from inside a
+    boundary the workload controls, so the values are applied between `fork`
+    and `exec` and land on `bwrap` itself; everything inside the sandbox
+    inherits them.
+
+    One hook for `exec` and for the capability probe (#1235), so the two
+    cannot drift apart: detection evidences Tier 3 under the budgets the
+    backend will enforce, and a namespace that only builds un-budgeted reads
+    as absent -- with the reason -- instead of failing at spawn after the
+    policy check believed it had a boundary.
+    """
+
+    def apply_limits() -> None:
+        for which, values in limits.items():
+            resource.setrlimit(which, values)
+
+    return apply_limits
 
 
 class BubblewrapUnavailableError(RuntimeError):
@@ -226,19 +256,14 @@ class BubblewrapSandboxBackend:
 
         limits = resource_limits(config)
 
-        def apply_limits() -> None:  # pragma: no cover - runs in the child
-            for which, values in limits.items():
-                resource.setrlimit(which, values)
-
         process = await asyncio.create_subprocess_exec(
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             # Between fork and exec, so the limits are on `bwrap` and inherited
-            # by everything inside the sandbox. There is no bwrap flag for
-            # this and no way to set it from inside a boundary the workload
-            # controls.
-            preexec_fn=apply_limits,
+            # by everything inside the sandbox. The same hook the capability
+            # probe runs under, so detection and spawn cannot disagree (#1235).
+            preexec_fn=preexec_for(limits),
         )
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_s)
@@ -302,4 +327,10 @@ class BubblewrapSandboxBackend:
         return entry
 
 
-__all__ = ["TIMEOUT_EXIT_CODE", "BubblewrapSandboxBackend", "BubblewrapUnavailableError"]
+__all__ = [
+    "TIMEOUT_EXIT_CODE",
+    "BubblewrapSandboxBackend",
+    "BubblewrapUnavailableError",
+    "preexec_for",
+    "resource_limits",
+]

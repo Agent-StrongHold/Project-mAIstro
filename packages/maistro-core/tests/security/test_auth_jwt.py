@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
+from maistro.protocols.auth import AuthError, CredentialNotApplicable
 from maistro.security._types import IdentityKind
-from maistro.security.auth_composite import AuthError, CredentialNotApplicable
 from maistro.security.auth_jwt import JWTAuthProvider
 
 
@@ -56,10 +56,11 @@ class TestAuthenticate:
             await provider.authenticate("Basic abc123")
 
     @pytest.mark.asyncio
-    async def test_empty_token_raises_not_applicable(self) -> None:
+    @pytest.mark.parametrize("authorization", ["Bearer", "Bearer\t", "Bearer    "])
+    async def test_empty_token_is_a_rejected_bearer_credential(self, authorization: str) -> None:
         provider = make_provider()
-        with pytest.raises(CredentialNotApplicable):
-            await provider.authenticate("Bearer    ")
+        with pytest.raises(AuthError, match="Empty token"):
+            await provider.authenticate(authorization)
 
     @pytest.mark.asyncio
     async def test_success_uses_preferred_username(self) -> None:

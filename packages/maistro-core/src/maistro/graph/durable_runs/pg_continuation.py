@@ -36,9 +36,9 @@ class PgGraphContinuationStore:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """INSERT INTO graph_continuations
-                       (run_id, status, project_id, created_at, resume_at, version,
-                        continuation)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb)
+                       (run_id, status, project_id, created_at, resume_at,
+                        hitl_deadline_at, version, continuation)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::jsonb)
                    ON CONFLICT (run_id) DO NOTHING
                    RETURNING run_id""",
                 *_values(continuation),
@@ -63,8 +63,8 @@ class PgGraphContinuationStore:
             row = await conn.fetchrow(
                 """UPDATE graph_continuations
                       SET status = $2, project_id = $3, created_at = $4, resume_at = $5,
-                          version = $6, continuation = $7::text::jsonb
-                    WHERE run_id = $1 AND version < $6
+                          hitl_deadline_at = $6, version = $7, continuation = $8::text::jsonb
+                    WHERE run_id = $1 AND version < $7
                 RETURNING run_id""",
                 *_values(continuation),
             )
@@ -92,32 +92,63 @@ class PgGraphContinuationStore:
         *,
         limit: int = 100,
         project_id: str | None = None,
+        after: tuple[str, str] | None = None,
     ) -> list[str]:
+        sql = (
+            "SELECT run_id FROM graph_continuations "
+            "WHERE status = $1 AND ($2::text IS NULL OR project_id = $2)"
+        )
+        params: list[Any] = [status.value, project_id]
+        if after is not None:
+            after_created, after_run_id = after
+            cursor_param = len(params) + 1
+            sql += f" AND (created_at, run_id) > (${cursor_param}, ${cursor_param + 1})"
+            params.extend([datetime.fromisoformat(after_created), after_run_id])
+        sql += f" ORDER BY created_at ASC, run_id ASC LIMIT ${len(params) + 1}"
+        params.append(limit)
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """SELECT run_id FROM graph_continuations
-                    WHERE status = $1 AND ($2::text IS NULL OR project_id = $2)
-                 ORDER BY created_at ASC, run_id ASC
-                    LIMIT $3""",
-                status.value,
-                project_id,
-                limit,
-            )
+            rows = await conn.fetch(sql, *params)
         return [str(row["run_id"]) for row in rows]
 
-    async def list_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
+    async def list_due_run_ids(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        after: tuple[str, str] | None = None,
+    ) -> list[str]:
         """Use persisted wait/claim deadlines to find bounded recovery candidates."""
+        sql = """SELECT run_id FROM graph_continuations
+                    WHERE status IN ($1, $2, $3)
+                      AND resume_at IS NOT NULL
+                      AND resume_at <= $4"""
+        params: list[Any] = [
+            RunStatus.WAITING.value,
+            RunStatus.PAUSED.value,
+            RunStatus.RUNNING.value,
+            now,
+        ]
+        if after is not None:
+            after_resume_at, after_run_id = after
+            cursor_param = len(params) + 1
+            sql += f" AND (resume_at, run_id) > (${cursor_param}, ${cursor_param + 1})"
+            params.extend([datetime.fromisoformat(after_resume_at), after_run_id])
+        sql += f" ORDER BY resume_at ASC, run_id ASC LIMIT ${len(params) + 1}"
+        params.append(limit)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [str(row["run_id"]) for row in rows]
+
+    async def list_hitl_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT run_id FROM graph_continuations
-                    WHERE status IN ($1, $2, $3)
-                      AND resume_at IS NOT NULL
-                      AND resume_at <= $4
-                 ORDER BY resume_at ASC, run_id ASC
-                    LIMIT $5""",
-                RunStatus.WAITING.value,
+                    WHERE status = $1
+                      AND hitl_deadline_at IS NOT NULL
+                      AND hitl_deadline_at <= $2
+                 ORDER BY hitl_deadline_at ASC, run_id ASC
+                    LIMIT $3""",
                 RunStatus.PAUSED.value,
-                RunStatus.RUNNING.value,
                 now,
                 limit,
             )
@@ -143,6 +174,7 @@ def _values(continuation: GraphContinuation) -> tuple[Any, ...]:
         continuation.project_id,
         continuation.created_at,
         continuation.resume_at,
+        continuation.hitl_deadline_at,
         continuation.version,
         continuation.model_dump_json(),
     )
