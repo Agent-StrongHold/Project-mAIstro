@@ -922,3 +922,76 @@ required long window. A ledger edit or longer host preflight cannot substitute.
 
 Progress: checked 1 issue, done 0, skipped 0, errors 1 validation gate (inventory).
 This local commit preserves the evidence and unresolved prerequisites only.
+
+## Repair checkpoint 522f97e7 — starting head c23503dd5428
+
+**BLOCKED; no evidence-backed source or ledger repair identified.** Processed
+only issue #860 in the assigned clean `auto-860` worktree. The dispatch snapshot,
+prior result, repository instructions and relevant ADRs were inspected; prior
+validation claims were not treated as current results. No driver `check-*.log`
+files were supplied. No fetch, merge, GitHub mutation, source/configuration
+change, test addition, grant or ledger edit was performed. This existing handoff
+is the only changed file; no inventory delta is warranted for it.
+
+### Fresh executed validation
+
+Logs are `auto-860-*.log` in job directory
+`/home/dev/maistro/jobs/522f97e75e104ed09977aace6f615e58/`.
+
+| Command | Outcome |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1322 findings / 1322 reviewed identities, zero unclassified. The requested CI repair has no unbanked identity to amend. |
+| `uv run ruff check .` | PASS |
+| `uv run ruff format --check .` | PASS: 3306 files |
+| `uv run pytest tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py tests/test_gitleaksignore_contract.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py -x -q` | 101 passed |
+| `uv run pytest packages/maistro-server/tests -x -q` | 566 passed, 8 skipped, 22 deprecation warnings; skips are not production evidence. |
+| `uv run python scripts/check-suite-inventory.py --suite tests` | FAIL: expected 5353, collected 5354; zero duplicate evidence. |
+| `uv run pytest tests --collect-only -q` | PASS collection: 5354 nodes; does not repair the count mismatch. |
+| `uv run python scripts/check-deployment-claims.py` | PASS: structural deployment claims, not a running RC. |
+| `uv run python scripts/check-execution-lifecycles.py` | PASS: 19 classified/discovered lifecycles. |
+| `uv run python -` importing the current soak driver and evaluating round-30 JSON | Negative check PASS: exactly `sustain_duration` and `exact_rc_artifact` fail; 420.08 seconds, historical head `c4f45b309fd622f2e8a4b315dad35e721d81aad3`. Current runner also reports artifact `ok=false`. |
+
+Inventory provenance remains **UNRESOLVED** after bounded inspection of the
+actual merged-base test/note diff and dynamic collection sources. The base ref
+`2f56be40ad241262b0384ab0b97834ebd37fe4d7` was resolved before comparison;
+no test source or workflow diff beyond the previously identified three root
+test files explains the extra node. This is not evidence that the count is
+safe to bank. The collection output is retained for a node-level provenance
+investigation; no unexplained `+1` note or baseline change was made.
+
+### All ten acceptance criteria
+
+| Criterion | Executed evidence / remaining limitation |
+| --- | --- |
+| Representative users/Workspaces, Graph fan-out, schedules, tool/model/Canvas and worker traffic | **UNVERIFIED**: `m3a-load-profile.md:167-183,215-218` explicitly leaves these representative surfaces incomplete; no representative RC workload executed here. |
+| At least two supported application replicas | **UNVERIFIED for RC**: executed tests use two ASGI middleware instances; historical JSON uses host uvicorn replicas rather than the promoted Compose artifact. |
+| Sustained saturation, queue/reclaim/retry and leak observations | **UNVERIFIED**: executed evaluator rejects the 420.08-second historical run against 14400 seconds; no long run executed. |
+| Admission, Goal reconciliation and no duplicate physical work | **UNVERIFIED**: focused admission tests pass, but the historical occurrence probe cancels its Run without executing it. Neither proves physical Attempt fencing under load. |
+| Rate/security/degraded behavior cannot be bypassed by replica selection | **FAILED**: executed `test_replica_selection_has_an_independent_production_allowance` observes `[200, 200, 429]` independently on both replicas for authenticated and pre-auth identities. |
+| Required metrics and explicit pass/fail thresholds | **UNVERIFIED**: sampler tests pass, not application-loop, saturation, worker or long-window observations; profile lines 179-183 retain those gaps. |
+| Active-work kill/restart, drain/fencing/recovery | **UNVERIFIED**: no current deployed replica restart was performed; historical rejoin/terminal counters are not physical-work recovery proof. |
+| Long-running exact RC artifact/configuration | **NOT MET**: executed evaluator rejects both duration and artifact; no immutable promotion image/configuration supplied. A longer host preflight cannot pass. |
+| Findings filed/reclassified to earliest broken invariant | **UNVERIFIED**: local findings preserved; no remote filing/reclassification performed or claimed. |
+| Machine/human evidence tied to promoted hashes | **UNVERIFIED**: inspected JSON is explicitly historical/non-RC; no promoted-image evidence generated. |
+
+### Architecture and handoff
+
+Production reachability was checked: `maistro_server/main.py:648` installs
+`RateLimitMiddleware`, and lines 735/755 mount the task router.
+`api/rate_limit.py:32-37` explicitly documents independent replica budgets;
+passing local enforcement tests cannot satisfy replica-independent allowance.
+Accepted ADR-085 does not waive that criterion. Accepted ADR-081226-a66b keeps
+one Run/NodeRun/Attempt lifecycle; ADR-081626-f383 does not define implicit
+lease-expiry takeover. Proposed ADR-081 is not accepted authority to waive
+exact-topology validation. ADR-082526-547c requires explained inventory deltas.
+No alternative scheduler, execution authority or authorization path was added.
+
+Next: attribute the root inventory node, resolve coordinated enforcement at
+the existing security boundary, designate the immutable RC and representative
+workload, then execute an instrumented unchanged-artifact production soak for
+at least four hours with physical Attempt correlation. Do not repeat short
+shakedowns or amend an already-matching vulture ledger as a substitute.
+
+Progress: checked 1 issue, done 0, skipped 0, errors 1 validation gate
+(inventory). This local commit is an unresolved-work handoff, not integration
+approval or issue completion.
