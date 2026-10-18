@@ -18,7 +18,7 @@ export function TemplatePicker({ onSelect, onClose }: { onSelect: (id: string) =
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 520 }}>
         <h2 style={{ margin: "0 0 4px", fontSize: "1rem", fontWeight: 700 }}>Load Template</h2>
-        <p style={{ margin: "0 0 16px", fontSize: "0.75rem", color: "var(--pencil)" }}>Pick a curated dashboard layout. You can customize it after loading.</p>
+        <p style={{ margin: "0 0 16px", fontSize: "var(--text-floor)", color: "var(--pencil)" }}>Pick a curated dashboard layout. You can customize it after loading.</p>
 
         {loading && <div className="skeleton skeleton-card" />}
 
@@ -33,7 +33,7 @@ export function TemplatePicker({ onSelect, onClose }: { onSelect: (id: string) =
             >
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: "0.82rem", fontWeight: 600, color: "var(--ink)" }}>{t.name}</div>
-                <div style={{ fontSize: "0.68rem", color: "var(--pencil)", marginTop: 2 }}>{t.description}</div>
+                <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", marginTop: 2 }}>{t.description}</div>
               </div>
               <span className="hex-badge">{t.widget_count} widgets</span>
             </button>

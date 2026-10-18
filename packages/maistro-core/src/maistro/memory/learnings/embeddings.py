@@ -13,9 +13,14 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from maistro.memory.learnings.evidence import DEFAULT_MIN_PROMOTION_CONFIDENCE
+
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from maistro.memory.learnings.store import InMemoryLearningStore
     from maistro.protocols.embeddings import EmbeddingClient
     from maistro.types.memory import Learning
@@ -117,6 +122,8 @@ class HybridLearningStore:
         user_text: str,
         *,
         agent_id: str | None = None,
+        user_id: str | None = None,
+        team_id: str | None = None,
         org_id: str = "",
         max_results: int = 10,
     ) -> list[Learning]:
@@ -131,6 +138,8 @@ class HybridLearningStore:
         keyword_results = await self._store.find_relevant(
             user_text,
             agent_id=agent_id,
+            user_id=user_id,
+            team_id=team_id,
             org_id=org_id,
             max_results=max_results * 2,
         )
@@ -183,8 +192,49 @@ class HybridLearningStore:
         """Delegate: provenance is the wrapped store's to answer (#709)."""
         return await self._store.produced_by(run_id, org_id=org_id)
 
-    async def check_auto_promotions(self, threshold: int = 5) -> list[Learning]:
-        return await self._store.check_auto_promotions(threshold)
+    async def check_auto_promotions(
+        self,
+        threshold: int = 5,
+        *,
+        min_confidence: float = DEFAULT_MIN_PROMOTION_CONFIDENCE,
+    ) -> list[Learning]:
+        return await self._store.check_auto_promotions(threshold, min_confidence=min_confidence)
 
-    async def get_promoted(self, task_type: str | None = None) -> list[Learning]:
-        return await self._store.get_promoted(task_type)
+    async def promote_learning(
+        self,
+        learning_id: int,
+        *,
+        org_id: str = "",
+        validated_by: str = "",
+        evaluator_version: str = "",
+        validated_at: datetime | None = None,
+        validation_run_ids: Sequence[str] = (),
+        validation_content_hash: str = "",
+    ) -> Learning | None:
+        """Delegate: this wrapper adds search ranking, not promotion policy (M4-B2)."""
+        return await self._store.promote_learning(
+            learning_id,
+            org_id=org_id,
+            validated_by=validated_by,
+            evaluator_version=evaluator_version,
+            validated_at=validated_at,
+            validation_run_ids=validation_run_ids,
+            validation_content_hash=validation_content_hash,
+        )
+
+    async def get_promoted(
+        self,
+        task_type: str | None = None,
+        *,
+        org_id: str = "",
+        team_id: str | None = None,
+        user_id: str | None = None,
+        agent_id: str | None = None,
+    ) -> list[Learning]:
+        return await self._store.get_promoted(
+            task_type,
+            org_id=org_id,
+            team_id=team_id,
+            user_id=user_id,
+            agent_id=agent_id,
+        )

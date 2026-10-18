@@ -180,7 +180,10 @@ def _generated_artifacts(answers: InstallAnswersV1) -> dict[str, Any]:
             "expected_difference": "source_build takes longer; image_pull is faster",
             "source": {
                 "enabled": answers.delivery_mode == "source_build",
-                "commands": ["git clone <maistro-engine-url>", "uv sync --extra bootstrap"],
+                "commands": [
+                    'git clone "https://github.com/${MAISTRO_REPO:-Agent-StrongHold/Project-mAIstro}.git"',
+                    "uv sync --extra bootstrap",
+                ],
             },
             "images": {
                 "enabled": answers.delivery_mode == "image_pull",
