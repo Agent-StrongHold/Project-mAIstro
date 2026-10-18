@@ -1501,7 +1501,10 @@ selected_container_runtime() {
             ;;
         auto | "") ;;
         *)
-            warn "Ignoring unknown MAISTRO_CONTAINER_RUNTIME='$override' (use 'docker', 'podman', or 'auto')."
+            # >&2: every caller consumes this function via command substitution
+            # (write_install_manifest among them), so stdout must stay only the
+            # runtime token — never the ANSI-colored diagnostic.
+            warn "Ignoring unknown MAISTRO_CONTAINER_RUNTIME='$override' (use 'docker', 'podman', or 'auto')." >&2
             ;;
     esac
     echo "auto"
@@ -2055,6 +2058,37 @@ note_residual_risk() {
 # caller's current directory (#353). Written once install.sh has settled the
 # source tree and credentials; get.sh delegates here, so every supported curl
 # and direct-checkout install produces one.
+# The runtime the install manifest records (#1820). The manifest is written
+# before start_engine resolves COMPOSE_CMD, so a wizardless or legacy-plan
+# install would record the literal `auto` — and `maistro upgrade`
+# (_resolve_compose_runtime) honors only a docker/podman recording, re-running
+# its docker-first lookup on `auto`. A Podman-owned stack would then be handed
+# to a merely-present Docker CLI on the first upgrade. Prefer the front-end
+# start_engine resolved; under an unresolved auto, probe the documented
+# docker-then-podman order read-only (runtime_compose_cmd runs `compose
+# version`, never a bootstrap) and record whoever answers. Only when neither
+# answers right now does the manifest keep `auto`, so upgrade keeps probing
+# instead of inventing a selection.
+manifest_container_runtime() {
+    if [[ -n "${COMPOSE_CMD[0]:-}" ]]; then
+        echo "${COMPOSE_CMD[0]}"
+        return 0
+    fi
+    local selected
+    selected="$(selected_container_runtime)"
+    case "$selected" in
+        docker | podman)
+            echo "$selected"
+            return 0
+            ;;
+    esac
+    if runtime_compose_cmd docker || runtime_compose_cmd podman; then
+        echo "${COMPOSE_CMD[0]}"
+        return 0
+    fi
+    echo "auto"
+}
+
 write_install_manifest() {
     local manifest_dir="$PLAN_DIR"
     local manifest="$manifest_dir/install-manifest.json"
@@ -2101,7 +2135,7 @@ writing no install manifest. 'maistro upgrade' will fall back to detection."
   "revision": "$rev",
   "image_tag": "$MAISTRO_IMAGE_TAG",
   "delivery_mode": "$(effective_delivery_mode)",
-  "container_runtime": "$(selected_container_runtime)",
+  "container_runtime": "$(manifest_container_runtime)",
   "source_url": "$source_url",
   "plan_dir": "$PLAN_DIR",
   "installed_at": "$ts"
@@ -2160,7 +2194,11 @@ compose_line_cmd() {
 # path in print_success (SPEC-072726-3439 Phase 3).
 write_recovery_md() {
     mkdir -p "$PLAN_DIR"
-    local compose_line="$(compose_line_cmd) ${COMPOSE_FILES[*]:--f $COMPOSE_FILE}"
+    # Declare and assign separately (SC2155): compose_line_cmd probes the
+    # selected runtime read-only and its failure is handled inside the
+    # function, so `local` must not mask that exit status.
+    local compose_line
+    compose_line="$(compose_line_cmd) ${COMPOSE_FILES[*]:--f $COMPOSE_FILE}"
     cat > "$PLAN_DIR/RECOVERY.md" <<EOF
 # Maistro recovery & operations
 

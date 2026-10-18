@@ -38,6 +38,7 @@ _FUNCTIONS = (
     "docker_only_preflight_checks",
     "ensure_compose_runtime",
     "compose_line_cmd",
+    "manifest_container_runtime",
     "write_recovery_md",
     "print_success",
 )
@@ -64,7 +65,11 @@ PLAN_DIR={shlex.quote(str(plan_dir))}
 export MAISTRO_INSTALL_PLAN_DIR="$PLAN_DIR"
 ok() {{ echo "[ok] $*"; }}
 info() {{ :; }}
-warn() {{ echo "WARN: $*" >&2; }}
+# Mirrors the real install.sh warn(): writes to STDOUT. Deliberate — the
+# unknown-token test must prove selected_container_runtime() itself keeps its
+# stdout to the bare runtime token by redirecting the diagnostic to stderr; a
+# stderr-writing stub would mask that bug.
+warn() {{ echo "WARN: $*"; }}
 fail() {{ echo "[error] $*" >&2; exit 1; }}
 is_macos() {{ return 1; }}
 is_wsl() {{ return 1; }}
@@ -376,7 +381,9 @@ def test_unknown_environment_token_degrades_to_auto_with_a_warning(
         'export MAISTRO_CONTAINER_RUNTIME=nerdctl; echo "SELECTION: $(selected_container_runtime)"\n',
     )
     assert result.returncode == 0, result.stderr
-    assert "SELECTION: auto" in result.stdout, result.stdout
+    # stdout is only the token: the diagnostic must land on stderr, never be
+    # captured into the selection (it would corrupt the install manifest).
+    assert result.stdout == "SELECTION: auto\n", result.stdout
     assert "Ignoring unknown MAISTRO_CONTAINER_RUNTIME='nerdctl'" in result.stderr, result.stderr
 
 
@@ -444,11 +451,87 @@ def test_docker_only_preflight_checks_run_for_docker_selection(
 def test_install_manifest_records_the_container_runtime() -> None:
     """`maistro upgrade` and recovery read install-manifest.json; the manifest
     heredoc must record the honored runtime beside the delivery mode (the
-    pydantic field exists on maistro.core's InstallManifest for exactly this)."""
+    pydantic field exists on maistro.core's InstallManifest for exactly this).
+    It must record the RESOLVED frontend (manifest_container_runtime), not the
+    raw selection: an `auto` install recording `auto` would let upgrade's
+    docker-first lookup hand a Podman-owned stack to a present Docker CLI."""
     body = INSTALL_SH.read_text(encoding="utf-8")
-    assert '"container_runtime": "$(selected_container_runtime)"' in body, (
+    assert '"container_runtime": "$(manifest_container_runtime)"' in body, (
         "install.sh stopped recording the honored runtime in the install manifest"
     )
+    assert '"container_runtime": "$(selected_container_runtime)"' not in body, (
+        "install.sh recorded the unresolved auto selection in the install manifest"
+    )
+
+
+def _write_archive_install(shim_dir: Path) -> None:
+    """Satisfies write_install_manifest's archive branch so the harness (no git
+    checkout) still emits the manifest file."""
+    (shim_dir / ".maistro-archive-install").touch()
+
+
+def _manifest_runtime(tmp_path: Path, plan: Path) -> str:
+    """manifest_container_runtime is lifted and called directly (the manifest
+    writer's heredoc cannot survive the harness's `^}`-terminated extraction,
+    since the JSON body closes a brace at column 0)."""
+    result = _run(
+        tmp_path,
+        plan,
+        "manifest_container_runtime\n",
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def test_install_manifest_auto_records_resolved_podman_frontend(
+    tmp_path: Path,
+) -> None:
+    """Auto with a Docker CLI that has no Compose provider and a working
+    Podman compose: install lands on Podman, so the manifest must say podman.
+    Recording `auto` here would let `maistro upgrade` re-run its docker-first
+    lookup (a bare `which docker`) and hand the stack to the unusable Docker."""
+    plan = tmp_path / "plan"
+    _write_plan(plan, "auto")
+    _write_runtime_shim(tmp_path, "docker", compose=False, daemon=True)
+    _write_runtime_shim(tmp_path, "podman", compose=True, daemon=True)
+    _write_archive_install(tmp_path)
+    assert _manifest_runtime(tmp_path, plan) == "podman"
+
+
+def test_install_manifest_auto_records_resolved_docker_frontend(
+    tmp_path: Path,
+) -> None:
+    plan = tmp_path / "plan"
+    _write_plan(plan, "auto")
+    _write_runtime_shim(tmp_path, "docker", compose=True, daemon=True)
+    _write_runtime_shim(tmp_path, "podman", compose=True, daemon=True)
+    _write_archive_install(tmp_path)
+    assert _manifest_runtime(tmp_path, plan) == "docker"
+
+
+def test_install_manifest_auto_keeps_auto_when_no_frontend_answers(
+    tmp_path: Path,
+) -> None:
+    """No Compose v2 front-end present right now (install aborts in
+    ensure_compose_runtime): the manifest must keep `auto` rather than invent
+    a selection upgrade would then honor blindly."""
+    plan = tmp_path / "plan"
+    _write_plan(plan, "auto")
+    _write_runtime_shim(tmp_path, "docker", compose=False, daemon=False)
+    _write_runtime_shim(tmp_path, "podman", compose=False, daemon=False)
+    _write_archive_install(tmp_path)
+    assert _manifest_runtime(tmp_path, plan) == "auto"
+
+
+def test_install_manifest_podman_selection_survives_working_docker(
+    tmp_path: Path,
+) -> None:
+    plan = tmp_path / "plan"
+    _write_plan(plan, "podman")
+    _write_runtime_shim(tmp_path, "docker", compose=True, daemon=True)
+    _write_runtime_shim(tmp_path, "podman", compose=True, daemon=True)
+    _write_archive_install(tmp_path)
+    assert _manifest_runtime(tmp_path, plan) == "podman"
 
 
 # --- generated recovery/success text honors an unresolved front-end ---------
