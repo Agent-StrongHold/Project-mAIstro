@@ -19,7 +19,7 @@ substrate:
   - maistro-engine#ADR-082326-5386
   - maistro-engine#ADR-038
 implements:
-  - maistro-engine#ADR-104
+  - maistro-engine#ADR-105
 related:
   - maistro-engine#ADR-101
   - maistro-engine#ADR-079
@@ -53,7 +53,7 @@ owners:
 
 ## Context
 
-ADR-104 decides that `maistro.capabilities.provider_adapters` is the whole
+ADR-105 decides that `maistro.capabilities.provider_adapters` is the whole
 integration surface for an out-of-tree model provider: a declarative
 `ProviderAdapterSpec` plus the `ProviderAdapter` normalization protocol,
 registered through `register_adapter_models`, transported by the one approved

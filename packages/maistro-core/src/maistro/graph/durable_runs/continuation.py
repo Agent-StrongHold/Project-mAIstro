@@ -18,6 +18,7 @@ assembly always reads the status back from it.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -29,7 +30,11 @@ from maistro.runs.model import RunStatus
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 from .fair_scan import cursor_time
-from .hitl import earliest_hitl_deadline, earliest_hitl_deadline_from_state
+from .hitl import (
+    earliest_hitl_deadline,
+    earliest_hitl_deadline_from_state,
+    has_active_hitl_pause,
+)
 from .types import DurableRunRecord
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -86,6 +91,11 @@ class GraphContinuation(BaseModel):
     resume_at: datetime | None = None
     # Lookup projection only; the pause entry in graph_state remains authoritative.
     hitl_deadline_at: datetime | None = None
+    # Pause-kind projection (#1109): whether the durable frontier holds at
+    # least one human pause, deadline or not. Pending discovery pages this
+    # instead of the generic PAUSED prefix, so machine-only pauses cannot
+    # occupy a page that human work behind them needs.
+    has_hitl_pause: bool = False
     version: int = Field(default=0, ge=0)
     status: RunStatus = RunStatus.CREATED
     project_id: str = ""
@@ -100,6 +110,9 @@ class GraphContinuation(BaseModel):
             traversal_commits=record.traversal_commits,
             resume_at=record.resume_at,
             hitl_deadline_at=earliest_hitl_deadline(record),
+            has_hitl_pause=has_active_hitl_pause(
+                record.graph_state.active_node_ids, record.graph_state.metadata
+            ),
             version=record.version,
             status=record.run.status,
             project_id=record.run.project_id,
@@ -156,6 +169,24 @@ class GraphContinuationStore(Protocol):
         """Return paused continuations whose indexed HITL deadline is due."""
         ...
 
+    async def list_hitl_paused_run_ids(
+        self,
+        *,
+        limit: int = 100,
+        project_id: str | None = None,
+        after: tuple[str, str] | None = None,
+    ) -> list[str]:
+        """Paused continuations whose frontier holds a human pause (#1109).
+
+        The pause-kind projection, oldest-created-first: pending human
+        discovery pages this instead of the generic PAUSED listing, so the
+        caller's ``limit`` bounds returned human work rather than an
+        arbitrarily long prefix of machine-only pauses. ``after`` is the same
+        ``(created_at_iso, run_id)`` keyset cursor ``list_run_ids_by_status``
+        uses.
+        """
+        ...
+
     async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]: ...
 
 
@@ -167,6 +198,25 @@ def _created_cursor(row: GraphContinuation) -> tuple[str, str]:
     """The ``(created_at_iso, run_id)`` keyset position of one row (#1056, #1109)."""
     created = cursor_time(row.created_at) if row.created_at is not None else ""
     return (created, row.run_id)
+
+
+def _hitl_paused_rows(
+    rows: Iterable[GraphContinuation], *, project_id: str | None
+) -> list[GraphContinuation]:
+    """Paused rows whose pause-kind projection claims a human pause (#1109).
+
+    The shared eligibility filter behind ``list_hitl_paused_run_ids``: the
+    projection plus PAUSED status decide eligibility before the caller's
+    limit is applied, so machine-only rows cannot occupy a page that human
+    work behind them needs.
+    """
+    return [
+        row
+        for row in rows
+        if row.status is RunStatus.PAUSED
+        and row.has_hitl_pause
+        and (project_id is None or row.project_id == project_id)
+    ]
 
 
 def _due_cursor(row: GraphContinuation) -> tuple[str, str]:
@@ -257,6 +307,19 @@ class InMemoryGraphContinuationStore:
         rows.sort(key=lambda row: (row.hitl_deadline_at, row.run_id))
         return [row.run_id for row in rows[:limit]]
 
+    async def list_hitl_paused_run_ids(
+        self,
+        *,
+        limit: int = 100,
+        project_id: str | None = None,
+        after: tuple[str, str] | None = None,
+    ) -> list[str]:
+        rows = _hitl_paused_rows(self._rows.values(), project_id=project_id)
+        rows.sort(key=lambda row: (row.created_at or datetime.min, row.run_id))
+        if after is not None:
+            rows = [row for row in rows if _created_cursor(row) > after]
+        return [row.run_id for row in rows[:limit]]
+
     async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]:
         rows = [row for row in self._rows.values() if row.project_id == project_id]
         rows.sort(
@@ -308,7 +371,16 @@ class SqliteGraphContinuationStore:
                 "CREATE INDEX IF NOT EXISTS idx_graph_continuations_hitl_deadline "
                 "ON graph_continuations (status, hitl_deadline_at)"
             )
+            if not any(row[1] == "has_hitl_pause" for row in columns):
+                await self._conn.execute(
+                    "ALTER TABLE graph_continuations ADD COLUMN has_hitl_pause INTEGER"
+                )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_graph_continuations_hitl_paused "
+                "ON graph_continuations (status, has_hitl_pause, created_at, run_id)"
+            )
             await self._backfill_hitl_deadlines()
+            await self._backfill_hitl_pauses()
 
     async def _backfill_hitl_deadlines(self) -> None:
         """Restore the lookup projection for continuations written pre-033."""
@@ -330,6 +402,32 @@ class SqliteGraphContinuationStore:
                     "UPDATE graph_continuations SET hitl_deadline_at = ? WHERE run_id = ?",
                     (deadline.isoformat(), run_id),
                 )
+
+    async def _backfill_hitl_pauses(self) -> None:
+        """Restore the pause-kind projection for rows written pre-#1109.
+
+        The column is a lookup projection, so upgrading must populate it from
+        the canonical pause entries already stored in each continuation;
+        leaving old rows NULL would hide those pauses from pending discovery.
+        NULL is read as "not projected", so the backfill also claims rows a
+        previous write left unprojected rather than only 0/1 rows.
+        """
+        cursor = await self._conn.execute(
+            """SELECT run_id, continuation_json FROM graph_continuations
+                WHERE status = ? AND has_hitl_pause IS NULL""",
+            (RunStatus.PAUSED.value,),
+        )
+        rows = await cursor.fetchall()
+        for run_id, payload in rows:
+            continuation = GraphContinuation.model_validate_json(payload)
+            has_pause = has_active_hitl_pause(
+                continuation.graph_state.active_node_ids,
+                continuation.graph_state.metadata,
+            )
+            await self._conn.execute(
+                "UPDATE graph_continuations SET has_hitl_pause = ? WHERE run_id = ?",
+                (int(has_pause), run_id),
+            )
 
     async def create(self, continuation: GraphContinuation) -> GraphContinuation:
         async with self._lock:
@@ -420,6 +518,32 @@ class SqliteGraphContinuationStore:
         )
         return [str(row[0]) for row in await cursor.fetchall()]
 
+    async def list_hitl_paused_run_ids(
+        self,
+        *,
+        limit: int = 100,
+        project_id: str | None = None,
+        after: tuple[str, str] | None = None,
+    ) -> list[str]:
+        # Two literal statements, not `? IS NULL OR project_id = ?`: SQLite
+        # cannot use `idx_graph_continuations_hitl_paused` through an OR, and
+        # the project arm is the one pending discovery always passes.
+        if project_id is None:
+            sql = """SELECT run_id FROM graph_continuations
+                    WHERE status = ? AND has_hitl_pause = 1"""
+            params: list[object] = [RunStatus.PAUSED.value]
+        else:
+            sql = """SELECT run_id FROM graph_continuations
+                    WHERE status = ? AND has_hitl_pause = 1 AND project_id = ?"""
+            params = [RunStatus.PAUSED.value, project_id]
+        if after is not None:
+            sql += " AND (created_at, run_id) > (?, ?)"
+            params.extend(after)
+        sql += " ORDER BY created_at ASC, run_id ASC LIMIT ?"
+        params.append(limit)
+        cursor = await self._conn.execute(sql, params)
+        return [str(row[0]) for row in await cursor.fetchall()]
+
     async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]:
         cursor = await self._conn.execute(
             "SELECT run_id FROM graph_continuations WHERE project_id = ? "
@@ -445,6 +569,7 @@ class SqliteGraphContinuationStore:
             cursor_time(continuation.created_at) if continuation.created_at else None,
             cursor_time(continuation.resume_at) if continuation.resume_at else None,
             cursor_time(continuation.hitl_deadline_at) if continuation.hitl_deadline_at else None,
+            int(continuation.has_hitl_pause),
             continuation.version,
             continuation.model_dump_json(),
         )
@@ -452,15 +577,16 @@ class SqliteGraphContinuationStore:
             await self._conn.execute(
                 """INSERT INTO graph_continuations
                        (status, project_id, created_at, resume_at, hitl_deadline_at,
-                        version, continuation_json, run_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        has_hitl_pause, version, continuation_json, run_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (*values, continuation.run_id),
             )
         else:
             cursor = await self._conn.execute(
                 """UPDATE graph_continuations
                       SET status = ?, project_id = ?, created_at = ?, resume_at = ?,
-                          hitl_deadline_at = ?, version = ?, continuation_json = ?
+                          hitl_deadline_at = ?, has_hitl_pause = ?, version = ?,
+                          continuation_json = ?
                     WHERE run_id = ? AND version < ?""",
                 (*values, continuation.run_id, continuation.version),
             )

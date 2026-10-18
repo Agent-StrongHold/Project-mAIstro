@@ -409,24 +409,31 @@ def test_effect_key_retry_requires_a_logical_node_identity() -> None:
         nodes=[Node(node_id="effect-1", node_type=_Effect.kind, policies={"max_attempts": 3})],
     )
     failed = NodeResult(success=False, error_code="RuntimeException", error_message="boom")
-    failed = failed.model_copy(update={"metadata": {"replay_effect_key": "k:1"}})
 
+    # No concrete logical key at execution time: the fold cannot prove replay
+    # safety, so the node is not revisited even with budget left.
     unbound = _FrontierItem_for(
         graph=graph,
         ctx=NodeContext(run_id="", dag_id="gaps-graph", node_id=""),
         result=failed,
+        effect_key=None,
     )
     assert _may_revisit_after(GraphExecutionState(run_id="run-1"), unbound) is False
 
+    # A concrete logical key (Run/node/input identity, not a physical visit)
+    # makes the revisit a reconciliation rather than a blind re-execution.
     bound = _FrontierItem_for(
         graph=graph,
         ctx=NodeContext(run_id="run-1", dag_id="gaps-graph", node_id="effect-1"),
         result=failed,
+        effect_key="agent.delegate_remote:run-1:effect-1:abc123",
     )
     assert _may_revisit_after(GraphExecutionState(run_id="run-1"), bound) is True
 
 
-def _FrontierItem_for(*, graph: Graph, ctx: NodeContext, result: NodeResult) -> Any:
+def _FrontierItem_for(
+    *, graph: Graph, ctx: NodeContext, result: NodeResult, effect_key: str | None
+) -> Any:
     from maistro.graph.durable_runs.executor import _FrontierItem
     from maistro.runs.model import NodeRun as _NodeRun
 
@@ -437,4 +444,5 @@ def _FrontierItem_for(*, graph: Graph, ctx: NodeContext, result: NodeResult) -> 
         ctx=ctx,
         result=result,
         replay_semantics=ReplaySemantics.EFFECT_KEY,
+        effect_key=effect_key,
     )
