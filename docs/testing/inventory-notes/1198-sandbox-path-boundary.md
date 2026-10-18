@@ -53,3 +53,28 @@ sandbox suite 137 passed / 35 skipped (same host budget artifact as round 2);
 the denial evidence covered by the fd-relative unit cases. Gates re-run: ruff
 check/format, suite inventory (17 suites), vulture 1322 -> 1322, reachability,
 radon, direct-effects, model-egress, security-inventory.
+
+Round-4 independent re-validation (at `75845bad0`): the round-3 gate list above
+was stale for the root suite — the final sync merge (`f70cbba2f`) brought
+develop's own
+[1993 note](1993-hive-permission-preset-inventory.md), which charged the same
+node this branch's sync note already carried, so CI-exact
+`python3 scripts/check-suite-inventory.py` reported `DRIFT tests/: expected
+5505, collected 5504` at that head. The duplicate delta is withdrawn from the
+sync note (`75845bad0`), and re-running CI's exact invocations at this head
+collects 31,672 node IDs across all 17 suites and matches (`tests/` = 5504).
+Vulture 1322 -> 1322, radon 137 -> 137, reachability, security-inventory,
+model-egress (direct-effect inventory matches), promotion-surface,
+ratchet-provenance (0 violations), shipped-surface-truth, test-duplicates,
+ruff check/format, and canonical mypy (901 files) all pass. The sandbox suite
+itself runs fully live at a process budget this host honors
+(`max_processes=4096`): 172 passed / 0 skipped — every kernel conformance
+case, including the host-transfer boundary case, executed against a real
+namespace. A standalone kernel probe additionally re-confirmed: `/etc` spawn
+denial with workdir cleanup, an authorized scratch mount writable at its
+guest name and landing on its authorized host root, host `/etc` invisible
+with the ro-bound host tree read-only and `/work` writable as a non-root
+user, and symlink-to-outside host transfer denied (ELOOP) with the outside
+file unchanged. Residual, non-blocking: `validate_host_root(create=True)`
+still raises for a not-yet-existing path before its mkdir step — it fails
+closed, and no caller passes `create=True`.
