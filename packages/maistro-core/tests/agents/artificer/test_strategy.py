@@ -517,6 +517,55 @@ class TestHandleToolCall:
 
         assert "[... truncated" in result_str
 
+    @pytest.mark.asyncio
+    async def test_non_allowlisted_tool_refused_before_sentinel_and_executor(
+        self,
+    ) -> None:
+        """Model-selected names outside the Agent declaration never run (#57)."""
+
+        strategy = ArtificerStrategy()
+        sentinel = _FakeSentinel()
+        executed: list[str] = []
+
+        async def executor(name: str, args: dict[str, Any]) -> str:
+            executed.append(name)
+            return f"ran with {args}"
+
+        tc = {"id": "call_1", "function": {"name": "write_file", "arguments": "{}"}}
+        _tool_args, result_str = await strategy._handle_tool_call(
+            tc,
+            tools=_tools_for("write_file"),
+            tool_executor=executor,
+            trace=None,
+            status=_noop_status,
+            sentinel=sentinel,
+            auth=_Auth(),
+            warden=None,
+            allowed_tools=frozenset({"read_file"}),
+        )
+
+        assert "not in the Agent allowlist" in result_str
+        assert executed == []
+
+    @pytest.mark.asyncio
+    async def test_unknown_schema_refused_even_when_allowlisted(self) -> None:
+        strategy = ArtificerStrategy()
+        tc = {"id": "call_1", "function": {"name": "drop_table", "arguments": "{}"}}
+
+        _tool_args, result_str = await strategy._handle_tool_call(
+            tc,
+            tools=None,
+            tool_executor=_echo_executor,
+            trace=None,
+            status=_noop_status,
+            sentinel=None,
+            auth=None,
+            warden=None,
+            allowed_tools=frozenset({"drop_table"}),
+        )
+
+        assert "no schema is registered for tool 'drop_table'" in result_str
+
 
 class TestPlan:
     @pytest.mark.asyncio

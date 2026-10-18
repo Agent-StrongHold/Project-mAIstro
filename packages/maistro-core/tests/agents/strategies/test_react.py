@@ -453,3 +453,121 @@ async def test_reason_multiple_tool_calls_in_one_round() -> None:
     assert len(result.tool_history) == 2
     assert result.tool_history[0]["arguments"] == {"path": "a.py"}
     assert result.tool_history[1]["arguments"] == {"path": "b.py"}
+
+
+async def test_reason_non_allowlisted_tool_refused_before_sentinel_and_executor() -> None:
+    """A model-selected name outside the Agent declaration never reaches effects (#57)."""
+
+    provider = FauxProvider()
+    provider.seed_tool_call("write_file", {"path": "a.py"})
+    provider.seed(FauxResponse(content="acknowledged"))
+    strategy = ReactStrategy(max_rounds=2)
+    tools = _tools_for("write_file")
+    sentinel = _FakeSentinel()
+    executed: list[str] = []
+
+    async def executor(name: str, args: dict[str, Any]) -> str:
+        executed.append(name)
+        return f"ran with {args}"
+
+    result = await strategy.reason(
+        [{"role": "user", "content": "x"}],
+        "m",
+        provider,
+        tools=tools,
+        tool_executor=executor,
+        sentinel=sentinel,
+        auth=_Auth(),
+        allowed_tools=frozenset({"read_file"}),
+    )
+
+    entry = result.tool_history[0]
+    assert "not in the Agent allowlist" in entry["result"]
+    assert executed == []
+    assert sentinel.pre_calls == []
+
+
+async def test_reason_unknown_schema_refused_even_when_allowlisted() -> None:
+    """Fail closed: an allowed name with no host-declared schema is refused."""
+
+    provider = FauxProvider()
+    provider.seed_tool_call("drop_table", {})
+    provider.seed(FauxResponse(content="acknowledged"))
+    strategy = ReactStrategy(max_rounds=2)
+    sentinel = _FakeSentinel()
+
+    result = await strategy.reason(
+        [{"role": "user", "content": "x"}],
+        "m",
+        provider,
+        tools=None,
+        tool_executor=_echo_executor,
+        sentinel=sentinel,
+        auth=_Auth(),
+        allowed_tools=frozenset({"drop_table"}),
+    )
+
+    assert "no schema is registered for tool 'drop_table'" in result.tool_history[0]["result"]
+    assert sentinel.pre_calls == []
+
+
+async def test_reason_schema_violating_args_refused_before_executor() -> None:
+    provider = FauxProvider()
+    provider.seed_tool_call("read_file", {"evil": True})
+    provider.seed(FauxResponse(content="acknowledged"))
+    strategy = ReactStrategy(max_rounds=2)
+    tools = _tools_for(
+        "read_file",
+        {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    )
+    sentinel = _FakeSentinel()
+    executed: list[str] = []
+
+    async def executor(name: str, args: dict[str, Any]) -> str:
+        executed.append(name)
+        return f"ran with {args}"
+
+    result = await strategy.reason(
+        [{"role": "user", "content": "x"}],
+        "m",
+        provider,
+        tools=tools,
+        tool_executor=executor,
+        sentinel=sentinel,
+        auth=_Auth(),
+        allowed_tools=frozenset({"read_file"}),
+    )
+
+    assert "invalid arguments for tool 'read_file'" in result.tool_history[0]["result"]
+    assert executed == []
+    assert sentinel.pre_calls == []
+
+
+async def test_reason_allowlisted_valid_call_still_executes() -> None:
+    """The allowlist gate must not refuse legitimate declared tool calls."""
+
+    provider = FauxProvider()
+    provider.seed_tool_call("read_file", {"path": "a.py"})
+    provider.seed(FauxResponse(content="ok"))
+    strategy = ReactStrategy(max_rounds=2)
+    tools = _tools_for("read_file")
+    sentinel = _FakeSentinel()
+
+    result = await strategy.reason(
+        [{"role": "user", "content": "x"}],
+        "m",
+        provider,
+        tools=tools,
+        tool_executor=_echo_executor,
+        sentinel=sentinel,
+        auth=_Auth(),
+        allowed_tools=frozenset({"read_file"}),
+    )
+
+    assert result.tool_history[0]["result"] == "sanitized:ran with {'path': 'a.py'}"
+    assert sentinel.pre_calls == [("read_file", {"path": "a.py"})]
