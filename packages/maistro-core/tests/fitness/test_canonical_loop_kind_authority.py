@@ -32,7 +32,20 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _PACKAGES = _REPO_ROOT / "packages"
-_HIVE_BACKEND = _PACKAGES / "hive-conductor" / "backend"
+
+#: Every governed production Python root outside ``packages/*/src``. These
+#: are the product surfaces that ship executable Python but do not use the
+#: ``src`` layout: the flat Hive backend app, the Turing backend that CI
+#: measures as production coverage, the Canvas frontend server, and the
+#: Hive cage/dags/eval trees the Hive Dockerfile copies into the image.
+_FLAT_APP_ROOTS: tuple[Path, ...] = (
+    _PACKAGES / "hive-conductor" / "backend",
+    _PACKAGES / "maistro-turing" / "backend",
+    _PACKAGES / "maistro-canvas" / "frontend" / "server",
+    _PACKAGES / "hive-conductor" / "cage",
+    _PACKAGES / "hive-conductor" / "dags",
+    _PACKAGES / "hive-conductor" / "eval",
+)
 
 #: The only module allowed to register the canonical loop kinds. #791 lands
 #: the canonical Rubric (and any sibling kinds) here; today the module ships
@@ -59,19 +72,34 @@ _CANONICAL_LOOP_KINDS = frozenset(
 
 
 def _production_python_files() -> list[Path]:
-    """``packages/*/src`` trees plus the flat hive-conductor backend app."""
+    """``packages/*/src`` trees plus every governed flat production root.
+
+    The flat roots in :data:`_FLAT_APP_ROOTS` ship executable Python that
+    never sits under a ``src`` tree; any of them could carry a competing
+    literal loop-kind registration, so all are walked.
+    """
     files: list[Path] = []
     for pkg in sorted(_PACKAGES.iterdir()):
         src = pkg / "src"
         if src.is_dir():
             files.extend(p for p in src.rglob("*.py") if "__pycache__" not in p.parts)
-    if _HIVE_BACKEND.is_dir():
-        files.extend(p for p in _HIVE_BACKEND.rglob("*.py") if "__pycache__" not in p.parts)
+    for root in _FLAT_APP_ROOTS:
+        if root.is_dir():
+            files.extend(p for p in root.rglob("*.py") if "__pycache__" not in p.parts)
     return files
 
 
 def _is_test_path(path: Path) -> bool:
-    return "test" in path.parts or path.name.startswith("test_")
+    # Test roots in this repo are named ``tests`` (plural); also keep the
+    # singular and ``test_*`` module spellings so fixture helpers, conftest
+    # modules, and inline ``register(...)`` wiring under any test directory
+    # are never scanned as production code.
+    return (
+        "tests" in path.parts
+        or "test" in path.parts
+        or path.name.startswith("test_")
+        or path.name == "conftest.py"
+    )
 
 
 def _relative(path: Path) -> str:
@@ -81,15 +109,52 @@ def _relative(path: Path) -> str:
         return str(path)
 
 
+def _module_constant_strings(tree: ast.AST) -> dict[str, str]:
+    """Names bound exactly once to a string literal anywhere in the module.
+
+    The repository's registration idiom defines the kind slug as a module
+    constant (``RUBRIC_KIND = "rubric"`` at ``maistro/ontology/rubric.py:43``)
+    and passes the constant to ``register``. A fence that reads only inline
+    literals would miss exactly that shape. Names assigned more than once (or
+    bound to non-literals) stay unresolved rather than guessed.
+    """
+    assignment_counts: dict[str, int] = {}
+    values: dict[str, str] = {}
+    for node in ast.walk(tree):
+        target: ast.Name | None = None
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            target = node.targets[0]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            target = node.target
+        if target is None:
+            continue
+        value = node.value
+        if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+            continue
+        assignment_counts[target.id] = assignment_counts.get(target.id, 0) + 1
+        values[target.id] = value.value
+    return {
+        name: value
+        for name, value in values.items()
+        if assignment_counts[name] == 1
+    }
+
+
 def _registered_kind_slugs(path: Path) -> list[tuple[int, str]]:
-    """``(lineno, slug)`` for every ``register(<string>, ...)`` call in path.
+    """``(lineno, slug)`` for every ``register(<kind>, ...)`` call in path.
 
     Both ``obj.register(...)`` and bare ``register(...)`` are matched; the
-    first positional argument must be a literal string. Dispatch-style
+    first positional argument must be a literal string or a module constant
+    bound to one (see :func:`_module_constant_strings`). Dispatch-style
     ``register`` calls take classes or functions, so the string-argument
     shape is registry-kind shaped and safe to read as a kind claim.
     """
     tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
+    constants = _module_constant_strings(tree)
     found: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -104,9 +169,10 @@ def _registered_kind_slugs(path: Path) -> list[tuple[int, str]]:
         if name != "register" or not node.args:
             continue
         first = node.args[0]
-        if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
-            continue
-        found.append((node.lineno, first.value))
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            found.append((node.lineno, first.value))
+        elif isinstance(first, ast.Name) and first.id in constants:
+            found.append((node.lineno, constants[first.id]))
     return found
 
 
@@ -146,7 +212,11 @@ def test_fence_detects_a_synthetic_competing_registration(tmp_path: Path) -> Non
 
     A guard that cannot fire is decoration. The violation file registers a
     competing ``Goal`` ontology kind exactly the way a stray product module
-    would; the control file registers a non-canonical kind and must pass.
+    would; the constant-backed violation file uses the repository's real
+    idiom (``GOAL_KIND = 'goal'`` passed to ``register``, as the canonical
+    Rubric does with ``RUBRIC_KIND``) so the fence cannot be dodged by
+    hoisting the slug into a constant; the control file registers a
+    non-canonical kind and must pass.
     """
     violating = tmp_path / "product_goal.py"
     violating.write_text(
@@ -159,6 +229,22 @@ def test_fence_detects_a_synthetic_competing_registration(tmp_path: Path) -> Non
         "\n"
         "def wire(registry) -> None:\n"
         "    registry.register('Goal', GoalModel)\n",
+        encoding="utf-8",
+    )
+    violating_via_constant = tmp_path / "product_goal_kind.py"
+    violating_via_constant.write_text(
+        "from pydantic import BaseModel\n"
+        "\n"
+        "\n"
+        "GOAL_KIND = 'goal'\n"
+        "\n"
+        "\n"
+        "class GoalModel(BaseModel):\n"
+        "    title: str\n"
+        "\n"
+        "\n"
+        "def wire(registry) -> None:\n"
+        "    registry.register(GOAL_KIND, GoalModel)\n",
         encoding="utf-8",
     )
     control = tmp_path / "product_widget.py"
@@ -175,7 +261,9 @@ def test_fence_detects_a_synthetic_competing_registration(tmp_path: Path) -> Non
         encoding="utf-8",
     )
 
-    offenders = _competing_registrations([violating, control])
-    assert len(offenders) == 1, offenders
+    offenders = _competing_registrations([violating, violating_via_constant, control])
+    assert len(offenders) == 2, offenders
     assert "product_goal.py" in offenders[0]
     assert "registers canonical loop kind 'Goal'" in offenders[0]
+    assert "product_goal_kind.py" in offenders[1]
+    assert "registers canonical loop kind 'goal'" in offenders[1]
