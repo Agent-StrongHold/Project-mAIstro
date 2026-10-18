@@ -174,7 +174,15 @@ FLAT_APPS = (
     FlatApp(
         name="maistro-turing-backend",
         path="packages/maistro-turing/backend",
-        roots=("main",),
+        # `provision` is the operator-invoked service-identity bootstrap CLI
+        # (#858): `python -m backend.provision` from packages/maistro-turing is
+        # the documented activation path (README, module docstring). Like the
+        # canvas server's `export_book`, a script a person launches is an
+        # entry point the import graph can root — not unreachable debt to
+        # baseline. Rooting it is also what keeps the #858 guarantee checkable:
+        # the no-default-credential ratchet and the key generation it proves
+        # both live on this path.
+        roots=("main", "provision"),
         report_prefix="maistro-turing-backend",
     ),
     FlatApp(

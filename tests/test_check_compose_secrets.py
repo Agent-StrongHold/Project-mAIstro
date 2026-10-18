@@ -63,6 +63,18 @@ class TestWhatIsACommittedCredential:
         string; both supply a committed value when the variable is unset."""
         assert _scan(check, "      - DB_PASSWORD=${DB_PASSWORD-hunter2}")
 
+    def test_a_literal_buried_in_a_fallback_chain_is_still_reported(self, check) -> None:
+        """The hole a reference-only exemption could open, pinned shut.
+
+        `${A:-${B:-hunter2}}` supplies `hunter2` to anyone who sets neither.
+        Nesting it one level deeper must not make it look parameterised.
+        """
+        found = _scan(
+            check, "      - LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:-hunter2}}"
+        )
+        assert len(found) == 1
+        assert "falls back to a non-empty default" in found[0].why
+
     def test_the_report_never_prints_the_value(self, check) -> None:
         """Printing it into a CI log is the same exposure one more time."""
         found = _scan(check, "      - API_KEYS=alice:changeme-alice")
@@ -99,6 +111,23 @@ class TestWhatIsFine:
 
     def test_an_inline_comment_is_not_part_of_the_value(self, check) -> None:
         assert not _scan(check, "      - API_KEYS=${API_KEYS:-}   # set in .env")
+
+    def test_a_fallback_to_another_required_variable_passes(self, check) -> None:
+        """`${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?msg}}` (#808).
+
+        A caller who sets nothing gets a refusal to start, not a value -- the
+        fallback is itself required. That is the layered default an external
+        gateway needs: its own key when given, the bundled proxy's otherwise,
+        and never a committed one. Flagging it would push the file towards a
+        worse spelling to satisfy the gate.
+        """
+        assert not _scan(
+            check,
+            "      - LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set it in .env}}",
+        )
+
+    def test_a_fallback_chain_ending_in_a_plain_reference_passes(self, check) -> None:
+        assert not _scan(check, "      - LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY}}")
 
 
 class TestWhichNamesCount:

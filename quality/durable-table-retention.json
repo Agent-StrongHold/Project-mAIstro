@@ -285,9 +285,22 @@
       "owner_module": "packages/maistro-core/src/maistro/capabilities/binding_store.py",
       "data_class": "configuration",
       "retention": "undecided",
-      "deletion_path": null,
+      "deletion_path": "maistro.capabilities.binding_store:SqliteBindingStore.revoke",
       "issue": "#325",
-      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+      "notes": "Operator revocation deletes the row (#1133) -- PgBindingStore.revoke does the same on the other backend. There is still no retention sweep, so rows a deployment never revokes accumulate for its life. The delete is a withdrawal of authority, not a purge, which is why this stays 'undecided'."
+    },
+    {
+      "table": "capability_binding_revocations",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/capabilities/binding_store.py",
+      "data_class": "configuration",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#1133",
+      "notes": "Tombstones, kept forever on purpose. A revoked binding_id must never become registrable again (#846), so pruning this table re-grants every capability it forgets -- the one row whose deletion is itself the security failure. It holds an id and a timestamp, so it is bounded by how many bindings a deployment has ever revoked."
     },
     {
       "table": "capability_invocations",

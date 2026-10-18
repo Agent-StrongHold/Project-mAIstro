@@ -180,7 +180,16 @@ EXTERNAL_COMMANDS = {
     "py": "Windows launcher fallback probed by ensure_python",
     "python": "fallback spelling of python3 probed by ensure_python",
     "python3": "documented dependency (>= 3.11): scripts/secret_env.py and probes",
+    "pkill": (
+        "procps/BSD: the arm64 check's timeout reaps the credential helper "
+        "docker spawned, which is what blocks; killing docker alone leaves it"
+    ),
     "rm": "POSIX file tool: cleanup of generated files",
+    "rmdir": (
+        "POSIX file tool: take down an adopted unfinished install's directory. "
+        "Chosen over rm -rf because it refuses a non-empty directory, so "
+        "anything get.sh did not expect makes it stop instead of deleting it"
+    ),
     "sed": "POSIX stream editor: rewrite generated files",
     "service": "WSL2: supervised init-system start of the Docker daemon",
     "setx": "Windows (Git Bash/MSYS): persist MAISTRO_REPO_ROOT across shells",

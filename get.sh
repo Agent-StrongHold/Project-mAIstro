@@ -197,6 +197,56 @@ ensure_git_origin() {
     fi
 }
 
+# Files an earlier run of this installer can leave in $INSTALL_DIR without a
+# checkout ever landing there. Anything else in the directory might be the
+# user's, so it is never adopted.
+UNFINISHED_INSTALL_FILES=(.env .DS_Store)
+
+# True when $1 holds nothing but what an unfinished install leaves behind:
+# a .env (the user's keys, which must survive) and macOS Finder litter.
+#
+# Before this, that state was unrecoverable. An install that died after the
+# .env was written -- an older get.sh migrated it *before* cloning -- left a
+# directory that is not a git checkout, so every later run of the one-liner
+# stopped at "exists but is not a git checkout", and the only way forward was
+# to find the directory and move it aside by hand.
+is_unfinished_install() {
+    local dir="$1" entry name allowed
+    [[ -d "$dir" && ! -e "$dir/.git" ]] || return 1
+    [[ -f "$dir/.env" ]] || return 1
+    for entry in "$dir"/.[!.]* "$dir"/..?* "$dir"/*; do
+        [[ -e "$entry" ]] || continue
+        name="${entry##*/}"
+        allowed=1
+        local f
+        for f in "${UNFINISHED_INSTALL_FILES[@]}"; do
+            [[ "$name" == "$f" ]] && allowed=0
+        done
+        [[ $allowed -eq 0 ]] || return 1
+    done
+    return 0
+}
+
+# Clone beside the unfinished directory, carry its .env across, and swap.
+# Nothing is removed until the clone has succeeded, and the old directory is
+# taken down with rmdir -- which refuses a non-empty directory -- so a file
+# this function did not expect makes it stop rather than delete it.
+adopt_unfinished_install() {
+    local staging="${INSTALL_DIR}.clone.$$"
+    warn "Found an unfinished install at $INSTALL_DIR: only its .env is there, no checkout."
+    info "Cloning maistro-engine ${REF} fresh and keeping that .env..."
+    rm -rf "$staging"
+    if ! git clone --depth 1 --branch "$REF" "$REPO_URL" "$staging"; then
+        rm -rf "$staging"
+        fail "Clone failed; $INSTALL_DIR is untouched. Re-run once the network or repository is reachable."
+    fi
+    mv "$INSTALL_DIR/.env" "$staging/.env"
+    rm -f "$INSTALL_DIR/.DS_Store"
+    rmdir "$INSTALL_DIR" || fail "$INSTALL_DIR gained unexpected content during install; the fresh checkout is at $staging."
+    mv "$staging" "$INSTALL_DIR"
+    ok "Recovered the unfinished install at ${REF}; your .env was kept."
+}
+
 download_with_git() {
     if [[ -d "$INSTALL_DIR/.git" ]]; then
         info "Updating existing maistro-engine checkout at $INSTALL_DIR..."
@@ -216,6 +266,10 @@ download_with_git() {
     fi
 
     if [[ -e "$INSTALL_DIR" ]]; then
+        if is_unfinished_install "$INSTALL_DIR"; then
+            adopt_unfinished_install
+            return
+        fi
         fail "$INSTALL_DIR exists but is not a git checkout. Move it aside or set MAISTRO_DIR."
     fi
 
@@ -360,7 +414,15 @@ run_installer() {
         exec bash ./install.sh "$@"
     fi
 
-    if [[ -r /dev/tty ]]; then
+    # Hand the wizard the user's terminal when stdin is the curl pipe. Test by
+    # *opening* /dev/tty, not with `-r`: the node exists and is world-readable
+    # on every macOS and Linux host, so `[[ -r /dev/tty ]]` is true even with
+    # no controlling terminal -- and then the redirect below fails with
+    # "Device not configured" and `exec` takes the whole install down with it.
+    # That is every non-interactive run of the one-liner: cloud-init/user-data,
+    # `ssh host 'curl ... | bash'` without -t, CI, launchd. Gate C never saw it
+    # because it runs install.sh directly and skips this hand-off entirely.
+    if { : < /dev/tty; } 2>/dev/null; then
         exec bash ./install.sh "$@" < /dev/tty
     fi
 
