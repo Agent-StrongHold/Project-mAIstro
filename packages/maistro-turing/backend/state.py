@@ -7,8 +7,8 @@ mutate this composed object.
 Cognitive state is never process-global shared state (#27/#859): self-model
 reads and writes are keyed by the authenticated canonical principal, and a
 missing scope is an error — there is no fallback to one shared snapshot. Chat
-sessions are (principal, session)-keyed and bounded in cardinality and
-lifetime by :class:`ChatSessionRegistry`.
+sessions are (principal, session)-keyed and bounded in per-principal
+cardinality and lifetime by :class:`ChatSessionRegistry`.
 
 GAP: this is an in-memory, single-process store. A production deployment would
 back the self-model scopes and producer feed with the persistence layer
@@ -105,15 +105,26 @@ class _SelfModelScope:
     facet_scores: dict[str, float]
 
 
+@dataclass
+class _ChatSessionEntry:
+    """One live chat session plus its recency timestamp for TTL purging."""
+
+    session: TuringChatSession
+    last_used: float
+
+
 class ChatSessionRegistry:
-    """Bounded ``(principal_id, session_id) -> TuringChatSession`` map.
+    """Bounded per-principal partitions of ``session_id -> TuringChatSession``.
 
     Chat history is cognitive state, so it is keyed by the authenticated
     canonical principal: a client-supplied session id alone never selects a
     session, and one caller cannot attach to another principal's session by
-    guessing its id (#859). The map cannot grow without bound: entries idle
-    past ``idle_ttl_seconds`` are dropped, and when ``max_sessions`` live
-    entries would be exceeded the least-recently-used session is evicted.
+    guessing its id (#859). Capacity and LRU are enforced within each
+    principal's own partition — each principal holds at most ``max_sessions``
+    sessions and eviction removes only that principal's least-recently-used
+    entry — so flooding distinct session ids can never evict another
+    principal's session (review P1). Entries idle past ``idle_ttl_seconds``
+    are dropped.
 
     Sessions are disposable process-local objects; a restart truthfully loses
     them (they are conversation convenience, not durable state).
@@ -136,12 +147,11 @@ class ChatSessionRegistry:
         self._idle_ttl_seconds = idle_ttl_seconds
         self._clock = clock
         self._lock = threading.Lock()
-        self._sessions: dict[tuple[str, str], TuringChatSession] = {}
-        # Ordered LRU: recency is tracked by position (move_to_end), not by the
-        # timestamp value, so an injected or coarse clock that returns equal
-        # values for several operations still yields an unambiguous eviction
-        # order instead of falling back to dict insertion order.
-        self._last_used: OrderedDict[tuple[str, str], float] = OrderedDict()
+        # principal_id -> (session_id -> entry), each partition an OrderedDict
+        # kept in LRU order: every hit does move_to_end and every create
+        # appends, so the front entry is the true LRU even when timestamps tie
+        # under a coarse or frozen clock (review P2).
+        self._sessions: dict[str, OrderedDict[str, _ChatSessionEntry]] = {}
 
     def get_or_create(self, principal_id: str, session_id: str) -> TuringChatSession:
         """Return the principal's session for ``session_id``, or a new one.
@@ -154,44 +164,38 @@ class ChatSessionRegistry:
         if not session_id:
             raise ValueError("chat sessions require a session id")
         now = self._clock()
-        key = (principal_id, session_id)
         with self._lock:
             self._purge_expired(now)
-            session = self._sessions.get(key)
-            if session is not None:
-                self._last_used[key] = now
-                self._last_used.move_to_end(key)
-                return session
-            while len(self._sessions) >= self._max_sessions:
-                self._evict_one()
+            partition = self._sessions.get(principal_id)
+            if partition is None:
+                partition = self._sessions[principal_id] = OrderedDict()
+            entry = partition.get(session_id)
+            if entry is not None:
+                entry.last_used = now
+                partition.move_to_end(session_id)
+                return entry.session
+            while len(partition) >= self._max_sessions:
+                partition.popitem(last=False)  # this principal's own LRU only
             session = self._factory()
-            self._sessions[key] = session
-            self._last_used[key] = now
+            partition[session_id] = _ChatSessionEntry(session=session, last_used=now)
             return session
 
     def _purge_expired(self, now: float) -> None:
         """Drop sessions idle past the TTL. Caller holds the lock."""
-        expired = [
-            key
-            for key, used_at in self._last_used.items()
-            if now - used_at > self._idle_ttl_seconds
-        ]
-        for key in expired:
-            self._sessions.pop(key, None)
-            self._last_used.pop(key, None)
-
-    def _evict_one(self) -> None:
-        """Drop the least-recently-used session. Caller holds the lock.
-
-        Recency is the OrderedDict position — every hit does ``move_to_end``
-        and every create appends — so the front entry is the true LRU even
-        when timestamps tie under a coarse or frozen clock.
-        """
-        if not self._last_used:
-            return
-        oldest = next(iter(self._last_used))
-        self._sessions.pop(oldest, None)
-        self._last_used.pop(oldest, None)
+        for partition in self._sessions.values():
+            expired = [
+                session_id
+                for session_id, entry in partition.items()
+                if now - entry.last_used > self._idle_ttl_seconds
+            ]
+            for session_id in expired:
+                del partition[session_id]
+        for principal_id in [
+            principal_id
+            for principal_id, partition in self._sessions.items()
+            if not partition
+        ]:
+            del self._sessions[principal_id]
 
 
 class TuringState:
@@ -296,8 +300,12 @@ class TuringState:
         HTTP layer's pydantic schema (#859).
         """
         with self._lock:
-            scoped = self._self_model_scope(scope_id)
-            current = scoped.mood
+            scope = _require_scope_id(scope_id)
+            scoped = self._scopes.get(scope)
+            current = scoped.mood if scoped is not None else _default_mood()
+            # Construct (and therefore validate) the candidate before any
+            # map mutation: a rejected write must not install a default
+            # scope entry for a previously unseen principal.
             updated = Mood(
                 self_id=SELF_ID,
                 valence=fields.get("valence", current.valence),
@@ -306,18 +314,39 @@ class TuringState:
                 last_tick_at=current.last_tick_at,
                 updated_at=_now(),
             )
-            scoped.mood = updated
+            if scoped is None:
+                scoped = _SelfModelScope(
+                    mood=updated,
+                    facet_scores=_default_facet_scores(),
+                )
+                self._scopes[scope] = scoped
+            else:
+                scoped.mood = updated
             return updated
 
     def set_facet(self, scope_id: str, facet_id: str, score: float) -> None:
         """Mutate one principal's facet score, bounds-checked at this seam."""
         with self._lock:
-            scoped = self._self_model_scope(scope_id)
-            if facet_id not in scoped.facet_scores:
+            scope = _require_scope_id(scope_id)
+            scoped = self._scopes.get(scope)
+            known = (
+                scoped.facet_scores
+                if scoped is not None
+                else _default_facet_scores()
+            )
+            # Validate against the candidate facet map before any map
+            # mutation, mirroring set_mood: a rejected write must not
+            # install a default scope entry for an unseen principal.
+            if facet_id not in known:
                 raise KeyError(facet_id)
             if not 1.0 <= score <= 5.0:
                 raise ValueError(f"facet score out of range: {score}")
-            scoped.facet_scores[facet_id] = score
+            known[facet_id] = score
+            if scoped is None:
+                self._scopes[scope] = _SelfModelScope(
+                    mood=_default_mood(),
+                    facet_scores=known,
+                )
 
     # ------------------------------------------------------------- feed ------
 

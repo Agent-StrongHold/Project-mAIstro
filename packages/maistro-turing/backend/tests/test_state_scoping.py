@@ -197,6 +197,26 @@ def test_chat_session_registry_is_bounded_by_capacity():
     assert replacement is not first
 
 
+def test_chat_session_eviction_never_crosses_principals():
+    # A process-wide capacity would let one principal flood distinct session
+    # ids and evict other principals' LRU sessions (review P1), so capacity
+    # and LRU are enforced within each principal's own partition.
+    reg, made = _registry(max_sessions=2)
+
+    victim0 = reg.get_or_create("victim", "v0")
+    victim1 = reg.get_or_create("victim", "v1")
+    flooded = [reg.get_or_create("attacker", f"a{i}") for i in range(4)]
+
+    # The attacker is capped inside their own partition: the flood evicts
+    # only the attacker's own LRU session.
+    assert reg.get_or_create("attacker", "a0") is not flooded[0]
+    assert len(made) == 7  # v0, v1, a0..a3, plus a0 recreated post-eviction
+
+    # ...and no victim session was evicted by the flood.
+    assert reg.get_or_create("victim", "v0") is victim0
+    assert reg.get_or_create("victim", "v1") is victim1
+
+
 def test_chat_session_registry_lru_order_survives_timestamp_ties():
     # A frozen (or coarse) clock gives every operation the same timestamp, so
     # eviction must follow tracked recency order, not timestamp comparison
