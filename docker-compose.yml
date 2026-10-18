@@ -71,7 +71,9 @@ services:
       # it, opt in explicitly:
       #   docker compose -f docker-compose.yml \
       #     -f docker-compose.docker-sock.override.example.yml up
-      # (or copy that override into docker-compose.override.yml).
+      # (or copy that override into docker-compose.override.yml, which
+      # ./install.sh includes automatically when present — it must be owned
+      # by the invoking user and not group/world-writable).
       - workspace-data:/repos
     depends_on:
       postgres:

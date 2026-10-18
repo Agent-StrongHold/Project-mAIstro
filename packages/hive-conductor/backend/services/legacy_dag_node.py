@@ -19,6 +19,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 
 from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding_store import register_boot_binding
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
     default_effect_context,
@@ -26,6 +27,7 @@ from maistro.capabilities.effect_context import (
 from maistro.graph.nodes.base import BaseNode, NodeContext
 from maistro.graph.policies import DEFAULT_NODE_TIMEOUT_S, resolve_node_timeout_s
 from maistro.http import shared_client
+from services.tool_executor import ModelCall
 
 logger = logging.getLogger(__name__)
 OnResponseHook = Callable[[dict[str, Any], httpx.Response], None]
@@ -194,7 +196,11 @@ def _run_node_subprocess(
 
 
 async def _tool_web_search(
-    tool_config: dict[str, Any], parent_outputs: dict[str, Any], task_desc: str
+    tool_config: dict[str, Any],
+    parent_outputs: dict[str, Any],
+    task_desc: str,
+    *,
+    model_call: ModelCall | None = None,
 ) -> str:
     iterate_over = tool_config.get("iterate_over", "")
     queries: list[str] = []
@@ -217,15 +223,19 @@ async def _tool_web_search(
     all_results = []
     max_r = tool_config.get("max_results", 5)
     for query in queries[:5]:
-        all_results.append(await web_search(query, max_results=max_r))
+        model_kwargs = {"model_call": model_call} if model_call is not None else {}
+        all_results.append(await web_search(query, max_results=max_r, **model_kwargs))
     return json.dumps(all_results, indent=2)
 
 
-async def _tool_clarify(tool_config: dict[str, Any], task_desc: str) -> str:
+async def _tool_clarify(
+    tool_config: dict[str, Any], task_desc: str, *, model_call: ModelCall | None = None
+) -> str:
     from services.tool_executor import clarify
 
     questions = tool_config.get("questions", [])
-    answers = await clarify(questions, {"input": task_desc})
+    model_kwargs = {"model_call": model_call} if model_call is not None else {}
+    answers = await clarify(questions, {"input": task_desc}, **model_kwargs)
     return "\n".join(
         f"Q: {question}\nA: {answers.get(str(index + 1), answers.get(question, 'Not specified'))}\n"
         for index, question in enumerate(questions)
@@ -282,6 +292,8 @@ async def _call_tool_node(
     inbound: dict[str, set[str]],
     results: dict[str, dict[str, Any]],
     task_desc: str,
+    *,
+    model_call: ModelCall | None = None,
 ) -> str:
     """Run the historical tool adapter, without deciding authorization."""
     tool_name = str(node.get("tool") or "")
@@ -299,13 +311,51 @@ async def _call_tool_node(
         if pid in results and results[pid].get("success")
     }
     if tool_name == "web_search":
-        return await _tool_web_search(tool_config, parent_outputs, task_desc)
+        return await _tool_web_search(tool_config, parent_outputs, task_desc, model_call=model_call)
     if tool_name == "clarify":
-        return await _tool_clarify(tool_config, task_desc)
+        return await _tool_clarify(tool_config, task_desc, model_call=model_call)
     if tool_name == "browse_url":
         return await _tool_browse_url(tool_config)
     result = await tool_fn(task_desc)
     return json.dumps(result) if isinstance(result, dict) else str(result)
+
+
+def _tool_model_caller(node: dict[str, Any], ctx: NodeContext, runtime: Any) -> ModelCall:
+    """Bind model sub-effects to this node without granting model authority."""
+    from maistro.capabilities.providers.llm_gateway import ModelChatRequest
+    from services.governed_model import dag_tool_completion
+
+    sequence = 0
+
+    async def call(request: ModelChatRequest) -> str:
+        nonlocal sequence
+        if runtime is None:
+            raise RuntimeError("model-backed DAG tool has no governed model runtime")
+        config = node.get("config", {})
+        configured_id = config.get("model_binding_id", "") if isinstance(config, dict) else ""
+        binding_id = str(node.get("model_binding_id") or configured_id)
+        sequence += 1
+        return await dag_tool_completion(
+            runtime,
+            ctx=ctx,
+            binding_id=binding_id,
+            effect_key=f"legacy-tool:{node.get('tool')}:model:{sequence}",
+            request=request,
+            timeout_s=min(30.0, declared_raw_node_timeout_s(node)),
+        )
+
+    return call
+
+
+async def _register_tool_binding(effects: CapabilityEffectContext, binding: Binding) -> Binding:
+    """Reconcile simultaneous first registrations through the same strict check."""
+    try:
+        return await register_boot_binding(effects.bindings, binding)
+    except ValueError:
+        # Two first users can both observe no record before one wins put().
+        # Re-read once through the canonical helper: only the exact immutable
+        # definition can be reused. A conflict or revocation still refuses.
+        return await register_boot_binding(effects.bindings, binding)
 
 
 async def _run_tool_node(
@@ -317,6 +367,7 @@ async def _run_tool_node(
     *,
     effect_context: CapabilityEffectContext | None = None,
     ctx: NodeContext | None = None,
+    governed_runtime: Any | None = None,
 ) -> None:
     role = node.get("role", "worker")
     tool_name = str(node.get("tool") or "")
@@ -350,7 +401,9 @@ async def _run_tool_node(
                 capability=f"legacy_tool:{tool_name}",
                 config={"effect": _legacy_tool_effect(tool_name)},
             )
-            await effect_context.bindings.put(binding)
+            # Repeated Runs reuse this immutable tool definition. A fresh
+            # registration timestamp must not make the second Run fail.
+            binding = await _register_tool_binding(effect_context, binding)
             provider = _LegacyToolProvider(tool_name)
 
             async def resolve(_binding: Binding) -> _LegacyToolProvider:
@@ -362,7 +415,14 @@ async def _run_tool_node(
                     for pid in inbound.get(nid, set())
                     if pid in results and results[pid].get("success")
                 }
-                return await _call_tool_node(node, nid, inbound, scratch, str(request["task"]))
+                return await _call_tool_node(
+                    node,
+                    nid,
+                    inbound,
+                    scratch,
+                    str(request["task"]),
+                    model_call=_tool_model_caller(node, ctx, governed_runtime),
+                )
 
             invocation = await effect_context.invocations.invoke(
                 binding=binding,
@@ -373,6 +433,7 @@ async def _run_tool_node(
                 request={"task": task_desc, "tool_config": node.get("tool_config", {})},
                 resolver=resolve,
                 executor=execute,
+                actor_id=str(ctx.user_id or ""),
             )
             response = str(invocation.result or "")
         else:
@@ -452,6 +513,7 @@ async def _run_llm_node(
             task_desc,
             effect_context=effect_context,
             ctx=ctx,
+            governed_runtime=governed_runtime,
         )
         return
     model = node.get("model", os.environ.get("CHAT_DEFAULT_MODEL", "gemini-3.5-flash"))

@@ -67,9 +67,19 @@ def _overlay(record: dict[str, Any], run: Any) -> dict[str, Any]:
     creative = _creative_run_provenance(run)
     return {
         **record,
+        # Canonical lifecycle truth replaces the projection row's wholesale
+        # (#1877): status, result, error AND finished_at all come from the
+        # canonical Run now. A null canonical result/error overwrites a stale
+        # projection value instead of letting it stand, a nonterminal Run
+        # clears any stale finished_at (the Run model forbids finished_at on
+        # nonterminal Runs), and a terminal Run's finished_at converts to the
+        # epoch-seconds shape the projection already serves -- derived from
+        # the canonical timestamp only, never a wall-clock value minted at
+        # read time.
         "status": run.status.value,
-        **({"result": run.result} if run.result is not None else {}),
-        **({"error": run.error} if run.error else {}),
+        "result": run.result,
+        "error": run.error,
+        "finished_at": (run.finished_at.timestamp() if run.finished_at is not None else None),
         **({"creative_provenance": creative} if creative else {}),
     }
 

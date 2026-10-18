@@ -18,6 +18,7 @@ from maistro.capabilities.providers.llm_gateway import (
     GatewayEndpoint,
 )
 from maistro.credentials.types import CredentialRecord
+from maistro.observability.correlation import bind_execution_context
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
 from maistro.providers.types import ModelMetadata
@@ -120,11 +121,21 @@ async def test_agent_completion_uses_canonical_invocation_quota_hook(
         warden=Warden(),
     )
 
-    response = await agent.handle(
-        [{"role": "user", "content": "say hello"}],
-        SimpleNamespace(user_id="u1", org_id="o1", team_id="t1"),
-        turn_id="run-agent-1",
-    )
+    # #1827: the governed client reads its Run/NodeRun/Attempt identity from
+    # the correlation context canonical execution binds (RunExecutionService
+    # for run_id, AttemptExecutionService.execute_claimed for the other two).
+    # Bind a complete context whose run matches the turn_id Agent.handle
+    # supplies, exactly as a node execution would.
+    with bind_execution_context(
+        run_id="run-agent-1",
+        node_run_id="node-agent-1",
+        attempt_id="attempt-agent-1",
+    ):
+        response = await agent.handle(
+            [{"role": "user", "content": "say hello"}],
+            SimpleNamespace(user_id="u1", org_id="o1", team_id="t1"),
+            turn_id="run-agent-1",
+        )
 
     assert response.content == "governed"
     events = usage_log.events_for("fast-model")

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Verify the specialized CI checks required by one integration candidate.
 
-Pull requests and protected pushes preserve the existing contract: every
-specialized check must complete successfully. Merge-group candidates may use
-the reviewed path classifier to omit checks that cannot be affected, but
-uncertainty never widens the skip set: a missing or malformed scope requires
-every check.
+Pull-request and merge-group candidates are path-scoped by the same classifier
+(#1351): a leg the measured changed files cannot affect may be omitted, while
+uncertainty never widens the skip set -- a missing or malformed scope requires
+every check. Protected pushes preserve the existing contract: every specialized
+check must complete successfully.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import argparse
 import json
 from collections.abc import Mapping
 
-from ci_merge_group_scope import LEGS
+from ci_merge_group_scope import LEGS, PATH_SCOPED_EVENTS
 
 CHECK_NAMES: dict[str, tuple[str, ...]] = {
     "postgres": ("postgres (pg17)", "postgres (pg18)"),
@@ -46,7 +46,7 @@ def _fail_closed_scope(raw: str | None) -> dict[str, bool]:
 
 def required_checks(event_name: str, scope_json: str | None) -> set[str]:
     """Return the check names whose success this candidate must prove."""
-    if event_name == "merge_group":
+    if event_name in PATH_SCOPED_EVENTS:
         scope = _fail_closed_scope(scope_json)
     else:
         scope = dict.fromkeys(LEGS, True)

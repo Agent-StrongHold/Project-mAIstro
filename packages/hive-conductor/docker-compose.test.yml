@@ -10,12 +10,20 @@ services:
     build:
       context: ../..
       dockerfile: packages/hive-conductor/Dockerfile
+      args:
+        # #1420: this harness is where the RUM reporter's production path is
+        # exercised end to end, so the SPA in the image collects and the
+        # backend below ingests. rum-telemetry.spec.ts pins the payloads.
+        VITE_RUM_ENABLED: "true"
+        VITE_RUM_BUILD_ID: e2e
     ports:
       - "8101:8101"
     environment:
       - PYTHONUNBUFFERED=1
       - HARDWARE_PRESET=beast
       - CONDUCTOR_DATA_DIR=/tmp/conductor
+      # #1420: ingest on — the reporter above needs a receiver that stores.
+      - RUM_INGEST_ENABLED=true
       # This harness serves the app over plain HTTP at http://hive:8101, so it
       # is a local-development context in the sense #369 defines one, and says
       # so with the same two settings a developer running locally sets.
