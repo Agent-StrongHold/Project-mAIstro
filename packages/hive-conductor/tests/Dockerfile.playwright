@@ -34,6 +34,20 @@ COPY frontend/src/pages/Dashboard.tsx /tests/frontend/src/pages/Dashboard.tsx
 COPY frontend/src/lib/widgetCapabilities.ts /tests/frontend/src/lib/widgetCapabilities.ts
 COPY frontend/src/components/SetupChecklist.tsx /tests/frontend/src/components/SetupChecklist.tsx
 COPY frontend/src/components/TemplatePicker.tsx /tests/frontend/src/components/TemplatePicker.tsx
+# #1414's toggle spec mounts the real shared.tsx Toggle (the component has no
+# routed consumer to drive); it imports only react, so this is the only
+# frontend file the harness needs.
+COPY frontend/src/components/shared.tsx /tests/frontend/src/components/shared.tsx
+COPY frontend/src/components/RichTooltip.tsx /tests/frontend/src/components/RichTooltip.tsx
 COPY frontend/src/lib/api.ts /tests/frontend/src/lib/api.ts
 COPY frontend/src/lib/debug.ts /tests/frontend/src/lib/debug.ts
+# #1420's specs import the shipped RUM modules from Node/the bundled page:
+# rum-telemetry.spec.ts asserts the redaction rules directly against
+# lib/rumSchema.ts, and rum-client-off-switches.spec.ts bundles lib/rum.ts
+# (the reporter is a per-page-load singleton, so each scenario compiles a
+# fresh bundle). rum.ts imports ./rumSchema at runtime, so both files must be
+# in the image or playwright's collection import of the spec fails with
+# "Cannot find module ../../frontend/src/lib/rumSchema".
+COPY frontend/src/lib/rum.ts /tests/frontend/src/lib/rum.ts
+COPY frontend/src/lib/rumSchema.ts /tests/frontend/src/lib/rumSchema.ts
 CMD ["npx", "playwright", "test", "--config=tests/e2e/playwright.config.ts"]

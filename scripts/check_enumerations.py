@@ -151,7 +151,7 @@ ROUTE_EXEMPT = {
     "/v1/chat": "the product's primary surface; admin is blocked from it, users live in it",
     "/v1/messages": "the user's own notification inbox",
     "/v1/tasks": "the user's own missions",
-    "/v1/backlog": "the user's own planning board — per-item ownership is enforced fail-closed in routes/services.backlog (401 anonymous, 403 viewer/non-member, 404 not-yours with no existence oracle), and elevation would 403 the daily account off its primary planning surface (#99)",
+    "/v1/backlog": "the user's own planning board — per-item ownership is enforced fail-closed in routes/services.backlog (401 anonymous, 403 viewer/non-member, 404 not-yours with no existence oracle), and elevation would 403 the daily account off its primary planning surface (#99/#102)",
     "/v1/work-items": "the user's own drafts (suggest/clarify/confirm)",
     "/v1/memory": "the user's own memory entries (CRUD + reinforce/decay/contradict)",
     "/v1/program": "onboarding coaching (guidance/interview/pulse)",
@@ -166,6 +166,7 @@ ROUTE_EXEMPT = {
     "/v1/cli": "creates an in-memory CLI session record only — no command execution in this router",
     "/v1/pm-fleet/distill": "telemetry recording; tool EXECUTION is scoped at /v1/pm-fleet/tools",
     "/v1/pm-fleet/topk": "telemetry recording",
+    "/v1/rum": "perceived-load telemetry recording (#1420): ingest appends only the reporter's own schema-projected timings to the instance's in-memory ring, bounded per field and per body — no elevation, no cross-principal or host-infrastructure mutation; the read-back/summary GETs are scope-gated at rum.read in _PROTECTED_OPS (cross-principal aggregate)",
 }
 
 
