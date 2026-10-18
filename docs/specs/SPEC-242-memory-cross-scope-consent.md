@@ -41,9 +41,10 @@ no widening workflow, and there is no consent-task queue.
 
 ## Goals
 
-- `can_read(reader: Principal, memory: EpisodicMemory) -> bool`: true iff the reader's scope matches
-  the memory's scope, or the memory is marked `shared` and the reader's scope is at-or-above the
-  memory's origin scope.
+- `can_read(reader: Principal, memory: EpisodicMemory) -> bool`: true iff the reader owns the memory
+  on the owner axis at its own scope (USER-scope compares the canonical `user_id`, AGENT-scope
+  compares `agent_id` — matching scope alone is not sufficient), or the memory is marked `shared`
+  and the reader's scope is at-or-above the memory's origin scope.
 - `propose_widen(memory, target_scope) -> ConsentTask`: builds a consent task naming the memory's
   summary and the proposed wider scope, addressed to the memory's owner/admin.
 - A `ConsentTask` data shape and an `approve`/`reject` resolution path that, on approval, widens the

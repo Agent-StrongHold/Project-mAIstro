@@ -114,8 +114,20 @@ cross-Workspace reuse itself happens only through canonical PostgreSQL/pgvector 
 never by traversing another Workspace's working graph.
 
 ```python
+def is_own_memory(reader: Principal, m: Memory) -> bool:
+    # Matching scope is necessary but not sufficient: the principal must own the
+    # record on the owner axis (USER-scope compares the canonical `user_id`,
+    # AGENT-scope compares `agent_id`). GLOBAL/ORG/TEAM have no owner axis.
+    if m.scope != reader.scope:
+        return False
+    if m.scope == Scope.AGENT:
+        return m.agent_id == reader.agent_id
+    if m.scope == Scope.USER:
+        return m.user_id == reader.user_id
+    return True
+
 def can_read(reader: Principal, m: Memory) -> bool:
-    return m.scope == reader.scope or (m.shared and m.scope >= reader.scope)
+    return is_own_memory(reader, m) or (m.shared and m.scope >= reader.scope)
 
 def propose_widen(m: Memory, target: Scope) -> ConsentTask:
     return ConsentTask(prompt=f"You learned {m.summary}; share with {target}?", approver=m.owner)
