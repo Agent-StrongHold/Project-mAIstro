@@ -20,6 +20,7 @@ packages = ["src/gallery_model_adapter"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "manifest.json" = "gallery_model_adapter/manifest.json"
+"extension.json" = "gallery_model_adapter/extension.json"
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib --strict-markers"

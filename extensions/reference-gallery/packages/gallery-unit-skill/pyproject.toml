@@ -21,6 +21,7 @@ packages = ["src/gallery_unit_skill"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "manifest.json" = "gallery_unit_skill/manifest.json"
+"extension.json" = "gallery_unit_skill/extension.json"
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib --strict-markers"

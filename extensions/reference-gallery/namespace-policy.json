@@ -22,11 +22,13 @@
     "gallery would misclassify it. Trees are declared explicitly here rather",
     "than globbed for exactly that reason.",
     "",
-    "required_artifacts is empty on purpose: the gallery distributes through",
-    "the extension catalog (tools/publish.py), which carries each package's",
-    "manifest as a sidecar document whose artifact claim describes the built",
-    "wheel. A manifest that declared the digest of the very wheel it rides in",
-    "could never exist, so catalog-first distribution is the honest shape",
+    "required_artifacts names extension.json: every package also carries",
+    "the public extension SDK's discovery manifest (maistro-ext-sdk, #949),",
+    "so `maistro-ext-sdk validate packages/<name>` passes against this very",
+    "tree and an SDK-shaped host can discover any installed gallery wheel.",
+    "The install envelope (manifest.json) stays a catalog sidecar: a",
+    "manifest that declared the digest of the very wheel it rides in could",
+    "never exist, so catalog-first distribution remains the honest shape.",
     "here. The first-party reference extension keeps its discover-in-wheel",
     "artifact under the product-side policy."
   ],
@@ -52,5 +54,7 @@
   "test_only_namespaces": [
     "pytest"
   ],
-  "required_artifacts": []
+  "required_artifacts": [
+    "extension.json"
+  ]
 }

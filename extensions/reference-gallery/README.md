@@ -12,7 +12,7 @@ developers start from.
 
 | Path | What it is |
 |------|------------|
-| [`packages/`](packages/) | One buildable extension package per family (below). Each has its own `pyproject.toml`, manifest, entrypoint module, and test suite. |
+| [`packages/`](packages/) | One buildable extension package per family (below). Each has its own `pyproject.toml`, install manifest (`manifest.json`), SDK discovery manifest (`extension.json`), entrypoint module, and test suite. |
 | [`tools/publish.py`](tools/publish.py) | The shared publish workflow: build every package, bind each manifest to its built artifact, sign with the publisher key, and emit the catalog snapshot the platform's registry/resolution consumes. |
 | [`keys/reference-publisher.pub`](keys/reference-publisher.pub) | The gallery publisher's Ed25519 public key (hex). It is derived from the fixed fixture seed documented in `tools/publish.py`; the publish workflow fails loudly if the key file and the seed ever disagree. **This is a fixture identity**: it signs nothing of value, and a real publisher keeps the private key out of the repository entirely. |
 | [`namespace-policy.json`](namespace-policy.json) | The gallery's own namespace policy. The same reusable M9 gates that police the first-party reference extension run against this file via `--policy`. |
@@ -34,14 +34,19 @@ would ship together:
 
 ## The manifest workflow
 
-Each package ships `manifest.json` — the authority declaration, in the
-platform install envelope (`maistro.extensions.inspect_manifest` is the
-executable contract this repository codes against; see Reconciliation
-below). The author never writes an artifact digest: `tools/publish.py`
-builds the wheel, computes its digest/size, and binds the `artifact` claim
-at publish time. Authority names come from the closed capability vocabulary
-(`network.outbound`, `tool.invoke`, `workspace.read`, …); declaring nothing
-yields nothing.
+Each package ships two manifests. `manifest.json` — the authority
+declaration, in the platform install envelope (`maistro.extensions.inspect_manifest`
+is the executable contract this repository codes against; see Reconciliation
+below). `extension.json` — the public SDK's discovery envelope
+(`packages/maistro-ext-sdk`), validated by `maistro-ext-sdk validate
+packages/<name>` and enforced in CI; an external author copying this
+repository runs the standard SDK validator as-is. The author never writes
+an artifact digest: `tools/publish.py` builds the wheel, computes its
+digest/size, and binds the `artifact` claim at publish time. Authority
+names come from the closed capability vocabulary (`network.outbound`,
+`tool.invoke`, `workspace.read`, …) in both envelopes, and the two agree on
+identity, version, authority, and entrypoint — a property
+`tests/test_reference_gallery.py` pins. Declaring nothing yields nothing.
 
 ## The signing workflow
 
@@ -60,28 +65,41 @@ catalog snapshot:
 
 ```
 publish → catalog.json (+ wheels)
+        → parse_catalog_json(catalog.json)          # maistro.extensions.catalog_json
         → resolve_lock(root requests, catalog)      # deterministic lock
         → materialize_lock(lock, store, fetcher)    # digest+signature-verified install records
         → ExtensionInstallService.inspect → authorize → install
         → loader imports the entrypoint             # the only code-execution seam
 ```
 
+`maistro.extensions.catalog_json` is the production import surface for the
+snapshot: it verifies the snapshot digest, inspects every manifest, and
+hands out the exact `CatalogEntry`/`ExtensionManifest` objects that
+`resolve_lock` and `CatalogService.set_catalog` consume — no hand-built
+translation anywhere.
+
 `tests/test_reference_gallery.py` (repository side) executes that entire
 chain against the real `maistro.extensions` and
 `maistro.capabilities.provider_adapters` code.
 
-## Reconciliation with the docs' manifest guide
+## Reconciliation with the docs' manifest guide and the SDK
 
 [`docs/extensions/manifest-reference.md`](../../docs/extensions/manifest-reference.md)
-describes the manifest schema the future `maistro-ext-sdk` package (#949)
-will enforce; that package has not landed in this tree, so its envelope has
-no executable validator here. The platform's *install* envelope —
-`manifest_version`, `id`, `name`, `version`, `publisher`, `api_version`,
-`permissions`, `entry_points`, `artifact`, optional `dependencies` — is what
-`maistro.extensions` actually validates, and it is what this repository
-ships. The authority *names* are the documented closed vocabulary either
-way; when the SDK package lands and unifies the envelopes, only
-`manifest.json` files change, never extension code.
+describes the manifest schema the `maistro-ext-sdk` package (#949) enforces;
+that package HAS landed (`packages/maistro-ext-sdk`), and every gallery
+package carries its `extension.json` discovery manifest — validated by the
+SDK's own validator in `tests/test_reference_gallery.py`, with the wheel
+carrying the file enforced by this repository's `required_artifacts` policy.
+The platform's *install* envelope — `manifest_version`, `id`, `name`,
+`version`, `publisher`, `api_version`, `permissions`, `entry_points`,
+`artifact`, optional `dependencies` — is what `maistro.extensions` actually
+validates, and it is what `tools/publish.py` binds, signs, and serves
+through the catalog: the artifact claim must describe the wheel it rides
+in, so the authoritative install manifest is necessarily a catalog sidecar.
+The authority *names* are the documented closed vocabulary in both
+envelopes; until the envelopes unify, this repository ships and validates
+both, and only `manifest.json`/`extension.json` files change when they do —
+never extension code.
 
 One platform seam needs the same reconciliation noted: dependency ranges.
 The lock resolver (`maistro.extensions.resolution`) reads comparator lists
@@ -96,7 +114,8 @@ grammars; when they do, only `manifest.json` changes.
 ## How the boundary is kept
 
 The gallery packages import nothing first-party — not the product, not the
-repo-relative roots, not even the (not-yet-published) SDK package. The
+repo-relative roots, not even the SDK package (its manifests are data the
+SDK validates without importing it). The
 same two reusable gates run in CI against this policy:
 
 ```

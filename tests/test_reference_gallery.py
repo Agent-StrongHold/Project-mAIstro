@@ -33,12 +33,14 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import zipfile
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import aiosqlite
@@ -56,12 +58,14 @@ from maistro.extensions import (
     ExtensionManifest,
     InMemoryExtensionStore,
     PackageDigestMismatch,
+    ParsedCatalogSnapshot,
     TrustPolicy,
     inspect_manifest,
+    parse_catalog_json,
     resolve_lock,
 )
+from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
 from maistro.extensions.resolution import (
-    CatalogEntry,
     ExtensionCatalog,
     ExtensionDependency,
     LockArtifacts,
@@ -105,19 +109,6 @@ EXPECTED_FAMILIES = (
 )
 
 
-def _load_publish_tool() -> Any:
-    """Import the gallery's publish tool as a module, for its canonical
-    serialization helpers. The test digests exactly what the tool digests."""
-    spec = importlib.util.spec_from_file_location("gallery_publish_tool", PUBLISH_TOOL)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-PUBLISH = _load_publish_tool()
-
-
 @dataclass(frozen=True)
 class PublishedEntry:
     """One catalog entry plus its artifact bytes, ready for the platform."""
@@ -136,6 +127,7 @@ class PublishedGallery:
     """The output of one publish run: the catalog snapshot and its bytes."""
 
     out_dir: Path
+    parsed: ParsedCatalogSnapshot
     catalog: dict[str, Any]
     snapshot_sha256: str
     entries: dict[str, PublishedEntry]
@@ -146,41 +138,31 @@ class PublishedGallery:
 
 
 def _parse_catalog(out_dir: Path) -> PublishedGallery:
-    catalog = json.loads((out_dir / "catalog.json").read_text(encoding="utf-8"))
-    snapshot = {key: value for key, value in catalog.items() if key != "catalog_snapshot_sha256"}
-    snapshot_sha256 = sha256_hex(PUBLISH.canonical_json(snapshot))
-    assert snapshot_sha256 == catalog["catalog_snapshot_sha256"], (
-        "the catalog's snapshot digest must cover exactly the entries it ships"
-    )
+    """Import the published catalog through the platform's production
+    parser and attach each entry's wheel bytes. Every platform object here —
+    identities, dependencies, catalog entries, inspected manifests, the
+    snapshot digest — comes from ``maistro.extensions.catalog_json``; the
+    test only reads the artifact files the catalog names."""
+    text = (out_dir / "catalog.json").read_text(encoding="utf-8")
+    parsed = parse_catalog_json(text)
+    catalog = json.loads(text)
     entries: dict[str, PublishedEntry] = {}
-    for raw in catalog["entries"]:
-        manifest_bytes = str(raw["manifest_bytes"]).encode("utf-8")
-        identity = PackageIdentity(
-            extension_name=str(raw["identity"]["extension_name"]),
-            semantic_version=str(raw["identity"]["semantic_version"]),
-            package_sha256=str(raw["identity"]["package_sha256"]),
-            manifest_sha256=str(raw["identity"]["manifest_sha256"]),
-        )
-        entries[identity.extension_name] = PublishedEntry(
-            identity=identity,
-            publisher_id=str(raw["publisher_id"]),
-            signature=str(raw["signature"]),
-            manifest_bytes=manifest_bytes,
-            package_bytes=(out_dir / str(raw["artifact_file"])).read_bytes(),
-            manifest=inspect_manifest(manifest_bytes),
-            dependencies=tuple(
-                ExtensionDependency(
-                    target=str(dep["target"]),
-                    range_text=str(dep["range_text"]),
-                    required=bool(dep["required"]),
-                )
-                for dep in raw["dependencies"]
-            ),
+    for entry in parsed.entries:
+        manifest = parsed.manifests[entry.identity]
+        entries[entry.identity.extension_name] = PublishedEntry(
+            identity=entry.identity,
+            publisher_id=entry.publisher_id,
+            signature=entry.signature,
+            manifest_bytes=manifest.raw,
+            package_bytes=(out_dir / parsed.artifact_files[entry.identity]).read_bytes(),
+            manifest=manifest,
+            dependencies=entry.dependencies,
         )
     return PublishedGallery(
         out_dir=out_dir,
+        parsed=parsed,
         catalog=catalog,
-        snapshot_sha256=snapshot_sha256,
+        snapshot_sha256=parsed.snapshot_sha256,
         entries=entries,
     )
 
@@ -230,6 +212,56 @@ def test_publish_is_byte_deterministic(gallery: PublishedGallery, tmp_path: Path
     )
     assert result.returncode == 0, result.stderr
     assert (second / "catalog.json").read_bytes() == (gallery.out_dir / "catalog.json").read_bytes()
+
+
+def _load_publish_module() -> ModuleType:
+    """Load ``tools/publish.py`` as a module (it is a script, not a package)."""
+    spec = importlib.util.spec_from_file_location("gallery_publish_tool", PUBLISH_TOOL)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_publish_refuses_unsafe_out_dirs(tmp_path: Path) -> None:
+    """The publish step clears ``--out-dir`` before installing its output, so
+    a typo like ``--out-dir .`` or the repository root must fail loudly
+    instead of recursively deleting unrelated files. Only empty destinations
+    and destinations owned by a previous publish run are accepted."""
+    publish = _load_publish_module()
+    safe = tmp_path / "safe"
+    publish._ensure_safe_destination(safe)  # not-yet-existing: allowed
+    safe.mkdir()
+    publish._ensure_safe_destination(safe)  # empty: allowed
+    (safe / "catalog.json").write_text("{}", encoding="utf-8")
+    (safe / "artifacts").mkdir()
+    publish._ensure_safe_destination(safe)  # previous publish output: allowed
+
+    hostile = tmp_path / "hostile"
+    hostile.mkdir()
+    sentinel = hostile / "keep-me.txt"
+    sentinel.write_text("unrelated artifact", encoding="utf-8")
+    with pytest.raises(publish.PublishError, match="refusing to clear"):
+        publish._ensure_safe_destination(hostile)
+    assert sentinel.read_text(encoding="utf-8") == "unrelated artifact"
+
+
+def test_publish_cli_refuses_non_dedicated_directory(tmp_path: Path) -> None:
+    """End to end: pointing ``--out-dir`` at a non-dedicated directory fails
+    with exit code 1 and leaves the directory's contents untouched — the
+    refusal happens before any build or clearing."""
+    sentinel = tmp_path / "keep-me.txt"
+    sentinel.write_text("do not delete", encoding="utf-8")
+    result = subprocess.run(
+        (sys.executable, str(PUBLISH_TOOL), "--out-dir", str(tmp_path)),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "refusing to clear" in result.stderr
+    assert sentinel.read_text(encoding="utf-8") == "do not delete"
 
 
 def test_the_gallery_spans_the_extension_families(gallery: PublishedGallery) -> None:
@@ -305,6 +337,70 @@ def test_catalog_manifests_pass_the_platform_inspector(
         assert manifest.entry_points, "a catalog manifest must name its entry point"
 
 
+def test_every_package_carries_an_sdk_validatable_manifest() -> None:
+    """The public SDK's validator accepts every gallery package as shipped:
+    an external author copying this repository can run
+    `maistro-ext-sdk validate packages/<name>` unchanged (review fix:
+    required_artifacts used to be empty, so nothing proved the wheels were
+    SDK-discoverable). The SDK envelope must also agree with the install
+    envelope on identity, version, authority, and entrypoint — one
+    extension, two projections."""
+    sdk_src = ROOT / "packages" / "maistro-ext-sdk" / "src"
+    packages = sorted((GALLERY / "packages").iterdir())
+    assert {p.name for p in packages} == {
+        "gallery-model-adapter",
+        "gallery-renderer-pack",
+        "gallery-unit-skill",
+        "gallery-weather-connector",
+    }
+    for pkg in packages:
+        # The exact author-facing front door: the SDK's own validator CLI
+        # (the `maistro-ext-sdk validate` console script's module), run the
+        # way a third party runs it. It reads extension.json, checks the
+        # closed authority vocabulary, the contract range, and that the
+        # declared entrypoint file exists — importing no extension code.
+        result = subprocess.run(
+            (
+                sys.executable,
+                str(sdk_src / "maistro_ext_sdk" / "cli.py"),
+                "validate",
+                str(pkg),
+            ),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, "PYTHONPATH": str(sdk_src)},
+            check=False,
+        )
+        assert result.returncode == 0, (
+            f"{pkg.name} failed `maistro-ext-sdk validate`:\n{result.stdout}\n{result.stderr}"
+        )
+        # The two envelopes are projections of one extension: anything they
+        # both express, they must express identically.
+        install = json.loads((pkg / "manifest.json").read_text(encoding="utf-8"))
+        discovery = json.loads((pkg / "extension.json").read_text(encoding="utf-8"))
+        assert discovery["publisher"] == install["publisher"] == PUBLISHER_ID, pkg.name
+        assert discovery["version"] == install["version"], pkg.name
+        assert set(discovery["capabilities"]) == set(install["permissions"]), pkg.name
+        entry_point = install["entry_points"][0]
+        assert discovery["entrypoint"]["module"] == entry_point["module"], pkg.name
+        assert discovery["entrypoint"]["object"] == entry_point["attribute"], pkg.name
+
+
+def test_the_published_wheels_carry_the_sdk_discovery_manifest(
+    gallery: PublishedGallery,
+) -> None:
+    """The policy's required_artifacts rule, executable here against the
+    real published artifacts: every built wheel ships extension.json at the
+    package root, where an SDK-shaped host discovers an installed
+    distribution."""
+    for name, entry in gallery.entries.items():
+        with zipfile.ZipFile(io.BytesIO(entry.package_bytes)) as wheel:
+            names = set(wheel.namelist())
+        expected = f"{name.replace('.', '_')}/extension.json"
+        assert expected in names, f"{name}'s wheel lacks the SDK discovery manifest"
+
+
 # ---------------------------------------------------------------------------
 # Resolution: the reproducible lock over the catalog snapshot
 # ---------------------------------------------------------------------------
@@ -312,19 +408,7 @@ def test_catalog_manifests_pass_the_platform_inspector(
 
 def _catalog_snapshot(gallery: PublishedGallery) -> ExtensionCatalog:
     """The published catalog, as the platform's resolution consumes it."""
-    return ExtensionCatalog(
-        entries=tuple(
-            CatalogEntry(
-                identity=entry.identity,
-                source="reference-gallery:catalog",
-                catalog_snapshot_sha256=gallery.snapshot_sha256,
-                publisher_id=entry.publisher_id,
-                signature=entry.signature,
-                dependencies=entry.dependencies,
-            )
-            for entry in gallery.entries.values()
-        )
-    )
+    return gallery.parsed.catalog()
 
 
 def test_resolution_locks_the_whole_gallery_deterministically(
@@ -362,6 +446,37 @@ def test_dependency_resolution_pulls_the_connector_in_for_the_skill(
     connector = lock.get("gallery.weather_connector")
     assert connector is not None
     assert "gallery.unit_skill" in connector.required_by
+
+
+async def test_published_catalog_imports_through_the_catalog_service(
+    gallery: PublishedGallery,
+) -> None:
+    """The operator path the README documents: the published ``catalog.json``
+    goes through the production parser into ``CatalogService.set_catalog``,
+    and the service reads back exactly what was published — every entry
+    carrying this snapshot's digest, each manifest anchored to the same
+    bytes, nothing reconstructed test-side."""
+    service = CatalogService(InMemoryCatalogStore())
+    parsed = gallery.parsed
+    await service.set_catalog(
+        SCOPE.org_id,
+        tuple((entry, parsed.manifests[entry.identity]) for entry in parsed.entries),
+    )
+    snapshot = await service.get_catalog(SCOPE.org_id)
+    assert snapshot is not None
+    assert sorted(entry.identity.extension_name for entry in snapshot.entries) == sorted(
+        EXPECTED_FAMILIES
+    )
+    for entry in snapshot.entries:
+        assert entry.catalog_snapshot_sha256 == gallery.snapshot_sha256
+        detail = await service.get_extension_version(
+            SCOPE.org_id, entry.identity.extension_name, entry.identity.semantic_version
+        )
+        assert detail is not None, entry.identity.extension_name
+        assert detail["manifest_sha256"] == entry.identity.manifest_sha256
+        assert detail["package_sha256"] == entry.identity.package_sha256
+        assert detail["publisher_id"] == PUBLISHER_ID
+        assert detail["signature"] == entry.signature
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ packages = ["src/gallery_renderer_pack"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "manifest.json" = "gallery_renderer_pack/manifest.json"
+"extension.json" = "gallery_renderer_pack/extension.json"
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib --strict-markers"

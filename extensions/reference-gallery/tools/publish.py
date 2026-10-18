@@ -254,12 +254,42 @@ def build_catalog(out_dir: Path) -> dict[str, object]:
     return catalog
 
 
+#: The only top-level entries a publish run ever produces. A destination
+#: that contains anything else is not owned by this publisher and must not
+#: be cleared (see ``_ensure_safe_destination``).
+PUBLISH_OUTPUT_NAMES = frozenset({"catalog.json", "artifacts"})
+
+
+def _ensure_safe_destination(out_dir: Path) -> None:
+    """Refuse to clear output directories this publisher does not own.
+
+    Publishing wipes ``out_dir`` before moving the staged catalog into
+    place, so a stray ``--out-dir .`` or a repository root would otherwise
+    be recursively deleted. Only empty (or not-yet-existing) destinations
+    and destinations that look exactly like a previous publish run are
+    accepted.
+    """
+    if not out_dir.exists():
+        return
+    if not out_dir.is_dir():
+        raise PublishError(f"--out-dir exists and is not a directory: {out_dir}")
+    unexpected = sorted(p.name for p in out_dir.iterdir() if p.name not in PUBLISH_OUTPUT_NAMES)
+    if unexpected:
+        shown = ", ".join(unexpected[:5]) + ("…" if len(unexpected) > 5 else "")
+        raise PublishError(
+            f"--out-dir {out_dir} is not empty and does not look like a previous "
+            f"publish run; refusing to clear it (unexpected entries: {shown}). "
+            "Use an empty directory or a previous publish output."
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out-dir", type=Path, required=True, help="catalog output directory")
     args = parser.parse_args(argv)
     out_dir = args.out_dir.resolve()
     try:
+        _ensure_safe_destination(out_dir)
         with tempfile.TemporaryDirectory(prefix="gallery-publish-") as tmp:
             staging = Path(tmp) / "publish"
             catalog = build_catalog(staging)
