@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +5
-  packages/hive-conductor/tests/e2e: +1
+  packages/hive-conductor/tests/e2e: +0
 ---
 
 # Issue #289: OpenAI-compatible credential lifecycle
@@ -26,3 +26,10 @@ asserted at the wire to carry no secret, disable/enable, and delete leaving no
 config behind. Successful discovery is deliberately not claimed in the browser
 (the compose stack ships no live OpenAI-compatible endpoint); it is proven
 server-side through the real transport by the backend test named above.
+
+Inventory correction: the e2e delta was originally claimed as `+1`, but the
+suite inventory counts pytest node IDs and the e2e recipe collects only the
+directory's Python tests — a Playwright `.spec.ts` journey never becomes a
+collected node, so the claim could never be collected and the gate read it as
+−1 drift (same correction as the #768/#817/#380 notes). The browser corpus is
+real evidence but is not part of the counted ledger.
