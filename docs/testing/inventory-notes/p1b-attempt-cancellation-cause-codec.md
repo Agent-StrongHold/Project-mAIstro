@@ -5,31 +5,45 @@ inventory-delta:
 
 # P1b Attempt cancellation-cause codec (#1885)
 
-Base: `a586560170a9ce4d72ee7d750100d0178c1f69d0` (branch `auto-1885`, identical
-to the develop base). Final leaf SHA: this commit.
+inventory-delta basis: `packages/maistro-core/tests` +36 collected node IDs,
+true at the original branch base and unchanged by the sync below (the sync
+moves no collected count).
 
-Production inputs verified byte-identical to the pinned audit:
-`runs/evidence_json.py` blob `5a069112a0a1ffcf33888a912f21e88465f0f1c8`,
+Lineage (all SHAs verified with `git merge-base`/`git show`):
+- Original branch base `a586560170a9ce4d72ee7d750100d0178c1f69d0`: the leaf
+  commit was authored here (pre-P1a; no `cancellation_cause` in
+  `Attempt.model_fields`).
+- Assigned develop base `ab8b3737fa64f8d840f421ef87ca506c509444ff`: P1a
+  (#1884) is present — landed via #1928, commit `91996e192` — so the
+  dependency block below is resolved at the base this leaf is judged on.
+- Final head: merge `44f16b483` joining the leaf commit `ec986e182` with the
+  assigned base (conflict-free; the leaf adds two new files only). Final leaf
+  content = the two files in `ec986e182`, byte-identical.
+
+Production inputs verified byte-identical to the pinned audit at the original
+base: `runs/evidence_json.py` blob `5a069112a0a1ffcf33888a912f21e88465f0f1c8`,
 `graph/durable_runs/types.py` blob `943271b4beec5961ce0ee0b7e823102c7baeb3c9`,
-`runs/model.py` blob `0de6b8ed9dedc87d590b39019cb0b0431e6259a2` (the audited
-pre-P1a model, confirmed against the P1a note).
+`runs/model.py` blob `0de6b8ed9dedc87d590b39019cb0b0431e6259a2`. The sync
+brings P1a's audited model/serializer changes to `runs/model.py` from develop;
+the leaf itself still touches no production file.
 
 ## Dependency state (read this before interpreting results)
 
-This leaf is DEPENDENCY_BLOCKED on #1884 (P1a optional
-`Attempt.cancellation_cause` + null-dropping wrap serializer). The pinned base
-does not contain P1a: `Attempt.model_fields` has no `cancellation_cause`, and
+This leaf was DEPENDENCY_BLOCKED on #1884 (P1a optional
+`Attempt.cancellation_cause` + null-dropping wrap serializer). That dependency
+is now **resolved**: P1a is merged into the assigned develop base via #1928
+(`91996e192`), `Attempt.model_fields` has `cancellation_cause`, and
 `packages/maistro-core/tests/runs/test_attempt_cancellation_cause_model.py`
-does not exist here. P1a's tested branch was located locally and verified:
+is present. Historical pre-merge evidence: P1a's tested branch
 `origin/feat/1884-attempt-cancellation-cause-model` @
-`3ed42ca6c7f731988bcf5d95a4424b07a6f8d1d1`, where its own 58 model cases pass.
+`3ed42ca6c7f731988bcf5d95a4424b07a6f8d1d1`, where this file first ran 36/36.
 
-The file is written against P1a's exact tested shape and degrades honestly on
-the pre-P1a base: case rows that cannot exist without the field carry
+The file still degrades honestly on any checkout that predates P1a: case rows
+that cannot exist without the field carry
 `pytest.mark.skipif(not _HAS_P1A, ...)` (`_HAS_P1A = "cancellation_cause" in
 Attempt.model_fields`) with the reason "P1a (#1884) optional
-Attempt.cancellation_cause is absent from this checkout". Once P1a merges, all
-skipped rows activate with zero edits.
+Attempt.cancellation_cause is absent from this checkout". At the synced head
+all 36 rows run live.
 
 ## What the 36 collected cases prove
 
@@ -54,13 +68,38 @@ types, non-CANCELLED typed causes and extra fields rejected after decode.
 
 ## Observed runs
 
-- Pinned base (this branch): 36 collected, **15 passed, 21 skipped** (the
-  P1a-gated rows), `pytest -q -ra`.
+- Pre-sync branch base `a58656017`: 36 collected, **15 passed, 21 skipped**
+  (the P1a-gated rows), `uv run --frozen pytest ... -q -ra`. Reproduced
+  independently this round before syncing.
 - P1a branch `3ed42ca6c` (isolated scratch worktree, this file copied in
-  unmodified): **36 passed, 0 skipped**. The same run there shows P1a's own
-  `test_attempt_cancellation_cause_model.py`: 58 passed.
+  unmodified): **36 passed, 0 skipped** (historical, pre-merge).
+- Synced head `44f16b483` (leaf + assigned develop base, all rows live):
+  **36 passed, 0 skipped**, and P1a's own
+  `test_attempt_cancellation_cause_model.py`: **34 passed** — the issue's
+  exact commands, `--frozen`, this round.
+- `uv run --frozen ruff check` / `ruff format --check` on the leaf file: pass;
+  repo-wide `ruff check .` and `ruff format --check .`: pass.
+- `uv run --frozen python scripts/check-suite-inventory.py` after
+  `uv sync --locked --extra dev --extra bootstrap` (CI's extras): ok, 17
+  suites match, `packages/maistro-core/tests: 16396` = develop 16360 + this
+  leaf's 36. (Without the bootstrap extra the two extension suites fail to
+  collect — an environment gap, not drift; CI installs them.)
 
 ## Mutation evidence (each mutation applied, run, then restored byte-identical)
+
+Independently re-verified this round at the synced head `44f16b483` (all 36
+rows live; originals saved, restored by byte-copy, `git diff` clean after
+each):
+
+- wrap serializer pops the cause key unconditionally (`runs/model.py`
+  `_serialize_attempt_without_unknown_cause`): **20 failed** — exactly the
+  typed-cause rows across every node and transport.
+- `encode_evidence` returns `None` for non-finite floats (`runs/evidence_json.py`):
+  **3 failed** — exactly `test_cause_round_trip_preserves_nonfinite_physical_evidence[*]`.
+- `Attempt` `extra="forbid"` → `extra="ignore"`: **1 failed** — exactly
+  `test_invalid_cause_and_extra_fields_still_fail_after_decode[unexpected-extra-field]`.
+
+Historical record from the authoring round:
 
 On the P1a branch (all 36 rows live): serializer pops an unknown cause
 unconditionally → 20 failed (exactly the typed rows); serializer registration
