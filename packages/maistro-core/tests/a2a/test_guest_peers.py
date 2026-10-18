@@ -109,8 +109,13 @@ class _CrossProcessPeer:
         assert self._proc is not None
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            if self._port_file.exists():
-                return f"http://127.0.0.1:{int(self._port_file.read_text().strip())}"
+            # The peer's `open(path, "w")` creates the port file before the
+            # port is written, so exists() is not the announcement; parsing
+            # that window as a port crashed with `int("")` under CI load.
+            # Only an all-digit body counts as announced (coverage gate).
+            port = self._port_file.read_text().strip() if self._port_file.exists() else ""
+            if port.isdigit():
+                return f"http://127.0.0.1:{int(port)}"
             if self._proc.poll() is not None:
                 raise RuntimeError("peer process exited before announcing its port")
             time.sleep(0.05)
@@ -151,6 +156,24 @@ class _CrossProcessPeer:
         except subprocess.TimeoutExpired:
             self._proc.kill()
             self._proc.wait(timeout=10)
+
+
+def test_peer_port_announcement_tolerates_the_empty_creation_window(tmp_path: Path) -> None:
+    """An existing-but-empty port file is 'not yet announced', never a port.
+
+    The peer's ``open(path, "w")`` creates the file before the port is
+    written. Announcing through ``exists()`` alone parsed that window as a
+    port and crashed with ``ValueError: invalid literal for int() with base
+    10: ''`` under CI load (coverage gate, 2026-10-18). Pre-creating the
+    empty file makes the window deterministic: the old reader fails on the
+    first poll, the current one waits for the real write.
+    """
+    peer = _CrossProcessPeer({"delegationReceived": True}, tmp_path)
+    peer._port_file.write_text("")
+    with peer as base_url:
+        port = base_url.rsplit(":", 1)[1]
+        assert port.isdigit()
+        assert int(port) > 0
 
 
 def _context(

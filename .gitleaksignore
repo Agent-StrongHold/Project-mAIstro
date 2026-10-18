@@ -92,3 +92,15 @@ b5c22a358a8b0a0fb064e89eb6b4eba6855b58c2:.gitleaksignore:generic-api-key:54
 # or commits remain scanned; no source path or rule is excluded wholesale.
 8185c1d076e3471e41fd948ac2bc43c6c2d110b8:scripts/soak/run_soak.py:generic-api-key:51
 88edcc7ea03baf4257a9edfb47e56a5493d6d329:docs/testing/soak/evidence/m3a-round7-prodstack-quick-probes.json:generic-api-key:13
+
+# ---- auto-837 (#837) redaction-proof fixture on this lane ----
+# The durable-runs failure-evidence redaction tests need a credential-shaped
+# literal to prove what is NOT persisted: `api_key=sk-proj-ABCdef123456` is a
+# synthetic placeholder that never authenticates anything, asserted through
+# pinned equality with the redacted output (`[REDACTED_SECRET_ASSIGNMENT]`).
+# Rewording it cannot clean the range scan, because `gitleaks git` scans each
+# commit's own patch and the introducing commits below are immutable history
+# on this branch — only these per-commit fingerprints can quiet them. New
+# values, commits, paths or rules remain fully scanned.
+1ac446cf4385285f32ef2408233ab81911fe36a9:packages/maistro-core/tests/graph/durable_runs/test_executor_gaps.py:generic-api-key:69
+f83de3b7a431523a47234102499d35218b9881fe:docs/testing/inventory-notes/837-persisted-failure-redaction.md:generic-api-key:38
