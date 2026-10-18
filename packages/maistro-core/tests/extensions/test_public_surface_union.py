@@ -106,9 +106,7 @@ def test_workspace_policy_names_stay_distinct() -> None:
     assert "WorkspaceExtensionEnablementPolicy" in exported
     # The root name binds the #969 input; the alias binds the #971 policy.
     assert maistro.extensions.WorkspaceExtensionPolicy is EffectiveAuthorityWorkspacePolicy
-    assert (
-        maistro.extensions.WorkspaceExtensionEnablementPolicy is EngineWorkspacePolicy
-    )
+    assert maistro.extensions.WorkspaceExtensionEnablementPolicy is EngineWorkspacePolicy
     # And the two are genuinely different contracts, not one class re-exported.
     assert maistro.extensions.WorkspaceExtensionPolicy is not (
         maistro.extensions.WorkspaceExtensionEnablementPolicy
