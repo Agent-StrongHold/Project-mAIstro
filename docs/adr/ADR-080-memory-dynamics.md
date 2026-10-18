@@ -100,6 +100,19 @@ the memory widens.
 Reads are **your own scope + anything explicitly shared at-or-above you**. A **cross-agent read
 requires the owner to mark the memory shareable** — nothing leaks across the agent boundary by default.
 
+One boundary, not two: **cross-agent sharing to another principal** and **an authorized Workspace
+Agent reading canonical user-scope memory for the same authenticated user** are different cases,
+and only the first trips the shareable rule. A Workspace Agent authorized as user *U* reads *U*'s
+USER-scope memory as *U*'s own scope (the reader principal carries the canonical `user_id`), needs
+no consent task and no shareable marker, and widens nothing: the memory stays unshared for every
+other principal. Handing memory to a **different principal** — another user's USER-scope record,
+or another agent's AGENT-scope record, even the same user's other agent — still requires the owner
+to mark it shareable, and widening to another user follows the consent flow
+([SPEC-242](../specs/SPEC-242-memory-cross-scope-consent.md); same-user promotion semantics in
+[ADR-092526-4391](ADR-092526-4391-same-user-user-model-promotion-is-self-consented.md)). Durable
+cross-Workspace reuse itself happens only through canonical PostgreSQL/pgvector user-model state,
+never by traversing another Workspace's working graph.
+
 ```python
 def can_read(reader: Principal, m: Memory) -> bool:
     return m.scope == reader.scope or (m.shared and m.scope >= reader.scope)
