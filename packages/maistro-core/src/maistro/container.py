@@ -2425,7 +2425,9 @@ async def create_container(
         # Same backend the spine just chose (#1176): claims beside the Runs they
         # reconcile, or the tiers cannot answer a restart the same way.
         task_idempotency = await wire_task_idempotency(db_pool, pg_pool=pg_pool)
-        schedule_admitter = _wire_schedule_admission(run_store, graph_template_store, schedule_store)
+        schedule_admitter = _wire_schedule_admission(
+            run_store, graph_template_store, schedule_store
+        )
         chat_admitter = wire_chat_admission(
             run_store,
             project_scope_store,
@@ -2527,44 +2529,21 @@ async def create_container(
         # --- P1 resilience policies (ADR-066) --------------------------------
         from maistro.resilience.p1 import InMemoryResiliencePolicyStore, default_policies
 
-        resilience_policies = InMemoryResiliencePolicyStore(default_policies(), include_defaults=False)
+        resilience_policies = InMemoryResiliencePolicyStore(
+            default_policies(), include_defaults=False
+        )
 
         # --- Durable events (ADR-086) ----------------------------------------
         from maistro.events.bus import EventBus
-        from maistro.events.consumer_cursor import InMemoryConsumerCursorStore
-        from maistro.events.durable_log import InMemoryEventLog, append_from_bus_event
-        from maistro.events.invocations import InMemoryInvocationStore
+        from maistro.events.durable_log import append_from_bus_event
         from maistro.events.processing import HTTPHandlerCaller
-        from maistro.events.trigger_store import InMemoryTriggerStore
 
-        durable_event_log: EventLogStore
-        trigger_store: TriggerStore
-        handler_invocation_store: InvocationStore
-        consumer_cursor_store: ConsumerCursorStore
-        # PostgreSQL first: a caller who supplied a pool asked for the durable
-        # backend, and `db_pool` (SQLite) may be set at the same time because the
-        # two cover different stores. Silently preferring SQLite here would give
-        # that caller in-memory-shaped durability on the one backend that can
-        # actually be shared between workers.
-        if pg_pool is not None:
-            (
-                durable_event_log,
-                trigger_store,
-                handler_invocation_store,
-                consumer_cursor_store,
-            ) = await _wire_pg_durable_events(pg_pool)
-        elif db_pool is not None:
-            (
-                durable_event_log,
-                trigger_store,
-                handler_invocation_store,
-                consumer_cursor_store,
-            ) = await _wire_sqlite_durable_events(db_pool)
-        else:
-            durable_event_log = InMemoryEventLog()
-            trigger_store = InMemoryTriggerStore()
-            handler_invocation_store = InMemoryInvocationStore()
-            consumer_cursor_store = InMemoryConsumerCursorStore()
+        (
+            durable_event_log,
+            trigger_store,
+            handler_invocation_store,
+            consumer_cursor_store,
+        ) = await _wire_durable_events(pg_pool, db_pool)
         handler_caller = HTTPHandlerCaller()
 
         event_bus = EventBus()
@@ -3647,6 +3626,34 @@ async def _wire_capability_invocations(
     from maistro.capabilities.invocation import InMemoryInvocationStore
 
     return InMemoryInvocationStore()
+
+
+async def _wire_durable_events(
+    pg_pool: Any, db_pool: Any
+) -> tuple[EventLogStore, TriggerStore, InvocationStore, ConsumerCursorStore]:
+    """Select the durable-events backend the caller already chose (#135, ADR-086).
+
+    PostgreSQL first: a caller who supplied a pool asked for the durable
+    backend, and `db_pool` (SQLite) may be set at the same time because the
+    two cover different stores. Silently preferring SQLite here would give
+    that caller in-memory-shaped durability on the one backend that can
+    actually be shared between workers.
+    """
+    from maistro.events.consumer_cursor import InMemoryConsumerCursorStore
+    from maistro.events.durable_log import InMemoryEventLog
+    from maistro.events.invocations import InMemoryInvocationStore
+    from maistro.events.trigger_store import InMemoryTriggerStore
+
+    if pg_pool is not None:
+        return await _wire_pg_durable_events(pg_pool)
+    if db_pool is not None:
+        return await _wire_sqlite_durable_events(db_pool)
+    return (
+        InMemoryEventLog(),
+        InMemoryTriggerStore(),
+        InMemoryInvocationStore(),
+        InMemoryConsumerCursorStore(),
+    )
 
 
 async def _wire_sqlite_durable_events(
