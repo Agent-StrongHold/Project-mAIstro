@@ -15,6 +15,7 @@ from typing import Any
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
+from maistro.extensions.resolution import CatalogEntry, ExtensionDependency
 from maistro.extensions.types import (
     InstallRequest,
     PackageIdentity,
@@ -147,3 +148,27 @@ def install_bundle(
 def reidentify(identity: PackageIdentity, **changes: Any) -> PackageIdentity:
     """A copy of ``identity`` with fields replaced (test-legibility helper)."""
     return replace(identity, **changes)
+
+
+def catalog_entry(
+    bundle: dict[str, Any],
+    *,
+    source: str = CATALOG_URL,
+    snapshot: str = CATALOG_SNAPSHOT,
+    dependencies: tuple[ExtensionDependency, ...] = (),
+) -> CatalogEntry:
+    """The catalog offering of one bundle: identity, source, and signature.
+
+    The signature is the bundle's publisher key signing the identity — the
+    exact bytes an install verifies at materialization time — so a catalog
+    entry built here round-trips through the real store unchanged.
+    """
+    identity = bundle["identity"]
+    return CatalogEntry(
+        identity=identity,
+        source=source,
+        catalog_snapshot_sha256=snapshot,
+        publisher_id=bundle["publisher"].publisher_id,
+        signature=sign(bundle["key"], identity),
+        dependencies=dependencies,
+    )

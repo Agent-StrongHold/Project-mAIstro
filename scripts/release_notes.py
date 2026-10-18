@@ -132,7 +132,8 @@ def _verification_block(tag: str) -> str:
 ## Verifying this release
 
 **Artifacts.** Wheels and sdists for `maistro-core`, `maistro-canvas`,
-`maistro-evolve`, `maistro-rsi` and `maistro-bootstrap`; `SHA256SUMS` over all
+`maistro-evolve`, `maistro-rsi`, `maistro-bootstrap` and `maistro-ext-sdk`;
+`SHA256SUMS` over all
 of them plus the installers; CycloneDX SBOMs (syft) for the source tree and
 both container images; and the `get.sh` / `get.ps1` / `install.sh` installers.
 
