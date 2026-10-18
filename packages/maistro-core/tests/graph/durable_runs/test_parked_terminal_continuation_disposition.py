@@ -1,27 +1,16 @@
 """The four parked canonical x terminal continuation rows, characterized (#1151).
 
-A crash between a resumed walker's terminal continuation write and every spine
-write behind it can leave a canonical Run still parked at WAITING or PAUSED
-while its continuation already reads COMPLETED or FAILED -- the four reachable
-``WAITING/PAUSED x COMPLETED/FAILED`` rows of the parked-conflict table. The
-accepted disposition table keeps them preserved: a parked Run awaits its
-existing retry/answer decision, terminal history is not rewritten, and no
-lifecycle edge is invented to settle one over the other. Repair of these rows
-is DESIGN_BLOCKED for exactly that reason -- a disposition that settled a
-WAITING Run COMPLETED would bypass the pending decision, and inverting the
-intentional zero-repair behavior of
-``test_a_waiting_run_under_a_completed_continuation_does_not_abort_the_tick``
-would contradict the accepted table, not extend it.
+These are constructed split-state inputs, not proof that a production walker
+can reach all four ``WAITING/PAUSED x COMPLETED/FAILED`` rows. The accepted
+ADR-082826-08f0 disposition table requires preserving a pending retry/answer
+decision; this characterization does not satisfy the parent's still-blocked
+terminal-disagreement repair criterion.
 
-What this parent-held artifact delivers is the characterization the acceptance
-criterion asks for: each row is reachable (built as the crash residue it is),
-each is enumerated and evaluated by the bounded sweep (a visitation spy on the
-per-Run repair, not merely an absent count), each keeps its pending decision
-evidence (an unelapsed wait timer, a durable HITL pause entry) and its
-completed NodeRun evidence intact, none aborts or poisons the tick, and a
-genuinely repairable Run -- the stale RUNNING continuation under a terminal
-canonical Run that ``_reconcile_terminal_spine`` owns -- is still settled in
-the same sweep, proving the parked rows isolate rather than block.
+Each row is enumerated and evaluated by the production reconciliation sweep,
+keeps its pending decision and full canonical history, and does not block a
+second, repairable Run. PostgreSQL uses both durable authorities and an
+independent recovery pool, so a process-local canonical spine cannot supply the
+evidence. This is persistence-boundary proof, not process-death injection.
 """
 
 from __future__ import annotations
@@ -100,6 +89,42 @@ class _Spine:
 async def spine(
     request: pytest.FixtureRequest, tmp_path: Path, pg_pool: Any
 ) -> AsyncIterator[_Spine]:
+    if request.param == "postgres":
+        if pg_pool is None:
+            pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+        import asyncpg
+
+        from maistro.graph.durable_runs.pg_continuation import PgGraphContinuationStore
+        from maistro.persistence import _register_json_codecs
+        from maistro.projects.pg_scope_store import PgProjectScopeStore
+        from maistro.runs.pg_store import PgRunStore
+        from maistro.testing.postgres import postgres_dsn
+
+        projects = PgProjectScopeStore(pg_pool)
+        root = await projects.create_root(_WORKSPACE)
+        project = await projects.create(
+            workspace_id=_WORKSPACE, parent_project_id=root.project_id, name="Parked rows"
+        )
+        runs = PgRunStore(pg_pool, project_store=projects, concurrency_limits=_BACKLOG_LIMITS)
+        continuations = PgGraphContinuationStore(pg_pool)
+        recovery_pool = await asyncpg.create_pool(
+            postgres_dsn(), min_size=1, max_size=4, init=_register_json_codecs
+        )
+        try:
+            recovery_runs = PgRunStore(
+                recovery_pool,
+                project_store=PgProjectScopeStore(recovery_pool),
+                concurrency_limits=_BACKLOG_LIMITS,
+            )
+            yield _Spine(
+                runs,
+                continuations,
+                CanonicalDurableRunStore(recovery_runs, PgGraphContinuationStore(recovery_pool)),
+                project.project_id,
+            )
+        finally:
+            await recovery_pool.close()
+        return
     projects = InMemoryProjectScopeStore()
     root = await projects.create_root(_WORKSPACE)
     project = await projects.create(
@@ -122,20 +147,12 @@ async def spine(
                 project.project_id,
             )
         return
-    continuations: GraphContinuationStore
-    if request.param == "memory":
-        continuations = InMemoryGraphContinuationStore()
-    else:
-        if pg_pool is None:
-            pytest.skip("MAISTRO_TEST_PG_DSN is not set")
-        from maistro.graph.durable_runs.pg_continuation import PgGraphContinuationStore
-
-        continuations = PgGraphContinuationStore(pg_pool)
+    memory_continuations = InMemoryGraphContinuationStore()
     run_store = InMemoryRunStore(project_store=projects, concurrency_limits=_BACKLOG_LIMITS)
     yield _Spine(
         run_store,
-        continuations,
-        CanonicalDurableRunStore(run_store, continuations),
+        memory_continuations,
+        CanonicalDurableRunStore(run_store, memory_continuations),
         project.project_id,
     )
 
@@ -218,13 +235,8 @@ async def _terminal_continuation_first(
     run_id: str,
     *,
     terminal_status: RunStatus,
-) -> None:
-    """Rewrite the continuation terminal and lose every spine write behind it.
-
-    This is the crash window itself: the resumed walker persisted its terminal
-    traversal and died before the spine learned anything, so the canonical Run
-    keeps its parked status under a continuation that already reads terminal.
-    """
+) -> int:
+    """Construct the split-state input without claiming walker reachability."""
     continuation = await spine.continuations.get(run_id)
     assert continuation is not None
     rewritten = await spine.continuations.update(
@@ -261,8 +273,13 @@ async def test_a_parked_run_under_a_terminal_continuation_keeps_its_pending_disp
         spine, run_id, terminal_status=terminal_status
     )
     visited = await _spy_repairs(spine, monkeypatch)
+    # On PostgreSQL this read crosses an independent pool and resolves both
+    # authorities. A memory-only Run paired with a PG continuation cannot pass.
+    before = await spine.store.get(run_id)
+    assert before is not None
+    assert _NOW < _TIMER_RESUME_AT < _HITL_DEADLINE
 
-    assert await spine.store.reconcile_persistence() == 0
+    assert await spine.store.reconcile_persistence(now=_NOW) == 0
 
     # Enumerated and evaluated, not merely invisible: the bounded sweep reaches
     # the row through the canonical parked scan and the terminal continuation
@@ -293,8 +310,12 @@ async def test_a_parked_run_under_a_terminal_continuation_keeps_its_pending_disp
     assert [node_run.status for node_run in node_runs] == [RunStatus.COMPLETED]
     assert node_runs[0].result == {"text": "done"}
 
-    # Idempotent: the next tick re-derives the same zero.
-    assert await spine.store.reconcile_persistence() == 0
+    # Preserve the complete identity, accepted result, ordinal and lease/fence
+    # history, not only the status projection. Both observations use recovery's
+    # pool on PostgreSQL, independent of the pool that constructed the residue.
+    assert await spine.store.get(run_id) == before
+    assert await spine.store.reconcile_persistence(now=_NOW) == 0
+    assert await spine.store.get(run_id) == before
 
 
 async def test_a_repairable_run_is_settled_alongside_the_parked_rows_in_one_tick(
@@ -330,7 +351,7 @@ async def test_a_repairable_run_is_settled_alongside_the_parked_rows_in_one_tick
         )
     )
 
-    assert await spine.store.reconcile_persistence() == 1
+    assert await spine.store.reconcile_persistence(now=_NOW) == 1
 
     repaired = await spine.continuations.get(repairable.run_id)
     assert repaired is not None and repaired.status is RunStatus.COMPLETED
@@ -342,4 +363,4 @@ async def test_a_repairable_run_is_settled_alongside_the_parked_rows_in_one_tick
         continuation = await spine.continuations.get(run_id)
         assert continuation is not None and continuation.status is terminal_status
 
-    assert await spine.store.reconcile_persistence() == 0
+    assert await spine.store.reconcile_persistence(now=_NOW) == 0
