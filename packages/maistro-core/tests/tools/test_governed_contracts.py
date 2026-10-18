@@ -10,6 +10,7 @@ from maistro.capabilities.binding import Binding
 from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
 from maistro.capabilities.invocation import InvocationStatus
 from maistro.tools.contracts import (
+    ExpectedEffectRequired,
     GovernedToolExecutor,
     PredictionMismatch,
     ToolArgumentError,
@@ -225,3 +226,32 @@ def test_schema_validation_rejects_command_text_and_extra_fields() -> None:
         validate_tool_arguments(schema, {"cmd": "git status"})
     with pytest.raises(ToolArgumentError):
         validate_tool_arguments(schema, {"argv": ["git"], "cmd": "status"})
+
+
+def test_high_impact_contract_without_expected_effect_fails_closed() -> None:
+    """A configured high-impact tool cannot register without prediction inputs.
+
+    Missing expected effects on high-impact actions must be detectable at
+    registration, not discovered after an unrecorded mutating call (#57).
+    """
+
+    with pytest.raises(ExpectedEffectRequired):
+        ToolContract(
+            name="deploy",
+            schema={"type": "object", "properties": {}, "additionalProperties": False},
+            capability="deploy",
+            provider_name="deploy-provider",
+            high_impact=True,
+        )
+    # The same contract registers once the prediction contract is complete.
+    ToolContract(
+        name="deploy",
+        schema={"type": "object", "properties": {}, "additionalProperties": False},
+        capability="deploy",
+        provider_name="deploy-provider",
+        high_impact=True,
+        policy_version="deploy-v1",
+        pre_state=lambda _args: {},
+        expected_post_state=lambda _args: {},
+        observed_post_state=lambda _result: {},
+    )

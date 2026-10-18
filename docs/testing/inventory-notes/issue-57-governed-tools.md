@@ -1,9 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests/tools/test_governed_contracts.py: +4
-  packages/maistro-bootstrap/tests/test_agent_loop_command_contract.py: +3
-  packages/maistro-core/tests/agents/strategies/test_react.py: +4
-  packages/maistro-core/tests/agents/artificer/test_strategy.py: +2
+  packages/maistro-core/tests: +11
+  packages/maistro-bootstrap/tests: +3
 ---
 # Issue 57 governed tool contracts
 
@@ -28,6 +26,37 @@ valid call still executes. `Agent._build_strategy_kwargs` derives
 `allowed_tools` from `identity.tools` — the same declaration that builds the
 model-facing tool definitions — so the model cannot widen authorization.
 
+## Develop-sync round (2026-10-18, merge of ab8b3737f)
+
+The preserved `origin/develop` sync conflict was resolved in place (commit
+`aa4194d3d`):
+
+- `binding_scope_policy` now carries both sides: develop's legacy-tool effect
+  floor (`m1.legacy-tool-effect`) and #57's host-resolved irreversibility floor
+  (`tool.reversibility`). The container's explicit composition passes this
+  evaluator, so production wiring keeps both floors.
+- `InvocationExecutionService.execute` adopts develop's refactored admission
+  (`_admit_effect` + quota + `_settled_by_another_admission`) with #57's
+  expected-effect evidence bound onto the candidate before durable admission;
+  `GovernedInvocationExecutionService.invoke` forwards both
+  `expected_effect` and `actor_id`.
+- Both strategies adopt develop's `security_pipeline`/bounded warden context
+  and fail-closed missing-Sentinel authorization, with #57's allowlist/schema
+  validation layered before Sentinel dispatch; artificer repair results are
+  revalidated against the host schema. The now-unused `_prepare_tool_args`
+  helper was dropped.
+- `test_tool_call_identity` expects the strategy-level allowlist refusal
+  string: the strategy gate fires before the executor boundary by design;
+  `Agent._authorize_and_invoke` keeps the same membership decision as the
+  inner defense in depth.
+- Governed-contract tests opt into `binding_scope_policy` explicitly: a bare
+  `new_effect_context()` is an unavailable authority, not an implicit ALLOW
+  (develop's #846 fail-closed composition contract).
+- Added: a high-impact `ToolContract` without its prediction contract fails
+  registration (`ExpectedEffectRequired`), closing criterion 9's test gap.
+- The suite-inventory delta is recorded against suite roots (+11 core, +3
+  bootstrap); `check-suite-inventory.py` reports all 17 suites matching.
+
 Residual scope still open on #57 (not closed by this branch):
 
 - `GovernedToolExecutor` is library-only: no shipped production path constructs
@@ -42,3 +71,10 @@ Residual scope still open on #57 (not closed by this branch):
   egress work — current authoritative count is 6.)
 - Issue #847 (adversarial tool-name/schema/argument tests) must close before
   #57 closes.
+- Quality-ratchet posture (two-merge rule): the branch's new identities are
+  unauthorized against the trusted base (ab8b3737f) — vulture
+  (`expected_effect.py::_validate_evidence` pydantic validator, 3 orphaned
+  `BuilderSandbox.run_command` raw-command methods after the argv cutover),
+  radon (`tools/contracts.py` C-complexity blocks), promotion-surface and
+  reachability (`tools/reversibility_registry.py`). Grants must land on trunk
+  first; candidate-ledger edits in this lane cannot authorize them.
