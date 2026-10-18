@@ -37,11 +37,6 @@ from services import canonical_dag_runner as runner
 from services.dag_execution_scope import DagExecutionScope
 
 from maistro.container import Container, create_container
-from maistro.quota.usage_log import (
-    InMemoryUsageLog,
-    get_default_usage_log,
-    set_default_usage_log,
-)
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.types.config import AgentConfig
 
@@ -76,22 +71,6 @@ def _dag() -> dict[str, Any]:
         "edges": [],
         "entry_node": _NODE,
     }
-
-
-def _fresh_usage_log(monkeypatch: pytest.MonkeyPatch) -> InMemoryUsageLog:
-    """Point the process-wide default usage log at a fresh, isolated instance.
-
-    Only the no-Container case needs this: with a Container, the shipped
-    composition restores the ledger from the Container's own durable backend
-    (read via ``container.usage_log``). Without one, fallback evidence would
-    land on the process-wide singleton, so the test swaps in a fresh log via
-    the documented test seam and restores the previous one afterwards.
-    """
-    fresh = InMemoryUsageLog()
-    previous = get_default_usage_log()
-    set_default_usage_log(fresh)
-    monkeypatch.setattr("maistro.quota.usage_log._default_usage_log", previous, raising=False)
-    return fresh
 
 
 async def _boot_container(
@@ -269,16 +248,35 @@ async def test_legacy_llm_node_reaches_the_pinned_provider_and_records_canonical
 async def test_unconfigured_gateway_fails_the_legacy_node_closed_without_fabricated_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No Container bridge and no gateway env: the node refuses, nothing succeeds.
+    """No gateway endpoint: the node refuses, nothing succeeds, nothing is invented.
 
-    ``dag_node_runtime`` composes ``None`` (no canonical authority), the node
-    falls to its compatibility builder, and the builder refuses to fabricate
-    a stub answer without an explicit opt-in. The run fails closed: no fake
-    transport call, no fabricated success, no usage evidence manufactured
+    The canonical execution spine is mandatory (#1113), so the unconfigured
+    deployment is the real Container minus every gateway endpoint source:
+    ``_endpoint`` finds no base URL, ``dag_node_runtime`` composes None, and
+    the compatibility builder refuses to fabricate a stub answer without the
+    explicit ALLOW_STUB_LLM opt-in. The admitted canonical Run fails closed:
+    no transport call, no fabricated success, no usage evidence manufactured
     for a call that never happened.
     """
-    fresh_log = _fresh_usage_log(monkeypatch)
+    from services.dag_agents import CanonicalGraphUnavailable
+
+    # No canonical authority at all is refused before admission — a second
+    # lifecycle is never invented for work that cannot be executed.
     monkeypatch.setattr(runner, "_container", lambda: None)
+    with pytest.raises(CanonicalGraphUnavailable):
+        await runner.execute_dag(
+            _dag(),
+            scope=DagExecutionScope(
+                workspace_id=_WORKSPACE,
+                project_id="legacy-egress-project",
+                user_id=_ACTOR,
+            ),
+        )
+
+    # The unconfigured-but-booted deployment: the same real Container the
+    # happy path uses, with the model metadata registered, and then every
+    # gateway endpoint/credential source removed.
+    container = await _boot_container(tmp_path, monkeypatch, register_model=True)
     for key in (
         "MAISTRO_LLM_BASE_URL",
         "MAISTRO_LLM_API_KEY",
@@ -290,32 +288,40 @@ async def test_unconfigured_gateway_fails_the_legacy_node_closed_without_fabrica
     ):
         monkeypatch.delenv(key, raising=False)
     # get_settings is lru_cached suite-wide; pin the attributes `_endpoint`
-    # reads so the unconfigured refusal is deterministic here.
+    # and `stub_llm_allowed` read so the unconfigured refusal is
+    # deterministic here.
     import config as hive_config
 
     monkeypatch.setattr(
         hive_config,
         "get_settings",
-        lambda: SimpleNamespace(litellm_api_base=None, litellm_api_key=None),
+        lambda: SimpleNamespace(litellm_api_base=None, litellm_api_key=None, allow_stub_llm=False),
     )
     calls = _fake_transport(monkeypatch)
+    ledger = container.usage_log
 
-    result = await runner.execute_dag(
-        _dag(),
-        scope=DagExecutionScope(
-            workspace_id=_WORKSPACE, project_id="legacy-egress-project", user_id=_ACTOR
-        ),
-    )
+    try:
+        result = await _execute(container)
 
-    assert result["status"] == "failed", result
-    node_result = result["node_results"][_NODE]
-    assert node_result["success"] is False
-    assert "No LLM gateway is configured" in node_result["response"]
-    assert "No LLM gateway is configured" in str(result.get("error", ""))
-    assert calls == []
-    # No fabricated evidence either: nothing recorded usage for a model call
-    # that never executed.
-    assert fresh_log.scope_keys() == ()
+        assert result["status"] == "failed", result
+        node_result = result["node_results"][_NODE]
+        assert node_result["success"] is False
+        assert "No LLM gateway is configured" in node_result["response"]
+        assert "No LLM gateway is configured" in str(result.get("error", ""))
+        assert calls == []
+        # The admitted canonical Run itself failed closed — no fabricated
+        # success anywhere in the lifecycle.
+        run = await container.run_store.get_run(result["run_id"])
+        assert run is not None
+        assert run.status is RunStatus.FAILED
+        (node_run,) = await container.run_store.list_node_runs(result["run_id"])
+        assert node_run.node_id == _NODE
+        assert node_run.status is RunStatus.FAILED
+        # No fabricated evidence either: nothing recorded usage for a model
+        # call that never executed.
+        assert ledger.scope_keys() == ()
+    finally:
+        await container.aclose()
 
 
 async def test_unregistered_model_metadata_fails_the_real_container_path_closed(
@@ -330,7 +336,6 @@ async def test_unregistered_model_metadata_fails_the_real_container_path_closed(
     collaborator gone, the container-path proof fails instead of quietly
     succeeding through some fallback.
     """
-    fresh_log = _fresh_usage_log(monkeypatch)
     container = await _boot_container(tmp_path, monkeypatch, register_model=False)
     calls = _fake_transport(monkeypatch)
     ledger = container.usage_log
@@ -346,6 +351,5 @@ async def test_unregistered_model_metadata_fails_the_real_container_path_closed(
         # No completed invocation, no usage evidence: the refusal happened before
         # the physical call, exactly as fail-closed requires.
         assert ledger.scope_keys() == ()
-        assert fresh_log.scope_keys() == ()
     finally:
         await container.aclose()
