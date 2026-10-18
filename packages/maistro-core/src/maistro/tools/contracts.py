@@ -228,8 +228,10 @@ def _reject_wrong_enum(schema: dict[str, Any], value: Any, path: str) -> None:
 
 def _reject_wrong_type(schema: dict[str, Any], value: Any, path: str) -> None:
     expected = schema.get("type")
+    if not expected:
+        return
     type_ok = _SCHEMA_TYPE_CHECKS.get(expected, lambda value: True)
-    if expected and not type_ok(value):
+    if not type_ok(value):
         raise ToolArgumentError(f"{path} must be a {expected}")
 
 
