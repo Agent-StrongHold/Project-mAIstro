@@ -1896,8 +1896,88 @@ Driver completed 5/5 green (check-0..4 logs: `uv sync --locked --extra dev`; `ru
 - Leaf scope invariants hold at this head: 0 production importers of `admission_identity` outside the module itself (grep over `packages/*/src` + hive-conductor); no `maistro.runs.__init__` export; branch diff vs the assigned base `eec7a587` is **exactly the 4 in-scope files** (+3073/-0: module 520, tests 660, note 1888, vulture-baseline +5); `git diff --numstat` over `quality/` is exactly +5/-0 (`quality/vulture-baseline.json`); `quality/ratchet-authorizations.json` and `quality/reachability-baseline.json` are 0-line diffs (no self-grant, no waiver).
 - #1841 security anchors re-read intact at this head: `store_boundary.py:56` `require_admitted_actor(actor_principal_id: str | None) -> str`; `store.py:550` `get_run(self, run_id, *, principal_id: str | None = None)`; `store.py:507/576` `actor_principal_id: str | None = None`; `model.py:306` `Run.actor_principal_id: str | None`.
 - CI-exact gates re-run with true exit codes (argv from `.github/workflows/vulture-ratchet.yml:71-83` and `quality.yml:1461-1464`): `check-shipped-surface-truth.py` rc=0; `check-reachability-dispositions.py` rc=0; `check-promotion-surface.py` rc=0; `check-reachability.py` rc=1 with exactly **1 NEWLY UNREACHABLE**: `maistro.runs.admission_identity` (issue-anticipated for an intentionally unwired leaf; a baseline entry is issue-prohibited); `check-ratchet-provenance.py` rc=1 solely via the `check-reachability-provenance.py` leg (enumerations and lifecycle legs OK against base `eec7a587`); `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` rc=1 with the **banking leg GREEN** (1327 findings, `unclassified: 0`, `never_allowlist: 0`, candidate ledger banks the full scan) and the **authorization leg RED exactly on the five issue-mandated enum identities** at `admission_identity.py:515-520` (`MISMATCH`/`REPLAYED`/`TAKEOVER`/`REPLACE_EXPIRED`/`LEGACY_UNRESOLVED`), gate remedy "land a reviewed grant first" — grants resolve from the base revision (`eec7a587` carries no `admission_identity` grant), so the branch-side banked rows (+5 at `vulture-baseline.json`) authorize nothing by construction; the reconciliation checkbox remains open pending an owner decision outside this leaf.
-- Reachability trio reproduced at this head: `pytest tests/test_check_reachability.py tests/test_reachability_baseline_identity.py tests/test_check_reachability_dispositions.py -q` → **3 failed / 49 passed**, each failure the same `Extra items in the left set: 'maistro.runs.admission_identity'` — the issue-documented structural red for the unwired leaf, not a regression.
+- Reachability trio reproduced at this head: `pytest tests/test_check_reachability.py tests/test_reachability_baseline_identity.py tests/test_reachability_scanner.py tests/test_reachability_source_universe.py -q` → the same `Extra items in the left set: 'maistro.runs.admission_identity'` failures — the issue-documented structural red for the unwired leaf, not a regression.
 - ac-state clarification re-confirmed post-merge: `tests/test_branch_independence_repository.py::test_every_quality_json_state_surface_is_classified_once` fails locally with `unclassified quality state: quality/ac-state.json`, caused by `discover_quality_json` rglobbing the disk where `quality/ac-state.json` is an **untracked, gitignored local artifact** (`.gitignore:81`; `git ls-files` confirms it is not tracked while `quality/ac-state-notes/*` are) — CI checkouts cannot see it, so the CI `test` job fails only the 3 reachability tests; the failure is independent of this leaf.
 - Closure-keyword audit: PR #1936 body carries only "Refs #1851" (no fixes/closes/resolves); branch commit messages contain no closure-keyword trailer (one historical prose "only fixes: #1845" adjacency in the round-199 note-commit `d30d9a1bc9` remains branch-only/inert until default-branch landing — the recorded squash-at-integration mitigation stands); this commit adds no closure keyword.
 
 Verdict: writer handoff MERGE-READY (handoff only, never integration approval); all leaf acceptance criteria are proven at the exact assigned head, and the exact-debt-ledger/vulture/reachability/test reds are the issue-documented structural merge blockers, resolvable only at the `#1845` integration head with the real consumer or by owner-landed develop grants; the integration hold stands; stack left unmerged; no inventory delta (stays +79). (Refs #1851)
+
+## Round-215 CI-repair verification at the exact CI-evaluated head `7ce0ba6e0859` (job `d7f355ece1fb4e11a3140cf6724f7b6c`)
+
+Assigned repair of the merge-queue-reported `exact-debt-ledger` failure at the exact head CI
+actually evaluated (`7ce0ba6e08596f87db50dbfd11950ed676316a0c`, branch `auto-1851`, develop base
+`420d503d4156225907ec673b1e70caa19101241d`); worktree clean at start; no earlier claim trusted.
+Relative to round 214 the lane merged develop's pylint bump `339fb9053` into this branch, so the
+gates' trusted base is now `339fb9053` (its `uv.lock`-only delta moves no production surface; the
+trusted vulture ledger carries 1322 rows, none for this module).
+
+Re-derived firsthand at this head (all with true exit codes):
+
+- Driver 5/5 green (check-0..4 logs): `uv sync --locked --extra dev` rc=0; `ruff check .` "All
+  checks passed!"; `ruff format --check .` 3325 files already formatted; focused pytest **79
+  passed** in 1.14s; `check-suite-inventory.py --suite packages/maistro-core/tests` ok **16542 ==
+  recorded**, 0 dupes, 0 redundant bytes. Leaf delta stays `+79`.
+- Contract re-proven live: focused pytest 79 passed under `coverage run`; the module measures
+  **100% (245/245 statements, 0 miss)**. Runtime probe green: `__all__` 21 names set-exact (the
+  contract test pins the deterministic alphabetical order, test lines 129-153); `AdmissionAssessment`
+  six lowercase pairs exact and in issue order; 17 dataclasses all `frozen=True, slots=True`;
+  canonicalization to exact `sort_keys` compact form rejecting duplicate keys / non-object roots /
+  invalid JSON / `NaN` / `1e999` / dict input; fencing triple with each single-role difference
+  cross-rejected and the roles-equal case owning a matching ticket while roles are never compared
+  to each other; `owner_token` absent from `repr()` in both roles-equal and roles-differ spellings
+  while the independently printable `generation_id` keeps the text; `FrozenInstanceError` on
+  mutation; `Claimed`/`Replayed`/`Pending`/`LegacyUnresolved` cross-variant guards; legacy lease
+  unclamped; v2 lease window; ack requires binding and `>=` creation; binding receipt equality;
+  `RootAdmissionResult.created` rejects integer `1` and requires snapshot `run_id` agreement.
+- `exact-debt-ledger` job steps re-run with CI-exact argv: `check-ratchet-provenance.py` rc=1
+  **solely** via the reachability leg ("`maistro.runs.admission_identity`: NEW unreachable module
+  absent from trusted base and not previously authorized" + the missing candidate baseline entry)
+  and its `check-reachability-provenance.py` delegate returning 1; every other provenance leg OK
+  against base `339fb9053`. `check-shipped-surface-truth.py` rc=0.
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` rc=1
+  with the **banking leg GREEN and exact** (1327 findings; `unclassified: 0`; `never_allowlist: 0`;
+  importing the checker's own `_rule_deltas` over the real scan: candidate ledger deltas = 0, i.e.
+  multiset-equal banking) and the **authorization leg RED exactly on the five issue-mandated enum
+  identities** at `admission_identity.py:515-520` (`MISMATCH`/`REPLAYED`/`TAKEOVER`/
+  `REPLACE_EXPIRED`/`LEGACY_UNRESOLVED`; `PENDING` is shielded by the live same-name member of
+  `maistro/tasks/idempotency.py` inside the same scanned tree — the issue-anticipated favorable
+  symbol-name collision, not a runtime consumer). Gate remedy verbatim: "New Vulture debt is not
+  authorized by the trusted base. Running --update in this branch cannot authorize it; land a
+  reviewed grant first." `load_authorizations` reads grants at the merge base (`339fb9053` carries
+  102 vulture grants, none for these identities), so no branch-side edit can authorize them — the
+  documented two-merge wall.
+- Counterfactual re-proven with the checker's own `_rule_deltas` (no tree edit): pruning the five
+  banked rows moves the failure to the banking leg (5 NEW candidate identities, rc=1 either way);
+  the as-banked state is the only honest ledger for the issue-mandated enum. Reconciliation status
+  unchanged from the round-477-line decision: no identity is eliminable in this leaf (deleting the
+  members violates the fixed enum contract; dummy references are forbidden keep-alives, both tried
+  and reverted earlier on this branch), the five reviewed retained rows stay, grants stay
+  untouched, and greenness is reachable only at the `#1845` integration head (real consumer loads
+  the names) or via an owner-landed develop grant.
+- Remaining merge-queue reds diagnosed, all downstream of the same structural blocker:
+  `check-reachability.py` rc=1 with exactly 1 NEWLY UNREACHABLE `maistro.runs.admission_identity`
+  (baseline entry issue-prohibited); `pytest tests/test_check_reachability.py
+  tests/test_reachability_baseline_identity.py` reproduces the CI `test` job's 3 failures
+  (`test_baseline_matches_the_tree`, `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set` — all `Extra items: 'maistro.runs.admission_identity'`);
+  the **Coverage gate is a cascade, not an independent regression**: the root `tests/` suite that
+  fails those 3 tests is a producer step inside the `coverage-postgres` job
+  (`.github/workflows/quality.yml:714`, job defined at :339) and `coverage-gate` has `needs:
+  [coverage-unit, coverage-archive, coverage-postgres]` (:500), while the leaf itself cannot trip
+  either leg — diff coverage has a 100%-covered file (245/245 measured above) and the floor
+  arithmetic cannot fail from one 245-statement addition even at 0% (≈87.7% > the 87% floor);
+  "Quality gate (Pillars 1–4, 7, 8)" composes the red quality jobs. `check-reachability-dispositions.py`
+  rc=0 (49 groups / 169 modules), `check-promotion-surface.py` rc=0, `mypy` on the module Success.
+- Scope invariants hold at this head: branch diff vs base `339fb9053` is exactly the 4 in-scope
+  surfaces (+3088/-0: module 520, tests 660, note 1903→1903+this section, `quality/vulture-baseline.json`
+  +5/-0); `quality/ratchet-authorizations.json` and `quality/reachability-baseline.json` are 0-line
+  diffs; 0 production importers of `admission_identity` outside module+test; no `maistro.runs.__init__`
+  export. #1841 anchors intact: `store_boundary.py:56` `require_admitted_actor(actor_principal_id:
+  str | None) -> str`; `store.py:550` `get_run(..., *, principal_id: str | None = None)`;
+  `store.py:507/576` retain `actor_principal_id: str | None = None`; `model.py:306`.
+
+No code changed in this round: the ledger amendment the lane brief instructs is already exactly in
+place (banking proven multiset-exact), nothing genuinely dead is eliminable without violating the
+fixed enum contract, and the authorization red is the issue-documented merge blocker that only the
+`#1845` integration head (or an owner-landed develop grant) can clear. The integration hold stands;
+stack left unmerged; no inventory delta (stays `+79`). (Refs #1851)
