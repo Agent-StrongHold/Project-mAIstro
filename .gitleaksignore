@@ -109,3 +109,16 @@ b5c22a358a8b0a0fb064e89eb6b4eba6855b58c2:.gitleaksignore:generic-api-key:54
 81f8985913f040b2b12aba0a1f71748ed1b1d20b:.gitleaksignore:generic-api-key:98
 1ac446cf4385285f32ef2408233ab81911fe36a9:packages/maistro-core/tests/graph/durable_runs/test_executor_gaps.py:generic-api-key:69
 f83de3b7a431523a47234102499d35218b9881fe:docs/testing/inventory-notes/837-persisted-failure-redaction.md:generic-api-key:38
+
+# ---- #1825: the engine-image Canvas smoke's placeholder router key ----
+# scripts/smoke-engine-canvas.sh boots the shipped engine image against a
+# throwaway PostgreSQL container it creates and destroys within one CI step.
+# ROUTER_API_KEY there is the ascending digit placeholder 0123456789abcdef
+# repeated — the same literal the inline ci.yml boot smoke carried for months
+# before the script was extracted. It authenticates nothing outside that
+# ephemeral container pair and is overwritten by every real deployment's env.
+# Recorded here rather than splitting the literal, which would obscure the
+# exact value the smoke proves is accepted (and the control assertion that a
+# request WITHOUT a key is refused). Fingerprint scoped to the introducing
+# commit, path, rule and line; later edits to the file are still scanned.
+13e8d307574e3c7e634caf181f49c3b37767e9ab:scripts/smoke-engine-canvas.sh:generic-api-key:153
