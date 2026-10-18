@@ -5,7 +5,7 @@
       "id": "maistro-engine",
       "dockerfile": "Dockerfile",
       "disposition": "PUBLISHED",
-      "rationale": "The maistro-engine API image. Chainguard/Wolfi runtime, browser surface deliberately split out into Dockerfile.research so this one can go near-zero-CVE.",
+      "rationale": "The maistro-engine API image. Chainguard/Wolfi runtime, browser surface deliberately split out into Dockerfile.research so this one can go near-zero-CVE. This is the supported Canvas-enabled engine profile (#1825): it installs maistro-canvas, and scripts/smoke-engine-canvas.sh proves the built artifact imports maistro_canvas.canvas.store.PgCanvasStore on image contents alone, boots through the shipped entrypoint on a clean PostgreSQL 18 volume, wires the real Canvas store, and serves an authenticated Canvas create/read through /v2/canvas. ci.yml:docker-build runs that proof on the built candidate; release.yml:images runs the same script against the exact pushed digest before signing it.",
       "built_by": [
         ".github/workflows/ci.yml:docker-build",
         ".github/workflows/security.yml:containers",
@@ -37,7 +37,7 @@
       "id": "maistro-engine-research",
       "dockerfile": "Dockerfile.research",
       "disposition": "DISTRIBUTED",
-      "rationale": "The RESEARCH worker: browser-use + Playwright + Chromium on a Debian base. Its own header calls the browser surface 'the single largest remaining CVE source', which is why it was split out of the API image -- so it is the image that most needs scanning, and was the one not scanned. Operators build it where the web tool actually runs; nothing pushes it, so there is no published digest to sign.",
+      "rationale": "The RESEARCH worker: browser-use + Playwright + Chromium on a Debian base. Its own header calls the browser surface 'the single largest remaining CVE source', which is why it was split out of the API image -- so it is the image that most needs scanning, and was the one not scanned. Operators build it where the web tool actually runs; nothing pushes it, so there is no published digest to sign. Deliberately a Canvas-lean profile (#1825): it installs maistro-core and maistro-server but not maistro-canvas, so if it is driven as an API server its /v2/canvas answers 503 and the startup log says canvas_store_unavailable -- the truthful report; it can never stand in for the supported Canvas-enabled proof, which is owned by the root Dockerfile's maistro-engine image.",
       "built_by": [
         ".github/workflows/ci.yml:docker-build",
         ".github/workflows/security.yml:containers"
