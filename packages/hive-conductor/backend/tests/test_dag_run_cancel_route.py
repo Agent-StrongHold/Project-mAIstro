@@ -296,3 +296,67 @@ async def test_list_overlays_only_canonical_runs_the_caller_may_read(
 
     assert listed["list-mine"]["status"] == "cancelled"
     assert listed["list-theirs"]["status"] != "cancelled"
+
+
+async def test_list_resolves_the_page_through_one_batched_reader_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Recent Runs list never re-enters the canonical reader per row (#1333).
+
+    The overlay needs one scoped read for the whole page; a return to the
+    pre-#1152 per-row `_canonical_projection` walk shows up here as one
+    `get_runs` call per row, each carrying a single id.
+    """
+    import services.engine as engine_mod
+    from services.dag_run_inspection import list_visible_runs
+    from services.dag_run_store import get_dag_run_store
+    from services.workspace_authority import canonical_store_for_tests
+
+    from maistro.graph import Graph, Node
+    from maistro.runs import InMemoryRunStore
+    from maistro.runs.scoped_reads import ScopedRunReader
+
+    view = await _owned_workspace()
+    workspaces = canonical_store_for_tests()
+    projects = workspaces.project_store
+    store = InMemoryRunStore(project_store=projects)
+
+    async def running_run(workspace_id: str) -> str:
+        root = await projects.root_for_workspace(workspace_id)
+        graph = Graph(
+            workspace_id=workspace_id,
+            project_id=root.project_id,
+            name="listed",
+            nodes=[Node(node_id="n", node_type="agent")],
+        )
+        return (await store.create_run(graph, actor_principal_id=_USER_ID)).run_id
+
+    first, second = await running_run(view.id), await running_run(view.id)
+    reader = ScopedRunReader(store, workspaces, projects)
+    batches: list[list[str]] = []
+    batched_get_runs = reader.get_runs
+
+    async def counting_get_runs(run_ids: Any, *, principal_id: str) -> Any:
+        batches.append([str(run_id) for run_id in run_ids])
+        return await batched_get_runs(run_ids, principal_id=principal_id)
+
+    reader.get_runs = counting_get_runs  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        engine_mod, "_singleton", SimpleNamespace(run_store=store, run_reader=reader)
+    )
+    dag_runs = get_dag_run_store()
+    await dag_runs.start_run(
+        run_id="batched-one", user_id=_USER_ID, workspace_id=view.id, canonical_run_id=first
+    )
+    await dag_runs.start_run(
+        run_id="batched-two", user_id=_USER_ID, workspace_id=view.id, canonical_run_id=second
+    )
+
+    listed = await list_visible_runs(_USER_ID, limit=100)
+
+    assert {row["id"] for row in listed} >= {"batched-one", "batched-two"}
+    # Exactly one reader call, carrying the whole in-scope page. The process
+    # singletons behind these suites keep earlier tests' rows, so the batch may
+    # name more than this test's two runs -- but never in more than one call.
+    assert len(batches) == 1
+    assert {first, second} <= set(batches[0])

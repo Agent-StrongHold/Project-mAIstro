@@ -65,9 +65,11 @@ import ast
 import hashlib
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import Protocol
 
 from maistro_evolve.scorecard import GateResult
 from maistro_evolve.tdd_gate import TddEvidence, run_test_selection
@@ -75,6 +77,7 @@ from maistro_evolve.tdd_gate import TddEvidence, run_test_selection
 __all__ = [
     "EvidenceContract",
     "FailFirstEvidence",
+    "ProbeExecutor",
     "collect_fail_first_evidence",
     "fail_first_gate",
     "resolve_contract",
@@ -233,10 +236,83 @@ def _failure_ids(output: str) -> list[str]:
     return ids
 
 
-def _probe(cwd: Path, tests: list[str], timeout: int) -> tuple[int, list[str]]:
-    """Run the changed-test selection; return (exit code, failing identities)."""
-    rc, out = run_test_selection(cwd, tests, timeout=timeout, extra_args=("-rfE",))
+def _probe(ex: ProbeExecutor, tests: list[str], timeout: int) -> tuple[int, list[str]]:
+    """Run the changed-test selection through ``ex``; return (exit code, ids)."""
+    rc, out = ex.probe(tests, timeout)
     return rc, _failure_ids(out)
+
+
+class ProbeExecutor(Protocol):
+    """Where the fail-first probe's steps run (#614).
+
+    The probe replays the candidate's changed tests against the baseline —
+    which means importing candidate-authored test code. On the host that is
+    the same escape the test gate closed; under container isolation the caller
+    supplies an executor whose every step runs inside the evaluation sandbox.
+    The default host executor below keeps the CLI paths unchanged.
+    """
+
+    def rev_parse(self, ref: str) -> str:
+        """Full SHA for ``ref``, or "" when it does not resolve."""
+        ...
+
+    def base_has(self, ref: str, rel: str) -> bool:
+        """Does ``ref`` carry ``rel``?"""
+        ...
+
+    def checkout(self, ref: str, rel: str) -> None:
+        """Restore ``rel``'s contents from ``ref``."""
+        ...
+
+    def remove(self, rel: str) -> None:
+        """Delete ``rel`` from the tree (its base state is absence)."""
+        ...
+
+    def probe(self, tests: list[str], timeout: int) -> tuple[int, str]:
+        """Run the changed-test selection; return (exit code, output)."""
+        ...
+
+    def read_text(self, rel: str) -> str:
+        """File content as data; raises OSError when absent."""
+        ...
+
+
+def _resolve_executor(executor: ProbeExecutor | None, cwd: Path) -> ProbeExecutor:
+    """The caller's executor, or the host default (#614): the CLI paths run git
+    and pytest as child processes here, and a contained evaluation passes the
+    sandbox-backed one."""
+    return executor if executor is not None else _HostExecutor(cwd)
+
+
+class _HostExecutor:
+    """The historical behavior: git and pytest run as child processes here."""
+
+    def __init__(self, cwd: Path) -> None:
+        self._cwd = cwd
+
+    def rev_parse(self, ref: str) -> str:
+        return _rev_parse(self._cwd, ref)
+
+    def base_has(self, ref: str, rel: str) -> bool:
+        return _base_has(self._cwd, ref, rel)
+
+    def checkout(self, ref: str, rel: str) -> None:
+        subprocess.run(
+            ["git", "checkout", ref, "--", rel],
+            cwd=str(self._cwd),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    def remove(self, rel: str) -> None:
+        (self._cwd / rel).unlink(missing_ok=True)
+
+    def probe(self, tests: list[str], timeout: int) -> tuple[int, str]:
+        return run_test_selection(self._cwd, tests, timeout=timeout, extra_args=("-rfE",))
+
+    def read_text(self, rel: str) -> str:
+        return (self._cwd / rel).read_text(encoding="utf-8")
 
 
 def _base_has(cwd: Path, baseline_ref: str, rel: str) -> bool:
@@ -250,66 +326,62 @@ def _base_has(cwd: Path, baseline_ref: str, rel: str) -> bool:
     return proc.returncode == 0
 
 
-def _resolve_evidence_shas(cwd: Path, baseline_ref: str) -> tuple[str, str] | None:
+def _resolve_evidence_shas(ex: ProbeExecutor, baseline_ref: str) -> tuple[str, str] | None:
     """(base, candidate) SHAs anchoring the evidence record.
 
     ``None`` when either revision cannot be resolved: without both SHAs the
     record is not replayable by an auditor, so there is no evidence to
-    collect. (#1792: extracted from ``collect_fail_first_evidence``.)
+    collect. (#1792: extracted from ``collect_fail_first_evidence``.) The
+    lookups ride the probe executor (#614).
     """
-    base_sha = _rev_parse(cwd, baseline_ref)
-    candidate_sha = _rev_parse(cwd, "HEAD")
+    base_sha = ex.rev_parse(baseline_ref)
+    candidate_sha = ex.rev_parse("HEAD")
     if not base_sha or not candidate_sha:
         return None
     return base_sha, candidate_sha
 
 
 def _tree_states(
-    cwd: Path, src: list[str], baseline_ref: str
+    cwd: Path, src: list[str], baseline_ref: str, ex: ProbeExecutor
 ) -> tuple[dict[str, bool], dict[str, bool]]:
     """Per-file presence maps, (candidate, base), captured BEFORE any revert.
 
     The candidate snapshot must precede the base reconstruction so the restore
     can rebuild even candidate DELETIONS (a plain ``git checkout HEAD --``
-    would silently resurrect a deleted file). (#1792 extraction.)
+    would silently resurrect a deleted file). The base probe rides the
+    executor (#614). (#1792 extraction.)
     """
     candidate_present = {rel: (cwd / rel).is_file() for rel in src}
-    base_present = {rel: _base_has(cwd, baseline_ref, rel) for rel in src}
+    base_present = {rel: ex.base_has(baseline_ref, rel) for rel in src}
     return candidate_present, base_present
 
 
 def _reconstruct_tree(
-    cwd: Path, src: list[str], present: dict[str, bool], from_ref: str | None
+    src: list[str], present: dict[str, bool], from_ref: str | None, ex: ProbeExecutor
 ) -> None:
     """Force ``src`` to a recorded presence state.
 
     A file marked present is checked out of ``from_ref`` (``HEAD`` when no
     ref is given); a file marked absent is removed — its base state is
     absence, which is exactly how a test written FIRST for a new module
-    proves fail-first. (#1792: the probe's restore closure, hoisted to a
-    module function so both tree flips share it.)
+    proves fail-first. Both moves ride the executor (#614). (#1792: the
+    probe's restore closure, hoisted to a module function so both tree flips
+    share it.)
     """
     for rel in src:
-        path = cwd / rel
         if present[rel]:
-            subprocess.run(
-                ["git", "checkout", from_ref or "HEAD", "--", rel],
-                cwd=str(cwd),
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
+            ex.checkout(from_ref or "HEAD", rel)
         else:
-            path.unlink(missing_ok=True)
+            ex.remove(rel)
 
 
 def _run_base_probes(
-    cwd: Path,
     src: list[str],
     tests: list[str],
     timeout: int,
     baseline_ref: str,
     base_present: dict[str, bool],
+    ex: ProbeExecutor,
 ) -> tuple[int | None, int | None, list[str], list[str]] | None:
     """Run the changed-test selection on the reconstructed base state.
 
@@ -323,10 +395,10 @@ def _run_base_probes(
     base_rc2: int | None = None
     failing2: list[str] = []
     try:
-        _reconstruct_tree(cwd, src, base_present, baseline_ref)
-        base_rc1, failing1 = _probe(cwd, tests, timeout)
+        _reconstruct_tree(src, base_present, baseline_ref, ex)
+        base_rc1, failing1 = _probe(ex, tests, timeout)
         if failing1:
-            base_rc2, failing2 = _probe(cwd, tests, timeout)
+            base_rc2, failing2 = _probe(ex, tests, timeout)
     except (OSError, subprocess.SubprocessError):
         return None
     return base_rc1, base_rc2, failing1, failing2
@@ -346,6 +418,7 @@ def collect_fail_first_evidence(
     timeout: int,
     *,
     config_files_changed: list[str] | None = None,
+    executor: ProbeExecutor | None = None,
 ) -> FailFirstEvidence | None:
     """Probe whether the candidate's changed tests fail on the exact base.
 
@@ -366,6 +439,14 @@ def collect_fail_first_evidence(
     candidate deleted/newly-absent state says so). The loop guarantees the
     commit: ``_run_variant``/``code_fixer`` commit before scoring.
 
+    Every step that runs candidate code — the probes replaying the changed
+    tests — goes through ``executor`` (#614). The default host executor keeps
+    the CLI paths; a contained evaluation passes one backed by the sandbox
+    opened for this candidate, so the replay imports candidate test code only
+    where the candidate's edits live. Git plumbing (rev-parse, cat-file,
+    checkout) moves files per the ref's recorded contents and executes
+    nothing the candidate wrote either way.
+
     Cost: one selection run on the candidate (green check — the same run the
     red→green signal always needed) plus two on the base when the first base
     run is red (reproducibility). A green first base run stops early: the
@@ -374,20 +455,21 @@ def collect_fail_first_evidence(
     if not tests or not src:
         return None
     cwd = Path(cwd)
-    base_sha = _rev_parse(cwd, baseline_ref)
-    candidate_sha = _rev_parse(cwd, "HEAD")
-    if not base_sha or not candidate_sha:
+    ex = _resolve_executor(executor, cwd)
+    resolved = _resolve_evidence_shas(ex, baseline_ref)
+    if resolved is None:
         return None
+    base_sha, candidate_sha = resolved
 
-    cand_rc, _ = _probe(cwd, tests, timeout)
+    cand_rc, _ = ex.probe(tests, timeout)
 
-    candidate_present, base_present = _tree_states(cwd, src, baseline_ref)
+    candidate_present, base_present = _tree_states(cwd, src, baseline_ref, ex)
     probed: tuple[int | None, int | None, list[str], list[str]] | None = None
     try:
-        probed = _run_base_probes(cwd, src, tests, timeout, baseline_ref, base_present)
+        probed = _run_base_probes(src, tests, timeout, baseline_ref, base_present, ex)
     finally:
         # Restore the exact candidate state on every path out of the probe.
-        _reconstruct_tree(cwd, src, candidate_present, "HEAD")
+        _reconstruct_tree(src, candidate_present, "HEAD", ex)
     if probed is None:
         # Cannot construct (or run against) the base state — no trustworthy
         # evidence; the gate fails the behavior contract closed.
@@ -404,7 +486,7 @@ def collect_fail_first_evidence(
         baseline_changed_rc=base_rc1,
         reproducible=_reproducible(failing1, failing2, base_rc2),
         config_tainted=bool(config_files_changed),
-        related=_has_related_failure(cwd, failing1, src),
+        related=_has_related_failure(ex.read_text, failing1, src),
     )
 
 
@@ -432,46 +514,47 @@ def _imported_names(tree: ast.AST) -> set[str]:
     return names
 
 
-def _test_module_imports(path: Path) -> set[str] | None:
-    """Every name one test file imports, or ``None`` when it is unreadable.
+def _test_module_imports(text: str) -> set[str]:
+    """Every name one test file's source imports.
 
-    The AST parse is primary; an unparsable file falls back to a textual
-    import-line match, so a syntactically broken test still gets the
-    attribution check. (#1792: extracted from ``_has_related_failure``.)
+    The AST parse is primary; an unparsable file (``SyntaxError``), null
+    bytes (``ValueError``) or pathologically nested source
+    (``RecursionError``) falls back to a textual import-line match, so a
+    syntactically broken test still gets the attribution check. Transport
+    failures are the caller's concern — an unreadable file has no import
+    surface at all, not a textual one. (#1792: extracted from
+    ``_has_related_failure``; ``text`` arrives through the probe executor's
+    ``read_text`` transport, #614.)
     """
     try:
-        return _imported_names(ast.parse(path.read_text(encoding="utf-8")))
-    except (OSError, SyntaxError, ValueError):
-        pass
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    return set(re.findall(r"(?:from|import)\s+([\w.]+)", text))
+        return _imported_names(ast.parse(text))
+    except (SyntaxError, ValueError, RecursionError):
+        return set(re.findall(r"(?:from|import)\s+([\w.]+)", text))
 
 
-def _references_changed_module(path: Path, suffixes: list[set[str]], stems: set[str]) -> bool:
-    """Whether ONE test file statically references any changed module: either
-    an import that intersects a module's dotted suffixes, or any mention of a
-    module's file stem. (#1792: extracted from ``_has_related_failure``.)
+def _references_changed_module(text: str, suffixes: list[set[str]], stems: set[str]) -> bool:
+    """Whether ONE test file's source statically references any changed
+    module: either an import that intersects a module's dotted suffixes, or
+    any mention of a module's file stem. (#1792: extracted from
+    ``_has_related_failure``.)
     """
-    imported = _test_module_imports(path)
-    if imported is not None and any(imported & s for s in suffixes):
+    if any(_test_module_imports(text) & s for s in suffixes):
         return True
-    try:
-        content = path.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    return any(re.search(rf"\b{re.escape(stem)}\b", content) for stem in stems)
+    return any(re.search(rf"\b{re.escape(stem)}\b", text) for stem in stems)
 
 
-def _has_related_failure(cwd: Path, failing_ids: list[str], src: list[str]) -> bool:
+def _has_related_failure(
+    read_text: Callable[[str], str], failing_ids: list[str], src: list[str]
+) -> bool:
     """Whether at least one failing test statically references a changed module.
 
     The dynamic flip (red with source reverted, green with it) is the primary
     attribution; this static check is the "unrelated test" guard: a failing
     test that never mentions any changed source module can't be evidence FOR
-    that change, even if it flips for incidental reasons.
+    that change, even if it flips for incidental reasons. Reads file CONTENT
+    through ``read_text`` — on the host that is the worktree; contained, the
+    sandbox the evaluation opened — and parses it here: parsing executes
+    nothing the candidate wrote.
     """
     if not failing_ids:
         return False
@@ -479,10 +562,16 @@ def _has_related_failure(cwd: Path, failing_ids: list[str], src: list[str]) -> b
     stems = {s.rsplit("/", 1)[-1].removesuffix(".py") for s in src}
     test_files = sorted({ident.split("::")[0] for ident in failing_ids})
     for rel in test_files:
-        path = cwd / rel
-        if not path.is_file():
+        try:
+            text = read_text(rel)
+        except FileNotFoundError:
+            # Absent on this side (restored away, or never present): there is
+            # no import surface here to match against.
             continue
-        if _references_changed_module(path, suffixes, stems):
+        except (OSError, RuntimeError):
+            # Unreadable through this side's transport: same answer.
+            continue
+        if _references_changed_module(text, suffixes, stems):
             return True
     return False
 
