@@ -136,6 +136,10 @@ class EngineService:
             "agent_port": type(self._agent_port).__name__ if self._agent_port is not None else None,
             "task_backend": type(self._backend).__name__ if self._backend is not None else None,
             "bridge_configured": self._configured,
+            # Stub/read-only surfaces may remain usable without execution authority.
+            "graph_execution_available": (
+                self.run_store is not None and self.graph_run_store is not None
+            ),
         }
 
     def _record_degradation(self, component: str, exc: BaseException) -> None:
@@ -240,9 +244,9 @@ class EngineService:
         """The core Container's schedule admission seam, or None.
 
         None for the same reason as `schedule_store`: without the bridge there
-        is no canonical spine in this process, and the scheduler then keeps the
-        behavior it had — evaluate locally and run the registered DAG — rather
-        than failing every tick. With the bridge, this is what makes a firing
+        is no canonical spine in this process, so registered Graph execution
+        refuses rather than creating process-local work (#1113). With the
+        bridge, this is what makes a firing
         and its Run one act instead of two (#231).
         """
         container = getattr(getattr(self, "_agent_port", None), "container", None)
