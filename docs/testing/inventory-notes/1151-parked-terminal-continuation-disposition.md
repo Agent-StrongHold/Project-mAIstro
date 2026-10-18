@@ -9,8 +9,10 @@ inventory-delta:
 delivers the parent-held parked-conflict characterization from #1151's dispatch
 scope: four constructed `WAITING/PAUSED x COMPLETED/FAILED` inputs, their
 pending-decision/HITL evidence, and a second repairable Run proving isolation.
-These direct store constructions do **not** prove that a production walker can
-reach every row, or satisfy the parent's blocked disagreement-repair criterion.
+The production walker now creates each timer/HITL park through physical
+execution and canonical acceptance; only the terminal-continuation mismatch is
+constructed. This does **not** prove that a production walker can reach every
+conflicting pair, or satisfy the parent's blocked disagreement-repair criterion.
 
 The accepted disposition table keeps these rows preserved: a parked Run awaits
 its existing retry/answer decision, terminal history is not rewritten, and no
@@ -33,18 +35,23 @@ nodes, so the existing +15 inventory delta remains unchanged.
 
 Each matrix node proves:
 
-- input persistence: a constructed parked Run (timer WAITING with `resume_at`
-  still in the future at the explicitly passed evaluation clock, or PAUSED with
-  a durable HITL pause entry) under a terminal continuation can be independently
-  read by recovery; this is not an injected production-walker crash;
+- input persistence: `run_durable_graph` executes a pausing node once and writes
+  its completed physical Attempt, accepted WAITING/PAUSED logical NodeRun and
+  parent, and timer/HITL continuation. Recovery independently reads that park
+  before the terminal mismatch is injected. Timer deadlines are in the future
+  at the explicitly passed evaluation clock; no HITL answer or settlement exists.
+  This is not an injected production-walker crash;
 - visitation: a spy on the sweep's per-Run repair records the row being
   enumerated and evaluated (through the canonical parked scan and the terminal
   continuation buckets), not merely absent from the changed count;
 - preservation: canonical parked status, terminal continuation status and
-  version, pending-decision evidence, and the completed NodeRun (with its
-  accepted Attempt outcome) are all intact after the tick; the full assembled
-  record, including physical Attempt history, is equal before and after both
-  reconciliation calls;
+  version, pending-decision evidence, and the parked NodeRun (with its
+  accepted completed physical Attempt outcome) are all intact after the tick;
+  lease identity is checked and the full assembled record, including physical
+  Attempt history, is equal before and after both reconciliation calls;
+- HITL authority: public `resume_durable_graph` refuses PAUSED rows before
+  resolving a node, even under a terminal continuation; neither canonical
+  history nor the raw continuation changes;
 - isolation and idempotence: a genuinely repairable Run — the stale RUNNING
   continuation under a canonically terminal COMPLETED Run that
   `_reconcile_terminal_spine` owns — settles in the same bounded sweep
@@ -54,3 +61,6 @@ Each matrix node proves:
 Earlier lane executions used the mixed PG-continuation/in-memory-spine fixture.
 They are not dual-PG durability evidence. Current repair validation and remaining
 acceptance gaps are recorded in `docs/testing/1151-repair-current.md`.
+The current walker-backed fixture repair and its validation are recorded in
+`docs/testing/1151-repair-20261018-current.md`. Collected node count remains 15;
+the existing inventory delta is unchanged.

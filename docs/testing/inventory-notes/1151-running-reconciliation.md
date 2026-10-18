@@ -32,15 +32,16 @@ canonical RUNNING reconciliation sweep and the `attempt_executor` active-Attempt
 `tests/graph/durable_runs/test_frontier_active_attempt_guard.py`
 (see `1151-frontier-active-attempt-guard.md`).
 
-This drop closes the lane's persistence-failure acceptance criterion through the
-recovery path, not by an in-line retry: `packages/maistro-core/src/maistro/runs/execution.py`
-is byte-identical to develop, and the criterion "persistence failure after successful
-runtime execution does not silently discard the result, bypass node retry policy, or
-leave an unrecoverable RUNNING Attempt" is what the #1288 contract tests already prove
-on this tree — the answered turn is returned to the caller exactly once and logged,
-the model is never asked again, and `recover_abandoned_attempts` reclaims the expired
-lease and settles the stranded Attempt/NodeRun (executed at this head: the whole
-`TestAPostDispatchRecordingFailureIsNeverRedispatched` class, 18 passed). PR #2153's
-summary bullet claiming an idempotent terminal-write retry in `runs/execution.py` is
-therefore stale branch history, not a description of this tree; correcting that body
-is a GitHub-side edit outside worker authority and remains for the integrator.
+This drop does **not** prove the lane's universal persistence-failure acceptance
+criterion. The #1288 contract covers chat: the answered turn is returned to the
+caller exactly once and logged, the model is never asked again, and lease recovery
+can settle the stranded physical/logical records. Those chat assertions do not
+prove preservation of an uncommitted Graph runtime result or Graph node-retry
+policy. That remaining acceptance is explicitly UNVERIFIED; recovering a lease
+must not fabricate persisted success from lost output (ADR-08f0).
+
+PR #2153's summary bullet claiming an idempotent terminal-write retry in
+`runs/execution.py` is stale branch history, not a description of this tree;
+correcting that body is a GitHub-side edit outside worker authority and remains
+for the integrator. Current executed validation and limits are recorded in
+`docs/testing/1151-repair-20261018-current.md`.
