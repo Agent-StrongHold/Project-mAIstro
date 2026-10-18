@@ -76,12 +76,12 @@ from maistro.extensions.types import (
     ExtensionTransition,
     InspectionConflict,
     InvalidTransition,
+    OperatorTrustEvidence,
     PinConflict,
     PinEvent,
     PinRecord,
     PreflightError,
     RemovalNote,
-    TrustEvidence,
     UnknownInstall,
 )
 
@@ -242,19 +242,48 @@ class ExtensionInstallService:
         actor: str,
         scope: ExtensionScope,
         package: ExtensionPackage,
-        trust_evidence: TrustEvidence,
+        trust_evidence: OperatorTrustEvidence,
     ) -> ExtensionInstallRecord:
         """Inspect a candidate and park it for explicit authorization.
 
         Parsing the manifest is pure byte handling. Compat, trust and
         authority are pure evaluations. Nothing here can import or execute
         extension code — the loader is not reachable from this method.
+
+        A removed version's bytes stay anchored: reinstalling the same
+        version opens a fresh authorization track only for the identical
+        manifest and artifact; different bytes under a used semver are
+        refused (:class:`InspectionConflict`), so one version never
+        silently names two packages.
         """
         if not actor.strip():
             raise ValueError("actor is required: every transition needs an accountable actor")
 
         manifest = inspect_manifest(package.manifest_bytes)
         existing = await self._store.latest_record(scope, manifest.extension_id, manifest.version)
+        if existing is not None and existing.state is ExtensionState.REMOVED:
+            # Removal releases the (scope, extension, version) key so a
+            # reinstall re-runs the full authorization flow — but the bytes
+            # the version installed under stay anchored: only the identical
+            # manifest and artifact may reopen a fresh track. A different
+            # payload under the same semver would make one version name two
+            # packages, so it is refused outright.
+            # A removed record always carries the artifact digest it was
+            # installed with: removal is reachable only after a successful
+            # install, so the digest is bound by the time a version is
+            # removed.
+            removed_artifact = existing.artifact_sha256 or ""
+            same_manifest = existing.manifest.source_sha256 == manifest.source_sha256
+            same_artifact = removed_artifact == manifest.artifact_sha256
+            if not (same_manifest and same_artifact):
+                raise InspectionConflict(
+                    f"{manifest.extension_id} {manifest.version} was installed in "
+                    f"{scope.describe} with different bytes (manifest "
+                    f"{existing.manifest.source_sha256[:12]}…, artifact "
+                    f"{removed_artifact[:12]}…); a removed version may only "
+                    "be reinstalled as the identical artifact — one semantic "
+                    "version never names two packages"
+                )
         if existing is not None and existing.state not in INSPECT_SKIP_STATES:
             same_manifest = existing.manifest.source_sha256 == manifest.source_sha256
             same_artifact = existing.artifact_sha256 == manifest.artifact_sha256
@@ -501,7 +530,12 @@ class ExtensionInstallService:
             reason=purpose,
             now=self._clock(),
             mutate=lambda r: replace(
-                r, install_attempts=r.install_attempts + 1, installed_by=actor
+                r,
+                install_attempts=r.install_attempts + 1,
+                # installed_by is the original installer's provenance and is
+                # frozen at the first activation; later resume/rollback
+                # operators are recorded on each transition instead.
+                installed_by=r.installed_by if r.installed_by is not None else actor,
             ),
         )
 
@@ -679,7 +713,7 @@ class ExtensionInstallService:
         actor: str,
         scope: ExtensionScope,
         package: ExtensionPackage,
-        trust_evidence: TrustEvidence,
+        trust_evidence: OperatorTrustEvidence,
     ) -> tuple[ExtensionInstallRecord, PreflightReport]:
         """Begin a version upgrade: preflight, then the governed inspect.
 
@@ -947,8 +981,11 @@ class ExtensionInstallService:
         The frozen grant stands — disable suspended resolution, it never
         revoked authorization — so no new decision is required; the payload
         must still be the exact bound artifact, and activation goes through
-        the shared loader path. Idempotent for an already-ACTIVE record
-        carrying the same artifact.
+        the shared loader path. Compatibility is re-evaluated against the
+        platform as it stands *now* (the same check inspection and rollback
+        run): a record disabled under an older platform API major cannot be
+        resumed by a service that has moved on. Idempotent for an
+        already-ACTIVE record carrying the same artifact.
         """
         if not actor.strip():
             raise ValueError("actor is required: every transition needs an accountable actor")
@@ -973,6 +1010,25 @@ class ExtensionInstallService:
                     f"payload digest {payload_digest} does not match the artifact bound for "
                     f"{record.version} ({record.artifact_sha256}); the grant stands only "
                     "for the authorized bytes"
+                )
+            # The grant is frozen, compatibility is not: re-run the same
+            # current evaluation inspection and rollback use, against the
+            # platform API version and the scope's ACTIVE set as they stand
+            # now. A record disabled under one platform major must not be
+            # resumed under another. The resumed record itself is DISABLED,
+            # so installed_versions never contains it and the dependency
+            # map needs no exclusion.
+            compatibility = evaluate_compatibility(
+                record.manifest,
+                CompatibilityPolicy(
+                    platform_api_version=self._platform_api_version,
+                    installed_versions=await self._store.installed_versions(scope),
+                ),
+            )
+            if not compatibility.compatible:
+                raise PreflightError(
+                    "resume refused: the platform no longer satisfies the recorded "
+                    "compatibility: " + "; ".join(compatibility.failures)
                 )
             return await self._activate_locked(
                 record,

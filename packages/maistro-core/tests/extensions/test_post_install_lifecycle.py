@@ -46,9 +46,9 @@ from maistro.extensions.types import (
     ExtensionPackage,
     ExtensionScope,
     ExtensionState,
+    OperatorTrustEvidence,
     PinRecord,
     RemovalNote,
-    TrustEvidence,
 )
 
 PAYLOAD_V1 = b"extension-payload-v1"
@@ -133,7 +133,7 @@ class RecordingJanitor:
         return resources
 
 
-TRUST = TrustEvidence(publisher_id="acme", signature_present=True, signer_key_id="key-1")
+TRUST = OperatorTrustEvidence(publisher_id="acme", signature_present=True, signer_key_id="key-1")
 POLICY = TrustPolicy(
     trusted_publishers=frozenset({"acme"}),
     require_signature=True,
@@ -364,7 +364,7 @@ class TestSameAuthorityUpgrade:
                 manifest_bytes=manifest_bytes(version="1.5.0", payload=PAYLOAD_V2),
                 payload=PAYLOAD_V2,
             ),
-            trust_evidence=TrustEvidence(publisher_id="acme", signature_present=False),
+            trust_evidence=OperatorTrustEvidence(publisher_id="acme", signature_present=False),
         )
         assert record.state is ExtensionState.REJECTED
         resolved = await service.resolve(SCOPE, "acme.chart_tools")
@@ -492,6 +492,41 @@ class TestRollback:
         v2_trail = await service.transitions(v2.install_id, scope=SCOPE)
         assert v2_trail[-1].to_state is ExtensionState.SUPERSEDED
         assert "rolled back to 1.4.0" in v2_trail[-1].reason
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_later_activations_preserve_the_original_installer(self) -> None:
+        """AC: installed_by stays the first installer across resume/rollback.
+
+        Resume and rollback funnel through the shared activation path, which
+        must not reattribute the record to the operator performing the later
+        lifecycle action; those later actors stay on the transition trail
+        instead, and the record keeps its original installation provenance.
+        """
+        service, _store, _loader, _clock = make_service()
+        v1 = await install_version(service, version="1.4.0", actor="installer-1")
+        assert v1.installed_by == "installer-1"
+
+        await service.disable(v1.install_id, actor="operator-9", scope=SCOPE, reason="maintenance")
+        resumed = await service.resume(
+            v1.install_id, actor="operator-9", scope=SCOPE, payload=PAYLOAD_V1
+        )
+        assert resumed.state is ExtensionState.ACTIVE
+        assert resumed.installed_by == "installer-1"
+        resume_trail = await service.transitions(v1.install_id, scope=SCOPE)
+        assert resume_trail[-1].actor == "operator-9"
+
+        v2, _report, _candidate = await upgrade_to(service, version="1.5.0", payload=PAYLOAD_V2)
+        rolled = await service.rollback(
+            v1.install_id,
+            actor="operator-9",
+            scope=SCOPE,
+            payload=PAYLOAD_V1,
+            reason="regression in 1.5.0",
+        )
+        assert rolled.state is ExtensionState.ACTIVE
+        assert rolled.installed_by == "installer-1"
+        assert v2 is not None
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")

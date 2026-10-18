@@ -40,7 +40,7 @@ from maistro.extensions.types import (
     ExtensionPackage,
     ExtensionScope,
     ExtensionState,
-    TrustEvidence,
+    OperatorTrustEvidence,
 )
 
 PAYLOAD = b"extension-payload-v1"
@@ -119,7 +119,7 @@ class SlowLoader:
         return LoadedExtension(extension_id=record.extension_id, version=record.version)
 
 
-TRUST = TrustEvidence(publisher_id="acme", signature_present=True, signer_key_id="key-1")
+TRUST = OperatorTrustEvidence(publisher_id="acme", signature_present=True, signer_key_id="key-1")
 POLICY = TrustPolicy(
     trusted_publishers=frozenset({"acme"}),
     require_signature=True,
@@ -163,7 +163,7 @@ async def inspect_default(
     scope: ExtensionScope = SCOPE,
     permissions: tuple[str, ...] = ("network.http", "storage.workspace"),
     actor: str = "operator-1",
-    evidence: TrustEvidence = TRUST,
+    evidence: OperatorTrustEvidence = TRUST,
     **manifest_kwargs: object,
 ) -> ExtensionInstallRecord:
     return await service.inspect(
@@ -716,6 +716,45 @@ class TestScopeContainment:
         await authorize_and_install(service, first)
         assert await service.active(SCOPE, "acme.chart_tools") is not None
         assert await service.active(scope_b, "acme.chart_tools") is None
+
+
+class TestRemovedVersionBytesStayAnchored:
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_reinstall_of_removed_version_with_different_bytes_is_refused(self) -> None:
+        """A removed version's digests stay anchored: a different payload may
+        not masquerade as the same semantic version, even though removal
+        released the (scope, extension, version) key."""
+        service, store, _loader, _clock = make_service()
+        record = await inspect_default(service)
+        await authorize_and_install(service, record)
+        await service.remove(record.install_id, actor="operator-1", scope=SCOPE, reason="cleanup")
+        with pytest.raises(InspectionConflict, match="identical artifact"):
+            await inspect_default(service, payload=PAYLOAD + b"-swapped")
+        removed = [
+            r
+            for r in store._records.values()
+            if r.extension_id == "acme.chart_tools" and r.state is ExtensionState.REMOVED
+        ]
+        assert len(removed) == 1, "the refused candidate must not create a record"
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_reinstall_of_removed_identical_version_opens_a_fresh_track(self) -> None:
+        """The identical artifact reinstalls through a full re-authorization:
+        removal ends the old grant, never silently reuses it."""
+        service, store, loader, _clock = make_service()
+        first = await inspect_default(service)
+        await authorize_and_install(service, first)
+        await service.remove(first.install_id, actor="operator-1", scope=SCOPE, reason="cleanup")
+        second = await inspect_default(service)
+        assert second.install_id != first.install_id
+        assert second.state is ExtensionState.AWAITING_AUTHORIZATION
+        assert await service.active(SCOPE, "acme.chart_tools") is None
+        await authorize_and_install(service, second)
+        assert loader.calls == [(first.install_id, PAYLOAD), (second.install_id, PAYLOAD)]  # type: ignore[attr-defined]
+        records = [r for r in store._records.values() if r.extension_id == "acme.chart_tools"]
+        assert len(records) == 2
 
 
 class TestDecisionDiscipline:
