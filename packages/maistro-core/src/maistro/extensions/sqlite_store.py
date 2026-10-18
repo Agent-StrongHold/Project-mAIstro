@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -153,6 +154,65 @@ class SqliteExtensionInstallStore:
             await self._conn.commit()
         if activate is not None:
             activate(resolved)
+        return resolved
+
+    async def record_installs(
+        self,
+        installs: Sequence[tuple[InstallRequest, bytes]],
+        *,
+        activate: ActivationCallback | None = None,
+    ) -> list[InstallRecord]:
+        """Verify the whole batch, then record all in one commit, then activate.
+
+        Same rules as :meth:`record_install`, with a stronger guarantee: every
+        digest, signature, and identity check runs — each entry against the
+        persisted history plus the records already resolved in this batch —
+        before the first INSERT. A failure anywhere commits nothing and never
+        invokes ``activate``, so a batch cannot land half-installed.
+        """
+        async with self._lock:
+            publishers = await self._publishers_in_lock()
+            pending: list[InstallRecord] = []
+            resolved: list[InstallRecord] = []
+            for request, package_bytes in installs:
+                prior = [
+                    *await self._history_in_lock(request.identity.extension_name),
+                    *(
+                        record
+                        for record in pending
+                        if record.identity.extension_name == request.identity.extension_name
+                    ),
+                ]
+                record = resolve_install(
+                    publishers,
+                    prior,
+                    request,
+                    package_bytes=package_bytes,
+                    now=datetime.now(UTC),
+                    install_id=uuid.uuid4().hex,
+                )
+                if record is None:
+                    resolved.append(self._existing_in_lock(prior, request.identity))
+                else:
+                    pending.append(record)
+                    resolved.append(record)
+            for record in pending:
+                await self._conn.execute(
+                    "INSERT INTO extension_installs "
+                    "(extension_name, semantic_version, package_sha256, installed_at, payload) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        record.identity.extension_name,
+                        record.identity.semantic_version,
+                        record.identity.package_sha256,
+                        record.installed_at.isoformat(),
+                        record_to_json(record),
+                    ),
+                )
+            await self._conn.commit()
+        if activate is not None:
+            for record in pending:
+                activate(record)
         return resolved
 
     async def install_history(self, extension_name: str) -> list[InstallRecord]:
