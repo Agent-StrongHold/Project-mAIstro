@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from maistro.events.envelope import EventEnvelope
-from maistro.goals import (
+from maistro.goals.reconciliation import (
     GOAL_WAKE_PATTERNS,
     Goal,
     GoalReconciler,
@@ -28,9 +28,9 @@ from maistro.goals import (
     StaleGoalFence,
     WakeReason,
 )
-from maistro.goals.model import GoalFacts
-from maistro.goals.store import GoalCancelled, GoalDeadlinePassed, _check_gates
-from maistro.goals.wiring import EventWakeBridge, wake_reason_for_event
+from maistro.goals.reconciliation.model import GoalFacts
+from maistro.goals.reconciliation.store import GoalCancelled, GoalDeadlinePassed, _check_gates
+from maistro.goals.reconciliation.wiring import EventWakeBridge, wake_reason_for_event
 
 T0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
@@ -694,7 +694,7 @@ class TestControlMetadataNotExecution:
         assert view["claim"] is None, "the claim was released with the pass"
 
     async def test_control_records_carry_no_execution_lifecycle(self) -> None:
-        from maistro.goals.model import GoalAdmission, GoalClaim, WakeFact
+        from maistro.goals.reconciliation.model import GoalAdmission, GoalClaim, WakeFact
 
         # None of the control records may restate Run/NodeRun/Attempt state;
         # they reference canonical artifacts, never re-own them.

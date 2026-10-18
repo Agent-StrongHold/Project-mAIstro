@@ -14,7 +14,11 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from maistro.goals.reconciliation.model import WakeFact, WakeReason, wake_id_for
-from maistro.goals.reconciliation.store import GoalReconciliationStore, InMemoryGoalStore, SqliteGoalStore
+from maistro.goals.reconciliation.store import (
+    GoalReconciliationStore,
+    InMemoryGoalStore,
+    SqliteGoalStore,
+)
 
 if TYPE_CHECKING:
     from maistro.goals.reconciliation.reconciler import GoalReconciler

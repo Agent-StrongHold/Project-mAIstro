@@ -13,8 +13,14 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from maistro.container import Container, create_container
-from maistro.goals import Goal, GoalFacts, PlannedAdmission, PolicyDecision, WakeReason
-from maistro.goals.wiring import wire_goal_reconciliation
+from maistro.goals.reconciliation import (
+    Goal,
+    GoalFacts,
+    PlannedAdmission,
+    PolicyDecision,
+    WakeReason,
+)
+from maistro.goals.reconciliation.wiring import wire_goal_reconciliation
 from maistro.types.config import AgentConfig
 
 
@@ -57,7 +63,7 @@ async def test_pg_pool_falls_back_to_memory_with_a_loud_warning(
 ) -> None:
     import logging
 
-    with caplog.at_level(logging.WARNING, logger="maistro.goals.wiring"):
+    with caplog.at_level(logging.WARNING, logger="maistro.goals.reconciliation.wiring"):
         store = await wire_goal_reconciliation(pg_pool=object())
     assert type(store).__name__ == "InMemoryGoalStore"
     assert any("#1572" in record.getMessage() for record in caplog.records)
