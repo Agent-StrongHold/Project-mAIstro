@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +22
+  packages/hive-conductor/backend/tests: +23
 ---
 # 1826-design-db-url-normalization
 
@@ -16,7 +16,7 @@ same "no DATABASE_URL configured" startup line — as the supported no-database
 mode. `DesignServiceStatus` carries the new `store_cause`, and
 `routes.design._require_store` answers project routes with it.
 
-## What the 22 node IDs cover
+## What the 23 node IDs cover
 
 `test_design_store_wiring.py` (18, hermetic — `create_async_engine` selects a
 dialect from the URL alone, so no server is needed):
@@ -33,14 +33,18 @@ dialect from the URL alone, so no server is needed):
 - 3: an absent URL stays a supported, explicit mode — engine/factory `None`,
   startup `ready` with `store_cause is None`, route answers "no database URL
   configured".
-- 7: a configured URL that cannot build an engine (forced
+- 8: a configured URL that cannot build an engine (forced
   `ModuleNotFoundError`, a real malformed-URL `ValueError` from
   SQLAlchemy, and a netloc-less spelling the shared redactor cannot parse)
   raises `DesignStoreConfigurationError`, startup degrades with
   the recorded sanitized cause, the status dict carries it, and the route
   answers with the actual failure — never "not set", never the password
   (AC-7: the cause names the exception type against a redacted URL and never
-  interpolates `str(exc)`).
+  interpolates `str(exc)`). The eighth pins the route's other unavailable
+  form: an accessor seam that yields `None` while a cause is recorded must
+  answer with that cause too, never the no-database message (repair round:
+  the diff-coverage gate named the seam's cause leg unexecuted; the test
+  was shown to fail when that leg is reverted to the absence answer).
 - 2: resolution is persistence-scoped too (salvage review) — a `DB_*` value
   pydantic rejects (`DB_PORT=notaport`) raises `DesignStoreConfigurationError`
   from the same boundary, naming the exception type and never the environment

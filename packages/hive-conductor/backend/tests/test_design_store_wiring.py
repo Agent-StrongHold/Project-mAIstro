@@ -251,6 +251,33 @@ class TestConfiguredButBrokenIsNeverAbsence:
         assert "not set" not in excinfo.value.detail
         assert "s3cret" not in excinfo.value.detail
 
+    async def test_the_none_returning_store_seam_answers_with_the_cause_too(
+        self, started, monkeypatch
+    ):
+        """`_require_store` normalizes two unavailable forms: the accessor's
+        RuntimeError and a None store. Both must answer a recorded cause with
+        that cause. The current accessor can only raise, so the None form is
+        the seam older callers (and the AC-6 scope tests) exercise — but if it
+        ever yielded None under a recorded failure, answering "no database URL
+        configured" would be the same conflation #1826 forbids, one seam over.
+        The assertion that discriminates is the positive one: the detail must
+        name the actual failure, not merely avoid the old "not set" words."""
+        monkeypatch.setenv("DATABASE_URL", COMPOSE_URL)
+
+        def _broken(*args: object, **kwargs: object) -> None:
+            raise ModuleNotFoundError("No module named 'psycopg2'")
+
+        monkeypatch.setattr(design_service, "create_async_engine", _broken)
+        await design_service.start_design_service(_Settings())
+        assert design_service.get_design_status().store_cause is not None
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: None)
+        with pytest.raises(HTTPException) as excinfo:
+            design_routes._require_store()
+        assert excinfo.value.status_code == 503
+        assert "ModuleNotFoundError" in excinfo.value.detail
+        assert "no database URL configured" not in excinfo.value.detail
+        assert "s3cret" not in excinfo.value.detail
+
 
 class TestAResolutionFailureIsAlsoConfiguration:
     """Resolution is persistence-scoped too (#1826 salvage review).
