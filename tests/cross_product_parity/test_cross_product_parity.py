@@ -74,9 +74,48 @@ def _golden_scenario() -> ScenarioExecution:
     return _unavailable_real_seam("golden observation (#463)")
 
 
-def _validate_builders_golden(observation: Mapping[str, object]) -> None:
-    """Match the independent #463 oracle against the producer's observation."""
-    assert_matches_golden("builders", "retry_keeps_logical_run", observation)
+def _required_golden_scenarios() -> tuple[tuple[str, str], ...]:
+    """Every (product, scenario_id) the locked #463 manifest requires."""
+    require_dependencies(GOLDEN_BASELINES)
+    manifest_path = (
+        Path(__file__).resolve().parents[1] / "golden_baselines" / "manifest.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    fixtures = {item["product"]: item for item in manifest["fixtures"]}
+    required: list[tuple[str, str]] = []
+    for product in manifest["required_products"]:
+        fixture_entry = fixtures.get(product)
+        if fixture_entry is None:
+            raise ParityContractError(
+                f"golden manifest requires {product!r} without a declared fixture"
+            )
+        fixture = json.loads(
+            (manifest_path.parent / fixture_entry["path"]).read_text(encoding="utf-8")
+        )
+        for scenario in fixture["scenarios"]:
+            required.append((product, scenario["id"]))
+    assert required, "golden manifest must require at least one product scenario"
+    return tuple(required)
+
+
+def _validate_golden_observation(observation: Mapping[str, object]) -> None:
+    """Match every manifest-required scenario, not one Builders case (#463)."""
+    required = _required_golden_scenarios()
+    required_keys = {f"{product}/{scenario_id}" for product, scenario_id in required}
+    registered = {str(key) for key in observation}
+    missing = sorted(required_keys - registered)
+    if missing:
+        raise ParityContractError(
+            "golden observation lacks required product scenarios: " + ", ".join(missing)
+        )
+    unexpected = sorted(registered - required_keys)
+    if unexpected:
+        raise ParityContractError(
+            "golden observation registered unrequired scenarios: " + ", ".join(unexpected)
+        )
+    for key in sorted(required_keys):
+        product, scenario_id = key.split("/", 1)
+        assert_matches_golden(product, scenario_id, observation[key])
 
 
 BUILDERS_SCENARIO = ParityScenario(
@@ -98,7 +137,7 @@ GOLDEN_SCENARIO = ParityScenario(
     name="golden-real-observation",
     dependencies=(GOLDEN_BASELINES,),
     execute=_golden_scenario,
-    validate_observation=_validate_builders_golden,
+    validate_observation=_validate_golden_observation,
 )
 
 
@@ -332,6 +371,20 @@ def test_golden_real_observation_emits_strict_closeout_evidence() -> None:
     evidence = execute_scenario_sync(GOLDEN_SCENARIO)
     if evidence.status == "BLOCKED":
         assert evidence.error or evidence.blockers
+
+
+def test_golden_closeout_requires_every_manifest_scenario() -> None:
+    """A lone Builders observation cannot register golden parity (#463).
+
+    The manifest requires Builders, Conductor, Evolve, and schedules, so the
+    golden validator must fail closed naming every uncovered product scenario
+    before a closeout report can declare the golden baseline satisfied.
+    """
+    required = _required_golden_scenarios()
+    assert {product for product, _ in required} == {"builders", "conductor", "evolve", "schedules"}
+    assert len(required) == 15
+    with pytest.raises(ParityContractError, match="lacks required product scenarios"):
+        _validate_golden_observation({"builders/retry_keeps_logical_run": {}})
 
 
 def test_strict_mode_fails_unavailable_dependencies_and_emits_json(capsys) -> None:

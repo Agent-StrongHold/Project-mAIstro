@@ -478,7 +478,15 @@ async def execute_scenario(
     except BaseException as exc:
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise
-        status = "FAILED" if selected_mode is ParityMode.M1_CLOSEOUT else "BLOCKED"
+        if selected_mode is ParityMode.M1_CLOSEOUT:
+            status = "FAILED"
+        elif not isinstance(exc, ScenarioAbstained):
+            # Development mode only turns intentional abstentions into BLOCKED
+            # evidence; execution and validation failures must stay visible so
+            # a real parity regression cannot hide behind a green check.
+            raise
+        else:
+            status = "BLOCKED"
         evidence = ScenarioEvidence(
             name=scenario.name,
             status=status,
