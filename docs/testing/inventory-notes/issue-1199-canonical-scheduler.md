@@ -87,3 +87,23 @@ down `coverage-gate` and `gates-ran` with it. See
 for the CI-log-derived root cause, the atomic-publish + tolerant-poll fix, and
 the regression proof (new test reproduces the exact CI error against the
 unfixed helper, then passes; a2a directory 281 passed).
+
+Queue-clear re-validation at 0edfccf9b (first-party, pgvector:pg18 at
+127.0.0.1:18999, fresh database migrated `alembic upgrade head` to 063): core
+scheduling 311 passed / 0 skipped with the PG legs live;
+`test_scheduler_canonical_due.py` 28/28 on both SQL backends; canonical
+admission, manual-fire, definitions, and scheduler suites together 101 passed;
+`test_concurrent_record_fire_on_one_store_does_not_lose_an_increment` across
+memory, SQLite, and PostgreSQL; the named AC tests — restart
+(`test_restart_executes_the_queued_run_once`,
+`test_restart_after_a_cursor_crash_keeps_the_same_run`), two-runner occurrence
+claim (`test_two_live_runners_claim_one_occurrence`), stale-Hive-row
+(`test_hive_row_cannot_force_a_schedule_that_is_not_due`), and the port-file
+regression (`test_base_url_tolerates_a_transiently_empty_port_file`) — all
+pass, the full a2a directory 281 passed. `check-suite-inventory.py` reports
+`ok: 17 suite(s) match the recorded inventory`, `check-test-duplicates.py`
+ok, the vulture gate exits 0 (1322/1322 banked), and ruff check/format are
+clean. This branch's file content is now identical to origin/develop for every
+path it touched (the merge queue landed it); the runs above are the head-level
+evidence the lane brief asked to re-confirm after the GH006 queue block
+cleared. No suite count moves, so no inventory delta is recorded.
