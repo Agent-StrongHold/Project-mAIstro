@@ -5336,11 +5336,6 @@ export interface components {
         /** CreateMissionBody */
         CreateMissionBody: {
             /**
-             * Assigned Agents
-             * @default []
-             */
-            assigned_agents: string[];
-            /**
              * Description
              * @default
              */
