@@ -50,7 +50,7 @@ owners:
 
 # SPEC-081226-6e34: Scoped Grants and Deny-Wins Authorization
 
-- **Status:** Active
+- **Status:** AC Defined
 - **Date:** 2026-08-14 revision
 - **ADR:** `ADR-081226-6e34`
 

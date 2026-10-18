@@ -50,7 +50,13 @@ _BLOCK_BOTO3 = (
 
 
 def test_the_package_imports_without_boto3() -> None:
-    result = _run(_BLOCK_BOTO3 + "import maistro.archive as a; assert a.FilesystemArchiveStore")
+    # `maistro.protocols` too: the aggregate DI surface re-exports `ArchiveStore`
+    # from `maistro.archive.protocols`, so the re-export must not drag boto3 in.
+    result = _run(
+        _BLOCK_BOTO3
+        + "import maistro.archive as a, maistro.protocols as p; "
+        + "assert a.FilesystemArchiveStore; assert p.ArchiveStore"
+    )
 
     assert result.returncode == 0, result.stderr
 
@@ -76,7 +82,9 @@ def test_importing_the_package_does_not_import_boto3() -> None:
     """The lazy re-export must stay lazy: a module-scope import in
     `archive/__init__.py` would satisfy the test above and still pull boto3 into
     every consumer that touches `maistro.archive`."""
-    result = _run("import sys, maistro.archive; assert 'boto3' not in sys.modules")
+    result = _run(
+        "import sys, maistro.archive, maistro.protocols; assert 'boto3' not in sys.modules"
+    )
 
     assert result.returncode == 0, result.stderr
 
