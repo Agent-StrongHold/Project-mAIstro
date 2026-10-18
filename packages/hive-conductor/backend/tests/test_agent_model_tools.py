@@ -569,7 +569,11 @@ async def test_boot_agent_denies_unlisted_model_tool_before_provider(
         for message in provider.call_log[-1]["messages"]
         if message.get("role") == "tool"
     ]
-    assert results == ["Error: Permission denied for undeclared tool 'clarify'"]
+    # #57 moved the allowlist refusal to the strategy gate, which fires before
+    # Sentinel pre-call from the same identity.tools declaration, so the
+    # message reports the allowlist rather than the inner undeclared-tool
+    # defense the direct-executor path below still exercises.
+    assert results == ["Error: tool 'clarify' is not in the Agent allowlist"]
 
 
 @pytest.mark.parametrize("runtime", ["unlisted-tool"], indirect=True)

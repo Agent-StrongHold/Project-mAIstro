@@ -103,3 +103,22 @@ Residual scope still open on #57 (not closed by this branch):
   egress work — current authoritative count is 6.)
 - Issue #847 (adversarial tool-name/schema/argument tests) must close before
   #57 closes.
+
+## CI-repair round (2026-10-18)
+
+CI on head `8e03f9ff8` failed exactly one root cause across two jobs: the
+`test` job's `pytest packages/hive-conductor/backend/tests` step and the
+Coverage gate's diff-coverage run both failed on
+`test_agent_model_tools.py::test_boot_agent_denies_unlisted_model_tool_before_provider`
+(3 params). The branch's strategy-level allowlist gate refuses an unlisted
+model-selected tool before Sentinel pre-call with
+`Error: tool 'X' is not in the Agent allowlist`, while the hive-conductor test
+pinned the inner `Agent._authorize_and_invoke` message. The gate derives
+`allowed_tools` from `frozenset(self.identity.tools)` (`base.py:_build_strategy_kwargs`)
+— the same declaration the test pins — so the repair updates the expectation
+to the earlier refusal; the direct strategy-widening test (which exercises the
+inner boundary via `tool_executor(...)`) keeps the undeclared-tool message and
+still passes. No production code changed in this round; no test counts
+changed (40 passed in the file locally, 111 across the six core/bootstrap
+suites touched by the branch). `check-suite-inventory.py` reports 17/17
+suites matching at this head.
