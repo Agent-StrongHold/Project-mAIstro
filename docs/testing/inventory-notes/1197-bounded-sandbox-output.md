@@ -1,8 +1,21 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +19
+  tests/: +1
 ---
 # #1197 — bounded sandbox output capture
+
+The `tests/: +1` line records a drift this branch did not create. Collection
+node IDs for the root suite are byte-identical to the branch base
+`2f56be40ad24`: the +1 arrived with the develop tip itself, when PR #1993
+(commit `edb669149`) added
+`test_hive_preset_tracks_the_executable_registry` to
+`tests/security/test_sentinel_permission_table_armed.py` without recording a
+delta. CI on develop fails the same gate step for the same reason (run
+39112583663, job `test`), so this note carries the missing +1 — the ledger
+sum then matches collection on the merged tree, which is the reconciliation
+mechanism the gate's failure message prescribes. Nothing was removed or
+renamed to make the numbers meet.
 
 The sandbox protocol now treats stdout and stderr as host-owned resources. Fake
 backend coverage drives concurrent unbounded writers and proves retained bytes
