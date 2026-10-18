@@ -7,6 +7,7 @@ canned rows, so tests assert on emitted SQL/params, not just "didn't raise".
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -15,6 +16,7 @@ import pytest
 from maistro.persistence.pg_audit import PgAuditLog
 from maistro.security._types import AuditEntry as SentinelAuditEntry
 from maistro.security._types import Violation as SentinelViolation
+from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
 from maistro.types.security import AuditEntry
 
 
@@ -73,6 +75,29 @@ def conn() -> FakeConnection:
 @pytest.fixture
 def log(conn: FakeConnection) -> PgAuditLog:
     return PgAuditLog(FakePool(conn))
+
+
+def test_ephemeral_signing_key_warns_on_a_durable_store(
+    conn: FakeConnection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The ADR-073 restart contract needs a configured key: without one this
+    durable store writes proofs no later process can verify, so it must say
+    so at wire time instead of failing silently on the first post-restart
+    ``verify()``."""
+    with caplog.at_level(logging.WARNING, logger="maistro.persistence.audit"):
+        PgAuditLog(FakePool(conn))
+    messages = " ".join(record.getMessage() for record in caplog.records)
+    assert SIGNING_KEY_ENV in messages
+    assert "verify" in messages
+
+
+def test_supplied_signing_key_does_not_warn_on_a_durable_store(
+    conn: FakeConnection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A deployment that configured its key chose durability; no warning."""
+    with caplog.at_level(logging.WARNING, logger="maistro.persistence.audit"):
+        PgAuditLog(FakePool(conn), signer=AuditSigner(bytes(32)))
+    assert not [r for r in caplog.records if r.name == "maistro.persistence.audit"]
 
 
 @pytest.mark.asyncio

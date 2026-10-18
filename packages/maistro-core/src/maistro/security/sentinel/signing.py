@@ -20,7 +20,7 @@ from typing import Any
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-_SIGNING_KEY_ENV = "MAISTRO_AUDIT_SIGNING_KEY"
+SIGNING_KEY_ENV = "MAISTRO_AUDIT_SIGNING_KEY"
 _PROOF_TYPE = "Ed25519Signature2020"
 _SIGNATURE_FIELDS = frozenset({"signature", "signing_key_id", "proof_type"})
 # Fields outside the persisted decision record. The durable stores serialize
@@ -113,6 +113,8 @@ class AuditSigner:
     32-byte Ed25519 seed.  Supplying the same external key after restart is
     required to verify durable records; the generated fallback is intentionally
     marked ephemeral and is suitable only for an in-memory/test store.
+    Durable stores surface that marker (``ephemeral``) as a startup warning so
+    a deployment never silently writes proofs no future process can verify.
     """
 
     def __init__(self, private_key: bytes | None = None) -> None:
@@ -130,7 +132,7 @@ class AuditSigner:
 
     @classmethod
     def from_environment(cls) -> AuditSigner:
-        raw = os.environ.get(_SIGNING_KEY_ENV)
+        raw = os.environ.get(SIGNING_KEY_ENV)
         if not raw:
             return cls()
         try:
@@ -142,7 +144,7 @@ class AuditSigner:
                 key = bytes.fromhex(raw.strip())
         except ValueError as exc:
             raise AuditSignatureError(
-                f"{_SIGNING_KEY_ENV} must be a 32-byte base64url or hexadecimal seed"
+                f"{SIGNING_KEY_ENV} must be a 32-byte base64url or hexadecimal seed"
             ) from exc
         return cls(key)
 
@@ -186,4 +188,4 @@ class AuditSigner:
         return True
 
 
-__all__ = ["AuditSignatureError", "AuditSigner", "canonical_audit_bytes"]
+__all__ = ["SIGNING_KEY_ENV", "AuditSignatureError", "AuditSigner", "canonical_audit_bytes"]

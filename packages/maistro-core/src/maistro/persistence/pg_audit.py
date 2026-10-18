@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from maistro.persistence.audit_pages import AuditPage, make_page, page_query
-from maistro.security.sentinel.signing import AuditSigner
+from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
 from maistro.types.security import AuditEntry
 
 if TYPE_CHECKING:
     import asyncpg
+
+logger = logging.getLogger("maistro.persistence.audit")
 
 
 _ALLOWED_FILTER_COLUMNS: frozenset[str] = frozenset(
@@ -27,6 +30,12 @@ class PgAuditLog:
     def __init__(self, pool: asyncpg.Pool, *, signer: AuditSigner | None = None) -> None:
         self._pool = pool
         self.signer = signer or AuditSigner.from_environment()
+        if self.signer.ephemeral:
+            logger.warning(
+                "audit_log signing key is process-generated (%s is unset): decisions written "
+                "to this durable store will not verify after this process exits",
+                SIGNING_KEY_ENV,
+            )
 
     async def ensure_schema(self) -> None:
         """Add proof columns to databases created before signed audit records."""

@@ -3,6 +3,7 @@ in-memory sqlite3 DB (via aiosqlite)."""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import replace
 
@@ -12,6 +13,7 @@ import pytest
 from maistro.persistence.sqlite_audit import SqliteAuditLog
 from maistro.security._types import AuditEntry as SentinelAuditEntry
 from maistro.security._types import Violation as SentinelViolation
+from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
 from maistro.types.security import AuditEntry
 
 
@@ -130,6 +132,39 @@ async def test_entry_with_unpersisted_metadata_verifies_after_roundtrip(
 
     forged = replace(entry, verdict="denied")
     assert not log.verify(forged)
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_signing_key_warns_on_a_durable_store(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The ADR-073 restart contract needs a configured key: without one this
+    durable store writes proofs no later process can verify, so it must say
+    so at wire time instead of failing silently on the first post-restart
+    ``verify()``."""
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        with caplog.at_level(logging.WARNING, logger="maistro.persistence.audit"):
+            SqliteAuditLog(conn)
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert SIGNING_KEY_ENV in messages
+        assert "verify" in messages
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_supplied_signing_key_does_not_warn_on_a_durable_store(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A deployment that configured its key chose durability; no warning."""
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        with caplog.at_level(logging.WARNING, logger="maistro.persistence.audit"):
+            SqliteAuditLog(conn, signer=AuditSigner(bytes(32)))
+        assert not [r for r in caplog.records if r.name == "maistro.persistence.audit"]
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio

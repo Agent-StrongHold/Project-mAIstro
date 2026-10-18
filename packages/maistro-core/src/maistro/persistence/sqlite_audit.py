@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES, AuditPage, make_page, page_query
-from maistro.security.sentinel.signing import AuditSigner
+from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
 from maistro.sqlite_schema import serialized_schema_upgrade
 from maistro.types.security import AuditEntry
+
+if TYPE_CHECKING:
+    import aiosqlite
+
+logger = logging.getLogger("maistro.persistence.audit")
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -77,6 +83,12 @@ class SqliteAuditLog:
     def __init__(self, conn: aiosqlite.Connection, *, signer: AuditSigner | None = None) -> None:
         self._conn = conn
         self.signer = signer or AuditSigner.from_environment()
+        if self.signer.ephemeral:
+            logger.warning(
+                "audit_log signing key is process-generated (%s is unset): decisions written "
+                "to this durable store will not verify after this process exits",
+                SIGNING_KEY_ENV,
+            )
 
     async def ensure_schema(self) -> None:
         """Create or upgrade the audit_log table, its scope and page indexes.
