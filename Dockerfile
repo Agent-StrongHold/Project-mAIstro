@@ -36,6 +36,11 @@ RUN python -m venv /app/venv
 COPY pyproject.toml uv.lock README.md ./
 COPY packages/maistro-core   packages/maistro-core
 COPY packages/maistro-server packages/maistro-server
+# #1825: the engine mounts /v2/canvas and advertises the Canvas ability, but
+# only the server was installed — `_wire_canvas_ability()` hit ImportError at
+# startup and every Canvas route answered 503 forever, invisibly to a healthy
+# API container. The Canvas package ships in the supported image.
+COPY packages/maistro-canvas packages/maistro-canvas
 # Non-editable install so the venv is fully self-contained (nothing from the
 # source trees is needed on sys.path at runtime).
 # psycopg is listed for alembic, not for the application. Alembic reaches
@@ -51,11 +56,26 @@ COPY packages/maistro-server packages/maistro-server
 RUN pip install --no-cache-dir \
       "./packages/maistro-core[identity,llm,sandbox,observability]" \
       "./packages/maistro-server" \
+      "./packages/maistro-canvas" \
       "alembic>=1.14" \
       "psycopg[binary]>=3.2" \
       "openai>=1.40,<2" \
       "anyio>=4.14.2" \
       "httpx>=0.27.0"
+
+# #406: the identity stack's locked bip-utils pins pytoniq-core-fork, whose
+# wheel installs a generic top-level `examples` namespace package into this
+# venv (examples/boc/*, examples/hashmaps/dict.py, examples/tl/*). It cannot
+# be upgraded away (both PyPI releases ship it; bip-utils pins <0.2.0), and
+# pip cannot exclude a subpath at install time, so the payload is pruned here
+# — build-time and asserted in the same layer so a silent no-op prune fails
+# the image build instead of the next audit. RECORD is rewritten, so the syft
+# SBOM keeps recording the fork distribution (pkg:pypi/pytoniq-core-fork)
+# with a file inventory that shows exactly what the patch removed.
+COPY scripts/check-dependency-namespaces.py scripts/prune-dependency-namespaces.py /tmp/
+RUN python /tmp/prune-dependency-namespaces.py \
+    && python /tmp/check-dependency-namespaces.py --production \
+    && rm -rf /tmp/check-dependency-namespaces.py /tmp/prune-dependency-namespaces.py
 
 # ─── Wolfi runtime (-dev variant): low-CVE, has apk so `git` is available ───
 # This image is NOT vuln-gated (only the hive-conductor image is trivy/grype
@@ -77,8 +97,14 @@ COPY --from=builder /app/venv /app/venv
 # On-disk assets the app reads at runtime (agent YAML, prompts, migrations).
 COPY packages/maistro-core   packages/maistro-core
 COPY packages/maistro-server packages/maistro-server
+# maistro-canvas is deliberately NOT copied here: the wheel carries no on-disk
+# assets (pure Python), so the runtime must resolve `maistro_canvas` from the
+# venv alone — which is exactly what the #1825 smoke asserts, on image contents
+# only, with no network and no mounts. Copying the source tree would blur that
+# proof boundary without serving any runtime read.
 COPY alembic/ alembic/
 COPY alembic.ini .
+COPY config/ config/
 COPY pyproject.toml uv.lock README.md ./
 # Static docker CLI (talks to a mounted /var/run/docker.sock) — a single static
 # binary, no daemon. 29-cli ships a binary built with go1.26.8; older 27-cli

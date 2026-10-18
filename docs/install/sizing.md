@@ -48,8 +48,12 @@ supported in production."* Each concurrent task needs its own memory headroom
 **4 vCPU / 8 GB RAM / 40–80 GB SSD**, covering engine + postgres + litellm +
 langfuse + open-webui plus a few concurrent sandbox tasks.
 
-Scale RAM and vCPU with expected task concurrency — the sandbox containers, not
-the idle services, are what grow under load.
+Scale RAM and vCPU with expected task concurrency - the sandbox containers, not
+the idle services, are what grow under load. The Compose limits are separate
+security ceilings: they contain one runaway service but do not replace runtime
+admission or determine a host's performance capacity. See
+[resource-containment.md](resource-containment.md) for the enforced values and
+recovery semantics.
 
 ---
 
@@ -84,5 +88,6 @@ two tiers:
 - [ADR-081 — Deployment Topology, Backup, and Disaster Recovery](../adr/ADR-081-deployment-backup-dr.md) (measure-first capacity stance)
 - [DEPLOYMENT-STANCE.md](../product/DEPLOYMENT-STANCE.md) (supported profiles, isolation tiers, preflight checks)
 - [resolver-matrix.md](./resolver-matrix.md) (feature selections → compose profiles)
+- [resource-containment.md](./resource-containment.md) (security ceilings and OOM recovery)
 </content>
 </invoke>

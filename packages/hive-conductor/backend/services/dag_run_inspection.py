@@ -16,10 +16,43 @@ carries no Workspace scope is a row written before #1174 threaded scope
 through `start_run`: it is visible to no one, fail-closed, until #1036's
 canonical inspection migration retires or re-scopes it.
 
+By canonical ID, the Run itself is also the answer (#1036): a canonical Run
+from any producer that left no Conductor projection row is retrievable —
+inspectable and controllable — directly through the scoped canonical reader,
+under its own run id. Recent-list discovery stays projection-gated: ordering
+a page of canonical Runs the projection never saw needs the scoped store
+read capability #1036's read-contract boundary reserves for the store
+owners, not a prefix scan here.
+
 `run.user_id` is deliberately NOT an authorization shortcut here. The
 canonical boundary is Workspace membership; a route-local
 `user_id == ...` comparison would be a second, divergent authority (#1174's
 stop condition).
+
+Standalone deployments and the retained projection (ADR-082826-d9f5): when
+this process has no canonical bridge -- `EngineService.run_store` and
+`run_reader` are None because no core Container is bound, which is a real
+configuration, not an error -- the historical `DagRunStore` projection stays
+readable so a bridge-less install keeps its event history. That compatibility
+path is closeout-reviewed policy, and its boundaries are load-bearing:
+
+- it is presentation only: every read enforces the Workspace scope above,
+  fail-closed on rows that name no Workspace;
+- it has no terminal authority: the cancel route refuses with 503 when the
+  spine is unavailable rather than touching the projection, so the path can
+  neither terminalize nor resurrect a run; and
+- it is superseded for every Run the wired reader can read and authorize:
+  a readable, same-Workspace canonical Run replaces the projection row's
+  status, result, error and finished_at wholesale (#1877). A reader that
+  answers nothing -- bridge absent, spine down, or a canonical id it cannot
+  authorize -- deliberately leaves the row's scoped presentation read
+  standing (#1036's reviewed fallback): the row still cannot terminalize,
+  resurrect, or invent canonical status (the cancel route refuses with 503
+  while the spine is unavailable), but it can serve stale lifecycle
+  metadata until the spine answers again. The same holds for a
+  cross-Workspace canonical link. Canonical truth replaces projection truth
+  whenever it is readable; wiring the bridge does not by itself make every
+  stored row agree with it.
 """
 
 from __future__ import annotations
@@ -67,9 +100,19 @@ def _overlay(record: dict[str, Any], run: Any) -> dict[str, Any]:
     creative = _creative_run_provenance(run)
     return {
         **record,
+        # Canonical lifecycle truth replaces the projection row's wholesale
+        # (#1877): status, result, error AND finished_at all come from the
+        # canonical Run now. A null canonical result/error overwrites a stale
+        # projection value instead of letting it stand, a nonterminal Run
+        # clears any stale finished_at (the Run model forbids finished_at on
+        # nonterminal Runs), and a terminal Run's finished_at converts to the
+        # epoch-seconds shape the projection already serves -- derived from
+        # the canonical timestamp only, never a wall-clock value minted at
+        # read time.
         "status": run.status.value,
-        **({"result": run.result} if run.result is not None else {}),
-        **({"error": run.error} if run.error else {}),
+        "result": run.result,
+        "error": run.error,
+        "finished_at": (run.finished_at.timestamp() if run.finished_at is not None else None),
         **({"creative_provenance": creative} if creative else {}),
     }
 
@@ -185,15 +228,47 @@ async def list_visible_runs(user_id: str, *, limit: int = 25) -> list[dict[str, 
     return visible[:limit]
 
 
+def _canonical_only_detail(run: Any) -> dict[str, Any]:
+    """Detail served straight from a canonical Run with no projection row.
+
+    The same answer shape the projection page serves, derived from the Run
+    the scoped reader just authorized -- canonical identity, lifecycle and
+    result, with the event-history fields honestly empty: this store holds
+    no event history for a run it never recorded, and inspection names that
+    gap rather than filling it with fabricated events (#1036).
+    """
+    creative = _creative_run_provenance(run)
+    return {
+        "id": run.run_id,
+        "canonical_run_id": run.run_id,
+        "user_id": str(run.actor_principal_id or ""),
+        "dag_id": "",
+        "status": run.status.value,
+        "result": run.result,
+        "error": run.error,
+        "workspace_id": run.workspace_id,
+        "project_id": run.project_id,
+        "started_at": run.created_at.timestamp(),
+        "finished_at": (run.finished_at.timestamp() if run.finished_at is not None else None),
+        "event_count": 0,
+        "node_states": {},
+        "events": [],
+        **({"creative_provenance": creative} if creative else {}),
+    }
+
+
 async def can_inspect_run(user_id: str, run_id: str) -> bool:
     """May `user_id` open this run's detail/event stream?
 
     Called before the SSE route opens anything: the stream, its replay, and
     every existence signal behind it stay closed until this says yes (#1174).
+    A canonical Run the projection never recorded is answerable directly
+    through the scoped reader (#1036): readable means inspectable, and every
+    reader refusal (absent, down, foreign) stays closed.
     """
     record = get_dag_run_store().get_run(run_id)
     if record is None:
-        return False
+        return bool(await _readable_canonical_runs([run_id], user_id))
     allowed = await authorized_workspace_ids(user_id)
     return _in_scope(record, allowed)
 
@@ -204,11 +279,22 @@ async def visible_run_detail(user_id: str, run_id: str) -> dict[str, Any] | None
     None is the answer for "does not exist" AND for "exists beyond your
     boundary" — deliberately indistinguishable, so a cross-Workspace id gets
     the same 404-shaped refusal a missing id gets and the response confirms
-    nothing about runs the caller cannot see (#1174).
+    nothing about runs the caller cannot see (#1174). A canonical Run from
+    any producer that left no projection row is answered from the canonical
+    Run itself, by its own id, through the same scoped reader (#1036).
     """
     record = get_dag_run_store().get_run(run_id)
     if record is None:
-        return None
+        runs = await _readable_canonical_runs([run_id], user_id)
+        run = runs.get(run_id)
+        if run is None:
+            return None
+        detail = _canonical_only_detail(run)
+        # AC-10 (#775), same rule as the projection path below: per-artifact
+        # state is only reachable when the caller just read the canonical Run.
+        if detail.get("creative_provenance"):
+            detail["artifacts"] = await _creative_artifacts(run.run_id)
+        return detail
     allowed = await authorized_workspace_ids(user_id)
     if not _in_scope(record, allowed):
         return None
@@ -228,17 +314,23 @@ async def visible_run_ids(user_id: str, run_ids: Iterable[str]) -> set[str]:
     The list-shaped companion to `visible_run_detail` (the eval-judge verdict
     list reads through it, #1174): the caller's Workspace universe is resolved
     once for the whole batch, and every candidate is answered by the same
-    projection-scope rule `visible_run_detail` applies, so a page-level answer
-    and a by-id answer can never disagree about what is visible. A candidate
-    whose run is missing — or whose projection row carries no Workspace scope
-    — is simply absent from the result, exactly as it is invisible to the
-    by-id readers.
+    rule `visible_run_detail` applies — projection scope, plus the by-ID
+    canonical read for ids the projection never recorded (#1036) — so a
+    page-level answer and a by-id answer can never disagree about what is
+    visible. A candidate whose run is missing, whose projection row carries
+    no Workspace scope, or whose canonical Run is unreadable is simply
+    absent from the result, exactly as it is invisible to the by-id readers.
     """
     allowed = await authorized_workspace_ids(user_id)
     store = get_dag_run_store()
+    candidates = [str(run_id) for run_id in run_ids]
     visible: set[str] = set()
-    for run_id in run_ids:
-        record = store.get_run(str(run_id))
+    for run_id in candidates:
+        record = store.get_run(run_id)
         if record is not None and _in_scope(record, allowed):
-            visible.add(str(run_id))
+            visible.add(run_id)
+    # One batched canonical read covers every id the projection cannot
+    # answer, so the batch never disagrees with the by-id fallback.
+    projectionless = [run_id for run_id in candidates if run_id not in visible]
+    visible |= set(await _readable_canonical_runs(projectionless, user_id))
     return visible

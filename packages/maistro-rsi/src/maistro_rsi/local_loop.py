@@ -33,6 +33,7 @@ native provider built here drops straight into `RsiCycle` later.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -41,6 +42,7 @@ import subprocess
 import time
 import uuid
 from collections import Counter
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,6 +55,8 @@ from maistro_evolve._candidate_env import candidate_env
 from maistro_evolve.improvement import BudgetTier, ImprovementKind
 from maistro_rsi.competitors import Competitor
 from maistro_rsi.contained_validation import (
+    CONTAINED_PYTHON,
+    ContainedEvaluation,
     ContainmentUnavailable,
     run_validation_in_container,
 )
@@ -185,6 +189,64 @@ def _git(
     if check and proc.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed in {cwd}: {proc.stderr.strip()}")
     return proc
+
+
+def _changed_file_names(cwd: Path, sha: str) -> list[str]:
+    """The non-empty file names one commit touches, in commit order."""
+    return [
+        ln.strip()
+        for ln in _git(cwd, "show", "--name-only", "--pretty=format:", sha).stdout.splitlines()
+        if ln.strip()
+    ]
+
+
+def _primary_changed_file(names: list[str]) -> str:
+    """The changed file a promotion manifest row names: the first changed
+    Python file when the commit touches one, else the first changed file,
+    else ``''`` (a commit with no file rows at all)."""
+    return next((n for n in names if n.endswith(".py")), names[0] if names else "")
+
+
+def _promotion_gate_evidence(note: Any) -> dict[str, Any] | None:
+    """A promotion's recorded gate evidence, or None when the trace note (or
+    the evidence itself) is absent — a legacy promotion must render as
+    unverified, never as gate-clean (#820)."""
+    if note is None or note.gate_evidence is None:
+        return None
+    return dict(note.gate_evidence)
+
+
+def _gate_evidence_entry(gate: Any) -> dict[str, Any]:
+    """#304: per-gate state + provenance (command/tool version/candidate
+    SHA/exit status/output digest where the gate recorded them)."""
+    return {
+        "state": gate.resolved_state().value,
+        "passed": gate.passed,
+        "reason": gate.reason,
+        **(
+            {"provenance": dict(gate.detail)}
+            if "command" in gate.detail or "cause" in gate.detail
+            else {}
+        ),
+    }
+
+
+def _named_gate_evidence(scorecard: Any) -> dict[str, Any]:
+    """Full detail rides along (never silent) for the gates whose detail is
+    an evidence payload: the protected inventory (#306), the fail-first
+    proof (#392), and the evaluator-oracle verdict (#109), keyed by their
+    trace-name rather than their gate name."""
+    evidence_keys = (
+        ("protected_test_inventory", "inventory"),
+        ("fail_first_evidence", "fail_first"),
+        ("evaluator_integrity", "evaluator"),
+    )
+    out: dict[str, Any] = {}
+    for gate_name, trace_key in evidence_keys:
+        detail = next((g.detail for g in scorecard.gates if g.name == gate_name), None)
+        if detail:
+            out[trace_key] = dict(detail)
+    return out
 
 
 def _git_apply(cwd: Path, patch: str) -> bool:
@@ -970,6 +1032,16 @@ class LocalRsiConfig:
     # change. Does NOT cover a test-config edit that shrinks the inventory
     # (that is presumed hiding and always vetoes).
     allow_test_inventory_shrink: bool = False
+    # Governance override for the evaluator-oracle veto (#109): when True, a
+    # candidate that mutated the score-defining artifacts (the scorer, its
+    # pinning tests, the scenario corpora, ratchet baselines, AC trees) is
+    # still scored — but never silently: the veto evidence (mutated paths plus
+    # the trusted base evaluator digest) rides the scorecard and the promotion
+    # record for human review. Default False: RSI may satisfy the oracle but
+    # may not edit it in the diff that is judged against it. This governs
+    # CANDIDATE diffs only — human edits to the oracle go through ordinary
+    # reviewed PRs and never pass through this loop.
+    allow_evaluator_mutation: bool = False
     # Checkpointing for long runs. Every ``report_every`` cycles (0 = only at the
     # end), write a progress report (markdown + JSON) into ``report_dir`` and
     # refresh a rolling, harvestable patch export of everything promoted so far.
@@ -1269,6 +1341,56 @@ class LocalRsiLoop:
             )
             self._elo = EloTournament()
 
+    @contextlib.contextmanager
+    def _contained_baseline(
+        self,
+    ) -> Iterator[tuple[Callable[[list[str]], tuple[int, str, str]] | None, str | None]]:
+        """Where baseline-tree measurements run (#614), yielded as
+        ``(execute, interpreter)`` for the fitness signals that read the
+        BASELINE worktree rather than the candidate's.
+
+        The baseline is not operator-owned code for long: from the second
+        cycle on it is the previously PROMOTED candidate, so its suite and
+        its conftest are candidate-authored. Under container isolation those
+        measurements therefore run inside a sandbox seeded from the baseline
+        directory — the same hardening the candidate evaluation gets — and a
+        sandbox that cannot be established raises `ContainmentUnavailable`,
+        never a host fallback. Local isolation yields ``(None, None)``: the
+        operator's own machine was never the problem. One sandbox per
+        measurement, and the measurement caches make that once per baseline
+        state — the same cost discipline as one sandbox per evaluation.
+        """
+        if self._config.isolation != "container":
+            yield (None, None)
+            return
+        try:
+            from maistro_bootstrap.builders.container_sandbox import (
+                ContainerBuilderSandbox,
+            )
+        except ImportError as exc:  # pragma: no cover - exercised by the import test
+            raise ContainmentUnavailable(
+                f"container isolation needs maistro-bootstrap's container sandbox: {exc}"
+            ) from exc
+        try:
+            with ContainerBuilderSandbox(
+                self._baseline, image=self._config.sandbox_image
+            ) as sandbox:
+                timeout = self._config.test_timeout
+
+                def execute(argv: list[str]) -> tuple[int, str, str]:
+                    # The configured test timeout, not the sandbox default —
+                    # the same contract `ContainedEvaluation` applies to the
+                    # candidate's signals.
+                    return sandbox.run_argv_streams(argv, timeout=timeout)
+
+                yield (execute, CONTAINED_PYTHON)
+        except ContainmentUnavailable:
+            raise
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            raise ContainmentUnavailable(
+                f"could not open the baseline measurement sandbox under container isolation: {exc}"
+            ) from exc
+
     def _baseline_coverage(self) -> float | None:
         if not self._config.use_fitness:
             return None
@@ -1277,27 +1399,41 @@ class LocalRsiLoop:
 
             # One instrumented run yields both the total (the gate) and each
             # file's missing lines (the scout's real targets) — no extra cost.
-            self._baseline_cov, self._baseline_missing = measure_coverage_detailed(
-                self._baseline,
-                source=self._config.coverage_source,
-                pytest_args=self._config.coverage_pytest_args,
-            )
+            # Under container isolation the run executes the baseline's own
+            # suite — candidate-authored code from the previous promotion —
+            # so it crosses the baseline sandbox boundary (#614); refusing
+            # beats a host fallback (see `_contained_baseline`).
+            with self._contained_baseline() as (execute, interpreter):
+                self._baseline_cov, self._baseline_missing = measure_coverage_detailed(
+                    self._baseline,
+                    source=self._config.coverage_source,
+                    pytest_args=self._config.coverage_pytest_args,
+                    interpreter=interpreter,
+                    execute=execute,
+                )
         return self._baseline_cov
 
     def _baseline_test_inventory(self) -> InventoryResult | None:
         """The baseline's protected test inventory (#306), cached per cycle.
 
-        Collection only — no test execution — computed once per baseline state
-        (mirroring ``_baseline_coverage``) and reused by every candidate this
-        cycle scores. None when fitness is off: the inventory gate lives in the
-        Scorecard, which only the fitness path composes.
+        Collection only — no test execution — but collection IMPORTS the
+        baseline tree's test modules and conftest, so under container
+        isolation it still runs inside the baseline sandbox (#614). Computed
+        once per baseline state (mirroring ``_baseline_coverage``) and reused
+        by every candidate this cycle scores. None when fitness is off: the
+        inventory gate lives in the Scorecard, which only the fitness path
+        composes.
         """
         if not self._config.use_fitness:
             return None
         if self._baseline_test_inventory_cache is None:
-            self._baseline_test_inventory_cache = collect_inventory(
-                self._baseline, shlex.split(self._config.coverage_pytest_args)
-            )
+            with self._contained_baseline() as (execute, interpreter):
+                self._baseline_test_inventory_cache = collect_inventory(
+                    self._baseline,
+                    shlex.split(self._config.coverage_pytest_args),
+                    execute=execute,
+                    interpreter=interpreter,
+                )
         return self._baseline_test_inventory_cache
 
     def _uncovered_for(self, target: str) -> list[int]:
@@ -1668,6 +1804,61 @@ class LocalRsiLoop:
         status = _git(cwd, "status", "--porcelain")
         return [ln[3:].strip() for ln in status.stdout.splitlines() if ln.strip()]
 
+    def _evaluator_integrity(self, cycle_dir: Path) -> tuple[list[str], str | None]:
+        """(#109) Did this candidate's committed diff mutate the evaluator oracle?
+
+        Returns ``(mutations, trusted_digest)``: the oracle paths the candidate
+        touched (edits, deletes, renames/moves, symlink swaps, committed
+        generated artifacts) and the SHA-256 of the score-defining artifacts at
+        the trusted base revision. Fail-closed — a git failure counts as a
+        mutation, because an integrity check that can be broken is broken in
+        exactly the direction that hides an edit.
+        """
+        from maistro_rsi.evaluator_oracle import oracle_digest, oracle_mutations
+
+        try:
+            mutations = oracle_mutations(cycle_dir, self._config.baseline_branch)
+            digest: str | None = oracle_digest(cycle_dir, self._config.baseline_branch)
+        except Exception as exc:  # pragma: no cover — defensive, fail closed
+            return [f"<evaluator integrity check failed: {exc}>"], None
+        return mutations, digest
+
+    def _veto_evaluator_mutation(
+        self,
+        index: int,
+        r: _VariantResult,
+        mutations: list[str],
+        digest: str | None,
+    ) -> None:
+        """(#109) Reject a candidate whose diff mutated the scoring oracle, BEFORE
+        the mutated oracle can produce its acceptance evidence.
+
+        Both acceptance paths route through here: with ``use_fitness`` the
+        scorecard never runs against the mutated tree (``evaluate_candidate``
+        short-circuits on the same evidence), and without it the bare test
+        command — itself part of the oracle — never executes. ``accepted``
+        stays False, so the #302 promotion prerequisites can never be met from
+        oracle self-mutation.
+        """
+        r.accepted = False
+        r.tests_passed = False
+        r.composite = 0.0
+        r.trace = {
+            "evaluator": {
+                "verdict": "vetoed",
+                "mutations": mutations,
+                "evaluator_digest": digest,
+                "authorized": False,
+            }
+        }
+        r.note = "evaluator oracle mutated; scoring withheld (#109): " + "; ".join(mutations[:5])
+        logger.warning(
+            "rsi_local_evaluator_mutation_vetoed",
+            index=index,
+            variant=r.label,
+            mutations=mutations[:10],
+        )
+
     def _load_saved_patches(self) -> None:
         """Resume from a prior run: reapply all saved patches to the baseline.
 
@@ -1826,21 +2017,17 @@ class LocalRsiLoop:
                 "-m",
                 f"RSI cycle {index} [{competitor.label}]: {objective[:50]}",
             )
-            if self._config.use_fitness:
-                (
-                    r.accepted,
-                    r.composite,
-                    r.note,
-                    r.tests_passed,
-                    r.regression_judge_score,
-                    r.trace,
-                ) = self._fitness_decision(
-                    index, cdir, r.changed_files, target=objective, kind=kind
-                )
-            else:
-                r.tests_passed = self._run_tests(cdir)
-                r.accepted = r.tests_passed
-                r.note = "" if r.tests_passed else "test command failed"
+            # Evaluator-oracle immunity (#109): enforced BEFORE either scoring
+            # path runs. A candidate that mutated the score-defining artifacts
+            # is rejected without its modified oracle ever executing — the
+            # test command and the fitness gates ARE the oracle, so running
+            # either against the mutated tree would let the candidate judge
+            # its own diff.
+            mutations, oracle_digest_value = self._evaluator_integrity(cdir)
+            if mutations and not self._config.allow_evaluator_mutation:
+                self._veto_evaluator_mutation(index, r, mutations, oracle_digest_value)
+                return r
+            self._score_variant(r, index, cdir, objective, kind, mutations, oracle_digest_value)
         except Exception as exc:
             r.errored = True
             if _is_transient_provider_error(str(exc)):
@@ -1883,6 +2070,57 @@ class LocalRsiLoop:
             note=r.note,
         )
         return r
+
+    def _score_variant(
+        self,
+        r: _VariantResult,
+        index: int,
+        cdir: Path,
+        objective: str,
+        kind: ImprovementKind,
+        mutations: list[str],
+        oracle_digest_value: str | None,
+    ) -> None:
+        """Set acceptance evidence on ``r`` from the trusted scoring path.
+
+        One branch per scoring path, both fed the evaluator-oracle verdict
+        (#109): fitness derives its gate detail from it, and the bare test
+        command path — which has no scorecard — stashes the verdict in
+        ``r.trace`` for _annotate_promotion on EVERY bare-path decision, not
+        only authorized overrides: a promotion accepted by the trusted oracle
+        must still name the oracle version that judged it — digest,
+        possibly-empty mutation list, authorization — or the export manifest
+        emits a null evaluator_digest and the promotion can never be replayed
+        against the oracle that produced it.
+        """
+        if self._config.use_fitness:
+            (
+                r.accepted,
+                r.composite,
+                r.note,
+                r.tests_passed,
+                r.regression_judge_score,
+                r.trace,
+            ) = self._fitness_decision(
+                index,
+                cdir,
+                r.changed_files,
+                target=objective,
+                kind=kind,
+                evaluator_evidence=(mutations, oracle_digest_value),
+            )
+            return
+        r.trace = {
+            "evaluator": {
+                "verdict": "authorized" if mutations else "clean",
+                "mutations": mutations,
+                "evaluator_digest": oracle_digest_value,
+                "authorized": bool(mutations),
+            }
+        }
+        r.tests_passed = self._run_tests(cdir)
+        r.accepted = r.tests_passed
+        r.note = "" if r.tests_passed else "test command failed"
 
     def _apply_to_merge(self, merge_dir: Path, variant: _VariantResult) -> bool:
         patch = _git(
@@ -2426,6 +2664,7 @@ class LocalRsiLoop:
         *,
         target: str = "",
         kind: ImprovementKind | None = None,
+        evaluator_evidence: tuple[list[str], str | None] | None = None,
     ) -> tuple[bool, float, str, bool, float | None, dict[str, Any]]:
         """Build the multi-signal Scorecard for the candidate and return
         (accepted, composite, reject_reason, tests_passed, regression_judge_score,
@@ -2435,25 +2674,63 @@ class LocalRsiLoop:
         compact per-gate/reward bundle for the commit's git-notes record.
         ``kind`` is the slot's declared ImprovementKind — the fail-first contract's
         declaration input (#392); None keeps the strict default (source-touching
-        ⇒ behavior contract)."""
+        ⇒ behavior contract). ``evaluator_evidence`` is the precomputed (#109)
+        integrity verdict ``(mutations, trusted_digest)``; when absent it is
+        resolved here, so merge-dir re-scoring gets the same oracle immunity.
+
+        Under `isolation="container"` the whole evaluation runs inside ONE
+        sandbox seeded from the candidate directory (#614): a sandbox that
+        cannot be established raises `ContainmentUnavailable`, so a decision is
+        never composed from signals that could not run safely.
+        """
         from maistro_rsi.candidate_fitness import evaluate_candidate
 
-        scorecard = evaluate_candidate(
-            cycle_dir,
-            changed_files,
-            test_command=self._config.test_command,
-            test_argv=self._config.test_argv,
-            coverage_source=self._config.coverage_source,
-            coverage_pytest_args=self._config.coverage_pytest_args,
-            baseline_coverage=self._baseline_coverage(),
-            baseline_ref=self._config.baseline_branch,
-            timeout=self._config.test_timeout,
-            regression_judge_fn=self._judge_regression if self._config.regression_judge else None,
-            target=target,
-            baseline_inventory=self._baseline_test_inventory(),
-            allow_test_inventory_shrink=self._config.allow_test_inventory_shrink,
-            declared_kind=kind,
-        )
+        if evaluator_evidence is None:
+            evaluator_evidence = self._evaluator_integrity(cycle_dir)
+        evaluator_mutations, evaluator_digest = evaluator_evidence
+
+        def _score(contained: ContainedEvaluation | None) -> Any:
+            return evaluate_candidate(
+                cycle_dir,
+                changed_files,
+                test_command=self._config.test_command,
+                test_argv=self._config.test_argv,
+                coverage_source=self._config.coverage_source,
+                coverage_pytest_args=self._config.coverage_pytest_args,
+                baseline_coverage=self._baseline_coverage(),
+                baseline_ref=self._config.baseline_branch,
+                timeout=self._config.test_timeout,
+                regression_judge_fn=(
+                    self._judge_regression if self._config.regression_judge else None
+                ),
+                target=target,
+                baseline_inventory=self._baseline_test_inventory(),
+                allow_test_inventory_shrink=self._config.allow_test_inventory_shrink,
+                declared_kind=kind,
+                evaluator_digest=evaluator_digest,
+                evaluator_mutations=evaluator_mutations,
+                evaluator_mutation_authorized=self._config.allow_evaluator_mutation,
+                contained=contained,
+            )
+
+        # Under container isolation the evaluation opens ONE sandbox seeded
+        # from the candidate directory and every executing signal runs inside
+        # it (#614) — the same containment `_run_tests` applies, extended to
+        # the coverage run, the red/green replay, the mutation probe's reruns,
+        # per-file collection and the static tools. A sandbox that cannot be
+        # established raises `ContainmentUnavailable` here: no Scorecard is
+        # produced from signals that could not run safely. Local isolation
+        # passes `contained=None` and evaluates on the host, as before — an
+        # operator's own machine is the one place that was never the problem.
+        if self._config.isolation == "container":
+            with ContainedEvaluation(
+                cycle_dir,
+                image=self._config.sandbox_image,
+                timeout=self._config.test_timeout,
+            ) as contained:
+                scorecard = _score(contained)
+        else:
+            scorecard = _score(None)
         logger.info(
             "rsi_local_scorecard",
             index=index,
@@ -2471,31 +2748,7 @@ class LocalRsiLoop:
         # None when the judge was unavailable (fail closed, #307). That None
         # must survive to the promotion evidence, never coerced to a number.
         judge_score = float(judge_raw) if isinstance(judge_raw, int | float) else None
-        mut_raw = next(
-            (g.detail.get("score") for g in scorecard.gates if g.name == "tests_pin_behavior"),
-            None,
-        )
-        trace: dict[str, Any] = {
-            "gates": {g.name: g.passed for g in scorecard.gates},
-            "composite": scorecard.composite,
-            "mutation_score": float(mut_raw) if isinstance(mut_raw, int | float) else None,
-        }
-        # Inventory evidence rides the promotion record (#306): the gate's
-        # counts and (capped) deleted/added lists, including the override flag
-        # when a governance-authorized shrink passed — never silent.
-        inv_detail = next(
-            (g.detail for g in scorecard.gates if g.name == "protected_test_inventory"), None
-        )
-        if inv_detail:
-            trace["inventory"] = dict(inv_detail)
-        # Fail-first evidence rides the promotion record (#392): the contract,
-        # probe SHAs, failing identities, digest, and passing result — the
-        # replayable proof behind a behavior-changing promotion.
-        ff_detail = next(
-            (g.detail for g in scorecard.gates if g.name == "fail_first_evidence"), None
-        )
-        if ff_detail:
-            trace["fail_first"] = dict(ff_detail)
+        trace = self._scorecard_trace(scorecard)
         return (
             scorecard.accepted,
             scorecard.composite,
@@ -2504,6 +2757,30 @@ class LocalRsiLoop:
             judge_score,
             trace,
         )
+
+    @staticmethod
+    def _scorecard_trace(scorecard: Any) -> dict[str, Any]:
+        """The compact per-gate/reward bundle behind a fitness decision — the
+        promotion record's evidence payload. Gate details ride along in full
+        (never silent): the protected inventory (#306), the fail-first proof
+        (#392), the evaluator-oracle verdict with its trusted digest
+        (#109), and — #304 — every gate's state plus execution provenance,
+        so the promotion record (and every PR body rendered from it) can
+        state exactly which gates ran and which never did."""
+        mut_raw = next(
+            (g.detail.get("score") for g in scorecard.gates if g.name == "tests_pin_behavior"),
+            None,
+        )
+        trace: dict[str, Any] = {
+            "gates": {g.name: g.passed for g in scorecard.gates},
+            "composite": scorecard.composite,
+            "mutation_score": float(mut_raw) if isinstance(mut_raw, int | float) else None,
+            # #304: per-gate state + provenance (command/tool version/candidate
+            # SHA/exit status/output digest where the gate recorded them).
+            "gate_evidence": {g.name: _gate_evidence_entry(g) for g in scorecard.gates},
+            **_named_gate_evidence(scorecard),
+        }
+        return trace
 
     def _annotate_promotion(
         self,
@@ -2550,9 +2827,15 @@ class LocalRsiLoop:
                 regression_judge=top.regression_judge_score,
             ),
             gates={str(k): bool(v) for k, v in gates.items()},
+            gate_evidence=(
+                {str(k): dict(v) for k, v in source["gate_evidence"].items()}
+                if isinstance(source.get("gate_evidence"), dict)
+                else None
+            ),
             note=summary,
             inventory=source.get("inventory"),
             fail_first=source.get("fail_first"),
+            evaluator=source.get("evaluator"),
         )
         return write_trace_note(self._baseline, sha, trace_note)
 
@@ -2573,29 +2856,6 @@ class LocalRsiLoop:
         if self._config.isolation == "container":
             return _NoHostExecSandbox(cycle_dir)
         return LocalSandbox(cycle_dir)
-
-    def _require_contained_signals(self) -> None:
-        """Refuse a configuration whose signals would execute on the host (#305).
-
-        `use_fitness` composes its Scorecard from signals that each run the
-        candidate's own code where the loop runs: `evaluate_candidate` invokes
-        the test vector, a coverage run, the red/green evidence replay and the
-        static tools, all with `cwd` pointing at the candidate worktree. Under
-        `isolation="container"` that is the same escape `_run_tests` just
-        closed, spread across six call sites instead of one.
-
-        Refused rather than silently downgraded to the bare test gate: a run
-        that scored a candidate on fewer signals than the operator asked for,
-        and said so nowhere, is how a promotion decision quietly changes
-        meaning. Containing those signals is #614.
-        """
-        if self._config.isolation == "container" and self._config.use_fitness:
-            raise ContainmentUnavailable(
-                "fitness scoring runs the candidate's coverage, red/green and "
-                "static-tool signals on the host, which container isolation "
-                "forbids (#614). Run with fitness disabled, or on the local "
-                "isolation an operator has chosen for their own machine."
-            )
 
     def _run_tests(self, cycle_dir: Path) -> bool:
         if self._config.isolation == "container":
@@ -2646,7 +2906,6 @@ class LocalRsiLoop:
         return proc.returncode == 0
 
     def run(self) -> LocalRsiResult:
-        self._require_contained_signals()
         self._setup_baseline()
         self._load_saved_patches()  # resume from a prior run by reapplying saved patches
         # Review starts AFTER any resume commit: a resumed patch is already-
@@ -3090,26 +3349,41 @@ class LocalRsiLoop:
             for stale in dest.glob("*.patch"):
                 stale.unlink()
             (dest / "manifest.json").unlink(missing_ok=True)
+
         rng = f"{self._start_ref}..{self._config.baseline_branch}"
         revs = [
             sha
             for sha in _git(self._baseline, "rev-list", "--reverse", rng).stdout.split()
             if sha not in self._excluded_from_export
         ]
-        manifest: list[dict[str, str]] = []
-        for i, sha in enumerate(revs, 1):
-            names = [
-                ln.strip()
-                for ln in _git(
-                    self._baseline, "show", "--name-only", "--pretty=format:", sha
-                ).stdout.splitlines()
-                if ln.strip()
-            ]
-            subject = _git(self._baseline, "show", "-s", "--pretty=format:%s", sha).stdout.strip()
-            patch_name = f"{i:04d}-{sha[:8]}.patch"
-            patch = _git(self._baseline, "format-patch", "-1", "--stdout", sha).stdout
-            (dest / patch_name).write_text(patch, encoding="utf-8")
-            src = next((n for n in names if n.endswith(".py")), names[0] if names else "")
-            manifest.append({"patch_file": patch_name, "file": src, "subject": subject})
+        manifest = [self._export_entry(dest, i, sha) for i, sha in enumerate(revs, 1)]
         (dest / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return len(manifest)
+
+    def _export_entry(self, dest: Path, position: int, sha: str) -> dict[str, object]:
+        """One promotion's manifest row: the git-am-able patch file, the file
+        it edits, the subject — (#109) the evaluator provenance, and (#304/
+        #820) the promotion's recorded gate evidence. The harvest path opens
+        PRs from these manifests, so each row carries exactly which gates ran
+        against this candidate and which never did: a PR body rendered from
+        the manifest can name its real evidence and cannot claim a gate that
+        has no recorded result."""
+        names = _changed_file_names(self._baseline, sha)
+        subject = _git(self._baseline, "show", "-s", "--pretty=format:%s", sha).stdout.strip()
+        patch_name = f"{position:04d}-{sha[:8]}.patch"
+        patch = _git(self._baseline, "format-patch", "-1", "--stdout", sha).stdout
+        (dest / patch_name).write_text(patch, encoding="utf-8")
+        from maistro_rsi.trace_notes import read_trace_note
+
+        note = read_trace_note(self._baseline, sha)
+        evaluator = (note.evaluator if note is not None else None) or {}
+        entry: dict[str, object] = {
+            "patch_file": patch_name,
+            "file": _primary_changed_file(names),
+            "subject": subject,
+            "evaluator_digest": evaluator.get("evaluator_digest"),
+            "evaluator_authorized": bool(evaluator.get("authorized")),
+            "gates": dict(note.gates) if note is not None else {},
+            "gate_evidence": _promotion_gate_evidence(note),
+        }
+        return entry

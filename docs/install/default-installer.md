@@ -15,6 +15,43 @@ the same command a week apart get the same code.
 | A release candidate | `MAISTRO_VERSION=v1.0.0-rc1 ./get.sh` | `.\get.ps1 -Version v1.0.0-rc1` |
 | Contributor / unreleased | `./get.sh --channel dev` | `.\get.ps1 -Channel dev` |
 | A specific branch | `./get.sh --branch my/topic` | `.\get.ps1 -Branch my/topic` |
+| Fully unattended install | `./get.sh -- --answers-file answers.yaml` | `.\get.ps1 -AutoInstallDeps -AnswersFile answers.yaml` |
+
+## Unattended installs (answers file, #409)
+
+One versioned answers schema — `InstallAnswersV1` (`schema_version: "1"`,
+templates in [`examples/`](examples/)) — is consumed equivalently by both
+entrypoints. On Unix it rides get.sh's passthrough into install.sh; on Windows
+`get.ps1 -AnswersFile` validates it, translates the path to the distro's
+`/mnt` view of the Windows filesystem (`C:\Users\me\answers.yaml` becomes
+`/mnt/c/Users/me/answers.yaml`), and forwards it as the same `--answers-file`
+argument to get.sh inside WSL:
+
+- **Validated before mutation.** Both entrypoints check the answers contract
+  before anything is installed: missing file, answers path that is a
+  directory, and the `--answers-file` + skip-wizard conflict (a skipped
+  questionnaire never reads the answers file) are reported as one complete,
+  actionable error list — on Windows before any WSL setup, elevation prompt,
+  or reboot; in install.sh before dependency installation. Schema-level
+  unknown-key and type errors surface from `maistro-install` itself
+  (`extra="forbid"`, #810).
+- **No secrets in the answers file.** The schema carries names and flags only
+  (SPEC-180); a `*_password`/`*_key` field is a named validation error, and
+  the file is never placed on a command line where shell history could
+  capture it. First-run credentials use the staged 0600 credentials file
+  referenced by `MAISTRO_BOOTSTRAP_CREDENTIALS_FILE` (get.ps1 translates a
+  Windows-side path and forwards it by environment variable), or the UI
+  Setup wizard.
+- **Never prompts in noninteractive mode.** Combine `-AnswersFile` with
+  `-AutoInstallDeps` on Windows (or `--answers-file` with
+  `MAISTRO_AUTO_INSTALL_DEPS=1` on Unix); with no answers file and no
+  terminal, the installer fails with the actionable message above instead of
+  prompting. `-AnswersFile` survives the elevation relaunch and the
+  post-reboot resume, so an unattended install cannot turn interactive
+  mid-flight.
+- **Same fixture, same install.** The contract is pinned by
+  `tests/test_answers_parity_contract.py`, which runs one fixture through
+  both entrypoints and compares the rendered effective config.
 
 The latest release is resolved from the GitHub API's `/releases/latest`, which
 **excludes prereleases**: an rc has to be asked for by name and is never handed
@@ -43,6 +80,70 @@ The plan includes a best-effort `environment` report with:
 - Admin/root availability and a user-scoped fallback hint.
 - Docker and Podman command/daemon probes.
 - KVM device and Hyper-V/WSL hints for sandbox and VM choices.
+
+## Host Python and uv bootstrap (#1821)
+
+The installer's host bootstrap never uses pip. One shared contract —
+`scripts/bootstrap-runtime.sh`, sourced by `install.sh` and by `get.sh`'s
+legacy-`.env` migration — resolves the toolchain in a fixed order:
+
+1. **uv first.** A compatible existing installation is reused (on `PATH`, or
+   in `$UV_INSTALL_DIR`, `~/.local/bin`, `~/.cargo/bin`, or
+   `/opt/homebrew/bin` when this shell predates the rc files). Otherwise uv
+   is installed with its official standalone installer from `astral.sh` — a
+   shell script, so a host with neither Python nor pip can still bootstrap —
+   into a user-owned directory. Nothing is elevated, and PEP 668
+   externally-managed interpreters can never block or break this path because
+   pip is never invoked.
+2. **Helper interpreter second.** The installer's own helpers (the
+   `scripts/secret_env.py` paths and inline validation snippets) run on the
+   first host interpreter meeting the 3.11 helper floor (`python3`, `python`,
+   then `py -3`). If none qualifies, the interpreter uv provisions is used.
+3. **Package interpreter, separately.** The wizard runs
+   `packages/maistro-bootstrap`, whose `requires-python` is `>= 3.12`. That
+   requirement is validated by `ensure_package_python` immediately before the
+   wizard starts, against the interpreter uv actually resolves — which is
+   then executed and re-checked against the floor rather than trusted. A
+   3.11 helper interpreter is therefore never reported as satisfying package
+   execution: the helper floor and the package floor are two distinct
+   constants (`MAISTRO_HELPER_PYTHON_FLOOR` / `MAISTRO_PACKAGE_PYTHON_FLOOR`),
+   and the tests pin the package floor to the package's own `pyproject.toml`.
+
+Everything resolved this way is owned by the initiating account, is on the
+running process's `PATH` immediately (the install itself never needs a fresh
+shell), and is preserved on re-runs — an existing compatible uv is adopted,
+not duplicated. Downloads land in a scratch directory that is removed on
+failure, and every failure (network, unwritable destination, failed
+provisioning) stops with an actionable message before any existing data is
+altered.
+
+### Version and provenance policy
+
+uv is installed only from the official `astral.sh` channel:
+
+- default: latest release (`https://astral.sh/uv/install.sh`),
+- `MAISTRO_UV_VERSION=0.9.5` pins one release
+  (`https://astral.sh/uv/0.9.5/install.sh`),
+- `MAISTRO_UV_INSTALLER_URL` replaces the URL entirely (mirrors, air-gapped
+  hosts),
+- `MAISTRO_UV_NO_MODIFY_PATH=1` forwards the official installer's
+  no-rc-file mode for hosts where shell start-up files must not change. The
+  installer itself never edits rc files either way; for new shells, PATH
+  handling is the official installer's documented, idempotent, clearly
+  marked block.
+
+### What each supported platform promises
+
+| Platform | Outcome with no Python and no uv |
+|---|---|
+| Linux x86_64/aarch64 (glibc; Debian/Ubuntu and Fedora-class) with `curl` and the standard userland the official installer drives (`cat`, `awk`, `tar`, `gzip`, `mv`, `sha256sum`) | Reaches the wizard: uv and a Python >= 3.12 interpreter are provisioned user-owned — no pip, no elevation in this stage. **Proven**: on a real restricted-PATH Linux account — astral.sh install, uv 0.13.1 into `~/.local/bin` (uid-owned), uv-provisioned interpreter floor-probed and immediately usable, fresh login shell resolves uv via the installer's `.profile` → `~/.local/bin/env` block (idempotent). This is the only platform with a clean-account proof so far. |
+| macOS x86_64/arm64 | The standalone installer channel is the same, so the same outcome is expected — but this is an **expectation, not a proven promise**: no clean-account run on macOS hardware has been executed. Until the release checklist's macOS smoke test records one, treat this row as untested and fall back to the explicit prerequisite boundary below on any deviation. |
+| Windows via `get.ps1` → WSL2 | The handoff lands inside the WSL2 distro, where the Linux contract applies; any distro Python meeting the floors is reused, otherwise uv provisions one. **Expectation, not a proven promise**: the Linux proof above did not run on WSL2 — no clean-account WSL2 run has been executed; the release checklist's platform smoke tests own that evidence. |
+| Everything else (musl without usable uv binaries, no `curl`, blocked egress, unwritable `$HOME`) | Explicit prerequisite boundary: the installer fails before mutating anything, naming the missing prerequisite (`curl`, network access, or a manual Python >= 3.12). |
+
+The legacy-`.env` migration in `get.sh` runs `scripts/secret_env.py` before
+`install.sh` initializes; it resolves its interpreter through this same
+contract, or fails before either `.env` file is touched.
 
 ## Safe defaults
 
