@@ -21,6 +21,7 @@ from maistro.graph.durable_runs.executor import (
     _node_spec,
     resume_durable_graph,
 )
+from maistro.graph.durable_runs.failure import sanitize_failure_message
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes import BaseNode, NodeContext, ReplaySemantics
 from maistro.graph.nodes.base import NodeResult
@@ -48,6 +49,34 @@ class _EchoNode(BaseNode[_EchoIn, _EchoOut]):
 
     async def _execute(self, inputs: _EchoIn, ctx: NodeContext) -> _EchoOut:
         return _EchoOut(text=inputs.text)
+
+
+class _BoomIn(BaseModel):
+    text: str = "x"
+
+
+class _BoomOut(BaseModel):
+    text: str
+
+
+class _BoomNode(BaseNode[_BoomIn, _BoomOut]):
+    """A node that always fails with a credential-shaped provider error."""
+
+    kind: ClassVar[str] = "test.executor_gaps.boom"
+    kind_category: ClassVar = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _BoomIn
+    output_schema: ClassVar[type[BaseModel]] = _BoomOut
+    message: ClassVar[str] = "provider rejected api_key=sk-proj-ABCdef123456 for tenant 42"
+
+    async def _execute(self, inputs: _BoomIn, ctx: NodeContext) -> _BoomOut:
+        raise RuntimeError(self.message)
+
+
+class _LongBoomNode(_BoomNode):
+    """The same failure carrying an oversized detail line."""
+
+    kind: ClassVar[str] = "test.executor_gaps.boom-long"
+    message: ClassVar[str] = "provider 500 detail " + "x" * 4000
 
 
 def _resolver(node_id: str, graph: Graph) -> _EchoNode:
@@ -290,6 +319,70 @@ class TestStepBudgetExhaustion:
         assert result.run.error is not None
         assert result.run.error.startswith("StepBudgetExhausted:")
         assert "max_steps=3" in result.run.error
+
+
+class TestPersistedFailureRedaction:
+    """A node failure must not write credential-shaped text into canonical state.
+
+    ``_fold_failures`` and ``_walk_frontier`` sanitize every failure through
+    ``_mark_failed`` before it is persisted, so a failed Run's durable evidence
+    stays inspectable without carrying provider secrets or unbounded text
+    (#837 truthful recovery evidence).
+    """
+
+    @staticmethod
+    def _boom_dag(kind: str) -> dict[str, Any]:
+        return {
+            "id": "d-boom",
+            "nodes": [{"id": "n1", "kind": kind, "inputs": {"text": "hello"}}],
+            "edges": [],
+        }
+
+    async def test_node_failure_persists_redacted_error(self) -> None:
+        store = InMemoryDurableRunStore()
+        record = _record_for(
+            "r-boom",
+            dag=self._boom_dag(_BoomNode.kind),
+            active_node_id="n1",
+        )
+        await store.create(record)
+        result = await _walk(
+            record,
+            store=store,
+            node_resolver=lambda _node_id, _graph: _BoomNode(),
+            runtime=PythonExecutionRuntime(),
+        )
+        assert result.status is RunStatus.FAILED
+        error = result.run.error or ""
+        assert error == (
+            "RuntimeError: provider rejected api_key=[REDACTED_SECRET_ASSIGNMENT] for tenant 42"
+        )
+        assert "sk-proj-ABCdef123456" not in error
+
+    async def test_persisted_error_is_bounded(self) -> None:
+        store = InMemoryDurableRunStore()
+        record = _record_for(
+            "r-boom-long",
+            dag=self._boom_dag(_LongBoomNode.kind),
+            active_node_id="n1",
+        )
+        await store.create(record)
+        result = await _walk(
+            record,
+            store=store,
+            node_resolver=lambda _node_id, _graph: _LongBoomNode(),
+            runtime=PythonExecutionRuntime(),
+        )
+        assert result.status is RunStatus.FAILED
+        error = result.run.error or ""
+        assert error.startswith("RuntimeError: provider 500 detail ")
+        assert len(error) <= 512
+
+    async def test_redaction_survives_a_second_sanitizing_pass(self) -> None:
+        """Both failure writers sanitize; double-sanitizing cannot corrupt evidence."""
+        once = sanitize_failure_message(_BoomNode.message)
+        assert sanitize_failure_message(once) == once
+        assert "sk-proj-ABCdef123456" not in once
 
 
 class TestCanonicalNodeRunPersistence:

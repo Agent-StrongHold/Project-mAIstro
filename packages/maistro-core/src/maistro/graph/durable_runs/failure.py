@@ -17,10 +17,4 @@ def sanitize_failure_message(message: object, *, limit: int = 512) -> str:
     return detail[:limit] or "unknown failure"
 
 
-def sanitized_exception(exc: BaseException, *, limit: int = 240) -> str:
-    """Format an exception for recovery evidence without exposing its details."""
-    detail = sanitize_failure_message(str(exc), limit=limit)
-    return f"{type(exc).__name__}: {detail}" if detail != "unknown failure" else type(exc).__name__
-
-
-__all__ = ["sanitize_failure_message", "sanitized_exception"]
+__all__ = ["sanitize_failure_message"]
