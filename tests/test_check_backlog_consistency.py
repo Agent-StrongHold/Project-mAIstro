@@ -29,6 +29,12 @@ def gate():
     return module
 
 
+def audit(gate, text: str, **kwargs: object) -> list[str]:
+    """Audit a synthetic backlog, which holds none of the real file's legacy ids."""
+    kwargs.setdefault("legacy", {})
+    return gate.audit(text, **kwargs)
+
+
 def backlog(*items: str, statuses: tuple[str, ...] = ("Proposed", "Implemented")) -> str:
     rows = "\n".join(f"| {status} | meaning |" for status in statuses)
     body = "\n".join(items)
@@ -55,11 +61,11 @@ def backlog(*items: str, statuses: tuple[str, ...] = ("Proposed", "Implemented")
 
 
 def test_a_consistent_backlog_passes(gate) -> None:
-    assert gate.audit(backlog("**[engine-001] A thing — Proposed — v1.0**")) == []
+    assert audit(gate, backlog("**[engine-001] A thing — Proposed — v1.0**")) == []
 
 
 def test_a_status_outside_the_legend_fails(gate) -> None:
-    failures = gate.audit(backlog("**[engine-001] A thing — Invented — v1.0**"))
+    failures = audit(gate, backlog("**[engine-001] A thing — Invented — v1.0**"))
     assert any("status 'Invented' is not in the status legend" in f for f in failures)
 
 
@@ -67,52 +73,53 @@ def test_adding_the_status_to_the_legend_is_what_permits_it(gate) -> None:
     """The vocabulary lives in the document, not in the checker. This is the
     property that stops the legend and its usage drifting apart."""
     item = "**[engine-001] A thing — Obsolete — v1.0**"
-    assert gate.audit(backlog(item)) != []
-    assert gate.audit(backlog(item, statuses=("Proposed", "Implemented", "Obsolete"))) == []
+    assert audit(gate, backlog(item)) != []
+    assert audit(gate, backlog(item, statuses=("Proposed", "Implemented", "Obsolete"))) == []
 
 
 def test_a_gap_marker_outside_the_gap_legend_fails(gate) -> None:
-    failures = gate.audit(backlog("**[engine-001] A thing — Proposed; `gap-vibes` — v1.0**"))
+    failures = audit(gate, backlog("**[engine-001] A thing — Proposed; `gap-vibes` — v1.0**"))
     assert any("gap marker 'gap-vibes' is not in the gap legend" in f for f in failures)
 
 
 def test_a_known_gap_marker_passes(gate) -> None:
-    assert gate.audit(backlog("**[engine-001] A thing — Proposed; `gap-impl` — v1.0**")) == []
+    assert audit(gate, backlog("**[engine-001] A thing — Proposed; `gap-impl` — v1.0**")) == []
 
 
 def test_an_undocumented_id_prefix_fails(gate) -> None:
-    failures = gate.audit(backlog("**[wildcat-001] A thing — Proposed — v1.0**"))
+    failures = audit(gate, backlog("**[wildcat-001] A thing — Proposed — v1.0**"))
     assert any("prefix 'wildcat' is not one of the documented id prefixes" in f for f in failures)
 
 
 def test_a_duplicate_item_id_fails(gate) -> None:
-    failures = gate.audit(
+    failures = audit(
+        gate,
         backlog(
             "**[engine-001] A thing — Proposed — v1.0**",
             "**[engine-001] Another thing — Proposed — v1.0**",
-        )
+        ),
     )
     assert "engine-001: duplicate item id" in failures
 
 
 def test_a_dangling_decision_citation_fails(gate) -> None:
-    failures = gate.audit(backlog("**[engine-001] A thing — Proposed — v1.0**\n- Per `ADR-9991`"))
+    failures = audit(gate, backlog("**[engine-001] A thing — Proposed — v1.0**\n- Per `ADR-9991`"))
     assert any("cites ADR-9991" in f for f in failures)
 
 
 def test_a_real_decision_citation_passes(gate) -> None:
-    assert gate.audit(backlog("**[engine-001] A thing — Proposed — v1.0**\n- Per `ADR-019`")) == []
+    assert audit(gate, backlog("**[engine-001] A thing — Proposed — v1.0**\n- Per `ADR-019`")) == []
 
 
 def test_an_unparsable_item_header_fails(gate) -> None:
-    failures = gate.audit(backlog("**[engine-001] no status separator here**"))
+    failures = audit(gate, backlog("**[engine-001] no status separator here**"))
     assert any("unparsable item header" in f for f in failures)
 
 
 def test_the_range_id_form_parses(gate) -> None:
     """`[engine-030..034]` batches sibling items under one entry — the real file
     uses this for five property tests, and it must not read as unparsable."""
-    assert gate.audit(backlog("**[engine-030..034] Five property tests — Proposed — v1.0**")) == []
+    assert audit(gate, backlog("**[engine-030..034] Five property tests — Proposed — v1.0**")) == []
 
 
 # --- item cross-references resolve (#30) ---------------------------------
@@ -124,19 +131,20 @@ def test_the_range_id_form_parses(gate) -> None:
 
 
 def test_a_dangling_item_reference_fails(gate) -> None:
-    failures = gate.audit(
-        backlog("**[engine-001] A thing — Proposed — v1.0**\n- Blocked-by: `[engine-999]`")
+    failures = audit(
+        gate, backlog("**[engine-001] A thing — Proposed — v1.0**\n- Blocked-by: `[engine-999]`")
     )
 
     assert any("[engine-999]" in f and "not an item defined" in f for f in failures)
 
 
 def test_a_reference_to_a_defined_item_passes(gate) -> None:
-    failures = gate.audit(
+    failures = audit(
+        gate,
         backlog(
             "**[engine-001] A thing — Proposed — v1.0**",
             "**[engine-002] Another — Proposed — v1.0**\n- Blocked-by: `[engine-001]`",
-        )
+        ),
     )
 
     assert failures == []
@@ -148,11 +156,12 @@ def test_a_reference_into_a_range_form_passes(gate) -> None:
     Without expanding the range, every such reference would read as dangling —
     the check would fail the file it is meant to protect.
     """
-    failures = gate.audit(
+    failures = audit(
+        gate,
         backlog(
             "**[engine-030..034] Five property tests — Proposed — v1.0**",
             "**[engine-001] A thing — Proposed — v1.0**\n- Substrate: `[engine-032]`",
-        )
+        ),
     )
 
     assert failures == []
@@ -160,11 +169,12 @@ def test_a_reference_into_a_range_form_passes(gate) -> None:
 
 def test_a_reference_outside_a_range_still_fails(gate) -> None:
     """The expansion must be bounded, or it would launder any id near a range."""
-    failures = gate.audit(
+    failures = audit(
+        gate,
         backlog(
             "**[engine-030..034] Five property tests — Proposed — v1.0**",
             "**[engine-001] A thing — Proposed — v1.0**\n- Substrate: `[engine-035]`",
-        )
+        ),
     )
 
     assert any("[engine-035]" in f for f in failures)
@@ -186,3 +196,220 @@ def test_the_sh_header_states_a_disposition(gate) -> None:
 
 def test_the_shipped_backlog_is_consistent(gate) -> None:
     assert gate.main() == 0
+
+
+# --- closure evidence on terminal items (#101) ----------------------------
+#
+# BACKLOG.md's Maintenance rules say a shipped item links its PR and an
+# abandoned one states why. Without enforcement an item can be marked
+# Implemented on an agent's say-so alone, which #101 forbids.
+
+TERMINAL = ("Proposed", "Implemented", "Abandoned")
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "x.py").write_text("")
+    return tmp_path
+
+
+def closure(gate, repo: Path, *items: str, legacy: dict[str, str] | None = None) -> list[str]:
+    return audit(gate, backlog(*items, statuses=TERMINAL), root=repo, legacy=legacy or {})
+
+
+def test_an_implemented_item_without_evidence_fails(gate, repo: Path) -> None:
+    failures = closure(gate, repo, "**[engine-001] A thing — Implemented — v1.0**\n- It works")
+
+    assert failures == ["engine-001: Implemented without a PR/issue link or an existing repo path"]
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "- Shipped (#1234)",
+        "- https://github.com/Agent-StrongHold/Project-mAIstro/pull/77",
+        "- Tracked in https://github.com/Agent-StrongHold/Project-mAIstro/issues/12",
+    ],
+)
+def test_a_pr_or_issue_link_is_evidence(gate, repo: Path, evidence: str) -> None:
+    assert closure(gate, repo, f"**[engine-001] A thing — Implemented — v1.0**\n{evidence}") == []
+
+
+def test_a_link_in_the_header_suffix_is_evidence(gate, repo: Path) -> None:
+    assert closure(gate, repo, "**[engine-001] A thing — Implemented — v1.0** — (#9)") == []
+
+
+def test_an_existing_repo_path_is_evidence(gate, repo: Path) -> None:
+    item = "**[engine-001] A thing — Implemented — v1.0**\n- Pinned by `tests/x.py`"
+
+    assert closure(gate, repo, item) == []
+
+
+def test_a_wrapped_bullet_line_still_counts(gate, repo: Path) -> None:
+    item = "**[engine-001] A thing — Implemented — v1.0**\n- Pinned by the suite in\n  `tests/x.py`"
+
+    assert closure(gate, repo, item) == []
+
+
+def test_a_missing_repo_path_is_rotted_evidence(gate, repo: Path) -> None:
+    item = "**[engine-001] A thing — Implemented — v1.0**\n- Pinned by `tests/missing.py` (#5)"
+
+    assert closure(gate, repo, item) == [
+        "engine-001: cites `tests/missing.py` as evidence, which does not exist"
+    ]
+
+
+def test_a_token_outside_any_top_level_directory_is_ignored(gate, repo: Path) -> None:
+    """`registry/registry.json` is prose about an output, not a repo path:
+    neither counted as evidence nor reported as rotted."""
+    item = "**[engine-001] A thing — Implemented — v1.0**\n- Emits `registry/registry.json`"
+
+    assert closure(gate, repo, item) == [
+        "engine-001: Implemented without a PR/issue link or an existing repo path"
+    ]
+
+
+def test_a_dot_dot_segment_is_never_read_as_a_path(gate, repo: Path) -> None:
+    item = "**[engine-001] A thing — Implemented — v1.0**\n- See `tests/../tests/x.py`"
+
+    assert closure(gate, repo, item) != []
+
+
+def test_evidence_does_not_leak_from_the_next_item_or_heading(gate, repo: Path) -> None:
+    failures = closure(
+        gate,
+        repo,
+        "**[engine-001] A thing — Implemented — v1.0**",
+        "### Next section\n\n- Stray (#3)",
+        "**[engine-002] Other — Proposed — v1.0**\n- `tests/x.py` (#4)",
+    )
+
+    assert failures == ["engine-001: Implemented without a PR/issue link or an existing repo path"]
+
+
+@pytest.mark.parametrize(
+    "citation",
+    ["`tests/sub`", "`.git/HEAD`", "`.venv/marker`", "`__pycache__/marker`"],
+)
+def test_a_directory_or_hidden_path_is_not_evidence(gate, repo: Path, citation: str) -> None:
+    """A path that exists but proves nothing — a directory, or a file in VCS
+    internals or a local cache — cannot stand in for the shipped change."""
+    (repo / "tests" / "sub").mkdir()
+    for hidden in (".git", ".venv", "__pycache__"):
+        (repo / hidden).mkdir()
+    (repo / ".git" / "HEAD").write_text("")
+    (repo / ".venv" / "marker").write_text("")
+    (repo / "__pycache__" / "marker").write_text("")
+
+    failures = closure(gate, repo, f"**[engine-001] A thing — Implemented — v1.0**\n- {citation}")
+
+    assert failures == ["engine-001: Implemented without a PR/issue link or an existing repo path"]
+
+
+def test_a_github_workflow_path_is_evidence(gate, repo: Path) -> None:
+    (repo / ".github").mkdir()
+    (repo / ".github" / "ci.yml").write_text("")
+
+    item = "**[engine-001] A thing — Implemented — v1.0**\n- Gated by `.github/ci.yml`"
+
+    assert closure(gate, repo, item) == []
+
+
+def test_a_bullet_after_a_rule_does_not_belong_to_the_item(gate, repo: Path) -> None:
+    failures = closure(gate, repo, "**[engine-200] A thing — Abandoned**\n\n---\n\n- stray note")
+
+    assert failures == ["engine-200: Abandoned without a one-line reason"]
+
+
+def test_an_unparsable_header_ends_the_item_above(gate, repo: Path) -> None:
+    failures = closure(
+        gate,
+        repo,
+        "**[engine-001] A thing — Implemented — v1.0**",
+        "**[engine-002] broken**\n- Shipped (#3)",
+    )
+
+    assert "engine-001: Implemented without a PR/issue link or an existing repo path" in failures
+
+
+def test_an_abandoned_item_without_a_reason_fails(gate, repo: Path) -> None:
+    failures = closure(gate, repo, "**[engine-200] A thing — Abandoned**\n\n---")
+
+    assert failures == ["engine-200: Abandoned without a one-line reason"]
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        "**[engine-200] A thing — Abandoned — v1.0** — superseded by Stronghold",
+        "**[engine-200] A thing — Abandoned**\n- Nobody runs Turing in production",
+    ],
+)
+def test_an_abandoned_item_with_a_reason_passes(gate, repo: Path, item: str) -> None:
+    assert closure(gate, repo, item) == []
+
+
+def test_a_legacy_id_is_tolerated_without_evidence(gate, repo: Path) -> None:
+    item = "**[engine-001] A thing — Implemented — v1.0**"
+
+    assert closure(gate, repo, item, legacy={"engine-001": "Implemented"}) == []
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        "**[engine-001] A thing — Implemented — v1.0**\n- Shipped (#12)",
+    ],
+)
+def test_a_legacy_id_that_gains_evidence_must_be_banked(gate, repo: Path, item: str) -> None:
+    failures = closure(gate, repo, item, legacy={"engine-001": "Implemented"})
+
+    assert failures == ["engine-001: now carries closure evidence; remove it from the legacy set"]
+
+
+@pytest.mark.parametrize(
+    ("item", "frozen", "now"),
+    [
+        ("**[engine-001] A thing — Implemented — v1.0**", "Abandoned", "Implemented"),
+        ("**[engine-001] A thing — Abandoned — v1.0**", "Implemented", "Abandoned"),
+    ],
+)
+def test_a_legacy_id_reclosed_under_another_status_fails(
+    gate, repo: Path, item: str, frozen: str, now: str
+) -> None:
+    """Flipping a frozen Abandoned item to Implemented would otherwise close it
+    on assertion alone, the exact thing the rule exists to stop."""
+    failures = closure(gate, repo, item, legacy={"engine-001": frozen})
+
+    assert failures == [
+        f"engine-001: was {frozen} when frozen and is now {now}; "
+        "remove it from the legacy set and evidence the new closure"
+    ]
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        "**[engine-001] A thing — Proposed — v1.0**",
+        "**[engine-002] Another thing — Proposed — v1.0**",
+    ],
+)
+def test_a_legacy_id_that_reopens_or_disappears_fails(gate, repo: Path, item: str) -> None:
+    failures = closure(gate, repo, item, legacy={"engine-001": "Implemented"})
+
+    assert failures == [
+        "engine-001: is no longer an Implemented or Abandoned item; remove it from the legacy set"
+    ]
+
+
+def test_the_shipped_legacy_set_is_exactly_the_unevidenced_terminal_items(gate) -> None:
+    """The legacy set is only a ratchet if it holds nothing already evidenced:
+    auditing the real file with an empty legacy set must name exactly its ids."""
+    failures = gate.audit((ROOT / "BACKLOG.md").read_text(), legacy={})
+
+    named = {failure.split(":", 1)[0]: failure for failure in failures}
+    assert named.keys() == gate._LEGACY_UNEVIDENCED.keys()
+    for item_id, status in gate._LEGACY_UNEVIDENCED.items():
+        assert f"{item_id}: {status} without" in named[item_id]
+    assert len(gate._LEGACY_UNEVIDENCED) == 21

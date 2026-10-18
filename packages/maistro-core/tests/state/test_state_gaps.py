@@ -27,6 +27,11 @@ class Widget(BaseModel):
     count: int
 
 
+class UserRecord(BaseModel):
+    username: str
+    value: int
+
+
 class TestSubmitGuard:
     def test_submit_before_open_writer_raises(self, db_path: Path) -> None:
         state = State(db_path=str(db_path))
@@ -121,6 +126,70 @@ class TestRunMigrationBranches:
         state.close()
 
 
+class TestRetryOnLocked:
+    """`State._retry_on_locked` (#1528): the bounded retry around the
+    WAL-mode-switch statement in `open_writer`, which busy_timeout alone does
+    not reliably cover for two processes opening a brand-new database
+    together.
+
+    Called directly rather than through `open_writer()` — it is a
+    `@staticmethod` precisely so the retry policy can be exercised on its own,
+    with a synthetic `fn` standing in for the real pragma statement.
+    """
+
+    def test_zero_attempts_never_calls_fn_and_returns(self) -> None:
+        """`attempts=0` means the loop body never runs (`range(0)` is empty),
+        so `fn` must never be called and the call returns normally instead of
+        raising — the for loop's "exhausted without ever entering" arc."""
+        calls: list[None] = []
+
+        State._retry_on_locked(lambda: calls.append(None), attempts=0)
+
+        assert calls == []
+
+    def test_retries_on_locked_error_then_succeeds(self) -> None:
+        """A transient "database is locked" is retried, not raised — the
+        loop must come back around to a second iteration."""
+        attempts_made: list[int] = []
+
+        def flaky() -> None:
+            attempts_made.append(1)
+            if len(attempts_made) < 2:
+                raise sqlite3.OperationalError("database is locked")
+
+        State._retry_on_locked(flaky, attempts=5)
+
+        assert len(attempts_made) == 2
+
+    def test_non_locked_operational_error_is_not_retried(self) -> None:
+        """ "Anything other than 'locked' is a real failure and is not
+        retried" — it must propagate on the very first attempt."""
+        attempts_made: list[int] = []
+
+        def always_broken() -> None:
+            attempts_made.append(1)
+            raise sqlite3.OperationalError("no such table: ghost")
+
+        with pytest.raises(sqlite3.OperationalError, match="no such table"):
+            State._retry_on_locked(always_broken, attempts=5)
+
+        assert len(attempts_made) == 1
+
+    def test_locked_error_still_raises_once_attempts_are_exhausted(self) -> None:
+        """A "locked" error that never clears is bounded, not retried
+        forever — it must surface once the last attempt is reached."""
+        attempts_made: list[int] = []
+
+        def always_locked() -> None:
+            attempts_made.append(1)
+            raise sqlite3.OperationalError("database is locked")
+
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            State._retry_on_locked(always_locked, attempts=3)
+
+        assert len(attempts_made) == 3
+
+
 class TestClose:
     def test_close_without_open_writer_is_noop(self, db_path: Path) -> None:
         state = State(db_path=str(db_path))
@@ -154,7 +223,9 @@ class TestPersistedStore:
 
         assert state._writer is not None
         assert state._writer.execute("SELECT name FROM schema_migrations").fetchall() == [
-            ("kv_store_001",)
+            ("kv_store_001",),
+            ("kv_unique_fields_001",),
+            ("kv_users_username_unique_001",),
         ]
         state.close()
 
@@ -251,6 +322,24 @@ class TestPersistedStore:
         assert store.put_raw_if_absent("raws", "r1", '{"owner": "first"}') is True
         assert store.put_raw_if_absent("raws", "r1", '{"owner": "second"}') is False
         assert store.get_raw("raws", "r1") == '{"owner": "first"}'
+        state.close()
+
+    def test_unique_model_insert_releases_claim_on_delete(self, db_path: Path) -> None:
+        state = State(db_path=str(db_path))
+        store = PersistedStore(state)
+        store.initialize()
+
+        assert store.put_model_if_unique(
+            "users", "first", UserRecord(username="Claimed", value=1), "username"
+        )
+        assert not store.put_model_if_unique(
+            "users", "second", UserRecord(username="claimed", value=2), "username"
+        )
+        store.delete("users", "first")
+        state.flush()
+        assert store.put_model_if_unique(
+            "users", "second", UserRecord(username="claimed", value=2), "username"
+        )
         state.close()
 
     def test_put_raw_if_absent_times_out(

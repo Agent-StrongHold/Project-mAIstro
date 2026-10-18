@@ -14,10 +14,13 @@ human.ask_question, ...) live in sibling modules and self-register via
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar, Generic, Literal, Protocol, TypeVar, runtime_checkable
+from enum import StrEnum
+from typing import Any, ClassVar, Generic, Literal, NoReturn, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializeAsAny
 
@@ -36,6 +39,28 @@ KindCategory = Literal[
     "composite",
     "negative_signal",
 ]
+
+
+class ReplaySemantics(StrEnum):
+    """Executable replay contract for one node kind.
+
+    ``EFFECT_KEY`` is retryable only because the node binds its durable or
+    external effect to :func:`replay_effect_key`; it is not a claim that the
+    underlying operation is intrinsically idempotent.
+    """
+
+    PURE = "pure"
+    IDEMPOTENT = "idempotent"
+    EFFECT_KEY = "retryable_with_effect_key"
+    NON_RETRYABLE = "non_retryable"
+
+    @property
+    def retryable(self) -> bool:
+        return self is not ReplaySemantics.NON_RETRYABLE
+
+    @property
+    def idempotent(self) -> bool:
+        return self in {ReplaySemantics.PURE, ReplaySemantics.IDEMPOTENT}
 
 
 class NodeContext(BaseModel):
@@ -126,12 +151,14 @@ class Node(Protocol):
     input_schema: ClassVar[type[BaseModel]]
     output_schema: ClassVar[type[BaseModel]]
     cost_hint: ClassVar[float]  # 0.0 = free; 10.0 = very expensive
-    idempotent: ClassVar[bool]
+    replay_semantics: ClassVar[ReplaySemantics]
     external_io: ClassVar[bool]
     display_name: ClassVar[str]
     description: ClassVar[str]
 
     async def run(self, inputs: BaseModel, ctx: NodeContext) -> NodeResult: ...
+
+    def logical_effect_key(self, inputs: BaseModel, ctx: NodeContext) -> str | None: ...
 
 
 class BaseNode(Generic[InputT, OutputT]):
@@ -155,10 +182,24 @@ class BaseNode(Generic[InputT, OutputT]):
     input_schema: ClassVar[type[BaseModel]]
     output_schema: ClassVar[type[BaseModel]]
     cost_hint: ClassVar[float] = 1.0
-    idempotent: ClassVar[bool] = True
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.PURE
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = ""
     description: ClassVar[str] = ""
+
+    #: Container-owned authorities this node cannot do its work without, as
+    #: ``{constructor keyword: authority name}`` (#1193, #1082). The production
+    #: resolver reads this declaration and refuses to construct the node when
+    #: one is missing — a node that declares ``run_store`` here can never be
+    #: built with ``run_store=None`` and then report success for work it did
+    #: not do. The constructor default stays permissive for direct, in-test
+    #: construction; the declaration is what production composition obeys.
+    required_authorities: ClassVar[Mapping[str, str]] = {}
+    #: Authorities the node uses when the resolver has them and degrades
+    #: truthfully without — the delegate node fails its NodeResult with "no
+    #: a2a_delegator configured", the effect nodes keep a context that
+    #: authorizes nothing. Same shape as ``required_authorities``.
+    optional_authorities: ClassVar[Mapping[str, str]] = {}
 
     async def run(
         self, inputs: InputT | BaseModel | dict[str, Any], ctx: NodeContext
@@ -199,11 +240,45 @@ class BaseNode(Generic[InputT, OutputT]):
                 status="failed",
                 error_code=type(exc).__name__,
                 error_message=str(exc)[:512],
+                metadata=_failure_metadata(exc),
             )
+
+    def logical_effect_key(self, inputs: InputT, ctx: NodeContext) -> str | None:
+        """Return the stable key that makes an EFFECT_KEY replay safe.
+
+        Nodes that do not expose a key fail closed in the graph retry fold;
+        merely labeling a node retryable must not authorize a second effect.
+        """
+        del inputs, ctx
+        return None
 
     async def _execute(self, inputs: InputT, ctx: NodeContext) -> OutputT:
         """Subclasses implement this. Return the typed output (or raise)."""
         raise NotImplementedError(f"{type(self).__name__}._execute not implemented")
+
+
+def _failure_metadata(exc: Exception) -> dict[str, Any]:
+    """Metadata a raising node attaches to its failed NodeResult, if a mapping."""
+    carried = getattr(exc, "result_metadata", None)
+    return dict(carried) if isinstance(carried, Mapping) else {}
+
+
+class NodeCompositionError(RuntimeError):
+    """A node was asked for without an authority it declares as required.
+
+    Raised by the production resolver before construction (#1193), and by a
+    node that was constructed directly without one and then asked to run: the
+    node's own answer to "do the work" is this, never a success-shaped output
+    saying nothing happened.
+    """
+
+    def __init__(self, kind: str, *, missing: Sequence[str]) -> None:
+        self.kind = kind
+        self.missing = tuple(missing)
+        super().__init__(
+            f"node kind {kind!r} requires {', '.join(self.missing)} and none was supplied; "
+            "a node cannot be composed without an authority it declares as required"
+        )
 
 
 class _NodePaused(Exception):
@@ -253,19 +328,23 @@ PAUSE_AWAITING_ROLE_DELEGATE = "awaiting_role_delegate"
 PAUSE_AWAITING_REMOTE_DELEGATION = "awaiting_remote_delegation"
 PAUSE_AWAITING_HARNESS = "awaiting_harness"
 PAUSE_WAITING_ON_JIRA_SUBTASKS = "waiting_on_jira_subtasks"
+PAUSE_AWAITING_DELEGATION_RECONCILIATION = "awaiting_delegation_reconciliation"
 
-#: Who each pause waits on. "human" means a person owes the next action and the
-#: NodeRun parks PAUSED; "system" means a retry decision is owed and it parks
-#: WAITING. Every reason states its own answer, so adding a pausing node is a
-#: question a reviewer sees rather than a default nobody chose.
+#: Who each pause waits on. "human" means an external answer is owed and the
+#: NodeRun parks PAUSED; "system" means a retry or poll is owed and it parks
+#: WAITING. A remote delegation is answer-gated too: its responder is another
+#: agent, but it must use the same durable answer/resume path as other
+#: externally answered nodes. Every reason states its own answer, so adding a
+#: pausing node is a question a reviewer sees rather than a default nobody chose.
 PAUSE_REASON_OWNERS: dict[str, str] = {
     PAUSE_AWAITING_HUMAN_ANSWER: "human",
     PAUSE_AWAITING_HUMAN_APPROVAL: "human",
     PAUSE_AWAITING_HUMAN_REVIEW: "human",
     PAUSE_AWAITING_ROLE_DELEGATE: "human",
-    PAUSE_AWAITING_REMOTE_DELEGATION: "system",
+    PAUSE_AWAITING_REMOTE_DELEGATION: "human",
     PAUSE_AWAITING_HARNESS: "system",
     PAUSE_WAITING_ON_JIRA_SUBTASKS: "system",
+    PAUSE_AWAITING_DELEGATION_RECONCILIATION: "system",
 }
 
 #: The reasons a *person* is owed an action, derived from the table above so
@@ -304,8 +383,19 @@ PAUSE_RESUME_CONDITIONS: dict[str, str] = {
     PAUSE_AWAITING_HUMAN_REVIEW: RESUME_ON_ANSWER,
     PAUSE_AWAITING_ROLE_DELEGATE: RESUME_ON_ANSWER,
     PAUSE_AWAITING_REMOTE_DELEGATION: RESUME_ON_ANSWER,
-    PAUSE_AWAITING_HARNESS: RESUME_ON_ANSWER,
+    # The node checkpoints a canonical dispatch receipt and observation ordinal
+    # before polling. Timer re-entry observes that same effect; it never repeats
+    # the dispatch or manufactures a human/system answer (#1192).
+    PAUSE_AWAITING_HARNESS: RESUME_ON_ELAPSED,
     PAUSE_WAITING_ON_JIRA_SUBTASKS: RESUME_ON_ELAPSED,
+    # Reconciliation is the polling half of a delegation whose transport
+    # acceptance is unknown: re-entering re-reads the receipt sources (the
+    # local task map, the peer's reconciliation endpoint) instead of
+    # re-dispatching, which is the elapsed-timer contract, not the answer
+    # contract. It is a distinct reason from `awaiting_remote_delegation`
+    # precisely because that one re-dispatches on re-entry and this one must
+    # not.
+    PAUSE_AWAITING_DELEGATION_RECONCILIATION: RESUME_ON_ELAPSED,
 }
 
 #: The reasons a timer alone may re-enter, derived so the two cannot disagree.
@@ -375,12 +465,16 @@ def pause_until(
     *,
     resume_at: datetime | None = None,
     metadata: dict[str, Any] | None = None,
-) -> None:
+) -> NoReturn:
     """Signal that the current node should pause and the run should checkpoint.
 
     Wait/HITL node `_execute` bodies call this to suspend execution. The
     runtime catches the signal, persists the run state, and resumes later
     (when the polled condition becomes true or the user supplies input).
+
+    Typed `NoReturn` rather than `None` because it never returns -- the raise
+    is unconditional -- and a caller that parks on it is entitled to have the
+    type checker know its own code after the call is unreachable.
     """
     raise _NodePaused(reason, resume_at=resume_at, metadata=metadata)
 
@@ -388,6 +482,18 @@ def pause_until(
 def now_utc() -> datetime:
     """Single source of truth for "now" so tests can monkeypatch."""
     return datetime.now(UTC)
+
+
+def replay_effect_key(ctx: NodeContext, operation: str, identity: Any = None) -> str:
+    """Derive one logical effect key across physical Attempt retries.
+
+    A retry gets a new Attempt (and may get a new NodeRun visit), so neither is
+    sufficient as the effect identity. Run + graph node is the logical scope;
+    the input digest distinguishes explicit new work at the same node.
+    """
+    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+    return f"{operation}:{ctx.run_id}:{ctx.node_id}:{digest}"
 
 
 def preserved_hitl_deadline(resumed: dict[str, Any] | None, *, timeout_seconds: int) -> datetime:
