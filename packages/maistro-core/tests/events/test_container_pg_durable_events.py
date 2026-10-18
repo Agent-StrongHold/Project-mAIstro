@@ -133,8 +133,8 @@ class TestPoolSelectsThePostgresStores:
         must be the very object injected into the governed effect context,
         and that object must be the durable PostgreSQL store.
         """
-        from maistro.events.publisher import CanonicalEventPublisher
         from maistro.events.pg_envelope import PgEventStore
+        from maistro.events.publisher import CanonicalEventPublisher
 
         container = await wire(_config(), pg_pool=pg_pool)
 

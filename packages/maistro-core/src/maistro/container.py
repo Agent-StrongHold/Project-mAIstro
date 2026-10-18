@@ -39,6 +39,7 @@ from maistro.events.consumer_cursor import (
     DEFAULT_HOLE_GRACE_SECONDS,
     LEGACY_BRIDGE_CONSUMER_ID,
 )
+from maistro.events.publisher import CanonicalEventPublisher
 from maistro.goals.authorization import ScopedGoalStore
 from maistro.goals.store import GoalStore
 from maistro.goals.wiring import wire_goal_store
@@ -98,7 +99,6 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
-from maistro.events.publisher import CanonicalEventPublisher
 from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.runs.store import RunIntegrityError, RunNotFound, RunStore
 from maistro.runs.wiring import (
@@ -1146,7 +1146,11 @@ class Container:
         crash between "processed" and "cursor written" costs at most a replay
         of already-settled, already-idempotent work; it never skips an event
         still in flight. Nor does it skip an event whose id the log handed
-        out but has not committed yet: see `_gap_safe_position`.
+        out but has not committed yet: see `_gap_safe_position`. The same
+        settled position is also acknowledged on the log itself
+        (`EventLogStore.acknowledge_replay`, #836), so the per-consumer
+        replay cursor stored beside the events stays truthful for readers
+        of the log.
         """
         lease = await self.consumer_cursor_store.claim(
             LEGACY_BRIDGE_CONSUMER_ID, holder=self._durable_events_holder
@@ -1173,6 +1177,17 @@ class Container:
                 fencing_token=lease.fencing_token,
                 position=new_cursor,
             )
+            # The log's own replay acknowledgement (#836) records the same
+            # settlement keyed to this consumer, so `get_replay_cursor`
+            # answers from the store the events live in rather than only
+            # from the bridge's separate cursor store. Both writes are
+            # monotonic and neither is the correctness backstop -- that is
+            # `InvocationStore.claim` -- so a crash between them costs a
+            # replay of already-settled, idempotent work, never a skip. The
+            # gap-safe position is acknowledged, not the raw batch cursor:
+            # a hole is not settled yet, and this acknowledgement must not
+            # claim otherwise.
+            await self.durable_event_log.acknowledge_replay(LEGACY_BRIDGE_CONSUMER_ID, new_cursor)
         self.durable_event_cursor = new_cursor
         return new_cursor
 

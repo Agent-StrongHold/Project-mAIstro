@@ -7,8 +7,8 @@ import pytest
 from services.dag_execution_scope import DagExecutionScope
 
 from maistro.events.bus import EventBus
-from maistro.events.publisher import CanonicalEventPublisher
 from maistro.events.envelope import InMemoryEventStore
+from maistro.events.publisher import CanonicalEventPublisher
 from maistro.graph.definitions import Graph
 from maistro.runs.model import GraphSnapshot, Run, RunStatus
 from maistro.runs.recovery_events import CanonicalRecoveryEventSink

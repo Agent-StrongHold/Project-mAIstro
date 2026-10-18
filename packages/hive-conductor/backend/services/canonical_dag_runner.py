@@ -14,6 +14,7 @@ import os
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+from maistro.events.publisher import CanonicalEventPublisher
 from maistro.graph.conditions import CONDITION_OPERATORS
 from maistro.graph.definitions import Edge, Graph, Node
 from maistro.graph.durable_runs import (
@@ -25,7 +26,6 @@ from maistro.graph.durable_runs import (
 from maistro.graph.policies import resolve_max_cycles, resolve_node_timeout_s
 from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, AgentRole
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
-from maistro.events.publisher import CanonicalEventPublisher
 from maistro.runs.recovery_events import CanonicalRecoveryEventSink
 from services.dag_agents import _container, require_graph_execution_spine
 from services.dag_execution_scope import DagExecutionScope, DagWorkspaceSelectionError
