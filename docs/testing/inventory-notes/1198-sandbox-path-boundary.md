@@ -148,3 +148,24 @@ user, and symlink-to-outside host transfer denied (ELOOP) with the outside
 file unchanged. Residual, non-blocking: `validate_host_root(create=True)`
 still raises for a not-yet-existing path before its mkdir step — it fails
 closed, and no caller passes `create=True`.
+
+Round-8 develop sync (merge `64aa176ce`): `origin/develop` advanced to
+`da3b04438`, a squash of an earlier PR #2165 snapshot. All five conflicted
+files (`paths.py`, `bubblewrap.py`, `test_host_path_boundary.py`,
+`SANDBOX-SUPPORT-MATRIX.md`, this note) are byte-identical on the develop
+side to ancestor states of this branch (`3e65811e2` / `0bf126137`), so every
+conflict resolves `--ours` and the merge tree equals the pre-sync HEAD
+exactly — no suite delta, no source change. Gates re-run at `64aa176ce`:
+CI-exact bandit (`packages/maistro-core/src packages/hive-conductor/backend
+packages/maistro-server/src -ll --confidence-level=medium`) reports Medium+
+count 0 (the develop-side copy predates the `3e65811e2` B108 nosec fix, which
+is why the queue's bandit leg failed on the unsynced branch); ruff check and
+format pass; the boundary + conformance suites collect 34 passed / 26 skipped
+and the full sandbox suite 165 passed / 38 skipped (skips are the documented
+namespace-budget environment, live-covered in round 4); CI-exact
+check-suite-inventory matches (16,493 node IDs for packages/maistro-core/tests);
+vulture and radon ratchets compare against the new base `da3b04438` and match
+(1322 -> 1322, 137 -> 137). `mypy --strict` on the sandbox tree is clean; the
+five `import-not-found` errors repo-wide come from `maistro_bootstrap` missing
+in this worktree's base-deps venv (CI syncs `--all-extras`, where the gate
+passes).
