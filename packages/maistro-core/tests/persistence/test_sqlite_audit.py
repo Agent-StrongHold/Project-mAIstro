@@ -97,6 +97,42 @@ async def test_deny_with_violations_verifies_after_durable_roundtrip(
 
 
 @pytest.mark.asyncio
+async def test_entry_with_unpersisted_metadata_verifies_after_roundtrip(
+    log: SqliteAuditLog,
+) -> None:
+    """Correlation metadata must not break the durable proof.
+
+    The user-model promotion auditor (#1047) logs action/project_id/run_id/
+    workspace_id onto the same wired store that Sentinel decisions use, but
+    the shipped durable stores serialize none of those columns. Signing them
+    attached proofs no stored row could reproduce: legitimate records failed
+    verify() after a restart. The proof must cover exactly the persisted
+    decision bytes, so the signed row verifies even though the metadata is
+    gone, while tampering a persisted column still fails.
+    """
+    await log.log(
+        AuditEntry(
+            boundary="user_model",
+            user_id="u1",
+            org_id="o1",
+            action="promote",
+            project_id="p1",
+            run_id="r-123",
+            workspace_id="w1",
+            detail="d",
+        )
+    )
+
+    [entry] = await log.get_entries(user_id="u1", org_id="o1")
+    assert entry.signature
+    assert entry.action == ""  # not serialized; proof must not depend on it
+    assert log.verify(entry)
+
+    forged = replace(entry, verdict="denied")
+    assert not log.verify(forged)
+
+
+@pytest.mark.asyncio
 async def test_ensure_schema_upgrades_legacy_table_with_scope_index() -> None:
     conn = await aiosqlite.connect(":memory:")
     try:

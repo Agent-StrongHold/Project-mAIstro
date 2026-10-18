@@ -24,12 +24,30 @@ _SIGNING_KEY_ENV = "MAISTRO_AUDIT_SIGNING_KEY"
 _PROOF_TYPE = "Ed25519Signature2020"
 _SIGNATURE_FIELDS = frozenset({"signature", "signing_key_id", "proof_type"})
 # Fields outside the persisted decision record. The durable stores serialize
-# neither the write-side timestamp nor the violations tuple (see the contract
-# note on ``maistro.types.security.AuditEntry``), so signing them would attach
-# a proof the stored row cannot reproduce — deny decisions, the records that
-# most need tamper evidence, would never verify after a round-trip. The proof
-# covers exactly the bytes a store retains.
-_CANONICAL_METADATA_FIELDS = frozenset({"timestamp", "violations"})
+# the decision columns (boundary, principals, tool, verdict, detail,
+# trace/request ids) plus the proof columns — nothing else. The write-side
+# timestamp, the violations tuple, and the correlation/route metadata the
+# #1139 callers compose onto an entry (user-model promotion audits set
+# action/run_id/project_id/workspace_id on the same wired store) are all
+# storage metadata: signing them would attach a proof the stored row cannot
+# reproduce, so legitimate records — deny decisions, the rows that most need
+# tamper evidence — would never verify after a round-trip. The proof covers
+# exactly the bytes a store retains.
+_CANONICAL_METADATA_FIELDS = frozenset(
+    {
+        "timestamp",
+        "violations",
+        "route",
+        "action",
+        "policy_version",
+        "workspace_id",
+        "project_id",
+        "run_id",
+        "invocation_id",
+        "content_sha256",
+        "content_length",
+    }
+)
 
 
 class AuditSignatureError(ValueError):
