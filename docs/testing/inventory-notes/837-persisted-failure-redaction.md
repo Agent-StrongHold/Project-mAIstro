@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +3
+  packages/maistro-core/tests: +4
 ---
 # Issue 837 Persisted-Failure Redaction
 
@@ -21,4 +21,6 @@ path with a failing node:
   ceiling, still naming the failure code;
 - the sanitizer is idempotent across the two sanitizing passes
   (`_walk_frontier` then `_mark_failed`), so double-sanitizing cannot
-  corrupt legitimate evidence.
+  corrupt legitimate evidence;
+- the `NodeRun.error` field is also sanitized, preventing credential
+  leakage in canonical node-run state.

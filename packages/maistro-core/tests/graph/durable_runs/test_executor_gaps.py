@@ -384,6 +384,32 @@ class TestPersistedFailureRedaction:
         assert sanitize_failure_message(once) == once
         assert "sk-proj-ABCdef123456" not in once
 
+    async def test_node_run_error_is_sanitized(self) -> None:
+        """The NodeRun.error must not contain credential-shaped text."""
+        store = InMemoryDurableRunStore()
+        record = _record_for(
+            "r-boom-noderun",
+            dag=self._boom_dag(_BoomNode.kind),
+            active_node_id="n1",
+        )
+        await store.create(record)
+        result = await _walk(
+            record,
+            store=store,
+            node_resolver=lambda _node_id, _graph: _BoomNode(),
+            runtime=PythonExecutionRuntime(),
+        )
+        assert result.status is RunStatus.FAILED
+        # There should be exactly one node run
+        assert len(result.node_runs) == 1
+        node_run = result.node_runs[0]
+        assert node_run.error is not None
+        error = node_run.error
+        assert error == (
+            "RuntimeError: provider rejected api_key=[REDACTED_SECRET_ASSIGNMENT] for tenant 42"
+        )
+        assert "sk-proj-ABCdef123456" not in error
+
 
 class TestCanonicalNodeRunPersistence:
     async def test_nonterminal_node_run_is_reused_on_resume(self) -> None:
