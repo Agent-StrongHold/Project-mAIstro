@@ -123,6 +123,15 @@ user_provider_config: JsonStore = JsonStore("user_provider_config")
 #: deployment configures for durability (#340, ADR-082926-3b80); the route
 #: used to keep its own file inside the image.
 dashboard_layouts: JsonStore = JsonStore("dashboard_layouts")
+#: One entry per Workspace, holding that Workspace's Home layout (#1048) —
+#: the durable half of the adaptive-Home contract, written through
+#: `services.home_layouts` only.
+home_layouts: JsonStore = JsonStore("home_layouts")
+#: Dismissed adaptive Home candidates, keyed `workspace:item_type:item_id`
+#: (#1048). A preference record, not a domain object; written through
+#: `services.home_projections.record_dismissal` only, so "show me less of
+#: this" survives a restart and is shared by the API and the Agent tool.
+home_adaptive_dismissals: JsonStore = JsonStore("home_adaptive_dismissals")
 #: Stable OIDC identity links. Records contain no provider token or email.
 oauth_identity_links: JsonStore = JsonStore("oauth_identity_links")
 #: DAG run history — the records behind the "Live DAG Runs" page. In-memory
@@ -167,6 +176,8 @@ _all_json_stores: list[JsonStore] = [
     optimizer_proposals,
     user_provider_config,
     dashboard_layouts,
+    home_layouts,
+    home_adaptive_dismissals,
     oauth_identity_links,
     dag_runs,
     registration_invitations,
