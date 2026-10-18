@@ -196,12 +196,16 @@ Run [`deploy/scripts/verify-restore.sh`](../../deploy/scripts/verify-restore.sh)
 4. Checks the backup's integrity manifest — any missing or corrupt component
    (including an empty Conductor capture) fails the drill before anything restores.
 5. Verifies the Conductor durable state: `state.db` integrity + canonical tables,
-   historical Run IDs printed as inspectable, fencing versions present; then the
-   decrypt proof — the escrowed `admin.key` must actually decrypt the backed-up
-   `secrets.age` (set `EXPECTED_SECRET_NAME` to pin a known secret), and
-   `credential_master.key` must be escrowed for `user_credentials.enc`. A missing
-   escrow is a hard failure (`artifact` class, as is an empty Conductor capture;
-   set `SKIP_CONDUCTOR_BACKUP=1` only for stacks that run no Conductor).
+   historical Run IDs printed as inspectable, fencing versions present. `secrets.age`
+   and `user_credentials.enc` are optional stores — the vault is provisioned lazily and
+   `user_credentials.enc` appears with the first persisted credential — so each is
+   verified, together with its escrow root, only when it was actually captured: when
+   `secrets.age` is captured, the decrypt proof demands the escrowed `admin.key` actually
+   decrypt it (set `EXPECTED_SECRET_NAME` to pin a known secret), and when
+   `user_credentials.enc` is captured, `credential_master.key` must be escrowed. A
+   captured ciphertext without its escrow root is a hard failure (`artifact` class, as
+   is a missing or empty `state.db`; set `SKIP_CONDUCTOR_BACKUP=1` only for stacks that
+   run no Conductor).
 6. (staging extension) Point a staging maistro-server at the scratch DB and check
    `GET /health/ready` + a smoke request.
 

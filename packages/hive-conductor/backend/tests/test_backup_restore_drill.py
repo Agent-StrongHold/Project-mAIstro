@@ -10,8 +10,12 @@ The drill in ``deploy/scripts/verify-restore.sh`` is where that gap is proven
 closed, so these tests drive the real script functions (sourced, not reimplemented)
 against real artifacts: a real age identity + vault built with ``age-keygen``/``age``,
 and a real SQLite ``state.db`` carrying the canonical spine tables. Each acceptance
-failure mode is exercised: absent escrow, wrong identity, corrupt component,
-missing component, and a pinned known secret that must decrypt.
+failure mode is exercised: absent escrow (for a captured ciphertext), wrong identity,
+corrupt component, missing state.db, a captured ciphertext without its escrow root,
+and a pinned known secret that must decrypt. The optional stores are also proven to
+pass when legitimately absent: a Conductor has no ``secrets.age`` until its optional
+vault is provisioned, and no ``user_credentials.enc`` until the first credential is
+persisted, so a valid backup may lack either (and then need no escrow at all).
 """
 
 from __future__ import annotations
@@ -264,14 +268,62 @@ def test_corrupt_backup_component_fails_manifest(
 
 
 @requires_age
-def test_missing_conductor_component_fails(
+def test_optional_store_absent_still_verifies(
     backup_and_escrow: tuple[Path, Path],
 ) -> None:
+    """user_credentials.enc is written only with the first persisted credential.
+
+    A valid backup of such a Conductor legitimately lacks it, so the drill must
+    skip its escrow-root check — not page an operator over a non-problem.
+    """
     backup, escrow = backup_and_escrow
     (backup / "conductor-data" / "user_credentials.enc").unlink()
     proc = _run_drill(backup, escrow, manifest=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "user_credentials.enc not captured" in proc.stdout
+
+
+@requires_age
+def test_unprovisioned_conductor_backup_verifies_without_escrow(
+    tmp_path: Path,
+) -> None:
+    """A fresh Conductor has neither secrets.age nor user_credentials.enc.
+
+    state.db alone is authoritative and mandatory; with no ciphertext captured,
+    no escrow can exist yet, and the drill must not demand one.
+    """
+    backup = tmp_path / "backup"
+    data = backup / "conductor-data"
+    data.mkdir(parents=True)
+    _build_state_db(data / "state.db")
+    proc = _run_drill(backup, tmp_path / "escrow-that-does-not-exist", manifest=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "nothing ciphertext to verify" in proc.stdout
+
+
+@requires_age
+def test_captured_credential_store_without_its_root_fails(
+    backup_and_escrow: tuple[Path, Path],
+) -> None:
+    """Conditionality is one-way: a captured ciphertext always demands its root."""
+    backup, escrow = backup_and_escrow
+    (escrow / "credential_master.key").unlink()
+    _write_manifest(escrow, ["admin.key"])
+    proc = _run_drill(backup, escrow, manifest=False)
     assert proc.returncode != 0
-    assert "user_credentials.enc is missing or empty" in proc.stderr
+    assert "credential escrow has no credential_master.key" in proc.stderr
+
+
+@requires_age
+def test_missing_state_db_fails(
+    backup_and_escrow: tuple[Path, Path],
+) -> None:
+    """state.db is the authoritative spine: it is never optional."""
+    backup, escrow = backup_and_escrow
+    (backup / "conductor-data" / "state.db").unlink()
+    proc = _run_drill(backup, escrow, manifest=False)
+    assert proc.returncode != 0
+    assert "conductor-data/state.db is missing or empty" in proc.stderr
 
 
 @requires_age

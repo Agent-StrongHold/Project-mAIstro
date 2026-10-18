@@ -17,10 +17,13 @@
 #
 # Beyond the PostgreSQL oracle, the drill proves the Conductor's own
 # authoritative state (#88 / the D-18 backup-gap audit): the backup must
-# contain the conductor-data capture (state.db, secrets.age,
-# user_credentials.enc), state.db must pass integrity/schema checks with
-# historical Runs inspectable and fencing values preserved, and — the decrypt
-# proof — the escrowed admin.key must actually open the backed-up secrets.age.
+# contain the conductor-data capture with a nonempty state.db, which must pass
+# integrity/schema checks with historical Runs inspectable and fencing values
+# preserved. secrets.age and user_credentials.enc are optional stores (the
+# vault is provisioned lazily; user_credentials.enc appears with the first
+# persisted credential), so each is verified — together with its escrow root —
+# only when it was actually captured; when secrets.age is captured, the
+# decrypt proof demands the escrowed admin.key actually open it.
 #
 # Distinct failure classes (all exit 1; the class is in the message):
 #   artifact  — missing or corrupt backup artifacts (dump, evidence, hashes,
@@ -109,10 +112,20 @@ verify_conductor_backup() {
   [[ -d "${data}" ]] \
     || fail_artifact "conductor-data is missing from the backup — the authoritative Conductor state (state.db, secrets.age, user_credentials.enc) was not captured; this is exactly the D-18 backup gap"
 
-  local f
-  for f in state.db secrets.age user_credentials.enc; do
-    [[ -s "${data}/${f}" ]] || fail_artifact "conductor-data/${f} is missing or empty in the backup"
-  done
+  # state.db is the authoritative spine — every Conductor backup carries it.
+  # secrets.age and user_credentials.enc are OPTIONAL: a supported Conductor
+  # has no secrets.age until its optional vault is provisioned, and
+  # user_credentials.enc is only written once the first credential is
+  # persisted. A valid backup may therefore lack either, so each ciphertext is
+  # verified, and its escrow root demanded, only when it was captured.
+  [[ -s "${data}/state.db" ]] \
+    || fail_artifact "conductor-data/state.db is missing or empty in the backup"
+  local vault_captured=0 creds_captured=0
+  if [[ -s "${data}/secrets.age" ]]; then vault_captured=1; fi
+  if [[ -s "${data}/user_credentials.enc" ]]; then creds_captured=1; fi
+  if [[ "${vault_captured}" -eq 0 && "${creds_captured}" -eq 0 ]]; then
+    echo "[verify-restore] no secrets.age / user_credentials.enc captured — vault and per-user credentials were never provisioned at backup time; nothing ciphertext to verify"
+  fi
 
   # state.db must be a usable SQLite database: intact, and carrying the
   # canonical spine (Workspaces, Runs/NodeRuns/Attempts), the graph
@@ -183,40 +196,55 @@ PY
 
   # Credential escrow: the decryption roots must exist OUTSIDE the backup —
   # an escrow that only lives beside the ciphertext it opens is no escrow.
-  [[ -d "${escrow}" ]] \
-    || fail_artifact "credential escrow missing at ${escrow} — without the escrowed admin.key the vault (secrets.age) is cryptographically unrecoverable and every stored secret is gone for good"
-  [[ -s "${escrow}/admin.key" ]] \
-    || fail_artifact "credential escrow at ${escrow} holds no admin.key — secrets.age is unrecoverable without it"
-  grep -q "^# public key: " "${escrow}/admin.key" \
-    || fail_artifact "escrowed admin.key is not an age identity file (missing '# public key:' header)"
-  if [[ -f "${escrow}/manifest.sha256" ]]; then
+  # Each root is demanded only when its ciphertext was actually captured; a
+  # Conductor with neither optional store provisioned needs no escrow at all.
+  if [[ "${vault_captured}" -eq 1 ]]; then
+    [[ -d "${escrow}" ]] \
+      || fail_artifact "credential escrow missing at ${escrow} — secrets.age was captured, so without the escrowed admin.key the vault is cryptographically unrecoverable and every stored secret is gone for good"
+    [[ -s "${escrow}/admin.key" ]] \
+      || fail_artifact "credential escrow at ${escrow} holds no admin.key — secrets.age is unrecoverable without it"
+    grep -q "^# public key: " "${escrow}/admin.key" \
+      || fail_artifact "escrowed admin.key is not an age identity file (missing '# public key:' header)"
+  else
+    echo "[verify-restore] secrets.age not captured — vault not provisioned at backup time; skipping vault escrow and decrypt proof"
+  fi
+
+  if [[ -d "${escrow}" && -f "${escrow}/manifest.sha256" ]]; then
     ( cd "${escrow}" && sha256sum -c --quiet manifest.sha256 ) \
       || fail_artifact "credential escrow manifest check failed — the escrowed keys do not match what backup.sh recorded; re-escrow from the off-host copy"
-  else
+  elif [[ -d "${escrow}" ]]; then
     echo "[verify-restore] WARNING: escrow has no manifest.sha256 — cannot prove these keys are the ones backup.sh recorded"
   fi
 
-  # THE decrypt proof: the escrowed identity actually opens the backed-up
-  # vault. This is what turns "the key file exists" into "the restored
-  # Conductor identity is usable".
-  command -v age >/dev/null 2>&1 \
-    || fail_verifier "age(1) not found on the drill host — install age to prove the escrowed identity decrypts the vault"
-  local vault_plain=""
-  if ! vault_plain="$(age --decrypt -i "${escrow}/admin.key" "${data}/secrets.age" 2>/dev/null)"; then
-    fail_artifact "DECRYPT PROOF FAILED: the escrowed admin.key cannot decrypt the backed-up secrets.age — a restored Conductor would fail closed on its vault (SECRET_MISSING)"
-  fi
-  if [[ -n "${EXPECTED_SECRET_NAME:-}" ]]; then
-    grep -Eq "^${EXPECTED_SECRET_NAME}( = |$)" <<< "${vault_plain}" \
-      || fail_artifact "known secret '${EXPECTED_SECRET_NAME}' is not readable in the decrypted vault — check EXPECTED_SECRET_NAME against the provisioned vault"
-    echo "[verify-restore] decrypt proof: escrowed admin.key decrypted secrets.age; known secret '${EXPECTED_SECRET_NAME}' is readable"
-  else
-    echo "[verify-restore] decrypt proof: escrowed admin.key decrypted secrets.age ($(grep -c . <<< "${vault_plain}" || true) secret line(s)); set EXPECTED_SECRET_NAME to pin a known secret"
+  if [[ "${vault_captured}" -eq 1 ]]; then
+    # THE decrypt proof: the escrowed identity actually opens the backed-up
+    # vault. This is what turns "the key file exists" into "the restored
+    # Conductor identity is usable".
+    command -v age >/dev/null 2>&1 \
+      || fail_verifier "age(1) not found on the drill host — install age to prove the escrowed identity decrypts the vault"
+    local vault_plain=""
+    if ! vault_plain="$(age --decrypt -i "${escrow}/admin.key" "${data}/secrets.age" 2>/dev/null)"; then
+      fail_artifact "DECRYPT PROOF FAILED: the escrowed admin.key cannot decrypt the backed-up secrets.age — a restored Conductor would fail closed on its vault (SECRET_MISSING)"
+    fi
+    if [[ -n "${EXPECTED_SECRET_NAME:-}" ]]; then
+      grep -Eq "^${EXPECTED_SECRET_NAME}( = |$)" <<< "${vault_plain}" \
+        || fail_artifact "known secret '${EXPECTED_SECRET_NAME}' is not readable in the decrypted vault — check EXPECTED_SECRET_NAME against the provisioned vault"
+      echo "[verify-restore] decrypt proof: escrowed admin.key decrypted secrets.age; known secret '${EXPECTED_SECRET_NAME}' is readable"
+    else
+      echo "[verify-restore] decrypt proof: escrowed admin.key decrypted secrets.age ($(grep -c . <<< "${vault_plain}" || true) secret line(s)); set EXPECTED_SECRET_NAME to pin a known secret"
+    fi
   fi
 
-  # user_credentials.enc disposition: its Fernet root must be escrowed too,
-  # or every per-user provider token in the backup is unrecoverable.
-  [[ -s "${escrow}/credential_master.key" ]] \
-    || fail_artifact "credential escrow has no credential_master.key — user_credentials.enc (per-user provider tokens) is unrecoverable without it; re-escrow from the off-host copy"
+  if [[ "${creds_captured}" -eq 1 ]]; then
+    # user_credentials.enc disposition: its Fernet root must be escrowed too,
+    # or every per-user provider token in the backup is unrecoverable.
+    [[ -d "${escrow}" ]] \
+      || fail_artifact "credential escrow missing at ${escrow} — user_credentials.enc was captured, so without credential_master.key its per-user provider tokens are unrecoverable"
+    [[ -s "${escrow}/credential_master.key" ]] \
+      || fail_artifact "credential escrow has no credential_master.key — user_credentials.enc (per-user provider tokens) is unrecoverable without it; re-escrow from the off-host copy"
+  else
+    echo "[verify-restore] user_credentials.enc not captured — no per-user credentials persisted at backup time; skipping credential_master.key escrow check"
+  fi
 }
 
 main() {
