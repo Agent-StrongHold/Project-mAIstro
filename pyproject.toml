@@ -174,6 +174,12 @@ dev = [
     "cosmic-ray>=8.0.0",
     "pytest-timeout>=2.3",  # see the note in [project.optional-dependencies].dev
     "copier>=9.17.2",
+    # The M8-A13 stateful API workflow suite
+    # (packages/maistro-server/tests/api/test_stateful_workflow_api.py) builds
+    # its schema-generated request bodies from the served OpenAPI document via
+    # schemathesis — a fresh `uv sync` prunes an undeclared package, so the
+    # research suite must declare it or run green having verified nothing.
+    "schemathesis>=4.29",
 ]
 
 [project.scripts]

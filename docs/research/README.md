@@ -101,16 +101,19 @@ Every child research epic/leaf defines:
 | [920 — hybrid vector + graph retrieval](920-hybrid-vector-graph-retrieval.md) | M8-C1 | leaf [#920](https://github.com/Agent-StrongHold/Project-mAIstro/issues/920), epic #901 | WATCH |
 | [921 — learned reranking and query rewriting](921-reranking-query-rewriting.md) | M8-C2 | leaf [#921](https://github.com/Agent-StrongHold/Project-mAIstro/issues/921), epic #901 | WATCH |
 | [935 — cross-Agent batching, prefix/KV reuse, semantic caching](935-cross-agent-batching-kv-reuse.md) | M8-F2 | leaf [#935](https://github.com/Agent-StrongHold/Project-mAIstro/issues/935), epic #905 | WATCH |
+| [893 — stateful generated API workflows](893-stateful-api-workflows.md) | M8-A | leaf [#893](https://github.com/Agent-StrongHold/Project-mAIstro/issues/893), epic #880 | GRADUATE (this seam, this scope) |
 
-No leaf currently holds a GRADUATE or REJECT disposition; two are INCUBATE (model-routing
-leaves #914, #916) and the rest are WATCH. Dispositions are owned by the individual notes —
-update the note first, then this table.
+No leaf currently holds a REJECT disposition; #893 is GRADUATE (for its seam), two are
+INCUBATE (model-routing leaves #914, #916) and the rest are WATCH. Dispositions are owned by
+the individual notes — update the note first, then this table.
 
 The initial research family, M8-A advanced software verification and assurance
 ([#880](https://github.com/Agent-StrongHold/Project-mAIstro/issues/880), leaves #881–#897), is
 tracked on GitHub with its in-repo evidence infrastructure in [`formal/`](../../formal/)
-([INVARIANTS](../../formal/INVARIANTS.md), [README](../../formal/README.md)); it has no note
-in this folder yet.
+([INVARIANTS](../../formal/INVARIANTS.md), [README](../../formal/README.md)). Two of its
+leaves have notes in this folder: #882 (Invocation effect/idempotency stateful testing, whose
+model ships as I31 in `formal/`) and #893 (stateful generated API workflows, whose suite ships
+in the server test job); the rest are evidenced on GitHub and in `formal/` only.
 
 ## Milestone object note
 
