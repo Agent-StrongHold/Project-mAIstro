@@ -19,31 +19,64 @@
 # can turn an otherwise reproducible image into a source-build failure.
 FROM python:3.13.15-slim-bookworm AS builder
 WORKDIR /app
-ENV PATH="/app/venv/bin:$PATH"
-RUN python -m venv /app/venv
+# uv is pinned to the release that generated the committed uv.lock: `uv export
+# --locked` (below) is version-sensitive, and a floating installer is exactly
+# the kind of unexamined resolution this image must not do (#348).
+COPY --from=ghcr.io/astral-sh/uv:0.12.20 /uv /usr/local/bin/uv
+ENV UV_LINK_MODE=copy
+
+# The lock covers the whole workspace, so uv needs every member's
+# pyproject.toml to verify `--locked` (lock-vs-pyproject drift fails the
+# build). Only the two packages the image installs end up in the venv; the
+# other members are build-time metadata and never reach the runtime stage.
 COPY pyproject.toml uv.lock README.md ./
-COPY packages/maistro-core   packages/maistro-core
-COPY packages/maistro-server packages/maistro-server
-# Non-editable install so the venv is fully self-contained (nothing from the
-# source trees is needed on sys.path at runtime).
-# psycopg is listed for alembic, not for the application. Alembic reaches
-# PostgreSQL through SQLAlchemy's *sync* engine, and `to_sync_url` names psycopg
-# 3 explicitly because a bare `postgresql://` resolves to psycopg2 instead; the
-# app path uses asyncpg and touches neither. The driver is declared in the
-# workspace root, which this image never installs — it installs the two packages
-# by path — so without naming it here `alembic upgrade head` in the shipped
-# container stops at ModuleNotFoundError before it reaches the schema.
-# pydantic-ai-slim is deliberately NOT installed: ADR-094 cut pydantic-ai from
-# the codebase (zero src imports) and the CVE-2026-25580 fix line (>=1.56.0)
-# requires openai>=2, which cannot co-install with the openai pin below.
-RUN pip install --no-cache-dir \
-      "./packages/maistro-core[identity,llm,sandbox,observability]" \
-      "./packages/maistro-server" \
-      "alembic>=1.14" \
-      "psycopg[binary]>=3.2" \
-      "openai>=1.40,<2" \
-      "anyio>=4.14.2" \
-      "httpx>=0.27.0"
+COPY packages/ packages/
+
+# Export the exact locked requirement set for this image's dependency contract
+# (maistro-server plus core's identity and observability extras), then install
+# it with --require-hashes:
+#   --locked    fails the build if uv.lock is out of date with any
+#               pyproject.toml - lock drift is a red build, not a silent
+#               re-resolution;
+#   --no-dev    dev tooling never ships;
+#   --no-emit-workspace
+#               third-party pins only, every line carrying hashes; the
+#               workspace members are installed separately (below) from the
+#               copied sources, non-editable;
+#   --require-hashes
+#               every downloaded artifact is verified against the lock's
+#               hashes, so an unresolvable locked artifact fails the build
+#               instead of silently substituting whatever the index serves.
+# This replaces the previous `pip install ./packages/... "alembic>=1.14" ...`
+# line, which re-resolved every transitive at build time while the scanners
+# inspected the lock - the shipped set and the scanned set were different
+# sets (#348). alembic and psycopg[binary] need no explicit pin here: both are
+# hard dependencies of maistro-server and arrive through the lock. The
+# explicit anyio/httpx security floors are superseded the same way: the lock
+# pins exact versions, so a rebuild cannot pick newer transitives.
+# pydantic-ai-slim remains deliberately NOT installed: ADR-094 cut pydantic-ai
+# from the codebase (zero src imports) and nothing in the lock names it. The
+# old explicit `openai>=1.40,<2` pin is gone with it: the only openai import
+# in the tree is the optional fallback inside core's browser tool, which this
+# browser-free image does not ship - installing an SDK nothing can import was
+# exactly the unexamined surface this change removes.
+RUN uv export --locked --package maistro-server \
+      --extra identity --extra observability \
+      --no-dev --no-emit-workspace \
+      --format requirements-txt --output-file /tmp/lock-requirements.txt \
+ && uv venv --python 3.13 /app/venv \
+ && uv pip install --python /app/venv/bin/python \
+      --require-hashes --no-cache -r /tmp/lock-requirements.txt
+
+# First-party packages: installed from the copied sources with --no-deps so
+# nothing re-resolves - their third-party requirements are already installed,
+# exact and hash-verified, from the export. Non-editable so the venv is fully
+# self-contained (nothing from the source trees is needed on sys.path at
+# runtime); the wheel build is local code, not dependency resolution.
+RUN uv pip install --python /app/venv/bin/python --no-deps --no-cache \
+      ./packages/maistro-core ./packages/maistro-server \
+ && uv pip check --python /app/venv/bin/python \
+ && /app/venv/bin/python -c "import importlib.metadata as m; assert m.version('maistro-core') and m.version('maistro-server'); import maistro_server.main; print('builder smoke ok')"
 
 # ─── Wolfi runtime (-dev variant): low-CVE, has apk so `git` is available ───
 # This image is NOT vuln-gated (only the hive-conductor image is trivy/grype

@@ -65,7 +65,21 @@ dependencies = [
     # Bound is `>=0.9.0,<2` because 0.9.0 is what every package in this repo is
     # at today (root VERSION); nothing resolves at 1.0.0 yet. Tighten to
     # `>=1.0.0,<2` at tag time, per E1/E2 of the v1.0.0 release plan.
-    "maistro-core[bcrypt]>=0.9.0,<2",
+    # `[bcrypt,identity]`: bcrypt for legacy password columns (see above);
+    # identity because the auth wiring imports maistro.identity
+    # (ConductorSeed), whose bip-utils/pynacl stack the extra declares. Both
+    # surfaces resolve through uv.lock — the image installs the locked pins,
+    # not this file (#348).
+    "maistro-core[bcrypt,identity]>=0.9.0,<2",
+    # routes/design.py and services/design_*.py import maistro_design at
+    # module load (unguarded) — the app cannot boot without it.
+    # maistro-canvas arrives as maistro-design's own hard dependency.
+    "maistro-design>=0.9.0,<2",
+    # services/evolution and the evolution routes import maistro_evolve.
+    "maistro-evolve>=0.9.0,<2",
+    # routes/install.py imports maistro_bootstrap lazily; the shipped image
+    # installs it today, so the wheel declares what the deployment carries.
+    "maistro-bootstrap>=0.9.0,<2",
 ]
 
 # `backend/adapters/telemetry_langfuse.py` exports spans to a Langfuse OTLP

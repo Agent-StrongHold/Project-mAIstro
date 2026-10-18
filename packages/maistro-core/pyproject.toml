@@ -63,6 +63,17 @@ bcrypt = [
 re2 = [
     "google-re2>=1.1",
 ]
+# The RESEARCH browser surface (#348): `tools/browser/client.py` lazy-imports
+# browser_use, falls back to the openai SDK directly, and drives Chromium
+# through playwright. Optional because the API image deliberately ships
+# browser-free (Dockerfile) — deployments that want the web tool install this
+# extra (Dockerfile.research selects it), and the resolution lives in uv.lock
+# so image builds cannot re-resolve it.
+browser = [
+    "browser-use>=0.1.40",
+    "playwright>=1.49",
+    "openai>=1.40,<2",
+]
 # The Archive tier (ADR-082226-f436) — cold records below durable memory, on any
 # S3-compatible store. Optional because the homelab deployment uses
 # `FilesystemArchiveStore`, which needs nothing, and because a deployment that
