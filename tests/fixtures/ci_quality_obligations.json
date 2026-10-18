@@ -162,7 +162,7 @@
       "steps": [
         {
           "name": "xenon (per-function \u2264 B; per-module \u2264 B; project avg \u2264 A \u2014 ratchet)",
-          "sha256": "02329cae403a22191eb93c27760d8f9e20da2030dda1ec2ce1db1f00d811da4d"
+          "sha256": "52ff23af8d26dbe751b284efcd8e79dcbca028951175347efd9d046fe951d7e6"
         }
       ]
     },
@@ -458,7 +458,7 @@
       "steps": [
         {
           "name": "interrogate (docstring coverage ratchet)",
-          "sha256": "3b613adfe4c6cdf2ac6784c9f42610d6904c1c01913464fc3de9fb15c930adb5"
+          "sha256": "d3d74e7535bdfc14ead644c4f43ae7d4e9258991b34e3fbff52480402e69fd82"
         }
       ]
     }

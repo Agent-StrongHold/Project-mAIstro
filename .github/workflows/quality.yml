@@ -1314,13 +1314,17 @@ jobs:
           # 143 xenon block identities matching the ledger's 143 entries
           # one-for-one, rank for rank.
           #
-          # 143 is the same number check-radon-baseline.py carries, and that
-          # is the point: the two tools measure the same blocks over the same
-          # scope, so a divergence between this count and the ledger's length is
-          # itself a signal that one of them stopped looking.
-          # tests/test_complexity_gate_scope.py pins the two together so the
-          # next improvement lowers both in the same PR.
-          XENON_BASELINE: 143
+          # 143 -> 139 (this PR), two moves in one. First, the ledger followed the
+          # Boy Scout waves after 2026-10-04 down to 137 while this ceiling sat
+          # at 143 -- exactly the drift the ledger pin exists to catch, and the
+          # pin test failed here until this PR re-pinned it. Second, the radon
+          # scan widened to packages/maistro-ext-sdk/src, which xenon already
+          # counted but the radon ledger did not look at: the SDK's two C blocks
+          # (_validate_least_authority 14, VersionRange.satisfied_by 12) are now
+          # banked as ledger rows, so 137 + 2 = 139. Re-measured at HEAD: 139
+          # block identities, xenon and the ledger one-for-one, module and
+          # average axes clean.
+          XENON_BASELINE: 139
           # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in
           # silence; widening the scope surfaced one.
@@ -2788,6 +2792,10 @@ jobs:
           uv run interrogate -f 45 packages/maistro-bootstrap/src
           uv run interrogate -f 36 packages/maistro-canvas/src
           uv run interrogate -f 24 packages/maistro-turing/src
+          # The shipped extension SDK. Floored at its measured coverage
+          # (73.1%); it was unmeasured until this PR -- xenon watched it, but
+          # nothing asked its docstrings for anything.
+          uv run interrogate -f 73 packages/maistro-ext-sdk/src
 
   quality-gate:
     name: Quality gate (Pillars 1–4, 7, 8)

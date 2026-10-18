@@ -27,6 +27,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -39,9 +40,21 @@ RADON_SCRIPT = ROOT / "scripts" / "check-radon-baseline.py"
 RADON_LEDGER = ROOT / "quality" / "radon-baseline.json"
 
 
+#: Packages under packages/ that carry a src/ tree but are tooling, not shipped
+#: product source, so the complexity/docstring gates do not watch them. The
+#: harness is the stdlib-only conformance runner a third-party CI installs; it
+#: loads extension code and is never imported by the product. Listed by name so
+#: an exclusion is a reviewed decision, not a side effect of a filename filter.
+_DEV_ONLY_PACKAGES = frozenset({"maistro-ext-harness"})
+
+
 def _shipped_src_roots() -> set[str]:
     """Every shipped package's ``src/`` root, discovered from the tree."""
-    return {p.relative_to(ROOT).as_posix() for p in (ROOT / "packages").glob("*/src")}
+    return {
+        p.relative_to(ROOT).as_posix()
+        for p in (ROOT / "packages").glob("*/src")
+        if p.parent.name not in _DEV_ONLY_PACKAGES
+    }
 
 
 def _radon_module() -> Any:
@@ -81,7 +94,42 @@ def _interrogate_run_lines() -> list[str]:
     assert len(hits) == 1, f"expected exactly one interrogate step, found {len(hits)}"
     run = hits[0]["run"]
     assert isinstance(run, str)
-    return [line.strip() for line in run.splitlines() if "interrogate " in line]
+    # Join backslash continuations BEFORE filtering: the Evolve floor spans two
+    # lines and its real target (`packages/maistro-evolve/src`) sits on the
+    # continuation line, which a per-line filter would drop.
+    lines: list[str] = []
+    pending = ""
+    for raw in run.splitlines():
+        line = (pending + " " + raw).strip() if pending else raw.strip()
+        if line.endswith("\\"):
+            pending = line[:-1].rstrip()
+            continue
+        pending = ""
+        if "interrogate " in line:
+            lines.append(line)
+    assert not pending, "the interrogate step ends in a dangling line continuation"
+    return lines
+
+
+def _interrogate_targets() -> list[str]:
+    """Positional scan targets of each interrogate invocation.
+
+    Option operands (``-f`` floors, ``-e`` excludes) are consumed as values, so
+    an explicitly excluded directory is never mistaken for covered ground.
+    """
+    option_flags = {"-e", "--exclude", "-f", "--fail-under"}
+    targets: list[str] = []
+    for line in _interrogate_run_lines():
+        skip_next = False
+        for token in shlex.split(line):
+            if skip_next:
+                skip_next = False
+                continue
+            if token in option_flags:
+                skip_next = True
+            elif token.startswith("packages/"):
+                targets.append(token)
+    return targets
 
 
 def _xenon_run() -> str:
@@ -150,6 +198,17 @@ def test_xenon_enforces_module_rank_and_project_average_not_just_block_count() -
     assert '[ "$average" -gt 0 ]' in run, (
         "a project average below rank A must fail the step, not be printed and dropped"
     )
+    # The condition text alone doesn't prove enforcement: deleting `fail=1` from
+    # that branch, or the final `exit "$fail"`, would restore the historical
+    # print-an-average-violation-and-pass behavior while the assertion above
+    # stayed green. Pin the branch body and the status propagation too.
+    assert re.search(r'if \[ "\$average" -gt 0 \]; then\n.*?\n\s*fail=1\n\s*fi', run, re.DOTALL), (
+        "the average branch must raise the shared `fail` flag, not just print an error annotation"
+    )
+    assert run.rstrip().endswith('exit "$fail"'), (
+        "the step must exit on the accumulated `fail` flag, or no counted "
+        "violation (block, module, or average) ever fails the job"
+    )
     # Module rank is compared by identity in both directions — a new violation
     # fails, and a fixed one must leave the ledger in the same PR.
     assert "comm -23 xenon-modules.now xenon-modules.ledger" in run
@@ -161,9 +220,7 @@ def test_xenon_enforces_module_rank_and_project_average_not_just_block_count() -
 
 def test_interrogate_floors_every_shipped_package() -> None:
     """Every shipped src root sits under at least one interrogate floor."""
-    floored: list[str] = []
-    for line in _interrogate_run_lines():
-        floored.extend(re.findall(r"packages/[\w/-]+", line))
+    floored = _interrogate_targets()
     assert floored, "the interrogate step must floor at least one tree"
     for root in _shipped_src_roots():
         covered = any(path == root or path.startswith(root.rstrip("/") + "/") for path in floored)
