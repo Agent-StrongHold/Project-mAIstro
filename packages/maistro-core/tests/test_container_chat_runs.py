@@ -18,6 +18,7 @@ from maistro.container import Container, create_container
 from maistro.runs.admission import ADMISSION_SOURCE
 from maistro.runs.chat_admission import ADMISSION_INCOMPLETE, CHAT_SOURCE, SESSION_ID_KEY
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 
@@ -417,7 +418,10 @@ async def test_compensation_declines_a_run_already_past_queued() -> None:
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await container.run_store.create_run(graph)
+    run = await container.run_store.create_run(
+        graph,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
     running = await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
 

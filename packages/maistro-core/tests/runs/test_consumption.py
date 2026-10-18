@@ -21,6 +21,7 @@ from maistro.graph.nodes import BaseNode, NodeContext, register_node
 from maistro.runs.model import RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
 from maistro.runs.store import run_cursor_key
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 
@@ -89,6 +90,7 @@ async def _admit_schedule_run(
         graph,
         provenance=provenance,
         initial_status=status,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     return run.run_id
 
@@ -199,10 +201,22 @@ async def test_list_by_status_returns_only_that_status_oldest_first(
         name="g",
         nodes=[Node(node_id="n1", node_type=_TickNode.kind)],
     )
-    older = await store.create_run(graph, initial_status=status)
-    newer = await store.create_run(graph, initial_status=status)
+    older = await store.create_run(
+        graph,
+        initial_status=status,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    newer = await store.create_run(
+        graph,
+        initial_status=status,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     other_status = RunStatus.CREATED if status is RunStatus.QUEUED else RunStatus.QUEUED
-    await store.create_run(graph, initial_status=other_status)
+    await store.create_run(
+        graph,
+        initial_status=other_status,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     listed = await store.list_by_status(status, limit=10)
 
@@ -235,8 +249,16 @@ async def test_list_by_status_offset_walks_past_the_first_page(
         name="g",
         nodes=[Node(node_id="n1", node_type=_TickNode.kind)],
     )
-    older = await store.create_run(graph, initial_status=status)
-    newer = await store.create_run(graph, initial_status=status)
+    older = await store.create_run(
+        graph,
+        initial_status=status,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    newer = await store.create_run(
+        graph,
+        initial_status=status,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     first_page = await store.list_by_status(status, limit=1, offset=0)
     second_page = await store.list_by_status(status, limit=1, offset=1)
@@ -266,9 +288,21 @@ async def test_list_by_status_conformance_on_the_reference_store(memory_spine: A
         name="g",
         nodes=[Node(node_id="n1", node_type=_TickNode.kind)],
     )
-    older = await store.create_run(graph, initial_status=RunStatus.QUEUED)
-    newer = await store.create_run(graph, initial_status=RunStatus.QUEUED)
-    await store.create_run(graph, initial_status=RunStatus.CREATED)
+    older = await store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    newer = await store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    await store.create_run(
+        graph,
+        initial_status=RunStatus.CREATED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     listed = await store.list_by_status(RunStatus.QUEUED, limit=10)
     assert [run.run_id for run in listed] == [older.run_id, newer.run_id]

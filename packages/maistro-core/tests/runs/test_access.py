@@ -8,6 +8,7 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import RunAccessContext, RunAuthorization, RunStatus
 from maistro.runs.store import InMemoryRunStore
 from maistro.security.sentinel.authz_types import Principal
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _project(projects: InMemoryProjectScopeStore, workspace_id: str, name: str):
@@ -57,8 +58,14 @@ async def test_scoped_reads_hide_foreign_run_children_and_attempt_lists() -> Non
     )
     store = InMemoryRunStore(project_store=projects)
 
-    mine = await store.create_run(_graph(first.workspace_id, first.project_id))
-    foreign = await store.create_run(_graph(second.workspace_id, second.project_id))
+    mine = await store.create_run(
+        _graph(first.workspace_id, first.project_id),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    foreign = await store.create_run(
+        _graph(second.workspace_id, second.project_id),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     node = await store.create_node_run(foreign.run_id, node_id="node")
     attempt = await store.create_attempt(node.node_run_id)
 
@@ -89,8 +96,14 @@ async def test_scoped_list_by_status_is_project_and_principal_bound() -> None:
         projects, workspace_id="workspace-a", project_id=second.project_id, principal_id="bob"
     )
     store = InMemoryRunStore(project_store=projects)
-    mine = await store.create_run(_graph("workspace-a", first.project_id))
-    await store.create_run(_graph("workspace-a", second.project_id))
+    mine = await store.create_run(
+        _graph("workspace-a", first.project_id),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    await store.create_run(
+        _graph("workspace-a", second.project_id),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     alice = store.scoped(
         RunAccessContext("workspace-a", first.project_id, Principal("alice", "human"))
@@ -151,4 +164,5 @@ async def test_delegation_requires_owned_acting_principal() -> None:
                 authenticated_principal=Principal(id="operator", kind="human"),
                 acting_principal=Principal(id="other", kind="human"),
             ),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )

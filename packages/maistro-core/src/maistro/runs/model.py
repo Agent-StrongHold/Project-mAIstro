@@ -295,6 +295,11 @@ class Run(BaseModel):
     def _validate_run(self) -> Run:
         _require_non_empty(self.workspace_id, "workspace_id")
         _require_non_empty(self.project_id, "project_id")
+        # A Run without an actor has no accounting attribution and no bound
+        # identity (#1152): admission is the only place one can be minted, so
+        # the model refuses actor-less rows outright.
+        if self.actor_principal_id is None or not self.actor_principal_id.strip():
+            raise ValueError("actor_principal_id is required")
         self._validate_scope_identity()
         for field_name in (
             "actor_principal_id",

@@ -26,6 +26,7 @@ from maistro.graph import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import RunStatus
 from maistro.runs.store import DEFAULT_ARCHIVE_AFTER, InMemoryRunStore
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 NOW = datetime(2026, 8, 25, tzinfo=UTC)
 COLD = NOW - timedelta(days=200)
@@ -59,7 +60,10 @@ async def _run(spine: Any, *, status: RunStatus, finished: Any, retention: Any) 
     state the store can really hold.
     """
     store, _archive, graph, _project_id = spine
-    run = await store.create_run(graph)
+    run = await store.create_run(
+        graph,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     moved = run.model_copy(
         update={"status": status, "finished_at": finished, "retention_expires_at": retention}
     )

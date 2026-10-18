@@ -20,6 +20,7 @@ from maistro.runs import (
     transition_run,
 )
 from maistro.runs.lifecycle import settle_open_node_run, transition_path
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 def _graph() -> Graph:
@@ -52,6 +53,7 @@ def test_run_requires_graph_snapshot_from_same_workspace_and_project() -> None:
             workspace_id="workspace-2",
             project_id="project-1",
             graph=snapshot,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
     with pytest.raises(ValueError, match="same Project"):
@@ -59,6 +61,7 @@ def test_run_requires_graph_snapshot_from_same_workspace_and_project() -> None:
             workspace_id="workspace-1",
             project_id="project-2",
             graph=snapshot,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
 
@@ -68,6 +71,7 @@ def test_run_transition_sets_start_and_finish_timestamps() -> None:
         workspace_id="workspace-1",
         project_id="project-1",
         graph=GraphSnapshot.from_graph(_graph()),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         created_at=created_at,
         updated_at=created_at,
     )

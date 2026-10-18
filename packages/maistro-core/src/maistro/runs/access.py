@@ -55,20 +55,31 @@ class RunAuthorization:
         return (self.acting_principal or self.authenticated_principal).id
 
 
+def require_admitted_actor(actor_principal_id: str | None) -> str:
+    """Admission requires a non-blank actor on every backend (#1152).
+
+    An admission without an actor would leave accounting attribution undefined
+    and let downstream consumers mint one from Run metadata, so the store
+    refuses it instead of carrying the gap.
+    """
+    if actor_principal_id is None or not str(actor_principal_id).strip():
+        raise ValueError("actor_principal_id is required")
+    return str(actor_principal_id).strip()
+
+
 def admission_identity_fields(
     graph: Graph,
     *,
     authorization: RunAuthorization | None,
     legacy_actor_principal_id: str | None,
-) -> dict[str, str | None]:
+) -> dict[str, str]:
     """Resolve immutable Run identity facts before a Run can be persisted."""
     if authorization is None:
-        if legacy_actor_principal_id is not None and not legacy_actor_principal_id.strip():
-            raise ValueError("actor_principal_id must be non-empty when present")
+        actor = require_admitted_actor(legacy_actor_principal_id)
         return {
-            "actor_principal_id": legacy_actor_principal_id,
-            "initiating_principal_id": legacy_actor_principal_id,
-            "acting_principal_id": legacy_actor_principal_id,
+            "actor_principal_id": actor,
+            "initiating_principal_id": actor,
+            "acting_principal_id": actor,
         }
     if (
         authorization.workspace_id != graph.workspace_id
@@ -222,4 +233,5 @@ __all__ = [
     "RunAuthorization",
     "RunReader",
     "admission_identity_fields",
+    "require_admitted_actor",
 ]

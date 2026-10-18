@@ -22,6 +22,7 @@ from maistro.graph.nodes import NodeContext
 from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore, RunIntegrityError, RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _spine(*, workspace_id: str = "workspace-1") -> tuple[InMemoryRunStore, Any]:
@@ -84,7 +85,10 @@ def _recording_delegator() -> _RecordingDelegator:
 
 async def _dispatched(store: InMemoryRunStore, project_id: str, **inputs: Any):
     """Dispatch one delegation and return `(node, parent, child_run_id)`."""
-    parent = await store.create_run(_graph(workspace_id="workspace-1", project_id=project_id))
+    parent = await store.create_run(
+        _graph(workspace_id="workspace-1", project_id=project_id),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
     node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
     result = await node.run(
@@ -225,7 +229,8 @@ class TestTheRunIdIsNotSourcedFromTheResponder:
         store, project = await _spine()
         node, parent, child_run_id = await _dispatched(store, project.project_id)
         victim = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
         result = await node.run(
@@ -261,7 +266,8 @@ class TestScopeIsCheckedBeforeDispatch:
     async def test_a_foreign_workspace_is_refused_before_the_task_is_queued(self) -> None:
         store, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         delegator = _recording_delegator()
         node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
@@ -335,7 +341,8 @@ class TestWhatTheChildRecords:
         the field is most needed for."""
         store, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
 
@@ -368,7 +375,8 @@ class TestWhatTheChildRecords:
         agree with the Run that holds it."""
         store, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
 

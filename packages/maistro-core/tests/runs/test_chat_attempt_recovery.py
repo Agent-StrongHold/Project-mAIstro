@@ -37,6 +37,7 @@ from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
 from maistro.runs.store import StaleExecutionFence
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 MESSAGES = [{"role": "user", "content": "hi"}]
@@ -76,7 +77,10 @@ async def _container() -> Container:
 
 async def _open_run(container: Container) -> Any:
     """A chat Run admitted to RUNNING, as admission leaves it before dispatch."""
-    run = await container.chat_admitter.admit(MESSAGES)
+    run = await container.chat_admitter.admit(
+        MESSAGES,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
     return await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
 

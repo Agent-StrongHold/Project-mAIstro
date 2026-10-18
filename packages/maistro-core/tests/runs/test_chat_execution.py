@@ -24,6 +24,7 @@ from maistro.runs.chat_execution import (
     attempt_result,
 )
 from maistro.runs.model import TERMINAL_RUN_STATUSES, AttemptStatus, RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 MESSAGES = [{"role": "user", "content": "hi"}]
@@ -296,7 +297,10 @@ class TestARetryIsASecondAttemptNotASecondNodeRun:
 
     @staticmethod
     async def _open_run(container: Container) -> str:
-        run = await container.chat_admitter.admit(MESSAGES)
+        run = await container.chat_admitter.admit(
+            MESSAGES,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
         await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
         await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
         return run.run_id
@@ -361,7 +365,10 @@ class TestTheTurnNamesItselfToTheSessionStore:
         """What makes the identity a *retry* identity. Two Attempts under one
         Run must name the same turn, or the retry writes a second copy."""
         container = await _container()
-        run = await container.chat_admitter.admit(MESSAGES)
+        run = await container.chat_admitter.admit(
+            MESSAGES,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
         container.conduit = conduit = _Conduit()
         executor = ChatAttemptExecutor(container.run_store)
         await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)

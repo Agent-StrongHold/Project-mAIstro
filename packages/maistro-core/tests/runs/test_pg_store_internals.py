@@ -30,6 +30,7 @@ from maistro.runs.sources import (
     SCHEDULED_FOR_KEY,
 )
 from maistro.runs.store import ActiveAttemptExists, DuplicateOccurrence, RunIntegrityError
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 def _asyncpg_integrity_base() -> type[Exception]:
@@ -93,6 +94,7 @@ class TestStatusListingEvidence:
             workspace_id="w1",
             project_id=root.project_id,
             graph=GraphSnapshot.from_graph(graph),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         run = transition_run(run, RunStatus.QUEUED)
         run = transition_run(run, RunStatus.RUNNING)
@@ -153,7 +155,11 @@ class TestTheOccurrenceClaimIsMatchedByName:
         store, graph = await _store_raising(_violation("some_other_index"))
 
         with pytest.raises(_AsyncpgViolation):
-            await store.create_run(graph, provenance=_occurrence_provenance())
+            await store.create_run(
+                graph,
+                provenance=_occurrence_provenance(),
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            )
 
     async def test_the_occurrence_index_becomes_a_duplicate_occurrence(self) -> None:
         """The positive half, so the two tests together pin the discrimination
@@ -161,7 +167,11 @@ class TestTheOccurrenceClaimIsMatchedByName:
         store, graph = await _store_raising(_violation(OCCURRENCE_INDEX))
 
         with pytest.raises(DuplicateOccurrence) as caught:
-            await store.create_run(graph, provenance=_occurrence_provenance())
+            await store.create_run(
+                graph,
+                provenance=_occurrence_provenance(),
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            )
 
         assert caught.value.schedule_id == "sched-1"
 
@@ -171,7 +181,11 @@ class TestTheOccurrenceClaimIsMatchedByName:
         store, graph = await _store_raising(_violation(OCCURRENCE_INDEX))
 
         with pytest.raises(_AsyncpgViolation):
-            await store.create_run(graph, provenance={ADMISSION_SOURCE: "task_queue"})
+            await store.create_run(
+                graph,
+                provenance={ADMISSION_SOURCE: "task_queue"},
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            )
 
 
 class _AsyncpgViolation(_asyncpg_integrity_base()):  # type: ignore[misc]

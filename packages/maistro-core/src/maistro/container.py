@@ -547,6 +547,15 @@ class Container:
         """
         if self.chat_admitter is None:
             return None
+        # An identity-free turn is the anonymous principal (#1152): admission
+        # requires a non-blank actor, and "no auth" must not mint an actor-less
+        # Run nor let the caller choose one.
+        if auth is None:
+            auth = ANONYMOUS_AUTH
+        actor = (
+            str(getattr(auth, "user_id", None) or getattr(auth, "username", "") or "").strip()
+            or None
+        )
         run: Run | None = None
         try:
             run = await self.chat_admitter.admit(
@@ -554,7 +563,7 @@ class Container:
                 session_id=session_id,
                 intent_hint=intent_hint,
                 known_task_types=self.config.task_types,
-                actor_principal_id=getattr(auth, "user_id", None) or None,
+                actor_principal_id=actor,
             )
             # Two hops: a Run is born CREATED and the lifecycle has no edge
             # from there to RUNNING. Queued is momentarily true here — the turn

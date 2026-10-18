@@ -23,6 +23,7 @@ from maistro.tasks.execution import TASK_EXECUTOR_ID, TaskAttemptExecutor, TaskE
 from maistro.tasks.models import TaskCreate, TaskStatus
 from maistro.tasks.queue import TaskQueue
 from maistro.tasks.runner import TaskRunner
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 def _ok(files: list[str] | None = None) -> ConductorOutput:
@@ -473,7 +474,8 @@ async def test_cancelling_a_multi_node_run_is_refused() -> None:
             project_id=root.project_id,
             name="Two nodes",
             nodes=[Node(node_id="a", node_type="agent"), Node(node_id="b", node_type="agent")],
-        )
+        ),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     with pytest.raises(RunIntegrityError, match="admits exactly one"):

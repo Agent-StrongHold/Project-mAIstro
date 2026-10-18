@@ -34,6 +34,7 @@ from maistro.graph.nodes.agent_delegate_remote import (
 )
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _spine(
@@ -82,7 +83,8 @@ class TestDelegationFilesAChildRun:
     ) -> None:
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
@@ -110,7 +112,8 @@ class TestDelegationFilesAChildRun:
     ) -> None:
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
@@ -140,7 +143,8 @@ class TestDelegationFilesAChildRun:
         """
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
         node = AgentDelegateRemoteNode(a2a_delegator=A2ADelegator(), run_store=store)
@@ -160,7 +164,8 @@ class TestTheEscapeGuardsFire:
     async def test_a_delegation_naming_a_foreign_workspace_is_refused(self) -> None:
         store, project_store, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         # A real second Workspace, so the refusal is about crossing rather than
         # about the destination not existing.
@@ -195,7 +200,8 @@ class TestTheEscapeGuardsFire:
             name="Sibling",
         )
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
         node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
@@ -298,7 +304,8 @@ class TestCrossInstanceDelegationFilesAChildRun:
     ) -> None:
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
@@ -324,7 +331,8 @@ class TestCrossInstanceDelegationFilesAChildRun:
         Run rather than the only record of the delegation."""
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
@@ -349,7 +357,8 @@ class TestCrossInstanceDelegationFilesAChildRun:
         to — the same rule the in-process rejection follows."""
         store, _projects, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
