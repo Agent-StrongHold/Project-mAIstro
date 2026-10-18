@@ -37,3 +37,30 @@ that never echoes file content; and two fresh-subprocess proofs run the real
 shipped lifespan in a clean worker process — one loading the documented config
 and resolving the Binding with no test singleton injection, one refusing a
 malformed file before dispatch.
+
+## Develop-merge reconciliation (no node-ID delta)
+
+The branch was synced to develop `2f56be40a` (merge `b3b386da5`). The merge
+kept this note's +17/+7 exactly: no node IDs were added, removed or renamed by
+the reconciliation, so the front-matter deltas above are unchanged. Three
+develop-side test files predated the one-contract contract and were repaired
+for stub fidelity / cache hygiene, not for behavior:
+
+- `test_effective_gateway_key.py` — develop's `AdmittedModelCalls` wiring in
+  `_construct_runtime` reads `container.run_store`/`provider_adapter_catalog`
+  (real Container attributes, always present); the two runtime-construction
+  stubs now mirror them. `test_endpoint_resolves_the_effective_key` gained the
+  same `get_settings.cache_clear()` hygiene its sibling already documented:
+  develop's e2e module seeds the lru-cached Settings with its own gateway key,
+  which otherwise outranks the alias this test states.
+- `test_provider_pin_registration.py` — the `get_settings` stub now carries
+  `maistro_llm_api_key`, mirroring what pydantic-settings produces from the
+  env the same fixture sets (the effective-key contract reads that field).
+- `test_graph_runner.py` — the `_S` settings stub carries
+  `maistro_llm_api_key` (unconfigured), mirroring the real Settings field the
+  governed `_endpoint` reads on the canonical DAG path.
+
+The `tests/` suite drift this merge reports (`expected 5260, collected 5261`)
+is inherited from develop's tip, not introduced here: `tests/`,
+`baseline.json`, `pyproject.toml` and the root conftest are byte-identical to
+develop, and develop collects the same 5261.

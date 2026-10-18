@@ -241,6 +241,10 @@ class TestNoPlaceholderCredential:
             llm_router=object(),
             a2a_delegator=object(),
             agents={},
+            # The real Container always carries these; develop's admitted-model
+            # wiring in _construct_runtime reads them (#1152, #1824 merge).
+            run_store=None,
+            provider_adapter_catalog=None,
         )
         captured: dict[str, Any] = {}
 
@@ -283,6 +287,8 @@ class TestNoPlaceholderCredential:
             llm_router=object(),
             a2a_delegator=object(),
             agents={},
+            run_store=None,
+            provider_adapter_catalog=None,
         )
 
         async def fake_create_container(config):
@@ -302,11 +308,20 @@ class TestNoPlaceholderCredential:
 
 class TestGovernedEndpointUsesTheContract:
     def test_endpoint_resolves_the_effective_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import config
         from services.governed_model import _endpoint
 
         monkeypatch.setenv("LITELLM_API_BASE", "http://gw.test/v1")
         monkeypatch.setenv("LITELLM_PROXY_KEY", "sk-proxy-alias")
-        endpoint = _endpoint()
+        # `get_settings` caches: an earlier test in a full-suite run can leave
+        # a Settings carrying its own gateway key. State the env, then resolve
+        # through exactly that construction (same hygiene as the sibling
+        # one-contract test below).
+        config.get_settings.cache_clear()
+        try:
+            endpoint = _endpoint()
+        finally:
+            config.get_settings.cache_clear()
         assert endpoint.api_key == "sk-proxy-alias"
 
     def test_endpoint_and_runtime_key_cannot_disagree(
