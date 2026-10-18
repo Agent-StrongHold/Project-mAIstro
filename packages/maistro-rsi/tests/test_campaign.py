@@ -17,7 +17,11 @@ Each acceptance criterion from the issue is pinned here:
 
 from __future__ import annotations
 
+import asyncio
 import json
+import runpy
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -270,6 +274,54 @@ class TestWorkScope:
         assert report.scope_refusals == 0
         assert all(arm.attempts == 1 for arm in report.arms)
 
+    async def test_traversal_paths_are_refused(self):
+        """ceiling-3: ``..`` traversal may not escape an allowed prefix; the
+        declared path is normalized before containment is decided."""
+        pool = _pool(
+            Objective(
+                objective_id="traversal",
+                task="Cover alpha",
+                keywords=("alpha",),
+                paths=("src/../secrets.txt",),
+            ),
+            Objective(objective_id="escape", task="Cover gamma", paths=("../outside.py",)),
+            Objective(objective_id="absolute", task="Cover delta", paths=("/etc/passwd",)),
+        )
+        report = await _run(pool, CampaignCeilings(allowed_paths=("src/",)))
+        assert report.scope_refusals == 6  # three refused objectives, once per arm
+
+    async def test_in_prefix_traversal_is_normalized_and_admitted(self):
+        """ceiling-3: traversal that stays inside the prefix normalizes down."""
+        pool = _pool(
+            Objective(
+                objective_id="scoped",
+                task="Cover alpha",
+                keywords=("alpha",),
+                paths=("src/sub/../a.py",),
+            ),
+        )
+        report = await _run(
+            pool,
+            CampaignCeilings(allowed_paths=("src/",)),
+            make_model_call=_per_model_calls(
+                {
+                    "frontier/max": _scripted_call({"Cover alpha": _answered("alpha")}),
+                    "free/mini": _scripted_call({"Cover alpha": _answered("alpha")}),
+                }
+            ),
+        )
+        assert report.scope_refusals == 0
+        assert all(arm.attempts == 1 for arm in report.arms)
+
+    async def test_prefix_is_not_matched_by_partial_components(self):
+        """ceiling-3: containment is component-wise, so ``srcx/`` does not
+        satisfy a ``src/`` ceiling the way a raw string prefix would."""
+        pool = _pool(
+            Objective(objective_id="lookalike", task="Cover gamma", paths=("srcx/leak.py",)),
+        )
+        report = await _run(pool, CampaignCeilings(allowed_paths=("src/",)))
+        assert report.scope_refusals == 2
+
 
 # -- stop-1..6: mechanical stops ----------------------------------------------
 
@@ -312,6 +364,48 @@ class TestMechanicalStops:
         assert frontier.attempts == 2
         assert [a.objective_id for a in frontier.attempts_log] == ["obj-1", "obj-2"]
         assert len(store._items) == 4  # 2 arms x 2 dispatched calls, no more
+
+    @staticmethod
+    def _three_failing_calls() -> Any:
+        """A ModelCall factory whose every dispatch raises, as a timeout/5xx
+        would. The returned callable has the ``make_model_call`` shape — one
+        arm in, one ``ModelCall`` out — so the arm context resolves a real
+        awaitable transport instead of binding a stray coroutine object."""
+
+        async def call(
+            messages: list[dict[str, str]], *, temperature: float = 0.2, max_tokens: int = 2048
+        ) -> ModelCallResult:
+            raise RuntimeError("gateway 503")
+
+        return lambda arm: call
+
+    async def test_failed_dispatch_counts_against_call_ceiling(self):
+        """A dispatch that raises (timeout, 5xx) may still have been received
+        and served by the provider, so it consumes max_model_calls at
+        admission: the walk stops instead of replaying one failed request
+        per remaining pool entry."""
+        store = InMemoryInvocationStore()
+        report = await _run(
+            self._three_objective_pool(),
+            CampaignCeilings(max_model_calls=1),
+            store=store,
+            make_model_call=self._three_failing_calls(),
+        )
+        frontier = report.arms[0]
+        assert frontier.stop_reason is not None
+        assert frontier.stop_reason.ceiling == "max_model_calls"
+        assert frontier.attempts == 1  # the failed dispatch; obj-2/obj-3 never dispatched
+        assert frontier.interventions == 1
+        dispatched = [
+            inv for inv in store._items.values() if inv.node_run_id.startswith("frontier:")
+        ]
+        assert len(dispatched) == 1
+        # Canonical terminalization (capabilities.invocation._run_provider): a
+        # generic provider exception does not prove the effect was unapplied —
+        # the request may still have been served — so the row reads UNKNOWN,
+        # never safe-to-retry FAILED. FAILED is reserved for EffectNotApplied.
+        assert dispatched[0].status is InvocationStatus.UNKNOWN
+        assert dispatched[0].error == "gateway 503"
 
     async def test_stops_at_spend_ceiling_mid_pool(self):
         """stop-2: measured spend stops the arm after the call that crossed it.
@@ -365,6 +459,46 @@ class TestMechanicalStops:
             assert arm.stop_reason is not None
             assert arm.stop_reason.ceiling == "max_wall_clock_s"
 
+    async def test_in_flight_call_is_cancelled_at_wall_clock_expiry(self):
+        """stop-4b: the wall-clock ceiling bounds the in-flight request, not
+        just the pre-dispatch gate — a call that hangs past its remaining
+        budget (e.g. against a 60s transport timeout with a 1s ceiling) is
+        cancelled at the clock; the row terminalizes UNKNOWN and the expiry
+        surfaces as the designed mechanical stop, not an intervention."""
+
+        async def hanging_call(
+            messages: list[dict[str, str]],
+            *,
+            temperature: float = 0.2,
+            max_tokens: int = 2048,
+        ) -> ModelCallResult:
+            await asyncio.sleep(3600)
+            raise AssertionError("the wall-clock cap should have cancelled this")
+
+        store = InMemoryInvocationStore()
+        report = await _run(
+            _two_objective_pool(),
+            CampaignCeilings(max_wall_clock_s=0.2),
+            store=store,
+            arms=[ArmPolicy(arm_id="frontier", model="frontier/max")],
+            make_model_call=lambda arm: hanging_call,
+        )
+        frontier = report.arms[0]
+        assert frontier.objectives_attempted == 1  # admitted, then cut off
+        assert frontier.attempts == 1  # the admitted in-flight dispatch counts
+        assert frontier.attempts_log == ()  # cut-off lands as the stop, not a record
+        assert frontier.interventions == 0
+        assert frontier.stop_reason is not None
+        assert frontier.stop_reason.ceiling == "max_wall_clock_s"
+        assert frontier.stop_reason.observed >= 0.2
+        assert frontier.stop_reason.limit == 0.2
+        # One admitted call; the second pool entry was never dispatched.
+        assert len(store._items) == 1
+        (invocation,) = list(store._items.values())
+        assert invocation.status is InvocationStatus.UNKNOWN
+        assert invocation.error == "TimeoutError"
+        assert invocation.finished_at is not None
+
     async def test_stops_at_objective_ceiling(self):
         """stop-5: max_objectives bounds how much of the pool an arm walks."""
         report = await _run(
@@ -387,6 +521,53 @@ class TestMechanicalStops:
         with pytest.raises(BudgetExhausted):
             budget.admit_call()
 
+    def test_dispatch_gate_refuses_when_measured_evidence_is_absent(self):
+        """stop-7: a measured ceiling with absent evidence fails closed — the
+        charge halts the budget and the dispatch seam refuses the next call
+        instead of spending the whole pool against a ceiling that cannot fire."""
+        budget = BudgetState(CampaignCeilings(max_spend_usd=5.0))
+        budget.admit_call()
+        budget.charge(None)  # provider reported nothing: spend cannot advance
+        with pytest.raises(BudgetExhausted) as excinfo:
+            budget.admit_call()
+        assert excinfo.value.stop.ceiling == "max_spend_usd"
+        assert excinfo.value.stop.evidence_missing is True
+
+    async def test_spend_ceiling_without_pricing_stops_after_one_call(self):
+        """stop-8: a spend-only campaign run without pricing cannot measure
+        spend, so the walk stops at the first unmeasured call rather than
+        dispatching the entire pool."""
+        report = await _run(
+            self._three_objective_pool(),
+            CampaignCeilings(max_spend_usd=5.0),
+            pricing=lambda arm: None,
+            make_model_call=self._three_answer_calls(),
+        )
+        for arm in report.arms:
+            assert arm.attempts == 1
+            assert arm.stop_reason is not None
+            assert arm.stop_reason.ceiling == "max_spend_usd"
+            assert arm.stop_reason.evidence_missing is True
+
+    async def test_token_ceiling_without_reported_usage_stops_after_one_call(self):
+        """stop-9: a token-only campaign whose provider omits usage cannot
+        advance its token counter — the walk halts instead of running on."""
+        unmeasured = _answered("alpha", inp=0, out=0)
+        unmeasured = unmeasured.model_copy(update={"usage_reported": False})
+        report = await _run(
+            self._three_objective_pool(),
+            CampaignCeilings(max_total_tokens=1000),
+            make_model_call=lambda arm: _scripted_call(
+                {"t1": unmeasured, "t2": unmeasured, "t3": unmeasured}
+            ),
+            pricing=lambda arm: None,
+        )
+        for arm in report.arms:
+            assert arm.attempts == 1
+            assert arm.stop_reason is not None
+            assert arm.stop_reason.ceiling == "max_total_tokens"
+            assert arm.stop_reason.evidence_missing is True
+
     async def test_spent_arm_does_not_silently_consume_the_other_arm(self):
         """stop-1: arms stop independently — one arm's ceiling must not erase
         or truncate the other arm's record."""
@@ -399,7 +580,9 @@ class TestMechanicalStops:
         assert frontier.attempts == 1
         assert baseline.attempts == 3
         assert baseline.stop_reason is None  # never hit a ceiling: pool done
-        assert report.comparison is not None
+        # The arm records stay intact, but with divergent objective coverage
+        # the cross-arm comparison is refused, not silently partial.
+        assert report.comparison is None
 
 
 # -- track-1..5: canonical Invocation / cost tracking -------------------------
@@ -492,10 +675,13 @@ class TestCanonicalTracking:
         usage = await tracker.get_usage_pct("frontier/max", CYCLE, free_tokens=1_000_000)
         assert usage is None
 
-    async def test_failed_dispatch_persists_failed_invocation_without_charging(self):
-        """track-5: a hard failure leaves a FAILED Invocation as audit
-        evidence; the quota ledger is not charged for a call the provider may
-        never have seen, and the attempt counts as an intervention."""
+    async def test_failed_dispatch_persists_ambiguous_invocation_without_charging(self):
+        """track-5: a hard failure terminalizes its Invocation as UNKNOWN —
+        canonical audit evidence (capabilities.invocation._run_provider: a
+        generic provider exception cannot prove the effect was unapplied, so
+        the row never reads as safe-to-retry FAILED); the quota ledger is not
+        charged for a call whose usage never arrived, and the attempt counts
+        as an intervention."""
         store = InMemoryInvocationStore()
         tracker = InMemoryQuotaTracker()
         script: dict[str, Any] = {
@@ -512,14 +698,21 @@ class TestCanonicalTracking:
             ),
         )
         frontier = report.arms[0]
-        failed = [
+        ambiguous = [
+            inv
+            for inv in store._items.values()
+            if inv.status is InvocationStatus.UNKNOWN and inv.node_run_id.startswith("frontier:")
+        ]
+        assert len(ambiguous) == 1
+        assert "gateway 503" in (ambiguous[0].error or "")
+        assert ambiguous[0].finished_at is not None
+        # No FAILED row exists either: the dispatch error is ambiguous, not a
+        # proven-unapplied effect, so nothing may read as safe-to-retry.
+        assert not [
             inv
             for inv in store._items.values()
             if inv.status is InvocationStatus.FAILED and inv.node_run_id.startswith("frontier:")
         ]
-        assert len(failed) == 1
-        assert "gateway 503" in (failed[0].error or "")
-        assert failed[0].finished_at is not None
         # The successful gamma call charged; the failed alpha call did not.
         assert frontier.attempts == 2
         assert frontier.interventions == 1
@@ -581,6 +774,18 @@ class TestArmComparison:
         assert comparison.baseline_wins == 0
         assert comparison.ties == 0
         assert comparison.mean_score_delta == pytest.approx(0.75)
+
+    async def test_early_stopped_arm_refuses_the_comparison(self):
+        """compare-2b: when one arm stops early on a ceiling and its attempt
+        log covers fewer objectives than its peer, the comparison is refused
+        instead of silently scoring the shared prefix."""
+        report = await _run(
+            _two_objective_pool(),
+            CampaignCeilings(max_spend_usd=0.005),  # frontier can afford one call
+        )
+        assert report.arms[0].attempts == 1
+        assert report.arms[1].attempts == 2
+        assert report.comparison is None
 
     async def test_regression_when_frontier_loses_to_baseline(self):
         """compare-3: an experimental arm scoring below its peer on a shared
@@ -858,3 +1063,242 @@ class TestCampaignCli:
             "1",
         )
         assert await cli_module._run_campaign(args) == 2
+
+    @staticmethod
+    def _gateway_env(monkeypatch: Any, *, base_url: str | None, api_key: str | None) -> None:
+        """Pin every gateway alias under monkeypatch.
+
+        ``normalize_litellm_env`` writes the values it resolves back to ALL
+        aliases; without pinning them here a configured run would leak real
+        values into the process environment for every later test.
+        """
+        for name in (
+            "LITELLM_BASE_URL",
+            "LITELLM_URL",
+            "LITELLM_PROXY_URL",
+            "LITELLM_MASTER_KEY",
+            "LITELLM_PROXY_KEY",
+            "LITELLM_API_KEY",
+            "LITELLM_VIRTUAL_KEY",
+        ):
+            monkeypatch.setenv(name, "")
+        if base_url is not None:
+            monkeypatch.setenv("LITELLM_BASE_URL", base_url)
+        if api_key is not None:
+            monkeypatch.setenv("LITELLM_MASTER_KEY", api_key)
+
+    @staticmethod
+    def _scripted_gateway(monkeypatch: Any, per_model: dict[str, Any]) -> None:
+        import maistro_rsi.campaign_cli as cli_module
+
+        monkeypatch.setattr(
+            cli_module,
+            "gateway_model_call",
+            lambda model, *, timeout: per_model[model],
+        )
+
+    async def test_campaign_run_dispatches_writes_and_renders(self, monkeypatch, tmp_path, capsys):
+        """cli-1: with a configured gateway the CLI dispatches through the
+        same ``run_campaign`` seam the library uses — arms, pricing and
+        ceilings built from flags, the report artifact written, and the
+        per-arm lines plus the frontier-vs-baseline comparison rendered for
+        an operator."""
+        import maistro_rsi.campaign_cli as cli_module
+
+        self._gateway_env(monkeypatch, base_url="http://gateway.local", api_key="key-test")
+        self._scripted_gateway(
+            monkeypatch,
+            {
+                "frontier/max": _scripted_call(
+                    {"Cover alpha": _answered("alpha"), "Cover beta": _answered("beta")}
+                ),
+                "free/mini": _scripted_call(
+                    {
+                        "Cover alpha": _answered("alpha free"),
+                        "Cover beta": _answered("beta free"),
+                    }
+                ),
+            },
+        )
+        pool_file = tmp_path / "pool.json"
+        pool_file.write_text(
+            json.dumps(
+                {
+                    "objectives": [
+                        {"objective_id": "obj-1", "task": "Cover alpha", "keywords": ["alpha"]},
+                        {"objective_id": "obj-2", "task": "Cover beta", "keywords": ["beta"]},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        pricing_file = tmp_path / "pricing.json"
+        # Only the frontier arm is priced: the baseline's cost stays absent,
+        # so the comparison's cost multiple renders as n/a rather than zero.
+        pricing_file.write_text(
+            json.dumps(
+                {
+                    "frontier/max": {
+                        "provider": "frontier",
+                        "cost_per_1k_input": 30.0,
+                        "cost_per_1k_output": 60.0,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        report_file = tmp_path / "out.json"
+        args = self._parse(
+            "--objective-pool",
+            str(pool_file),
+            "--frontier-model",
+            "frontier/max",
+            "--baseline-model",
+            "free/mini",
+            "--max-model-calls",
+            "4",
+            "--pricing",
+            str(pricing_file),
+            "--report",
+            str(report_file),
+            "--run-id",
+            "cli-1",
+        )
+        assert await cli_module._run_campaign(args) == 0
+        payload = json.loads(report_file.read_text(encoding="utf-8"))
+        assert payload["run_id"] == "cli-1"
+        assert [arm["arm_id"] for arm in payload["arms"]] == ["frontier", "baseline"]
+        assert payload["comparison"]["frontier_arm"] == "frontier"
+        assert payload["comparison"]["objectives_compared"] == 2
+        out = capsys.readouterr().out
+        assert "frontier (frontier/max): attempts=2" in out
+        assert "baseline (free/mini): attempts=2" in out
+        assert "comparison frontier vs baseline over 2 objective(s)" in out
+        assert "multiple n/a" in out
+
+    async def test_campaign_cli_prints_json_summary_when_asked(self, monkeypatch, tmp_path, capsys):
+        """cli-2: ``--json`` prints exactly the machine-readable artifact —
+        the same payload a ``--report`` file would carry, and nothing else
+        that a consumer would have to parse around."""
+        import maistro_rsi.campaign_cli as cli_module
+
+        self._gateway_env(monkeypatch, base_url="http://gateway.local", api_key="key-test")
+        self._scripted_gateway(
+            monkeypatch,
+            {"frontier/max": _scripted_call({"Cover alpha": _answered("alpha")})},
+        )
+        pool_file = tmp_path / "pool.json"
+        pool_file.write_text(
+            json.dumps({"objectives": [{"objective_id": "o1", "task": "Cover alpha"}]}),
+            encoding="utf-8",
+        )
+        args = self._parse(
+            "--objective-pool",
+            str(pool_file),
+            "--frontier-model",
+            "frontier/max",
+            "--max-model-calls",
+            "2",
+            "--json",
+            "--run-id",
+            "cli-json",
+        )
+        assert await cli_module._run_campaign(args) == 0
+        out = capsys.readouterr().out
+        # The artifact is pretty-printed over many lines; it starts at the
+        # first '{' on stdout and runs to the end.
+        payload_text = out[out.index("{") :]
+        assert json.loads(payload_text)["run_id"] == "cli-json"
+
+    async def test_campaign_cli_stopped_arm_renders_its_ceiling(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """cli-3: an arm that stops mid-pool renders the ceiling that stopped
+        it, and without ``--report`` the payload goes to stdout."""
+        import maistro_rsi.campaign_cli as cli_module
+
+        self._gateway_env(monkeypatch, base_url="http://gateway.local", api_key="key-test")
+        self._scripted_gateway(
+            monkeypatch,
+            {
+                "frontier/max": _scripted_call(
+                    {"Cover alpha": _answered("alpha"), "Cover beta": _answered("beta")}
+                )
+            },
+        )
+        pool_file = tmp_path / "pool.json"
+        pool_file.write_text(
+            json.dumps(
+                {
+                    "objectives": [
+                        {"objective_id": "obj-1", "task": "Cover alpha", "keywords": ["alpha"]},
+                        {"objective_id": "obj-2", "task": "Cover beta", "keywords": ["beta"]},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        args = self._parse(
+            "--objective-pool",
+            str(pool_file),
+            "--frontier-model",
+            "frontier/max",
+            "--max-model-calls",
+            "1",
+            "--run-id",
+            "cli-stop",
+        )
+        assert await cli_module._run_campaign(args) == 0
+        out = capsys.readouterr().out
+        assert "stop=max_model_calls" in out
+        payload_text = out[out.index("{") :]
+        assert json.loads(payload_text)["arms"][0]["stop_reason"]["ceiling"] == "max_model_calls"
+
+    def test_cli_module_entry_point_runs_main(self, monkeypatch, tmp_path):
+        """cli-4: the console script's module guard routes through ``main()``
+        — running the file as ``__main__`` with an unconfigured gateway exits
+        2, the designed refusal, so the installed entry wiring is pinned and
+        not just the import surface."""
+        import maistro_rsi.campaign_cli as cli_module
+
+        self._gateway_env(monkeypatch, base_url=None, api_key=None)
+        pool_file = tmp_path / "pool.json"
+        pool_file.write_text(
+            json.dumps({"objectives": [{"objective_id": "o1", "task": "t"}]}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "maistro-rsi-campaign",
+                "--objective-pool",
+                str(pool_file),
+                "--frontier-model",
+                "m",
+                "--max-model-calls",
+                "1",
+            ],
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            runpy.run_path(Path(cli_module.__file__), run_name="__main__")
+        assert excinfo.value.code == 2
+
+    async def test_campaign_cli_reports_invalid_pool_configuration(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """cli-5: an unreadable pool file is a configuration error reported on
+        stderr with exit 2, after the gateway check — never a traceback."""
+        import maistro_rsi.campaign_cli as cli_module
+
+        self._gateway_env(monkeypatch, base_url="http://gateway.local", api_key="key-test")
+        args = self._parse(
+            "--objective-pool",
+            str(tmp_path / "absent.json"),
+            "--frontier-model",
+            "m",
+            "--max-model-calls",
+            "1",
+        )
+        assert await cli_module._run_campaign(args) == 2
+        assert "invalid campaign configuration" in capsys.readouterr().err

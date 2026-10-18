@@ -29,6 +29,8 @@ instead of merely being reported afterwards.
 
 from __future__ import annotations
 
+import asyncio
+import posixpath
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -40,6 +42,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from maistro.capabilities.binding import ResolvedBinding
 from maistro.capabilities.invocation import (
+    EffectNotApplied,
     InMemoryInvocationStore,
     Invocation,
     InvocationStatus,
@@ -137,9 +140,19 @@ class StopReason(BaseModel):
     ceiling: str
     observed: float
     limit: float
+    #: True when the stop fired on *absent evidence* rather than a reached
+    #: value: the declared ceiling is measured from usage the provider (or
+    #: the operator's pricing table) never reported, so its counter can
+    #: never advance and the campaign fails closed instead of running on.
+    evidence_missing: bool = False
 
     @property
     def message(self) -> str:
+        if self.evidence_missing:
+            return (
+                f"ceiling {self.ceiling!r} unenforceable: measured evidence "
+                f"is absent (observed {self.observed}, limit {self.limit})"
+            )
         return f"ceiling {self.ceiling!r} reached: {self.observed} >= {self.limit}"
 
 
@@ -158,7 +171,10 @@ class Objective(BaseModel):
 
     objective_id: NonEmptyStr
     task: NonEmptyStr
-    keywords: tuple[str, ...] = ()
+    #: Keywords share the non-empty, whitespace-stripped constraint applied to
+    #: ids and tasks: an empty keyword is a substring of every response, so it
+    #: would score a perfect match (and verified progress) with no work done.
+    keywords: tuple[NonEmptyStr, ...] = ()
     paths: tuple[str, ...] = ()
 
 
@@ -187,6 +203,19 @@ def ensure_unique_objectives(pool: ObjectivePool) -> None:
     ids = [objective.objective_id for objective in pool.objectives]
     if len(ids) != len(set(ids)):
         raise ValueError("objective ids must be unique within a pool")
+
+
+def ensure_unique_arm_ids(arms: Sequence[ArmPolicy]) -> None:
+    """Refuse duplicate arm ids.
+
+    Ledgers, budgets, and ordinals are keyed by arm_id, so a repeated id
+    would collapse two arms into one shared state and collide their
+    binding/invocation identities. Rejected at admission, before any
+    ledger is built.
+    """
+    ids = [arm.arm_id for arm in arms]
+    if len(ids) != len(set(ids)):
+        raise ValueError("arm ids must be unique within a campaign")
 
 
 def keyword_objective_scorer(objective: Objective, response: str) -> float:
@@ -295,7 +324,12 @@ class BudgetState:
     :class:`BudgetExhausted` rather than letting an already-spent campaign
     dispatch another model call. Spend/tokens are measured post-hoc, so a
     ceiling can be crossed by at most the one in-flight call; the call-count
-    and wall-clock ceilings are enforced strictly before dispatch.
+    ceiling is enforced strictly before dispatch, and the wall-clock ceiling
+    additionally caps each in-flight request at its remaining budget, so one
+    hanging transport (default timeout 60s) cannot run far past the clock. A
+    *measured* ceiling whose evidence is absent (no provider usage, no
+    pricing) can never fire, so charging halts the campaign instead —
+    absent evidence fails closed, it never lets a pool run unbounded.
     """
 
     def __init__(
@@ -330,20 +364,55 @@ class BudgetState:
     def elapsed_s(self) -> float:
         return self._clock() - self._started
 
+    def remaining_wall_clock_s(self) -> float | None:
+        """Seconds left under the wall-clock ceiling; ``None`` when unbounded."""
+        if self.ceilings.max_wall_clock_s is None:
+            return None
+        return self.ceilings.max_wall_clock_s - self.elapsed_s
+
     def charge(self, usage: InvocationUsage | None) -> None:
         """Charge one terminalized Invocation's measured usage.
 
-        ``None`` usage (the provider reported nothing, #718) still counts the
-        dispatch — a call happened — but charges no tokens and no spend: an
-        unmeasured call is absent evidence, never a free one.
+        ``None`` usage (the provider reported nothing, #718) still counts
+        toward the call ceiling — taken at admission in :meth:`admit_call`,
+        so failed dispatches consume it too — but charges no tokens and no
+        spend: an unmeasured call is absent evidence, never a free one.
+        Absent evidence is also fail-closed: if a ceiling is measured from
+        the very counter that cannot advance, :meth:`halt` fires
+        immediately, so the walk stops rather than dispatching the rest of
+        the pool against a ceiling that can never be reached.
         """
-        self.model_calls += 1
         if usage is None:
+            self._halt_on_absent_evidence(tokens_reported=False)
             return
         self.input_tokens += usage.input_units
         self.output_tokens += usage.output_units
         if usage.cost_cents is not None:
             self.spend_usd += usage.cost_cents / 100.0
+        else:
+            self._halt_on_absent_evidence(tokens_reported=True)
+
+    def _halt_on_absent_evidence(self, *, tokens_reported: bool) -> None:
+        """Halt when a declared ceiling's evidence cannot ever arrive."""
+        c = self.ceilings
+        if not tokens_reported and c.max_total_tokens is not None:
+            self.halt(
+                StopReason(
+                    ceiling="max_total_tokens",
+                    observed=float(self.total_tokens),
+                    limit=float(c.max_total_tokens),
+                    evidence_missing=True,
+                )
+            )
+        elif c.max_spend_usd is not None:
+            self.halt(
+                StopReason(
+                    ceiling="max_spend_usd",
+                    observed=self.spend_usd,
+                    limit=float(c.max_spend_usd),
+                    evidence_missing=True,
+                )
+            )
 
     def stop_reason(self) -> StopReason | None:
         c = self.ceilings
@@ -373,9 +442,15 @@ class BudgetState:
 
     def admit_call(self) -> None:
         """Mechanical pre-dispatch gate inside the invocation seam."""
-        stop = self.stop_reason()
+        stop = self.cached_stop or self.stop_reason()
         if stop is not None:
             raise BudgetExhausted(stop)
+        # The dispatch count advances at admission, not on success: a call
+        # that raises (timeout, 5xx) may still have been received and served
+        # by the provider, so every admitted dispatch consumes one unit of
+        # the max_model_calls ceiling. Success-path charge() adds only the
+        # measured usage.
+        self.model_calls += 1
 
 
 # -- recorded dispatch -------------------------------------------------------
@@ -418,14 +493,18 @@ async def _recorded_call(
     )
     await store.create(invocation)
     try:
-        result = await call(messages, temperature=temperature, max_tokens=max_tokens)
-    except Exception as exc:
-        # Audit evidence only: the FAILED Invocation row persists the error,
-        # but the quota ledger is not charged. A refused or failed dispatch
-        # has no measured usage, and charging an unreported-request marker
-        # would count a call the provider may never have seen (e.g. a warden
-        # refusal raised before any gateway I/O). The store assigns the new
-        # revision on save (OCC); sending a pre-incremented one is stale.
+        # The wall-clock ceiling bounds the in-flight request too, not just
+        # the pre-dispatch gate: the request is cancelled once its remaining
+        # budget expires, so a hanging transport (default timeout 60s) cannot
+        # run the clock far past ``max_wall_clock_s``. ``wait_for(None)``
+        # awaits directly, so an unbounded clock adds no wrapping.
+        result = await asyncio.wait_for(
+            call(messages, temperature=temperature, max_tokens=max_tokens),
+            timeout=budget.remaining_wall_clock_s(),
+        )
+    except EffectNotApplied as exc:
+        # Canonical terminalization semantics (CapabilityEffectContext
+        # ._run_provider): FAILED is reserved for provably-unapplied effects.
         failed = invocation.model_copy(
             update={
                 "status": InvocationStatus.FAILED,
@@ -434,6 +513,68 @@ async def _recorded_call(
             }
         )
         await store.save(failed)
+        raise
+    except asyncio.CancelledError:
+        # Cancellation leaves the external outcome ambiguous; mark UNKNOWN so
+        # the row is terminal and never reads as safe-to-retry FAILED.
+        await store.save(
+            invocation.model_copy(
+                update={
+                    "status": InvocationStatus.UNKNOWN,
+                    "error": "provider invocation cancelled with unknown external outcome",
+                    "finished_at": _utc_now(),
+                }
+            )
+        )
+        raise
+    except TimeoutError as exc:
+        # The wall-clock ceiling expired mid-flight: the request was cancelled
+        # at its remaining budget, leaving the external outcome ambiguous, so
+        # the row terminalizes as UNKNOWN (never safe-to-retry FAILED) and the
+        # expiry surfaces as the designed mechanical stop — the campaign stops
+        # on the clock rather than recording an intervention. A transport
+        # timeout of its own raises its own error type; if one surfaces as a
+        # builtin TimeoutError while budget remains, it re-raises unchanged.
+        expired = (
+            budget.remaining_wall_clock_s() is not None and budget.remaining_wall_clock_s() <= 0.0
+        )
+        await store.save(
+            invocation.model_copy(
+                update={
+                    "status": InvocationStatus.UNKNOWN,
+                    "error": str(exc) or type(exc).__name__,
+                    "finished_at": _utc_now(),
+                }
+            )
+        )
+        if expired:
+            raise BudgetExhausted(
+                StopReason(
+                    ceiling="max_wall_clock_s",
+                    observed=budget.elapsed_s,
+                    limit=float(budget.ceilings.max_wall_clock_s),
+                )
+            ) from exc
+        raise
+    except Exception as exc:
+        # Audit evidence only: a timeout, connection loss, or provider error
+        # does not prove the effect was unapplied, so it terminalizes as
+        # UNKNOWN (never FAILED), keeping ambiguous calls out of the
+        # safe-to-retry set. No tokens or spend are charged; the call ceiling
+        # was already consumed at admission (admit_call). A refused or failed
+        # dispatch has no measured usage, and charging an unreported-request
+        # marker would fabricate token/spend evidence (the #717/#718
+        # anti-pattern). The store assigns the new revision on save (OCC);
+        # sending a pre-incremented one is stale.
+        await store.save(
+            invocation.model_copy(
+                update={
+                    "status": InvocationStatus.UNKNOWN,
+                    "error": str(exc) or type(exc).__name__,
+                    "finished_at": _utc_now(),
+                }
+            )
+        )
         raise
     # Absent provider usage stays None on the Invocation: the canonical
     # recorder keys "reported" off usage-is-not-None, so a zero-filled row
@@ -499,6 +640,11 @@ class AttemptRecord(BaseModel):
     cost_usd: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
+    #: Evidence flags for the zero-filled counters above (#717/#718): the
+    #: serialized report must distinguish a measured zero-token/free call
+    #: from a call whose usage or pricing evidence never arrived.
+    usage_reported: bool = False
+    cost_known: bool = False
 
 
 class ArmResult(BaseModel):
@@ -516,6 +662,12 @@ class ArmResult(BaseModel):
     cost_usd: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
+    #: Absent-evidence accounting (#718): how many dispatched attempts
+    #: entered the report with zero-filled counters because the provider
+    #: sent no usage (or no pricing metadata was available), so the
+    #: aggregate zeros are not silently read as measured zeros.
+    attempts_without_usage_report: int = 0
+    attempts_with_unknown_cost: int = 0
     scores: dict[str, float] = Field(default_factory=dict)
     stop_reason: StopReason | None = None
     attempts_log: tuple[AttemptRecord, ...] = ()
@@ -580,15 +732,45 @@ class _ArmLedger:
         self.cost_usd = 0.0
         self.input_tokens = 0
         self.output_tokens = 0
+        self.attempts_without_usage_report = 0
+        self.attempts_with_unknown_cost = 0
         self.scores: dict[str, float] = {}
         self.log: list[AttemptRecord] = []
 
 
+def _normalized_repo_path(path: str) -> str | None:
+    """Normalized repo-relative form of *path*, or ``None`` when it escapes
+    the repo (absolute paths, empty paths, or ``..`` traversal climbing out)."""
+    if not path:
+        return None
+    normalized = posixpath.normpath(path)
+    if normalized == "." or normalized.startswith(("/", "../")) or normalized == "..":
+        return None
+    return normalized
+
+
+def _under_prefix(path: str, prefix: str) -> bool:
+    """Component-wise containment of *path* under the *prefix* directory."""
+    if prefix == "":
+        return True  # empty prefix historically admits the whole repo
+    norm_prefix = posixpath.normpath(prefix)
+    if norm_prefix in (".", "/"):
+        return True
+    return path == norm_prefix or path.startswith(norm_prefix + "/")
+
+
 def _in_scope(paths: tuple[str, ...], allowed: tuple[str, ...]) -> bool:
-    """Work-scope admission: every declared path falls under an allowed prefix."""
-    return all(
-        any(path == prefix or path.startswith(prefix) for prefix in allowed) for path in paths
-    )
+    """Work-scope admission: every declared path normalizes to a repo-relative
+    location under an allowed prefix. Traversal is rejected and containment is
+    checked by path components rather than raw string prefixes, so a path such
+    as ``src/../secrets.txt`` cannot pass a ``src/`` ceiling."""
+    normalized: list[str] = []
+    for path in paths:
+        rel = _normalized_repo_path(path)
+        if rel is None:
+            return False
+        normalized.append(rel)
+    return all(any(_under_prefix(rel, prefix) for prefix in allowed) for rel in normalized)
 
 
 @dataclass
@@ -689,6 +871,12 @@ async def _score_attempt(
     verified = score >= ctx.progress_threshold
     cost = _measure_cost(ctx, result)
     reported = result.input_tokens if result.usage_reported else 0
+    usage_reported = result.usage_reported
+    cost_known = usage_reported and ctx.metadata is not None
+    if not usage_reported:
+        ledger.attempts_without_usage_report += 1
+    if not cost_known:
+        ledger.attempts_with_unknown_cost += 1
     ledger.scores[objective.objective_id] = max(
         score, ledger.scores.get(objective.objective_id, score)
     )
@@ -707,6 +895,8 @@ async def _score_attempt(
             cost_usd=cost,
             input_tokens=reported,
             output_tokens=result.output_tokens if result.usage_reported else 0,
+            usage_reported=usage_reported,
+            cost_known=cost_known,
         )
     )
 
@@ -720,8 +910,10 @@ async def _walk_pool(ctx: _ArmContext, pool: ObjectivePool) -> None:
     """
     arm, budget, ledger = ctx.arm, ctx.budget, ctx.ledger
     for objective in pool.objectives:
-        # Mechanical stop: no new work once a ceiling is reached (Q3).
-        stop = budget.stop_reason()
+        # Mechanical stop: no new work once a ceiling is reached (Q3), and
+        # none either when a measured ceiling's evidence went absent mid-walk
+        # (charge() halts; the very next iteration refuses here).
+        stop = budget.cached_stop or budget.stop_reason()
         if stop is not None:
             await _stop_logged(ctx, stop)
             return
@@ -810,6 +1002,8 @@ def _arm_result(
         cost_usd=ledger.cost_usd,
         input_tokens=ledger.input_tokens,
         output_tokens=ledger.output_tokens,
+        attempts_without_usage_report=ledger.attempts_without_usage_report,
+        attempts_with_unknown_cost=ledger.attempts_with_unknown_cost,
         scores=dict(sorted(ledger.scores.items())),
         stop_reason=budget.cached_stop or budget.stop_reason(),
         attempts_log=tuple(ledger.log),
@@ -851,6 +1045,7 @@ async def run_campaign(
     if not arms:
         raise ValueError("a campaign needs at least one arm")
     ensure_unique_objectives(pool)
+    ensure_unique_arm_ids(arms)
     if workspace_id.strip() == "" or project_id.strip() == "":
         raise ValueError("a campaign Invocation must carry workspace and project scope")
     started = clock()
@@ -963,13 +1158,18 @@ def _with_cross_arm_regressions(
 def _compare(results: tuple[ArmResult, ...]) -> ArmComparison | None:
     """Compare the first two arms (frontier first) on the shared pool.
 
-    Both arms walked the identical pool, so a per-objective comparison is
-    defined wherever both arms produced a score.
+    Both arms walked the identical pool, so a comparison is only defined
+    when both produced a score for every pool objective. Divergent score
+    coverage means one arm stopped early on a ceiling; refuse rather than
+    silently compare the shared prefix (partial coverage must not read as
+    a valid frontier-versus-baseline result).
     """
     if len(results) < 2:
         return None
     frontier, baseline = results[0], results[1]
-    shared = sorted(set(frontier.scores) & set(baseline.scores))
+    if set(frontier.scores) != set(baseline.scores):
+        return None
+    shared = sorted(frontier.scores)
     wins = sum(1 for oid in shared if frontier.scores[oid] > baseline.scores[oid])
     losses = sum(1 for oid in shared if frontier.scores[oid] < baseline.scores[oid])
     ties = len(shared) - wins - losses
