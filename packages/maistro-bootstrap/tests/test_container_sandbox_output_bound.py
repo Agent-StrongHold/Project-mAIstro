@@ -96,6 +96,45 @@ def test_read_file_over_limit_errors_without_truncation_notice(tmp_path: Path, m
         sandbox.read_file("big.txt")
 
 
+def test_read_file_missing_file_raises_file_not_found(tmp_path: Path, monkeypatch) -> None:
+    """A failing `cat` is a missing file, surfaced as FileNotFoundError."""
+    bin_dir = tmp_path / "bin-cat-fail"
+    bin_dir.mkdir()
+    fake = bin_dir / "docker"
+    fake.write_text("#!/bin/sh\nexit 1\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
+    sandbox = ContainerBuilderSandbox(tmp_path)
+    sandbox._cid = "fakecid"
+
+    with pytest.raises(FileNotFoundError):
+        sandbox.read_file("absent.txt")
+
+
+def test_read_file_timeout_raises_timeout_not_missing_file(tmp_path: Path, monkeypatch) -> None:
+    """A read that outlives its bound must report the timeout.
+
+    `run_bounded` kills a timed-out child, so its exit status is nonzero too;
+    the timed-out check therefore has to run first, or a slow container would
+    be misreported as a missing file."""
+    import maistro_bootstrap.builders.container_sandbox as container_sandbox_module
+
+    bin_dir = tmp_path / "bin-cat-slow"
+    bin_dir.mkdir()
+    fake = bin_dir / "docker"
+    fake.write_text("#!/bin/sh\nsleep 30\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
+    # The read bound is a module global read at call time; one second here
+    # keeps this a structure assertion, not a wall-clock one.
+    monkeypatch.setattr(container_sandbox_module, "_DEFAULT_TIMEOUT", 1)
+    sandbox = ContainerBuilderSandbox(tmp_path)
+    sandbox._cid = "fakecid"
+
+    with pytest.raises(RuntimeError, match="timed out reading"):
+        sandbox.read_file("slow.txt")
+
+
 def test_edit_file_refuses_oversized_file_before_any_write(tmp_path: Path, monkeypatch) -> None:
     """The P1 scenario: a match inside the retained prefix must not let
     edit_file write the truncated text back and destroy the file's tail."""

@@ -95,14 +95,31 @@ docker run -d --name "${SCRATCH_NAME}" \
   -e POSTGRES_DB="${PG_DB}" \
   "${PG_IMAGE}" >/dev/null
 
-for _ in $(seq 1 60); do
+# Readiness budget: 120 probes at 1s. The 60s budget produced two unverifiable
+# CI failures on 2026-10-18 (runs 39116394628 and 39134762935, different tests
+# of the characterization suite): a scratch container whose initdb had not
+# finished under a loaded runner reports as "did not become ready" with no
+# evidence either way. 120s absorbs the slow-start case; the container-state
+# probe below keeps a genuinely dead container from burning the full budget.
+for _ in $(seq 1 120); do
   if docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1; then
     break
+  fi
+  # A container that has exited can never become ready (initdb crashed,
+  # OOM-killed, bad image): waiting longer cannot help, and its logs are the
+  # only evidence the verifier failure class can offer. Surface them instead
+  # of failing with a bare message.
+  if [[ "$(docker inspect -f '{{.State.Running}}' "${SCRATCH_NAME}" 2>/dev/null)" != "true" ]]; then
+    docker logs "${SCRATCH_NAME}" >&2 2>/dev/null || true
+    fail_verifier "scratch postgres exited before becoming ready (its logs are above)"
   fi
   sleep 1
 done
 docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1 \
-  || fail_verifier "scratch postgres did not become ready"
+  || {
+    docker logs "${SCRATCH_NAME}" >&2 2>/dev/null || true
+    fail_verifier "scratch postgres did not become ready within 120s (its logs are above)"
+  }
 
 # ── 3. Restore the custom-format archive ─────────────────────────────────────
 if ! docker exec -i "${SCRATCH_NAME}" pg_restore -U "${PG_USER}" -d "${PG_DB}" \

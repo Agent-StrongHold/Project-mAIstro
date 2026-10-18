@@ -365,10 +365,15 @@ class ContainerBuilderSandbox:
             limit=self._output_limit,
             timeout=_DEFAULT_TIMEOUT,
         )
-        if run.exit_code != 0:
-            raise FileNotFoundError(path)
+        # `timed_out` must be tested before the exit status: `run_bounded`
+        # kills a timed-out child, whose then-nonzero exit status would
+        # otherwise be misread as "file missing" (FileNotFoundError) — the
+        # wrong verdict and, for an agent deciding what to do next, a wrong
+        # conclusion about the workspace.
         if run.timed_out:
             raise RuntimeError(f"timed out reading {path!r} from the sandbox container")
+        if run.exit_code != 0:
+            raise FileNotFoundError(path)
         if run.stdout.truncated:
             raise ValueError(
                 f"{path} exceeds the sandbox read bound ({self._output_limit} bytes); "
