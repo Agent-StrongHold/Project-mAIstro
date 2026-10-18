@@ -17,6 +17,10 @@ BASELINE_RATE_LIMIT_PER_MINUTE = 60
 BASELINE_RATE_LIMIT_BURST = 10
 BASELINE_CIRCUIT_FAILURE_THRESHOLD = 5
 BASELINE_CIRCUIT_RECOVERY_TIMEOUT_S = 60.0
+#: Hard ceiling on the number of distinct LLM failure domains one process
+#: tracks in the per-provider circuit bank (#1203). Bounds breaker
+#: bookkeeping — not exposure — so it is a constructor bound, not a floor.
+MAX_CIRCUIT_DOMAINS = 4096
 BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL = 8
 BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE = 32
 

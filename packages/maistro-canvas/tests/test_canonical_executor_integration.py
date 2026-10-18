@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from itertools import count
+from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import pytest
+from canvas_testing.job_store_contract import InMemoryJobStore
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs import model as run_model
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro_canvas.canvas.canonical_execution import (
@@ -31,6 +37,8 @@ from maistro_canvas.types import (
 )
 
 pytestmark = pytest.mark.asyncio
+
+_TEST_ACTOR = "user-1"
 
 
 class _CanvasStore:
@@ -142,12 +150,35 @@ class _CanvasStore:
         return list(self.reaped)
 
 
+class _RecoveryCanvasStore(InMemoryJobStore):
+    """Production-like detached/CAS job rows plus the executor's scoped reads."""
+
+    async def get_canvas(self, canvas_id: str, *, org_id: str) -> CanvasRecord | None:
+        canvas = self._canvases.get(canvas_id)
+        return replace(canvas) if canvas is not None and canvas.org_id == org_id else None
+
+    async def get_layer(self, layer_id: str, *, org_id: str) -> LayerRecord | None:
+        layer = self._layers.get(layer_id)
+        if layer is None or await self.get_canvas(layer.canvas_id, org_id=org_id) is None:
+            return None
+        return replace(layer)
+
+
 class _ImageClient:
     async def generate(self, **_kwargs: object) -> list[ImageData]:
         return [ImageData(width=64, height=64, url="image://generated")]
 
     async def refine(self, **_kwargs: object) -> ImageData:
         return ImageData(width=64, height=64, url="image://refined")
+
+
+class _CountingImageClient(_ImageClient):
+    def __init__(self) -> None:
+        self.generate_calls = 0
+
+    async def generate(self, **kwargs: object) -> list[ImageData]:
+        self.generate_calls += 1
+        return await super().generate(**kwargs)
 
 
 class _FailThenSucceedImageClient(_ImageClient):
@@ -350,6 +381,7 @@ async def test_provider_retry_keeps_both_sanitised_attempts_inspectable() -> Non
         canvas_id="canvas-1",
         layer_id="layer-1",
         action=JobAction.GENERATE,
+        actor_principal_id=_TEST_ACTOR,
     )
     job.max_attempts = 2
 
@@ -393,6 +425,7 @@ async def test_receipt_persistence_failure_leaves_run_for_durable_reconciliation
             layer_id="layer-1",
             action=JobAction.GENERATE,
             prompt="safe",
+            actor_principal_id=_TEST_ACTOR,
         )
 
     # Receipt persistence failure is indistinguishable from process death to
@@ -428,6 +461,7 @@ async def test_restart_reconciles_admission_gap_and_idempotent_retry_reuses_run(
             action=JobAction.GENERATE,
             prompt="safe",
             idempotency_key="generation-1",
+            actor_principal_id=_TEST_ACTOR,
         )
     queued = await runs.list_by_status(RunStatus.QUEUED, limit=10)
     assert len(queued) == 1
@@ -452,6 +486,7 @@ async def test_restart_reconciles_admission_gap_and_idempotent_retry_reuses_run(
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-1",
+        actor_principal_id=_TEST_ACTOR,
     )
     assert retried.id == repaired[0].id
     all_runs = [
@@ -571,6 +606,124 @@ async def test_runner_requeues_then_terminalizes_at_retry_budget() -> None:
     assert executor.failures == ["provider 503"]
 
 
+async def test_simulated_pre_stage_worker_losses_respect_the_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated lost claims cannot dispatch past the budget or strand the Run.
+
+    This is hermetic coroutine interruption and lease-expiry simulation, not
+    OS process-kill or PostgreSQL durability proof. The production composition
+    supplies the real executor, canonical adapter and runner. The shared
+    job-store contract fake preserves detached reads, claim limits and CAS.
+    """
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace-1")
+    runs = InMemoryRunStore(project_store=projects)
+    store = _RecoveryCanvasStore()
+    canvas = await store.create_canvas(name="Recovery", width=64, height=64, org_id="org-1")
+    layer = await store.add_layer(canvas.id, org_id="org-1")
+    image_client = _CountingImageClient()
+    runtime = build_canvas_runtime(
+        store=store,  # type: ignore[arg-type]
+        image_client=image_client,  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+        run_store=runs,
+        workspace_id="workspace-1",
+        project_id=root.project_id,
+    )
+    job = await runtime.executor.start_job(
+        org_id="org-1",
+        canvas_id=canvas.id,
+        layer_id=layer.id,
+        action=JobAction.GENERATE,
+        prompt="safe",
+        actor_principal_id=_TEST_ACTOR,
+    )
+    run_id = canonical_run_id(job.params)
+    assert run_id is not None
+    claim = store.claim_next_pending
+
+    async def lose_worker_after_claim(
+        worker_id: str, lease_seconds: int
+    ) -> GenerationJobRecord | None:
+        claimed = await claim(worker_id, lease_seconds)
+        assert claimed is not None
+        # The claim has persisted, but execution has not begun. Interrupt the
+        # runner here without fabricating a canonical cancellation or failure.
+        raise asyncio.CancelledError
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(store, "claim_next_pending", lose_worker_after_claim)
+        for attempt in range(1, job.max_attempts + 1):
+            # Each tick must reconcile the previous lost claim before claiming
+            # again. No explicit recovery call bypasses the runner's ordering.
+            with pytest.raises(asyncio.CancelledError):
+                await runtime.runner.tick_once()
+            receipt = await store.get_job(job.id, org_id="org-1")
+            assert receipt is not None
+            assert receipt.status == JobStatus.RUNNING
+            assert receipt.attempts == attempt
+            assert receipt.leased_by is not None
+            assert canonical_run_id(receipt.params) == run_id
+            queued = await runs.get_run(run_id)
+            assert queued is not None and queued.status is RunStatus.QUEUED
+            assert await runs.list_node_runs(run_id) == []
+            assert image_client.generate_calls == 0
+            # Persist the expired lease on a detached row, as a test clock
+            # advancing past the lost worker's lease would make it appear.
+            receipt.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            await store.update_job(
+                receipt,
+                org_id="org-1",
+                expected_status=JobStatus.RUNNING,
+                expected_attempts=attempt,
+            )
+
+    assert await runtime.runner.tick_once() is False
+    exhausted = await store.get_job(job.id, org_id="org-1")
+    assert exhausted is not None
+    assert exhausted.attempts == job.max_attempts
+    assert exhausted.status == JobStatus.RUNNING
+    assert exhausted.leased_by is None
+    assert exhausted.lease_expires_at is not None
+    assert image_client.generate_calls == 0
+
+    # Exercise the real reaper path, including canonical failure and the
+    # fenced receipt write, rather than calling its terminal hook directly.
+    reaped = await runtime.runner.reap_once()
+    assert [candidate.id for candidate in reaped] == [job.id]
+    failed = await runs.get_run(run_id)
+    assert failed is not None and failed.status is RunStatus.FAILED
+    assert failed.error == LEASE_EXPIRED_MESSAGE
+    terminal = await store.get_job(job.id, org_id="org-1")
+    assert terminal is not None and terminal.status == JobStatus.FAILED
+    assert terminal.attempts == job.max_attempts
+    assert terminal.error_message == LEASE_EXPIRED_MESSAGE
+    assert terminal.completed_at is not None
+    assert terminal.leased_by is None and terminal.lease_expires_at is None
+    assert await runs.list_node_runs(run_id) == []
+    assert await runtime.runner.reap_once() == []
+    assert await runtime.runner.tick_once() is False
+    assert image_client.generate_calls == 0
+
+    # Positive control: the same unpatched composition can still dispatch a
+    # fresh job. Zero calls above cannot be explained by a disconnected fake.
+    fresh = await runtime.executor.start_job(
+        org_id="org-1",
+        canvas_id=canvas.id,
+        layer_id=layer.id,
+        action=JobAction.GENERATE,
+        prompt="safe",
+        actor_principal_id=_TEST_ACTOR,
+    )
+    assert await runtime.runner.tick_once() is True
+    completed = await store.get_job(fresh.id, org_id="org-1")
+    assert completed is not None and completed.status == JobStatus.DONE
+    assert canonical_run_id(fresh.params) != run_id
+    assert image_client.generate_calls == 1
+
+
 async def test_runner_idle_and_reap_terminal_failure_paths() -> None:
     store = _CanvasStore()
     executor = _FailingRunnerExecutor()
@@ -614,6 +767,7 @@ async def test_whitespace_idempotency_key_starts_a_new_operation_each_time() -> 
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="   ",
+        actor_principal_id=_TEST_ACTOR,
     )
     assert "canvas_operation_id" not in first.params
 
@@ -627,6 +781,7 @@ async def test_whitespace_idempotency_key_starts_a_new_operation_each_time() -> 
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="   ",
+        actor_principal_id=_TEST_ACTOR,
     )
 
     assert second.id != first.id
@@ -650,6 +805,7 @@ async def test_retry_of_active_operation_returns_the_active_receipt() -> None:
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-1",
+        actor_principal_id=_TEST_ACTOR,
     )
     retried = await executor.start_job(
         org_id=_CanvasStore.ORG,
@@ -658,6 +814,7 @@ async def test_retry_of_active_operation_returns_the_active_receipt() -> None:
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-1",
+        actor_principal_id=_TEST_ACTOR,
     )
 
     assert retried.id == first.id
@@ -688,6 +845,7 @@ async def test_retry_of_active_operation_with_changed_inputs_is_rejected() -> No
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-mismatch",
+        actor_principal_id=_TEST_ACTOR,
     )
 
     with pytest.raises(RunIntegrityError, match="retried with different inputs"):
@@ -698,6 +856,7 @@ async def test_retry_of_active_operation_with_changed_inputs_is_rejected() -> No
             action=JobAction.GENERATE,
             prompt="a completely different prompt",
             idempotency_key="generation-mismatch",
+            actor_principal_id=_TEST_ACTOR,
         )
 
 
@@ -744,6 +903,7 @@ async def test_terminal_retry_with_a_durable_receipt_skips_a_replacement_admissi
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-durable",
+        actor_principal_id=_TEST_ACTOR,
     )
     assert canonical.admit_calls == 1
     # Terminal, as a completed generation's receipt would be -- and no longer
@@ -757,6 +917,7 @@ async def test_terminal_retry_with_a_durable_receipt_skips_a_replacement_admissi
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-durable",
+        actor_principal_id=_TEST_ACTOR,
     )
 
     assert retried.id == first.id
@@ -793,11 +954,22 @@ class _StallThenSucceedImageClient(_ImageClient):
         return await super().generate(**kwargs)
 
 
-async def test_execution_deadline_is_a_retryable_timeout_not_a_user_cancellation() -> None:
+@pytest.mark.parametrize("id_marker", ["401", "403", "429", "503", "402"])
+async def test_execution_deadline_is_a_retryable_timeout_not_a_user_cancellation(
+    monkeypatch: pytest.MonkeyPatch, id_marker: str
+) -> None:
     """Codex #1560: a stalled provider call hitting ``max_execution_seconds``
     must be recorded canonically as a timed-out Attempt the NodeRun can retry,
     never as a requested cancellation that terminalizes the Run and breaks
     every remaining retry."""
+    sequence = count()
+
+    def controlled_uuid() -> UUID:
+        # #1762: random Attempt IDs containing 401/403 were misclassified as
+        # permanent auth faults. Keep IDs unique, but reproduce the marker.
+        return UUID(f"16e5402cfaec{id_marker}0ba717ef5{next(sequence):08x}")
+
+    monkeypatch.setattr(run_model, "uuid", SimpleNamespace(uuid4=controlled_uuid))
     projects = InMemoryProjectScopeStore()
     root = await projects.create_root("workspace-1")
     runs = InMemoryRunStore(project_store=projects)
@@ -810,23 +982,30 @@ async def test_execution_deadline_is_a_retryable_timeout_not_a_user_cancellation
         run_store=runs,
         workspace_id="workspace-1",
         project_id=root.project_id,
-        max_execution_seconds=0.3,
+        # Exercise the real runtime deadline without changing its existing budget.
+        max_execution_seconds=2.0,
     )
     job = await runtime.executor.start_job(
         org_id=_CanvasStore.ORG,
         canvas_id="canvas-1",
         layer_id="layer-1",
         action=JobAction.GENERATE,
+        actor_principal_id=_TEST_ACTOR,
     )
     job.max_attempts = 2
     runner = runtime.runner
     assert isinstance(runner, CanvasJobRunner)
 
-    assert await asyncio.wait_for(runner.tick_once(), timeout=5) is True
-    assert job.status == JobStatus.PENDING
-    assert job.error_message is None
+    assert await asyncio.wait_for(runner.tick_once(), timeout=10) is True
+    assert job.attempts == 1
+    assert job.max_attempts == 2
     run_id = canonical_run_id(job.params)
     assert run_id is not None
+    first_nodes = await runs.list_node_runs(run_id)
+    first_attempts = await runs.list_attempts(first_nodes[0].node_run_id)
+    assert [attempt.status for attempt in first_attempts] == [AttemptStatus.TIMED_OUT]
+    assert job.status == JobStatus.PENDING
+    assert job.error_message is None
     parked = await runs.get_run(run_id)
     assert parked is not None
     assert parked.status is not RunStatus.CANCELLED
@@ -864,6 +1043,7 @@ async def test_execution_deadline_at_the_retry_ceiling_fails_both_sides_consiste
         canvas_id="canvas-1",
         layer_id="layer-1",
         action=JobAction.GENERATE,
+        actor_principal_id=_TEST_ACTOR,
     )
     job.max_attempts = 1
 

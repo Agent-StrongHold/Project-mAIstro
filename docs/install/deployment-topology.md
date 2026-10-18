@@ -4,6 +4,7 @@ Runbook for the production (multi-instance) profile of maistro-engine. Implement
 [SPEC-070226-fbe3](../specs/SPEC-070226-fbe3-deployment-topology.md) and
 [ADR-081](../adr/ADR-081-deployment-backup-dr.md). For single-host homelab sizing see
 [sizing.md](./sizing.md); for the installer path see [default-installer.md](./default-installer.md).
+Resource ceilings and OOM recovery are in [resource-containment.md](./resource-containment.md).
 Reference artifacts live in [`deploy/`](../../deploy/).
 
 Per ADR-081 this document sets **no hard RPO/RTO or throughput numbers** — capacity is
@@ -39,7 +40,10 @@ Persistent layer (outside instances):
   tasks in flight on a replica that dies to be lost with it.
 - **Rate limits are per-process, not cluster-wide (#842).** The request limiter
   (`maistro_server.api.rate_limit`) keeps its sliding window in process memory,
-  keyed to the authenticated principal (ADR-085). Each of the N replicas
+  keyed to the authenticated principal (ADR-085) — or, in the auth-disabled
+  development configuration (`API_KEYS` empty), to the connecting client's
+  address; Authorization header content never changes the bucket there (#1101).
+  Each of the N replicas
   enforces `RATE_LIMIT_PER_MINUTE` independently, so the effective aggregate
   budget is N × the configured limit. A cluster-wide floor would need the
   shared store (e.g. the Redis above); none is claimed today.
@@ -67,6 +71,13 @@ Persistent layer (outside instances):
 - **Failover automation:** the compose reference uses a manually promoted replica
   (§4.1). Deployments needing sub-second automated failover add Patroni/etcd (Postgres)
   and Redis Sentinel; the runbook steps below are the manual equivalent.
+- **Resource containment:** every service has finite `mem_limit`, matching
+  `memswap_limit`, `pids_limit`, and `cpus` values in the effective Compose
+  configuration. These are security ceilings, not performance targets; see
+  [resource-containment.md](./resource-containment.md). The API replicas are
+  removed from LB rotation when readiness fails after an OOM or PID breach, and
+  `restart: unless-stopped` recreates them without claiming the interrupted
+  request or graph work succeeded.
 
 Bring it up:
 
@@ -98,9 +109,13 @@ second command with `required variable POSTGRES_PASSWORD is missing a value`.
 
 All of this is one script: [`deploy/scripts/backup.sh`](../../deploy/scripts/backup.sh)
 (cron it daily). It writes a self-contained backup under `${BACKUP_ROOT}/YYYY-MM-DD/`
-including a plain-SQL dump + `sha256` used by the verify drill, an integrity
-manifest over every component, and optionally ships off-host (`REMOTE_TARGET` —
-rsync/S3/wal-g, per the ADR-081 pluggable-connector rule).
+including the custom-format archive, semantic verification evidence (schema inventory
++ exact per-table row counts, all bound to one exported snapshot — see the #1881
+oracle), provenance (snapshot id, server and tool versions), `sha256` integrity
+hashes, and an integrity manifest over every component (including the Conductor
+capture) that the verify drill re-checks before restoring anything, and optionally
+ships off-host (`REMOTE_TARGET` — rsync/S3/wal-g, per the ADR-081
+pluggable-connector rule).
 
 ### 2.1 Conductor durable state and the credential escrow
 
@@ -165,10 +180,19 @@ Run [`deploy/scripts/verify-restore.sh`](../../deploy/scripts/verify-restore.sh)
 (cron). It:
 
 1. Takes yesterday's dump, restores it into a throwaway scratch PostgreSQL container.
-2. Re-runs `pg_dump` on the restored DB and compares its SHA-256 to the hash recorded
-   at backup time — the spec's property: *backup restore always produces bit-for-bit
-   identical state (via pg_dump hash)*.
-3. Prints per-table row counts and fails if zero user tables were restored.
+2. Recomputes the semantic verification evidence recorded at backup time — a schema
+   inventory plus exact per-table row counts — and compares it against the restored
+   database. At backup time the archive and its evidence are bound to the same
+   exported snapshot (`pg_export_snapshot` + `pg_dump --snapshot`), so concurrent
+   writes cannot make them describe different states. The drill does NOT compare raw
+   dump bytes: plain dumps embed a random psql restrict key (PostgreSQL ≥ 17) and
+   unconstrained dumps can describe different snapshots, so byte equality is neither
+   stable nor a proof of semantic fidelity (#1881).
+3. Prints per-table row counts and fails if zero user tables were restored. Failures
+   are classified: `artifact` (missing/corrupt backup files), `restore` (pg_restore
+   failed), `semantic` (restored schema/row counts differ from the backup evidence),
+   `verifier` (the drill itself could not run). Limits: the oracle proves structure
+   and cardinality, not cell-level content.
 4. Checks the backup's integrity manifest — any missing or corrupt component
    (including an empty Conductor capture) fails the drill before anything restores.
 5. Verifies the Conductor durable state: `state.db` integrity + canonical tables,
@@ -176,7 +200,8 @@ Run [`deploy/scripts/verify-restore.sh`](../../deploy/scripts/verify-restore.sh)
    decrypt proof — the escrowed `admin.key` must actually decrypt the backed-up
    `secrets.age` (set `EXPECTED_SECRET_NAME` to pin a known secret), and
    `credential_master.key` must be escrowed for `user_credentials.enc`. A missing
-   escrow is a hard failure.
+   escrow is a hard failure (`artifact` class, as is an empty Conductor capture;
+   set `SKIP_CONDUCTOR_BACKUP=1` only for stacks that run no Conductor).
 6. (staging extension) Point a staging maistro-server at the scratch DB and check
    `GET /health/ready` + a smoke request.
 
@@ -236,7 +261,8 @@ brings it back. To replace manually: `docker compose -f deploy/docker-compose.pr
    ```
    Start postgres; it replays WAL to the target, then pauses for promotion
    (`SELECT pg_wal_replay_resume();` / `pg_promote()`).
-4. Run the §3 verify steps (pg_dump hash + row counts) against the restored DB.
+4. Run the §3 verify steps (schema inventory + row counts vs. backup evidence) against
+   the restored DB.
 5. Restart the app replicas and check `/health/ready`.
 
 ### 4.4 Full disaster — rebuild from scratch
