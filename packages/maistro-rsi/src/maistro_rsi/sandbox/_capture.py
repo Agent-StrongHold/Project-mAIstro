@@ -30,10 +30,10 @@ from dataclasses import dataclass
 #: large enough that draining a discarded stream is not a syscall-per-byte tax.
 _CHUNK = 65536
 
-#: Mirrors ``maistro.sandbox.protocol.DEFAULT_MAX_OUTPUT_BYTES`` exactly.
+#: Mirrors ``maistro.tools.sandbox._capture.DEFAULT_MAX_OUTPUT_BYTES`` exactly.
 DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024
 
-#: Mirrors ``maistro.sandbox.protocol.MAX_OUTPUT_BYTES_CEILING`` exactly: a
+#: Mirrors ``maistro.tools.sandbox._capture.MAX_OUTPUT_BYTES_CEILING`` exactly: a
 #: caller may lower the limit per workload; nothing can raise the retained
 #: output above this.
 MAX_OUTPUT_BYTES_CEILING = 8 * 1024 * 1024
@@ -57,7 +57,7 @@ class BoundedCapture:
 def clamped_output_limit(value: int) -> int:
     """Host policy for retained output: positive, never above the ceiling.
 
-    Mirrors ``maistro.sandbox.protocol.clamped_output_limit`` exactly,
+    Mirrors ``maistro.tools.sandbox._capture.clamped_output_limit`` exactly,
     including the ValueError on non-positive limits.
     """
     if value <= 0:

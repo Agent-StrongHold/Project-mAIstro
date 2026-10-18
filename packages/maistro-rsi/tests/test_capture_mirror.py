@@ -1,8 +1,8 @@
 """The RSI capture mirror stays pinned to the canonical sandbox capture.
 
 ``maistro_rsi.sandbox._capture`` re-implements the asyncio flavor of
-``maistro.tools.sandbox._capture`` (plus the retention-limit policy of
-``maistro.sandbox.protocol``) because the seam must not import maistro-core:
+``maistro.tools.sandbox._capture`` (plus the retention-limit policy owned by
+that module) because the seam must not import maistro-core:
 the promotion-surface gate reads the AST from the promotion roots, and any
 import edge — even function-level — onto maistro-core drags the whole
 core cascade onto the promotion path (see the mirror's docstring and
@@ -22,14 +22,14 @@ import pytest
 
 def test_capture_constants_mirror_the_canonical_module() -> None:
     import maistro_rsi.sandbox._capture as mirror
-    from maistro.sandbox.protocol import (
-        DEFAULT_MAX_OUTPUT_BYTES as CORE_DEFAULT,
-    )
-    from maistro.sandbox.protocol import (
-        MAX_OUTPUT_BYTES_CEILING as CORE_CEILING,
-    )
     from maistro.tools.sandbox._capture import _CHUNK as CORE_CHUNK
     from maistro.tools.sandbox._capture import _TRUNCATION_NOTICE as CORE_NOTICE
+    from maistro.tools.sandbox._capture import (
+        DEFAULT_MAX_OUTPUT_BYTES as CORE_DEFAULT,
+    )
+    from maistro.tools.sandbox._capture import (
+        MAX_OUTPUT_BYTES_CEILING as CORE_CEILING,
+    )
 
     assert mirror.DEFAULT_MAX_OUTPUT_BYTES == CORE_DEFAULT
     assert mirror.MAX_OUTPUT_BYTES_CEILING == CORE_CEILING
@@ -39,7 +39,7 @@ def test_capture_constants_mirror_the_canonical_module() -> None:
 
 def test_clamped_output_limit_mirrors_the_canonical_policy() -> None:
     import maistro_rsi.sandbox._capture as mirror
-    from maistro.sandbox.protocol import clamped_output_limit as core_clamp
+    from maistro.tools.sandbox._capture import clamped_output_limit as core_clamp
 
     for value in (1, 100, mirror.MAX_OUTPUT_BYTES_CEILING, 10**9):
         assert mirror.clamped_output_limit(value) == core_clamp(value)

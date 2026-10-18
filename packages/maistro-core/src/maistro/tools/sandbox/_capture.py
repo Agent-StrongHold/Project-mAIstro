@@ -1,8 +1,10 @@
 """Bounded host-side capture of child output (#1197).
 
 Every sandbox execution path that captures a child's stdout/stderr must do so
-through one of the helpers here. The contract they implement (#1197,
-`SandboxConfig.max_output_bytes` in the canonical protocol):
+through one of the helpers here. The contract they implement (#1197; the
+sandbox-backend protocol carries its own per-stream policy in
+`maistro.sandbox.protocol`, while the tools-layer executors own the policy
+here):
 
 - **Retain at most `limit` bytes per stream.** Beyond the limit the bytes are
   still *read* — and immediately discarded, never buffered — so an unbounded
@@ -29,9 +31,10 @@ package, while importing any `maistro.sandbox` leaf initializes that package's
 facade — wiring, selector, backends — which the promotion-surface gate forbids
 on the RSI path (it flags every newly reached module, as it did when the
 executors first imported the policy through `maistro.sandbox.protocol`). This
-module imports nothing but the standard library and owns the policy;
-`maistro.sandbox.protocol` re-exports the constants from here as the policy's
-public home inside the subsystem. The RSI runtime keeps its own mirror
+module imports nothing but the standard library and owns the tools-layer
+policy; the sandbox-backend protocol defines its own per-stream bounds
+(`maistro.sandbox.protocol` / `maistro.sandbox.capture`) and deliberately
+does not import from here. The RSI runtime keeps its own mirror
 (`maistro_rsi.sandbox._capture`) pinned by test, because that package must not
 depend on maistro-core at all.
 """

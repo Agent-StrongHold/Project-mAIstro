@@ -33,15 +33,15 @@ from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
+from maistro.sandbox.capture import capture_process
 from maistro.sandbox.detect import BUBBLEWRAP_BINARY
 from maistro.sandbox.network import EgressMode, resolve_grant
 from maistro.sandbox.protocol import (
+    OUTPUT_LIMIT_EXIT_CODE,
     ExecResult,
     SandboxConfig,
     SandboxInstance,
-    clamped_output_limit,
 )
-from maistro.tools.sandbox._capture import communicate_bounded
 
 logger = logging.getLogger("maistro.sandbox.bubblewrap")
 
@@ -272,51 +272,33 @@ class BubblewrapSandboxBackend:
             # by everything inside the sandbox. The same hook the capability
             # probe runs under, so detection and spawn cannot disagree (#1235).
             preexec_fn=preexec_for(limits),
+            start_new_session=True,
         )
-        try:
-            # Bounded drain (#1197): at most the config's output limit is
-            # retained per stream; beyond it the drain continues and
-            # discards, so a `yes`-style workload can neither grow host
-            # memory nor block on a full pipe until the wall-clock timeout.
-            stdout, stderr = await asyncio.wait_for(
-                communicate_bounded(process, clamped_output_limit(config.max_output_bytes)),
-                timeout=timeout_s,
-            )
-        except TimeoutError:
-            # `--die-with-parent` makes the kill reach the whole sandbox rather
-            # than only the `bwrap` process, so a timeout cannot leave the
-            # sandboxed work running unsupervised.
-            process.kill()
-            await process.wait()
-            return ExecResult(
-                exit_code=TIMEOUT_EXIT_CODE,
-                stdout="",
-                stderr=f"sandbox timed out after {timeout_s}s",
-                duration_ms=int((time.monotonic() - start) * 1000),
-                timed_out=True,
-            )
-
-        result = ExecResult(
-            exit_code=process.returncode if process.returncode is not None else -1,
-            stdout=stdout.data.decode(errors="replace"),
-            stderr=stderr.data.decode(errors="replace"),
+        captured = await capture_process(
+            process,
+            timeout_s=timeout_s,
+            max_stdout_bytes=config.max_stdout_bytes,
+            max_stderr_bytes=config.max_stderr_bytes,
+        )
+        # `--die-with-parent` plus capture_process's process-group kill makes
+        # both timeout and output overflow terminate the complete workload.
+        exit_code = process.returncode if process.returncode is not None else -1
+        if captured.timed_out:
+            exit_code = TIMEOUT_EXIT_CODE
+        elif captured.output_limit_exceeded:
+            exit_code = OUTPUT_LIMIT_EXIT_CODE
+        return ExecResult(
+            exit_code=exit_code,
+            stdout=captured.stdout.decode(errors="replace"),
+            stderr=captured.stderr.decode(errors="replace"),
             duration_ms=int((time.monotonic() - start) * 1000),
-            stdout_bytes=len(stdout.data),
-            stderr_bytes=len(stderr.data),
-            stdout_truncated=stdout.truncated,
-            stderr_truncated=stderr.truncated,
+            timed_out=captured.timed_out,
+            output_limit_exceeded=captured.output_limit_exceeded,
+            stdout_truncated=captured.stdout_truncated,
+            stderr_truncated=captured.stderr_truncated,
+            stdout_bytes_retained=len(captured.stdout),
+            stderr_bytes_retained=len(captured.stderr),
         )
-        # The protocol contract says a truncated result is incomplete evidence;
-        # the backend is the one place that always sees the truncation, so it
-        # is the one place that can always say so in the audit trail (#1197).
-        if note := result.truncation_summary():
-            logger.warning(
-                "sandbox_exec_output_truncated id=%s exit_code=%s: %s",
-                instance.id,
-                result.exit_code,
-                note,
-            )
-        return result
 
     # --- files -------------------------------------------------------------
 
@@ -358,6 +340,7 @@ class BubblewrapSandboxBackend:
 
 
 __all__ = [
+    "OUTPUT_LIMIT_EXIT_CODE",
     "TIMEOUT_EXIT_CODE",
     "BubblewrapSandboxBackend",
     "BubblewrapUnavailableError",

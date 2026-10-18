@@ -134,7 +134,7 @@ async def test_exec_under_the_limit_has_no_truncation_notice() -> None:
 
 
 def test_container_limit_is_clamped_to_the_protocol_ceiling() -> None:
-    from maistro.sandbox.protocol import MAX_OUTPUT_BYTES_CEILING
+    from maistro.tools.sandbox._capture import MAX_OUTPUT_BYTES_CEILING
 
     container = SandboxContainer("abc123", "/host", max_output_bytes=10**9)
     assert container.max_output_bytes == MAX_OUTPUT_BYTES_CEILING

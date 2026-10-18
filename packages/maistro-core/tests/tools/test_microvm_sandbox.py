@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from maistro.config.settings import SandboxSettings
-from maistro.sandbox.protocol import DEFAULT_MAX_OUTPUT_BYTES
+from maistro.tools.sandbox._capture import DEFAULT_MAX_OUTPUT_BYTES
 from maistro.tools.sandbox.microvm import (
     MicroVMConfig,
     MicroVMRunSpec,

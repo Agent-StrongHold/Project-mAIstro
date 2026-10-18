@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from maistro.sandbox.protocol import DEFAULT_MAX_OUTPUT_BYTES
+from maistro.tools.sandbox._capture import DEFAULT_MAX_OUTPUT_BYTES
 from maistro_bootstrap.builders.container_sandbox import ContainerBuilderSandbox
 
 _FAKE_DOCKER = """#!/bin/sh
