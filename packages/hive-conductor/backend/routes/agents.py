@@ -31,6 +31,7 @@ from services.agent_materialization import (
     delete_agent_definition,
     materialize_runtime,
     scan_config,
+    scan_config_bounded,
     slugify_agent_name,
     update_agent_definition,
     upsert_agent_definition,
@@ -198,23 +199,63 @@ async def _store_or_refuse(awaitable):
 
 @router.post("/scan")
 async def scan_proposed_config(body: dict) -> dict:
-    """Scan a proposed configuration before it is saved."""
+    """Scan a proposed configuration before it is saved.
+
+    The result names the scanner (`scanner.name` / `policy_version`), the
+    target, and the completion timestamp, so `clean` is always a completed
+    analysis and never an assumption (#288). A scan that cannot run -- the
+    detector raising or outliving its time budget, including
+    `AgentScannerUnavailable` -- answers 503 with no findings list: unknown,
+    never clean.
+    """
     try:
-        return await scan_config(body)
+        return await scan_config_bounded(body, target={"kind": "proposed_config", "id": None})
     except ScanBudgetExceeded as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        logger.warning("agent scan exceeded its time budget")
+        raise HTTPException(
+            status_code=503,
+            detail="security scan exceeded its time budget; result unknown, nothing was cleared",
+        ) from exc
+    except Exception as exc:
+        logger.warning("agent scan did not complete: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="security scan did not complete; result unknown, nothing was cleared",
+        ) from exc
 
 
 @router.post("/{agent_id}/scan")
 async def scan_agent(agent_id: str) -> dict:
-    """Scan a saved agent's configuration."""
+    """Scan a saved agent's configuration.
+
+    Same contract as the proposed-config scan (#288): the result names the
+    scanner, the saved agent it walked, and when the walk completed; a scanner
+    that cannot run -- raises or outlives its time budget -- answers 503
+    (unknown), never clean.
+    """
     agent = stores.agents.get(agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail="agent not found")
     try:
-        return await scan_config(agent.model_dump(mode="json"))
+        return await scan_config_bounded(
+            agent.model_dump(mode="json"), target={"kind": "saved_agent", "id": agent_id}
+        )
     except ScanBudgetExceeded as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        logger.warning("agent scan exceeded its time budget")
+        raise HTTPException(
+            status_code=503,
+            detail="security scan exceeded its time budget; result unknown, nothing was cleared",
+        ) from exc
+    except Exception as exc:
+        logger.warning("agent scan did not complete: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="security scan did not complete; result unknown, nothing was cleared",
+        ) from exc
 
 
 class ForgeAgentBody(BaseModel):

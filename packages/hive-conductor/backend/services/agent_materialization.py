@@ -36,6 +36,7 @@ a persona declares (tools, checklist, theme) -- there's nothing to wait on.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections.abc import Iterator, Mapping
@@ -49,7 +50,7 @@ from models.schemas import Agent
 
 from maistro.personas.expander import expand_persona
 from maistro.personas.schema import PersonaTemplate
-from maistro.security.warden.detector import Warden
+from maistro.security.warden.detector import WARDEN_POLICY_VERSION, Warden
 
 from .model_store import register_pop_hook
 
@@ -126,16 +127,31 @@ def _warden() -> Warden:
 _warden_instance: Warden | None = None
 
 
-async def scan_config(config: object, *, boundary: str = "user_input") -> dict:
+async def scan_config(
+    config: object,
+    *,
+    boundary: str = "user_input",
+    target: Mapping[str, Any] | None = None,
+) -> dict:
     """Scan every string in a configuration at a Warden boundary.
 
     The default boundary is the one inbound configurations cross; `tool_result`
     selects the detector's second boundary (#315) so tool outputs that will be
     re-fed to a model are judged by the same detector, not a second check.
+
+    The result is self-describing (#288): `scanner` names the detector and its
+    policy version, `target` names what was scanned, `scanned_at` is the
+    completion timestamp, and `scanned_values` is how many strings the walk
+    judged -- the evidence that distinguishes a completed analysis from one
+    that never ran. `status` is only ever `clean` or `flagged`, and only on a
+    completed walk: a scanner that raises raises, and the routes translate
+    that into an explicit unknown state (503) rather than a clean bill.
     """
     warden = _warden()
     findings: list[str] = []
+    scanned_values = 0
     for scanned, (path, text) in enumerate(_text_leaves(config), start=1):
+        scanned_values = scanned
         if scanned > MAX_SCAN_NODES:
             raise ScanBudgetExceeded(f"config holds more than {MAX_SCAN_NODES} values")
         if len(text) > MAX_SCAN_TEXT:
@@ -143,7 +159,47 @@ async def scan_config(config: object, *, boundary: str = "user_input") -> dict:
         verdict = await warden.scan(text, boundary)
         if not verdict.clean:
             findings.extend(f"{path}: {flag}" for flag in verdict.flags)
-    return {"findings": findings, "status": "clean" if not findings else "flagged"}
+    return {
+        "findings": findings,
+        "status": "clean" if not findings else "flagged",
+        "scanner": {
+            "name": "warden",
+            "policy_version": WARDEN_POLICY_VERSION,
+            "boundary": boundary,
+        },
+        "target": dict(target) if target is not None else {"kind": "config", "id": None},
+        "scanned_at": datetime.now(UTC).isoformat(),
+        "scanned_values": scanned_values,
+    }
+
+
+#: Hard wall-clock ceiling for one scan surfaced over HTTP (#288). Warden's
+#: reject phase already bounds each pattern at 0.5s (`_PATTERN_TIMEOUT_S`,
+#: fail-closed), but its heuristic fallback has no internal timeout -- so the
+#: scan routes bound the whole walk here, the same way the chat gate bounds
+#: its pre-turn scan (`chat_gate.SCAN_TIMEOUT_SECONDS`). A scan that outlives
+#: this budget is an *unknown* state: `TimeoutError` to the caller, which the
+#: routes translate into 503 -- never a truncated result, and never clean.
+SCAN_TIMEOUT_SECONDS = 10.0
+
+
+async def scan_config_bounded(
+    config: object,
+    *,
+    boundary: str = "user_input",
+    target: Mapping[str, Any] | None = None,
+) -> dict:
+    """`scan_config` under a hard time budget (#288): no verdict or `TimeoutError`.
+
+    The HTTP scan routes use this so a detector that hangs cannot hang the
+    request: past `SCAN_TIMEOUT_SECONDS` the caller gets `TimeoutError` -- an
+    explicit unknown, the same state a raising detector produces. The constant
+    is read at call time so tests (and deployments) can tighten it.
+    """
+    return await asyncio.wait_for(
+        scan_config(config, boundary=boundary, target=target),
+        timeout=SCAN_TIMEOUT_SECONDS,
+    )
 
 
 # ─── Definition writes: the CRUD / Forge / chat-tool fronts ───────────────
@@ -160,6 +216,9 @@ def _provenance(source: str, scan: dict | None, when: datetime) -> dict[str, Any
     entry: dict[str, Any] = {"source": source, "timestamp": when.isoformat()}
     if scan is not None:
         entry["scan"] = {
+            "scanner": scan.get(
+                "scanner", {"name": "warden", "policy_version": WARDEN_POLICY_VERSION}
+            ),
             "boundary": "user_input",
             "status": scan.get("status", "flagged" if scan.get("findings") else "clean"),
             "findings": list(scan.get("findings", [])),
@@ -212,7 +271,10 @@ async def _scanned_definition(agent: Agent, *, source: str, scan: dict[str, Any]
     t = datetime.now(UTC)
     if scan is None:
         try:
-            scan = await scan_config(agent.model_dump(mode="json"))
+            scan = await scan_config(
+                agent.model_dump(mode="json"),
+                target={"kind": "agent_definition", "id": agent.id},
+            )
         except ScanBudgetExceeded:
             raise
         except Exception as exc:

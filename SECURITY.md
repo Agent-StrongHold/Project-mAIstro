@@ -40,6 +40,38 @@ This is the engine's version of Stronghold's Gate → Warden → Identity → Sk
 five-layer model, with sandbox isolation (ADR-093) called out as its own layer because it is a
 harder guarantee (hypervisor boundary) than the container/RBAC layers above it.
 
+### Scan result states (#288)
+
+Every security scan surface (agent config scans, the skills content scan, the MCP server
+record scan, the HITL answer gate) distinguishes four states, and a scan that did not run is
+never allowed to read as clean:
+
+- **clean** — the analysis *completed* and found nothing. Scan-route results say what ran and
+  on what: `scanner.name` / `scanner.policy_version` (the Warden `WARDEN_POLICY_VERSION`),
+  `target` (kind and id of the artifact walked), `scanned_at` (completion timestamp), and
+  `scanned_values` (how many strings the walk judged). Stored agent definitions carry the same
+  stamp in `config["provenance"]["scan"]`.
+- **flagged (findings)** — the analysis completed and found patterns; each finding names the
+  path inside the target where it hit (`config.prompt: …`), so a human can act on it.
+- **unknown / failed** — the scanner could not run, raised, or timed out. The HTTP scan routes
+  answer `503` with *no findings list* (a client must not be able to mistake a failed scan for
+  an empty one); each route also bounds the whole walk at `SCAN_TIMEOUT_SECONDS` (the same wall
+  the chat gate uses), so a detector that hangs produces the same explicit unknown instead of a
+  hung request. Definition writes fail closed with nothing stored (`AgentScannerUnavailable`,
+  surfaced as `503` on the Forge route); the chat gate refuses the turn with its scanner-error
+  / scanner-timeout reasons. Warden's per-pattern regex timeout fails closed too: it becomes a
+  `regex_error:` finding, i.e. flagged — never silently clean.
+- **unsupported / over-budget** — the target exceeds the bounded walk (nesting depth, value
+  count, string size) and is refused with `413` (`ScanBudgetExceeded`) rather than truncated
+  into a partial — and therefore unearned — clean.
+
+The surface set itself is checked, not trusted:
+`packages/hive-conductor/backend/tests/test_scan_contract.py` enumerates every `POST …/scan`
+route from the live app and must find each one backed by the registered real scanner, and it
+parses `routes/` and `services/` to forbid the unconditional
+`{"findings": [], "status": "clean"}` literal anywhere in production code — the shape the
+agent scan used to answer before #418 and the MCP server-record scan answered until #288.
+
 ### Account credential storage
 
 Conductor accounts are hashed with **Argon2id** (`maistro/security/passwords.py`), OWASP

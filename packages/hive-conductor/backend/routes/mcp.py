@@ -10,6 +10,7 @@ import stores
 from fastapi import APIRouter, HTTPException, Request
 from models.schemas import MCPServer, MCPTool
 from pydantic import BaseModel, ConfigDict
+from services.agent_materialization import ScanBudgetExceeded, scan_config_bounded
 
 from maistro.http import shared_client
 from maistro.security.outbound import OutboundBlockedError, outbound_origin
@@ -180,10 +181,42 @@ def delete_server(server_id: str) -> None:
 
 
 @router.post("/servers/{server_id}/scan")
-def scan_server(server_id: str) -> dict:
-    if server_id not in stores.mcp_servers:
+async def scan_server(server_id: str) -> dict:
+    """Warden-scan a stored server's configuration (#288).
+
+    This used to be the last fake-clean scan surface: it answered
+    `{"findings": [], "status": "clean"}` without running anything. Now it
+    runs the same bounded walk the Agent Builder uses, over every string the
+    stored record carries (name, description, url, status, id). Scope note:
+    like the skills scan, this is a content scan of what the app stores -- it
+    does not probe the server's endpoint (health checks do that) and does not
+    attest to how the server was registered.
+
+    `clean` therefore means the walk completed and found nothing. A scanner
+    that cannot run -- raises or outlives its time budget -- answers 503 with
+    no findings list: unknown, never clean.
+    """
+    server = stores.mcp_servers.get(server_id)
+    if server is None:
         raise HTTPException(status_code=404, detail="server not found")
-    return {"findings": [], "status": "clean"}
+    try:
+        return await scan_config_bounded(
+            server.model_dump(mode="json"), target={"kind": "mcp_server", "id": server_id}
+        )
+    except ScanBudgetExceeded as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        logger.warning("mcp server scan exceeded its time budget")
+        raise HTTPException(
+            status_code=503,
+            detail="security scan exceeded its time budget; result unknown, nothing was cleared",
+        ) from exc
+    except Exception as exc:
+        logger.warning("mcp server scan did not complete: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="security scan did not complete; result unknown, nothing was cleared",
+        ) from exc
 
 
 class McpTestBody(BaseModel):
