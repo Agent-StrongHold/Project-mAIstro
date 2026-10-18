@@ -7,8 +7,9 @@ inventory-delta:
 Issue #1856 (parent #55) at branch `auto-1856`; this note's delta covers the
 nine lifecycle tests the lane added on top of develop (eight for the effect
 context and resource cleanup at head `31d891a5`, plus the quota-tracker
-default test at head `26a4ec3c3`); develop base now `6b631928b` after the
-conflict-free `origin/develop` sync (sandbox-capture commit `6b631928b`).
+default test at head `26a4ec3c3`). Develop base now `420d503d4` after two
+conflict-free `origin/develop` sync merges (`33dd02f`, then the
+deps-bump-only merge `b2787cf89`).
 
 Eight `packages/maistro-core/tests` node IDs arrive in
 `test_container_effect_context_lifecycle.py`, all pinning one boundary: a
@@ -38,3 +39,30 @@ cleanup case failed with `DID NOT RAISE any of (ValueError, ProgrammingError)`
 validation command — lifecycle + convergence + model-binding bootstrap —
 26 passed, 3 skipped without PostgreSQL, and 29 passed, 0 failed with a
 migrated pgvector/pg18 service (`MAISTRO_TEST_PG_DSN` set).
+
+Salvage-round re-verification (2026-10-18, merged head `b2787cf89`, tests
+re-run from scratch against the real rejection, bootstrap never mocked):
+
+- Failing-before reproduced three ways. (1) At head `31d891a5` + the new
+test file, `test_failed_startup_closes_the_sqlite_connections_it_opened`
+failed with `DID NOT RAISE any of (ValueError, ProgrammingError)`. (2) At
+PR #2207's head `4567dd98a` + the quota test,
+`test_failed_startup_keeps_the_previous_quota_tracker_default` failed with
+the failed candidate's `SqliteQuotaTracker` installed as the process default
+(`assert <SqliteQuotaTracker ...> is <InMemoryQuotaTracker ...>`). (3) With
+the issue's named regression re-created by hand — publication moved back
+above `bootstrap_model_bindings`, the #1362 arrangement — both preservation
+cases failed: the failed candidate displaced a live outer container's
+default and the cached fallback.
+- Passing-after at `b2787cf89`: the issue's validation command collected 31
+nodes — 28 passed, 3 skipped without PostgreSQL; 31 passed, 0 failed, 0
+skipped with a migrated pgvector/pg18 service
+(`MAISTRO_TEST_PG_DSN=postgresql://maistro:postgres@127.0.0.1:18556/maistro`,
+75 public tables) — including both PostgreSQL pool-ownership cases.
+Adjacent container suites (`test_container_pool_ownership.py`,
+`test_container_sqlite_backend.py`, `test_container_wiring.py`) 81 passed.
+Gates re-run with CI's exact arguments: ruff check/format clean, mypy
+`--strict packages/maistro-core/src` clean under `--all-extras`, suite
+inventory 17/17, radon ledger 137→137, xenon 137 blocks = baseline with
+module and average axes clean, vulture ledger 1322→1322, promotion surface
+ok, reachability ok.
