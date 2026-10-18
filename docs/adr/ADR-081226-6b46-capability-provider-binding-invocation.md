@@ -137,4 +137,4 @@ A fulfillment path complies when an executable consumer reaches external/special
 
 - `ADR-081226-9944`
 - `ADR-081226-a66b`
-- `docs/analysis/ARCHITECTURE-CONVERGENCE-MATRIX.md`
+- [`docs/architecture/CONVERGENCE-MATRIX.md`](../architecture/CONVERGENCE-MATRIX.md)

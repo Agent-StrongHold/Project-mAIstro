@@ -99,7 +99,7 @@ chaos/failover tests, alerting wiring) happens at deploy time on real infrastruc
   `deploy/scripts/verify-restore.sh`.
 - Health endpoints for the LB already exist in maistro-server
   (`/health`, `/health/live`, `/health/ready` — `maistro_server/api/health.py`,
-  tested in `tests/api/test_health.py`).
+  tested in `packages/maistro-server/tests/api/test_health.py`).
 
 ## Acceptance criteria
 
@@ -107,7 +107,9 @@ chaos/failover tests, alerting wiring) happens at deploy time on real infrastruc
       (no local files except config). *(Topology enforces this; instances are stateless.)*
 - [ ] PostgreSQL replicas are catching up (replication lag < 1s). *(Live-infra check.)*
 - [x] Backup test: restore yesterday's backup, verify data is present and consistent.
-      *(`deploy/scripts/verify-restore.sh` — pg_dump hash + row-count check.)*
+      *(`deploy/scripts/verify-restore.sh` — semantic oracle: schema inventory + exact
+      row counts bound to the backup's exported snapshot, compared against the restored
+      database.)*
 - [ ] Instance failure: one instance goes down, remaining handle traffic without data loss.
       *(Chaos test at deploy time; LB passive checks configured.)*
 - [ ] Monitoring alerts on replication lag > 5s or backup failure. *(Wired at deploy time;
@@ -117,7 +119,9 @@ chaos/failover tests, alerting wiring) happens at deploy time on real infrastruc
 
 - Chaos test: kill one instance, verify failover and no lost requests.
 - Restore test: simulate data corruption, restore from backup, verify consistency.
-- Property: "backup restore always produces bit-for-bit identical PostgreSQL state" (via pg_dump hash).
+- Property: "a restored backup matches the semantic evidence recorded for its snapshot
+  — schema inventory and exact per-table row counts" (#1881; independent of dump
+  formatting and random metadata).
 
 ## References
 

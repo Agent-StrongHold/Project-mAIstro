@@ -32,6 +32,10 @@ candidate edit cannot authorize new debt or a newly allowed surface.
 | `check_mutation_baseline.py` | `mutation-baseline.json`, `mutation-history.json` | tolerance/history | direct; quality floor and runtime-history evidence both come from base; generated candidates start from that trusted baseline |
 | `check-model-egress.py` | `model-egress.json` | security allowlist | direct; a new direct caller requires prior authorization |
 | `check-public-routes.py` | `public-routes.json` | security allowlist | direct; a new unauthenticated path requires prior authorization |
+| `check-workspace-retirement.py` | `workspace-retirement.json` | tolerance | direct; a new importer of a retiring surface, or untracking an entry, requires prior authorization (Workspace cutover S0.1) |
+| `check-principal-identity.py` | `principal-identity-baseline.json` | security tolerance | direct; a new parallel principal class or `state.user` file requires prior authorization (Workspace cutover P0.1) |
+| `check-route-permissions.py` | `route-permissions-baseline.json`, `route-permissions.json` | security tolerance | direct; a new undeclared `/v1` prefix or a new `exempt_reason` requires prior authorization (Workspace cutover P0.2) |
+| `check-frontend-typed-client.py` | `frontend-typed-client-baseline.json` | tolerance | direct; a new raw `fetch(` outside `src/lib/` or a new local `interface`/`type` in `pages/`/`components/` requires prior authorization (Workspace cutover P0.3) |
 
 `mutation-history.json` is trusted evidence, not an authorization channel. It
 changes runtime-regression/new-survivor reporting; it never grants permission to
@@ -102,11 +106,56 @@ choosing and enforcing its provenance model in the same change rather than
 inheriting candidate-controlled comparison by accident.
 
 A trusted-base ratchet must fail closed when the base revision or ledger cannot
-be read, identify the base and candidate revisions in its provenance record, and
-must not let its normal update/banking path authorize the increase it just
+be read, identify the base and candidate revisions in its provenance record,
+name the analyzer implementation that measured the verdict, and must not let
+its normal update/banking path authorize the increase it just
 measured. Authorization lives separately in
 `quality/ratchet-authorizations.json`, which is itself read from the trusted
 base, so a new authorization takes effect only after it has already merged.
+
+## Tool version identity (#319)
+
+Every provenance record carries a required, non-empty `tool_version` naming
+the analyzer *implementation* that measured the verdict, kept distinct from
+`metric_definition_version`, which versions the question being asked. A
+missing or blank version is a reporting failure — there is deliberately no
+`unknown` or default fallback. Two identity kinds cover the gates here:
+
+- **Bundled scanners** — `bundled-sha256:<digest>` from
+  `ratchet_provenance.bundled_implementation_fingerprint`, a SHA-256 over a
+  stable sorted manifest of repository-relative paths and their actual source
+  bytes (each entry length-framed so no file's content can impersonate another
+  entry's framing). The manifest is bounded and explicit per constructor: a
+  same-file scanner hashes itself; a delegated adapter hashes itself plus the
+  checker and the helper files it actually loads (reachability collector,
+  direct-effect census, sensitive-path classifier, registry
+  validator/parser/schema/citations, convergence-matrix checker,
+  `tools/lint_lifecycle.py`). Because real checkout bytes are hashed, an
+  uncommitted edit to a delegated analyzer changes the identity — a git SHA
+  alone cannot see dirty source, and a hand-maintained constant can silently
+  go stale. The digest is deterministic across checkout locations (only
+  relative paths and bytes are hashed). An empty manifest, a path outside the
+  repository root, a missing file, or an unreadable one is a non-passing
+  state, not a degraded identity. The prefix says what it is: a bounded source
+  fingerprint, not an exhaustive environment attestation.
+- **Installed analyzers** (radon, vulture) — the distribution version observed
+  through `importlib.metadata` in the *same interpreter* that runs
+  `sys.executable -m <tool>`, via
+  `ratchet_provenance.installed_distribution_version`. Lockfile-declared
+  versions are never read: they state what a resolution once wanted, not what
+  will execute. Known limitation, stated rather than claimed away:
+  distribution metadata can be shadowed by a different module earlier on
+  `sys.path`, so this is a metadata observation, not a binary attestation of
+  the executed code. A missing or blank version is refused.
+
+`check_mutation_baseline.py` never executes Cosmic Ray; it evaluates scheduler
+telemetry and raw outcome rows with the bundled evaluator/parser in this
+repository, so all three of its branches identify that bundled implementation
+(`check_mutation_baseline.py` plus `mutation_ratchet.py` on the scheduler
+path), while keeping the cosmic-ray name as the *input format* description.
+The identity resolves before any baseline or health-report write; a failure
+to resolve is a clear nonzero diagnostic, never a traceback, a silent
+`unknown`, or a write without identity.
 
 Developer runs without a base revision remain possible and are explicitly
 labelled worktree-judged by the shared resolver; required monotonicity CI supplies

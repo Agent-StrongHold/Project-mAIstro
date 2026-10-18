@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 import time
-from typing import Any
+from typing import Any, Literal
 
 from maistro.credentials.types import (
     CredentialRecord,
@@ -44,13 +44,46 @@ def _soonest_cooldown(entries: list[CredentialRecord]) -> float | None:
     return soonest
 
 
-def _exhaustion_counts(entries: list[CredentialRecord]) -> tuple[int, int]:
-    """(blocked, cooling-down) counts over the entries being accounted."""
+def _classify_entry(
+    entry: CredentialRecord, now: float
+) -> Literal["blocked", "cooling", "available"]:
+    """Classify ``entry`` against the single clock sample ``now``.
 
-    blocked = sum(1 for e in entries if e.blocked)
-    cooling = sum(
-        1 for e in entries if not e.blocked and e.cooldown_until is not None and not e.is_available
-    )
+    The one classification rule for this module: blocked beats cooling beats
+    available, and a cooldown still counts as cooling only while
+    ``cooldown_until > now`` (a key is selectable at the instant its cooldown
+    expires, matching :attr:`CredentialRecord.is_available`).
+    """
+
+    if entry.blocked:
+        return "blocked"
+    if entry.cooldown_until is not None and entry.cooldown_until > now:
+        return "cooling"
+    return "available"
+
+
+def _exhaustion_counts(entries: list[CredentialRecord]) -> tuple[int, int]:
+    """(blocked, cooling-down) counts over the entries being accounted.
+
+    Every entry is classified against one ``time.monotonic()`` sample. The
+    former shape read the clock per entry through ``is_available``, so a
+    cooldown expiring mid-scan dropped its key out of the cooling bucket
+    while the failure that triggered the accounting had already excluded it
+    from selection -- blocked + cooling then under-counted the unavailable
+    set at no single instant (the same clock-boundary race #1041 removed
+    from ``get_stats``). Classifying against one sample makes
+    blocked + cooling the exact unavailable set at that sample by
+    construction.
+    """
+
+    now = time.monotonic()
+    blocked = cooling = 0
+    for entry in entries:
+        state = _classify_entry(entry, now)
+        if state == "blocked":
+            blocked += 1
+        elif state == "cooling":
+            cooling += 1
     return blocked, cooling
 
 
@@ -216,14 +249,18 @@ class CredentialPool:
         # ``time.monotonic()`` per call, so classifying via three separate
         # comprehensions let a cooldown expiring mid-scan drop its key out of
         # all three buckets (total != available + blocked + cooling) — the
-        # stateful machine found it. The partition is now exact by construction.
+        # stateful machine found it. The partition is now exact by
+        # construction, and _exhaustion_counts shares this exact classifier
+        # so exhaustion errors and stats can never drift into two subtly
+        # different clock rules (#1116).
         now = time.monotonic()
         available_keys = blocked_keys = cooling_down_keys = 0
         per_key: list[dict[str, Any]] = []
         for entry in self._entries:
-            if entry.blocked:
+            state = _classify_entry(entry, now)
+            if state == "blocked":
                 blocked_keys += 1
-            elif entry.cooldown_until is not None and entry.cooldown_until > now:
+            elif state == "cooling":
                 cooling_down_keys += 1
             else:
                 available_keys += 1
