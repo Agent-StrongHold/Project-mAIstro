@@ -83,7 +83,6 @@
     "maistro.collaboration",
     "maistro.collaboration.session_collab",
     "maistro.collaboration.types",
-    "maistro.config.loader",
     "maistro.delivery",
     "maistro.delivery.dispatch",
     "maistro.delivery.protocols",
