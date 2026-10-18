@@ -421,8 +421,9 @@ class ExecutionLifecycleMachine(RuleBasedStateMachine):
 # A live database is orders of magnitude slower than the in-process models, so
 # this one runs the same reduced budget as I29 with a longer sequence: an
 # earned completion alone takes nine coordinated steps (admit, start, claim,
-# begin, complete, queue, run, accept, complete). The nightly sweep raises the
-# budget through the same conftest hook every other model uses.
+# begin, complete, queue, run, accept, complete). The nightly workflow raises
+# this budget by exporting MAISTRO_FORMAL_PG_EXAMPLES (the conftest nightly
+# hook cannot reach a module that pins its own settings).
 ExecutionLifecycleMachine.TestCase.settings = hyp_settings(
     max_examples=int(os.environ.get("MAISTRO_FORMAL_PG_EXAMPLES", "15")),
     stateful_step_count=16,

@@ -15,8 +15,34 @@ jobs:
     permissions:
       contents: read
       issues: write
+    # A live PostgreSQL, same image and credentials as formal-conformance.yml's
+    # service, so the Pg-backed models (#881's execution-lifecycle machine and
+    # I29's lease/fence model) run here instead of skipping: ac_outcome_plugin
+    # counts a skip as no evidence, and the nightly sweep exists precisely to
+    # explore what the PR budget cannot.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: maistro
+          POSTGRES_PASSWORD: maistro
+          POSTGRES_DB: maistro_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U maistro -d maistro_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       MAISTRO_FORMAL_NIGHTLY_EXAMPLES: "10000"
+      # The Pg-backed models read this module-specific budget directly, not the
+      # MAISTRO_FORMAL_NIGHTLY_EXAMPLES hook above: a live store is orders of
+      # magnitude slower than the in-process models, so the nightly raise is
+      # deliberately two orders of magnitude, not three.
+      MAISTRO_FORMAL_PG_EXAMPLES: "200"
+      MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      MAISTRO_TEST_DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
 
     steps:
       - name: Checkout
@@ -29,6 +55,18 @@ jobs:
 
       - name: Install dependencies
         run: pip install -e formal/ && pip install -e packages/maistro-core && pip install -e packages/maistro-evolve
+
+      # Same drivers and migration step as formal-conformance.yml: asyncpg for
+      # PgRunStore, psycopg[binary] for alembic's synchronous engine, and the
+      # canonical schema applied before the models run so a missing relation
+      # cannot read as a broken model.
+      - name: Install PostgreSQL drivers and alembic
+        run: pip install asyncpg "psycopg[binary]>=3.2" alembic "aiosqlite>=0.20"
+
+      - name: Apply migrations
+        env:
+          DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+        run: alembic upgrade head
 
       - name: Restore Hypothesis example database
         uses: actions/cache/restore@v6
