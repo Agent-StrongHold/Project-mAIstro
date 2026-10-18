@@ -605,3 +605,53 @@ def test_older_note_without_fail_first_still_parses() -> None:
     note = TraceNote(cycle=1, target="t", accepted=True, kind="doc", model="m", files_touched=1)
     back = TraceNote.from_json(note.to_json())
     assert back.fail_first is None
+
+
+# ---------------------------------------------------------------------------
+# #1792: malformed and unreadable evidence inputs fail closed, never open
+# ---------------------------------------------------------------------------
+
+
+def test_related_detection_falls_back_to_textual_imports_when_the_test_file_is_malformed(
+    tmp_path: Path,
+) -> None:
+    """An unparsable failing test keeps its attribution check: the textual
+    import-line fallback matches the changed module that a parse cannot."""
+    (tmp_path / "test_broken.py").write_text(
+        "from helper import g\ndef test_g(:\n    assert g() == 5\n",  # syntax error
+        encoding="utf-8",
+    )
+    assert fail_first._has_related_failure(tmp_path, ["test_broken.py::test_g"], ["pkg/helper.py"])
+
+
+def test_related_detection_skips_unreadable_test_files_without_inventing_relatedness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing test whose content cannot be read is neither related nor a
+    crash: the guard drops the attribution check, it never manufactures it."""
+    (tmp_path / "test_ghost.py").write_text("placeholder", encoding="utf-8")
+
+    def boom(self: Path, *args: object, **kwargs: object) -> str:
+        raise OSError("vanishing file")
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    assert not fail_first._has_related_failure(
+        tmp_path, ["test_ghost.py::test_g"], ["pkg/helper.py"]
+    )
+
+
+@pytest.mark.skipif(not _PYTEST_RUNNABLE, reason="pytest not runnable as a subprocess")
+def test_probe_returns_missing_evidence_when_the_base_ref_is_unresolvable(
+    tmp_path: Path,
+) -> None:
+    """No replayable base revision means no evidence at all: collection must
+    return None (the gate then fails the behavior contract closed on missing)
+    without touching the candidate tree."""
+    repo = _repo(tmp_path)
+    _commit_candidate(repo)
+    ev = collect_fail_first_evidence(
+        repo, "definitely-not-a-ref", ["src.py"], ["test_src.py"], timeout=120
+    )
+    assert ev is None
+    # The early return must not have flipped a single file in the worktree.
+    assert "return 2" in (repo / "src.py").read_text(encoding="utf-8")
