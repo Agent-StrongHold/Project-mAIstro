@@ -34,6 +34,34 @@ def _public_failure(exc: BaseException) -> str:
 router = APIRouter(tags=["dags"])
 logger = logging.getLogger("hive.dags")
 
+# OpenAPI contract for canonical admission backpressure (#1182): the shape of
+# the HTTPException raised by `run_dag` and `run_champion` when a concurrency
+# ceiling is reached. Declared on both routes so generated clients can type
+# the retry path, including the `Retry-After` header they must honor.
+_ADMISSION_429_RESPONSES: dict[int | str, dict[str, Any]] = {
+    429: {
+        "description": (
+            "Admission backpressure: too many active runs for this scope; "
+            "retry after the interval named by Retry-After"
+        ),
+        "headers": {
+            "Retry-After": {
+                "description": "Seconds to wait before retrying the request",
+                "schema": {"type": "integer"},
+            }
+        },
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {"detail": {"type": "string"}},
+                    "required": ["detail"],
+                }
+            }
+        },
+    }
+}
+
 
 class DAGNode(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -366,7 +394,7 @@ def remove_edge(dag_id: str, edge_id: str) -> dict:
     return removed[0].model_dump(mode="json")
 
 
-@router.post("/{dag_id}/run")
+@router.post("/{dag_id}/run", responses=_ADMISSION_429_RESPONSES)
 async def run_dag(
     dag_id: str,
     request: Request,
@@ -435,7 +463,7 @@ async def run_dag(
     }
 
 
-@router.post("/run-champion")
+@router.post("/run-champion", responses=_ADMISSION_429_RESPONSES)
 async def run_champion(
     request: Request,
     body: DagRunRequest | None = None,
