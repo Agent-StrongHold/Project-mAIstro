@@ -1282,9 +1282,11 @@ jobs:
       # reach 0.
       #
       # This step's unique value after #1682 is the module-rank and
-      # project-average axes: check-radon-baseline.py now carries the same
-      # 139 blocks as a per-identity ledger, which is strictly stronger than
-      # a count for the per-block axis.
+      # project-average axes: check-radon-baseline.py carries the same blocks
+      # as a per-identity ledger, which is strictly stronger than a count for
+      # the per-block axis. tests/test_complexity_gate_scope.py pins
+      # XENON_BASELINE to the ledger's length, so the two instruments cannot
+      # drift apart silently.
       - name: xenon (per-function ≤ B; per-module ≤ B; project avg ≤ A — ratchet)
         env:
           # 77 -> 140 when the scope widened from maistro-core to every shipped
@@ -1304,17 +1306,41 @@ jobs:
           # scan does not watch *until this PR lands* -- which is the argument
           # for landing it rather than refreshing the number again.
           #
-          # 145 is the same number check-radon-baseline.py now carries, and that
-          # is the point: the two tools measure the same blocks over the same
-          # scope, so a divergence between this count and the ledger's length is
-          # itself a signal that one of them stopped looking.
+          # 145 -> 143: the Boy Scout wave after this landed (the M4-A8/#115
+          # refactors, then the M5-B rounds) fixed LocalRsiLoop._fitness_decision
+          # and LocalRsiLoop.export_promotions outright and re-pinned six more
+          # rows lower; the ledger followed every improvement down and this
+          # ceiling follows the ledger. Re-measured 2026-10-18 at 31d891a561df:
+          # 143 xenon block identities matching the ledger's 143 entries
+          # one-for-one, rank for rank.
           #
-          # 145 -> 142: #1791 took the three consistency-evaluator blocks in
+          # 143 -> 139: the pin test caught the ceiling drifted from the ledger
+          # it mirrors (143 vs a ledger the post-2026-10-04 Boy Scout waves had
+          # pulled down to 137), and the radon scan widened to
+          # packages/maistro-ext-sdk/src, banking the SDK's two C blocks
+          # (_validate_least_authority 14, VersionRange.satisfied_by 12) as
+          # ledger rows: 137 + 2 = 139.
+          #
+          # 139 -> 137: those two SDK blocks did not stay debt. The Boy Scout
+          # ratchet took them down instead of banking them --
+          # _validate_least_authority split into its two one-directional halves
+          # and VersionRange.satisfied_by became an operator dispatch, both now
+          # B or better -- so the scan widening surfaced no new debt and the
+          # two ledger rows and their grants were withdrawn as never landed.
+          # Re-measured on develop: 137 block identities, xenon and the ledger
+          # one-for-one, module and average axes clean.
+          #
+          # 137 -> 134 (#1791, developed in parallel with the waves above and
+          # merged here): the three consistency-evaluator blocks in
           # maistro-design (consistency.py::_build_refinement,
-          # _check_sibling_contradictions, evaluate_project_snapshot) from C
-          # (17/16/15) to B (8/6/6), and the radon ledger dropped the same
-          # three rows -- the same move #1674 made for tau_bench.
-          XENON_BASELINE: 142
+          # _check_sibling_contradictions, evaluate_project_snapshot) went
+          # from C (17/16/15) to B (8/6/6), and the radon ledger dropped the
+          # same three rows together with their #1682 grants -- the same move
+          # #1674 made for tau_bench. A divergence between this count and the
+          # ledger's length is itself a signal that one of the two instruments
+          # stopped looking; tests/test_complexity_gate_scope.py pins them
+          # together.
+          XENON_BASELINE: 134
           # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in
           # silence; widening the scope surfaced one.
@@ -2782,6 +2808,10 @@ jobs:
           uv run interrogate -f 45 packages/maistro-bootstrap/src
           uv run interrogate -f 36 packages/maistro-canvas/src
           uv run interrogate -f 24 packages/maistro-turing/src
+          # The shipped extension SDK. Floored at its measured coverage
+          # (73.1%); it was unmeasured until this PR -- xenon watched it, but
+          # nothing asked its docstrings for anything.
+          uv run interrogate -f 73 packages/maistro-ext-sdk/src
 
   quality-gate:
     name: Quality gate (Pillars 1–4, 7, 8)
