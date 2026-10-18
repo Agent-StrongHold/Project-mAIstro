@@ -15,6 +15,43 @@ the same command a week apart get the same code.
 | A release candidate | `MAISTRO_VERSION=v1.0.0-rc1 ./get.sh` | `.\get.ps1 -Version v1.0.0-rc1` |
 | Contributor / unreleased | `./get.sh --channel dev` | `.\get.ps1 -Channel dev` |
 | A specific branch | `./get.sh --branch my/topic` | `.\get.ps1 -Branch my/topic` |
+| Fully unattended install | `./get.sh -- --answers-file answers.yaml` | `.\get.ps1 -AutoInstallDeps -AnswersFile answers.yaml` |
+
+## Unattended installs (answers file, #409)
+
+One versioned answers schema — `InstallAnswersV1` (`schema_version: "1"`,
+templates in [`examples/`](examples/)) — is consumed equivalently by both
+entrypoints. On Unix it rides get.sh's passthrough into install.sh; on Windows
+`get.ps1 -AnswersFile` validates it, translates the path to the distro's
+`/mnt` view of the Windows filesystem (`C:\Users\me\answers.yaml` becomes
+`/mnt/c/Users/me/answers.yaml`), and forwards it as the same `--answers-file`
+argument to get.sh inside WSL:
+
+- **Validated before mutation.** Both entrypoints check the answers contract
+  before anything is installed: missing file, answers path that is a
+  directory, and the `--answers-file` + skip-wizard conflict (a skipped
+  questionnaire never reads the answers file) are reported as one complete,
+  actionable error list — on Windows before any WSL setup, elevation prompt,
+  or reboot; in install.sh before dependency installation. Schema-level
+  unknown-key and type errors surface from `maistro-install` itself
+  (`extra="forbid"`, #810).
+- **No secrets in the answers file.** The schema carries names and flags only
+  (SPEC-180); a `*_password`/`*_key` field is a named validation error, and
+  the file is never placed on a command line where shell history could
+  capture it. First-run credentials use the staged 0600 credentials file
+  referenced by `MAISTRO_BOOTSTRAP_CREDENTIALS_FILE` (get.ps1 translates a
+  Windows-side path and forwards it by environment variable), or the UI
+  Setup wizard.
+- **Never prompts in noninteractive mode.** Combine `-AnswersFile` with
+  `-AutoInstallDeps` on Windows (or `--answers-file` with
+  `MAISTRO_AUTO_INSTALL_DEPS=1` on Unix); with no answers file and no
+  terminal, the installer fails with the actionable message above instead of
+  prompting. `-AnswersFile` survives the elevation relaunch and the
+  post-reboot resume, so an unattended install cannot turn interactive
+  mid-flight.
+- **Same fixture, same install.** The contract is pinned by
+  `tests/test_answers_parity_contract.py`, which runs one fixture through
+  both entrypoints and compares the rendered effective config.
 
 The latest release is resolved from the GitHub API's `/releases/latest`, which
 **excludes prereleases**: an rc has to be asked for by name and is never handed
@@ -93,6 +130,7 @@ To go from a machine with no Python, no container runtime, and no virtualization
 1. **Native bootstrapper with no Python dependency.** Provide POSIX shell and PowerShell entrypoints that run on a bare host, detect OS/arch, install or locate `uv`, and then fetch the pinned `maistro-install` payload.
    - The POSIX side (`get.sh` → `install.sh`) ships today; `install.sh` resolves `uv` itself rather than depending on it being preinstalled.
    - The Windows side now has a native PowerShell entrypoint too: `get.ps1` (repo root) enables WSL2, installs an Ubuntu distro (handling the feature-enable reboot via a RunOnce resume hook), then hands off into the distro and runs `get.sh`/`install.sh` there as root. It does not yet feed into the `maistro-install` wizard plan described above — it's wired directly to the existing shell installer.
+   - Distro detection never installs over a set-up machine: `get.ps1` reads the WSL distro table (preferring machine-readable `wsl --list --json` where the installed WSL offers it, otherwise a normalized parse of `wsl -l -v` that handles the `* ` default marker, UTF-16LE/OEM decoding, localized headers, and Unicode names). Re-running it on a configured machine uses the existing distro; only a machine with no usable WSL2 distro installs one, and an explicitly passed `-Distro <name>` is always honored (and carried through elevation/reboot resume).
 2. **Privilege and runtime installer.** Detect whether elevation is available, then install or guide installation of Docker Engine/Podman on Linux, Docker Desktop/WSL2/Hyper-V on Windows, and Docker Desktop/Colima-compatible tooling on macOS. The script must verify the daemon is running before proceeding.
    - Done for macOS (`install.sh` offers Docker Desktop or Colima via Homebrew) and for apt-based Linux/WSL2 (`install.sh` offers Docker Engine via apt). `get.ps1` requests elevation only for the one step that needs it (enabling the WSL2/Virtual Machine Platform Windows features).
 3. **Virtualization readiness.** On Windows, verify WSL2/Hyper-V prerequisites and reboot requirements; on Linux, verify KVM/cgroups where needed; on macOS, verify the selected container VM is started.

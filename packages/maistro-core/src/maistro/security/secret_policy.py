@@ -13,7 +13,10 @@ evidence, the Sentinel PII filter, and the log redactor cannot drift apart:
    match. A trailing ``id``/``identifier``/``arn`` segment marks an
    *identifier*, not a secret: ``aws_access_key_id`` holding an ``AKIA...``
    access key ID stays readable, because an access key ID is not a reusable
-   credential — the paired 40-character secret is.
+   credential — the paired 40-character secret is. Likewise a ``key`` whose
+   preceding segment names what it *identifies* (``effect_key``,
+   ``idempotency_key``, ``cache_key``, ``partition_key``, ...) is a lookup or
+   correlation identifier, not credential material, and stays readable.
 
 2. **What does a credential look like in free text?** — the compiled shapes
    below are the single source shared by ``security/redact.py`` (log
@@ -77,6 +80,42 @@ _IDENTIFIER_QUALIFIERS = frozenset({"id", "identifier", "arn"})
 #: this set.
 _SOFT_SEGMENTS = frozenset({"key", "token"})
 
+#: Segments that, immediately before a trailing ``key``, name what the key
+#: *identifies* rather than what it unlocks: an idempotency or effect key, a
+#: cache/partition/sort/routing key, a database primary/foreign key, the key
+#: of a parent, issue, project, cycle, scope, occurrence or archive record.
+#: These are lookup and correlation identifiers -- the canonical capability
+#: events carry ``effect_key`` so audit and replay consumers can join them --
+#: and redacting them destroys the join while protecting nothing. Reviewed
+#: and deliberately narrow: ``access``, ``api``, ``private``, ``public``,
+#: ``client``, ``service``, ``admin`` and ``master`` are not here because a
+#: ``*_key`` under those names is, or may be, the credential itself. A strong
+#: family segment anywhere in the name (``effect_secret_key``) still wins.
+_IDENTIFIER_KEY_PREFIXES = frozenset(
+    {
+        "archive",
+        "cache",
+        "correlation",
+        "cycle",
+        "dedup",
+        "dedupe",
+        "effect",
+        "foreign",
+        "idempotency",
+        "index",
+        "issue",
+        "lookup",
+        "occurrence",
+        "parent",
+        "partition",
+        "primary",
+        "project",
+        "routing",
+        "scope",
+        "sort",
+    }
+)
+
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _NON_ALNUM = re.compile(r"[^A-Za-z0-9]+")
 
@@ -102,8 +141,11 @@ def is_secret_key_name(name: str) -> bool:
     ``key``, and camelCase ``apiKey`` are sensitive while ``tokenizer``,
     ``secretary``, ``monkey``, and ``author`` are not. A trailing identifier
     qualifier (``id``/``identifier``/``arn``) preserves identifier-valued
-    fields such as ``aws_access_key_id`` unless a strong family segment
-    (``secret``, ``password``, ``credential``, ...) is present.
+    fields such as ``aws_access_key_id``, and a ``key`` preceded by one of
+    the reviewed identifier prefixes (``effect_key``, ``idempotency_key``,
+    ``partition_key``, ...) is an identifier too; neither escape applies when
+    a strong family segment (``secret``, ``password``, ``credential``, ...)
+    is present.
 
     The camel-case split runs on the ORIGINAL spelling: lowering first
     (``privateKey`` becomes ``privatekey``) destroyed the boundary the
@@ -123,7 +165,19 @@ def is_secret_key_name(name: str) -> bool:
         return True
     if not any(s in _SOFT_SEGMENTS for s in segments):
         return False
+    if _names_an_identifier_key(segments):
+        return False
     return segments[-1] not in _IDENTIFIER_QUALIFIERS
+
+
+def _names_an_identifier_key(segments: list[str]) -> bool:
+    """Whether a trailing ``key`` is qualified by a reviewed identifier prefix.
+
+    Only the segment *immediately* before the trailing ``key`` counts, so
+    ``effect_secret_key`` (caught earlier by its strong segment anyway) and
+    ``effect_token_key`` do not qualify.
+    """
+    return len(segments) > 1 and segments[-1] == "key" and segments[-2] in _IDENTIFIER_KEY_PREFIXES
 
 
 # ─── Credential shapes shared by both redaction engines ──────────────────────

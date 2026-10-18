@@ -7,10 +7,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from maistro_evolve.mutation_probe import (
     MutationProbe,
     probe_diff_mutations,
 )
+from maistro_rsi.contained_validation import ContainmentUnavailable
 
 # combine(a, b) == a * b + 1 — three mutable sites on the return line:
 # Mult->Add, Add->Sub, and the constant 1->2.
@@ -91,6 +94,78 @@ def test_max_mutants_caps_the_run(tmp_path: Path) -> None:
         cwd, {"source.py": _RETURN_LINE}, selectors, timeout=60, max_mutants=1
     )
     assert probe.total == 1
+
+
+def test_containment_failure_propagates(tmp_path: Path) -> None:
+    # A contained read that fails (Docker gone, exec timeout) raises
+    # ContainmentUnavailable — a RuntimeError. It must propagate, not be
+    # swallowed into an empty plan: an empty plan reports the probe as
+    # "unavailable" (skipped), letting an unevaluated candidate pass.
+    class _BrokenRunner:
+        def read_text(self, rel: str) -> str:
+            raise ContainmentUnavailable("docker daemon unreachable")
+
+        def write_text(self, rel: str, content: str) -> None:  # pragma: no cover
+            raise AssertionError("never reached")
+
+        def run_tests(
+            self, selectors: list[str], *, timeout: int
+        ) -> tuple[int, str]:  # pragma: no cover
+            raise AssertionError("never reached")
+
+    cwd, selectors = _write(tmp_path, _SOURCE, "def test_noop():\n    assert True\n")
+    with pytest.raises(ContainmentUnavailable):
+        probe_diff_mutations(cwd, {"source.py": _RETURN_LINE}, selectors, runner=_BrokenRunner())
+
+
+def test_missing_host_file_is_still_skipped(tmp_path: Path) -> None:
+    # Ordinary missing-file handling is preserved: the file is dropped from
+    # the plan and the probe reports unavailable (nothing to measure).
+    cwd, selectors = _write(tmp_path, _SOURCE, "def test_noop():\n    assert True\n")
+    probe = probe_diff_mutations(cwd, {"gone.py": _RETURN_LINE}, selectors)
+    assert not probe.available
+
+
+def test_contained_runner_writes_the_mutant_into_the_tree_it_runs(
+    tmp_path: Path,
+) -> None:
+    """The contained probe's happy path (#614): with a runner, the plan is read
+    through it, each mutant is written through it (the tree the tests RUN
+    against — the sandbox's copy, never the host worktree), the selectors reach
+    the runner's test channel once per mutant, a mutant the tests catch counts
+    as killed, and the original bytes are always restored — on the runner's
+    tree AND on the host, which never saw the mutant at all."""
+    (tmp_path / "source.py").write_text(_SOURCE, encoding="utf-8")
+
+    class _Runner:
+        def __init__(self) -> None:
+            self.files = {"source.py": _SOURCE}
+            self.runs: list[list[str]] = []
+
+        def read_text(self, rel: str) -> str:
+            return self.files[rel]
+
+        def write_text(self, rel: str, content: str) -> None:
+            self.files[rel] = content
+
+        def run_tests(self, selectors: list[str], *, timeout: int) -> tuple[int, str]:
+            self.runs.append(list(selectors))
+            # the mutant is in place while this runs: the changed tests fail
+            return (1, "1 failed")
+
+    runner = _Runner()
+    probe = probe_diff_mutations(
+        tmp_path, {"source.py": _RETURN_LINE}, ["test_source.py"], runner=runner
+    )
+
+    assert probe.available is True
+    assert probe.total >= 1
+    assert probe.killed == probe.total
+    assert not probe.survivors
+    assert runner.runs == [["test_source.py"]] * probe.total
+    assert runner.files["source.py"] == _SOURCE, "the runner's tree must be restored"
+    host_after = (tmp_path / "source.py").read_text(encoding="utf-8")
+    assert host_after == _SOURCE, "the host worktree must never see a mutant"
 
 
 def test_score_rounds_and_summary_reads() -> None:

@@ -31,6 +31,8 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
+
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -45,7 +47,7 @@ def fresh_outcome_store():
     from maistro.memory.outcomes import InMemoryOutcomeStore
 
     previous = svc.get_outcome_store()
-    store = InMemoryOutcomeStore()
+    store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     svc.set_outcome_store(store)
     yield store
     svc.set_outcome_store(previous)
@@ -151,7 +153,7 @@ def test_set_outcome_store_swaps_the_module_singleton() -> None:
     from maistro.memory.outcomes import InMemoryOutcomeStore
 
     original = svc.get_outcome_store()
-    new_store = InMemoryOutcomeStore()
+    new_store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     svc.set_outcome_store(new_store)
     try:
         assert svc.get_outcome_store() is new_store
@@ -322,7 +324,7 @@ async def test_collect_thumbs_scopes_a_sqlite_store_by_org_and_project() -> None
     from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
 
     conn = await aiosqlite.connect(":memory:")
-    store = SqliteOutcomeStore(conn)
+    store = SqliteOutcomeStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await store.ensure_schema()
     previous = svc.get_outcome_store()
     svc.set_outcome_store(store)

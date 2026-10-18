@@ -213,7 +213,14 @@ class TestRunRagas:
             await run_ragas(genome, None)
 
     @pytest.mark.asyncio
-    async def test_faithfulness_sample_high_static_score_no_judge_call(self, genome):
+    async def test_high_static_overlap_no_longer_skips_the_judge(self, genome):
+        """#384: the old static >= 0.6 judge-skip is gone.
+
+        A response echoing the expected answer + context has near-perfect word
+        overlap — the exact response the old scorer credited without any
+        verification. Now the judge runs for every sample and its verdict is
+        the only credit.
+        """
         judge_calls: list[str] = []
 
         async def fake_llm_call(messages, **kwargs):
@@ -221,39 +228,72 @@ class TestRunRagas:
             if "Rate 0-10" in prompt:
                 judge_calls.append(prompt)
                 return "score: 9"
-            # Identify which sample this call is for (by its unique context substring)
-            # and echo back its own expected_answer + context, which always yields a
-            # high static score (>= 0.6) for both eval types, so the judge is never
-            # invoked for any sample.
             sample = next(s for s in RAGAS_SAMPLES if s["context"] in prompt)
             return sample["expected_answer"] + " " + sample["context"]
 
         result = await run_ragas(genome, fake_llm_call)
         assert result.samples_evaluated == 12
-        assert judge_calls == []
-        # cost: 0.001 per sample (12 samples), no judge calls since all statics are high
-        assert result.cost_usd == pytest.approx(round(0.001 * 12, 4))
-        assert result.score == pytest.approx(1.0)
+        # Judge ran for every sample — no static bypass.
+        assert len(judge_calls) == 12
+        # cost: 0.001 (main) + 0.0005 (judge) per sample, every sample judged.
+        assert result.cost_usd == pytest.approx(round(0.0015 * 12, 4))
+        assert result.score == pytest.approx(0.9)
 
     @pytest.mark.asyncio
-    async def test_relevance_sample_high_static_score_no_judge_call(self, genome):
-        judge_calls: list[str] = []
+    async def test_high_static_overlap_does_not_inflate_above_judge(self, genome):
+        """#384: max(static, judged) is gone — a judged-low response scores
+        judged-low even when its static word overlap is near 1.0."""
 
         async def fake_llm_call(messages, **kwargs):
             prompt = messages[-1]["content"]
             if "Rate 0-10" in prompt:
-                judge_calls.append(prompt)
-                return "score: 9"
+                return "score: 2"
             sample = next(s for s in RAGAS_SAMPLES if s["context"] in prompt)
+            # Near-total word overlap with expected answer + context: static
+            # diagnostic is high, but the verified verdict is 0.2.
             return sample["expected_answer"] + " " + sample["context"]
 
         result = await run_ragas(genome, fake_llm_call)
-        assert judge_calls == []
-        assert result.cost_usd == pytest.approx(round(0.001 * 12, 4))
-        assert result.score == pytest.approx(1.0)
+        # The old scorer took max(static, judged) and scored ~1.0 here.
+        assert result.score == pytest.approx(0.2)
 
     @pytest.mark.asyncio
-    async def test_low_static_score_triggers_judge_and_extra_cost(self, genome):
+    async def test_static_overlap_reported_as_uncarded_diagnostic(self, genome):
+        """#384: the static overlap is still computed — for calibration
+        visibility — and metadata marks it explicitly as uncredited."""
+
+        async def fake_llm_call(messages, **kwargs):
+            prompt = messages[-1]["content"]
+            if "Rate 0-10" in prompt:
+                return "score: 5"
+            sample = next(s for s in RAGAS_SAMPLES if s["context"] in prompt)
+            return sample["expected_answer"]
+
+        result = await run_ragas(genome, fake_llm_call)
+        evidence = result.metadata["evidence"]
+        assert evidence["method"] == "llm-judge"
+        assert evidence["diagnostic_credited"] is False
+        assert 0.0 <= evidence["static_overlap_diagnostic_mean"] <= 1.0
+
+    @pytest.mark.asyncio
+    async def test_judge_llm_call_override_is_used_for_verification(self, genome):
+        """#384: judge_llm_call supplies the verifier channel, distinct from
+        the candidate channel."""
+        judge_calls: list[int] = []
+
+        async def candidate_llm(messages, **kwargs):
+            return "some answer text"
+
+        async def judge_llm(messages, **kwargs):
+            judge_calls.append(1)
+            return "score: 6"
+
+        result = await run_ragas(genome, candidate_llm, judge_llm_call=judge_llm)
+        assert len(judge_calls) == 12
+        assert result.score == pytest.approx(0.6)
+
+    @pytest.mark.asyncio
+    async def test_judge_always_runs_even_for_low_overlap(self, genome):
         judge_calls: list[str] = []
 
         async def fake_llm_call(messages, **kwargs):
@@ -261,17 +301,15 @@ class TestRunRagas:
             if "Rate 0-10" in prompt:
                 judge_calls.append(prompt)
                 return "score: 7"
-            # A response sharing no words with any sample's expected_answer/context
-            # guarantees a low static score (well below 0.6) for every sample.
+            # A response sharing no words with any sample's expected_answer/context.
             return "zzz qqq xxx yyy completely unrelated gibberish"
 
         result = await run_ragas(genome, fake_llm_call)
         assert result.samples_evaluated == 12
-        # every sample's static score should be low enough to trigger the judge
         assert len(judge_calls) == 12
         # cost: 0.001 (main call) + 0.0005 (judge call) per sample = 0.0015 * 12
         assert result.cost_usd == pytest.approx(round(0.0015 * 12, 4))
-        # judge always returns 0.7 -> avg_score should be 0.7 (since judged >= static)
+        # The judge's verdict is the score.
         assert result.score == pytest.approx(0.7)
 
     @pytest.mark.asyncio

@@ -42,7 +42,7 @@ owners:
 
 # SPEC-082926-3b80: Conductor Dashboard Layout Durability
 
-- **Status:** Active
+- **Status:** AC Defined
 - **Decision:** ADR-082926-3b80
 - **Closes:** #340
 

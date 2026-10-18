@@ -3,16 +3,16 @@ id: SPEC-070226-fbe3
 title: "Deployment topology, backup, and disaster recovery"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-07-02
 substrate:
-  - maistro-engine#ADR-081
   - maistro-engine#ADR-087
-  - maistro-engine#SPEC-230
 implements:
   - maistro-engine#ADR-081
 related:
   - maistro-engine#ADR-077
+  - maistro-engine#ADR-081
+  - maistro-engine#SPEC-230
 supersedes: []
 blocks: []
 blocked-by: []
@@ -22,15 +22,22 @@ tests: []
 layer: Reliability
 owners:
   - '@BlakeMatthews-dev'
+history:
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-070226-fbe3: Deployment topology, backup, and disaster recovery
 
 ## Context
 
-Hive Conductor currently runs on localhost for development. ADR-081 specifies production deployment
+Hive Conductor currently runs on localhost for development. ADR-081 proposes production deployment
 topology: multi-instance high-availability (active-active or active-passive), persistent state
-backup, and recovery procedures for data loss / instance failure.
+backup, and recovery procedures for data loss / instance failure. ADR-081 remains Proposed and is
+retained as design context only; it is not shipped authority for this SPEC — the operative
+authority is this SPEC under its Accepted substrate (ADR-087).
 
 ## Goals
 
@@ -92,7 +99,7 @@ chaos/failover tests, alerting wiring) happens at deploy time on real infrastruc
   `deploy/scripts/verify-restore.sh`.
 - Health endpoints for the LB already exist in maistro-server
   (`/health`, `/health/live`, `/health/ready` — `maistro_server/api/health.py`,
-  tested in `tests/api/test_health.py`).
+  tested in `packages/maistro-server/tests/api/test_health.py`).
 
 ## Acceptance criteria
 

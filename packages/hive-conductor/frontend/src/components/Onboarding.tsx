@@ -50,7 +50,7 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
           )}
         </div>
 
-        <button onClick={dismiss} style={{ marginTop: 16, background: "none", border: "none", color: "var(--pencil)", cursor: "pointer", fontFamily: "var(--mono)", fontSize: 10, textDecoration: "underline" }}>
+        <button onClick={dismiss} style={{ marginTop: 16, background: "none", border: "none", color: "var(--pencil)", cursor: "pointer", fontFamily: "var(--mono)", fontSize: 12, textDecoration: "underline" }}>
           Skip onboarding
         </button>
       </div>

@@ -197,3 +197,31 @@ def test_naive_after_is_read_as_wall_time_in_the_zone() -> None:
         datetime(2026, 8, 19, 8, 0), timezone="America/New_York"
     )
     assert (fire.hour, fire.tzinfo) == (9, NY)
+
+
+# --- the parse cache (#1200) -------------------------------------------------
+
+
+def test_a_parse_is_memoized_so_catchup_walking_does_not_reparse() -> None:
+    """Catch-up enumeration reads the expression once per occurrence; the
+    audit behind #1200 measured 50,000 reparses of the same expression at
+    ~0.64s of synchronous event-loop work in one evaluation. One immutable
+    compiled value per expression string is what closes that."""
+    first = parse_cron("*/5 * * * *")
+    second = parse_cron("*/5 * * * *")
+    assert first is second
+    # Distinct expressions are distinct values; the cache is keyed on the
+    # whole string, not a normalized prefix.
+    assert parse_cron("*/6 * * * *") is not first
+
+
+def test_an_unparsable_expression_is_not_cached() -> None:
+    """`lru_cache` cannot memoize exceptions, so probing invalid expressions
+    costs a reparse but no memory — and cannot poison the cache for the valid
+    expression a caller corrects the input to."""
+    for _ in range(2):
+        with pytest.raises(CronParseError):
+            parse_cron("*/5 * * *")
+    assert parse_cron("*/5 * * * *").next_fire(datetime(2026, 8, 21, tzinfo=UTC)) == datetime(
+        2026, 8, 21, 0, 5, tzinfo=UTC
+    )

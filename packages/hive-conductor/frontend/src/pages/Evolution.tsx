@@ -21,9 +21,15 @@ type Genome = {
 
 type EvoStatus = {
   running: boolean;
+  execution_available: boolean;
+  availability: "executable" | "degraded" | "unavailable";
+  availability_reason: string | null;
+  domain_state_only: boolean;
   cycle_count: number;
   population_size: number;
   last_error: string | null;
+  last_run_id: string | null;
+  last_run_status: string | null;
   tournament: { total_battles: number; total_genomes_rated: number; benchmarks_tracked: number };
 };
 
@@ -129,7 +135,13 @@ export default function Evolution() {
             min={1}
             max={50}
           />
-          <button onClick={triggerCycle} disabled={loading || !canRunEvolution} title={canRunEvolution ? "Run evolution cycle" : "Admin role required for evolution controls"} className="btn" style={{ background: "var(--accent)", color: "var(--paper)" }}>
+          <button
+            onClick={triggerCycle}
+            disabled={loading || !canRunEvolution || (status !== null && !status.execution_available)}
+            title={canRunEvolution ? "Run evolution cycle" : "Admin role required for evolution controls"}
+            className="btn"
+            style={{ background: "var(--accent)", color: "var(--paper)" }}
+          >
             Run Cycle
           </button>
           <button onClick={refresh} disabled={loading} className="btn">
@@ -142,6 +154,11 @@ export default function Evolution() {
         <div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16, marginBottom: 24 }}>
             <StatCard label="Running" value={status?.running ? "Yes" : "No"} color={status?.running ? "var(--success)" : "var(--danger)"} />
+            <StatCard
+              label="Execution"
+              value={status?.availability ?? "unknown"}
+              color={status?.execution_available ? "var(--success)" : "var(--danger)"}
+            />
             <StatCard label="Cycles" value={String(status?.cycle_count ?? 0)} />
             <StatCard label="Population" value={String(status?.population_size ?? 0)} />
             <StatCard label="Champion Fitness" value={fmt(champion?.fitness_score)} />
@@ -149,9 +166,15 @@ export default function Evolution() {
             <StatCard label="Benchmarks Tracked" value={String(status?.tournament?.benchmarks_tracked ?? 0)} />
           </div>
 
+          {status?.availability_reason && !status.execution_available && (
+            <div style={{ padding: 12, background: "var(--danger)", color: "var(--paper)", borderRadius: 8, marginBottom: 16, fontSize: 13 }}>
+              Execution unavailable: {status.availability_reason}
+            </div>
+          )}
+
           {status?.last_error && (
             <div style={{ padding: 12, background: "var(--danger)", color: "var(--paper)", borderRadius: 8, marginBottom: 16, fontSize: 13 }}>
-              Last error: {status.last_error}
+              Last cycle ({status.last_run_id ?? "no run"}, {status.last_run_status ?? "unknown"}): {status.last_error}
             </div>
           )}
 
@@ -175,7 +198,7 @@ export default function Evolution() {
                         color: "var(--paper)",
                         padding: "2px 8px",
                         borderRadius: 4,
-                        fontSize: 11,
+                        fontSize: 12,
                       }}
                     >
                       {bench}: {(score as number).toFixed(3)}
@@ -230,7 +253,7 @@ export default function Evolution() {
                 const passed = Object.values(g.eval_scores).filter((s) => s > 0.2).length;
                 return (
                   <tr key={g.id} style={{ borderBottom: "1px solid var(--border)" }}>
-                    <td style={{ padding: 8, fontFamily: "var(--mono)", fontSize: 11 }}>
+                    <td style={{ padding: 8, fontFamily: "var(--mono)", fontSize: 12 }}>
                       {g.name || g.id.slice(0, 12)}
                     </td>
                     <td style={{ padding: 8, fontWeight: g.id === champion?.id ? 700 : 400 }}>
@@ -273,7 +296,7 @@ export default function Evolution() {
                 {leaderboard.map((entry, i) => (
                   <tr key={entry.genome_id} style={{ borderBottom: "1px solid var(--border)" }}>
                     <td style={{ padding: 8 }}>{i + 1}</td>
-                    <td style={{ padding: 8, fontFamily: "var(--mono)", fontSize: 11 }}>
+                    <td style={{ padding: 8, fontFamily: "var(--mono)", fontSize: 12 }}>
                       {entry.genome_id.slice(0, 16)}
                     </td>
                     <td style={{ padding: 8, fontWeight: 600 }}>{entry.avg_elo.toFixed(0)}</td>
@@ -297,7 +320,7 @@ export default function Evolution() {
 function StatCard({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
     <div style={{ background: "var(--card)", borderRadius: 8, padding: 16 }}>
-      <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4, textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4, textTransform: "uppercase" }}>{label}</div>
       <div style={{ fontSize: 24, fontWeight: 700, color: color ?? "var(--ink)" }}>{value}</div>
     </div>
   );

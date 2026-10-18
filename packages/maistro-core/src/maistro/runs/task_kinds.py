@@ -32,6 +32,12 @@ from maistro.agents.intents import IntentRegistry
 #: only one.
 DELEGATE_NODE_KIND = "agent.delegate_remote"
 
+#: Reserved A2A principal for work submitted directly by the task/chat seams.
+#: It is registered by the agent factory with the loaded roster's targets; a
+#: blank ``from_agent`` would make every admitted delegation look like a
+#: target refusal rather than an authorized system submission.
+DIRECT_SUBMISSION_AGENT = "__maistro_direct__"
+
 #: Node name used when a task carries no better label.
 DEFAULT_WORK_NAME = "task"
 
@@ -59,7 +65,7 @@ def resolve_direct_work(
     description: str,
     task_type: str | None = None,
     agent_id: str | None = None,
-    from_agent: str = "",
+    from_agent: str = DIRECT_SUBMISSION_AGENT,
     timeout_seconds: int | None = None,
     registry: IntentRegistry | None = None,
 ) -> DirectWork:
@@ -91,6 +97,7 @@ def resolve_direct_work(
 __all__ = [
     "DEFAULT_WORK_NAME",
     "DELEGATE_NODE_KIND",
+    "DIRECT_SUBMISSION_AGENT",
     "DirectWork",
     "resolve_direct_work",
 ]

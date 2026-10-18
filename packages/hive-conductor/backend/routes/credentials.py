@@ -8,6 +8,7 @@ import stores
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from services import user_credentials as cred_svc
+from services.request_principal import require_actor_id
 
 from maistro.credentials import get_provider
 from maistro.credentials.store import CredentialStoreUnavailable
@@ -38,11 +39,7 @@ def _read_config(user_id: str, provider_id: str) -> dict[str, str]:
 
 
 def _user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    uid = user.get("id")
-    if not uid:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return str(uid)
+    return require_actor_id(request)
 
 
 class SetCredentialBody(BaseModel):

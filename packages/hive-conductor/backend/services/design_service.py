@@ -235,7 +235,7 @@ async def start_design_service(settings: Settings) -> None:
         else:
             logger.info("Design project store disabled (no DATABASE_URL configured)")
 
-        # Initialize design engine with registries and optional store
+        # Initialize design engine with registries and optional store.
         _engine_singleton = DesignEngine(
             skill_registry=skill_registry,
             system_registry=system_registry,

@@ -12,8 +12,12 @@ where a green tick would go.
 For merge-group candidates, specialized service checks may now be legitimately
 out of scope. Their execution evidence is represented by one unconditional
 ``integration-scope`` aggregate, which itself verifies that every classifier-
-selected specialized job completed successfully. Pull requests and protected
-pushes retain the existing per-check execution-evidence contract.
+selected specialized job completed successfully. Pull-request candidates are
+path-scoped by the same classifier (#1351): the producers (ci.yml job
+conditions, integration-scope) skip exactly the legs a measured changed-file
+envelope proves unreachable, so this evaluator may excuse a skipped specialized
+check only on that same measured evidence. Protected pushes retain the
+per-check execution-evidence contract without path scoping.
 """
 
 from __future__ import annotations
@@ -33,6 +37,13 @@ REQUIRED_CHECKS_SCRIPT = REPO_ROOT / "scripts" / "check-required-checks.py"
 NON_EXECUTED = frozenset({"action_required", "stale", "skipped", "cancelled"})
 PENDING_EXIT = 2
 INTEGRATION_SCOPE_CHECK = "integration-scope"
+# GitHub's pulls.listFiles endpoint exposes at most this many files per pull
+# request, even when fully paginated (#1350). The workflow's changed-files
+# collector records a response at the cap as `truncated`; a truncated envelope
+# is a partial measurement and must never excuse a skipped check. The same
+# literal lives in .github/workflows/gates-ran.yml — keep them together
+# (tests/test_gates_ran_publisher_contract.py pins the pair).
+LIST_FILES_CAP = 3000
 # These checks are covered by the aggregate merge-group legs rather than by
 # independent jobs on the synthetic queue SHA.
 MERGE_GROUP_SPECIALIZED_CHECKS = frozenset(
@@ -232,6 +243,15 @@ def _pull_request_scope(path: Path) -> tuple[dict[str, bool] | None, bool]:
     measured = payload.get("measured")
     if type(measured) is not bool or not measured:
         return None, False
+    if payload.get("truncated"):
+        # A truncated envelope is a *partial* measurement: the paths beyond
+        # the cap are unmeasured and may carry every specialized leg, so
+        # scope is ambiguous. Raising reaches the CLI as a pending reason via
+        # _scope_for_args' ValueError path, never as a scope that could
+        # excuse a skipped check.
+        raise ValueError(
+            f"changed-file set was truncated at GitHub's {LIST_FILES_CAP}-file listFiles cap"
+        )
     changed_files = payload.get("files")
     if not isinstance(changed_files, list) or not all(
         isinstance(item, str) for item in changed_files

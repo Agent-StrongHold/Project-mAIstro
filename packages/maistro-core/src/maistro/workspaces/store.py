@@ -23,6 +23,19 @@ class _WorkspaceCreateKwargs(TypedDict):
 
 @runtime_checkable
 class WorkspaceStore(Protocol):
+    #: The Project tree paired with this Workspace authority.  Workspace
+    #: admission resolves the existing Root Project through this same object.
+    #:
+    #: Declared as a read-only property, not a plain attribute: concrete
+    #: stores (`PgWorkspaceStore`, `SqliteWorkspaceStore`) hold a
+    #: `TransactionalProjectScopeStore` here, a distinct (wider) Protocol
+    #: than `ProjectScopeStore`. A mutable Protocol attribute is invariant —
+    #: it would demand that exact type back — but every consumer only reads
+    #: this field, so a covariant read-only property is both correct and
+    #: what concrete stores' plain instance attributes already satisfy.
+    @property
+    def project_store(self) -> ProjectScopeStore: ...
+
     async def create(
         self,
         *,
@@ -36,9 +49,13 @@ class WorkspaceStore(Protocol):
         """Create a Workspace, preserving identity/timestamps only for convergence imports."""
         ...
 
-    async def get(self, workspace_id: str) -> Workspace | None: ...
+    async def get(
+        self, workspace_id: str, *, principal_id: str | None = None
+    ) -> Workspace | None: ...
 
-    async def update(self, workspace: Workspace) -> Workspace: ...
+    async def update(
+        self, workspace: Workspace, *, principal_id: str | None = None
+    ) -> Workspace: ...
 
     async def delete(self, workspace_id: str) -> None: ...
 
@@ -109,35 +126,79 @@ class InMemoryWorkspaceStore:
         self._memberships[(workspace.workspace_id, creator_user_id)] = owner
         try:
             await self.project_store.create_root(workspace.workspace_id)
-        except Exception:
+        except BaseException:
             del self._workspaces[workspace.workspace_id]
             del self._memberships[(workspace.workspace_id, creator_user_id)]
+            # A failing scope backend may have persisted the Root before
+            # reporting the failure; remove it so the operation is atomic in
+            # the reference store as well as in the durable transactions.
+            await self.project_store.purge_workspace(workspace.workspace_id)
             raise
         return workspace.model_copy(deep=True)
 
-    async def get(self, workspace_id: str) -> Workspace | None:
-        workspace = self._workspaces.get(workspace_id)
-        return workspace.model_copy(deep=True) if workspace is not None else None
+    async def get(self, workspace_id: str, *, principal_id: str | None = None) -> Workspace | None:
+        from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
+        from maistro.workspaces.store_boundary import is_blank_principal, require_workspace_view
 
-    async def update(self, workspace: Workspace) -> Workspace:
+        workspace = self._workspaces.get(workspace_id)
+        if workspace is None:
+            return None
+        if principal_id is not None:
+            if is_blank_principal(principal_id):
+                raise WorkspaceAuthorizationDenied
+            await require_workspace_view(self, workspace_id, principal_id)
+        return workspace.model_copy(deep=True)
+
+    async def update(self, workspace: Workspace, *, principal_id: str | None = None) -> Workspace:
+        from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
+        from maistro.workspaces.store_boundary import is_blank_principal, require_workspace_view
+
         if workspace.workspace_id not in self._workspaces:
             raise WorkspaceNotFound(workspace.workspace_id)
+        if principal_id is not None:
+            if is_blank_principal(principal_id):
+                raise WorkspaceAuthorizationDenied
+            await require_workspace_view(self, workspace.workspace_id, principal_id)
         updated = workspace.model_copy(update={"updated_at": datetime.now(UTC)})
         self._workspaces[workspace.workspace_id] = updated
         return updated.model_copy(deep=True)
 
     async def delete(self, workspace_id: str) -> None:
+        """Remove the Workspace, its memberships, and its Projects.
+
+        The reference has no transaction, so it compensates the way `create`
+        does: the Workspace and membership entries come out first and go back
+        if the purge raises, so a failure in either half leaves everything as
+        it was (#1121). The durable stores do both halves in one transaction
+        and need no restore; the contract the conformance suite reads is the
+        same.
+        """
         if workspace_id not in self._workspaces:
             raise WorkspaceNotFound(workspace_id)
-        del self._workspaces[workspace_id]
-        for key in [key for key in self._memberships if key[0] == workspace_id]:
-            del self._memberships[key]
+        workspace, memberships = await self._delete_workspace_row(workspace_id)
 
         # A direct call, not `getattr(store, "purge_workspace", None)`. The
         # optional form meant the Projects were purged in tests, where the
         # store was the in-memory reference, and left orphaned on every durable
         # deployment, where no implementation defined it (Codex, #516).
-        await self.project_store.purge_workspace(workspace_id)
+        try:
+            await self.project_store.purge_workspace(workspace_id)
+        except Exception:
+            self._workspaces[workspace_id] = workspace
+            self._memberships.update(memberships)
+            raise
+
+    async def _delete_workspace_row(
+        self, workspace_id: str
+    ) -> tuple[Workspace, dict[tuple[str, str], WorkspaceMembership]]:
+        """Take the Workspace and its memberships out, returning them for a restore."""
+        workspace = self._workspaces.pop(workspace_id)
+        memberships = {
+            key: self._memberships[key] for key in self._memberships if key[0] == workspace_id
+        }
+        for key in memberships:
+            del self._memberships[key]
+        return workspace, memberships
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
         workspace_ids = {

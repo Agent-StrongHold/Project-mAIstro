@@ -25,7 +25,7 @@ profile by construction.
 
 | Profile | Components | Use case |
 |---------|-----------|----------|
-| `full-ui` | maistro-server + Hive + persistence | Full deployment with dashboard |
+| `full-ui` | maistro-server + hive-conductor + persistence | Full deployment with Workspaces UI |
 | `full-headless` | maistro-server + persistence | API-only, no UI |
 | `proxmox-vm` | maistro-server + persistence | Self-hosted on Proxmox; separate VMs preferred |
 | `docker-vps` | maistro-server + persistence | Single VPS with Docker/Podman |
@@ -92,7 +92,7 @@ engine's detector and does not pretend to. It reports **hints** and names
       not as capability. A visible `/dev/kvm` is not Tier 1: the device has to
       open and a VMM has to exist, which is a check only the engine makes
 - [x] No Docker socket mounted into maistro-server container
-- [ ] Auth enabled (`MAISTRO_ACCESS_TOKEN` set)
+- [ ] Auth enabled (`API_KEYS` set, `REQUIRE_AUTH=true`)
 - [ ] Secrets generated (not defaults)
 - [ ] Sandbox network denied by default
 - [ ] Bind host is `127.0.0.1` unless explicitly overridden

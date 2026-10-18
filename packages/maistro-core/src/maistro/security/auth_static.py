@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import hmac
 
+from maistro.protocols.auth import AuthError, CredentialNotApplicable, _extract_bearer_token
 from maistro.security._types import SYSTEM_AUTH, AuthContext, IdentityKind
 
 
 class StaticKeyAuthProvider:
     """Authenticates via static API key. Returns system identity only."""
+
+    scheme = "static_api_key"
 
     def __init__(self, api_key: str, read_only: bool = False) -> None:
         self._api_key = api_key
@@ -24,17 +27,15 @@ class StaticKeyAuthProvider:
         headers: dict[str, str] | None = None,
     ) -> AuthContext:
         if not authorization:
-            msg = "Missing Authorization header"
-            raise ValueError(msg)
+            raise CredentialNotApplicable("Missing Authorization header")
 
-        if not authorization.startswith("Bearer "):
-            msg = "Invalid authorization format"
-            raise ValueError(msg)
+        token = _extract_bearer_token(authorization)
+        if token is None:
+            raise CredentialNotApplicable("Not a Bearer token")
 
-        token = authorization.removeprefix("Bearer ").strip()
-        if not hmac.compare_digest(token, self._api_key):
-            msg = "Invalid API key"
-            raise ValueError(msg)
+        # Empty configured keys and empty credentials are never valid credentials.
+        if not token or not self._api_key or not hmac.compare_digest(token, self._api_key):
+            raise AuthError("Invalid API key")
 
         if self._read_only:
             return AuthContext(

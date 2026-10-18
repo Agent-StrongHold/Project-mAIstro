@@ -1,0 +1,148 @@
+"""Deletion authority for Run retention, named in one place (#1175).
+
+A leaf module, for the same reason `runs.sources` is: three parts of the
+system — the `RunStore` protocol, the two durable backends' candidate SQL,
+and the sweeper that rides on admission — must agree on what a purge is
+allowed to touch, and none of them can import the others without a cycle.
+Retention is invoked from Workspace-scoped admission and composition, so the
+scope has to be a value the caller *names*, not a predicate the store
+*remembers*: an omitted scope must be impossible, and store-wide must be an
+explicit, attributed act rather than the default.
+
+## The dependent-reference inventory (#1175 acceptance 3)
+
+A Run row is the index into more than its own spine. One purge, one database
+transaction, and a policy for every reference — decided once, in one table, so
+the next dependent table added to the schema edits this list instead of
+silently joining the population "references nobody accounted for":
+
+================================================  ============================  ====================================================
+Reference                                         Declared constraint           Policy under purge
+================================================  ============================  ====================================================
+canonical_attempts.node_run_id                    FK ON DELETE RESTRICT (012)   Delete — spine children go first, in the purge transaction.
+canonical_node_runs.run_id                        FK ON DELETE RESTRICT (012)   Delete — same transaction.
+canonical_run_eval_scores.run_id (+ node/attempt ids)   FK ON DELETE RESTRICT (051)   Delete in the purge transaction, before the spine rows it names. Eval scores are execution evidence on the spine itself (M7-A3), not attribution history: a score whose producing Run, NodeRun and Attempt are gone is not a receipt, it is a dangling verdict.
+canonical_runs.parent_run_id                      FK (012)                      Never selected — a Run with live descendants is not a candidate.
+canonical_runs.parent_node_run_id                 FK (012)                      Never selected — same rule, through a NodeRun.
+graph_continuations.run_id                        PK only, **no FK** (021)      Delete in the purge transaction. Traversal state is execution identity, not audit (ADR-062); a continuation whose Run is gone is not history, it is a recovery trap — the recovery tick reads due run_ids from this table. `CanonicalDurableRunStore.get` already refuses the dangling case outright ("purged without reconciling Graph continuation state"), and its `reconcile_persistence` remains the crash backstop.
+canonical_event_log.run_id (+ node/attempt ids)   none — logical (030)          **Preserve.** The Event log is the append-only audit trail; deleting or rewriting events to keep ids resolvable would destroy the provenance retention exists to bound. The residue stays inspectable in the log itself; the purge does not count it.
+schedule occurrence claim                         unique expression index on the Run's own provenance (015)   Dies with the Run row — deleting the Run *is* releasing the claim, the same policy `InMemoryRunStore._forget_run` has always applied.
+canonical_runs.archive_key                        column (017)                  Not reachable — purgable Runs carry a deadline, archived Runs carry none; the populations are disjoint by predicate (ADR-082226-f436 decision 10).
+tasks.run_id, session_turns.run_id                none — logical (004/028)      Preserve. Historical attribution owned by other modules: a task receipt or a session turn says "this happened", and it stays true after the execution identity is reclaimed. Same class as Events.
+learnings/outcomes/design_outputs/episodic_memories .run_id, .node_run_id, .attempt_id   none — logical (026/028/031)   Preserve. Producer provenance (#709, #64): "this execution produced this learning/outcome/design output/memory" is attribution history exactly like a task receipt — it names an execution that did happen. The purge never touches these tables; the reference resolving to a purged Run is the same residue an Event reference is, and the same policy — observable, not destroyed — applies.
+capability_invocations .run_id, .node_run_id, .attempt_id   none — logical (035)   Preserve. The capability-invocation ledger is an effect receipt ("this Attempt invoked this binding with this effect key"): attribution history, the same class as a task receipt, and it outlives the execution identity it names.
+capability_approvals.run_id (+ node_run_id)       none — logical (runtime DDL)  Preserve. A durable approval request for one effect of one execution is receipt history like the invocation ledger and is never selected by the purge.
+design_artifact_versions / design_project_guidance / design_branch_controls .run_id   none — logical (049)   Preserve. Producer provenance (#780): a version-ledger row, a durable guidance record or a branch-control row names the canonical execution that produced or last authorized it — attribution history exactly like `design_outputs`, and the purge never touches it. (`design_artifact_locks` carries no `run_id` column and so is outside this inventory.)
+task_idempotency.run_id                           none — logical (038)          Preserve. The admitted-outcome receipt for an idempotency key, bounded by its own replay window rather than by the Run's retention. `_ClaimFlow.claim` (#325, #1577) drives `purge_expired` on every claim, so the window is swept in production; `quality/durable-table-retention.json` records it as `ttl_purge`. The Run purge does not stand in for it.
+workspace_working_log.run_id                      none — logical (runtime DDL)   Preserve. The per-Workspace observation log (#301, M4-H) records *which run observed something* — attribution history on an append-only log whose only driven deletion is `purge_workspace` when the Workspace itself goes away. A Run purge deleting observations would break the losslessness the log exists for; the residue policy is the same class as Events and task receipts.
+durable_graph_runs.run_id                         PK only, separate store       Not touched, and not yet decided. `SqliteDurableRunStore`'s checkpoint table belongs to a store the canonical purge does not reach; its retention is recorded as `undecided` in `quality/durable-table-retention.json` rather than claimed here.
+================================================  ============================  ====================================================
+
+The line the table draws: **execution state** (spine children, continuations,
+occurrence claims) is reclaimed with the Run; **attribution history** (events,
+task receipts, session turns, effect receipts) outlives it and is left
+inspectable rather than silently destroyed.
+
+`RUN_REFERENCING_TABLES` is this table as data: every table named in it. A test
+scans the migrations, runtime DDL and ORM models for tables with a ``run_id``
+column and fails on any not listed, so a new one cannot join the schema
+unaccounted for.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from maistro.runs.model import Run
+
+__all__ = [
+    "RUN_REFERENCING_TABLES",
+    "GlobalRetentionScope",
+    "RetentionScope",
+    "WorkspaceRetentionScope",
+    "run_in_purge_scope",
+]
+
+RUN_REFERENCING_TABLES: tuple[str, ...] = (
+    "canonical_attempts",
+    "canonical_node_runs",
+    "canonical_runs",
+    # Eval scores are Run evidence on the spine (M7-A3): every row carries the
+    # run_id of the Run that produced the scored artifact, so a purge that
+    # forgot this table would orphan the scores of the Runs it deletes.
+    "canonical_run_eval_scores",
+    "graph_continuations",
+    "canonical_event_log",
+    "tasks",
+    "session_turns",
+    "learnings",
+    "outcomes",
+    "design_outputs",
+    "design_artifact_versions",
+    "design_project_guidance",
+    "design_branch_controls",
+    "episodic_memories",
+    "capability_invocations",
+    "capability_approvals",
+    "task_idempotency",
+    # Runtime SQLite DDL (working-memory observation log, #301): run_id names
+    # the Run that produced the observation — provenance, not execution state.
+    "workspace_working_log",
+    "durable_graph_runs",
+)
+
+
+@dataclass(frozen=True)
+class WorkspaceRetentionScope:
+    """Deletion authority over the Runs of exactly one Workspace (#1175).
+
+    Retention is invoked from Workspace-scoped admission and composition, so
+    this is the scope every routine sweeper carries: its purge can only ever
+    select Runs filed in this Workspace, whatever else expires elsewhere in
+    the same store while it runs.
+    """
+
+    workspace_id: str
+
+    def __post_init__(self) -> None:
+        if not self.workspace_id.strip():
+            raise ValueError("workspace_id must be a non-empty string")
+
+
+@dataclass(frozen=True)
+class GlobalRetentionScope:
+    """Explicitly authorized store-wide retention (#1175).
+
+    Store-wide deletion exists — an operator decommissioning a deployment is
+    its legitimate user — but it must never be what falls out of *omitting* a
+    predicate, which is exactly what the pre-#1175 signature rewarded. The
+    authorization is part of the value: whoever's name is in ``authorized_by``
+    is who asked every Run in the store to be deletable, and it travels in the
+    purge outcome for the same audit reason the Runs' own provenance does.
+    """
+
+    authorized_by: str
+
+    def __post_init__(self) -> None:
+        if not self.authorized_by.strip():
+            raise ValueError("authorized_by must name the principal that authorized a global purge")
+
+
+# Plain assignment, not a PEP 695 `type` statement: the cross-package-imports
+# AST gate cannot see `type` aliases, and the durable backends import this
+# name across packages (#1489; same lesson as the #1274 lint-gate repair).
+RetentionScope = WorkspaceRetentionScope | GlobalRetentionScope
+
+
+def run_in_purge_scope(run: Run, scope: RetentionScope) -> bool:
+    """Whether ``run`` is inside ``scope``'s deletion authority.
+
+    A module function rather than a method on the scope so the durable backends
+    can translate it into their candidate SQL's WHERE clause while this stays
+    the one statement of what the predicate means.
+    """
+    if isinstance(scope, WorkspaceRetentionScope):
+        return run.workspace_id == scope.workspace_id
+    return True

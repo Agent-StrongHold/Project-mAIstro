@@ -23,6 +23,7 @@ from maistro.runs import (
     Run,
     RunStatus,
 )
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 def _accepted_outcome(
@@ -63,6 +64,7 @@ def _fixture() -> tuple[Run, NodeRun, GraphExecutionState, TraversalCommit]:
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
         status=RunStatus.RUNNING,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     outcome = _accepted_outcome(
         node_run_id="node-run-a",

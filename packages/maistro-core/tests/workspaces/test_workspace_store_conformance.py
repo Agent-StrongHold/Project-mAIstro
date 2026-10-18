@@ -15,17 +15,32 @@ assertion.
 The PostgreSQL leg needs a real migrated server and skips without one, and a
 skipped leg is untested rather than passing. `MAISTRO_REQUIRE_PG_LEGS` turns
 that skip into a failure in the jobs that own a server.
+
+Regression, #1121: the durable stores wrote the Workspace and its Root Project
+in two transactions -- commit, then `create_root` on a second connection with
+an in-process compensator; and `delete` the same way round. A process crash
+between the halves left a Workspace with no Root Project (which
+`root_for_workspace` assumes exists) or a Project tree with no Workspace. The
+last two classes below inject a failure at each seam between the halves and
+read a *fresh* store back: after a failure mid-create it sees neither the
+Workspace nor a root; after a failure mid-delete it sees both. The seams are
+where the durable stores now join one transaction, so an injected exception
+there is the closest a test can come to pulling the plug.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC
+from typing import Any
 from uuid import uuid4
 
 import pytest
 
+from maistro.projects.scope import ProjectNotFound
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.testing.postgres import postgres_dsn
 from maistro.workspaces.model import (
@@ -42,6 +57,10 @@ class _MemoryBackend:
     true."""
 
     supports_concurrent_writers = False
+    #: The reference has no transaction to join, so its seams are the plain
+    #: protocol methods the durable stores wrap (#1121).
+    root_insert_seam = "create_root"
+    purge_seam = "purge_workspace"
 
     def __init__(self) -> None:
         from maistro.workspaces.store import InMemoryWorkspaceStore
@@ -59,6 +78,8 @@ class _SqliteBackend:
     """A file on disk; each `store()` opens its own connection to it."""
 
     supports_concurrent_writers = False
+    root_insert_seam = "create_root_in"
+    purge_seam = "purge_workspace_in"
 
     def __init__(self, tmp_path) -> None:
         self._path = tmp_path / "workspaces.db"
@@ -87,6 +108,8 @@ class _PostgresBackend:
     """A migrated database; each `store()` is a new object on the same pool."""
 
     supports_concurrent_writers = True
+    root_insert_seam = "create_root_in"
+    purge_seam = "purge_workspace_in"
 
     def __init__(self, pool) -> None:
         self._pool = pool
@@ -151,6 +174,50 @@ def _user(label: str = "") -> str:
     point of it -- so a fixed id would inherit memberships an earlier run made.
     """
     return f"user-{label}{uuid4().hex}"
+
+
+@contextmanager
+def _refusing(target: Any, attribute: str, message: str) -> Iterator[list[tuple[Any, ...]]]:
+    """Make one method of `target` raise `RuntimeError(message)` for the block.
+
+    Yields the positional arguments of every refused call, so a test can
+    assert the seam was actually reached -- a rollback assertion on a seam
+    nothing called is vacuous.
+    """
+    original = getattr(target, attribute)
+    calls: list[tuple[Any, ...]] = []
+
+    async def refuse(*args: Any, **kwargs: Any) -> None:
+        calls.append(args)
+        raise RuntimeError(message)
+
+    setattr(target, attribute, refuse)
+    try:
+        yield calls
+    finally:
+        setattr(target, attribute, original)
+
+
+async def _assert_whole(backend, workspace_id: str, *, user_id: str) -> None:
+    """A fresh store sees the Workspace, the membership, and the Root Project."""
+    fresh = await backend.store()
+    assert await fresh.get(workspace_id) is not None
+    membership = await fresh.get_membership(workspace_id, user_id=user_id)
+    assert membership is not None
+    assert membership.role is WorkspaceRole.OWNER
+    root = await fresh.project_store.root_for_workspace(workspace_id)
+    assert root.workspace_id == workspace_id
+    assert root.is_root
+
+
+async def _assert_gone(backend, workspace_id: str, *, user_id: str) -> None:
+    """A fresh store sees neither the Workspace, its membership, nor a root."""
+    fresh = await backend.store()
+    assert await fresh.get(workspace_id) is None
+    with pytest.raises(WorkspaceNotFound):
+        await fresh.get_membership(workspace_id, user_id=user_id)
+    with pytest.raises(ProjectNotFound):
+        await fresh.project_store.root_for_workspace(workspace_id)
 
 
 class TestIdentityAndMembershipSurviveTheObjectThatWroteThem:
@@ -483,25 +550,110 @@ class TestAnAbsentWorkspaceIsRefusedTheSameWayEverywhere:
 
 class TestARootProjectFailureLeavesNoWorkspaceBehind:
     async def test_create_rolls_back_when_the_root_project_cannot_be_made(self, backend) -> None:
-        """The Root Project is another store's write and cannot join the
-        Workspace's transaction, so `create` compensates. A Workspace without
-        one is a Workspace whose Runs can never be filed, which is worse than
-        no Workspace at all."""
+        """A Workspace without a Root Project is a Workspace whose Runs can
+        never be filed, which is worse than no Workspace at all.
+
+        The failure is injected *after* the Workspace and membership rows are
+        written and *before* the root is: on the durable stores that is the
+        in-transaction root seam, so the rows already written must roll back
+        rather than be compensated (#1121); on the reference it is
+        `create_root` itself, and the dict entries are undone by hand. Either
+        way a fresh store must see none of the three.
+        """
         store = await backend.store()
-        original = store.project_store.create_root
-        seen: list[str] = []
+        creator = _user("creator-")
 
-        async def refuse(workspace_id: str):
-            seen.append(workspace_id)
-            raise RuntimeError("scope store is down")
+        with (
+            _refusing(
+                store.project_store, backend.root_insert_seam, "scope store is down"
+            ) as calls,
+            pytest.raises(RuntimeError, match="scope store is down"),
+        ):
+            await store.create(creator_user_id=creator, name="Doomed")
 
-        store.project_store.create_root = refuse  # type: ignore[method-assign]
-        try:
-            with pytest.raises(RuntimeError, match="scope store is down"):
-                await store.create(creator_user_id=_user(), name="Doomed")
-        finally:
-            store.project_store.create_root = original  # type: ignore[method-assign]
+        assert len(calls) == 1
+        workspace_id = calls[0][-1]
+        assert isinstance(workspace_id, str)
+        await _assert_gone(backend, workspace_id, user_id=creator)
 
-        assert len(seen) == 1
-        second = await backend.store()
-        assert await second.get(seen[0]) is None
+
+class TestAFailureMidDeleteLeavesTheWorkspaceWhole:
+    """`delete` is two stores' writes as much as `create` is (#1121).
+
+    The durable stores deleted the Workspace row, committed, and only then
+    purged the Project tree, so a crash between the two left Projects with no
+    Workspace to reach them by. Both halves now share one transaction, and
+    a failure in either half must leave a fresh store seeing the Workspace,
+    its owner membership, and its Root Project exactly as they were.
+    """
+
+    async def test_a_failure_at_the_workspace_row_delete_leaves_everything_intact(
+        self, backend
+    ) -> None:
+        """On the durable stores the Workspace row goes *after* the purge, in
+        the same transaction, so this failure lands after the Project tree is
+        already deleted -- and the rollback must bring the tree back. The
+        reference cannot un-purge, so it orders its row delete first and
+        restores on a purge failure; the seam is the same and so is the
+        contract."""
+        creator = _user("creator-")
+        store = await backend.store()
+        workspace = await store.create(creator_user_id=creator, name="Kept")
+
+        with (
+            _refusing(store, "_delete_workspace_row", "workspace row is stuck") as calls,
+            pytest.raises(RuntimeError, match="workspace row is stuck"),
+        ):
+            await store.delete(workspace.workspace_id)
+
+        assert len(calls) == 1
+        await _assert_whole(backend, workspace.workspace_id, user_id=creator)
+
+    async def test_a_failure_during_the_project_purge_leaves_everything_intact(
+        self, backend
+    ) -> None:
+        creator = _user("creator-")
+        store = await backend.store()
+        workspace = await store.create(creator_user_id=creator, name="Kept")
+
+        with (
+            _refusing(store.project_store, backend.purge_seam, "purge is stuck") as calls,
+            pytest.raises(RuntimeError, match="purge is stuck"),
+        ):
+            await store.delete(workspace.workspace_id)
+
+        assert len(calls) == 1
+        await _assert_whole(backend, workspace.workspace_id, user_id=creator)
+
+    async def test_every_listed_workspace_still_has_a_root_after_the_injections(
+        self, backend
+    ) -> None:
+        """`root_for_workspace` is an invariant, not a hope: after a failed
+        create and two failed deletes, every Workspace `list_for_user` returns
+        has a Root Project, and the failed create is not among them. A lazily
+        invented root on read would make this pass for the wrong reason; the
+        stop condition of #1121 forbids one, and `_assert_gone` above is what
+        would catch it."""
+        creator = _user("creator-")
+        store = await backend.store()
+        kept = await store.create(creator_user_id=creator, name="Kept")
+
+        with (
+            _refusing(store.project_store, backend.root_insert_seam, "down"),
+            pytest.raises(RuntimeError),
+        ):
+            await store.create(creator_user_id=creator, name="Doomed")
+        with _refusing(store, "_delete_workspace_row", "stuck"), pytest.raises(RuntimeError):
+            await store.delete(kept.workspace_id)
+        with (
+            _refusing(store.project_store, backend.purge_seam, "stuck"),
+            pytest.raises(RuntimeError),
+        ):
+            await store.delete(kept.workspace_id)
+
+        fresh = await backend.store()
+        listed = await fresh.list_for_user(creator)
+        assert [item.workspace_id for item in listed] == [kept.workspace_id]
+        for item in listed:
+            root = await fresh.project_store.root_for_workspace(item.workspace_id)
+            assert root.is_root

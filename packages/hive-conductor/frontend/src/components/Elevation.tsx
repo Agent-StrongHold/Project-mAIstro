@@ -129,7 +129,9 @@ export function useAuthorizedAction() {
     try {
       return await action();
     } catch (error) {
-      if (!(error instanceof ApiError) || error.status !== 403 || !error.detail.includes(permission)) {
+      // develop's ApiError carries the backend detail as its human-safe
+      // message; the 403 body names the required permission verbatim.
+      if (!(error instanceof ApiError) || error.status !== 403 || !error.message.includes(permission)) {
         throw error;
       }
       await requestElevation(permission);

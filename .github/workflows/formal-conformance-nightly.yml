@@ -30,9 +30,6 @@ jobs:
       - name: Install dependencies
         run: pip install -e formal/ && pip install -e packages/maistro-core && pip install -e packages/maistro-evolve
 
-      - name: Extract constants from source
-        run: python -m formal.extractors.extract_security_constants
-
       - name: Restore Hypothesis example database
         uses: actions/cache/restore@v6
         with:

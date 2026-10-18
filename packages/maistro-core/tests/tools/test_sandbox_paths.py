@@ -2,6 +2,12 @@
 
 Evidence: The sandbox must prevent path traversal and absolute path injection
 that could allow reading/writing files outside /workspace.
+
+The two parametrized pre-container rejection tests at the bottom came from the
+root ``tests/tools`` copy (#396): they were the only cases that file had that
+this one did not, and they pin a different layer — the MCP ``sandbox_grep`` /
+``sandbox_glob`` entry points must reject a hostile path *before* any container
+is created, not merely ``_safe_path`` afterwards.
 """
 
 from __future__ import annotations
@@ -37,3 +43,39 @@ class TestSafePathResolution:
     def test_simple_filename(self) -> None:
         result = SandboxContainer._safe_path("/workspace", "README.md")
         assert result == "/workspace/README.md"
+
+
+@pytest.mark.parametrize("path", ["../../etc/passwd", "/etc/passwd", "src/../../etc/passwd"])
+def test_sandbox_grep_rejects_path_traversal_before_container(
+    monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    from maistro.tools.sandbox import server as sandbox_server
+
+    async def fail_get_or_create(workspace: str):  # pragma: no cover - must not be called
+        raise AssertionError("container should not be created for blocked grep path")
+
+    monkeypatch.setattr(sandbox_server, "_get_or_create", fail_get_or_create)
+
+    import asyncio
+
+    result = asyncio.run(sandbox_server.sandbox_grep("/tmp/maistro-workspace/repo", "root", path))
+    assert result["success"] is False
+    assert result["error_code"] == "blocked_path"
+
+
+@pytest.mark.parametrize("pattern", ["../../*.py", "/etc/*", "src/../../*.py"])
+def test_sandbox_glob_rejects_path_traversal_before_container(
+    monkeypatch: pytest.MonkeyPatch, pattern: str
+) -> None:
+    from maistro.tools.sandbox import server as sandbox_server
+
+    async def fail_get_or_create(workspace: str):  # pragma: no cover - must not be called
+        raise AssertionError("container should not be created for blocked glob pattern")
+
+    monkeypatch.setattr(sandbox_server, "_get_or_create", fail_get_or_create)
+
+    import asyncio
+
+    result = asyncio.run(sandbox_server.sandbox_glob("/tmp/maistro-workspace/repo", pattern))
+    assert result["success"] is False
+    assert result["error_code"] == "blocked_path"

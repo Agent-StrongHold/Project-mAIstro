@@ -78,6 +78,30 @@ class AuditEntry:
     trace_id: str = ""
     request_id: str = ""
     detail: str = ""
+    # Correlation and route metadata are identifiers only; boundary consumers
+    # must never put scanned content in an audit entry. (#1139: the Turing
+    # ingress composes these onto the canonical record.)
+    route: str = ""
+    action: str = ""
+    policy_version: str = ""
+    workspace_id: str = ""
+    project_id: str = ""
+    run_id: str = ""
+    invocation_id: str = ""
+    content_sha256: str = ""
+    content_length: int = 0
+
+    def __post_init__(self) -> None:
+        """Reject malformed non-secret audit correlation evidence."""
+        if self.policy_version and not self.policy_version.strip():
+            raise ValueError("policy_version must not be whitespace")
+        if self.content_sha256 and (
+            len(self.content_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.content_sha256)
+        ):
+            raise ValueError("content_sha256 must be a lowercase SHA-256 digest")
+        if self.content_length < 0:
+            raise ValueError("content_length must not be negative")
 
 
 @dataclass(frozen=True)

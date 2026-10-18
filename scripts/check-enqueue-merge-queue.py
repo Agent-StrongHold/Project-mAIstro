@@ -14,14 +14,29 @@ in between may have tightened the policy, and assessing the newer base with the
 older policy could classify a newly-sensitive path as green. Assessment
 therefore refuses whenever the fetched base differs from the revision this
 controller was loaded from, and a trusted run from the newer revision retries.
+
+A head that already failed inside the merge queue is not requested again. With
+batched groups, GitHub builds one entry per queued PR on top of the entry ahead
+of it and, under ALLGREEN, ejects a failing entry and rebuilds everything
+behind it; a head that fails on its own tree and is re-queued every scan would
+drag each new group through that rebuild. The controller therefore reads the
+recent merge-group run history, attributes each failed entry to its own tree or
+to a failed entry ahead of it (the entry branch name carries the SHA it was
+built on), and quarantines any head whose own entry failed after that head's
+``gates-ran`` went green — the earliest moment an entry for it could exist. A
+new push (new head) or a human enqueue lifts the quarantine; the bot never
+does. If the history cannot be read the controller refuses every admission,
+because it cannot prove any head has not already failed.
 """
 
 from __future__ import annotations
 
 import base64
+import datetime as dt
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
@@ -37,6 +52,28 @@ BASE_BRANCH = "develop"
 GATES_CONTEXT = "gates-ran"
 POLICY_PATH = Path(__file__).with_name("check-autonomous-merge.py")
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+#: Pages of merge-group runs (100 each) the quarantine reads. Every queued PR
+#: fans out to one run per merge-group workflow (~9 today), so five pages is
+#: roughly the last 50 queue entries. A failure older than that is retried
+#: once, fails inside the window, and is quarantined from then on — bounded,
+#: and far cheaper than reading the full history on every scan.
+QUEUE_HISTORY_PAGES = 5
+
+#: The branch GitHub synthesizes for one queue entry. The trailing SHA is the
+#: commit the entry was built on: the entry ahead's head, or the base head at
+#: the front of the queue. That link is what lets a failure be attributed.
+_QUEUE_ENTRY = re.compile(r"^gh-readonly-queue/(?P<base>.+)/pr-(?P<pr>\d+)-(?P<parent>\w+)$")
+
+#: Conclusions that mean the entry's own tree failed verification. ``cancelled``
+#: is deliberately absent: GitHub cancels the entries behind a failed one when
+#: it rebuilds them, and a head that moved cancels its own entry.
+OWN_FAILURE_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure", "action_required"})
+
+#: Conclusions that do not count against an entry ahead: still running, or
+#: passed. Anything else (including ``cancelled``) means that entry did not
+#: verify, so an entry stacked on it was rebuilt through no fault of its own.
+_BENIGN_CONCLUSIONS = frozenset({None, "success", "skipped", "neutral"})
 
 
 def _load_policy() -> ModuleType:
@@ -66,16 +103,157 @@ class Candidate:
     auto_merge_requested: bool = False
 
 
+@dataclass(frozen=True)
+class QueueFailure:
+    """One merge-queue entry that failed on its own tree, not behind another."""
+
+    number: int
+    parent: str
+    created_at: dt.datetime
+    workflows: tuple[str, ...]
+
+
+class GitCommandError(RuntimeError):
+    """A failed Git command with its exit status available to callers."""
+
+    def __init__(self, message: str, returncode: int) -> None:
+        super().__init__(message)
+        self.returncode = returncode
+
+
+class UnmergeableCandidate(RuntimeError):
+    """Expected: the candidate cannot be merged with the current base."""
+
+
 def candidate_from_pr(pr: dict[str, Any]) -> Candidate:
-    return Candidate(
-        number=int(pr["number"]),
-        head_sha=str(pr["head"]["sha"]),
-        base_ref=str(pr["base"]["ref"]),
-        base_sha=str(pr["base"]["sha"]),
-        state=str(pr["state"]),
-        draft=bool(pr.get("draft", False)),
-        auto_merge_requested=pr.get("auto_merge") is not None,
-    )
+    try:
+        return Candidate(
+            number=int(pr["number"]),
+            head_sha=str(pr["head"]["sha"]),
+            base_ref=str(pr["base"]["ref"]),
+            base_sha=str(pr["base"]["sha"]),
+            state=str(pr["state"]),
+            draft=bool(pr.get("draft", False)),
+            auto_merge_requested=pr.get("auto_merge") is not None,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("GitHub returned an invalid pull request payload") from exc
+
+
+def _parse_time(stamp: object) -> dt.datetime:
+    """A GitHub timestamp as an aware datetime; anything else is a hard failure."""
+
+    if not isinstance(stamp, str) or not stamp:
+        raise RuntimeError(f"GitHub returned an unusable timestamp: {stamp!r}")
+    try:
+        parsed = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RuntimeError(f"GitHub returned an unusable timestamp: {stamp!r}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.UTC)
+    return parsed
+
+
+def _behind_failed_entry(
+    number: int,
+    parent: str,
+    entries: dict[tuple[int, str], dict[str, Any]],
+    by_head: dict[str, tuple[int, str]],
+) -> bool:
+    """Whether the chain of entries this one was built on holds a failed one."""
+
+    seen: set[str] = set()
+    while parent in by_head and parent not in seen:
+        seen.add(parent)
+        ahead_key = by_head[parent]
+        if ahead_key[0] == number:
+            return False
+        if entries[ahead_key]["unsuccessful"]:
+            return True
+        parent = ahead_key[1]
+    return False
+
+
+def own_queue_failures(
+    runs: list[dict[str, Any]],
+    base: str = BASE_BRANCH,
+) -> dict[int, list[QueueFailure]]:
+    """Merge-queue entries that failed on their own tree, keyed by PR number.
+
+    One entry is every merge-group run sharing a ``pr-N-<parent>`` branch. An
+    entry with a failing run is attributed to itself unless the parent chain
+    (its branch's SHA is the head of the entry ahead, and so on) reaches an
+    entry of another PR that did not verify — then it was rebuilt behind that
+    failure and is not the bad candidate. A parent outside the fetched history
+    is treated as the base head, which is the fail-closed reading: the entry
+    owns its failure.
+    """
+
+    entries: dict[tuple[int, str], dict[str, Any]] = {}
+    for run in runs:
+        if run.get("event") != "merge_group":
+            continue
+        match = _QUEUE_ENTRY.match(str(run.get("head_branch") or ""))
+        if not match or match.group("base") != base:
+            continue
+        key = (int(match.group("pr")), match.group("parent"))
+        entry = entries.setdefault(
+            key, {"heads": set(), "created": None, "failed": set(), "unsuccessful": False}
+        )
+        head = run.get("head_sha")
+        if head:
+            entry["heads"].add(str(head))
+        conclusion = run.get("conclusion")
+        if conclusion in OWN_FAILURE_CONCLUSIONS:
+            entry["failed"].add(str(run.get("name") or run.get("id") or "unnamed workflow"))
+            created = _parse_time(run.get("created_at"))
+            if entry["created"] is None or created < entry["created"]:
+                entry["created"] = created
+        if conclusion not in _BENIGN_CONCLUSIONS:
+            entry["unsuccessful"] = True
+
+    by_head = {head: key for key, entry in entries.items() for head in entry["heads"]}
+    failures: dict[int, list[QueueFailure]] = {}
+    for (number, parent), entry in entries.items():
+        if not entry["failed"] or _behind_failed_entry(number, parent, entries, by_head):
+            continue
+        failures.setdefault(number, []).append(
+            QueueFailure(
+                number=number,
+                parent=parent,
+                created_at=entry["created"],
+                workflows=tuple(sorted(entry["failed"])),
+            )
+        )
+    return failures
+
+
+def queue_failure_for_head(
+    candidate: Candidate,
+    statuses: list[dict[str, Any]],
+    failures: dict[int, list[QueueFailure]],
+) -> QueueFailure | None:
+    """The own-tree queue failure that quarantines this exact head, if any.
+
+    A queue entry for a head cannot exist before that head's ``gates-ran``
+    first succeeded (it is a required context), so an own-tree failure for the
+    PR recorded at or after that moment belongs to this head. Failures from
+    an earlier head are older than the bound and do not count; a push lifts
+    the quarantine by moving the bound past them.
+    """
+
+    successes = [
+        _parse_time(item.get("created_at"))
+        for item in statuses
+        if item.get("context") == GATES_CONTEXT and item.get("state") == "success"
+    ]
+    if not successes:
+        return None
+    bound = min(successes)
+    for failure in sorted(failures.get(candidate.number, []), key=lambda item: item.created_at):
+        if failure.created_at >= bound:
+            return failure
+    return None
 
 
 def latest_status_state(statuses: list[dict[str, Any]], context: str) -> str | None:
@@ -108,7 +286,10 @@ def _git_bytes(
             if isinstance(stderr, bytes)
             else str(stderr).strip()
         )
-        raise RuntimeError(f"git {' '.join(args)} failed ({proc.returncode}): {detail}")
+        raise GitCommandError(
+            f"git {' '.join(args)} failed ({proc.returncode}): {detail}",
+            proc.returncode,
+        )
     stdout = proc.stdout
     return stdout if isinstance(stdout, bytes) else str(stdout).encode("utf-8")
 
@@ -194,13 +375,20 @@ def policy_assessment(repo: Path, candidate: Candidate) -> Any:
     quoting cannot alter the trusted-path classification.
     """
 
-    merge_tree = _git(
-        repo,
-        "merge-tree",
-        "--write-tree",
-        candidate.base_sha,
-        candidate.head_sha,
-    ).strip()
+    try:
+        merge_tree = _git(
+            repo,
+            "merge-tree",
+            "--write-tree",
+            candidate.base_sha,
+            candidate.head_sha,
+        ).strip()
+    except GitCommandError as exc:
+        if exc.returncode == 1:
+            raise UnmergeableCandidate(
+                "candidate does not merge cleanly with the current develop head"
+            ) from exc
+        raise
     if not merge_tree:
         detail = (
             "no merge base-compatible prospective merge tree for "
@@ -319,7 +507,12 @@ class GitHubApi:
         )
         with urllib.request.urlopen(request, timeout=30) as response:
             raw = response.read()
-            return None if not raw else json.loads(raw.decode("utf-8"))
+        if not raw:
+            return None
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("GitHub API returned invalid JSON") from exc
 
     def open_develop_prs(self) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
@@ -358,6 +551,21 @@ class GitHubApi:
         )
         assert isinstance(data, list)
         return data
+
+    def merge_group_runs(self) -> list[dict[str, Any]]:
+        """Recent merge-group workflow runs, newest first, bounded by pages."""
+
+        runs: list[dict[str, Any]] = []
+        for page in range(1, QUEUE_HISTORY_PAGES + 1):
+            query = urllib.parse.urlencode({"event": "merge_group", "per_page": 100, "page": page})
+            data = self._request("GET", f"/repos/{self._repository}/actions/runs?{query}")
+            batch = data.get("workflow_runs") if isinstance(data, dict) else None
+            if not isinstance(batch, list):
+                raise RuntimeError("GitHub returned an invalid workflow-run listing")
+            runs.extend(batch)
+            if len(batch) < 100:
+                break
+        return runs
 
     def _fetch_base(self) -> str:
         _git(
@@ -452,53 +660,107 @@ class GitHubApi:
             ) from exc
 
 
+def _admission_hold(
+    candidate: Candidate,
+    statuses: list[dict[str, Any]],
+    quarantine: dict[int, list[QueueFailure]],
+) -> tuple[str, bool] | None:
+    """Why this head is not requested now, as ``(message, controller_failure)``.
+
+    ``None`` means the head may proceed to policy assessment. A hold is not a
+    controller failure unless the evidence itself was unusable.
+    """
+
+    if latest_status_state(statuses, GATES_CONTEXT) != "success":
+        return f"gates-ran not green on {candidate.head_sha}", False
+    try:
+        failed = queue_failure_for_head(candidate, statuses, quarantine)
+    except RuntimeError as exc:
+        return f"queue history unusable: {exc}", True
+    if failed is None:
+        return None
+    return (
+        f"quarantined on {candidate.head_sha}: its merge-queue entry failed "
+        f"{', '.join(failed.workflows)} at {failed.created_at:%Y-%m-%dT%H:%M:%SZ}; "
+        "a new push or a human enqueue lifts this",
+        False,
+    )
+
+
+def _admit(
+    api: GitHubApi,
+    number: int,
+    quarantine: dict[int, list[QueueFailure]],
+) -> str:
+    """One PR's pass through the controller: ``enqueued``, ``held`` or ``failed``."""
+
+    candidate = candidate_from_pr(api.pull_request(number))
+    if candidate.auto_merge_requested:
+        print(f"PR #{candidate.number}: already requested on {candidate.head_sha}")
+        return "held"
+
+    statuses = api.statuses(candidate.head_sha)
+    hold = _admission_hold(candidate, statuses, quarantine)
+    if hold is not None:
+        message, controller_failure = hold
+        if controller_failure:
+            print(f"PR #{candidate.number}: {message}", file=sys.stderr)
+            return "failed"
+        print(f"PR #{candidate.number}: {message}")
+        return "held"
+
+    try:
+        assessment = api.policy_assessment(candidate)
+    except UnmergeableCandidate as exc:
+        print(f"PR #{candidate.number}: not queueable: {exc}")
+        return "held"
+    except RuntimeError as exc:
+        print(
+            f"PR #{candidate.number}: trusted policy evidence failed: {exc}",
+            file=sys.stderr,
+        )
+        return "failed"
+    if assessment is None:
+        print(f"PR #{candidate.number}: head moved; waiting for new exact-head gates")
+        return "held"
+
+    print(f"PR #{candidate.number}: {AUTONOMOUS_POLICY.render(assessment)}")
+    if not is_admissible(
+        candidate,
+        statuses,
+        policy_eligible=bool(assessment.eligible),
+    ):
+        print(f"PR #{candidate.number}: human merge required on {candidate.head_sha}")
+        return "held"
+
+    try:
+        outcome = api.enqueue(candidate)
+    except RuntimeError as exc:
+        print(f"PR #{candidate.number}: queue request failed: {exc}", file=sys.stderr)
+        return "failed"
+    print(f"PR #{candidate.number}: {outcome} on {candidate.head_sha}")
+    if outcome in {"accepted", "already-requested"}:
+        return "enqueued"
+    return "held"
+
+
 def run(api: GitHubApi) -> int:
+    try:
+        quarantine = own_queue_failures(api.merge_group_runs())
+    except (urllib.error.URLError, TimeoutError, RuntimeError) as exc:
+        # Without the history no head can be proven not to have failed in the
+        # queue already; refusing every admission is the fail-closed answer.
+        print(f"merge-group history unreadable; refusing every admission: {exc}", file=sys.stderr)
+        return 1
+
     enqueued = 0
     failures = 0
     for raw_pr in api.open_develop_prs():
-        listed = candidate_from_pr(raw_pr)
-        candidate = candidate_from_pr(api.pull_request(listed.number))
-
-        if candidate.auto_merge_requested:
-            print(f"PR #{candidate.number}: already requested on {candidate.head_sha}")
-            continue
-
-        statuses = api.statuses(candidate.head_sha)
-        if latest_status_state(statuses, GATES_CONTEXT) != "success":
-            print(f"PR #{candidate.number}: gates-ran not green on {candidate.head_sha}")
-            continue
-
-        try:
-            assessment = api.policy_assessment(candidate)
-        except RuntimeError as exc:
-            failures += 1
-            print(
-                f"PR #{candidate.number}: trusted policy evidence failed: {exc}",
-                file=sys.stderr,
-            )
-            continue
-        if assessment is None:
-            print(f"PR #{candidate.number}: head moved; waiting for new exact-head gates")
-            continue
-
-        print(f"PR #{candidate.number}: {AUTONOMOUS_POLICY.render(assessment)}")
-        if not is_admissible(
-            candidate,
-            statuses,
-            policy_eligible=bool(assessment.eligible),
-        ):
-            print(f"PR #{candidate.number}: human merge required on {candidate.head_sha}")
-            continue
-
-        try:
-            outcome = api.enqueue(candidate)
-        except RuntimeError as exc:
-            failures += 1
-            print(f"PR #{candidate.number}: queue request failed: {exc}", file=sys.stderr)
-            continue
-        print(f"PR #{candidate.number}: {outcome} on {candidate.head_sha}")
-        if outcome in {"accepted", "already-requested"}:
+        outcome = _admit(api, candidate_from_pr(raw_pr).number, quarantine)
+        if outcome == "enqueued":
             enqueued += 1
+        elif outcome == "failed":
+            failures += 1
     print(f"bot queue requests: {enqueued}; controller failures: {failures}")
     return 1 if failures else 0
 

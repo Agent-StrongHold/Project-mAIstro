@@ -1,4 +1,10 @@
-"""Task domain models — Pydantic schemas for the task API."""
+"""Task domain models — Pydantic schemas for the task API.
+
+Admission identity (#1176) travels on both request and receipt:
+``TaskCreate.idempotency_key`` is the caller's explicit key (usually the
+standard ``Idempotency-Key`` header instead), and ``TaskResponse`` echoes it
+so a replay answers with the receipt the first call got.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +16,15 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from maistro.tasks.lanes import Lane
+
+# The effective-actor vocabulary (#1057): who a task runs as once service
+# delegation is resolved. One alias so the receipt field, the queue's
+# submission path and the server's delegation resolver share a spelling a
+# plain ``str`` could silently drift from.
+TaskActorKind = Literal["user", "system", "service"]
+
+# ADR-070426-b5e9's six-tier spend label, shared by request and receipt.
+TaskPriorityTier = Literal["P0", "P1", "P2", "P3", "P4", "P5"]
 
 
 class TaskStatus(StrEnum):
@@ -40,14 +55,23 @@ class TaskCreate(BaseModel):
     lane: Lane = Lane.BACKGROUND
     # ADR-070426-b5e9 six-tier label. Orders waiters within a lane. P2 is
     # "user-missions", the normal default for a submitted task.
-    priority_tier: Literal["P0", "P1", "P2", "P3", "P4", "P5"] = "P2"
+    priority_tier: TaskPriorityTier = "P2"
     task_type: str | None = None
     agent_id: str | None = None
     capability: str | None = None
     program_context: dict[str, Any] | None = None
     session_id: str | None = None
-    # Set by API from auth — ignored if sent by client
+    # Stable admission identity (#1176), usually supplied as the standard
+    # ``Idempotency-Key`` header instead. Absent, admission derives one from
+    # the payload, so a byte-identical retry still reconciles to the original
+    # Run inside the documented replay window. Excluded from the payload
+    # fingerprint — a key must not be an ingredient of its own identity.
+    idempotency_key: str | None = None
+    # Set by API from authenticated/delegated context — ignored if sent by client.
     user_id: str | None = None
+    service_principal_id: str | None = None
+    delegation_id: str | None = None
+    actor_kind: TaskActorKind = "user"
 
 
 class TaskProgress(BaseModel):
@@ -74,17 +98,27 @@ class TaskResponse(BaseModel):
     description: str
     workspace: str
     user_id: str = ""
+    # Service and delegation evidence remain separate from the effective actor.
+    service_principal_id: str | None = None
+    delegation_id: str | None = None
+    actor_kind: TaskActorKind = "user"
     task_type: str | None = None
     agent_id: str | None = None
     capability: str | None = None
     program_context: dict[str, Any] | None = None
+    branch: str | None = None
+    constraints: list[str] = Field(default_factory=list)
     tier: int
     # Carried through from TaskCreate so the dispatcher can admit on them.
     # Without these on the stored task the lane/tier labels are accepted at
     # the API boundary and silently dropped before scheduling ever sees them.
     lane: Lane = Lane.BACKGROUND
-    priority_tier: Literal["P0", "P1", "P2", "P3", "P4", "P5"] = "P2"
+    priority_tier: TaskPriorityTier = "P2"
     session_id: str | None = None
+    # The caller's explicit admission key (#1176), echoed on the receipt. None
+    # when the key was derived from the payload — the derivation is admission
+    # machinery, not something the caller said.
+    idempotency_key: str | None = None
     # Canonical execution identity (#41). Populated at submission when the queue
     # is wired to a Run store; ``None`` means this build admitted the task
     # without a Run, and the receipt is all the execution identity there is.

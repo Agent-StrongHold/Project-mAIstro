@@ -1,0 +1,69 @@
+# Domain pack: book (M7-A4, #793)
+# Thesis/outline/chapter-plan exploration; a text artifact tree as the
+# execute backend. Canvas is deliberately NOT bound — a book is manuscript
+# and chapters, so this pack proves canvas use is per-pack binding, never
+# the pack identity.
+pack_id: book
+# Pack release version (M9-F3, #968): the identity Workspace activations
+# are recorded against; bump it when the manifest's defaults change.
+version: 1.0.0
+name: Book Pack
+summary: >-
+  Thesis, outline, and a chapter plan explored before produce; manuscript and
+  chapter drafts written into a text artifact tree on the same canonical
+  loop, evaluated on thesis coherence, chapter purpose, and claim-evidence.
+explore_focus:
+  - thesis
+  - outline
+  - chapter_plan
+execute_backends:
+  - text_artifact_tree
+artifact_kinds:
+  - thesis_statement
+  - outline
+  - chapter_plan
+  - chapter_draft
+  - manuscript
+rubric_dimensions:
+  - dimension_id: thesis_coherence
+    name: Thesis coherence
+    description: Every chapter advances one thesis without contradicting it.
+  - dimension_id: chapter_purpose
+    name: Chapter purpose
+    description: Each chapter exists because the argument needs it.
+  - dimension_id: claim_evidence
+    name: Claim-evidence
+    description: Claims made in the manuscript are supported where they are made.
+fence_points:
+  - explore.accept
+  - refine.accept
+graph:
+  name: book-loop
+  entry_node: explore.thesis
+  nodes:
+    - node_id: explore.thesis
+      kind: pack.explore
+      phase: explore
+    - node_id: explore.outline
+      kind: pack.explore
+      phase: explore
+    - node_id: explore.chapter_plan
+      kind: pack.explore
+      phase: explore
+      fenced: true
+    - node_id: execute.chapter_draft
+      kind: pack.execute
+      phase: execute
+    - node_id: evaluate.rubric
+      kind: pack.evaluate
+      phase: evaluate
+    - node_id: refine.revise
+      kind: pack.refine
+      phase: refine
+      fenced: true
+  edges:
+    - [explore.thesis, explore.outline]
+    - [explore.outline, explore.chapter_plan]
+    - [explore.chapter_plan, execute.chapter_draft]
+    - [execute.chapter_draft, evaluate.rubric]
+    - [evaluate.rubric, refine.revise]

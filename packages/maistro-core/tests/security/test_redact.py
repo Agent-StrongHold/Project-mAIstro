@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+import hashlib
 import string
 import time
+from uuid import uuid4
 
 import pytest
 
 from maistro.security.redact import (
     _ENTROPY_BITS_PER_CHAR_THRESHOLD,
     _MIN_SECRET_LENGTH,
+    REDACTED_FIELD,
     _looks_like_secret,
     _shannon_entropy,
     redact,
+    redact_structure,
 )
+
+#: Assembled from segments for the same reason as `_jwt` below: a contiguous
+#: `xoxb-` literal trips secret scanners on every fresh clone.
+_SLACK_BOT_TOKEN = "-".join(["xoxb", "123456789012", "1234567890123", "abcdefghijklmnopqrstuvwx"])
 
 
 def _jwt(header: str, payload: str, signature: str) -> str:
@@ -829,6 +837,13 @@ class TestNestedPatternSafety:
         assert "[REDACTED_AUTH_HEADER]" in result
 
 
+#: Samples per timing in `TestRedactScaling`. The minimum of N runs only ever
+#: tightens as N grows, so raising this never weakens what the assertions
+#: prove; it widens the gap between "a noisy sample" and "the least noisy
+#: sample" that a flake must clear on every run of one side.
+_REDACT_TIMING_REPEATS = 9
+
+
 class TestRedactScaling:
     """ADR-064/AC-36 — redaction must not rescan quadratically.
 
@@ -844,16 +859,49 @@ class TestRedactScaling:
     minimum of several runs — the sample least contaminated by scheduling
     noise. Linear is ~4x for 4x input; quadratic is ~16x; 8.0 sits midway on a
     log scale.
+
+    The small and large timings are interleaved rather than batched (quality-gate
+    repair, #910 CI: one AC-36 sample batch on a contended runner landed its
+    scheduling noise wholly on the 16 KB side, and a min-of-5 with ~2x numeric
+    headroom read as a regression that never existed). Interleaved, both sides
+    sample the same machine state, so contention lands on numerator and
+    denominator together and cancels in the ratio; nine samples per side then
+    need a *sustained*, one-sided stall to move the minimum at all.
     """
 
+    #: Samples per timing — see `_REDACT_TIMING_REPEATS` above.
+    _REPEATS = _REDACT_TIMING_REPEATS
+
     @staticmethod
-    def _best(text: str, repeats: int = 5) -> float:
+    def _best(text: str, repeats: int = _REDACT_TIMING_REPEATS) -> float:
         best = float("inf")
         for _ in range(repeats):
             start = time.perf_counter()
             redact(text)
             best = min(best, time.perf_counter() - start)
         return best
+
+    @staticmethod
+    def _best_pair(
+        small: str, large: str, repeats: int = _REDACT_TIMING_REPEATS
+    ) -> tuple[float, float]:
+        """Best timing of each input, taken in an interleaved s/l/s/l… order.
+
+        The ratio test wants *comparable* minima: sampled back-to-back batches,
+        a scheduler burst that covers exactly the large-input batch inflates the
+        numerator alone and the ratio reads quadratic on a linear engine.
+        Alternating the inputs makes that burst hit both sides or neither, which
+        is the cancellation the ratio is for.
+        """
+        best_s = best_l = float("inf")
+        for _ in range(repeats):
+            start = time.perf_counter()
+            redact(small)
+            best_s = min(best_s, time.perf_counter() - start)
+            start = time.perf_counter()
+            redact(large)
+            best_l = min(best_l, time.perf_counter() - start)
+        return best_s, best_l
 
     @pytest.mark.ac("ADR-064/AC-36")
     @pytest.mark.parametrize(
@@ -876,7 +924,8 @@ class TestRedactScaling:
         ],
     )
     def test_cost_grows_linearly_with_input(self, label, build):
-        ratio = self._best(build(16_000)) / self._best(build(4_000))
+        small, large = self._best_pair(build(4_000), build(16_000))
+        ratio = large / small
         assert ratio < 8.0, f"{label}: 4x input cost {ratio:.1f}x time (linear=4, quadratic=16)"
 
     @pytest.mark.ac("ADR-064/AC-35")
@@ -895,7 +944,9 @@ class TestRedactScaling:
 
         Deliberately loose: the tight bound is machine-specific and would flake,
         while an order-of-magnitude alarm still catches the 2.3 ms regression a
-        1 KB unbroken word run caused before the anchors went in.
+        1 KB unbroken word run caused before the anchors went in. The best of
+        nine runs is the sample least contaminated by runner noise (see
+        `TestRedactScaling` — the quality-gate repair for #910's CI run).
         """
         assert self._best(text[:1024]) < 0.010
 
@@ -940,3 +991,122 @@ class TestLooksLikeSecretLengthGuard:
     def test_length_alone_does_not_make_a_secret(self):
         """A long single-class run clears the guard and fails on entropy."""
         assert _looks_like_secret("a" * (_MIN_SECRET_LENGTH * 2)) is False
+
+
+class TestRedactStructure:
+    """`redact_structure` walks a nested structure applying both halves of the
+    canonical policy: name-based classification and value-shape scanning."""
+
+    def test_a_secret_named_field_loses_its_value(self):
+        assert redact_structure({"api_key": "live-value"}) == {"api_key": REDACTED_FIELD}
+
+    def test_nested_mappings_lists_and_tuples_are_walked(self):
+        scrubbed = redact_structure(
+            {"outer": {"ssh_key": "k"}, "items": [{"password": "p"}], "pair": ({"token": "t"},)}
+        )
+        assert scrubbed["outer"]["ssh_key"] == REDACTED_FIELD
+        assert scrubbed["items"][0]["password"] == REDACTED_FIELD
+        assert scrubbed["pair"][0]["token"] == REDACTED_FIELD
+
+    def test_a_secret_shaped_value_is_scrubbed_even_under_an_innocent_name(self):
+        """The name-based half alone would miss this: `message` is not a secret
+        name, but the Slack token inside its value still is."""
+        scrubbed = redact_structure({"message": f"deploying with {_SLACK_BOT_TOKEN}"})
+        assert _SLACK_BOT_TOKEN not in scrubbed["message"]
+        assert "deploying with" in scrubbed["message"]
+
+    def test_the_identifier_escape_survives_the_walk(self):
+        """An ARN or a `*_id` names an identifier, not a reusable credential —
+        the shared segment policy lets it through, and so must this walker."""
+        payload = {"key_arn": "arn:aws:kms:us-east-1:123456789012:key/1234abcd", "token_id": "t-42"}
+        assert redact_structure(payload) == payload
+
+    def test_the_value_scanner_is_a_second_gate_the_name_escape_cannot_open(self):
+        """`aws_access_key_id` clears the *name* half — it ends in an identifier
+        qualifier — and is still redacted, because the *value* half recognizes
+        the key-id shape on its own. The two halves are independent, so an
+        attacker cannot smuggle a credential through by choosing a benign name."""
+        scrubbed = redact_structure({"aws_access_key_id": "AKIAIOSFODNN7EXAMPLE"})
+        assert scrubbed["aws_access_key_id"] == redact("AKIAIOSFODNN7EXAMPLE")
+        assert "AKIAIOSFODNN7EXAMPLE" not in scrubbed["aws_access_key_id"]
+
+    def test_digests_ids_and_prose_are_not_destroyed(self):
+        """False-positive control. Lowercase-hex digests and uuid4 ids carry no
+        uppercase, so the high-entropy heuristic declines them; ordinary prose
+        is far below its length floor. Event payloads are full of all three."""
+        payload = {
+            "digest": hashlib.sha256(b"artifact").hexdigest(),
+            "event_id": uuid4().hex,
+            "note": "the build failed on step 3 with 2 lint errors",
+        }
+        assert redact_structure(payload) == payload
+
+    def test_it_is_idempotent(self):
+        """Re-scrubbing an already-scrubbed structure must not double-redact —
+        the canonical Event outbox re-validates envelopes exactly that way."""
+        once = redact_structure({"api_key": "v", "msg": f"tok {_SLACK_BOT_TOKEN}", "keep": "plain"})
+        assert redact_structure(once) == once
+
+    def test_non_string_keys_keep_their_type(self):
+        """`str(key)` is only how a name is classified; rewriting the key would
+        quietly change the structure a caller reads back."""
+        scrubbed = redact_structure({2: "int-key", "ok": 1})
+        assert 2 in scrubbed
+        assert scrubbed[2] == "int-key"
+
+    def test_a_tuple_stays_a_tuple(self):
+        assert isinstance(redact_structure({"t": (1, "a")})["t"], tuple)
+
+    def test_the_result_shares_no_container_with_its_input(self):
+        """It rebuilds every container it walks, so callers can rely on it as a
+        deep copy rather than paying for a second one."""
+        source = {"nested": {"n": 1}, "items": [{"n": 2}]}
+        scrubbed = redact_structure(source)
+        source["nested"]["n"] = 999
+        source["items"][0]["n"] = 999
+        assert scrubbed["nested"]["n"] == 1
+        assert scrubbed["items"][0]["n"] == 2
+
+    def test_a_secret_shaped_mapping_key_is_scrubbed(self):
+        """A token-indexed object carries the credential in the *key*, where no
+        field name classifies it and no value scan would reach it (#1164 review)."""
+        scrubbed = redact_structure({_SLACK_BOT_TOKEN: {"owner": "u"}})
+        assert _SLACK_BOT_TOKEN not in scrubbed
+        [label] = scrubbed
+        assert label.startswith("[REDACTED")
+        assert scrubbed[label] == {"owner": "u"}
+
+    def test_two_secret_keys_that_share_a_label_stay_distinct(self):
+        """Collapsing two credentials onto one label would silently drop one of
+        the caller's values; the second gets a suffix instead."""
+        other = _SLACK_BOT_TOKEN.replace("xoxb", "xoxp")
+        scrubbed = redact_structure({_SLACK_BOT_TOKEN: 1, other: 2})
+        assert sorted(scrubbed.values()) == [1, 2]
+        assert len(scrubbed) == 2
+        assert all(key.startswith("[REDACTED") for key in scrubbed)
+
+    def test_scrubbed_mapping_keys_are_stable_on_a_second_pass(self):
+        """The label a key was replaced with must not itself classify as a secret
+        *name* on re-scrub (its segments spell `redacted`/`api`/`key`), or the
+        outbox's re-validation would swallow the value under it."""
+        other = _SLACK_BOT_TOKEN.replace("xoxb", "xoxp")
+        once = redact_structure({_SLACK_BOT_TOKEN: {"n": 1}, other: 2})
+        assert redact_structure(once) == once
+
+    def test_identifier_style_key_names_survive(self):
+        """`effect_key` is the join key of every canonical capability event; an
+        idempotency, cache or partition key is likewise an identifier."""
+        payload = {
+            "effect_key": "ticket:create:123",
+            "idempotency_key": "9b2c",
+            "partition_key": "tenant-7",
+        }
+        assert redact_structure(payload) == payload
+
+    def test_scalars_pass_through_untouched(self):
+        assert redact_structure({"n": 5, "f": 1.5, "b": True, "none": None}) == {
+            "n": 5,
+            "f": 1.5,
+            "b": True,
+            "none": None,
+        }

@@ -1,0 +1,38 @@
+[project]
+name = "maistro-ext-sdk"
+version = "0.9.0"
+description = "Public MAIstro extension SDK: versioned extension contract and machine-validatable manifest schema (M9-A1, #949)"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+    # The whole point of this package is to be installable OUT of tree, by
+    # extension authors who do not have the monorepo. Pydantic is the only
+    # runtime dependency: the manifest schema is a Pydantic model, and the
+    # emitted JSON Schema is the machine-validatable public schema the issue
+    # asks for. No maistro-* dependency is permitted (enforced by
+    # packages/maistro-ext-sdk/tests/test_import_hygiene.py).
+    "pydantic>=2.4.0,<3",
+]
+
+[project.optional-dependencies]
+# YAML manifests are opt-in: the manifest contract is JSON-native, and a
+# minimal SDK install must not drag a parser a JSON-only host never uses.
+yaml = ["pyyaml>=6.0,<7"]
+dev = [
+    "pytest>=9.0.3,<10",
+    "ruff>=0.9,<1",
+    "mypy>=1.14,<3",
+]
+
+[project.scripts]
+# The author-facing validator: `maistro-ext-sdk validate <dir>` rejects a
+# manifest without importing the extension (M9-A1's core acceptance).
+maistro-ext-sdk = "maistro_ext_sdk.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maistro_ext_sdk"]

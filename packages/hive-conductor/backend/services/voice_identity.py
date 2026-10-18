@@ -102,9 +102,12 @@ def principal_for(authorization: str | None) -> dict[str, Any] | None:
     if not secret_equal(presented, key):
         return None
 
-    import stores
+    from services import username_registry
 
-    account = next((u for u in stores.users.values() if u.username == username), None)
+    # Voice uses the same canonical username claim as password login. Never
+    # select a first matching row from the random-id users store: historical
+    # duplicates are quarantined by the registry and fail closed.
+    account = username_registry.resolve(username)
     if account is None or not account.is_active:
         return None
 

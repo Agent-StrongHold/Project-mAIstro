@@ -30,6 +30,14 @@ PROTECTED_OPERATIONS: tuple[ProtectedOperation, ...] = (
     ProtectedOperation("GET", "/v1/rsi", "rsi.execute", "inspect RSI sessions"),
     ProtectedOperation("GET", "/v1/evolution", "rsi.execute", "inspect evolution sessions"),
     ProtectedOperation("GET", "/v1/hitl", "dags.write", "inspect pending graph approvals"),
+    # The RUM ring aggregates every principal's navigation telemetry
+    # (route templates, session ids, timings) into one instance-wide
+    # read-back — a cross-principal aggregate, so it takes an operator-only
+    # posture. Ingest (POST) is deliberately NOT protected: every session's
+    # reporter beacons its own bounded, schema-projected timings on the
+    # session it already holds, and gating the beacon would starve the ring
+    # of exactly the ordinary traffic it exists to measure (#1420).
+    ProtectedOperation("GET", "/v1/rum", "rum.read", "read navigation telemetry"),
     ProtectedOperation("DELETE", "/v1/settings", "config.delete", "delete settings"),
     ProtectedOperation("DELETE", "/v1/agents", "agents.delete", "delete agents"),
     ProtectedOperation("DELETE", "/v1/skills", "skills.delete", "delete skills"),
@@ -51,9 +59,20 @@ PROTECTED_OPERATIONS: tuple[ProtectedOperation, ...] = (
     ProtectedOperation("POST", "/v1/schedules", "schedules.write", "change schedules"),
     ProtectedOperation("POST", "/v1/workspaces", "workspaces.write", "change workspaces"),
     ProtectedOperation("POST", "/v1/evolution", "rsi.execute", "run evolution"),
+    # Chat workflow execution creates durable Run history and can invoke
+    # mutating nodes. It uses the shared approval capability before the
+    # existing chat dispatch path, so authentication alone is not enough.
+    ProtectedOperation("POST", "/v1/chat/workflows", "dags.write", "run a chat workflow"),
     ProtectedOperation("POST", "/v1/audit", "audit.write", "write audit entries"),
     ProtectedOperation("POST", "/v1/harness", "harness.execute", "run harness sessions"),
     ProtectedOperation("POST", "/v1/rsi", "rsi.execute", "run RSI"),
+    # Resolving an approval is an authority-bearing decision, not a
+    # generic configuration write. Require the dedicated approver scope;
+    # the route applies the action-specific policy on top of this.
+    # More-specific path: must stay ahead of /v1/capabilities below.
+    ProtectedOperation(
+        "POST", "/v1/capabilities/approvals", "approvals.resolve", "resolve an approval"
+    ),
     ProtectedOperation("POST", "/v1/capabilities", "config.write", "change capabilities"),
     ProtectedOperation("POST", "/v1/providers", "config.write", "activate providers"),
     ProtectedOperation("PUT", "/v1/settings", "config.write", "change settings"),

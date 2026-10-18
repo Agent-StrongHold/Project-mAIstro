@@ -15,6 +15,7 @@ from __future__ import annotations
 from maistro.runs.model import RunStatus
 
 from .attempt_executor import (
+    DEFAULT_MAX_STEPS,
     NodeResolver,
     resume_durable_graph,
     run_durable_graph,
@@ -27,11 +28,19 @@ from .continuation import (
     SqliteGraphContinuationStore,
 )
 from .execution_store import DurableRunExecutionStore
+from .fair_scan import ScanContinuation, cursor_time
 from .hitl import (
+    MAX_PENDING_SCAN_RECORDS,
+    HitlAuthorization,
+    HitlAuthorizationRequired,
     HitlDeadlineElapsed,
     HitlDeadlinePending,
+    HitlDelegationEvidence,
     HitlSettlementError,
+    PendingHitlScan,
     expire_hitl_pauses,
+    pending_hitl_node_ids,
+    pending_hitl_records,
 )
 from .launch import durable_graph_launch_provenance
 from .legacy_archive import (
@@ -39,12 +48,21 @@ from .legacy_archive import (
     LegacyGraphRunArchive,
     LegacyRunNotResumable,
 )
-from .protocol import DurableRunStore
+from .protocol import DurableRunStore, RecoveryInfrastructureError
 from .recovery import recover_queued_graph_runs, resume_due_graph_runs
 from .stores import InMemoryDurableRunStore, SqliteDurableRunStore
+from .time_travel import (
+    GraphStateEpoch,
+    GraphStateLoad,
+    SequenceOutOfRangeError,
+    StateHistoryIntegrityError,
+    UnknownGraphRunError,
+)
 from .types import DurableRunRecord
 
 __all__ = [
+    "DEFAULT_MAX_STEPS",
+    "MAX_PENDING_SCAN_RECORDS",
     "ArchivedGraphRun",
     "CanonicalDurableRunStore",
     "DurableRunExecutionStore",
@@ -52,19 +70,33 @@ __all__ = [
     "DurableRunStore",
     "GraphContinuation",
     "GraphContinuationStore",
+    "GraphStateEpoch",
+    "GraphStateLoad",
+    "HitlAuthorization",
+    "HitlAuthorizationRequired",
     "HitlDeadlineElapsed",
     "HitlDeadlinePending",
+    "HitlDelegationEvidence",
     "HitlSettlementError",
     "InMemoryDurableRunStore",
     "InMemoryGraphContinuationStore",
     "LegacyGraphRunArchive",
     "LegacyRunNotResumable",
     "NodeResolver",
+    "PendingHitlScan",
+    "RecoveryInfrastructureError",
     "RunStatus",
+    "ScanContinuation",
+    "SequenceOutOfRangeError",
     "SqliteDurableRunStore",
     "SqliteGraphContinuationStore",
+    "StateHistoryIntegrityError",
+    "UnknownGraphRunError",
+    "cursor_time",
     "durable_graph_launch_provenance",
     "expire_hitl_pauses",
+    "pending_hitl_node_ids",
+    "pending_hitl_records",
     "recover_queued_graph_runs",
     "resume_due_graph_runs",
     "resume_durable_graph",

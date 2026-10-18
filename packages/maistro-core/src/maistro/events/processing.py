@@ -15,6 +15,7 @@ semantics from ADR-086 live here:
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import httpx
@@ -141,6 +142,65 @@ async def _dispatch(
     return event_settled
 
 
+@dataclass(frozen=True)
+class ProcessedBatch:
+    """What one `process_events_batch` tick settled, and what it could not see.
+
+    `cursor` is the id of the last event whose matching triggers have ALL
+    reached a terminal status — the same value `process_events` returns.
+
+    `holes` lists, in ascending order, the first id of every run of ids in
+    ``(after_id, cursor]`` that the log did not return this tick; it is empty
+    when the ids the log returned were contiguous from ``after_id + 1``. The
+    field exists for the PostgreSQL backend:
+    `BIGSERIAL` allocates ids at insert time, before commit, so an appender
+    that is slow to commit (or that rolls back) leaves a lower id invisible
+    while a higher one is already readable. Advancing a *durable* cursor past
+    such a hole would exclude the slow event from every later ``id > cursor``
+    read, restart included — the one case where a resume optimisation would
+    lose an event. `process_events` itself keeps working on the events it can
+    see; the caller decides what a hole means for the cursor it persists.
+    """
+
+    cursor: int
+    holes: tuple[int, ...] = ()
+
+
+async def process_events_batch(
+    event_log: EventLogStore,
+    trigger_store: TriggerStore,
+    invocation_store: InvocationStore,
+    caller: HandlerCaller,
+    *,
+    after_id: int = 0,
+    limit: int = 100,
+) -> ProcessedBatch:
+    """`process_events`, also reporting the ids the log skipped over.
+
+    Delivery semantics are unchanged (see `process_events`). The addition is
+    the contiguity check: as events are settled in id order, each one whose
+    id is not ``previous + 1`` marks a hole, and the first missing id of each
+    is reported alongside the cursor so a durable consumer can refuse to
+    persist past it.
+    """
+    events = await event_log.query(after_id=after_id, limit=limit)
+    cursor = after_id
+    holes: list[int] = []
+    for event in events:
+        settled = [
+            await _dispatch(event_log, invocation_store, caller, trigger, event)
+            for trigger in await trigger_store.get_matching(event.event_type)
+        ]
+        event_settled = all(settled)
+        if not event_settled:
+            # Hold the cursor: this event must be replayed next tick.
+            break
+        if event.id != cursor + 1:
+            holes.append(cursor + 1)
+        cursor = event.id
+    return ProcessedBatch(cursor=cursor, holes=tuple(holes))
+
+
 async def process_events(
     event_log: EventLogStore,
     trigger_store: TriggerStore,
@@ -162,17 +222,19 @@ async def process_events(
     Safe to run in more than one process: `_dispatch` claims each
     (trigger, event) before invoking anything, so exactly one worker calls a
     given handler.
+
+    A caller that persists the cursor durably should use
+    `process_events_batch` instead, which also reports whether the log had a
+    hole below the returned cursor (an id allocated but not yet committed);
+    this convenience keeps the original contract for callers whose cursor is
+    process-local and so is rebuilt from zero on restart anyway.
     """
-    events = await event_log.query(after_id=after_id, limit=limit)
-    cursor = after_id
-    for event in events:
-        settled = [
-            await _dispatch(event_log, invocation_store, caller, trigger, event)
-            for trigger in await trigger_store.get_matching(event.event_type)
-        ]
-        event_settled = all(settled)
-        if not event_settled:
-            # Hold the cursor: this event must be replayed next tick.
-            break
-        cursor = event.id
-    return cursor
+    batch = await process_events_batch(
+        event_log,
+        trigger_store,
+        invocation_store,
+        caller,
+        after_id=after_id,
+        limit=limit,
+    )
+    return batch.cursor

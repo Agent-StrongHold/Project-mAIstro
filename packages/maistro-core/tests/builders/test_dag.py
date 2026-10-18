@@ -27,8 +27,15 @@ from maistro.builders.dag import (
 )
 from maistro.builders.graph import RunContext
 from maistro.builders.graph_executor import DispatchResult
+from maistro.graph.durable_runs import (
+    CanonicalDurableRunStore,
+    InMemoryGraphContinuationStore,
+)
 from maistro.graph.node import IterationBudget
 from maistro.graph.types import AgentRole, GraphConfig
+from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.model import RunStatus
+from maistro.runs.store import InMemoryRunStore
 
 
 class ScriptedDispatcher:
@@ -83,6 +90,57 @@ def run(coro: Any) -> Any:
 
 
 # ── Full pipeline ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_builders_dag_records_gate_revisions_on_canonical_spine() -> None:
+    project_store = InMemoryProjectScopeStore()
+    workspace_id = "builders-dag-test"
+    await project_store.create_root(workspace_id)
+    project = await project_store.root_for_workspace(workspace_id)
+    run_store = InMemoryRunStore(project_store=project_store)
+    durable_store = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
+    dispatcher = ScriptedDispatcher(
+        script={"review": ["Violation", "APPROVED"]},
+        context_writes={"test": [{"coverage": 95}]},
+    )
+
+    result = await run_builders_dag(
+        default_builders_dag(),
+        dispatcher,
+        params={"title": "Builders", "issue_number": 734},
+        run_id="builders-dag-canonical",
+        run_store=run_store,
+        durable_store=durable_store,
+        workspace_id=workspace_id,
+        project_id=project.project_id,
+    )
+
+    assert result.ok
+    assert result.run.canonical_run_id is not None
+    stored = await run_store.get_run(result.run.canonical_run_id)
+    assert stored is not None
+    assert stored.status is RunStatus.COMPLETED
+    node_runs = await run_store.list_node_runs(result.run.canonical_run_id)
+    assert [node_run.node_id for node_run in node_runs] == [
+        "builders-stage:design",
+        "builders-stage:revise",
+        "builders-stage:test",
+        "builders-stage:implement",
+        "builders-stage:review",
+        "builders-stage:revise",
+        "builders-stage:test",
+        "builders-stage:implement",
+        "builders-stage:review",
+    ]
+    attempts = [
+        attempt
+        for node_run in node_runs
+        for attempt in await run_store.list_attempts(node_run.node_run_id)
+    ]
+    assert len(attempts) == len(node_runs)
+    assert node_runs[4].result["route"] == "revise"
+    assert node_runs[-1].result["route"] == "proceed"
 
 
 def test_full_pipeline_runs_to_approval() -> None:

@@ -18,6 +18,7 @@ from maistro.graph.templates import (
     NodeTemplateNotFound,
     revalidated,
 )
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import aiosqlite
@@ -61,8 +62,9 @@ class SqliteGraphTemplateStore:
         self._conn = conn
 
     async def ensure_schema(self) -> None:
-        await self._conn.executescript(_SCHEMA)
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await execute_schema_script(self._conn, _SCHEMA)
+            await execute_schema_script(self._conn, _NODE_SCHEMA)
 
     async def put(self, template: GraphTemplate) -> GraphTemplate:
         """Register one version, idempotently for identical content.
@@ -224,8 +226,8 @@ class SqliteNodeTemplateStore:
         self._conn = conn
 
     async def ensure_schema(self) -> None:
-        await self._conn.executescript(_NODE_SCHEMA)
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await execute_schema_script(self._conn, _NODE_SCHEMA)
 
     async def put(self, template: NodeTemplate) -> NodeTemplate:
         """Register one version, idempotently for identical content.

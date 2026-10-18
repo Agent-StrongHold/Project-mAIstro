@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph, Node
 from maistro.graph.nodes import list_kinds
+from maistro.runs.model import RunStatus
 
 # Re-exported: `ADMISSION_SOURCE` has always been this module's name for the
 # provenance key, and it now lives in `runs.sources` so `runs.store` can read
@@ -94,6 +95,9 @@ async def admit_direct_work(
     persona_id: str | None = None,
     provenance: dict[str, Any] | None = None,
     retention_expires_at: datetime | None = None,
+    initial_status: RunStatus = RunStatus.CREATED,
+    goal_id: str | None = None,
+    goal_revision: int | None = None,
 ) -> Run:
     """Admit directly-submitted work and return its canonical Run.
 
@@ -101,6 +105,13 @@ async def admit_direct_work(
     Run can be traced back to its entry point without the entry point having to
     own any lifecycle state of its own. That is the whole trade #41 asks for:
     the admission record stays a receipt, the Run becomes the truth.
+
+    ``goal_id``/``goal_revision`` bind the Run to the canonical Goal
+    (`maistro.goals`, #1572) and the exact desired-state revision it was
+    admitted against. The caller resolves the Goal through the authorized
+    Goal seam first; admission records the binding as immutable Run
+    provenance and validates only its shape — it is not a second Goal
+    authorization path.
     """
     graph = direct_work_graph(
         workspace_id=workspace_id,
@@ -121,6 +132,9 @@ async def admit_direct_work(
         # audit correlates on.
         provenance={**(provenance or {}), ADMISSION_SOURCE: source},
         retention_expires_at=retention_expires_at,
+        initial_status=initial_status,
+        goal_id=goal_id,
+        goal_revision=goal_revision,
     )
 
 

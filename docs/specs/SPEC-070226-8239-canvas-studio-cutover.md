@@ -135,7 +135,11 @@ Workspace/Project context required by the canonical product hierarchy.
 The current Canvas server surface may support its narrow Canvas media-type
 behavior. It must not be described as implementation of the repository-wide
 ADR-076 negotiation scheme unless the general server actually implements that
-scheme. API version and package version remain independent.
+scheme. API version and package version remain independent. (Since #96 the
+general scheme *is* implemented — `maistro.api_versioning`, mounted on both
+business HTTP surfaces — but the Canvas media type remains a separate,
+canvas-local mechanism; the general middleware never rewrites a vendor media
+type.)
 
 ## Consumer cutover
 

@@ -557,7 +557,7 @@ export default function Topology() {
               borderRadius: 6,
               padding: "8px 12px",
               fontFamily: "var(--mono)",
-              fontSize: 10,
+              fontSize: 12,
               color: "var(--ink)",
               pointerEvents: "none",
               zIndex: 50,
@@ -571,22 +571,22 @@ export default function Topology() {
               {tooltip.name}
             </div>
             {tooltip.model && (
-              <div style={{ color: "var(--pencil)", fontSize: 9 }}>{tooltip.model}</div>
+              <div style={{ color: "var(--pencil)", fontSize: 12 }}>{tooltip.model}</div>
             )}
             {tooltip.status && (
-              <div style={{ color: "var(--pencil)", fontSize: 9 }}>status: {tooltip.status}</div>
+              <div style={{ color: "var(--pencil)", fontSize: 12 }}>status: {tooltip.status}</div>
             )}
             {tooltip.tasks !== undefined && (
-              <div style={{ color: "var(--pencil)", fontSize: 9 }}>tasks completed: {tooltip.tasks}</div>
+              <div style={{ color: "var(--pencil)", fontSize: 12 }}>tasks completed: {tooltip.tasks}</div>
             )}
             {tooltip.caps && tooltip.caps.length > 0 && (
-              <div style={{ color: "var(--pencil)", fontSize: 9 }}>capabilities: {tooltip.caps.join(", ")}</div>
+              <div style={{ color: "var(--pencil)", fontSize: 12 }}>capabilities: {tooltip.caps.join(", ")}</div>
             )}
             {tooltip.sk && tooltip.sk.length > 0 && (
-              <div style={{ color: "var(--pencil)", fontSize: 9 }}>skills: {tooltip.sk.join(", ")}</div>
+              <div style={{ color: "var(--pencil)", fontSize: 12 }}>skills: {tooltip.sk.join(", ")}</div>
             )}
             {tooltip.connections !== undefined && (
-              <div style={{ color: "var(--pencil)", fontSize: 9 }}>
+              <div style={{ color: "var(--pencil)", fontSize: 12 }}>
                 {tooltip.connections} connection{tooltip.connections !== 1 ? "s" : ""}
               </div>
             )}
@@ -604,14 +604,14 @@ export default function Topology() {
               borderRadius: 6,
               padding: "10px 14px",
               fontFamily: "var(--mono)",
-              fontSize: 9,
+              fontSize: 12,
               color: "var(--ink)",
               zIndex: 5,
               boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
               lineHeight: 1.8,
             }}
           >
-            <div style={{ fontWeight: 700, marginBottom: 6, fontSize: 10 }}>Legend</div>
+            <div style={{ fontWeight: 700, marginBottom: 6, fontSize: 12 }}>Legend</div>
             {LEGEND_ITEMS.map((item) => (
               <div key={item.label} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
                 <span
@@ -624,7 +624,7 @@ export default function Topology() {
                     borderRadius: "50%",
                     border: `1.5px solid ${item.fill}`,
                     color: item.fill,
-                    fontSize: 9,
+                    fontSize: 12,
                   }}
                 >
                   {item.glyph}
@@ -645,7 +645,7 @@ export default function Topology() {
                   borderRadius: 3,
                   background: "var(--paper-2)",
                   border: "0.8px solid var(--rule)",
-                  fontSize: 6,
+                  fontSize: 12,
                   textAlign: "center",
                   lineHeight: "13px",
                   fontFamily: "var(--mono)",

@@ -3,7 +3,7 @@ id: SPEC-251
 title: "Outbound delivery gateway — Channel protocol, registry, idempotent dispatch (ADR-047)"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-06-20
 substrate:
   - maistro-engine#ADR-014
@@ -12,6 +12,7 @@ implements:
   - maistro-engine#ADR-047
 related:
   - maistro-engine#ADR-046
+  - maistro-engine#ADR-047
 supersedes: []
 blocks: []
 blocked-by: []
@@ -23,21 +24,27 @@ tests:
 layer: Connectivity
 owners:
   - '@BlakeMatthews-dev'
+history:
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-251: Outbound delivery gateway — Channel protocol, registry, idempotent dispatch
 
-> **Convergence note (2026-08-19).** This spec is marked `Implemented` over
-> code with no path from any process entry point — see
+> **Convergence note (2026-08-19).** The code behind this spec has no path
+> from any process entry point — see
 > [#363](https://github.com/Agent-StrongHold/maistro-engine/issues/363). It
 > tracks ADR-047, now `Deprecated`.
 >
-> The status is left unchanged because the spec lifecycle has no way to
-> express this. From `Implemented` a spec may only become `Superseded`, which
-> requires a `superseded-by`, and no successor document exists. There is no
-> `Deprecated` state for specs as there is for ADRs. Correcting this needs
-> either the successor spec or a lifecycle change, so the note carries the
-> truth in the meantime.
+> The spec returned to `Proposed` on 2026-09-26 (#374): an accepted plan
+> cannot rest on a decision that is itself not accepted and shipped
+> authority, and the lifecycle expresses the correction as a backwards
+> transition with a reason in `history:`. The reachability finding above
+> (#363) is what keeps this spec from coming back until it is true.
+> ADR-047 stays recorded in `implements:` as the decision this spec
+> would implement, marked as design context, not shipped authority.
 
 
 ## Context

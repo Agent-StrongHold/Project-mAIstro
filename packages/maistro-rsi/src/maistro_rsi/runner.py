@@ -20,14 +20,22 @@ import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path as _Path
+from typing import Any
 
 import structlog
 
+from maistro.security.warden.detector import Warden
 from maistro_evolve.harness import BenchmarkFidelity, EvalHarness
 from maistro_evolve.tournament import EloTournament, GenomeBattle
 from maistro_evolve.types import EvalResult, PipelineGenome
 from maistro_rsi.benchmarks import RSI_BENCHMARKS
 from maistro_rsi.gateway import LlmCall, make_gateway_llm_call
+from maistro_rsi.harvest_boundary import (
+    HarvestCorrelation,
+    JsonlAuditSink,
+    WardenHarvestBoundary,
+    guarded_async_call,
+)
 from maistro_rsi.protocols import ApplyPatchFn, MicroVmSandbox, WorkspaceProbeFn
 from maistro_rsi.quota_burn import QuotaBurnScheduler
 from maistro_rsi.sandbox.microvm import create_rsi_sandbox
@@ -88,6 +96,11 @@ class RsiCycleConfig:
     benchmarks: list[str] = field(default_factory=lambda: list(DEFAULT_BENCHMARKS))
     open_prs: bool = False
     base_branch: str = "main"
+    # Source pin (#404 AC3): a full 40/64-hex digest the cycle's clone is
+    # fetched and verified against. None resolves the remote's HEAD digest
+    # first and pins to that — the clone is always digest-verified, never
+    # "whatever the ref points at when the fetch happens".
+    source_commit: str | None = None
     # Keep the cloned workspace after the cycle (debugging). Default False:
     # long-running loops would otherwise slowly fill the disk with one clone
     # per run_id that nothing ever deletes.
@@ -98,6 +111,9 @@ class RsiCycleConfig:
     # measured battles replace the stock genome benchmarks — the tournament
     # then scores what the patch actually did to the checkout.
     benchmark_commands: dict[str, str] = field(default_factory=dict)
+    # Durable Warden admission evidence for standalone RSI runs. Application
+    # composition roots may instead pass an EventStore-backed sink.
+    audit_path: str | None = None
 
 
 @dataclass
@@ -185,9 +201,48 @@ class RsiCycle:
         # headroom) actually drive the eval instead of being decorative. If no
         # model is available, leave it None and the benchmarks score
         # heuristically (loudly non-real).
+        audit_sink = JsonlAuditSink(
+            self._config.audit_path
+            or str(_Path(self._config.workspace_root) / "rsi-warden-audit.jsonl")
+        )
         llm_call = self._llm_call
         if llm_call is None and model:
-            llm_call = make_gateway_llm_call(model)
+            llm_call = make_gateway_llm_call(
+                model,
+                correlation=HarvestCorrelation(
+                    workspace_id=workspace,
+                    run_id=run_id,
+                    source_repository=self._config.repo_url,
+                    source_base=self._config.base_branch,
+                    candidate_id=model,
+                ),
+                audit_sink=audit_sink,
+            )
+        elif llm_call is not None:
+            # The constructor is an injection seam used by production adapters
+            # and tests alike. Do not let it bypass the harvest boundary.
+            boundary = WardenHarvestBoundary(
+                Warden(),
+                correlation=HarvestCorrelation(
+                    workspace_id=workspace,
+                    run_id=run_id,
+                    source_repository=self._config.repo_url,
+                    source_base=self._config.base_branch,
+                    candidate_id=model,
+                ),
+                audit_sink=audit_sink,
+            )
+            inner_llm_call = llm_call
+
+            async def guarded_llm_call(messages: object, **kwargs: Any) -> str:
+                result: str = await guarded_async_call(inner_llm_call, messages, boundary, **kwargs)
+                for attr in ("usage_input", "usage_output"):
+                    setattr(guarded_llm_call, attr, getattr(inner_llm_call, attr, 0))
+                return result
+
+            for attr in ("usage_input", "usage_output"):
+                setattr(guarded_llm_call, attr, getattr(inner_llm_call, attr, 0))
+            llm_call = guarded_llm_call
 
         sandbox = await create_rsi_sandbox(workspace)
         try:
@@ -195,6 +250,7 @@ class RsiCycle:
                 self._config.repo_url,
                 self._config.test_command,
                 base_branch=self._config.base_branch,
+                commit=self._config.source_commit,
             )
             probe = (
                 probe_from_commands(self._config.benchmark_commands)
@@ -238,7 +294,7 @@ class RsiCycle:
         usage_in = int(getattr(llm_call, "usage_input", 0) or 0)
         usage_out = int(getattr(llm_call, "usage_output", 0) or 0)
         if model and (usage_in or usage_out):
-            await self._scheduler.record_attempt(model, usage_in, usage_out)
+            await self._scheduler.record_attempt(model, usage_in, usage_out, event_id=run_id)
 
         result = RsiCycleResult(
             run_id=run_id,

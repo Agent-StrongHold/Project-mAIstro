@@ -15,8 +15,12 @@ import pytest
 from pydantic import BaseModel
 
 from maistro.graph import Graph, Node
+from maistro.graph.durable_runs import (
+    CanonicalDurableRunStore,
+    InMemoryGraphContinuationStore,
+    run_durable_graph,
+)
 from maistro.graph.durable_runs import executor as traversal
-from maistro.graph.durable_runs import run_durable_graph
 from maistro.graph.durable_runs.execution_store import DurableRunExecutionStore
 from maistro.graph.durable_runs.stores import InMemoryDurableRunStore
 from maistro.graph.durable_runs.types import DurableRunRecord
@@ -25,6 +29,7 @@ from maistro.graph.nodes import BaseNode, NodeContext
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore, RunStatus
 from maistro.runs.store import RunIntegrityError
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 class _StepIn(BaseModel):
@@ -111,7 +116,9 @@ async def _bound_execution_store() -> tuple[
 ]:
     run_store, workspace_id, project_id = await _spine()
     graph = _graph(workspace_id, project_id)
-    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    run = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     run = await run_store.transition_run(run.run_id, RunStatus.RUNNING)
     node_run = await run_store.create_node_run(run.run_id, node_id="step")
     await run_store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
@@ -138,7 +145,11 @@ async def test_pinned_run_rejects_a_different_graph_before_physical_work() -> No
     run_store, workspace_id, project_id = await _spine()
     canonical_graph = _graph(workspace_id, project_id, name="canonical graph")
     supplied_graph = _graph(workspace_id, project_id, name="different graph")
-    admitted = await run_store.create_run(canonical_graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(
+        canonical_graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     executed: list[str] = []
 
     def resolver(node_id: str, graph: Any) -> _Step:
@@ -152,6 +163,7 @@ async def test_pinned_run_rejects_a_different_graph_before_physical_work() -> No
             node_resolver=resolver,
             run_id=admitted.run_id,
             run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
     assert executed == []
@@ -168,7 +180,9 @@ async def test_pinned_parent_is_running_before_any_node_executes() -> None:
         name="observe parent",
         nodes=[Node(node_id="step", node_type=_ObserveRunStatus.kind)],
     )
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     seen: list[RunStatus] = []
 
     record = await traversal.run_durable_graph(
@@ -177,6 +191,7 @@ async def test_pinned_parent_is_running_before_any_node_executes() -> None:
         node_resolver=lambda node_id, graph: _ObserveRunStatus(run_store, admitted.run_id, seen),
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.COMPLETED
@@ -198,6 +213,7 @@ async def test_canonical_path_does_not_bootstrap_run_before_traversal_checkpoint
             store=_FailCreateStore(),
             node_resolver=lambda node_id, graph: _Step(),
             run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
     assert await run_store.list_by_status(RunStatus.CREATED, limit=10) == []
@@ -209,7 +225,9 @@ async def test_retry_adopts_node_run_created_before_checkpoint_failure() -> None
     """Canonical NodeRun identity survives a failed aggregate checkpoint exactly once."""
     run_store, workspace_id, project_id = await _spine()
     graph = _graph(workspace_id, project_id)
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     class FailFrontierCheckpoint(InMemoryDurableRunStore):
         fail_frontier = True
@@ -229,6 +247,7 @@ async def test_retry_adopts_node_run_created_before_checkpoint_failure() -> None
             node_resolver=lambda node_id, graph: _Step(),
             run_id=admitted.run_id,
             run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
     orphaned = await run_store.list_node_runs(admitted.run_id)
@@ -305,7 +324,9 @@ async def test_scoped_reclaim_settles_canonical_attempt_before_immediate_retry()
 
 
 async def _admitted(run_store: InMemoryRunStore, graph: Graph) -> str:
-    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    run = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     return run.run_id
 
 
@@ -319,6 +340,7 @@ async def test_a_pinned_run_that_is_not_on_the_spine_is_refused() -> None:
             node_resolver=lambda node_id, graph: _Step(),
             run_id="never-admitted",
             run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
 
@@ -333,6 +355,7 @@ async def test_a_pinned_run_admitted_for_a_different_graph_is_refused() -> None:
             node_resolver=lambda node_id, graph: _Step(),
             run_id=run_id,
             run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
 
@@ -347,6 +370,7 @@ async def test_a_pinned_run_admitted_under_another_scope_is_refused() -> None:
             node_resolver=lambda node_id, graph: _Step(),
             run_id=run_id,
             run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
 
@@ -365,4 +389,67 @@ async def test_a_pinned_run_that_already_left_the_queue_is_refused() -> None:
             node_resolver=lambda node_id, graph: _Step(),
             run_id=run_id,
             run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
+
+
+@pytest.mark.parametrize(
+    ("offset", "requeued"),
+    [
+        pytest.param(timedelta(microseconds=-1), False, id="live-lease"),
+        pytest.param(timedelta(0), True, id="lease-expiry-boundary"),
+        pytest.param(timedelta(microseconds=1), True, id="expired-lease"),
+    ],
+)
+async def test_frontier_recovery_respects_persisted_attempt_lease(
+    offset: timedelta, requeued: bool
+) -> None:
+    """Only an unheld frontier is re-queued; recovery never rewrites its Attempt."""
+    run_store, workspace_id, project_id = await _spine()
+    graph = _graph(workspace_id, project_id)
+    run = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+    run = await run_store.transition_run(run.run_id, RunStatus.RUNNING)
+    node = await run_store.create_node_run(run.run_id, node_id="step")
+    await run_store.transition_node_run(node.node_run_id, RunStatus.QUEUED)
+    node = await run_store.transition_node_run(node.node_run_id, RunStatus.RUNNING)
+    attempt = await run_store.create_attempt(
+        node.node_run_id, lease_holder="frontier-worker", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+    assert attempt.execution_lease.expires_at is not None
+    moment = attempt.execution_lease.expires_at + offset
+    continuations = InMemoryGraphContinuationStore()
+    store = CanonicalDurableRunStore(run_store, continuations)
+    await store.create(
+        DurableRunRecord(
+            run=run,
+            graph_state=GraphExecutionState(run_id=run.run_id, active_node_ids=("step",)),
+            node_runs=(node,),
+            attempts=(attempt,),
+            version=1,
+        )
+    )
+    before = await continuations.get(run.run_id)
+    assert before is not None and before.resume_at is None
+    assert await store.list_due(now=moment) == []
+
+    assert await store.reconcile_persistence(now=moment) == int(requeued)
+
+    after = await continuations.get(run.run_id)
+    assert after is not None
+    expected = (
+        before.model_copy(update={"resume_at": moment, "version": before.version + 1})
+        if requeued
+        else before
+    )
+    assert after == expected
+    assert [record.run_id for record in await store.list_due(now=moment)] == (
+        [run.run_id] if requeued else []
+    )
+    assert await run_store.get_run(run.run_id) == run
+    assert await run_store.list_node_runs(run.run_id) == [node]
+    assert await run_store.list_attempts(node.node_run_id) == [attempt]
+    assert await store.reconcile_persistence(now=moment) == 0
+    assert await continuations.get(run.run_id) == after

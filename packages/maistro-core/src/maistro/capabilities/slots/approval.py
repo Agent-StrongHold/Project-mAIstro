@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from maistro.capabilities.authority import ApprovalAuthority
 from maistro.capabilities.protocols import CapabilityProvider
 
 
@@ -24,6 +25,7 @@ class ApprovalDecision:
     request_id: str
     approved: bool
     actor: str = ""
+    authority: ApprovalAuthority | None = None
 
 
 @runtime_checkable

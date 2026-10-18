@@ -34,7 +34,7 @@ history:
 
 # ADR-073: Warden + Sentinel
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-30
 **Implements the enforcement substrate** that ADR-068 (authz), ADR-050 (reversibility), and ADR-051
 (approval gates) all delegate to but never specified — they exist only in code today.

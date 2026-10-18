@@ -91,9 +91,20 @@ def _unshallow_ci_checkout(prov: ModuleType, event_base: str) -> None:
         )
     fetched = _run_git(["fetch", "--no-tags", "--unshallow", "origin", current_ref])
     if fetched.returncode != 0:
-        raise prov.RatchetProvenanceError(
-            f"could not unshallow GitHub event ref {current_ref!r}: {fetched.stderr.strip()}"
-        )
+        # Merge-group checkouts name an ephemeral
+        # refs/heads/gh-readonly-queue/develop/pr-N-<sha> ref that GitHub does
+        # not publish for fetch (observed 2026-09-15: every merge-group lint
+        # run died here and bounced its whole queue group). Unshallow without
+        # a ref filter instead: the unrestricted fetch materializes the queue
+        # merge commit's ancestry from the same branches the queue composed
+        # it from, which is all this gate needs.
+        fallback = _run_git(["fetch", "--no-tags", "--unshallow", "origin"])
+        if fallback.returncode != 0:
+            raise prov.RatchetProvenanceError(
+                f"could not unshallow GitHub event ref {current_ref!r}: "
+                f"{fetched.stderr.strip()}; unrestricted fallback also failed: "
+                f"{fallback.stderr.strip()}"
+            )
 
 
 def _materialize_event_base(prov: ModuleType, event_base: str) -> None:

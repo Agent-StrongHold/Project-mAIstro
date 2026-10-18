@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "od-design-system-project/v1",
+  "id": "workspace",
+  "name": "Workspace",
+  "category": "First-party product surface",
+  "description": "First-party design system for the Workspace product surface: frosted glass over a persona bloom, a fixed four-colour actor grammar (you / agent / gate / system), four honest state faces, cited why-panels, three undo outcomes and a 12px floor. Greenhouse is the default persona; slate and studio ship as templates; users may author their own from four values.",
+  "source": {
+    "type": "first-party",
+    "origin": "Agent-StrongHold/Project-mAIstro, authored for the Workspace surface (issue #1046 / #1048 / #65)"
+  },
+  "files": {
+    "design": "DESIGN.md",
+    "tokens": "tokens.css",
+    "designTokens": "design-tokens.json",
+    "components": "components.html"
+  },
+  "importMode": "normalized",
+  "craft": {
+    "applies": [],
+    "suggested": [
+      "color",
+      "accessibility-baseline"
+    ],
+    "exemptions": []
+  },
+  "preview": {
+    "dir": "preview",
+    "pages": [
+      {
+        "path": "components.html",
+        "role": "components",
+        "title": "Kit"
+      },
+      {
+        "path": "preview/home.html",
+        "role": "app",
+        "title": "Workspace Home"
+      }
+    ]
+  },
+  "personas": {
+    "default": "greenhouse",
+    "templates": ["greenhouse", "slate", "studio"],
+    "schemes": ["light", "dark"],
+    "customizable": ["--bg", "--bloom", "--accent", "--accent-on", "--radius-sm", "--radius-md", "--radius-lg"],
+    "fixed": ["--actor-human", "--actor-agent", "--actor-gate", "--actor-system", "--face-*", "--text-floor", "--focus-ring", "--font-*"]
+  }
+}

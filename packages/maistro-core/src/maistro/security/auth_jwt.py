@@ -20,6 +20,8 @@ logger = logging.getLogger("maistro.auth.jwt")
 class JWTAuthProvider:
     """Authenticates via JWT tokens from any OIDC-compliant IdP."""
 
+    scheme = "jwt_bearer"
+
     def __init__(
         self,
         *,
@@ -49,17 +51,22 @@ class JWTAuthProvider:
         authorization: str | None,
         headers: dict[str, str] | None = None,
     ) -> AuthContext:
-        from maistro.security.auth_composite import AuthError, CredentialNotApplicable
+        from maistro.protocols.auth import (
+            AuthError,
+            CredentialNotApplicable,
+            _extract_bearer_token,
+        )
 
         if not authorization:
             raise CredentialNotApplicable("Missing Authorization header")
 
-        if not authorization.startswith("Bearer "):
+        token = _extract_bearer_token(authorization)
+        if token is None:
             raise CredentialNotApplicable("Not a Bearer token")
 
-        token = authorization.removeprefix("Bearer ").strip()
         if not token:
-            raise CredentialNotApplicable("Empty token")
+            # The Bearer scheme is recognized even when its credential is empty.
+            raise AuthError("Empty token")
 
         claims = await self._decode_token(token)
 
@@ -75,7 +82,7 @@ class JWTAuthProvider:
             kind = IdentityKind.INTERACTIVE_AGENT
 
         if not user_id:
-            from maistro.security.auth_composite import AuthError
+            from maistro.protocols.auth import AuthError
 
             raise AuthError("Token missing 'sub' claim")
 
@@ -122,7 +129,7 @@ class JWTAuthProvider:
                 audience=self._audience,
             )
         except Exception as e:
-            from maistro.security.auth_composite import AuthError
+            from maistro.protocols.auth import AuthError
 
             raise AuthError(f"JWT validation failed: {e}") from e
 

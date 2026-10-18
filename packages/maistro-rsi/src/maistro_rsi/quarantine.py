@@ -22,18 +22,28 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from maistro.security.warden.detector import Warden
-from maistro_rsi.sensitive_paths import SENSITIVE_PATH_PATTERNS, matches_sensitive_pattern
+from maistro_rsi.sensitive_paths import (
+    EVALUATOR_ORACLE_PATTERNS,
+    SENSITIVE_PATH_PATTERNS,
+    matches_evaluator_oracle_pattern,
+    matches_sensitive_pattern,
+)
 
 # The containment-surface classifier lives in `sensitive_paths` (#303): it is
 # pure string work with no dependencies, and both this gate and
 # `scripts/check-promotion-surface.py` must consult the same matcher rather
 # than two that agree until they don't. Re-exported here because callers --
 # including `scripts/check_enumerations.py` -- import both names from this
-# module.
+# module. The evaluator-oracle classifier (#109) is re-exported alongside for
+# the same reason; its tier is ENFORCED in evaluator_oracle.py /
+# candidate_fitness.py, not by this gate — quarantine escalates a sensitive
+# diff to review, while an oracle mutation is vetoed before scoring.
 __all__ = [
+    "EVALUATOR_ORACLE_PATTERNS",
     "SENSITIVE_PATH_PATTERNS",
     "AdversarialReview",
     "QuarantineVerdict",
+    "matches_evaluator_oracle_pattern",
     "matches_sensitive_pattern",
     "quarantine_scan",
 ]

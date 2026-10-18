@@ -37,14 +37,15 @@ is also required live on both branches; because it is produced by
 
 | Branch | PR | Approvals | Linear history | Force-push | Deletion | Required checks |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `develop` | yes | **0** | yes | no | no | **17** |
-| `main` | yes | **1** | no | no | no | **29** |
+| `develop` | yes | **0** | yes | no | no | **18** |
+| `main` | yes | **1** | no | no | no | **30** |
 
 | Check | `develop` | `main` |
 |---|:--:|:--:|
 | `Analyze (actions)` | ○ | ● |
 | `Analyze (javascript-typescript)` | ○ | ● |
 | `Analyze (python)` | ○ | ● |
+| `Compliance registry` | ● | ● |
 | `Container scan + SBOM + cosign` | ○ | ● |
 | `Coverage gate (publish-set floor + diff coverage)` | ● | ● |
 | `DevSkim` | adv | ○ |

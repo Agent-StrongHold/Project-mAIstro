@@ -15,7 +15,6 @@ from maistro.security.external_content import (
     wrap_external_content,
     _normalize_text,
 )
-from maistro.security.patterns import INVISIBLE_CHARS
 
 
 _START_MARKER = "<<<EXTERNAL_UNTRUSTED_CONTENT>>>"
@@ -25,6 +24,7 @@ _END_MARKER = "<<<END_EXTERNAL_UNTRUSTED_CONTENT>>>"
 class ExternalContentMachine(RuleBasedStateMachine):
     def __init__(self):
         super().__init__()
+        self.last_wrapped: str | None = None
         self.wrapped_count = 0
         self.injection_count = 0
 
@@ -46,11 +46,27 @@ class ExternalContentMachine(RuleBasedStateMachine):
         for marker in (_START_MARKER, _END_MARKER):
             expected = re.sub(re.escape(marker), "", expected, flags=re.IGNORECASE)
         assert expected in result
+        self.last_wrapped = result
         self.wrapped_count += 1
 
     @invariant()
-    def wrapped_always_contains_markers(self):
-        pass
+    def wrapped_output_positions_markers_correctly(self):
+        """Structural property over the most recent wrap (was an empty `pass`
+        invariant that added green signal to the run without checking any).
+
+        Counterexample class: a wrapper that emits the end marker before (or
+        instead of) the start marker, or drops a marker entirely, breaks the
+        boundary contract every consumer of `contains_markers` relies on —
+        the ordering/position assertion fails here.
+        """
+        if self.last_wrapped is None:
+            return
+        start_idx = self.last_wrapped.find(_START_MARKER)
+        end_idx = self.last_wrapped.find(_END_MARKER)
+        assert start_idx != -1 and end_idx != -1, "a boundary marker is missing from the wrapped output"
+        assert start_idx < end_idx, "end marker appears before start marker"
+        assert start_idx == 0, "wrapped output does not open with the start marker"
+        assert self.last_wrapped.endswith(_END_MARKER), "wrapped output does not close with the end marker"
 
 
 TestExternalContentMachine = ExternalContentMachine.TestCase
@@ -176,10 +192,11 @@ def test_invisible_word_joiners_stripped(char_code):
 @settings(max_examples=50)
 def test_normalize_preserves_printable(content):
     result = _normalize_text(content)
-    for char in result:
-        if char in "\n\r\t":
-            continue
-        assert not INVISIBLE_CHARS.match(char)
+    known_invisible = (
+        "\u200b\u200c\u200d\u200e\u200f\u2060\u2061\u2062\u2063\u2064"
+        "\u2066\u2067\u2068\u2069\ufeff\u00ad\u034f\u061c\u180e"
+    )
+    assert not any(char in known_invisible for char in result)
 
 
 @given(

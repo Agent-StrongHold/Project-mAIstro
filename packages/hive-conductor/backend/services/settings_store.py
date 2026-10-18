@@ -5,9 +5,10 @@ anywhere. Four surfaces rebound or mutated it and returned `200`; every one of
 those writes was discarded at restart (#334).
 
 Attaching `PersistedStore` alone would not have closed that. `PersistedStore.put`
-enqueues a closure for `State`'s writer thread and returns, and
-`State._writer_loop` swallows every exception that closure raises — so an
-acknowledgement issued after `put` still precedes, and survives, the failure.
+only enqueues a closure for `State`'s writer thread, and `State._writer_loop`
+swallows every exception that closure raises — so an acknowledgement issued
+after a queued `put` still precedes, and survives, the failure (#1238,
+#1179).
 
 So a write here is acknowledged only after it has been **read back** from the
 authoritative store and compared to what was sent. Everything else in this
@@ -62,7 +63,7 @@ class SettingsPersistenceError(RuntimeError):
     """A write was not observed in the store afterwards.
 
     Raised for a write that did not land, a read-back that disagreed with what
-    was sent, and a drain that timed out. All three mean the same thing to a
+    was sent, and a commit that failed. All three mean the same thing to a
     caller: do not tell anyone this succeeded.
     """
 
@@ -150,16 +151,18 @@ class EphemeralSettingsRecordStore:
 
 
 class PersistedSettingsRecordStore:
-    """Record store over `PersistedStore`, draining the writer queue on write.
+    """Record store over `PersistedStore`'s acknowledged writes (#333, #1179).
 
-    `flush` is the drain. Without it `read` races the writer thread and the
-    read-back check would pass or fail on timing.
+    ``put_raw`` is the acknowledgement primitive: it does not return until the
+    State writer thread has committed the row, and it raises the writer's
+    failure instead of accepting the write into a queue (#1238). There is no
+    per-store ``flush`` to remember: a completed ``write`` is durable, so the
+    read-back after it observes the committed document rather than racing the
+    writer thread.
     """
 
-    def __init__(self, persisted: Any, flush: Any, timeout: float = 10.0) -> None:
+    def __init__(self, persisted: Any) -> None:
         self._persisted = persisted
-        self._flush = flush
-        self._timeout = timeout
 
     @property
     def durable(self) -> bool:
@@ -170,8 +173,11 @@ class PersistedSettingsRecordStore:
         return str(document) if document is not None else None
 
     def write(self, document: str) -> None:
+        # Blocks until the writer commits; raises the writer's failure. A
+        # caller that sees ``write`` return holds a committed row, and one that
+        # sees it raise holds nothing (#1179 acceptance: a queued command is
+        # never an acknowledgement).
         self._persisted.put_raw(STORE_NAME, RECORD_KEY, document)
-        self._flush(timeout=self._timeout)
 
 
 #: `save` is read-modify-write across three steps — load, compare the revision,
@@ -288,6 +294,24 @@ def record() -> SettingsRecord:
     if _cache is None:
         return load()
     return _cache
+
+
+def reload() -> SettingsRecord:
+    """Drop the cached record and re-read the store (#389).
+
+    `POST /v1/settings/reload` is this function's HTTP surface. It exists so a
+    record edited out of band -- an operator's script writing the durable
+    document directly, a restore from backup -- becomes visible without a
+    process restart: the cache is dropped *first*, so the read below cannot
+    answer from stale state even if the store read itself fails halfway.
+
+    Raises whatever the store raises on an unavailable read (the route maps
+    that to 503); on success the returned record IS what the store now holds,
+    so the caller can verify the reload against a revision it saw before.
+    """
+    global _cache
+    _cache = None
+    return load()
 
 
 def current() -> SettingsModel:

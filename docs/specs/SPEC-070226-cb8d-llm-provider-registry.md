@@ -3,17 +3,17 @@ id: SPEC-070226-cb8d
 title: "LLM provider / model registry, routing, and embeddings"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-07-02
 substrate:
-  - maistro-engine#ADR-079
   - maistro-engine#ADR-085
-  - maistro-engine#SPEC-014
 implements:
   - maistro-engine#ADR-079
 related:
   - maistro-engine#ADR-094
   - maistro-engine#SPEC-270
+  - maistro-engine#ADR-079
+  - maistro-engine#SPEC-014
 supersedes: []
 blocks: []
 blocked-by: []
@@ -28,16 +28,23 @@ tests:
 layer: Tools
 owners:
   - '@BlakeMatthews-dev'
+history:
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-070226-cb8d: LLM provider / model registry, routing, and embeddings
 
 ## Context
 
-Agents currently call the OpenAI-compatible gateway directly. ADR-079 specifies a unified provider
+Agents currently call the OpenAI-compatible gateway directly. ADR-079 proposes a unified provider
 registry where operators declare available models (claude-3-opus, gpt-4-turbo, local-llama, etc.),
 each with cost/latency/tier metadata, and a router that selects the best model for each call
-based on task requirements (reasoning depth, latency budget, cost constraint).
+based on task requirements (reasoning depth, latency budget, cost constraint). ADR-079 remains
+Proposed and is retained as design context only; it is not shipped authority for this SPEC — the
+operative authority is this SPEC under its Accepted substrate (ADR-085).
 
 ## Goals
 
