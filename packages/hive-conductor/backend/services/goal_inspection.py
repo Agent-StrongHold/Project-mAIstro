@@ -269,9 +269,16 @@ def _goal_view_for(
     )
     rows = [_run_evidence_row(summary, context, run) for context, summary, run in ordered]
     contexts = [context for context, _summary, _run in ordered]
+    # `ordered` is newest evidence first; a lexical sort would incorrectly
+    # select revision "9" over revision "10" for its desired-state details.
+    seen_revision = contexts[0].goal_revision if contexts else None
 
     def _recorded(pick) -> str | None:
         for context in contexts:
+            # Missing facts on the displayed revision are absence, not license
+            # to attribute an older revision's intent to the newer one.
+            if context.goal_revision != seen_revision:
+                continue
             value = pick(context)
             if value is not None:
                 return value
@@ -285,9 +292,6 @@ def _goal_view_for(
         ),
     )
     canonical_revisions = canonical_revisions or {}
-    # `ordered` is newest evidence first; a lexical sort would incorrectly
-    # select revision "9" over revision "10" for its desired-state details.
-    seen_revision = contexts[0].goal_revision if contexts else None
     exact_revision = (
         canonical_revisions.get(int(seen_revision))
         if seen_revision is not None and seen_revision.isdecimal()
@@ -325,14 +329,16 @@ def _goal_view_for(
             if exact_revision is not None
             else _recorded(lambda c: c.desired_state)
         ),
+        # An authoritative empty list must also clear the scalar compatibility
+        # field; otherwise the UI revives stale legacy conditions as fallback.
         "success_condition": (
-            exact_revision.success_conditions[0]
-            if exact_revision is not None and exact_revision.success_conditions
+            next(iter(exact_revision.success_conditions), None)
+            if exact_revision is not None
             else _recorded(lambda c: c.success_condition)
         ),
         "stop_condition": (
-            exact_revision.stop_conditions[0]
-            if exact_revision is not None and exact_revision.stop_conditions
+            next(iter(exact_revision.stop_conditions), None)
+            if exact_revision is not None
             else _recorded(lambda c: c.stop_condition)
         ),
         "success_conditions": (

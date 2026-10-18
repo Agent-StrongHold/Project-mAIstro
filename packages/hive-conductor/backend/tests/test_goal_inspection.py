@@ -453,6 +453,78 @@ async def test_canonical_goal_state_and_bound_revision_are_not_derived_from_a_ru
     assert view["execution_disposition"] == "evidence_settled"
 
 
+async def test_legacy_goal_facts_do_not_cross_revision_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sparse newer revision must not borrow an older revision's intent."""
+    goal_id = _next_id("goal")
+    scene = await _make_scene(monkeypatch)
+    await scene.add_goal_run(
+        goal_id=goal_id,
+        provenance={
+            "goal_id": goal_id,
+            "goal_revision": "1",
+            "desired_state": "old desired state",
+            "success_condition": "old success condition",
+            "stop_condition": "old stop condition",
+        },
+    )
+    latest = await scene.add_goal_run(
+        goal_id=goal_id,
+        provenance={"goal_id": goal_id, "goal_revision": "2"},
+    )
+
+    view = (await _views_for(goal_id))[0]
+    assert view["runs"][0]["run_id"] == latest
+    assert view["goal_revision_seen"] == "2"
+    assert view["goal_revisions"] == ["1", "2"]
+    assert view["desired_state"] is None
+    assert view["success_condition"] is None
+    assert view["stop_condition"] is None
+    # The older intent remains available as historical execution provenance.
+    assert view["runs"][1]["provenance"]["desired_state"] == "old desired state"
+
+
+async def test_canonical_empty_conditions_override_legacy_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Canonical absence is authoritative, not permission to revive stale facts."""
+    from maistro.goals import GoalRevisionDraft
+
+    goal_id = _next_id("goal")
+    scene = await _make_scene(monkeypatch)
+    root = await scene.workspaces.project_store.root_for_workspace(scene.view.id)
+    await scene.goal_store.create_goal(
+        goal_id=goal_id,
+        workspace_id=scene.view.id,
+        project_id=root.project_id,
+        agent_id="workspace-agent-1",
+        draft=GoalRevisionDraft(
+            desired_state="canonical desired state",
+            success_conditions=(),
+            stop_conditions=(),
+            author=_USER_ID,
+        ),
+    )
+    await scene.add_goal_run(
+        goal_id=goal_id,
+        provenance={
+            "goal_id": goal_id,
+            "goal_revision": "1",
+            "success_condition": "stale success",
+            "stop_condition": "stale stop",
+        },
+    )
+
+    view = (await _views_for(goal_id))[0]
+    assert view["goal_state_source"] == "canonical_goal"
+    assert view["desired_state"] == "canonical desired state"
+    assert view["success_conditions"] == []
+    assert view["stop_conditions"] == []
+    assert view["success_condition"] is None
+    assert view["stop_condition"] is None
+
+
 async def test_failed_run_surfaces_a_blocker_without_a_goal_verdict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
