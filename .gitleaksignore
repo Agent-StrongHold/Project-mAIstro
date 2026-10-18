@@ -95,12 +95,17 @@ b5c22a358a8b0a0fb064e89eb6b4eba6855b58c2:.gitleaksignore:generic-api-key:54
 
 # ---- auto-837 (#837) redaction-proof fixture on this lane ----
 # The durable-runs failure-evidence redaction tests need a credential-shaped
-# literal to prove what is NOT persisted: `api_key=sk-proj-ABCdef123456` is a
-# synthetic placeholder that never authenticates anything, asserted through
-# pinned equality with the redacted output (`[REDACTED_SECRET_ASSIGNMENT]`).
-# Rewording it cannot clean the range scan, because `gitleaks git` scans each
-# commit's own patch and the introducing commits below are immutable history
-# on this branch — only these per-commit fingerprints can quiet them. New
-# values, commits, paths or rules remain fully scanned.
+# literal to prove what is NOT persisted: an OpenAI-style placeholder key
+# ("sk-proj" prefix plus a short alphabet block) assigned to an api_key
+# parameter — synthetic, never authenticates anything, asserted through
+# pinned equality with the redacted output (REDACTED_SECRET_ASSIGNMENT).
+# Deliberately paraphrased: quoting the fixture verbatim in this comment
+# makes this file trip the same rule (see the M4-A8 note above), and commit
+# 81f898591 is fingerprinted below for exactly that earlier wording.
+# Rewording cannot clean the range scan on its own, because `gitleaks git`
+# scans each commit's own patch and the introducing commits below are
+# immutable history on this branch — only these per-commit fingerprints can
+# quiet them. New values, commits, paths or rules remain fully scanned.
+81f8985913f040b2b12aba0a1f71748ed1b1d20b:.gitleaksignore:generic-api-key:98
 1ac446cf4385285f32ef2408233ab81911fe36a9:packages/maistro-core/tests/graph/durable_runs/test_executor_gaps.py:generic-api-key:69
 f83de3b7a431523a47234102499d35218b9881fe:docs/testing/inventory-notes/837-persisted-failure-redaction.md:generic-api-key:38
