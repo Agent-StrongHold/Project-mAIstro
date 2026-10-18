@@ -7,32 +7,25 @@ and ``agent.delegated`` but NOT ``task.created`` and NOT ``agent.task.created``
 
 Distinct from the richer, payload-condition :class:`maistro.events.bus.Trigger`
 used by the in-memory bus; this store backs the durable reactor loop.
+
+Replay safety (#1060 §2): a trigger declares what its recipient can prove
+about redelivery — ``replay_safety`` plus the operator-approved
+``contract_ref`` that names the versioned commit/dedup contract. Enrollment is
+supplied through this store (the authorized trigger-configuration path),
+never by a remote response. An idempotent/read_only declaration without a
+``contract_ref`` is treated as unproven: fail-closed.
 """
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from enum import StrEnum
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import uuid4
 
+from maistro.events.invocations import ReplaySafety
 from maistro.sqlite_schema import serialized_schema_upgrade
-
-
-class HandlerDeliveryContract(StrEnum):
-    """External-effect contract required before the reactor may replay.
-
-    The durable Invocation row only deduplicates MAIstro dispatch. It cannot
-    prove that a remote commit did not happen before a worker died. Only a
-    handler that stores/deduplicates the stable delivery key qualifies for
-    automatic at-least-once replay; unknown handlers fail closed.
-    """
-
-    AT_LEAST_ONCE_IDEMPOTENT = "at_least_once_idempotent"
-    UNSAFE = "unsafe"
-
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -57,16 +50,39 @@ def pattern_matches(pattern: str, event_type: str) -> bool:
 
 @dataclass
 class TriggerDefinition:
-    """Declarative trigger: event pattern -> handler endpoint."""
+    """Declarative trigger: event pattern -> handler endpoint.
+
+    ``replay_safety``/``contract_ref`` enroll the recipient in the reviewed
+    delivery contract (#1060 §2). The declaration is frozen onto each receipt
+    when its delivery key is allocated, but every subsequent dispatch must
+    also match a *currently* valid authorized declaration — editing a trigger
+    never retrospectively certifies previous sends, and a removed/changed
+    declaration is never overridden by the frozen historical assertion.
+    """
 
     trigger_id: str = field(default_factory=lambda: uuid4().hex[:8])
     name: str = ""
     event_pattern: str = ""
     handler_url: str = ""
     enabled: bool = True
-    # Existing trigger rows default to unsafe until their remote commit
-    # protocol is explicitly attested by the operator.
-    delivery_contract: HandlerDeliveryContract = HandlerDeliveryContract.UNSAFE
+    # Existing trigger rows default to unproven until their remote commit
+    # protocol is explicitly attested by the operator through this store.
+    replay_safety: ReplaySafety = ReplaySafety.UNPROVEN
+    contract_ref: str = ""
+
+    @property
+    def effective_replay_safety(self) -> ReplaySafety:
+        """The safety this trigger may act on, after fail-closed validation.
+
+        Idempotent/read_only enrollment requires a nonempty, immutable,
+        versioned ``contract_ref``; absent or invalid declarations read as
+        unproven rather than upgrading the row's stored assertion.
+        """
+        if self.replay_safety in (ReplaySafety.IDEMPOTENT, ReplaySafety.READ_ONLY) and not (
+            self.contract_ref
+        ):
+            return ReplaySafety.UNPROVEN
+        return self.replay_safety
 
     def matches(self, event_type: str) -> bool:
         return self.enabled and pattern_matches(self.event_pattern, event_type)
@@ -129,9 +145,17 @@ CREATE TABLE IF NOT EXISTS trigger_definitions (
     event_pattern TEXT NOT NULL DEFAULT '',
     handler_url TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1,
-    delivery_contract TEXT NOT NULL DEFAULT 'unsafe'
+    replay_safety TEXT NOT NULL DEFAULT 'unproven',
+    contract_ref TEXT NOT NULL DEFAULT ''
 )
 """
+
+# Legacy rows predate the explicit replay contract; they upgrade fail-closed
+# to unproven (#1060 §5 — never silently upgrade an old safety declaration).
+_TRIGGER_UPGRADES = (
+    "ALTER TABLE trigger_definitions ADD COLUMN replay_safety TEXT NOT NULL DEFAULT 'unproven'",
+    "ALTER TABLE trigger_definitions ADD COLUMN contract_ref TEXT NOT NULL DEFAULT ''",
+)
 
 
 class SqliteTriggerStore:
@@ -147,41 +171,39 @@ class SqliteTriggerStore:
     async def ensure_schema(self) -> None:
         async with serialized_schema_upgrade(self._conn):
             await self._conn.execute(_SCHEMA)
-            # Existing installations predate the explicit replay contract. Keep
-            # those handlers disabled for automatic replay until opted in.
             columns = await self._conn.execute("PRAGMA table_info(trigger_definitions)")
             names = {str(row[1]) for row in await columns.fetchall()}
-            if "delivery_contract" not in names:
-                await self._conn.execute(
-                    "ALTER TABLE trigger_definitions ADD COLUMN delivery_contract TEXT "
-                    "NOT NULL DEFAULT 'unsafe'"
-                )
+            for upgrade in _TRIGGER_UPGRADES:
+                column = upgrade.split()[5]
+                if column not in names:
+                    await self._conn.execute(upgrade)
             await self._conn.commit()
 
     async def add(self, trigger: TriggerDefinition) -> None:
         await self._conn.execute(
             """INSERT INTO trigger_definitions
-               (trigger_id, name, event_pattern, handler_url, enabled, delivery_contract)
-               VALUES (?,?,?,?,?,?)
+               (trigger_id, name, event_pattern, handler_url, enabled, replay_safety, contract_ref)
+               VALUES (?,?,?,?,?,?,?)
                ON CONFLICT(trigger_id) DO UPDATE SET
                  name=excluded.name, event_pattern=excluded.event_pattern,
                  handler_url=excluded.handler_url, enabled=excluded.enabled,
-                 delivery_contract=excluded.delivery_contract""",
+                 replay_safety=excluded.replay_safety, contract_ref=excluded.contract_ref""",
             (
                 trigger.trigger_id,
                 trigger.name,
                 trigger.event_pattern,
                 trigger.handler_url,
                 1 if trigger.enabled else 0,
-                trigger.delivery_contract.value,
+                trigger.replay_safety.value,
+                trigger.contract_ref,
             ),
         )
         await self._conn.commit()
 
     async def get(self, trigger_id: str) -> TriggerDefinition | None:
         cursor = await self._conn.execute(
-            "SELECT trigger_id, name, event_pattern, handler_url, enabled, delivery_contract "
-            "FROM trigger_definitions WHERE trigger_id = ?",
+            "SELECT trigger_id, name, event_pattern, handler_url, enabled, "
+            "replay_safety, contract_ref FROM trigger_definitions WHERE trigger_id = ?",
             (trigger_id,),
         )
         row = await cursor.fetchone()
@@ -195,16 +217,16 @@ class SqliteTriggerStore:
 
     async def list_triggers(self) -> list[TriggerDefinition]:
         cursor = await self._conn.execute(
-            "SELECT trigger_id, name, event_pattern, handler_url, enabled, delivery_contract "
-            "FROM trigger_definitions"
+            "SELECT trigger_id, name, event_pattern, handler_url, enabled, "
+            "replay_safety, contract_ref FROM trigger_definitions"
         )
         rows = await cursor.fetchall()
         return [self._row_to_trigger(tuple(r)) for r in rows]
 
     async def get_matching(self, event_type: str) -> list[TriggerDefinition]:
         cursor = await self._conn.execute(
-            "SELECT trigger_id, name, event_pattern, handler_url, enabled, delivery_contract "
-            "FROM trigger_definitions WHERE enabled = 1"
+            "SELECT trigger_id, name, event_pattern, handler_url, enabled, "
+            "replay_safety, contract_ref FROM trigger_definitions WHERE enabled = 1"
         )
         rows = await cursor.fetchall()
         triggers = [self._row_to_trigger(tuple(r)) for r in rows]
@@ -225,5 +247,6 @@ class SqliteTriggerStore:
             event_pattern=str(row[2] or ""),
             handler_url=str(row[3] or ""),
             enabled=bool(row[4]),
-            delivery_contract=HandlerDeliveryContract(str(row[5] or "unsafe")),
+            replay_safety=ReplaySafety(str(row[5] or "unproven")),
+            contract_ref=str(row[6] or ""),
         )

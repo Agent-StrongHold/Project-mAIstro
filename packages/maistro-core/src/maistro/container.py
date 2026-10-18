@@ -2557,7 +2557,7 @@ async def create_container(
         trigger_store = InMemoryTriggerStore()
         handler_invocation_store = InMemoryInvocationStore()
         consumer_cursor_store = InMemoryConsumerCursorStore()
-    handler_caller = HTTPHandlerCaller()
+    handler_caller = HTTPHandlerCaller(handler_invocation_store)
 
     event_bus = EventBus()
 

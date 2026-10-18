@@ -5,117 +5,304 @@ caller, designed to be ticked by the reactor loop (SPEC-013). All delivery
 semantics from ADR-086 live here:
 
 - at-least-once delivery: the cursor only advances past an event once every
-  matching trigger's invocation is terminal, so a crash replays it;
-- dispatch deduplication: (trigger_id, event_id) rows and leases ensure one
-  active MAIstro dispatcher, but do not prove an external effect was applied;
-- external-effect idempotency: automatic replay is allowed only for triggers
-  whose handler declares durable deduplication of the stable delivery key;
-- retry: a failing handler is retried on subsequent ticks up to
-  ``MAX_ATTEMPTS`` (3) total attempts, then marked failed and a
-  ``handler.failed`` event is appended to the log.
+  matching trigger's receipt is settled-for-cursor (success/failed/unknown),
+  so a crash replays it;
+- dispatch deduplication: (trigger_id, event_id) receipts, claim leases and
+  revision fencing ensure one active MAIstro dispatcher — they do not prove an
+  external effect was applied;
+- external-effect idempotency: automatic redelivery after an uncertain send
+  happens only for triggers whose recipient is enrolled as idempotent or
+  read_only through the authorized trigger store (#1060 §2);
+- truthful ambiguity: a transport loss, 5xx or arbitrary exception after a
+  possibly-committed remote effect is indeterminate evidence. It becomes
+  RETRYING only under a currently valid safe contract, and otherwise UNKNOWN —
+  visible, cursor-settled, and never automatically replayed;
+- retry: a proven not-applied call is retried up to ``MAX_ATTEMPTS`` total
+  physical sends, then marked failed with a ``handler.failed`` event appended.
+
+The old `_dispatch` ignored caller return values and retried every exception;
+the typed outcome classifier, the receipt-reading HTTP caller and the
+Container wiring activate together (#1060 §4).
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import httpx
 
-from maistro.events.invocations import MAX_ATTEMPTS, InvocationStatus
-from maistro.events.trigger_store import HandlerDeliveryContract
+from maistro.events.invocations import (
+    MAX_ATTEMPTS,
+    DeliveryAlreadyStarted,
+    DeliveryAttemptLimitReached,
+    DeliveryDisposition,
+    DeliveryIdentity,
+    DeliveryIdentityMismatch,
+    HandlerCallOutcome,
+    InvocationStatus,
+    ReplaySafety,
+    identity_matches,
+    request_digest_v1,
+    validated_outcome,
+)
 from maistro.http import shared_client
 
 if TYPE_CHECKING:
     from maistro.events.durable_log import EventLogStore, LoggedEvent
-    from maistro.events.invocations import InvocationStore
+    from maistro.events.invocations import HandlerInvocation, InvocationStore
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
 
 logger = logging.getLogger("maistro.events.processing")
 
 HANDLER_FAILED_EVENT = "handler.failed"
 
+_SAFE_REPLAY_SAFETIES = (ReplaySafety.IDEMPOTENT, ReplaySafety.READ_ONLY)
 
-class HandlerCallError(Exception):
-    """A handler invocation failed.
-
-    ``ambiguous`` is true when the caller cannot prove the remote handler did
-    not commit before the response was lost. It is never inferred from a local
-    Invocation row; an idempotent trigger contract is what makes retrying such
-    a delivery safe.
-    """
-
-    def __init__(self, message: str, *, ambiguous: bool = False) -> None:
-        super().__init__(message)
-        self.ambiguous = ambiguous
+#: Bound for the shielded settlement attempt when the dispatch task itself is
+#: cancelled: settlement must not hang forever, but re-raising the
+#: cancellation must not skip the attempt entirely (#1060 §4).
+_CANCELLED_SETTLE_TIMEOUT_S = 2.0
 
 
 @runtime_checkable
 class HandlerCaller(Protocol):
     """Injected async callable that delivers an event to a trigger's handler.
 
-    Must raise :class:`HandlerCallError` (or any exception) on failure;
-    returning normally means the handler committed its effect. An exception not
-    explicitly proven pre-commit is treated as an ambiguous remote outcome.
+    Returns ``None`` (the established injected-caller acknowledgment) or a
+    :class:`HandlerCallOutcome` describing the current call's evidence. A
+    ``NOT_APPLIED`` outcome is a trusted caller's explicit proof that nothing
+    was applied; a generic HTTP status, transport error or arbitrary exception
+    never proves it. Raising is permitted and classified indeterminate.
     """
 
-    async def __call__(self, trigger: TriggerDefinition, event: LoggedEvent) -> None: ...
-
-
-def handler_idempotency_key(trigger: TriggerDefinition, event: LoggedEvent) -> str:
-    """Return the stable logical effect identity used on every redelivery."""
-
-    return f"maistro-event:{trigger.trigger_id}:{event.id}"
+    async def __call__(
+        self, trigger: TriggerDefinition, event: LoggedEvent
+    ) -> HandlerCallOutcome | None: ...
 
 
 class HTTPHandlerCaller:
-    """POST an event with its stable idempotency key via httpx.
+    """POST an event to the handler its prepared receipt names, keyed by it.
 
-    The remote endpoint must persist this key at its own effect commit boundary.
-    Sending the header does not turn a non-idempotent endpoint into a safe one;
-    such a trigger remains ``UNSAFE`` and is held for operator reconciliation.
+    Reads the receipt the Container-selected invocation store prepared for
+    ``(trigger, event)``, refuses absent/mismatched/not-in-dispatch receipts,
+    snapshots target and body before any await, validates the request digest,
+    and sends the receipt's persisted ``delivery_key`` as the
+    ``Idempotency-Key``. It never allocates keys, claims ownership, writes
+    receipts or creates a private store: the key's recipient-side dedupe is
+    what makes redelivery safe, and this caller only ever relays it.
+
+    The reread is a refusal gate, not a fence: a sender that already passed
+    ``begin_dispatch`` and stalled is not physically stopped by it — the
+    receipt's revision fencing and the recipient's dedupe cover that window.
     """
 
-    def __init__(self, timeout: float = 5.0, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        invocation_store: InvocationStore,
+        *,
+        timeout: float = 5.0,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self._store = invocation_store
         self._timeout = timeout
         self._client = client
 
-    async def __call__(self, trigger: TriggerDefinition, event: LoggedEvent) -> None:
+    async def __call__(
+        self, trigger: TriggerDefinition, event: LoggedEvent
+    ) -> HandlerCallOutcome | None:
+        receipt = await self._store.get(trigger.trigger_id, event.id)
+        if receipt is None:
+            return HandlerCallOutcome(
+                DeliveryDisposition.NOT_APPLIED,
+                "receipt_absent",
+                f"no prepared receipt for ({trigger.trigger_id}, {event.id})",
+            )
+        if receipt.dispatch_started_at is None:
+            return HandlerCallOutcome(
+                DeliveryDisposition.NOT_APPLIED,
+                "receipt_not_in_dispatch",
+                "receipt has no in-flight dispatch marker for this claim",
+            )
+        if receipt.delivery_key is None:
+            return HandlerCallOutcome(
+                DeliveryDisposition.NOT_APPLIED,
+                "delivery_key_missing",
+                "receipt was never keyed; no fallback key is ever allocated",
+            )
+        if receipt.handler_url != trigger.handler_url:
+            return HandlerCallOutcome(
+                DeliveryDisposition.NOT_APPLIED,
+                "handler_url_mismatch",
+                "receipt destination differs from the trigger's current handler_url",
+            )
+        # Snapshot the exact target and body before the first await, so a
+        # concurrent trigger edit cannot change what this send contains.
+        url = receipt.handler_url
+        body = event.to_dict()
+        if request_digest_v1(url, event) != receipt.request_digest:
+            return HandlerCallOutcome(
+                DeliveryDisposition.NOT_APPLIED,
+                "request_digest_mismatch",
+                "event body no longer matches the receipt's frozen digest",
+            )
+        headers = {
+            "Idempotency-Key": receipt.delivery_key,
+            "X-MAIstro-Trigger-Id": trigger.trigger_id,
+            "X-MAIstro-Event-Id": str(event.id),
+        }
         try:
             if self._client is not None:
                 response = await self._client.post(
-                    trigger.handler_url,
-                    json=event.to_dict(),
-                    headers={
-                        "Idempotency-Key": handler_idempotency_key(trigger, event),
-                        "X-MAIstro-Trigger-Id": trigger.trigger_id,
-                        "X-MAIstro-Event-Id": str(event.id),
-                    },
-                    timeout=self._timeout,
+                    url, json=body, headers=headers, timeout=self._timeout
                 )
             else:
                 async with shared_client(timeout=self._timeout) as client:
-                    response = await client.post(
-                        trigger.handler_url,
-                        json=event.to_dict(),
-                        headers={
-                            "Idempotency-Key": handler_idempotency_key(trigger, event),
-                            "X-MAIstro-Trigger-Id": trigger.trigger_id,
-                            "X-MAIstro-Event-Id": str(event.id),
-                        },
-                    )
+                    response = await client.post(url, json=body, headers=headers)
         except httpx.HTTPError as exc:
-            raise HandlerCallError(
-                f"ambiguous transport error calling {trigger.handler_url}: {exc}",
-                ambiguous=True,
-            ) from exc
+            # The remote may have committed before the connection was lost:
+            # a transport error is never proof of absence.
+            return HandlerCallOutcome(
+                DeliveryDisposition.INDETERMINATE, "transport_error", str(exc)
+            )
         if response.status_code >= 500:
-            raise HandlerCallError(
-                f"ambiguous {response.status_code}: {response.text}", ambiguous=True
+            return HandlerCallOutcome(
+                DeliveryDisposition.INDETERMINATE,
+                "http_server_error",
+                f"{response.status_code}: {response.text}"[:2048],
             )
         if response.status_code >= 400:
-            raise HandlerCallError(f"{response.status_code}: {response.text}")
+            # A status line alone proves nothing about the remote commit.
+            return HandlerCallOutcome(
+                DeliveryDisposition.INDETERMINATE,
+                "http_error_status",
+                f"{response.status_code}: {response.text}"[:2048],
+            )
+        return None
+
+
+def _classify_outcome(
+    *, attempts_used: int, prior_uncertainty: bool, safe_contract: bool, outcome: HandlerCallOutcome
+) -> InvocationStatus:
+    """Map current-call evidence + inherited uncertainty to a target status.
+
+    The reviewed classification table (#1060 §4): acknowledged is SUCCESS; a
+    proven not-applied call retries while budget remains (FAILED when
+    exhausted, or immediately when the refusal is terminal); indeterminate or
+    inherited uncertainty retries only under a currently valid matching
+    idempotent/read_only contract, and is otherwise UNKNOWN.
+    """
+    budget_remains = attempts_used < MAX_ATTEMPTS
+    if outcome.disposition is DeliveryDisposition.ACKNOWLEDGED:
+        return InvocationStatus.SUCCESS
+    if outcome.disposition is DeliveryDisposition.NOT_APPLIED:
+        if prior_uncertainty:
+            if safe_contract and budget_remains:
+                return InvocationStatus.RETRYING
+            return InvocationStatus.UNKNOWN
+        return InvocationStatus.RETRYING if budget_remains else InvocationStatus.FAILED
+    # Indeterminate current call.
+    if safe_contract and budget_remains:
+        return InvocationStatus.RETRYING
+    return InvocationStatus.UNKNOWN
+
+
+async def _settle_and_report(
+    invocation_store: InvocationStore,
+    trigger_id: str,
+    event_id: int,
+    *,
+    claim_token: str,
+    expected_revision: int,
+    status: InvocationStatus,
+    outcome: HandlerCallOutcome,
+) -> bool:
+    """Settle under fencing; report the reread truth if the claim was lost."""
+    settled = await invocation_store.settle(
+        trigger_id,
+        event_id,
+        claim_token=claim_token,
+        expected_revision=expected_revision,
+        status=status,
+        outcome=outcome,
+    )
+    if settled is None:
+        # An unverified stale settlement never advances the cursor by itself.
+        current = await invocation_store.get(trigger_id, event_id)
+        return current is not None and current.settled_for_cursor
+    if settled.is_successful_delivery:
+        logger.info(
+            "Delivered event %d for trigger %s under delivery key %s",
+            event_id,
+            trigger_id,
+            settled.delivery_key,
+        )
+    return settled.settled_for_cursor
+
+
+async def _settle_refusal(
+    invocation_store: InvocationStore,
+    claimed: HandlerInvocation,
+    *,
+    reason_code: str,
+) -> bool:
+    """Visibly settle a pre-send refusal without any physical call.
+
+    Local identity/config/refusal before this claim sent is FAILED only when
+    no historical possibly-applied call exists; with inherited uncertainty it
+    is UNKNOWN instead — never a retry.
+    """
+    status = (
+        InvocationStatus.UNKNOWN if claimed.uncertain_prior_dispatch else InvocationStatus.FAILED
+    )
+    return await _settle_and_report(
+        invocation_store,
+        claimed.trigger_id,
+        claimed.event_id,
+        claim_token=claimed.claim_token,
+        expected_revision=claimed.revision,
+        status=status,
+        outcome=HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, reason_code),
+    )
+
+
+async def _settle_attempt_limit(
+    event_log: EventLogStore,
+    invocation_store: InvocationStore,
+    trigger: TriggerDefinition,
+    event: LoggedEvent,
+    claimed: HandlerInvocation,
+) -> bool:
+    """Settle an exhausted receipt without another physical call.
+
+    The cap is a pre-send fact about this claim, never proof an earlier send
+    was absent: with inherited uncertainty the truthful state is UNKNOWN.
+    """
+    if claimed.uncertain_prior_dispatch:
+        return await _settle_and_report(
+            invocation_store,
+            claimed.trigger_id,
+            claimed.event_id,
+            claim_token=claimed.claim_token,
+            expected_revision=claimed.revision,
+            status=InvocationStatus.UNKNOWN,
+            outcome=HandlerCallOutcome(
+                DeliveryDisposition.INDETERMINATE, "attempt_limit_with_uncertainty"
+            ),
+        )
+    await _append_handler_failed(event_log, trigger, event, "attempt limit reached")
+    return await _settle_and_report(
+        invocation_store,
+        claimed.trigger_id,
+        claimed.event_id,
+        claim_token=claimed.claim_token,
+        expected_revision=claimed.revision,
+        status=InvocationStatus.FAILED,
+        outcome=HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, "attempt_limit_reached"),
+    )
 
 
 async def _dispatch(
@@ -125,85 +312,170 @@ async def _dispatch(
     trigger: TriggerDefinition,
     event: LoggedEvent,
 ) -> bool:
-    """Run one trigger against one event; return whether it has settled.
+    """Run one trigger against one event; return whether it settled for cursor.
 
-    "Settled" means terminal — succeeded, or failed past `MAX_ATTEMPTS`. A
-    durable lease only prevents concurrent dispatch; an external commit can
-    still be ahead of a lost SUCCESS save. Safe replay therefore relies on the
-    trigger's at-least-once idempotency contract, not this row alone.
-
-    Split out of `process_events` because the loop grew past the complexity
-    ratchet when dispatch became a claim; the two halves read better apart
-    anyway — this one owns one invocation, the caller owns the cursor.
+    Claims the receipt, compares the frozen delivery context, classifies prior
+    uncertainty, consumes budget exactly once per physical send via
+    ``begin_dispatch``, and settles with the begin snapshot's revision. A lost
+    claim never authorizes HTTP, and an unverified stale settlement never
+    advances the cursor.
     """
-    if trigger.delivery_contract is HandlerDeliveryContract.UNSAFE:
-        unsafe_invocation = await invocation_store.get_or_create(trigger.trigger_id, event.id)
-        unsafe_invocation.status = InvocationStatus.UNSAFE
-        unsafe_invocation.last_error = (
-            "handler is unsafe for automatic replay; declare durable idempotency "
-            "or route the effect through the governed Invocation seam"
+    delivery = DeliveryIdentity(
+        handler_url=trigger.handler_url,
+        request_digest=request_digest_v1(trigger.handler_url, event),
+        replay_safety=trigger.effective_replay_safety,
+        contract_ref=trigger.contract_ref,
+    )
+    claimed = await invocation_store.claim(trigger.trigger_id, event.id, delivery=delivery)
+    if claimed is None:
+        # Someone else owns this dispatch, or it is already settled. Either
+        # way this worker must not send — and must not report the event
+        # settled unless the reread actually says so.
+        current = await invocation_store.get(trigger.trigger_id, event.id)
+        return current is not None and current.settled_for_cursor
+
+    if not identity_matches(claimed, delivery):
+        # Changed target/body/contract: the frozen receipt disagrees with the
+        # current authorized declaration. Refuse visibly, without HTTP.
+        return await _settle_refusal(
+            invocation_store, claimed, reason_code="delivery_identity_changed"
         )
-        unsafe_invocation.lease_expires_at = 0.0
-        await invocation_store.save(unsafe_invocation)
-        logger.error("Holding unsafe handler trigger %s for event %d", trigger.trigger_id, event.id)
-        return False
 
-    # `claim`, not `get_or_create`: the latter hands every racing worker the
-    # same non-terminal row, and a non-terminal row reads as permission to call
-    # the handler — so two workers both fired the side effect on one event.
-    # `claim` returns the invocation to exactly one of them and `None` to the
-    # rest, whether the answer is "already done" or "someone else has it".
-    #
-    # `attempts` is incremented by the claim itself, inside the same statement,
-    # so a handler that keeps dying still converges on MAX_ATTEMPTS instead of
-    # being retried forever by whichever worker happens to win each round.
-    invocation = await invocation_store.claim(trigger.trigger_id, event.id)
-    if invocation is None:
-        # Someone else owns this dispatch, or it is already settled. Either way
-        # this worker must not call the handler — and must not report the event
-        # settled unless it actually is, or the cursor advances past an event
-        # still in flight and nothing ever replays it.
-        settled = await invocation_store.get(trigger.trigger_id, event.id)
-        return settled is not None and settled.is_terminal
+    if not trigger.handler_url:
+        return await _settle_refusal(invocation_store, claimed, reason_code="handler_url_missing")
 
-    event_settled = True
+    prior_uncertainty = claimed.uncertain_prior_dispatch
+    safe_contract = delivery.replay_safety in _SAFE_REPLAY_SAFETIES
+    if prior_uncertainty and not safe_contract:
+        # A possibly-applied earlier send + a recipient that cannot dedupe:
+        # automatic redelivery is exactly what cannot be allowed.
+        return await _settle_and_report(
+            invocation_store,
+            claimed.trigger_id,
+            claimed.event_id,
+            claim_token=claimed.claim_token,
+            expected_revision=claimed.revision,
+            status=InvocationStatus.UNKNOWN,
+            outcome=HandlerCallOutcome(
+                DeliveryDisposition.INDETERMINATE, "prior_uncertain_dispatch"
+            ),
+        )
+
     try:
-        await caller(trigger, event)
+        begun = await invocation_store.begin_dispatch(
+            claimed.trigger_id,
+            claimed.event_id,
+            claim_token=claimed.claim_token,
+            expected_revision=claimed.revision,
+            delivery=delivery,
+        )
+    except DeliveryAttemptLimitReached:
+        return await _settle_attempt_limit(event_log, invocation_store, trigger, event, claimed)
+    except DeliveryIdentityMismatch:
+        return await _settle_refusal(
+            invocation_store, claimed, reason_code="delivery_identity_changed"
+        )
+    except DeliveryAlreadyStarted:
+        # This claim's dispatch is already in flight in another coroutine;
+        # the marker's owner will settle it.
+        return False
+    if begun is None:
+        current = await invocation_store.get(trigger.trigger_id, event.id)
+        return current is not None and current.settled_for_cursor
+
+    outcome = await _call_with_cancellation_settlement(
+        invocation_store,
+        caller,
+        trigger,
+        event,
+        begun=begun,
+        prior_uncertainty=prior_uncertainty,
+        safe_contract=safe_contract,
+    )
+    status = _classify_outcome(
+        attempts_used=begun.attempts,
+        prior_uncertainty=prior_uncertainty,
+        safe_contract=safe_contract,
+        outcome=outcome,
+    )
+    if status is InvocationStatus.FAILED:
+        await _append_handler_failed(
+            event_log, trigger, event, outcome.detail or outcome.reason_code
+        )
+    return await _settle_and_report(
+        invocation_store,
+        claimed.trigger_id,
+        claimed.event_id,
+        claim_token=claimed.claim_token,
+        expected_revision=begun.revision,
+        status=status,
+        outcome=outcome,
+    )
+
+
+async def _append_handler_failed(
+    event_log: EventLogStore, trigger: TriggerDefinition, event: LoggedEvent, error: str
+) -> None:
+    logger.error(
+        "Handler for trigger %s failed permanently on event %d: %s",
+        trigger.name or trigger.trigger_id,
+        event.id,
+        error,
+    )
+    await event_log.append(
+        HANDLER_FAILED_EVENT,
+        entity_type="trigger",
+        entity_id=trigger.trigger_id,
+        payload={"trigger": trigger.name, "event_id": event.id, "error": error},
+        source="reactor",
+    )
+
+
+async def _call_with_cancellation_settlement(
+    invocation_store: InvocationStore,
+    caller: HandlerCaller,
+    trigger: TriggerDefinition,
+    event: LoggedEvent,
+    *,
+    begun: HandlerInvocation,
+    prior_uncertainty: bool,
+    safe_contract: bool,
+) -> HandlerCallOutcome:
+    """Run the physical call; classify exceptions and cancellation.
+
+    Cancellation uses the same indeterminate classifier: a bounded shielded
+    settlement attempt is made, then the cancellation is re-raised — the
+    durable marker (or a takeover's uncertainty fold) carries the truth if the
+    attempt loses the race.
+    """
+    try:
+        returned = await caller(trigger, event)
+    except asyncio.CancelledError:
+        outcome = HandlerCallOutcome(DeliveryDisposition.INDETERMINATE, "handler_cancelled")
+        status = _classify_outcome(
+            attempts_used=begun.attempts,
+            prior_uncertainty=prior_uncertainty,
+            safe_contract=safe_contract,
+            outcome=outcome,
+        )
+        settlement = invocation_store.settle(
+            begun.trigger_id,
+            begun.event_id,
+            claim_token=begun.claim_token,
+            expected_revision=begun.revision,
+            status=status,
+            outcome=outcome,
+        )
+        with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+            # bounded: the durable marker/takeover owns the truth if this loses
+            await asyncio.wait_for(asyncio.shield(settlement), timeout=_CANCELLED_SETTLE_TIMEOUT_S)
+        raise
     except Exception as exc:
-        if not isinstance(exc, HandlerCallError) or exc.ambiguous:
-            invocation.last_error = f"ambiguous remote outcome: {exc}"
-        else:
-            invocation.last_error = str(exc)
-        if invocation.attempts >= MAX_ATTEMPTS:
-            invocation.status = InvocationStatus.FAILED
-            logger.error(
-                "Handler for trigger %s failed permanently on event %d: %s",
-                trigger.name or trigger.trigger_id,
-                event.id,
-                exc,
-            )
-            await event_log.append(
-                HANDLER_FAILED_EVENT,
-                entity_type="trigger",
-                entity_id=trigger.trigger_id,
-                payload={"trigger": trigger.name, "event_id": event.id, "error": str(exc)},
-                source="reactor",
-            )
-        else:
-            invocation.status = InvocationStatus.RETRYING
-            event_settled = False
-    else:
-        invocation.status = InvocationStatus.SUCCESS
-        invocation.last_error = ""
-    # Release the lease on the way out. Without this a RETRYING invocation stays
-    # owned by a worker that has already finished with it, and nothing retries
-    # the event until the lease lapses — a failed attempt would sit idle for the
-    # whole lease window instead of being picked up on the next tick. Terminal
-    # statuses do not need it (`claim` refuses them anyway); releasing uniformly
-    # means there is no path that forgets.
-    invocation.lease_expires_at = 0.0
-    await invocation_store.save(invocation)
-    return event_settled
+        # An arbitrary exception never proves the effect did not apply.
+        return HandlerCallOutcome(
+            DeliveryDisposition.INDETERMINATE, "handler_exception", str(exc)[:2048]
+        )
+    return validated_outcome(returned)
 
 
 @dataclass(frozen=True)
@@ -211,7 +483,8 @@ class ProcessedBatch:
     """What one `process_events_batch` tick settled, and what it could not see.
 
     `cursor` is the id of the last event whose matching triggers have ALL
-    reached a terminal status — the same value `process_events` returns.
+    reached a settled-for-cursor status — the same value `process_events`
+    returns.
 
     `holes` lists, in ascending order, the first id of every run of ids in
     ``(after_id, cursor]`` that the log did not return this tick; it is empty
@@ -276,11 +549,11 @@ async def process_events(
 ) -> int:
     """Process up to ``limit`` events after cursor ``after_id``; return new cursor.
 
-    The cursor advances only after matching triggers are terminal. Restarting
-    from an older cursor is safe for an ``AT_LEAST_ONCE_IDEMPOTENT`` trigger
-    because HTTP redelivery carries the same key and the handler deduplicates
-    it at its own commit boundary. The Invocation row alone supplies only
-    dispatch deduplication. Unsafe triggers hold the cursor for reconciliation.
+    The cursor advances only past settled receipts (success/failed/unknown).
+    Restarting from an older cursor redelivers under the same persisted
+    delivery key, and an idempotent/read_only recipient deduplicates that key
+    at its own commit boundary; the receipt alone supplies only dispatch
+    deduplication. UNKNOWN receipts stay visible while later events advance.
 
     Safe to run in more than one process: `_dispatch` claims each
     (trigger, event) before invoking anything, so exactly one worker is the

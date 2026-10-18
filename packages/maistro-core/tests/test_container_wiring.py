@@ -145,7 +145,8 @@ async def test_bus_events_are_bridged_into_the_durable_log() -> None:
 
 
 async def test_process_durable_events_delivers_to_matching_trigger() -> None:
-    from maistro.events.trigger_store import HandlerDeliveryContract, TriggerDefinition
+    from maistro.events.invocations import ReplaySafety
+    from maistro.events.trigger_store import TriggerDefinition
 
     container = await _container()
     delivered = []
@@ -159,7 +160,9 @@ async def test_process_durable_events_delivers_to_matching_trigger() -> None:
             trigger_id="t1",
             name="on-agent",
             event_pattern="agent.*",
-            delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+            handler_url="http://handlers.invalid/agent",
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="contract-v1",
         )
     )
     await container.durable_event_log.append("agent.created")
@@ -187,7 +190,8 @@ async def test_durable_event_cursor_survives_a_restart(tmp_path: Path) -> None:
     resume from the position the first container's tick durably committed.
     """
     from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
-    from maistro.events.trigger_store import HandlerDeliveryContract, TriggerDefinition
+    from maistro.events.invocations import ReplaySafety
+    from maistro.events.trigger_store import TriggerDefinition
 
     db_url = f"sqlite:///{tmp_path / 'events.db'}"
     delivered_first: list[int] = []
@@ -199,7 +203,9 @@ async def test_durable_event_cursor_survives_a_restart(tmp_path: Path) -> None:
             TriggerDefinition(
                 trigger_id="t1",
                 event_pattern="agent.*",
-                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+                handler_url="http://handlers.invalid/agent",
+                replay_safety=ReplaySafety.IDEMPOTENT,
+                contract_ref="contract-v1",
             )
         )
         await container1.durable_event_log.append("agent.created")
@@ -237,7 +243,9 @@ async def test_durable_event_cursor_survives_a_restart(tmp_path: Path) -> None:
             TriggerDefinition(
                 trigger_id="t1",
                 event_pattern="agent.*",
-                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+                handler_url="http://handlers.invalid/agent",
+                replay_safety=ReplaySafety.IDEMPOTENT,
+                contract_ref="contract-v1",
             )
         )
         await container2.durable_event_log.append("agent.created")  # id 3
@@ -321,7 +329,8 @@ async def test_the_durable_cursor_waits_below_an_id_the_log_has_not_committed() 
     would exclude 2 from every later ``id > cursor`` read, restart included.
     The durable position must stop at 1 until 2 appears, while the work on 3
     itself is not delayed."""
-    from maistro.events.trigger_store import HandlerDeliveryContract, TriggerDefinition
+    from maistro.events.invocations import ReplaySafety
+    from maistro.events.trigger_store import TriggerDefinition
 
     container = await _container()
     delivered: list[int] = []
@@ -330,7 +339,9 @@ async def test_the_durable_cursor_waits_below_an_id_the_log_has_not_committed() 
         TriggerDefinition(
             trigger_id="t1",
             event_pattern="agent.*",
-            delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+            handler_url="http://handlers.invalid/agent",
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="contract-v1",
         )
     )
     log = _HidingLog(container.durable_event_log, hidden={2})
@@ -358,7 +369,8 @@ async def test_a_hole_that_outlives_the_grace_is_an_aborted_append() -> None:
     """An id that never commits (the append rolled back) must not pin the
     resume point forever: once the hole has been seen for longer than
     `durable_event_hole_grace_s`, the position moves past it."""
-    from maistro.events.trigger_store import HandlerDeliveryContract, TriggerDefinition
+    from maistro.events.invocations import ReplaySafety
+    from maistro.events.trigger_store import TriggerDefinition
 
     container = await _container()
     delivered: list[int] = []
@@ -367,7 +379,9 @@ async def test_a_hole_that_outlives_the_grace_is_an_aborted_append() -> None:
         TriggerDefinition(
             trigger_id="t1",
             event_pattern="agent.*",
-            delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+            handler_url="http://handlers.invalid/agent",
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="contract-v1",
         )
     )
     log = _HidingLog(container.durable_event_log, hidden={2})

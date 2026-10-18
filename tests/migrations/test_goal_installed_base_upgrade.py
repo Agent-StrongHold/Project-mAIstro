@@ -62,8 +62,10 @@ HITL_FILE = "alembic/versions/061_hitl_pause_kind_index.py"
 USER_MODEL_FILE = "alembic/versions/056_user_model_facts.py"
 PLANNER_FILE = "alembic/versions/057_run_store_planner_stability.py"
 
-#: The single linear head after HITL ``061``, audit ``062`` and the Goal store.
+#: The single linear head after HITL ``061``, audit ``062`` and the Goal store;
+#: ``064`` (durable delivery receipts, #1060) appends after it.
 GOAL_REVISION = "063"
+CHAIN_TIP = "064"
 
 GOAL_TABLES = ("canonical_goals", "canonical_goal_revisions", "canonical_goal_transitions")
 USER_MODEL_TABLES = ("user_model_facts", "user_model_statement_keys")
@@ -296,7 +298,7 @@ def _assert_planner_artifacts_present() -> None:
 
 def _assert_goal_upgrade_completed() -> None:
     """The assertions every installed-base fixture makes at the candidate head."""
-    assert _stamp() == GOAL_REVISION
+    assert _stamp() == CHAIN_TIP
     tables = _tables()
     missing = set(GOAL_TABLES) - tables
     assert not missing, f"the Goal DDL did not apply: {missing}"
@@ -409,7 +411,8 @@ class TestTheMergedIdentities:
         assert revisions["060"].down_revision == "059"
         assert revisions["061"].down_revision == "060"
         assert revisions[GOAL_REVISION].down_revision == "062"
-        assert script_directory.get_heads() == [GOAL_REVISION]
+        assert script_directory.get_heads() == [CHAIN_TIP]
+        assert revisions[CHAIN_TIP].down_revision == GOAL_REVISION
         # The filenames carry the merged identities too — a renamed file
         # and a moved id are the same silent reassignment in two clothes.
         assert (VERSIONS / "056_user_model_facts.py").is_file()

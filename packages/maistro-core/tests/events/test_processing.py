@@ -1,10 +1,13 @@
-"""Tests for the idempotent event processing loop (SPEC-070226-b234).
+"""Tests for the idempotent event processing loop (SPEC-070226-b234, #1060).
 
-Covers trigger fan-out, retry-with-cap, cursor semantics, the crash-replay
-idempotency scenario, and the HTTPHandlerCaller.
+Covers trigger fan-out, the claim/begin/settle dispatch protocol, the
+classification table for post-effect crash windows, the receipt-reading
+HTTPHandlerCaller, and the durable fake-receiver fault-injection phases.
 """
 
 from __future__ import annotations
+
+import asyncio
 
 import httpx
 import pytest
@@ -12,42 +15,85 @@ import pytest
 from maistro.events.durable_log import InMemoryEventLog, LoggedEvent
 from maistro.events.invocations import (
     MAX_ATTEMPTS,
-    HandlerInvocation,
+    DeliveryAttemptLimitReached,
+    DeliveryDisposition,
+    DeliveryIdentity,
+    HandlerCallOutcome,
     InMemoryInvocationStore,
     InvocationStatus,
+    ReplaySafety,
+    request_digest_v1,
 )
 from maistro.events.processing import (
     HANDLER_FAILED_EVENT,
-    HandlerCallError,
     HTTPHandlerCaller,
-    handler_idempotency_key,
     process_events,
     process_events_batch,
 )
 from maistro.events.trigger_store import (
-    HandlerDeliveryContract,
     InMemoryTriggerStore,
     TriggerDefinition,
 )
 
+SAFE_TRIGGER_KWARGS = {
+    "handler_url": "http://handlers.local/x",
+    "replay_safety": ReplaySafety.IDEMPOTENT,
+    "contract_ref": "contract-v1",
+}
+
 
 class RecordingCaller:
-    """Handler caller that records calls and fails on command."""
+    """Handler caller that records calls and fails on command.
+
+    Returns ``None`` (acknowledgment) unless scripted otherwise; scripted
+    failures are explicit trusted evidence, as an injected caller may be.
+    """
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, int]] = []
         self.fail_keys: set[tuple[str, int]] = set()
         self.fail_times: dict[tuple[str, int], int] = {}
+        self.raising_keys: set[tuple[str, int]] = set()
 
-    async def __call__(self, trigger: TriggerDefinition, event: LoggedEvent) -> None:
+    async def __call__(
+        self, trigger: TriggerDefinition, event: LoggedEvent
+    ) -> HandlerCallOutcome | None:
         key = (trigger.trigger_id, event.id)
         self.calls.append(key)
         if key in self.fail_keys:
-            raise HandlerCallError("permanent failure")
+            return HandlerCallOutcome(
+                DeliveryDisposition.NOT_APPLIED, "permanent_pre_commit_refusal"
+            )
+        if key in self.raising_keys:
+            raise RuntimeError("connection lost after possible remote commit")
         remaining = self.fail_times.get(key, 0)
         if remaining > 0:
             self.fail_times[key] = remaining - 1
-            raise HandlerCallError("transient failure")
+            return HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, "pre_commit_refusal")
+        return None
+
+
+class FakeReceiver:
+    """A durable recipient: atomically binds delivery key + digest to commit.
+
+    The #1060 §6 oracle shape: repeated POSTs carrying the same key are one
+    logical committed effect; the binding is atomic (a single lock guards the
+    read-decide-write), as an idempotent V1 recipient's commit must be.
+    """
+
+    def __init__(self) -> None:
+        self.received: list[tuple[str, str]] = []
+        self.committed: dict[str, str] = {}
+        self._lock = asyncio.Lock()
+
+    async def receive(self, key: str, digest: str) -> None:
+        async with self._lock:
+            self.received.append((key, digest))
+            self.committed.setdefault(key, digest)
+
+    @property
+    def logical_effects(self) -> int:
+        return len(self.committed)
 
 
 @pytest.fixture
@@ -60,11 +106,7 @@ async def test_matching_trigger_invoked_once(
     stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore],
 ) -> None:
     log, triggers, invocations = stores
-    t = TriggerDefinition(
-        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-        name="agents",
-        event_pattern="agent.*",
-    )
+    t = TriggerDefinition(name="agents", event_pattern="agent.*", **SAFE_TRIGGER_KWARGS)
     await triggers.add(t)
     e = await log.append("agent.created")
     await log.append("task.created")  # no matching trigger
@@ -74,7 +116,9 @@ async def test_matching_trigger_invoked_once(
 
     assert caller.calls == [(t.trigger_id, e.id)]
     inv = await invocations.get(t.trigger_id, e.id)
-    assert inv is not None and inv.status is InvocationStatus.SUCCESS
+    assert inv is not None and inv.is_successful_delivery
+    assert inv.attempts == 1
+    assert inv.delivery_key is not None
     assert cursor == 2
 
     # Second tick from the cursor: nothing to do.
@@ -87,16 +131,8 @@ async def test_multiple_triggers_fan_out(
     stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore],
 ) -> None:
     log, triggers, invocations = stores
-    t1 = TriggerDefinition(
-        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-        name="a",
-        event_pattern="agent.*",
-    )
-    t2 = TriggerDefinition(
-        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-        name="b",
-        event_pattern="agent.created",
-    )
+    t1 = TriggerDefinition(name="a", event_pattern="agent.*", **SAFE_TRIGGER_KWARGS)
+    t2 = TriggerDefinition(name="b", event_pattern="agent.created", **SAFE_TRIGGER_KWARGS)
     await triggers.add(t1)
     await triggers.add(t2)
     e = await log.append("agent.created")
@@ -105,6 +141,11 @@ async def test_multiple_triggers_fan_out(
     await process_events(log, triggers, invocations, caller)
 
     assert sorted(caller.calls) == sorted([(t1.trigger_id, e.id), (t2.trigger_id, e.id)])
+    # Each trigger's receipt has its own allocated delivery key.
+    r1 = await invocations.get(t1.trigger_id, e.id)
+    r2 = await invocations.get(t2.trigger_id, e.id)
+    assert r1 is not None and r2 is not None
+    assert r1.delivery_key != r2.delivery_key
 
 
 @pytest.mark.ac("SPEC-070226-b234/AC-4")
@@ -112,11 +153,7 @@ async def test_retry_up_to_three_attempts_then_failed(
     stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore],
 ) -> None:
     log, triggers, invocations = stores
-    t = TriggerDefinition(
-        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-        name="always-fails",
-        event_pattern="task.failed",
-    )
+    t = TriggerDefinition(name="always-fails", event_pattern="task.failed", **SAFE_TRIGGER_KWARGS)
     await triggers.add(t)
     e = await log.append("task.failed")
     caller = RecordingCaller()
@@ -133,7 +170,7 @@ async def test_retry_up_to_three_attempts_then_failed(
         assert inv is not None
         assert inv.attempts == expected_attempts
         assert inv.status is expected_status
-        assert "failure" in inv.last_error
+        assert inv.last_error_code == "permanent_pre_commit_refusal"
 
     # Exactly MAX_ATTEMPTS calls, never more, even on further ticks.
     await process_events(log, triggers, invocations, caller, after_id=cursor)
@@ -151,11 +188,7 @@ async def test_transient_failure_recovers(
     stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore],
 ) -> None:
     log, triggers, invocations = stores
-    t = TriggerDefinition(
-        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-        name="flaky",
-        event_pattern="x.y",
-    )
+    t = TriggerDefinition(name="flaky", event_pattern="x.y", **SAFE_TRIGGER_KWARGS)
     await triggers.add(t)
     e = await log.append("x.y")
     caller = RecordingCaller()
@@ -166,9 +199,8 @@ async def test_transient_failure_recovers(
         cursor = await process_events(log, triggers, invocations, caller, after_id=cursor)
     inv = await invocations.get(t.trigger_id, e.id)
     assert inv is not None
-    assert inv.status is InvocationStatus.SUCCESS
+    assert inv.is_successful_delivery
     assert inv.attempts == 3
-    assert inv.last_error == ""
     assert cursor == e.id
 
 
@@ -176,11 +208,7 @@ async def test_cursor_holds_back_on_unsettled_event(
     stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore],
 ) -> None:
     log, triggers, invocations = stores
-    t = TriggerDefinition(
-        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-        name="flaky",
-        event_pattern="a.*",
-    )
+    t = TriggerDefinition(name="flaky", event_pattern="a.*", **SAFE_TRIGGER_KWARGS)
     await triggers.add(t)
     e1 = await log.append("a.one")
     await log.append("a.two")
@@ -189,7 +217,6 @@ async def test_cursor_holds_back_on_unsettled_event(
 
     cursor = await process_events(log, triggers, invocations, caller)
     # First event is retrying: cursor must not advance past it.
-    assert cursor < e1.id or cursor == 0
     assert cursor == 0
 
     cursor = await process_events(log, triggers, invocations, caller, after_id=cursor)
@@ -203,18 +230,10 @@ async def test_crash_replay_no_duplicate_successful_invocations(
     """Idempotency crash-replay: handler A succeeds, handler B crashes
     mid-processing; the whole batch is reprocessed from cursor 0 (simulating
     reactor restart with lost cursor); A is NOT re-invoked, B completes, and
-    each (trigger, event) pair has exactly one successful invocation."""
+    each (trigger, event) pair has exactly one settled receipt."""
     log, triggers, invocations = stores
-    ok = TriggerDefinition(
-        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-        name="ok",
-        event_pattern="agent.*",
-    )
-    crashy = TriggerDefinition(
-        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-        name="crashy",
-        event_pattern="agent.*",
-    )
+    ok = TriggerDefinition(name="ok", event_pattern="agent.*", **SAFE_TRIGGER_KWARGS)
+    crashy = TriggerDefinition(name="crashy", event_pattern="agent.*", **SAFE_TRIGGER_KWARGS)
     await triggers.add(ok)
     await triggers.add(crashy)
     e = await log.append("agent.delegated")
@@ -226,7 +245,7 @@ async def test_crash_replay_no_duplicate_successful_invocations(
     await process_events(log, triggers, invocations, caller)
     inv_ok = await invocations.get(ok.trigger_id, e.id)
     inv_crashy = await invocations.get(crashy.trigger_id, e.id)
-    assert inv_ok is not None and inv_ok.status is InvocationStatus.SUCCESS
+    assert inv_ok is not None and inv_ok.is_successful_delivery
     assert inv_crashy is not None and inv_crashy.status is InvocationStatus.RETRYING
 
     # "Restart": replay everything from cursor 0.
@@ -237,24 +256,19 @@ async def test_crash_replay_no_duplicate_successful_invocations(
     assert caller.calls.count((ok.trigger_id, e.id)) == 1
     assert caller.calls.count((crashy.trigger_id, e.id)) == 2
     inv_crashy = await invocations.get(crashy.trigger_id, e.id)
-    assert inv_crashy is not None and inv_crashy.status is InvocationStatus.SUCCESS
+    assert inv_crashy is not None and inv_crashy.is_successful_delivery
 
-    # Exactly one invocation row per (trigger, event) — no duplicates.
+    # Exactly one receipt per (trigger, event) — no duplicates.
     rows = await invocations.list_for_event(e.id)
     assert len(rows) == 2
-    assert all(r.status is InvocationStatus.SUCCESS for r in rows)
+    assert all(r.is_successful_delivery for r in rows)
 
 
 async def test_disabled_trigger_not_invoked(
     stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore],
 ) -> None:
     log, triggers, invocations = stores
-    t = TriggerDefinition(
-        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-        name="off",
-        event_pattern="agent.*",
-        enabled=False,
-    )
+    t = TriggerDefinition(name="off", event_pattern="agent.*", enabled=False, **SAFE_TRIGGER_KWARGS)
     await triggers.add(t)
     await log.append("agent.created")
     caller = RecordingCaller()
@@ -266,11 +280,7 @@ async def test_limit_batches(
     stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore],
 ) -> None:
     log, triggers, invocations = stores
-    t = TriggerDefinition(
-        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-        name="all",
-        event_pattern="e.*",
-    )
+    t = TriggerDefinition(name="all", event_pattern="e.*", **SAFE_TRIGGER_KWARGS)
     await triggers.add(t)
     for _ in range(5):
         await log.append("e.n")
@@ -283,7 +293,32 @@ async def test_limit_batches(
 
 
 class TestHTTPHandlerCaller:
-    async def test_posts_event_json(self) -> None:
+    """The receipt-reading caller: no receipt, no key, no send."""
+
+    async def _prepared_receipt(
+        self, invocations: InMemoryInvocationStore
+    ) -> tuple[TriggerDefinition, LoggedEvent, str]:
+        trigger = TriggerDefinition(trigger_id="t-call", **SAFE_TRIGGER_KWARGS)
+        event = LoggedEvent(id=7, event_type="agent.created", payload={"a": 1})
+        identity = DeliveryIdentity(
+            handler_url=trigger.handler_url,
+            request_digest=request_digest_v1(trigger.handler_url, event),
+            replay_safety=trigger.effective_replay_safety,
+            contract_ref=trigger.contract_ref,
+        )
+        claimed = await invocations.claim(trigger.trigger_id, event.id, delivery=identity)
+        assert claimed is not None
+        begun = await invocations.begin_dispatch(
+            trigger.trigger_id,
+            event.id,
+            claim_token=claimed.claim_token,
+            expected_revision=claimed.revision,
+            delivery=identity,
+        )
+        assert begun is not None
+        return trigger, event, claimed.delivery_key or ""
+
+    async def test_posts_event_json_with_the_persisted_delivery_key(self) -> None:
         seen: dict[str, object] = {}
 
         def handle(request: httpx.Request) -> httpx.Response:
@@ -292,169 +327,642 @@ class TestHTTPHandlerCaller:
             seen["headers"] = dict(request.headers)
             return httpx.Response(200)
 
+        invocations = InMemoryInvocationStore()
         transport = httpx.MockTransport(handle)
         async with httpx.AsyncClient(transport=transport) as client:
-            caller = HTTPHandlerCaller(client=client)
-            trigger = TriggerDefinition(
-                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-                handler_url="http://handlers.local/log",
-            )
-            event = LoggedEvent(id=7, event_type="agent.created", payload={"a": 1})
-            await caller(trigger, event)
+            caller = HTTPHandlerCaller(invocations, client=client)
+            trigger, event, key = await self._prepared_receipt(invocations)
+            outcome = await caller(trigger, event)
 
-        assert seen["url"] == "http://handlers.local/log"
+        assert outcome is None  # acknowledged
+        assert seen["url"] == SAFE_TRIGGER_KWARGS["handler_url"]
         assert b'"agent.created"' in seen["body"]  # type: ignore[operator]
-        assert seen["headers"]["idempotency-key"] == handler_idempotency_key(trigger, event)
+        assert seen["headers"]["idempotency-key"] == key
 
-    async def test_raises_on_error_status(self) -> None:
+    async def test_a_5xx_is_indeterminate_never_not_applied(self) -> None:
+        invocations = InMemoryInvocationStore()
         transport = httpx.MockTransport(lambda _: httpx.Response(500, text="nope"))
         async with httpx.AsyncClient(transport=transport) as client:
-            caller = HTTPHandlerCaller(client=client)
-            trigger = TriggerDefinition(
-                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-                handler_url="http://handlers.local/x",
-            )
-            event = LoggedEvent(id=1, event_type="a.b")
-            with pytest.raises(HandlerCallError, match="500") as exc_info:
-                await caller(trigger, event)
-            assert exc_info.value.ambiguous
+            caller = HTTPHandlerCaller(invocations, client=client)
+            trigger, event, _ = await self._prepared_receipt(invocations)
+            outcome = await caller(trigger, event)
+        assert outcome is not None
+        assert outcome.disposition is DeliveryDisposition.INDETERMINATE
+        assert outcome.reason_code == "http_server_error"
 
-    async def test_raises_on_transport_error(self) -> None:
+    async def test_a_transport_error_is_indeterminate(self) -> None:
         def handle(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("refused", request=request)
 
+        invocations = InMemoryInvocationStore()
         transport = httpx.MockTransport(handle)
         async with httpx.AsyncClient(transport=transport) as client:
-            caller = HTTPHandlerCaller(client=client)
-            trigger = TriggerDefinition(
-                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-                handler_url="http://handlers.local/x",
-            )
+            caller = HTTPHandlerCaller(invocations, client=client)
+            trigger, event, _ = await self._prepared_receipt(invocations)
+            outcome = await caller(trigger, event)
+        assert outcome is not None
+        assert outcome.disposition is DeliveryDisposition.INDETERMINATE
+        assert outcome.reason_code == "transport_error"
+
+    async def test_refuses_an_absent_receipt_without_sending(self) -> None:
+        calls: list[httpx.Request] = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            calls.append(request)
+            return httpx.Response(200)
+
+        invocations = InMemoryInvocationStore()
+        transport = httpx.MockTransport(handle)
+        async with httpx.AsyncClient(transport=transport) as client:
+            caller = HTTPHandlerCaller(invocations, client=client)
+            trigger = TriggerDefinition(trigger_id="never-claimed", **SAFE_TRIGGER_KWARGS)
             event = LoggedEvent(id=1, event_type="a.b")
-            with pytest.raises(HandlerCallError, match="transport error") as exc_info:
-                await caller(trigger, event)
-            assert exc_info.value.ambiguous
+            outcome = await caller(trigger, event)
+        assert outcome is not None
+        assert outcome.disposition is DeliveryDisposition.NOT_APPLIED
+        assert outcome.reason_code == "receipt_absent"
+        assert calls == []
+
+    async def test_refuses_a_receipt_not_in_dispatch(self) -> None:
+        invocations = InMemoryInvocationStore()
+        transport = httpx.MockTransport(lambda _: httpx.Response(200))
+        async with httpx.AsyncClient(transport=transport) as client:
+            caller = HTTPHandlerCaller(invocations, client=client)
+            trigger = TriggerDefinition(trigger_id="t-idle", **SAFE_TRIGGER_KWARGS)
+            event = LoggedEvent(id=1, event_type="a.b")
+            identity = DeliveryIdentity(
+                handler_url=trigger.handler_url,
+                request_digest=request_digest_v1(trigger.handler_url, event),
+                replay_safety=trigger.effective_replay_safety,
+                contract_ref=trigger.contract_ref,
+            )
+            claimed = await invocations.claim(trigger.trigger_id, event.id, delivery=identity)
+            assert claimed is not None  # claimed but begin_dispatch never ran
+            outcome = await caller(trigger, event)
+        assert outcome is not None
+        assert outcome.disposition is DeliveryDisposition.NOT_APPLIED
+        assert outcome.reason_code == "receipt_not_in_dispatch"
+
+    async def test_refuses_when_the_event_body_drifted_from_the_frozen_digest(self) -> None:
+        invocations = InMemoryInvocationStore()
+        trigger, event, _ = await self._prepared_receipt(invocations)
+        # The Event body changes after the receipt froze its digest (e.g. an
+        # upstream rewrite): the send must refuse rather than re-key.
+        mutated = LoggedEvent(
+            id=event.id, event_type=event.event_type, payload={"a": 1, "extra": True}
+        )
+        transport = httpx.MockTransport(lambda _: httpx.Response(200))
+        async with httpx.AsyncClient(transport=transport) as client:
+            caller = HTTPHandlerCaller(invocations, client=client)
+            outcome = await caller(trigger, mutated)
+        assert outcome is not None
+        assert outcome.disposition is DeliveryDisposition.NOT_APPLIED
+        assert outcome.reason_code == "request_digest_mismatch"
+
+    async def test_never_allocates_a_fallback_key(self) -> None:
+        """A receipt that somehow lost its key is refused, never re-keyed."""
+        invocations = InMemoryInvocationStore()
+        trigger, event, _ = await self._prepared_receipt(invocations)
+        receipt = await invocations.get(trigger.trigger_id, event.id)
+        assert receipt is not None
+        keyless = type(receipt)(**{**receipt.__dict__, "delivery_key": None})
+        await invocations.save(keyless)
+        transport = httpx.MockTransport(lambda _: httpx.Response(200))
+        async with httpx.AsyncClient(transport=transport) as client:
+            caller = HTTPHandlerCaller(invocations, client=client)
+            outcome = await caller(trigger, event)
+        assert outcome is not None
+        assert outcome.disposition is DeliveryDisposition.NOT_APPLIED
+        assert outcome.reason_code == "delivery_key_missing"
 
 
-async def test_unsafe_handler_is_held_without_dispatch(
-    stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore],
-) -> None:
-    log, triggers, invocations = stores
-    trigger = TriggerDefinition(name="unsafe", event_pattern="task.created")
-    await triggers.add(trigger)
-    event = await log.append("task.created")
-    caller = RecordingCaller()
+class TestClassificationTable:
+    """The #1060 §4 classification table, one row at a time."""
 
-    cursor = await process_events(log, triggers, invocations, caller)
+    async def test_acknowledged_is_success(self) -> None:
+        log, triggers, invocations = (
+            InMemoryEventLog(),
+            InMemoryTriggerStore(),
+            InMemoryInvocationStore(),
+        )
+        t = TriggerDefinition(trigger_id="t-ack", event_pattern="a.b", **SAFE_TRIGGER_KWARGS)
+        await triggers.add(t)
+        await log.append("a.b")
 
-    assert cursor == 0
-    assert caller.calls == []
-    invocation = await invocations.get(trigger.trigger_id, event.id)
-    assert invocation is not None
-    assert invocation.status is InvocationStatus.UNSAFE
-    assert "unsafe for automatic replay" in invocation.last_error
+        async def caller(tr, ev):
+            return HandlerCallOutcome(DeliveryDisposition.ACKNOWLEDGED, "committed")
 
+        cursor = await process_events(log, triggers, invocations, caller)
+        receipt = await invocations.get("t-ack", 1)
+        assert receipt is not None
+        assert receipt.is_successful_delivery
+        assert receipt.last_outcome is DeliveryDisposition.ACKNOWLEDGED
+        assert cursor == 1
 
-async def test_worker_death_before_dispatch_is_reclaimed() -> None:
-    log = InMemoryEventLog()
-    triggers = InMemoryTriggerStore()
-    invocations = InMemoryInvocationStore()
-    trigger = TriggerDefinition(
-        trigger_id="t-before-dispatch",
-        event_pattern="task.created",
-        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-    )
-    await triggers.add(trigger)
-    event = await log.append("task.created")
-    assert await invocations.claim(trigger.trigger_id, event.id, lease_seconds=-1.0) is not None
-    caller = RecordingCaller()
+    async def test_proven_not_applied_retries_then_fails_at_the_cap(self) -> None:
+        log, triggers, invocations = (
+            InMemoryEventLog(),
+            InMemoryTriggerStore(),
+            InMemoryInvocationStore(),
+        )
+        t = TriggerDefinition(trigger_id="t-na", event_pattern="a.b", **SAFE_TRIGGER_KWARGS)
+        await triggers.add(t)
+        await log.append("a.b")
 
-    cursor = await process_events(log, triggers, invocations, caller)
+        async def caller(tr, ev):
+            return HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, "pre_send_refusal")
 
-    assert cursor == event.id
-    assert caller.calls == [(trigger.trigger_id, event.id)]
-
-
-class _CrashOnSuccessSaveStore(InMemoryInvocationStore):
-    """Fault injection for the window after remote commit and before SUCCESS."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.crash_once = True
-
-    async def save(self, invocation: HandlerInvocation) -> None:
-        if self.crash_once and invocation.status is InvocationStatus.SUCCESS:
-            self.crash_once = False
-            raise RuntimeError("worker died before SUCCESS persistence")
-        await super().save(invocation)
-
-
-async def test_remote_commit_before_success_save_is_deduplicated_on_replay() -> None:
-    log = InMemoryEventLog()
-    triggers = InMemoryTriggerStore()
-    invocations = _CrashOnSuccessSaveStore()
-    trigger = TriggerDefinition(
-        trigger_id="t-commit",
-        event_pattern="task.created",
-        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-    )
-    await triggers.add(trigger)
-    event = await log.append("task.created")
-    effects: set[str] = set()
-    deliveries: list[str] = []
-
-    async def caller(current_trigger: TriggerDefinition, current_event: LoggedEvent) -> None:
-        key = handler_idempotency_key(current_trigger, current_event)
-        deliveries.append(key)
-        effects.add(key)  # The remote handler's commit-boundary dedupe.
-
-    with pytest.raises(RuntimeError, match="before SUCCESS"):
+        for expected in (InvocationStatus.RETRYING, InvocationStatus.RETRYING):
+            await process_events(log, triggers, invocations, caller)
+            receipt = await invocations.get("t-na", 1)
+            assert receipt is not None and receipt.status is expected
         await process_events(log, triggers, invocations, caller)
+        receipt = await invocations.get("t-na", 1)
+        assert receipt is not None and receipt.status is InvocationStatus.FAILED
+        assert not receipt.uncertain_prior_dispatch
 
-    # A restarted worker can reclaim the expired lease. The external effect
-    # store sees the same key and turns the redelivery into a no-op.
-    pending = await invocations.get(trigger.trigger_id, event.id)
-    assert pending is not None
-    pending.lease_expires_at = 0.0
-    await invocations.save(pending)
-    cursor = await process_events(log, triggers, invocations, caller, after_id=0)
+    async def test_indeterminate_retries_only_under_a_safe_contract(self) -> None:
+        # Safe contract: RETRYING while budget remains.
+        log, triggers, invocations = (
+            InMemoryEventLog(),
+            InMemoryTriggerStore(),
+            InMemoryInvocationStore(),
+        )
+        t = TriggerDefinition(trigger_id="t-ind-safe", event_pattern="a.b", **SAFE_TRIGGER_KWARGS)
+        await triggers.add(t)
+        await log.append("a.b")
 
-    assert cursor == event.id
-    assert len(deliveries) == 2
-    assert len(effects) == 1
-    saved = await invocations.get(trigger.trigger_id, event.id)
-    assert saved is not None and saved.status is InvocationStatus.SUCCESS
+        async def indeterminate(tr, ev):
+            return HandlerCallOutcome(DeliveryDisposition.INDETERMINATE, "conn_lost")
+
+        await process_events(log, triggers, invocations, indeterminate)
+        receipt = await invocations.get("t-ind-safe", 1)
+        assert receipt is not None
+        assert receipt.status is InvocationStatus.RETRYING
+        assert receipt.uncertain_prior_dispatch  # cumulative uncertainty recorded
+
+    async def test_indeterminate_on_an_unproven_recipient_is_unknown_after_one_shot(self) -> None:
+        log, triggers, invocations = (
+            InMemoryEventLog(),
+            InMemoryTriggerStore(),
+            InMemoryInvocationStore(),
+        )
+        t = TriggerDefinition(
+            trigger_id="t-ind-unsafe", event_pattern="a.b", handler_url="http://h"
+        )
+        await triggers.add(t)
+        await log.append("a.b")
+        calls: list[int] = []
+
+        async def indeterminate(tr, ev):
+            calls.append(ev.id)
+            return HandlerCallOutcome(DeliveryDisposition.INDETERMINATE, "conn_lost")
+
+        cursor = await process_events(log, triggers, invocations, indeterminate)
+        receipt = await invocations.get("t-ind-unsafe", 1)
+        assert receipt is not None
+        assert receipt.status is InvocationStatus.UNKNOWN
+        assert receipt.settled_for_cursor
+        assert cursor == 1  # UNKNOWN is cursor-settled and visible
+        assert receipt.uncertain_prior_dispatch
+
+        # No automatic replay of UNKNOWN, ever.
+        await process_events(log, triggers, invocations, indeterminate, after_id=0)
+        assert calls == [1]
+
+    async def test_unproven_recipient_still_gets_its_one_shot_attempt(self) -> None:
+        log, triggers, invocations = (
+            InMemoryEventLog(),
+            InMemoryTriggerStore(),
+            InMemoryInvocationStore(),
+        )
+        t = TriggerDefinition(trigger_id="t-one-shot", event_pattern="a.b", handler_url="http://h")
+        await triggers.add(t)
+        await log.append("a.b")
+        caller = RecordingCaller()
+
+        cursor = await process_events(log, triggers, invocations, caller)
+        receipt = await invocations.get("t-one-shot", 1)
+        assert receipt is not None
+        assert receipt.is_successful_delivery
+        assert cursor == 1
+        assert caller.calls == [("t-one-shot", 1)]
+
+    async def test_an_arbitrary_exception_is_indeterminate_evidence(self) -> None:
+        log, triggers, invocations = (
+            InMemoryEventLog(),
+            InMemoryTriggerStore(),
+            InMemoryInvocationStore(),
+        )
+        t = TriggerDefinition(trigger_id="t-exc", event_pattern="a.b", handler_url="http://h")
+        await triggers.add(t)
+        await log.append("a.b")
+
+        async def exploding(tr, ev):
+            raise RuntimeError("bug in the handler client")
+
+        await process_events(log, triggers, invocations, exploding)
+        receipt = await invocations.get("t-exc", 1)
+        assert receipt is not None
+        assert receipt.status is InvocationStatus.UNKNOWN
+        assert receipt.last_error_code == "handler_exception"
+
+    async def test_prior_indeterminate_plus_current_not_applied_stays_unknown_on_exhaustion(
+        self,
+    ) -> None:
+        """The §6 oracle: an earlier possibly-applied call is never erased by a
+        later proven not-applied one once the budget is gone."""
+        log, triggers, invocations = (
+            InMemoryEventLog(),
+            InMemoryTriggerStore(),
+            InMemoryInvocationStore(),
+        )
+        t = TriggerDefinition(trigger_id="t-unc", event_pattern="a.b", **SAFE_TRIGGER_KWARGS)
+        await triggers.add(t)
+        await log.append("a.b")
+        outcomes = iter(
+            [
+                HandlerCallOutcome(DeliveryDisposition.INDETERMINATE, "conn_lost"),
+                HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, "proven_absent"),
+            ]
+        )
+
+        async def caller(tr, ev):
+            return next(outcomes)
+
+        await process_events(log, triggers, invocations, caller)  # attempt 1: indeterminate
+        receipt = await invocations.get("t-unc", 1)
+        assert receipt is not None and receipt.status is InvocationStatus.RETRYING
+        await process_events(log, triggers, invocations, caller)  # attempt 2: not applied
+        receipt = await invocations.get("t-unc", 1)
+        assert receipt is not None and receipt.status is InvocationStatus.RETRYING
+        assert receipt.uncertain_prior_dispatch
+
+        # Attempt 3 also proven absent: budget exhausted with inherited
+        # uncertainty -> UNKNOWN, never FAILED.
+        async def not_applied(tr, ev):
+            return HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, "proven_absent")
+
+        cursor = await process_events(log, triggers, invocations, not_applied)
+        receipt = await invocations.get("t-unc", 1)
+        assert receipt is not None
+        assert receipt.status is InvocationStatus.UNKNOWN
+        assert receipt.uncertain_prior_dispatch
+        assert receipt.last_error_code == "proven_absent"
+        assert cursor == 1
+
+    async def test_changed_target_refuses_to_send_and_settles_visibly(self) -> None:
+        log, triggers, invocations = (
+            InMemoryEventLog(),
+            InMemoryTriggerStore(),
+            InMemoryInvocationStore(),
+        )
+        t = TriggerDefinition(trigger_id="t-move", event_pattern="a.b", **SAFE_TRIGGER_KWARGS)
+        await triggers.add(t)
+        await log.append("a.b")
+        caller = RecordingCaller()
+
+        # First tick holds the receipt in RETRYING with its frozen identity.
+        caller.fail_keys.add(("t-move", 1))
+        await process_events(log, triggers, invocations, caller)
+        receipt = await invocations.get("t-move", 1)
+        assert receipt is not None and receipt.status is InvocationStatus.RETRYING
+
+        # The operator repoints the handler: the frozen receipt disagrees.
+        moved = TriggerDefinition(
+            trigger_id="t-move",
+            event_pattern="a.b",
+            handler_url="http://handlers.local/other",
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="contract-v1",
+        )
+        await triggers.add(moved)
+        cursor = await process_events(log, triggers, invocations, caller, after_id=0)
+
+        receipt = await invocations.get("t-move", 1)
+        assert receipt is not None
+        assert receipt.status is InvocationStatus.FAILED
+        assert receipt.last_error_code == "delivery_identity_changed"
+        assert cursor == 1  # settled for cursor: refused, visible, not replayed
+        assert caller.calls == [("t-move", 1)]  # the repointed URL was never called
+
+    async def test_changed_target_with_prior_uncertainty_is_unknown_not_failed(self) -> None:
+        log, triggers, invocations = (
+            InMemoryEventLog(),
+            InMemoryTriggerStore(),
+            InMemoryInvocationStore(),
+        )
+        t = TriggerDefinition(trigger_id="t-move2", event_pattern="a.b", **SAFE_TRIGGER_KWARGS)
+        await triggers.add(t)
+        await log.append("a.b")
+
+        async def indeterminate(tr, ev):
+            return HandlerCallOutcome(DeliveryDisposition.INDETERMINATE, "conn_lost")
+
+        await process_events(log, triggers, invocations, indeterminate)
+        receipt = await invocations.get("t-move2", 1)
+        assert receipt is not None and receipt.uncertain_prior_dispatch
+
+        moved = TriggerDefinition(
+            trigger_id="t-move2", event_pattern="a.b", handler_url="http://other", contract_ref="c"
+        )
+        await triggers.add(moved)
+        caller = RecordingCaller()
+        cursor = await process_events(log, triggers, invocations, caller, after_id=0)
+        receipt = await invocations.get("t-move2", 1)
+        assert receipt is not None
+        assert receipt.status is InvocationStatus.UNKNOWN
+        assert cursor == 1
+
+    async def test_missing_handler_url_is_a_pre_send_refusal(self) -> None:
+        log, triggers, invocations = (
+            InMemoryEventLog(),
+            InMemoryTriggerStore(),
+            InMemoryInvocationStore(),
+        )
+        t = TriggerDefinition(
+            trigger_id="t-nourl",
+            event_pattern="a.b",
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="c",
+        )
+        await triggers.add(t)
+        await log.append("a.b")
+        caller = RecordingCaller()
+
+        cursor = await process_events(log, triggers, invocations, caller)
+        receipt = await invocations.get("t-nourl", 1)
+        assert receipt is not None
+        assert receipt.status is InvocationStatus.FAILED
+        assert receipt.last_error_code == "handler_url_missing"
+        assert caller.calls == []
+        assert cursor == 1
+
+    async def test_idempotent_declaration_without_a_contract_ref_acts_unproven(self) -> None:
+        log, triggers, invocations = (
+            InMemoryEventLog(),
+            InMemoryTriggerStore(),
+            InMemoryInvocationStore(),
+        )
+        t = TriggerDefinition(
+            trigger_id="t-noref",
+            event_pattern="a.b",
+            handler_url="http://h",
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="",  # invalid enrollment
+        )
+        await triggers.add(t)
+        await log.append("a.b")
+
+        async def indeterminate(tr, ev):
+            return HandlerCallOutcome(DeliveryDisposition.INDETERMINATE, "conn_lost")
+
+        await process_events(log, triggers, invocations, indeterminate)
+        receipt = await invocations.get("t-noref", 1)
+        assert receipt is not None
+        assert receipt.status is InvocationStatus.UNKNOWN  # not auto-retried
+        assert receipt.replay_safety is ReplaySafety.UNPROVEN
 
 
-async def test_failure_before_commit_retries_and_ambiguous_transport_is_marked() -> None:
-    log = InMemoryEventLog()
-    triggers = InMemoryTriggerStore()
-    invocations = InMemoryInvocationStore()
-    trigger = TriggerDefinition(
-        trigger_id="t-failure",
-        event_pattern="task.created",
-        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-    )
-    await triggers.add(trigger)
-    await log.append("task.created")
-    calls = 0
+class TestCrashPhases:
+    """§6 fault injection: kill the worker at every boundary, prove the
+    post-effect window cannot double-apply under the supported contract."""
 
-    async def caller(_trigger: TriggerDefinition, _event: LoggedEvent) -> None:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise HandlerCallError("connection refused before commit")
-        raise HandlerCallError("response lost after commit", ambiguous=True)
+    @staticmethod
+    def _stack():
+        log = InMemoryEventLog()
+        trig_store = InMemoryTriggerStore()
+        invocations = InMemoryInvocationStore()
+        trigger = TriggerDefinition(
+            trigger_id="t-crash",
+            event_pattern="task.created",
+            handler_url="http://receiver.local/handler",
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="contract-v1",
+        )
+        return log, trig_store, invocations, trigger
 
-    assert await process_events(log, triggers, invocations, caller) == 0
-    invocation = await invocations.get(trigger.trigger_id, 1)
-    assert invocation is not None and invocation.status is InvocationStatus.RETRYING
-    assert "connection refused" in invocation.last_error
+    @staticmethod
+    def _delivery(trigger: TriggerDefinition, event: LoggedEvent) -> DeliveryIdentity:
+        return DeliveryIdentity(
+            handler_url=trigger.handler_url,
+            request_digest=request_digest_v1(trigger.handler_url, event),
+            replay_safety=trigger.effective_replay_safety,
+            contract_ref=trigger.contract_ref,
+        )
 
-    assert await process_events(log, triggers, invocations, caller) == 0
-    invocation = await invocations.get(trigger.trigger_id, 1)
-    assert invocation is not None and invocation.status is InvocationStatus.RETRYING
-    assert invocation.last_error.startswith("ambiguous remote outcome:")
+    async def test_death_before_begin_leaves_no_uncertainty(self) -> None:
+        """Claimed, then the worker dies before consuming a send: the takeover
+        finds no dispatch marker, so nothing possibly applied."""
+        log, trig_store, invocations, trigger = self._stack()
+        await trig_store.add(trigger)
+        event = await log.append("task.created")
+        delivery = self._delivery(trigger, event)
+        # Worker A claims and dies (lease lapses).
+        await invocations.claim(trigger.trigger_id, event.id, delivery=delivery, lease_seconds=-1.0)
+
+        receiver = FakeReceiver()
+        cursor = await process_events(
+            log, trig_store, invocations, self._receiver_caller(receiver, invocations)
+        )
+        receipt = await invocations.get(trigger.trigger_id, event.id)
+        assert receipt is not None
+        assert receipt.is_successful_delivery
+        assert not receipt.uncertain_prior_dispatch
+        assert receiver.logical_effects == 1
+        assert cursor == event.id
+
+    async def test_death_after_begin_before_http_folds_uncertainty(self) -> None:
+        """begin_dispatch consumed the send and set the marker, then death:
+        takeover must fold the marker into cumulative uncertainty."""
+        log, trig_store, invocations, trigger = self._stack()
+        await trig_store.add(trigger)
+        event = await log.append("task.created")
+        delivery = self._delivery(trigger, event)
+        claimed = await invocations.claim(trigger.trigger_id, event.id, delivery=delivery)
+        assert claimed is not None
+        begun = await invocations.begin_dispatch(
+            trigger.trigger_id,
+            event.id,
+            claim_token=claimed.claim_token,
+            expected_revision=claimed.revision,
+            delivery=delivery,
+        )
+        assert begun is not None and begun.attempts == 1
+
+        # The lease lapses (hard death); the next claim takes over and folds
+        # the in-flight marker into cumulative uncertainty.
+        raw = await invocations.get(trigger.trigger_id, event.id)
+        assert raw is not None
+        expired = raw.__class__(**{**raw.__dict__, "lease_expires_at": 0.0})
+        await invocations.save(expired)
+        reclaimed = await invocations.claim(trigger.trigger_id, event.id, delivery=delivery)
+        assert reclaimed is not None
+        assert reclaimed.uncertain_prior_dispatch
+        assert reclaimed.dispatch_started_at is None
+        # The send budget was consumed by the dead worker and is not refunded.
+        assert reclaimed.attempts == 1
+
+    async def test_death_after_begin_before_http_redelivers_once_under_safe_contract(self) -> None:
+        log, trig_store, invocations, trigger = self._stack()
+        await trig_store.add(trigger)
+        event = await log.append("task.created")
+        delivery = self._delivery(trigger, event)
+        claimed = await invocations.claim(trigger.trigger_id, event.id, delivery=delivery)
+        assert claimed is not None
+        begun = await invocations.begin_dispatch(
+            trigger.trigger_id,
+            event.id,
+            claim_token=claimed.claim_token,
+            expected_revision=claimed.revision,
+            delivery=delivery,
+        )
+        assert begun is not None
+        # Hard death: the lease lapses with the marker in flight.
+        raw = await invocations.get(trigger.trigger_id, event.id)
+        assert raw is not None
+        expired = raw.__class__(**{**raw.__dict__, "lease_expires_at": 0.0})
+        await invocations.save(expired)
+
+        receiver = FakeReceiver()
+        cursor = await process_events(
+            log, trig_store, invocations, self._receiver_caller(receiver, invocations)
+        )
+        receipt = await invocations.get(trigger.trigger_id, event.id)
+        assert receipt is not None
+        assert receipt.is_successful_delivery
+        assert receipt.uncertain_prior_dispatch  # the dead attempt stays uncertain
+        assert receiver.logical_effects == 1  # the receiver's dedupe held
+        assert len(receiver.received) == 1
+        assert cursor == event.id
+
+    async def test_remote_commit_before_success_save_is_one_logical_effect_on_replay(self):
+        """The original crash window: the receiver commits, the response is
+        lost, and the worker dies before settling. Redelivery under the same
+        persisted key commits exactly one logical effect."""
+        log, trig_store, invocations, trigger = self._stack()
+        await trig_store.add(trigger)
+        event = await log.append("task.created")
+        receiver = FakeReceiver()
+        deliveries: list[str] = []
+
+        async def crash_after_commit(tr, ev):
+            # The receiver commits the effect, then the worker dies before
+            # recording anything: the response never arrives.
+            key = (await invocations.get(tr.trigger_id, ev.id)).delivery_key
+            assert key is not None
+            deliveries.append(key)
+            await receiver.receive(key, "digest")
+            raise RuntimeError("worker died after remote commit")
+
+        with pytest.raises(RuntimeError, match="worker died"):
+            # The classification settles the receipt, but a *hard* death is
+            # simulated by the store refusing the settle: patch it out by
+            # crashing the settle itself.
+            crashing_store = _CrashBeforeSettleStore(invocations)
+            await process_events(log, trig_store, crashing_store, crash_after_commit)
+
+        # A restarted worker replays from cursor 0 under the same key.
+        receipt = await invocations.get(trigger.trigger_id, event.id)
+        assert receipt is not None and receipt.dispatch_started_at is not None
+
+        async def receiver_caller(tr, ev):
+            key = (await invocations.get(tr.trigger_id, ev.id)).delivery_key
+            assert key is not None
+            deliveries.append(key)
+            await receiver.receive(key, "digest")
+            return None
+
+        # Simulate lease lapse so the replay can take over.
+        raw = await invocations.get(trigger.trigger_id, event.id)
+        expired = raw.__class__(**{**raw.__dict__, "lease_expires_at": 0.0})
+        await invocations.save(expired)
+        cursor = await process_events(log, trig_store, invocations, receiver_caller, after_id=0)
+
+        assert cursor == event.id
+        assert len(deliveries) == 2  # the POST physically repeated...
+        assert receiver.logical_effects == 1  # ...but committed one logical effect
+        saved = await invocations.get(trigger.trigger_id, event.id)
+        assert saved is not None and saved.is_successful_delivery
+
+    async def test_after_success_before_cursor_save_replay_does_not_resend(self) -> None:
+        log, trig_store, invocations, trigger = self._stack()
+        await trig_store.add(trigger)
+        event = await log.append("task.created")
+        receiver = FakeReceiver()
+        cursor = await process_events(
+            log, trig_store, invocations, self._receiver_caller(receiver, invocations)
+        )
+        assert cursor == event.id
+
+        # The cursor save is lost: the next tick replays from 0 and must not
+        # re-send — the settled receipt refuses the claim.
+        cursor2 = await process_events(
+            log,
+            trig_store,
+            invocations,
+            self._receiver_caller(receiver, invocations),
+            after_id=0,
+        )
+        assert cursor2 == event.id
+        assert len(receiver.received) == 1
+        assert receiver.logical_effects == 1
+
+    @staticmethod
+    def _receiver_caller(receiver: FakeReceiver, invocations: InMemoryInvocationStore):
+        async def caller(trigger: TriggerDefinition, event: LoggedEvent) -> None:
+            receipt = await invocations.get(trigger.trigger_id, event.id)
+            assert receipt is not None
+            assert receipt.delivery_key is not None
+            await receiver.receive(receipt.delivery_key, receipt.request_digest)
+            return None
+
+        return caller
+
+    async def test_unknown_receipts_stay_inspectable_while_later_events_advance(self) -> None:
+        log, trig_store, invocations, trigger = self._stack()
+        await trig_store.add(trigger)
+        await log.append("task.created")
+
+        async def indeterminate(tr, ev):
+            return HandlerCallOutcome(DeliveryDisposition.INDETERMINATE, "conn_lost")
+
+        # Event 1 lands UNKNOWN (budget consumed across three uncertain sends).
+        for _ in range(MAX_ATTEMPTS):
+            await process_events(log, trig_store, invocations, indeterminate, after_id=0)
+        first = await invocations.get(trigger.trigger_id, 1)
+        assert first is not None and first.status is InvocationStatus.UNKNOWN
+
+        # Later events keep flowing past the visible UNKNOWN receipt.
+        await log.append("task.created")
+        cursor = await process_events(log, trig_store, invocations, RecordingCaller(), after_id=0)
+        assert cursor == 2
+        still_unknown = await invocations.get(trigger.trigger_id, 1)
+        assert still_unknown is not None
+        assert still_unknown.status is InvocationStatus.UNKNOWN
+        assert still_unknown.last_error_code == "conn_lost"
+
+
+class _CrashBeforeSettleStore:
+    """Proxy that simulates hard death at the settle boundary (#1060 §6).
+
+    Delegates every read to the real store but dies on the first settle, so
+    the receipt keeps its in-flight dispatch marker exactly as a process
+    killed between the remote commit and the local SUCCESS write would.
+    """
+
+    def __init__(self, inner: InMemoryInvocationStore) -> None:
+        self._inner = inner
+        self.crash_armed = True
+
+    def __getattr__(self, name: str):  # pragma: no cover - simple delegation
+        return getattr(self._inner, name)
+
+    async def settle(self, *args, **kwargs):
+        if self.crash_armed:
+            self.crash_armed = False
+            raise RuntimeError("worker died before SUCCESS persistence")
+        return await self._inner.settle(*args, **kwargs)
 
 
 class YieldingCaller(RecordingCaller):
@@ -462,55 +970,27 @@ class YieldingCaller(RecordingCaller):
 
     `RecordingCaller.__call__` is `async def` with no `await` in it, so it never
     yields — and `asyncio.gather` over coroutines that never yield runs them one
-    after another to completion. Every worker after the first then finds the
-    invocation already terminal and skips, and a test built on it passes against
-    the *unfixed* dispatch loop: worker 2 never overlaps worker 1, so there is
-    no race to lose. Verified by reverting `process_events` to `get_or_create`
-    and watching the test still pass.
-
-    Suspending inside the handler is what puts a second worker at `claim` while
-    the first is mid-dispatch, which is the only arrangement in which the bug
-    exists.
+    after another to completion. Suspending inside the handler is what puts a
+    second worker at `claim` while the first is mid-dispatch.
     """
 
     async def __call__(self, trigger: TriggerDefinition, event: LoggedEvent) -> None:
-        import asyncio
-
         self.calls.append((trigger.trigger_id, event.id))
         for _ in range(4):
             await asyncio.sleep(0)
 
 
 class TestConcurrentWorkersDispatchOnce:
-    """Two workers, one event, one handler call (Codex review, #181).
-
-    The store's composite key made racing workers converge on one invocation
-    *row*, and `process_events` read any non-terminal row as permission to
-    dispatch — so both workers called the handler and the bookkeeping showed a
-    single tidy invocation either way. ADR-086 says a handler is invoked "at
-    most once successfully per event"; one row and two calls is not that.
-
-    These run at the `process_events` level rather than the store level on
-    purpose: `test_durable_store_conformance.py` proves `claim` is atomic, and
-    this proves the dispatch loop actually goes through it. The store being
-    correct while the caller ignores it is exactly the shape of the original
-    bug.
-    """
+    """Two workers, one event, one handler call (#181, retained)."""
 
     @staticmethod
     async def _one_event_two_workers(caller, workers: int = 8):
-        import asyncio
-
         event_log = InMemoryEventLog()
         trigger_store = InMemoryTriggerStore()
         invocations = InMemoryInvocationStore()
         await trigger_store.add(
             TriggerDefinition(
-                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-                trigger_id="t1",
-                name="t1",
-                event_pattern="task.created",
-                handler_url="http://handler.invalid",
+                trigger_id="t1", name="t1", event_pattern="task.created", **SAFE_TRIGGER_KWARGS
             )
         )
         await event_log.append("task.created")
@@ -523,40 +1003,32 @@ class TestConcurrentWorkersDispatchOnce:
     async def test_only_one_worker_calls_the_handler(self):
         caller = YieldingCaller()
         invocations = await self._one_event_two_workers(caller)
-
         assert caller.calls == [("t1", 1)], f"the handler fired {len(caller.calls)} times"
         assert len(await invocations.list_for_event(1)) == 1
 
     async def test_the_surviving_invocation_records_the_success(self):
-        """A worker that skipped dispatch must not leave the invocation looking
-        unhandled — the cursor would then never advance past the event."""
         caller = YieldingCaller()
         invocations = await self._one_event_two_workers(caller)
-
         invocation = await invocations.get("t1", 1)
         assert invocation is not None
-        assert invocation.status is InvocationStatus.SUCCESS
+        assert invocation.is_successful_delivery
 
     async def test_a_worker_that_skips_does_not_advance_past_an_unsettled_event(self):
-        """The other half: skipping is not the same as settled. A worker that
-        finds the event owned by someone still running it must hold its cursor,
-        or the event is dropped from every later batch."""
         event_log = InMemoryEventLog()
         trigger_store = InMemoryTriggerStore()
         invocations = InMemoryInvocationStore()
-        await trigger_store.add(
-            TriggerDefinition(
-                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-                trigger_id="t1",
-                name="t1",
-                event_pattern="task.created",
-                handler_url="http://handler.invalid",
-            )
+        trigger = TriggerDefinition(
+            trigger_id="t1", name="t1", event_pattern="task.created", **SAFE_TRIGGER_KWARGS
         )
+        await trigger_store.add(trigger)
         event = await event_log.append("task.created")
 
-        # Another worker holds a live lease and has not finished.
-        held = await invocations.claim("t1", event.id)
+        # Another worker holds a live claim and has not finished.
+        held = await invocations.claim(
+            trigger.trigger_id,
+            event.id,
+            delivery=DeliveryIdentity("http://handlers.local/x", "v1:digest"),
+        )
         assert held is not None
 
         caller = RecordingCaller()
@@ -590,11 +1062,7 @@ class TestTheBatchReportsWhatTheLogSkipped:
     ) -> None:
         log, triggers, invocations = stores
         await triggers.add(
-            TriggerDefinition(
-                name="agents",
-                event_pattern="agent.*",
-                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-            )
+            TriggerDefinition(name="agents", event_pattern="agent.*", **SAFE_TRIGGER_KWARGS)
         )
         await log.append("agent.created")
         await log.append("agent.created")
@@ -609,11 +1077,7 @@ class TestTheBatchReportsWhatTheLogSkipped:
     ) -> None:
         inner, triggers, invocations = stores
         await triggers.add(
-            TriggerDefinition(
-                name="agents",
-                event_pattern="agent.*",
-                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-            )
+            TriggerDefinition(name="agents", event_pattern="agent.*", **SAFE_TRIGGER_KWARGS)
         )
         for _ in range(6):
             await inner.append("agent.created")
@@ -622,8 +1086,6 @@ class TestTheBatchReportsWhatTheLogSkipped:
 
         batch = await process_events_batch(log, triggers, invocations, caller)  # type: ignore[arg-type]
 
-        # The visible events were still processed: a hole delays only the
-        # persisted resume point, never the work.
         assert [event_id for _, event_id in caller.calls] == [1, 3, 6]
         assert batch.cursor == 6
         assert batch.holes == (2, 4)
@@ -633,11 +1095,7 @@ class TestTheBatchReportsWhatTheLogSkipped:
     ) -> None:
         inner, triggers, invocations = stores
         await triggers.add(
-            TriggerDefinition(
-                name="agents",
-                event_pattern="agent.*",
-                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-            )
+            TriggerDefinition(name="agents", event_pattern="agent.*", **SAFE_TRIGGER_KWARGS)
         )
         await inner.append("agent.created")
         await inner.append("agent.created")
@@ -651,14 +1109,8 @@ class TestTheBatchReportsWhatTheLogSkipped:
     async def test_holes_are_only_counted_below_the_settled_cursor(
         self, stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore]
     ) -> None:
-        """An unsettled event holds the cursor; a hole above it is next tick's
-        business, since nothing above the cursor is persisted anyway."""
         inner, triggers, invocations = stores
-        t = TriggerDefinition(
-            name="agents",
-            event_pattern="agent.*",
-            delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-        )
+        t = TriggerDefinition(name="agents", event_pattern="agent.*", **SAFE_TRIGGER_KWARGS)
         await triggers.add(t)
         for _ in range(4):
             await inner.append("agent.created")
@@ -676,11 +1128,7 @@ class TestTheBatchReportsWhatTheLogSkipped:
     ) -> None:
         inner, triggers, invocations = stores
         await triggers.add(
-            TriggerDefinition(
-                name="agents",
-                event_pattern="agent.*",
-                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
-            )
+            TriggerDefinition(name="agents", event_pattern="agent.*", **SAFE_TRIGGER_KWARGS)
         )
         for _ in range(3):
             await inner.append("agent.created")
@@ -689,3 +1137,53 @@ class TestTheBatchReportsWhatTheLogSkipped:
         cursor = await process_events(log, triggers, invocations, RecordingCaller())  # type: ignore[arg-type]
 
         assert cursor == 3
+
+
+class TestAttemptBudgetCannotBeEvaded:
+    """Kill loops: repeated death/reclaim never buys a fourth send."""
+
+    async def test_repeated_death_and_reclaim_stops_at_the_cap(self) -> None:
+        log = InMemoryEventLog()
+        trig_store = InMemoryTriggerStore()
+        invocations = InMemoryInvocationStore()
+        trigger = TriggerDefinition(trigger_id="t-kill", event_pattern="a.b", **SAFE_TRIGGER_KWARGS)
+        await trig_store.add(trigger)
+        event = await log.append("a.b")
+        delivery = DeliveryIdentity(
+            handler_url=trigger.handler_url,
+            request_digest=request_digest_v1(trigger.handler_url, event),
+            replay_safety=trigger.effective_replay_safety,
+            contract_ref=trigger.contract_ref,
+        )
+        # Worker dies after begin each round: three send permissions total.
+        for expected_attempts in (1, 2, 3):
+            claimed = await invocations.claim(trigger.trigger_id, event.id, delivery=delivery)
+            assert claimed is not None
+            begun = await invocations.begin_dispatch(
+                trigger.trigger_id,
+                event.id,
+                claim_token=claimed.claim_token,
+                expected_revision=claimed.revision,
+                delivery=delivery,
+            )
+            assert begun is not None
+            assert begun.attempts == expected_attempts
+            # Hard death: the lease lapses with the marker in flight.
+            raw = await invocations.get(trigger.trigger_id, event.id)
+            assert raw is not None
+            expired = raw.__class__(**{**raw.__dict__, "lease_expires_at": 0.0})
+            await invocations.save(expired)
+
+        # A fourth begin is refused even after another takeover.
+        fourth_claim = await invocations.claim(
+            trigger.trigger_id, event.id, delivery=delivery, lease_seconds=-1.0
+        )
+        assert fourth_claim is not None  # claim may settle an exhausted receipt...
+        with pytest.raises(DeliveryAttemptLimitReached):
+            await invocations.begin_dispatch(
+                trigger.trigger_id,
+                event.id,
+                claim_token=fourth_claim.claim_token,
+                expected_revision=fourth_claim.revision,
+                delivery=delivery,
+            )

@@ -1,4 +1,4 @@
-"""Migrations 004 + 036 and `pg_stores._SCHEMA` must describe the same four tables.
+"""Migrations 004 + 036 + 064 and `pg_stores._SCHEMA` must describe the same four tables.
 
 `PgEventLog`/`PgTriggerStore`/`PgInvocationStore`/`PgConsumerCursorStore`
 create their tables two ways. Alembic revisions 004 (the first three) and
@@ -31,15 +31,20 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DATABASE_URL = os.environ.get("MAISTRO_TEST_DATABASE_URL", "")
 
 #: The tables the event revisions create: three by 004, `consumer_cursors` by
-#: 036. Spelled out rather than derived from the catalogue: a test that asks
-#: "are the tables that exist equal?" passes vacuously when neither side
-#: creates anything.
+#: 036, delivery-receipt columns by 064. Spelled out rather than derived from
+#: the catalogue: a test that asks "are the tables that exist equal?" passes
+#: vacuously when neither side creates anything.
 EVENT_TABLES = ("consumer_cursors", "event_log", "handler_invocations", "trigger_definitions")
 
 #: Each event revision rendered on its own: `alembic upgrade a:b --sql` renders
 #: the revisions strictly between the two, so rendering ``003:036`` would drag
-#: every unrelated table from 005 to 035 into the comparison.
-EVENT_REVISION_RANGES = ("003:004", "035_outcome_scope_thumb_index:036_consumer_cursors")
+#: every unrelated table from 005 to 035 into the comparison. 064 (#1060)
+#: carries the delivery-receipt columns both sides must agree on.
+EVENT_REVISION_RANGES = (
+    "003:004",
+    "035_outcome_scope_thumb_index:036_consumer_cursors",
+    "063:064",
+)
 
 
 def _require_postgres() -> str:

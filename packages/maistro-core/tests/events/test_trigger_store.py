@@ -7,8 +7,8 @@ from collections.abc import AsyncIterator
 import aiosqlite
 import pytest
 
+from maistro.events.invocations import ReplaySafety
 from maistro.events.trigger_store import (
-    HandlerDeliveryContract,
     InMemoryTriggerStore,
     SqliteTriggerStore,
     TriggerDefinition,
@@ -66,7 +66,8 @@ class TestTriggerStore:
             name="log-delegations",
             event_pattern="agent.delegated",
             handler_url="http://localhost:8000/handlers/log",
-            delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="log-handler-contract-v3",
         )
         await store.add(t)
         got = await store.get(t.trigger_id)
@@ -75,14 +76,49 @@ class TestTriggerStore:
         assert got.event_pattern == "agent.delegated"
         assert got.handler_url == "http://localhost:8000/handlers/log"
         assert got.enabled
-        assert got.delivery_contract is HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT
+        assert got.replay_safety is ReplaySafety.IDEMPOTENT
+        assert got.contract_ref == "log-handler-contract-v3"
 
-    async def test_unknown_delivery_contract_defaults_unsafe(self, store: TriggerStore) -> None:
-        trigger = TriggerDefinition(trigger_id="unsafe", event_pattern="task.created")
+    async def test_unknown_replay_safety_defaults_unproven(self, store: TriggerStore) -> None:
+        """#1060 §2 fail-closed default: existing rows (and new ones without an
+        explicit enrollment) are unsafe for automatic replay."""
+        trigger = TriggerDefinition(trigger_id="unproven", event_pattern="task.created")
         await store.add(trigger)
-        got = await store.get("unsafe")
+        got = await store.get("unproven")
         assert got is not None
-        assert got.delivery_contract is HandlerDeliveryContract.UNSAFE
+        assert got.replay_safety is ReplaySafety.UNPROVEN
+        assert got.effective_replay_safety is ReplaySafety.UNPROVEN
+
+    async def test_a_safe_declaration_without_contract_ref_reads_unproven(
+        self, store: TriggerStore
+    ) -> None:
+        """Idempotent/read_only enrollment requires the operator-approved
+        contract ref; the stored declaration is never allowed to upgrade an
+        invalid enrollment (#1060 §2)."""
+        for safety in (ReplaySafety.IDEMPOTENT, ReplaySafety.READ_ONLY):
+            trigger = TriggerDefinition(
+                trigger_id=f"noref-{safety.value}",
+                event_pattern="task.created",
+                replay_safety=safety,
+                contract_ref="",
+            )
+            await store.add(trigger)
+            got = await store.get(trigger.trigger_id)
+            assert got is not None
+            assert got.replay_safety is safety  # the declaration round-trips
+            assert got.effective_replay_safety is ReplaySafety.UNPROVEN  # but does not act
+
+    async def test_read_only_enrollment_round_trips(self, store: TriggerStore) -> None:
+        trigger = TriggerDefinition(
+            trigger_id="ro",
+            event_pattern="task.created",
+            replay_safety=ReplaySafety.READ_ONLY,
+            contract_ref="readonly-v1",
+        )
+        await store.add(trigger)
+        got = await store.get("ro")
+        assert got is not None
+        assert got.effective_replay_safety is ReplaySafety.READ_ONLY
 
     async def test_get_missing(self, store: TriggerStore) -> None:
         assert await store.get("nope") is None

@@ -208,7 +208,9 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     # develop's #358 audit cursor indexes follow that landed revision as
     # `062`. The Goal migration appends as `063`; installed-base upgrade
     # tests cover the preserved 056/057/061 identities and forward upgrade.
-    assert directory.get_heads() == ["063"]
+    # `064` (durable delivery receipts, #1060) appends after the Goal store.
+    assert directory.get_heads() == ["064"]
+    assert directory.get_revision("064").down_revision == "063"
     walked = {item.revision for item in directory.walk_revisions("base", "062")}
     assert {
         "034_canonical_run_effect_claim",

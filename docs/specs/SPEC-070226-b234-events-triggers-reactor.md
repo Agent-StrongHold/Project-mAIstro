@@ -78,24 +78,41 @@ The 1kHz reactor loop (SPEC-013) currently emits events in-memory; this SPEC per
 > - `maistro/events/durable_log.py` — `LoggedEvent`, `EventLogStore` protocol (append-only,
 >   query by type/time window, keyset pagination via `after_id`/`limit`),
 >   `InMemoryEventLog`, `SqliteEventLog`.
-> - `maistro/events/trigger_store.py` — `TriggerDefinition`, `pattern_matches()` (dot-segmented
->   glob: `agent.*` matches `agent.created`, not `task.created` and not `agent.task.created`),
->   `TriggerStore` protocol, `InMemoryTriggerStore`, `SqliteTriggerStore`.
+> - `maistro/events/trigger_store.py` — `TriggerDefinition` (with #1060 recipient
+>   enrollment: `replay_safety` ∈ unproven/idempotent/read_only plus the
+>   operator-approved `contract_ref`; a safe declaration without a contract ref
+>   reads as unproven — fail-closed), `pattern_matches()` (dot-segmented
+>   glob: `agent.*` matches `agent.created`, not `task.created` and not
+>   `agent.task.created`), `TriggerStore` protocol, `InMemoryTriggerStore`,
+>   `SqliteTriggerStore`.
 > - `maistro/events/invocations.py` — `HandlerInvocation` with `(trigger_id, event_id)`
->   dispatch key, `InvocationStatus` (pending/success/failed/retrying/unsafe), `MAX_ATTEMPTS = 3`,
->   `InvocationStore` protocol, `InMemoryInvocationStore`, `SqliteInvocationStore`
->   (composite PK + `INSERT OR IGNORE` enforce the key at the storage layer).
-> - `maistro/events/processing.py` — `HandlerCaller` protocol (injected async callable),
->   `HTTPHandlerCaller` (httpx POST of `event.to_dict()` to `trigger.handler_url` with a stable
->   `Idempotency-Key`, raises `HandlerCallError` on >=400 or transport error), and the pure async
->   `process_events()` loop ticked by the reactor with injected stores. Transport/5xx failures are
->   marked ambiguous; unsafe trigger contracts are held rather than automatically replayed.
+>   dispatch key, `InvocationStatus` (pending/success/failed/retrying/unknown),
+>   `MAX_ATTEMPTS = 3`, frozen `DeliveryIdentity` and `HandlerCallOutcome` DTOs,
+>   digest v1, and the `InvocationStore` protocol whose writer half is
+>   `claim`/`begin_dispatch`/`settle` under claim-token/revision fencing
+>   (#1060 §3): `claim` prepares one winning receipt and allocates the delivery
+>   key exactly once; `begin_dispatch` is the sole budget-consuming permission
+>   to send; `settle` validates the structural/evidence invariants.
+>   In-memory, SQLite and PostgreSQL (`pg_stores.py`, migration `064`) implement
+>   the same semantics, and pre-contract rows upgrade fail-closed to `unknown`.
+> - `maistro/events/processing.py` — `HandlerCaller` protocol (injected async
+>   callable returning `HandlerCallOutcome | None`; `None` is the established
+>   acknowledgment), `HTTPHandlerCaller` (reads the prepared receipt, refuses
+>   absent/mismatched/not-in-dispatch receipts, snapshots target/body before
+>   awaits, validates the digest, sends the persisted delivery key as
+>   `Idempotency-Key`, and classifies transport/5xx/4xx as indeterminate —
+>   never not_applied), and the pure async `process_events()` loop ticked by
+>   the reactor with injected stores. The classification table (#1060 §4)
+>   retries only proven not-applied calls, or indeterminate ones under a
+>   currently valid idempotent/read_only contract; everything else possibly
+>   applied settles UNKNOWN — visible, cursor-settled, never auto-replayed.
 >
 > Deviations from the original text: `process_events()` is cursor-based (`after_id` in,
 > new cursor out) — the cursor only advances past an event once all matching triggers are
 > terminal, so retries happen on subsequent ticks and a crash (lost cursor) replays from an
-> older position. That redelivery is effect-safe only for an opted-in handler that honors the
-> stable idempotency key; the local invocation row alone is not proof. Retry backoff is not
+> older position. That redelivery is effect-safe only for a recipient whose currently valid
+> enrollment (idempotent/read_only + contract ref) matches the receipt's frozen identity; the
+> local invocation row alone is not proof. Retry backoff is not
 > `sleep`-based inside the loop; it falls out
 > of the tick cadence (the reactor/caller owns pacing). On permanent failure a
 > `handler.failed` event is appended to the log (source `reactor`) instead of an in-memory
@@ -198,31 +215,48 @@ triggers:
   - name: "log-delegations"
     event_pattern: "agent.delegated"
     handler_url: "http://localhost:8000/handlers/log"
-    delivery_contract: "at_least_once_idempotent"  # handler-owned dedupe required
-    
-  - name: "notify-on-task-failure"
-    event_pattern: "task.failed"
-    handler_url: "http://localhost:8000/handlers/notify"
+    # #1060 recipient enrollment: idempotent requires the operator-approved,
+    # versioned contract ref naming the key+effect commit protocol.
+    replay_safety: "idempotent"
+    contract_ref: "log-handler-contract-v3"
 
   - name: "update-cache-on-memory-write"
     event_pattern: "memory.written"
     handler_url: "http://localhost:8000/handlers/cache-update"
+    replay_safety: "read_only"  # applies no external effect; still needs a contract ref
+
+  - name: "notify-on-task-failure"
+    event_pattern: "task.failed"
+    handler_url: "http://localhost:8000/handlers/notify"
+    # no enrollment: unproven — one-shot delivery only, never auto-replayed
 ```
 
-### Delivery and effect contract
+### Delivery and effect contract (#1060)
 
-The `(trigger_id, event_id)` unique key and lease ensure exactly one active MAIstro
-**dispatcher**, not exactly one remote effect. A trigger must declare
-`AT_LEAST_ONCE_IDEMPOTENT` before automatic replay is admitted. HTTP delivery then carries the
-stable key `maistro-event:{trigger_id}:{event_id}` on every attempt, and the handler must persist
-that key atomically with its own effect. If a worker dies after that commit but before the local
-SUCCESS save, replay sends the same key and the handler returns its stored result/no-ops.
+The `(trigger_id, event_id)` receipt and its lease ensure exactly one active MAIstro
+**dispatcher**, never exactly one remote effect. Each receipt freezes a
+`DeliveryIdentity` (handler URL, request digest v1, replay safety, contract
+ref) and allocates a full random `delivery_key` exactly once, on its first
+prepared claim; the key survives retries and restarts, and the HTTP send
+carries it as `Idempotency-Key` on every attempt. An idempotent recipient must
+persist that key atomically with its own effect; if a worker dies after that
+commit but before the local SUCCESS save, redelivery sends the same key and the
+recipient returns its stored result / no-ops.
 
-A timeout or connection loss is an ambiguous outcome, not proof that the handler did not commit.
-It is retryable only under the declared idempotency contract. A trigger without proof is recorded
-as `UNSAFE`, held in the cursor, and requires reconciliation or migration to the governed
-Capability/Provider/Binding/Invocation seam. HTTP 2xx does not make the remote effect and local
-SUCCESS write atomic.
+Automatic replay after an *uncertain* send (transport loss, 5xx, arbitrary
+exception, expired in-flight marker, or a crashed worker's folded marker) is
+admitted only while the trigger's **currently valid** `idempotent`/`read_only`
+enrollment matches the receipt's frozen identity. An unproven recipient keeps
+its one-shot attempt: it is never automatically redelivered after an
+uncertain send. The truthful terminal state for unresolved uncertainty is
+`UNKNOWN` — cursor-settled and visible for reconciliation, not silently
+retried and not a FAILED that would claim the effect never applied. A local
+identity/config refusal before any send settles FAILED (or UNKNOWN once a
+possibly-applied call exists); a proven not-applied call retries while budget
+remains and FAILED at the cap. Pre-contract rows upgrade fail-closed
+(`legacy_unkeyed_attempt` / `legacy_failed_unproven`), and canonical
+side-effect reconciliation stays under the governed Invocation seam (#55).
+HTTP 2xx does not make the remote effect and local SUCCESS write atomic.
 
 ## Acceptance criteria
 
@@ -256,20 +290,28 @@ Feature: Durable event log with truthful at-least-once replay
 
   @AC-3
   Scenario: An idempotent handler applies one logical effect across a crash
-    Given an opted-in trigger whose handler stores the delivery key with its effect
+    Given an enrolled idempotent trigger whose handler stores the delivery key with its effect
     When the process dies after the handler commits but before SUCCESS persistence
     And the processor runs again after the dispatch lease expires
-    Then the handler may receive the event again with the same key
+    Then the handler may receive the event again under the same persisted key
     And its effect store observes one logical effect
     And the invocation record eventually names its terminal status
 
   @AC-4
   Scenario: A failing handler is retried three times and then given up on
-    Given a handler that raises on every call
+    Given a handler whose calls are proven not-applied on every attempt
     When the processor runs until the invocation settles
-    Then the handler is called no more than 4 times in total
+    Then the handler is called no more than 3 times in total
     And the invocation ends in a terminal failed status
     And the backoff is paced by reactor ticks rather than an in-loop sleep
+
+  @AC-6
+  Scenario: An unproven handler's uncertain send is never automatically replayed
+    Given a trigger with no replay-safety enrollment whose send loses the response
+    When the processor settles the receipt and ticks again
+    Then the receipt is UNKNOWN, visible and cursor-settled
+    And the handler is not called a second time
+    And a later idempotent trigger's events still advance past it
 
   @AC-5
   Scenario: Events are queryable over HTTP
@@ -286,12 +328,13 @@ Feature: Durable event log with truthful at-least-once replay
 
 ## Testing
 
-- Unit: trigger pattern matching, idempotency key logic.
-- Integration: emit event, inject death before dispatch, during the call, after remote commit
-  before SUCCESS persistence, and after SUCCESS persistence; restart and confirm one logical
-  effect only for the opted-in idempotent handler. Unsafe handlers remain held.
-- Property: "every event in the log is delivered at least once; opted-in handlers apply one
-  logical effect per stable key" (Hypothesis).
+- Unit: trigger pattern matching, delivery-identity/digest logic, claim/begin/settle fencing.
+- Integration: emit event, inject death before dispatch, after begin before the send, during
+  the call, after remote commit before SUCCESS persistence, and after SUCCESS persistence;
+  restart and confirm one logical effect only for the enrolled idempotent recipient. An
+  unproven recipient's uncertain send settles UNKNOWN and is never auto-replayed.
+- Property: "every event in the log is delivered at least once; enrolled idempotent recipients
+  apply one logical effect per persisted delivery key" (Hypothesis).
 - Load: 1000 events/second, 10 triggers, verify no dropped events.
 
 ## References

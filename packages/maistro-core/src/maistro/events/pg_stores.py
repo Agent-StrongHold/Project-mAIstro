@@ -43,10 +43,22 @@ from maistro.events.consumer_cursor import CursorLease
 from maistro.events.durable_log import LoggedEvent
 from maistro.events.invocations import (
     DEFAULT_LEASE_SECONDS,
+    MAX_ATTEMPTS,
+    DeliveryAlreadyStarted,
+    DeliveryAttemptLimitReached,
+    DeliveryDisposition,
+    DeliveryIdentity,
+    DeliveryIdentityMismatch,
+    HandlerCallOutcome,
     HandlerInvocation,
     InvocationStatus,
+    ReplaySafety,
+    identity_matches,
+    settle_fields,
+    validate_settle,
+    validated_outcome,
 )
-from maistro.events.trigger_store import HandlerDeliveryContract, TriggerDefinition
+from maistro.events.trigger_store import TriggerDefinition
 
 if TYPE_CHECKING:
     import asyncpg
@@ -75,7 +87,8 @@ CREATE TABLE IF NOT EXISTS trigger_definitions (
     event_pattern TEXT NOT NULL DEFAULT '',
     handler_url TEXT NOT NULL DEFAULT '',
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    delivery_contract TEXT NOT NULL DEFAULT 'unsafe'
+    replay_safety TEXT NOT NULL DEFAULT 'unproven',
+    contract_ref TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_trigger_enabled ON trigger_definitions(enabled);
 
@@ -91,6 +104,20 @@ CREATE TABLE IF NOT EXISTS handler_invocations (
     -- both read that row back in a non-terminal status. `claim` is what settles
     -- ownership, and this column is where it is recorded.
     lease_expires_at DOUBLE PRECISION NOT NULL DEFAULT 0,
+    -- Frozen delivery identity (#1060): the key is allocated exactly once on
+    -- the first prepared claim; url/digest/safety/ref are immutable after.
+    delivery_key TEXT,
+    handler_url TEXT NOT NULL DEFAULT '',
+    request_digest TEXT NOT NULL DEFAULT '',
+    replay_safety TEXT NOT NULL DEFAULT 'unproven',
+    contract_ref TEXT NOT NULL DEFAULT '',
+    -- Current-claim fencing and dispatch marker.
+    claim_token TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL DEFAULT 0,
+    dispatch_started_at DOUBLE PRECISION,
+    last_outcome TEXT,
+    uncertain_prior_dispatch BOOLEAN NOT NULL DEFAULT FALSE,
+    last_error_code TEXT NOT NULL DEFAULT '',
     -- The idempotency key, enforced by the database rather than by the caller.
     -- This is what `ON CONFLICT` in `get_or_create` and `claim` relies on, and
     -- what makes two racing workers converge on one row.
@@ -113,6 +140,45 @@ CREATE TABLE IF NOT EXISTS consumer_cursors (
 #: unrelated advisory lock in this database should pick it too.
 _SCHEMA_LOCK_KEY = 0x6D61_6973  # "mais"
 
+#: Legacy-column upgrades plus the fail-closed reclassification of attempted
+#: pre-contract rows (#1060 §5), applied idempotently for dev/test bootstrap.
+#: Only rows that never received a delivery key are touched; every receipt
+#: written by the claim/begin/settle protocol carries one, and historical
+#: SUCCESS rows stay untouched as settled historical acknowledgment.
+_SCHEMA_UPGRADES = (
+    "ALTER TABLE trigger_definitions ADD COLUMN IF NOT EXISTS "
+    "replay_safety TEXT NOT NULL DEFAULT 'unproven'",
+    "ALTER TABLE trigger_definitions ADD COLUMN IF NOT EXISTS "
+    "contract_ref TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE handler_invocations ADD COLUMN IF NOT EXISTS delivery_key TEXT",
+    "ALTER TABLE handler_invocations ADD COLUMN IF NOT EXISTS handler_url TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE handler_invocations ADD COLUMN IF NOT EXISTS "
+    "request_digest TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE handler_invocations ADD COLUMN IF NOT EXISTS "
+    "replay_safety TEXT NOT NULL DEFAULT 'unproven'",
+    "ALTER TABLE handler_invocations ADD COLUMN IF NOT EXISTS "
+    "contract_ref TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE handler_invocations ADD COLUMN IF NOT EXISTS claim_token TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE handler_invocations ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE handler_invocations ADD COLUMN IF NOT EXISTS dispatch_started_at DOUBLE PRECISION",
+    "ALTER TABLE handler_invocations ADD COLUMN IF NOT EXISTS last_outcome TEXT",
+    "ALTER TABLE handler_invocations ADD COLUMN IF NOT EXISTS "
+    "uncertain_prior_dispatch BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE handler_invocations ADD COLUMN IF NOT EXISTS "
+    "last_error_code TEXT NOT NULL DEFAULT ''",
+    """UPDATE handler_invocations SET status = 'unknown',
+          uncertain_prior_dispatch = attempts > 0,
+          last_error_code = 'legacy_failed_unproven'
+       WHERE delivery_key IS NULL AND status = 'failed' AND last_error_code = ''""",
+    """UPDATE handler_invocations SET status = 'unknown',
+          uncertain_prior_dispatch = TRUE,
+          last_error_code = 'legacy_unkeyed_attempt'
+       WHERE delivery_key IS NULL AND last_error_code = ''
+         AND (status NOT IN ('pending', 'success', 'failed')
+              OR (status = 'pending'
+                  AND (attempts > 0 OR lease_expires_at <> 0)))""",
+)
+
 
 async def ensure_event_schema(pool: asyncpg.Pool) -> None:
     """Create all four tables. Idempotent, and safe to call concurrently.
@@ -128,16 +194,15 @@ async def ensure_event_schema(pool: asyncpg.Pool) -> None:
     transaction ends, including by crash, so a worker killed mid-bootstrap does
     not lock the rest out.
 
-    Migration 004 remains the real path for a managed deployment; this is what
-    lets tests and single-command dev runs work without one.
+    Migrations 004 + 064 remain the real path for a managed deployment; this is
+    what lets tests and single-command dev runs work without one. The upgrade
+    statements mirror migration 064 (see `tests/migrations/…agreement`).
     """
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute("SELECT pg_advisory_xact_lock($1)", _SCHEMA_LOCK_KEY)
         await conn.execute(_SCHEMA)
-        await conn.execute(
-            "ALTER TABLE trigger_definitions ADD COLUMN IF NOT EXISTS "
-            "delivery_contract TEXT NOT NULL DEFAULT 'unsafe'"
-        )
+        for statement in _SCHEMA_UPGRADES:
+            await conn.execute(statement)
 
 
 class PgEventLog:
@@ -239,24 +304,26 @@ class PgTriggerStore:
     async def add(self, trigger: TriggerDefinition) -> None:
         await self._pool.execute(
             """INSERT INTO trigger_definitions
-               (trigger_id, name, event_pattern, handler_url, enabled, delivery_contract)
-               VALUES ($1,$2,$3,$4,$5,$6)
+               (trigger_id, name, event_pattern, handler_url, enabled, replay_safety, contract_ref)
+               VALUES ($1,$2,$3,$4,$5,$6,$7)
                ON CONFLICT (trigger_id) DO UPDATE SET
                  name=EXCLUDED.name, event_pattern=EXCLUDED.event_pattern,
                  handler_url=EXCLUDED.handler_url, enabled=EXCLUDED.enabled,
-                 delivery_contract=EXCLUDED.delivery_contract""",
+                 replay_safety=EXCLUDED.replay_safety,
+                 contract_ref=EXCLUDED.contract_ref""",
             trigger.trigger_id,
             trigger.name,
             trigger.event_pattern,
             trigger.handler_url,
             trigger.enabled,
-            trigger.delivery_contract.value,
+            trigger.replay_safety.value,
+            trigger.contract_ref,
         )
 
     async def get(self, trigger_id: str) -> TriggerDefinition | None:
         row = await self._pool.fetchrow(
-            "SELECT trigger_id, name, event_pattern, handler_url, enabled, delivery_contract "
-            "FROM trigger_definitions WHERE trigger_id = $1",
+            "SELECT trigger_id, name, event_pattern, handler_url, enabled, "
+            "replay_safety, contract_ref FROM trigger_definitions WHERE trigger_id = $1",
             trigger_id,
         )
         return _row_to_trigger(row) if row is not None else None
@@ -268,8 +335,8 @@ class PgTriggerStore:
 
     async def list_triggers(self) -> list[TriggerDefinition]:
         rows = await self._pool.fetch(
-            "SELECT trigger_id, name, event_pattern, handler_url, enabled, delivery_contract "
-            "FROM trigger_definitions"
+            "SELECT trigger_id, name, event_pattern, handler_url, enabled, "
+            "replay_safety, contract_ref FROM trigger_definitions"
         )
         return [_row_to_trigger(r) for r in rows]
 
@@ -279,8 +346,8 @@ class PgTriggerStore:
         # Doing it differently here would make "the same trigger matches" a
         # per-backend question.
         rows = await self._pool.fetch(
-            "SELECT trigger_id, name, event_pattern, handler_url, enabled, delivery_contract "
-            "FROM trigger_definitions WHERE enabled = TRUE"
+            "SELECT trigger_id, name, event_pattern, handler_url, enabled, "
+            "replay_safety, contract_ref FROM trigger_definitions WHERE enabled = TRUE"
         )
         return [t for t in (_row_to_trigger(r) for r in rows) if t.matches(event_type)]
 
@@ -293,13 +360,20 @@ class PgTriggerStore:
 
 
 class PgInvocationStore:
-    """PostgreSQL-backed `InvocationStore` — the idempotency guarantee.
+    """PostgreSQL-backed `InvocationStore` — the delivery-receipt authority.
 
-    The composite primary key `(trigger_id, event_id)` is the idempotency key,
-    and `ON CONFLICT DO NOTHING` is what makes two workers racing on the same
-    redelivered event converge on one row. Not a lock, not a read-then-write:
-    both of those have a window, and the window is the bug.
+    The composite primary key `(trigger_id, event_id)` is the receipt
+    identity, and single fenced upserts make two workers racing on the same
+    redelivered event converge on one row — never a read-then-write window.
+    `claim` prepares/allocates the delivery key, `begin_dispatch` is the sole
+    budget-consuming permission to send, and `settle` is revision-fenced.
     """
+
+    _RECEIPT_COLUMNS = (
+        "trigger_id, event_id, status, attempts, last_error, created_at, lease_expires_at, "
+        "delivery_key, handler_url, request_digest, replay_safety, contract_ref, claim_token, "
+        "revision, dispatch_started_at, last_outcome, uncertain_prior_dispatch, last_error_code"
+    )
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
@@ -309,8 +383,8 @@ class PgInvocationStore:
 
     async def get(self, trigger_id: str, event_id: int) -> HandlerInvocation | None:
         row = await self._pool.fetchrow(
-            "SELECT trigger_id, event_id, status, attempts, last_error, created_at, "
-            "lease_expires_at FROM handler_invocations WHERE trigger_id = $1 AND event_id = $2",
+            f"SELECT {self._RECEIPT_COLUMNS} FROM handler_invocations "
+            "WHERE trigger_id = $1 AND event_id = $2",
             trigger_id,
             event_id,
         )
@@ -320,14 +394,14 @@ class PgInvocationStore:
         # One statement. `RETURNING` fires only for the inserting caller, so a
         # NULL row means somebody else won the race — and the follow-up SELECT
         # returns *their* row, which is the whole point: both callers see one
-        # invocation with one `created_at`.
+        # receipt with one `created_at`. Bookkeeping only: no key, no claim.
         row = await self._pool.fetchrow(
             """INSERT INTO handler_invocations
                (trigger_id, event_id, status, attempts, last_error, created_at, lease_expires_at)
                VALUES ($1,$2,$3,0,'',$4,0)
                ON CONFLICT (trigger_id, event_id) DO NOTHING
-               RETURNING trigger_id, event_id, status, attempts, last_error, created_at,
-                         lease_expires_at""",
+               RETURNING """
+            + self._RECEIPT_COLUMNS,
             trigger_id,
             event_id,
             InvocationStatus.PENDING.value,
@@ -342,47 +416,214 @@ class PgInvocationStore:
         return existing
 
     async def claim(
-        self, trigger_id: str, event_id: int, *, lease_seconds: float = DEFAULT_LEASE_SECONDS
+        self,
+        trigger_id: str,
+        event_id: int,
+        *,
+        delivery: DeliveryIdentity,
+        lease_seconds: float = DEFAULT_LEASE_SECONDS,
     ) -> HandlerInvocation | None:
-        """Hand this (trigger, event) to exactly one worker.
+        """Prepare one winning receipt/key, or take over an expired lease.
 
-        One statement, so there is no window: the `WHERE` on the `DO UPDATE`
-        means a row that is terminal or still leased matches nothing, updates
-        nothing, and returns nothing — and the loser gets `None` rather than a
-        non-terminal row it would read as permission to dispatch. That
-        distinction is the difference between deduplicating bookkeeping and
-        deduplicating side effects.
+        One upsert: the `WHERE` on the `DO UPDATE` refuses settled or leased
+        rows (they match nothing, update nothing, return nothing), the frozen
+        identity columns are written only when no key exists yet, and any old
+        dispatch marker without a proven not-applied outcome folds into
+        `uncertain_prior_dispatch`. Attempts are not consumed here.
         """
         now = time.time()
         row = await self._pool.fetchrow(
             """INSERT INTO handler_invocations
-               (trigger_id, event_id, status, attempts, last_error, created_at, lease_expires_at)
-               VALUES ($1,$2,$3,1,'',$4,$5)
+               (trigger_id, event_id, status, attempts, last_error, created_at, lease_expires_at,
+                delivery_key, handler_url, request_digest, replay_safety, contract_ref,
+                claim_token, revision, dispatch_started_at, last_outcome,
+                uncertain_prior_dispatch, last_error_code)
+               VALUES ($1,$2,$3,0,'',$4,$5,$6,$7,$8,$9,$10,$11,1,NULL,NULL,FALSE,'')
                ON CONFLICT (trigger_id, event_id) DO UPDATE SET
-                 attempts = handler_invocations.attempts + 1,
-                 lease_expires_at = EXCLUDED.lease_expires_at
-               WHERE handler_invocations.status <> ALL($6::text[])
+                 delivery_key = COALESCE(handler_invocations.delivery_key, EXCLUDED.delivery_key),
+                 handler_url = CASE WHEN handler_invocations.delivery_key IS NULL
+                     THEN EXCLUDED.handler_url ELSE handler_invocations.handler_url END,
+                 request_digest = CASE WHEN handler_invocations.delivery_key IS NULL
+                     THEN EXCLUDED.request_digest ELSE handler_invocations.request_digest END,
+                 replay_safety = CASE WHEN handler_invocations.delivery_key IS NULL
+                     THEN EXCLUDED.replay_safety ELSE handler_invocations.replay_safety END,
+                 contract_ref = CASE WHEN handler_invocations.delivery_key IS NULL
+                     THEN EXCLUDED.contract_ref ELSE handler_invocations.contract_ref END,
+                 uncertain_prior_dispatch = handler_invocations.uncertain_prior_dispatch OR (
+                     handler_invocations.dispatch_started_at IS NOT NULL
+                     AND (handler_invocations.last_outcome IS NULL
+                          OR handler_invocations.last_outcome = 'indeterminate')),
+                 claim_token = EXCLUDED.claim_token,
+                 revision = handler_invocations.revision + 1,
+                 lease_expires_at = EXCLUDED.lease_expires_at,
+                 dispatch_started_at = NULL,
+                 last_outcome = NULL
+               WHERE handler_invocations.status <> ALL($12::text[])
                  AND handler_invocations.lease_expires_at <= $4
-               RETURNING trigger_id, event_id, status, attempts, last_error, created_at,
-                         lease_expires_at""",
+               RETURNING """
+            + self._RECEIPT_COLUMNS,
             trigger_id,
             event_id,
             InvocationStatus.PENDING.value,
             now,
             now + lease_seconds,
-            [InvocationStatus.SUCCESS.value, InvocationStatus.FAILED.value],
+            uuid.uuid4().hex,
+            delivery.handler_url,
+            delivery.request_digest,
+            delivery.replay_safety.value,
+            delivery.contract_ref,
+            uuid.uuid4().hex,
+            [
+                s.value
+                for s in (
+                    InvocationStatus.SUCCESS,
+                    InvocationStatus.FAILED,
+                    InvocationStatus.UNKNOWN,
+                )
+            ],
+        )
+        return _row_to_invocation(row) if row is not None else None
+
+    async def begin_dispatch(
+        self,
+        trigger_id: str,
+        event_id: int,
+        *,
+        claim_token: str,
+        expected_revision: int,
+        delivery: DeliveryIdentity,
+    ) -> HandlerInvocation | None:
+        if not claim_token or expected_revision < 0:
+            raise ValueError("claim_token must be nonempty and revision non-negative")
+        now = time.time()
+        row = await self._pool.fetchrow(
+            f"""UPDATE handler_invocations SET
+                 attempts = attempts + 1, revision = revision + 1, status = 'pending',
+                 last_outcome = NULL, dispatch_started_at = $1,
+                 last_error = '', last_error_code = ''
+               WHERE trigger_id = $2 AND event_id = $3 AND claim_token = $4 AND revision = $5
+                 AND lease_expires_at > $1 AND status <> ALL($6::text[])
+                 AND dispatch_started_at IS NULL AND attempts < {MAX_ATTEMPTS}
+                 AND handler_url = $7 AND request_digest = $8
+                 AND replay_safety = $9 AND contract_ref = $10
+               RETURNING """
+            + self._RECEIPT_COLUMNS,
+            now,
+            trigger_id,
+            event_id,
+            claim_token,
+            expected_revision,
+            [
+                s.value
+                for s in (
+                    InvocationStatus.SUCCESS,
+                    InvocationStatus.FAILED,
+                    InvocationStatus.UNKNOWN,
+                )
+            ],
+            delivery.handler_url,
+            delivery.request_digest,
+            delivery.replay_safety.value,
+            delivery.contract_ref,
+        )
+        if row is not None:
+            return _row_to_invocation(row)
+        return await self._diagnose_refusal(
+            trigger_id, event_id, claim_token, expected_revision, delivery
+        )
+
+    async def _diagnose_refusal(
+        self,
+        trigger_id: str,
+        event_id: int,
+        claim_token: str,
+        expected_revision: int,
+        delivery: DeliveryIdentity,
+    ) -> HandlerInvocation | None:
+        """Classify a refused begin as a pre-send fact, or `None` when stale.
+
+        Staleness is reported first: a lost claim is never misread as an
+        identity or budget fact about the current owner's receipt.
+        """
+        receipt = await self.get(trigger_id, event_id)
+        if (
+            receipt is None
+            or receipt.claim_token != claim_token
+            or receipt.revision != expected_revision
+        ):
+            return None
+        if not identity_matches(receipt, delivery):
+            raise DeliveryIdentityMismatch(
+                "receipt destination context differs from the supplied delivery"
+            )
+        if receipt.attempts >= MAX_ATTEMPTS:
+            raise DeliveryAttemptLimitReached(f"attempt cap of {MAX_ATTEMPTS} already consumed")
+        if receipt.dispatch_started_at is not None:
+            raise DeliveryAlreadyStarted("this claim already began its dispatch")
+        return None
+
+    async def settle(
+        self,
+        trigger_id: str,
+        event_id: int,
+        *,
+        claim_token: str,
+        expected_revision: int,
+        status: InvocationStatus,
+        outcome: HandlerCallOutcome,
+    ) -> HandlerInvocation | None:
+        if not claim_token or expected_revision < 0:
+            raise ValueError("claim_token must be nonempty and revision non-negative")
+        evidence = validated_outcome(outcome)
+        receipt = await self.get(trigger_id, event_id)
+        if (
+            receipt is None
+            or receipt.claim_token != claim_token
+            or receipt.revision != expected_revision
+        ):
+            return None
+        validate_settle(receipt, status, evidence)
+        fields = settle_fields(receipt, status, evidence)
+        row = await self._pool.fetchrow(
+            """UPDATE handler_invocations SET
+                 status = $1, last_error = $2, last_error_code = $3, last_outcome = $4,
+                 uncertain_prior_dispatch = $5, dispatch_started_at = NULL,
+                 revision = revision + 1, lease_expires_at = 0
+               WHERE trigger_id = $6 AND event_id = $7 AND claim_token = $8 AND revision = $9
+               RETURNING """
+            + self._RECEIPT_COLUMNS,
+            status.value,
+            str(fields["last_error"]),
+            str(fields["last_error_code"]),
+            evidence.disposition.value,
+            bool(fields["uncertain_prior_dispatch"]),
+            trigger_id,
+            event_id,
+            claim_token,
+            expected_revision,
         )
         return _row_to_invocation(row) if row is not None else None
 
     async def save(self, invocation: HandlerInvocation) -> None:
         await self._pool.execute(
             """INSERT INTO handler_invocations
-               (trigger_id, event_id, status, attempts, last_error, created_at, lease_expires_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7)
+               (trigger_id, event_id, status, attempts, last_error, created_at, lease_expires_at,
+                delivery_key, handler_url, request_digest, replay_safety, contract_ref,
+                claim_token, revision, dispatch_started_at, last_outcome,
+                uncertain_prior_dispatch, last_error_code)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
                ON CONFLICT (trigger_id, event_id) DO UPDATE SET
                  status=EXCLUDED.status, attempts=EXCLUDED.attempts,
                  last_error=EXCLUDED.last_error,
-                 lease_expires_at=EXCLUDED.lease_expires_at""",
+                 lease_expires_at=EXCLUDED.lease_expires_at,
+                 delivery_key=EXCLUDED.delivery_key, handler_url=EXCLUDED.handler_url,
+                 request_digest=EXCLUDED.request_digest,
+                 replay_safety=EXCLUDED.replay_safety, contract_ref=EXCLUDED.contract_ref,
+                 claim_token=EXCLUDED.claim_token, revision=EXCLUDED.revision,
+                 dispatch_started_at=EXCLUDED.dispatch_started_at,
+                 last_outcome=EXCLUDED.last_outcome,
+                 uncertain_prior_dispatch=EXCLUDED.uncertain_prior_dispatch,
+                 last_error_code=EXCLUDED.last_error_code""",
             invocation.trigger_id,
             invocation.event_id,
             invocation.status.value,
@@ -390,12 +631,22 @@ class PgInvocationStore:
             invocation.last_error,
             invocation.created_at,
             invocation.lease_expires_at,
+            invocation.delivery_key,
+            invocation.handler_url,
+            invocation.request_digest,
+            invocation.replay_safety.value,
+            invocation.contract_ref,
+            invocation.claim_token,
+            invocation.revision,
+            invocation.dispatch_started_at,
+            invocation.last_outcome.value if invocation.last_outcome else None,
+            invocation.uncertain_prior_dispatch,
+            invocation.last_error_code,
         )
 
     async def list_for_event(self, event_id: int) -> list[HandlerInvocation]:
         rows = await self._pool.fetch(
-            "SELECT trigger_id, event_id, status, attempts, last_error, created_at, "
-            "lease_expires_at FROM handler_invocations WHERE event_id = $1",
+            f"SELECT {self._RECEIPT_COLUMNS} FROM handler_invocations WHERE event_id = $1",
             event_id,
         )
         return [_row_to_invocation(r) for r in rows]
@@ -484,11 +735,13 @@ def _row_to_trigger(row: Any) -> TriggerDefinition:
         event_pattern=row["event_pattern"] or "",
         handler_url=row["handler_url"] or "",
         enabled=bool(row["enabled"]),
-        delivery_contract=HandlerDeliveryContract(row["delivery_contract"] or "unsafe"),
+        replay_safety=ReplaySafety(row["replay_safety"] or "unproven"),
+        contract_ref=row["contract_ref"] or "",
     )
 
 
 def _row_to_invocation(row: Any) -> HandlerInvocation:
+    outcome = row["last_outcome"]
     return HandlerInvocation(
         trigger_id=row["trigger_id"],
         event_id=int(row["event_id"]),
@@ -497,6 +750,19 @@ def _row_to_invocation(row: Any) -> HandlerInvocation:
         last_error=row["last_error"] or "",
         created_at=float(row["created_at"]),
         lease_expires_at=float(row["lease_expires_at"] or 0),
+        delivery_key=row["delivery_key"],
+        handler_url=row["handler_url"] or "",
+        request_digest=row["request_digest"] or "",
+        replay_safety=ReplaySafety(row["replay_safety"] or "unproven"),
+        contract_ref=row["contract_ref"] or "",
+        claim_token=row["claim_token"] or "",
+        revision=int(row["revision"] or 0),
+        dispatch_started_at=(
+            float(row["dispatch_started_at"]) if row["dispatch_started_at"] is not None else None
+        ),
+        last_outcome=DeliveryDisposition(outcome) if outcome else None,
+        uncertain_prior_dispatch=bool(row["uncertain_prior_dispatch"]),
+        last_error_code=row["last_error_code"] or "",
     )
 
 

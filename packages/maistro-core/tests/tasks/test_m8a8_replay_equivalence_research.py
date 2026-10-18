@@ -82,15 +82,19 @@ import pytest
 from pydantic import ValidationError
 
 from maistro.events.durable_log import InMemoryEventLog, LoggedEvent
-from maistro.events.invocations import InMemoryInvocationStore, InvocationStatus
+from maistro.events.invocations import (
+    DeliveryDisposition,
+    HandlerCallOutcome,
+    InMemoryInvocationStore,
+    InvocationStatus,
+    ReplaySafety,
+)
 from maistro.events.processing import (
     HANDLER_FAILED_EVENT,
-    HandlerCallError,
     process_events,
     process_events_batch,
 )
 from maistro.events.trigger_store import (
-    HandlerDeliveryContract,
     InMemoryTriggerStore,
     TriggerDefinition,
 )
@@ -796,14 +800,19 @@ class _RecordingCaller:
         self.committed: list[tuple[str, int]] = []
         self.fail_times: dict[tuple[str, int], int] = {}
 
-    async def __call__(self, trigger: TriggerDefinition, event: LoggedEvent) -> None:
+    async def __call__(
+        self, trigger: TriggerDefinition, event: LoggedEvent
+    ) -> HandlerCallOutcome | None:
         key = (trigger.trigger_id, event.id)
         self.calls.append(key)
         remaining = self.fail_times.get(key, 0)
         if remaining > 0:
             self.fail_times[key] = remaining - 1
-            raise HandlerCallError("transient failure for research fixture")
+            return HandlerCallOutcome(
+                DeliveryDisposition.NOT_APPLIED, "transient_pre_commit_failure"
+            )
         self.committed.append(key)
+        return None
 
 
 _EVENT_TYPES = [
@@ -832,7 +841,9 @@ def _fresh_event_stack() -> _EventStack:
         trigger=TriggerDefinition(
             name="tasks",
             event_pattern="task.*",
-            delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+            handler_url="http://handlers.invalid/tasks",
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="contract-v1",
         ),
     )
     return stack
