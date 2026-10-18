@@ -143,6 +143,21 @@ def test_same_session_id_per_scope_stays_continuous(prompt_capturing_provider, a
     assert "Previous context:" in prompt_capturing_provider[1]
 
 
+def test_invalid_session_id_is_refused_at_the_chat_boundary(authed_client):
+    """The route maps the registry's session-id validation to a 400 (#859).
+
+    The registry refuses an oversized session id; the HTTP seam must surface
+    that refusal to the client instead of creating an unbounded session.
+    """
+    refused = authed_client.post("/v1/chat", json={"message": "hi", "session_id": "x" * 129})
+    assert refused.status_code == 400
+    assert "128 characters" in refused.json()["detail"]
+    # Nothing was admitted and no session exists for the refused id.
+    from ..state import get_state
+
+    assert get_state().sessions.active_count() == 0
+
+
 # ------------------------------------------------------- registry bounds ----
 
 

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-turing/backend/tests: +20
+  packages/maistro-turing/backend/tests: +21
   packages/maistro-turing/tests: +4
 ---
 
@@ -56,12 +56,13 @@ same resolution chat admission already used.
   unknown-tier proposals without reaching the store (bridge); session
   history is trimmed to `MAX_HISTORY_TURNS` with oldest turns falling off
   (runtime).
-- `packages/maistro-turing/backend/tests` +20: a new
+- `packages/maistro-turing/backend/tests` +21: a new
   `test_scope_isolation.py` proving the #859 acceptance matrix —
   two-user/two-Workspace isolation over the real HTTP surface (admin mood
   and facet patches never reach the other principal's snapshot), session-id
   guessing collapsing into an isolated fresh session in the guesser's own
-  scope (prompt-level evidence, admin conversation untouched), registry
+  scope (prompt-level evidence, admin conversation untouched), an invalid
+  session id refused as 400 at the chat/registry boundary, registry
   validation/bounds (scope and session-id validation, LRU cardinality cap,
   TTL lifetime), refusal of scope-less state access (no process-global
   fallback), bounded published feed (payload bounds at the write seam and
