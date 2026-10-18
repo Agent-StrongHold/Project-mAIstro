@@ -92,12 +92,62 @@ second command with `required variable POSTGRES_PASSWORD is missing a value`.
 | PostgreSQL | `pg_dump -Fc` full dump + continuous WAL archival (`archive_command`) | daily full, WAL continuous |
 | Redis | `SAVE` → copy `dump.rdb` off-volume; AOF enabled on each instance | daily |
 | Files | copy/rsync of the file-store volume | nightly |
+| Conductor durable state | consistent SQLite snapshot of `state.db` (via the running `hive-conductor`) + `secrets.age` + `user_credentials.enc` from the `conductor-data` volume | daily (same script) |
+| Credential escrow | `admin.key` + `credential_master.key` copied to `ESCROW_ROOT` (default `/var/lib/maistro-escrow`), **never into the backup artifact itself** | daily; replicate off-host via your secret manager |
 | Config | version-controlled in git; backup records the deployed ref | on change |
 
 All of this is one script: [`deploy/scripts/backup.sh`](../../deploy/scripts/backup.sh)
 (cron it daily). It writes a self-contained backup under `${BACKUP_ROOT}/YYYY-MM-DD/`
-including a plain-SQL dump + `sha256` used by the verify drill, and optionally ships
-off-host (`REMOTE_TARGET` — rsync/S3/wal-g, per the ADR-081 pluggable-connector rule).
+including a plain-SQL dump + `sha256` used by the verify drill, an integrity
+manifest over every component, and optionally ships off-host (`REMOTE_TARGET` —
+rsync/S3/wal-g, per the ADR-081 pluggable-connector rule).
+
+### 2.1 Conductor durable state and the credential escrow
+
+The backup above is not only the engine's PostgreSQL/Redis/file-store: the
+Conductor's own authoritative state rides the `conductor-data` volume
+(`CONDUCTOR_DATA_DIR=/data` in `deploy/docker-compose.prod.yml`) and **cannot
+be reconstructed from the PostgreSQL/Redis/file-store backups**:
+
+| File | What it holds | Restored from |
+|---|---|---|
+| `state.db` | SQLite: canonical Workspaces/Memberships, Runs/NodeRuns/Attempts, graph continuations (fencing versions), sessions, schedules, audit log | the backup's consistent snapshot |
+| `secrets.age` | age-encrypted secrets vault (SPEC-011) | the backup (ciphertext) |
+| `user_credentials.enc` | Fernet-encrypted per-user provider tokens (Jira, GitHub, …) | the backup (ciphertext) |
+| `admin.key` | the age/X25519 identity — **the only key that decrypts `secrets.age`** | the credential escrow, **not** the backup |
+| `credential_master.key` | Fernet root for `user_credentials.enc` | the credential escrow, **not** the backup |
+
+The decrypting identity must never live only beside the ciphertext it opens, so
+`backup.sh` writes the keys to a separate escrow root (`ESCROW_ROOT`, default
+`/var/lib/maistro-escrow`), dated and `0600`, with its own `manifest.sha256`.
+The off-host backup stream carries ciphertext only; replicate the escrow off-host
+through your secret manager by a separate path.
+
+**What becomes unrecoverable if the escrow is lost:** every value in
+`secrets.age` is gone permanently — age/X25519 has no recovery path, so a
+restored Conductor fails closed on its vault (`SECRET_MISSING`) — and every
+provider token in `user_credentials.enc` must be re-entered by hand. `state.db`
+survives (it is not key-protected), but identities tied to vault material are
+broken. There is no fallback: this is the documented cost of losing the escrow.
+
+**Validate the escrow before a disaster, not during one:** the weekly drill
+below decrypts the backed-up vault with the escrowed key. Run it (or the
+one-liner `age --decrypt -i <escrow>/admin.key <backup>/conductor-data/secrets.age`)
+whenever `admin.key` or the vault changes, and confirm it prints the decrypt
+proof. An escrow that has never proven a decrypt is a hope, not an escrow.
+
+**Fencing survives restore as data.** Continuation versions, attempt ordinals
+and lease epochs live in `state.db` and restore byte-for-byte, so resumed work
+is bounded by the same compare-and-set fences as before the incident. Do not
+"reset" or renumber those columns during a restore — a fresh-looking fence
+value is how a stale replica wins a race it already lost.
+
+**Retired compatibility stores do not come back.** The PostgREST
+`user_profiles` table was retired (#699): profiles live only in `state.db`, and
+the backup contains no PostgREST data, so a restore cannot resurrect the old
+duplicate lifecycle as canonical. Anything still sitting in a leftover
+`user_profiles` table stays dead after restore, exactly as the
+`PROFILE_STORE_CUTOVER` warning says.
 
 Monitoring: alert on backup-script failure (non-zero exit / missing today's directory)
 and on replication lag > 5s:
@@ -119,7 +169,15 @@ Run [`deploy/scripts/verify-restore.sh`](../../deploy/scripts/verify-restore.sh)
    at backup time — the spec's property: *backup restore always produces bit-for-bit
    identical state (via pg_dump hash)*.
 3. Prints per-table row counts and fails if zero user tables were restored.
-4. (staging extension) Point a staging maistro-server at the scratch DB and check
+4. Checks the backup's integrity manifest — any missing or corrupt component
+   (including an empty Conductor capture) fails the drill before anything restores.
+5. Verifies the Conductor durable state: `state.db` integrity + canonical tables,
+   historical Run IDs printed as inspectable, fencing versions present; then the
+   decrypt proof — the escrowed `admin.key` must actually decrypt the backed-up
+   `secrets.age` (set `EXPECTED_SECRET_NAME` to pin a known secret), and
+   `credential_master.key` must be escrowed for `user_credentials.enc`. A missing
+   escrow is a hard failure.
+6. (staging extension) Point a staging maistro-server at the scratch DB and check
    `GET /health/ready` + a smoke request.
 
 A failing drill is a paging alert: your backups are not restorable.
@@ -155,13 +213,14 @@ A failing drill is a paging alert: your backups are not restorable.
 
 ### 4.2 App-instance failure
 
-No action required for data: state is in PostgreSQL/Redis. nginx ejects the failing
-replica (`max_fails=3 fail_timeout=10s`); `restart: unless-stopped` brings it back.
-To replace manually: `docker compose -f deploy/docker-compose.prod.yml up -d --force-recreate maistro-server-1`.
+No action required for data: state is in PostgreSQL/Redis (and the Conductor's
+durable state is on the persistent `conductor-data` volume — §2.1). nginx ejects
+the failing replica (`max_fails=3 fail_timeout=10s`); `restart: unless-stopped`
+brings it back. To replace manually: `docker compose -f deploy/docker-compose.prod.yml up -d --force-recreate maistro-server-1`.
 
 ### 4.3 Data corruption — point-in-time restore (PITR)
 
-1. Stop writes: `docker compose -f deploy/docker-compose.prod.yml stop maistro-server-1 maistro-server-2`.
+1. Stop writes: `docker compose -f deploy/docker-compose.prod.yml stop maistro-server-1 maistro-server-2 hive-conductor`.
 2. Preserve the corrupted data directory (copy the `pgdata-primary` volume aside for forensics).
 3. Restore the last daily base into a fresh data directory. Simple path (logical, loses
    sub-day changes unless you replay WAL):
@@ -193,9 +252,17 @@ To replace manually: `docker compose -f deploy/docker-compose.prod.yml up -d --f
 5. Restore Redis: stop redis, copy `redis-dump.rdb` from the backup into the
    `redis-data` volume as `/data/dump.rdb`, start redis.
 6. Restore the file store: copy the backup's `files/` into the `file-store` volume.
-7. Start the standby, replicas, and LB:
+7. Restore the Conductor durable state: copy the backup's `conductor-data/`
+   (including the `state.db` snapshot) into the `conductor-data` volume, then copy
+   `admin.key` and `credential_master.key` **from the escrow** (`ESCROW_ROOT`, not
+   from the backup) into the same volume. Start `hive-conductor` and confirm the
+   vault opens — the readiness probe reflects vault availability.
+8. Start the standby, replicas, and LB:
    ```bash
    docker compose -f deploy/docker-compose.prod.yml up -d
    ```
-8. Verify: `curl -fsS http://localhost:8080/health/ready`, replication catching up
-   (`pg_stat_replication`), and run the §3 drill against the restored state.
+9. Verify: `curl -fsS http://localhost:8080/health/ready`, replication catching up
+   (`pg_stat_replication`), and run the §3 drill against the restored state — which
+   re-proves the escrow decrypts the restored vault. IDs and provenance (Workspace,
+   Run, Attempt, continuation fencing values) come back exactly as backed up, so
+   historical Runs are inspectable and resumed work respects the restored fences.
