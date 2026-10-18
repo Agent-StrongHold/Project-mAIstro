@@ -216,10 +216,18 @@ def _write_installer_payload(path: Path, *, pre_delay: int = 0) -> None:
 
     ``pre_delay`` keeps the installer running (sleep) before it lays anything
     down, so a test can deliver a signal mid-run — the interrupted run must
-    never adopt the success the installer would eventually have reported."""
+    never adopt the success the installer would eventually have reported. The
+    sleep detaches its own stdout/stderr: when the interrupted run's trap kills
+    the installer wrapper, the still-running sleep is orphaned, and an orphan
+    holding this process's pipes would keep ``communicate()`` waiting for EOF
+    until the sleep ended — a harness artifact that measures the sleep, not the
+    contract, and the reason this suite once ate the whole 30s pytest-timeout
+    budget in CI while the bootstrap itself had exited within ~2s."""
     path.write_text(
         "#!/bin/sh\n"
-        + (f"sleep {pre_delay}\n" if pre_delay > 0 else "")
+        # >/dev/null 2>&1: see the docstring — an orphaned sleep must not hold
+        # the harness's pipe write-ends open.
+        + (f"sleep {pre_delay} >/dev/null 2>&1\n" if pre_delay > 0 else "")
         + 'install_dir="${UV_INSTALL_DIR:-$HOME/.local/bin}"\n'
         'mkdir -p "$install_dir" || exit 1\n'
         'cp "${STUB_UV_BIN:?}" "$install_dir/uv" || exit 1\n'
@@ -465,6 +473,7 @@ class TestEnsureUv:
         harness.uv_asset(install_version="3.12.7", install_path=real_python)
         harness.stub_curl(delayed)
         asset_env = harness.asset_env(harness.tmp_path / "uv-asset")
+        started = time.monotonic()
         proc = subprocess.Popen(
             ["bash", "-c", harness.script(asset_env + "ensure_uv || exit 1\necho READY\n")],
             cwd=harness.tmp_path,
@@ -474,13 +483,24 @@ class TestEnsureUv:
         )
         time.sleep(2.0)  # the installer is in its sleep; the run is mid-flight
         proc.send_signal(signal.SIGTERM)
+        # The installer's sleep detached its fds (see _write_installer_payload),
+        # so EOF here means the bootstrap exited — a deferred trap would surface
+        # as TimeoutExpired, and a trap that fired only after the installer's own
+        # 30s delay would breach the promptness bound below. Either way the test
+        # fails; passing requires the immediate stop the contract promises.
         stdout, stderr = proc.communicate(timeout=30)
+        elapsed = time.monotonic() - started
         # The signal is not swallowed: conventional non-zero exit, no success
         # announcement of any kind.
         assert proc.returncode != 0, (proc.returncode, stdout, stderr)
         assert "OK: uv installed" not in stdout
         assert "READY" not in stdout
         assert "Interrupted while the uv installer was running" in stderr
+        # Prompt, not eventual: the run stopped while the installer was still
+        # mid-flight, not once the installer would have finished anyway. The
+        # root suite runs this file under pytest-timeout's 30s per-test cap;
+        # ~2s is the mechanism, 15s the structural bound.
+        assert elapsed < 15, (elapsed, proc.returncode, stdout, stderr)
         # The installer was killed mid-flight: it laid nothing down, and the
         # scratch it ran from is gone — no half-state left behind.
         assert not (harness.home / ".local" / "bin" / "uv").exists()

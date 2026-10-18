@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +21
+  tests/: +28
 ---
 # 1821-bootstrap-runtime
 
@@ -56,6 +56,29 @@ documents (user-owned destination, marked idempotent rc block,
 existing harnesses at the moved definition: `ensure_python` left `install.sh`
 for the shared library, so the compose-override, docker-sock, mnemonic, and
 secret-env harnesses source it and no longer lift a private copy.
+
+CI-repair delta (+7, `tests/test_check_install_functions.py` →
+`TestSourcedDefinitions`): the #1821 gate change teaches
+`check-install-functions.py` to count definitions from a literal file the
+target sources (the variable-sourced shared library), and those new branches
+shipped without direct cases — the root producer measured them at 78.6% branch
+arcs, under the diff-coverage floor. The seven cases pin the resolution
+contract both ways: a resolvable `source "$VAR/lib.sh"` counts its
+definitions (base tried before the repo root; repo root alone for the
+single-argument form the DEFAULT_TARGETS checks use), while an unresolvable
+path, a substitution that survives the strip, an empty candidate, and a
+clean-shaped path missing from both roots are all ignored — so a helper
+defined only in an unresolvable file still fails the gate loudly.
+
+The same repair round fixed the interrupted-install test's CI timeout
+(`tests/test_bootstrap_runtime.py`): the fixture installer's mid-flight
+`sleep` held the harness's stdout/stderr pipes after the trap killed the
+installer wrapper, so `communicate()` waited out the orphaned sleep (~28s)
+instead of the bootstrap's prompt exit-143 — the run stopped correctly all
+along, but the measurement ate the producer's 30s per-test cap. The sleep now
+detaches its fds, and the test additionally bounds the stop as prompt (<15s)
+so a deferred trap can never pass by finishing eventually. No test count
+changes from that fix; the +7 above is the only count delta.
 
 The offline gap these tests cannot close — a real download from astral.sh — was
 proved once on this machine outside the suite: a restricted-`PATH` account with
