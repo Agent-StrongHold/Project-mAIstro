@@ -60,18 +60,36 @@ CORE_PUBLIC_SURFACE = [
     # is absent, rather than failing at import.
     "maistro.archive",
     "maistro.auth",
+    # The #102 work-source substrate: lossless Markdown import/export, the
+    # canonical BacklogItem store, the authority-cutover ledger and the agent
+    # surface. Published library surface for downstream products; no process
+    # entry point in this repository imports it until the recorded cutover.
+    "maistro.backlog",
     "maistro.builders",
     "maistro.capabilities",
     "maistro.classifier",
+    # Connector/source SDK (ADR-100526-be49, #963): the public surface out-of-tree
+    # connectors import. Pure-library surface; httpx is a base dependency, so
+    # the bare tier asserts it imports.
+    "maistro.connectors",
+    # Shared extension-family conformance suite (M9-E4, #965): stdlib +
+    # maistro-internal imports only, so a bare install can import and run it
+    # against any ConformanceSubject.
+    "maistro.conformance",
     "maistro.conduit",
     "maistro.container",
     "maistro.credentials",
     "maistro.events",
-    # Governed extension registry persistence (#939/#952, SPEC-952): publisher
-    # identity, package digests/signatures, manifest snapshots and immutable
-    # install records. Pure-library surface — `cryptography` is a declared
-    # dependency and aiosqlite is TYPE_CHECKING-only — so a bare install can
-    # import it, and the bare tier asserts that.
+    # The canonical Goal store (#1572): ontology owner of the shared Goal
+    # concept, shipped public surface like runs/workspaces beside it.
+    "maistro.goals",
+    # M9 extension surface, importable from a bare install by design:
+    # - the context/lifecycle SDK (#950, ADR-104) resolves without optional
+    #   credentials, so the enumeration ratchet's core-surface check sees it
+    #   covered here rather than as a gap;
+    # - the governed registry persistence (#939/#952, SPEC-952) is a
+    #   pure-library surface — `cryptography` is a declared dependency and
+    #   aiosqlite is TYPE_CHECKING-only — and the bare tier asserts that.
     "maistro.extensions",
     "maistro.graph",
     "maistro.http",
@@ -183,6 +201,9 @@ ESSENTIAL_FILES = ("manifest.json", "DESIGN.md", "tokens.css", "design-tokens.js
 PACKAGES = [
     Package("maistro-core", "maistro", CORE_PUBLIC_SURFACE, widest_extra="all"),
     Package("maistro-canvas", "maistro_canvas", widest_extra="export"),
+    # The extension SDK (#949) is in the release publish set: standalone,
+    # pydantic-only, and the whole product surface an external author touches.
+    Package("maistro-ext-sdk", "maistro_ext_sdk"),
     Package("maistro-server", "maistro_server"),
     Package("maistro-turing", "maistro_turing"),
     Package(
@@ -231,6 +252,13 @@ PACKAGES = [
     Package("maistro-registry", "maistro_registry"),
     Package("maistro-rsi", "maistro_rsi"),
     Package("maistro-bootstrap", "maistro_bootstrap", widest_extra="builders"),
+    # The extension host harness (#974, #975). The whole point of the package
+    # is third-party CI installability, so its wheel importing clean with zero
+    # declared dependencies IS the acceptance surface — stdlib-only is not a
+    # detail here, it is the promise. The one optional extra, `signing`
+    # (Ed25519 certification signatures), is the widest extra so the `all`
+    # tier still sweeps signing.py with its dependency installed.
+    Package("maistro-ext-harness", "maistro_ext_harness", widest_extra="signing"),
 ]
 
 # Distributions that are BUILT by the CI loop but not import-verified here. Both
@@ -318,6 +346,17 @@ def find_wheel(dist_dir: Path, dist: str) -> Path | None:
     return matches[-1] if matches else None
 
 
+def _wheel_dist_name(wheel: Path) -> str:
+    """PEP 503-normalized distribution name from a wheel filename.
+
+    Wheel filenames carry the distribution before the first dash, with
+    underscores in place of dashes (`maistro_core-...whl`); the normalized
+    form (`maistro-core`) is what a constraint's PEP 508 name must spell.
+    """
+    raw = wheel.name.split("-", 1)[0]
+    return re.sub(r"[-_.]+", "-", raw).lower()
+
+
 def requires_python_minor(wheel: Path) -> int | None:
     """Minimum 3.x minor version from the wheel's Requires-Python, if declared.
 
@@ -371,10 +410,39 @@ def check(pkg: Package, mode: str, dist_dir: Path, uv: str, py: str) -> tuple[bo
         if made.returncode != 0:
             return False, f"uv venv failed:\n{made.stderr.strip()}"
 
-        # --find-links resolves sibling maistro-* deps from the same dist/ dir;
-        # these packages are not published, so PyPI cannot satisfy them.
+        # Sibling maistro-* dependencies must resolve from the same dist/ dir.
+        # --find-links alone used to be enough back when these packages were
+        # unpublished, but PyPI now carries same-version (0.9.0) snapshots of
+        # the maistro-* names, and with a version tie between the local wheel
+        # and the index artifact uv's choice between the two is not stable —
+        # a run can silently import the stale published snapshot instead of
+        # the wheel under test (observed: maistro-rsi's `git_remote_tip`
+        # import resolving against a pre-#55 published maistro-core). Pin
+        # every sibling to its exact local artifact with a direct-reference
+        # constraint: same-source resolution, deterministic, and third-party
+        # dependencies still come from the index.
+        constraints = tmpdir / "sibling-constraints.txt"
+        constraints.write_text(
+            "\n".join(
+                f"{_wheel_dist_name(p)} @ {p.resolve().as_uri()}"
+                for p in sorted(dist_dir.glob("*.whl"))
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         install = _run(
-            [uv, "pip", "install", "--python", str(venv), "--find-links", str(dist_dir), spec],
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                str(venv),
+                "--find-links",
+                str(dist_dir),
+                "--constraints",
+                str(constraints),
+                spec,
+            ],
             cwd=tmpdir,
             env=env,
         )

@@ -236,11 +236,23 @@ class TaskRunner:
         try:
             await self._execute_task(task_id)
         except asyncio.CancelledError:
-            # Graceful shutdown — mark task as failed rather than leaving it stuck
-            await self._queue.update_status(
+            # Cancellation arrives here with two different stories (#1337):
+            # a shutdown drain cancelling the worker, and a user-initiated
+            # `TaskQueue.cancel` that fenced its Run CANCELLED and settled the
+            # Attempt before this handler ran. Only the first may write the
+            # shutdown disposition. When the Run refuses FAILED (it is already
+            # CANCELLED) `update_status` returns False — and has already
+            # reconciled the receipt to the Run's own terminal state (#849) —
+            # so the shutdown result must not be written: overwriting that
+            # projection stamped a cancelled receipt with a shutdown failure
+            # it never had and pushed it to the progress webhook. Emit either
+            # way: the receipt read at emit time is whichever disposition
+            # actually holds.
+            accepted = await self._queue.update_status(
                 task_id, TaskStatus.FAILED, error="Task cancelled during shutdown"
             )
-            self._queue.set_result(task_id, TaskResult(error="Task cancelled during shutdown"))
+            if accepted:
+                self._queue.set_result(task_id, TaskResult(error="Task cancelled during shutdown"))
             await self._emit_progress_webhook(task_id)
         except Exception as exc:
             await logger.aexception("task_execution_failed", task_id=task_id)

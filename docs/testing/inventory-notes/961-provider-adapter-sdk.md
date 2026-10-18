@@ -12,7 +12,7 @@ bootstrap), adapter transport inside the one approved egress module
 (`capabilities/providers/llm_gateway.py`), adapter-aware resolution and
 capability refusals in `capabilities/model_chat.py`, the
 `AgentConfig.provider_adapters` wiring surface (`types/config.py`), and
-container composition. ADR-104 records the decision.
+container composition. ADR-105 records the decision.
 
 **+53 `packages/maistro-core/tests/capabilities/test_provider_adapters.py`**
 (collect-only verified on this head), each cluster naming the acceptance
@@ -74,7 +74,7 @@ unchanged. This round only adds traceability and governance artifacts:
   `test_provider_adapters.py` (collect count unchanged at 84), mapping the six
   issue acceptance bullets to the tests that already pin them.
 - **`docs/specs/SPEC-284-provider-adapter-sdk.md`** — the spec implementing
-  ADR-104 (fixes the `check-ac-state.py` failure: `adrs_without_implementing_spec`
+  ADR-105 (fixes the `check-ac-state.py` failure: `adrs_without_implementing_spec`
   32 → 31, `design_coverage` raised past the 42.8609 floor), with all six
   criteria measured `reachable` on a full `--run-tests --ratchet --mandate
   56332162` run (mandates OK, improvement banked to

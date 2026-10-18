@@ -17,6 +17,7 @@ late-owner rules — no release for a successor, retryability after a refusal.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -67,6 +68,11 @@ class _BoundAdmitter:
     def coordinator(self) -> _StubCoordinator:
         return self._coordinator
 
+    async def record_transition(self, run_id: str, status: Any) -> bool:
+        # This seam stub has no Run store to rehydrate, so its replay cannot
+        # claim dispatch ownership. The real task admitter performs that fence.
+        return False
+
     async def prepare_run(self, task: Any) -> Any:
         self.prepared.append(task)
         return object()  # the Run's shape is the stores' concern, not the queue's
@@ -93,28 +99,14 @@ class _StubCoordinator:
         self.inserts.append((task_id, run_id))
         row = self.store._rows[scope_key]
         assert row is not None and row.task_id is None
-        self.store._rows[scope_key] = AdmissionRecord(
-            fingerprint=row.fingerprint,
-            request=row.request,
+        bound = replace(
+            row,
             task_id=task_id,
             run_id=run_id,
-            created_at_us=row.created_at_us,
-            expires_at_us=row.expires_at_us,
-            lease_expires_at_us=row.lease_expires_at_us,
+            completed_at_us=row.created_at_us,
         )
-        return AdmissionBound(
-            record=AdmissionRecord(
-                fingerprint=row.fingerprint,
-                request=row.request,
-                task_id=task_id,
-                run_id=run_id,
-                created_at_us=row.created_at_us,
-                expires_at_us=row.expires_at_us,
-                lease_expires_at_us=row.lease_expires_at_us,
-            ),
-            task_id=task_id,
-            run_id=run_id,
-        )
+        self.store._rows[scope_key] = bound
+        return AdmissionBound(record=bound, task_id=task_id, run_id=run_id)
 
     async def release_claim(self, scope_key: str, claim: AdmissionRecord) -> bool:
         self.releases.append(claim)
@@ -215,13 +207,13 @@ async def test_a_replaced_row_is_reacquired_without_releasing_the_successor() ->
             # the row back through the takeover fence rather than polling
             # out a live 30-second lease in wall-clock time, a wait CI's
             # --timeout=30 kills by construction.
-            successor = AdmissionRecord(
-                fingerprint=claim.fingerprint,
-                request=claim.request,
+            successor = replace(
+                claim,
+                claim_token=f"successor-{claim.claim_token}",
                 task_id=None,
                 run_id=None,
+                completed_at_us=0,
                 created_at_us=claim.created_at_us + 1_000_000,
-                expires_at_us=claim.expires_at_us,
                 lease_expires_at_us=claim.created_at_us,
             )
             store._rows[kw["scope_key"]] = successor

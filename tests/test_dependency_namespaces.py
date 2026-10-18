@@ -110,6 +110,15 @@ PYTONIQ_PAYLOAD = {
     "pytoniq_core/__init__.py": b"REAL = 'pytoniq-core'\n",
 }
 
+CROSSHAIR_PAYLOAD = {
+    # The M8-A10 (#890) research dependency, exactly as its wheel ships the
+    # pruned namespace: crosshair-tool 0.0.111 records exactly one doc/ row,
+    # a Sphinx config nothing in production or test code imports.
+    "doc/source/conf.py": b"CONF = 'sphinx'\n",
+    # The package the tool's own import surface needs.
+    "crosshair/__init__.py": b"REAL = 'crosshair'\n",
+}
+
 
 @pytest.fixture
 def site(tmp_path: Path) -> Path:
@@ -574,6 +583,27 @@ class TestPruneScript:
         # The kept payload row survived with its hash column intact.
         assert "sha256=" in kept[0]
 
+    def test_prune_removes_the_crosshair_doc_payload(self, scripts, site):
+        """The second production target (#890) gets the same treatment as
+        examples: crosshair-tool ships a generic top-level ``doc`` namespace
+        (its Sphinx tree), the prune deletes exactly its RECORD rows, and the
+        distribution itself stays installed and named for the SBOM."""
+        dist_info = make_dist(site, "crosshair-tool", "0.0.111", CROSSHAIR_PAYLOAD)
+        record = dist_info / "RECORD"
+        before = record.read_text(encoding="utf-8")
+        assert self._run(scripts, site) == 0
+        assert not (site / "doc").exists()
+        kept = [row for row in record.read_text(encoding="utf-8").splitlines() if row]
+        assert [row[0] for row in csv.reader(kept)] == [
+            "crosshair/__init__.py",
+            "crosshair_tool-0.0.111.dist-info/METADATA",
+        ]
+        # The one doc row that existed before is exactly what went.
+        assert (
+            sum(1 for row in csv.reader(before.splitlines()) if row and row[0].startswith("doc/"))
+            == 1
+        )
+
     def test_prune_keeps_the_fork_provenance_for_sbom(self, scripts, installed):
         """The distribution stays installed and named: syft catalogs from
         dist-info, so the SBOM keeps recording pkg:pypi/pytoniq-core-fork."""
@@ -651,7 +681,12 @@ class TestPruneScript:
         as None — the no-op path the research image relies on."""
         make_dist(site, "unrelated", "1.0", {"unrelated/__init__.py": b"x = 1\n"})
         results = scripts.prune.prune_site_packages(site)
-        assert results == [("examples", "pytoniq-core-fork", 0)]
+        # One row per PRUNED_IN_PRODUCTION target, sorted by top-level name;
+        # both targets are absent here, so each row is the 0-rows no-op.
+        assert results == [
+            ("doc", "crosshair-tool", 0),
+            ("examples", "pytoniq-core-fork", 0),
+        ]
 
     def test_finder_stem_fallback_without_name_header(self, scripts, site):
         """METADATA with no ``Name:`` line still yields the distribution via
@@ -665,7 +700,10 @@ class TestPruneScript:
             metadata="Metadata-Version: 2.4\nVersion: 0.1.48\n",
         )
         results = scripts.prune.prune_site_packages(site)
-        assert results == [("examples", "pytoniq-core-fork", 3)]
+        assert results == [
+            ("doc", "crosshair-tool", 0),
+            ("examples", "pytoniq-core-fork", 3),
+        ]
         assert not (site / "examples").exists()
 
     def test_prune_never_deletes_outside_site_on_escaped_rows(self, scripts, site):
@@ -724,7 +762,10 @@ class TestPruneScript:
         make_dist(site, "pytoniq-core-fork", "0.1.48", PYTONIQ_PAYLOAD)
         monkeypatch.setattr(scripts.prune, "assert_not_importable", lambda top: True)
         assert scripts.prune.main(["--site-packages", str(site)]) == 0
-        assert "verified: 1 pruned namespace(s) no longer importable" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        # The absent crosshair-tool target is a stated no-op, not silence.
+        assert "nothing to prune for 'doc'" in out
+        assert "verified: 2 pruned namespace(s) no longer importable" in out
 
 
 class TestRealEnvironment:
@@ -871,5 +912,9 @@ class TestFirstPartyMap:
         registry, so a prune target that the gate would not demand absent — or
         vice versa — is impossible by construction."""
         check = scripts.check
-        assert check.PRUNED_IN_PRODUCTION == {"examples": "pytoniq-core-fork"}
+        assert check.PRUNED_IN_PRODUCTION == {
+            "examples": "pytoniq-core-fork",
+            "doc": "crosshair-tool",
+        }
         assert "examples" in check.REVIEWED_NAMESPACES
+        assert "doc" in check.REVIEWED_NAMESPACES

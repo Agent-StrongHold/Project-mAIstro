@@ -39,6 +39,9 @@ from maistro.events.consumer_cursor import (
     DEFAULT_HOLE_GRACE_SECONDS,
     LEGACY_BRIDGE_CONSUMER_ID,
 )
+from maistro.goals.authorization import ScopedGoalStore
+from maistro.goals.store import GoalStore
+from maistro.goals.wiring import wire_goal_store
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
@@ -143,8 +146,11 @@ if TYPE_CHECKING:
     from maistro.events.invocations import InvocationStore
     from maistro.events.processing import HandlerCaller
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
+    from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
+    from maistro.extensions.health import ExtensionHealthService, InMemoryExtensionHealthStore
     from maistro.extensions.service import ExtensionInstallService
-    from maistro.extensions.store import InMemoryExtensionStore
+    from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
+    from maistro.extensions.store import ExtensionStore
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
         AgentIdentity as LifecycleIdentity,
@@ -259,6 +265,26 @@ class Container:
     #: (AC-5); in-memory with a loud warning otherwise, because PostgreSQL
     #: campaign tables are not part of the schema yet.
     campaign_store: CampaignStore | None = None
+    #: The canonical Goal store (`maistro.goals`, #1572) on the deployment's
+    #: selected backend — the ontology owner of the shared Goal concept.
+    #: Raw (id-addressed) on purpose: authorization is not the store's job,
+    #: it lives in the `goal_reader` seam below, over the canonical Workspace
+    #: authorization path (#1150).
+    goal_store: GoalStore = None  # type: ignore[assignment]  # wired in create_container
+
+    @property
+    def goal_reader(self) -> ScopedGoalStore:
+        """The principal-carrying Goal seam over `goal_store` (#1572).
+
+        Derived rather than stored — it wraps two stores this Container
+        already wires, so a second stored object would be a second thing to
+        keep in step. Workspace membership decides who may read or mutate a
+        Goal, and a foreign Goal answers like a missing one. What
+        `run_reader` is to `run_store`, this is to `goal_store`.
+        """
+
+        return ScopedGoalStore(self.goal_store, self.workspace_store)
+
     #: Durable log-as-context for repeated autonomous work (#301, M4-H): the
     #: append-only per-Workspace observation log and the disposable working
     #: graphs projected over it (ADR-082226-5104 §5-6). Rides the SQLite pool
@@ -478,8 +504,25 @@ class Container:
     # Governed extension install lifecycle (#953, M9-B2). Process-lifetime
     # in-memory records until the B1 signing/identity substrate (#952) lands;
     # this is a records-and-authority store, never an execution authority.
-    extension_install_store: InMemoryExtensionStore | None = None
+    # Typed as the store protocol: a host may prewire
+    # ``extension_install_service`` over any conforming store, and
+    # ``ensure_extension_install_service`` synchronizes this field from that
+    # service so every reader observes the one canonical record.
+    extension_install_store: ExtensionStore | None = None
     extension_install_service: ExtensionInstallService | None = None
+    # Extension operational views (#978, M9-I3): health evidence, operator
+    # decisions, and the projection facade over the SAME install store —
+    # never a second lifecycle authority, only a read/projection layer.
+    # Health evidence and operator decisions are durable-admission state:
+    # create_container wires the SQLite twin whenever it owns a SQLite
+    # connection, so a quarantine/disable survives restart instead of the
+    # held extension flipping back to ready.
+    extension_health_store: InMemoryExtensionHealthStore | SqliteExtensionHealthStore | None = None
+    extension_health_service: ExtensionHealthService | None = None
+    # Private organizational extension catalog (#979). In-memory catalog per
+    # organization until a durable backend is configured.
+    catalog_store: InMemoryCatalogStore | None = None
+    catalog_service: CatalogService | None = None
 
     def __post_init__(self) -> None:
         if self.conduit is None:
@@ -903,7 +946,7 @@ class Container:
             # compensating write would be aborted by the same cancellation it
             # exists to clean up after — the `_close_chat_run` shield's reason,
             # one step earlier in the turn.
-            await asyncio.shield(self._cancel_incomplete_admission(run))
+            await asyncio.shield(self._cancel_incomplete_admission(run, admission_failed=True))
             self._release_chat_dispatch(run)
             raise
         except RunConcurrencyExceeded:
@@ -912,7 +955,7 @@ class Container:
             raise
         except Exception as exc:
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)
-            await self._cancel_incomplete_admission(run)
+            await self._cancel_incomplete_admission(run, admission_failed=True)
             self._release_chat_dispatch(run)
             raise ChatTurnRefused("chat turn could not be admitted as a Run") from exc
 
@@ -935,22 +978,16 @@ class Container:
             logger.warning("chat slot reclamation failed", exc_info=True)
             return 0
 
-    async def _cancel_incomplete_admission(self, run: Run | None) -> None:
-        """Compensate a chat Run whose admission never reached RUNNING (#338).
+    async def _cancel_incomplete_admission(
+        self, run: Run | None, *, admission_failed: bool = False
+    ) -> None:
+        """Compensate a failed admission without cancelling newly started work.
 
-        Admission persists CREATED, then QUEUED, then RUNNING. An exception
-        between any two of those writes used to strand the Run at the state it
-        had reached: the caller got `None`, so `_close_chat_run` had nothing to
-        settle, and no sweeper owns a QUEUED chat Run — durable state claiming
-        work is waiting to run that nothing will ever run.
-
-        CREATED and QUEUED both have a legal edge to CANCELLED, and CANCELLED
-        is the honest word: the turn was never dispatched, so nothing failed
-        (ADR-082426-f170's distinction). A Run past QUEUED reached RUNNING and
-        returned from admission, making it `_close_chat_run`'s to settle — not
-        this method's. Idempotent by the terminal guard; a concurrent settle
-        loses the race harmlessly because the compensating write is logged,
-        never re-raised — compensation must not replace the turn's answer.
+        An admission write may commit RUNNING and lose its response. The
+        admission caller knows it did not hand this Run to dispatch, and may
+        offer that state too. Other callers preserve the pre-RUNNING rule.
+        The store atomically rechecks the observed state and NodeRun absence;
+        a concurrent dispatch or lifecycle change defeats cancellation.
         """
         if run is None:
             return
@@ -958,14 +995,12 @@ class Container:
             current = await self.run_store.get_run(run.run_id)
             if current is None or current.status in TERMINAL_RUN_STATUSES:
                 return
-            if current.status not in (RunStatus.CREATED, RunStatus.QUEUED):
+            if current.status not in (RunStatus.CREATED, RunStatus.QUEUED) and not (
+                admission_failed and current.status is RunStatus.RUNNING
+            ):
                 return
-            await self.run_store.transition_run(
-                run.run_id,
-                RunStatus.CANCELLED,
-                error=ADMISSION_INCOMPLETE,
-            )
-            await self._sweep_chat_runs()
+            if await self.run_store.cancel_unstarted_chat_run(current, error=ADMISSION_INCOMPLETE):
+                await self._sweep_chat_runs()
         except Exception:
             logger.warning(
                 "stranded chat Run %s could not be compensated", run.run_id, exc_info=True
@@ -1170,6 +1205,13 @@ class Container:
             a2a_delegator=self.a2a_delegator,
             guest_peers=self.guest_peers,
             run_store=self.run_store,
+            # The inbound A2A warden and the security audit log (#1137): the
+            # delegate node scans peer-controlled payloads at the canonical
+            # boundary and records verdicts beside the canonical audit trail,
+            # so resolver-composed delegation carries the same policy the
+            # rest of the Container is wired with.
+            warden=self.warden,
+            audit_log=self.audit_log,
             effect_context=self.capability_effects,
             graph_run_store=self.graph_run_store,
             provider_registry=self.provider_registry,
@@ -1457,12 +1499,10 @@ class Container:
     async def _compensate_if_stranded(self, run: Run, *, cutoff: datetime) -> bool:
         """Cancel `run` if it is a stranded chat admission; say whether it did.
 
-        Eligibility is `CHAT_SOURCE`, older than `cutoff`, and no NodeRun. The
-        source is re-checked here even though the listing query already filters
-        on it: the predicate narrows what the tick reads, and a store that
-        ignored it must still not get a foreign Run cancelled. The NodeRun
-        absence is read twice, the second immediately before the write, which
-        is the only window a turn starting between the two reads can close.
+        Eligibility is `CHAT_SOURCE`, older than `cutoff`, and no NodeRun.
+        The store compares the listed status/time and checks child absence in
+        one write transaction. A dispatch or newer lifecycle write wins even
+        when it lands after the last read in this process.
         """
         from maistro.runs.sources import ADMISSION_SOURCE, CHAT_SOURCE
 
@@ -1471,13 +1511,8 @@ class Container:
         if run.updated_at > cutoff:
             return False
         try:
-            if await self.run_store.list_node_runs(run.run_id):
-                return False
-            if await self.run_store.list_node_runs(run.run_id):
-                return False
-            await self.run_store.transition_run(
-                run.run_id,
-                RunStatus.CANCELLED,
+            return await self.run_store.cancel_unstarted_chat_run(
+                run,
                 # Never reached RUNNING: the same word the in-request
                 # compensation uses for an admission that did not finish.
                 error=(
@@ -1502,7 +1537,6 @@ class Container:
                 "stranded chat Run %s could not be compensated", run.run_id, exc_info=True
             )
             return False
-        return True
 
     async def execute_admitted_runs(self, *, limit: int = 100) -> int:
         """Tick the canonical consumer for admitted Runs (#251). Returns how many ran.
@@ -2039,17 +2073,66 @@ class Container:
         activation substrate can inspect and decide, but installation fails
         closed with a clear error instead of improvising code execution. Hosts
         that own activation replace ``extension_install_service`` with one
-        built over their own loader.
+        built over their own loader. A host that prewires the service over
+        its own loader *and* store need not mirror the store onto
+        ``extension_install_store``; this method synchronizes the field from
+        the supplied service so every reader observes the one canonical
+        store the returned service owns.
         """
         from maistro.extensions.service import ExtensionInstallService, UnwiredExtensionLoader
         from maistro.extensions.store import InMemoryExtensionStore
 
         if self.extension_install_service is None:
+            if self.extension_install_store is None:
+                self.extension_install_store = InMemoryExtensionStore()
             self.extension_install_service = ExtensionInstallService(
-                self.extension_install_store or InMemoryExtensionStore(),
+                self.extension_install_store,
                 loader=UnwiredExtensionLoader(),
             )
+        else:
+            self.extension_install_store = self.extension_install_service.store
         return self.extension_install_service
+
+    def ensure_extension_health_service(self) -> ExtensionHealthService:
+        """Return the extension operational-view facade (#978, M9-I3).
+
+        Built over the same install-store instance the install-lifecycle
+        service uses, so health projections read the one canonical record of
+        activation. ``create_container`` wires the SQLite twin for the health
+        store whenever durable storage is configured; the in-memory fallback
+        below is only reached by deliberately ephemeral containers and tests.
+        """
+        from maistro.extensions.health import ExtensionHealthService, InMemoryExtensionHealthStore
+
+        # Ensure the lifecycle side exists first so both services share the
+        # one store instance; building them independently could fork the
+        # canonical record into two drifting copies. Take the store from the
+        # returned service, not from the container field: a host that
+        # prewired the service over its own store may never have mirrored
+        # the store onto ``extension_install_store``, and reading the field
+        # directly could project health from an empty fork.
+        install = self.ensure_extension_install_service()
+        if self.extension_health_service is None:
+            self.extension_health_service = ExtensionHealthService(
+                install.store,
+                self.extension_health_store or InMemoryExtensionHealthStore(),
+            )
+        return self.extension_health_service
+
+    def ensure_catalog_service(self) -> CatalogService:
+        """Return the private organizational extension catalog service (#979).
+
+        Lazily built over the process-lifetime in-memory store. The store is
+        cached back onto the container so callers that bypass the service see
+        the same snapshot the API serves.
+        """
+        from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
+
+        if self.catalog_service is None:
+            store = self.catalog_store or InMemoryCatalogStore()
+            self.catalog_store = store
+            self.catalog_service = CatalogService(store)
+        return self.catalog_service
 
 
 def _wire_schedule_admission(
@@ -2326,6 +2409,16 @@ async def create_container(
     # deployment gets the in-memory fallback plus a startup warning naming
     # the cost, rather than a silent durability lie (#103, AC-5).
     campaign_store: CampaignStore | None = await _wire_campaign_backend(db_pool)
+    # The canonical Goal store rides the same backend decision, upgraded where
+    # the deployment offers it: a PostgreSQL pool always selects the durable
+    # PgGoalStore, creating the migration-063 tables when the database has not
+    # run `alembic upgrade head` yet — the event stores' "wiring creates the
+    # schema it needs" contract, never a second (in-process) backend (#1572).
+    # Without a PG pool, SQLite selects its twin and no database selects memory
+    # with a warning.
+    # The authorized `goal_reader` seam is derived on
+    # the Container from this store and the Workspace store.
+    goal_store = await wire_goal_store(db_pool, pg_pool=pg_pool)
     working_log = await _wire_working_memory_backend(db_pool)
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     # Same backend the spine just chose (#1176): claims beside the Runs they
@@ -2388,6 +2481,7 @@ async def create_container(
     from maistro.security.sentinel.policy import Sentinel
 
     audit_log = await _wire_audit_log(pg_pool=pg_pool, db_pool=db_pool)
+    extension_health_store = await _wire_extension_health_store(db_pool=db_pool)
     permission_table = build_permission_table(
         preset=config.security.permission_preset,
         permissions=config.security.permissions,
@@ -2584,7 +2678,7 @@ async def create_container(
     # GuestPeerManager defaults its own audit logger. There is no configuration
     # decision behind either, so neither is made optional (ADR-082526-3ca6).
     a2a_delegator = A2ADelegator()
-    guest_peers = GuestPeerManager()
+    guest_peers = GuestPeerManager(warden=warden)
 
     container = Container(
         config=config,
@@ -2611,6 +2705,7 @@ async def create_container(
         workspace_store=workspace_store,
         backlog_history_store=backlog_history_store,
         campaign_store=campaign_store,
+        goal_store=goal_store,
         working_log=working_log,
         run_store=run_store,
         run_reader=ScopedRunReader(run_store, workspace_store, project_scope_store),
@@ -2626,6 +2721,7 @@ async def create_container(
         working_memory=working_memory,
         agents=agents,
         audit_log=audit_log,
+        extension_health_store=extension_health_store,
         db_pool=db_pool,
         session_conn=session_conn,
         schedule_conn=schedule_conn,
@@ -2741,6 +2837,29 @@ async def _wire_prompt_manager(*, pg_pool: Any, db_pool: Any) -> PromptManager:
     from maistro.prompts.store import InMemoryPromptManager
 
     return InMemoryPromptManager()
+
+
+async def _wire_extension_health_store(*, db_pool: Any) -> Any:
+    """Select the extension health store from the configured backend (#978).
+
+    Health evidence and the operator decisions recorded against it
+    (quarantine, disable) are durable-admission state: leaving the
+    in-memory fallback here would let a held extension become ready again
+    on the first health request after a restart. The SQLite twin is wired
+    whenever the container owns a SQLite connection, matching the other
+    relational stores; the in-memory store remains only for the deliberate
+    ephemeral configuration and tests.
+    """
+    if db_pool is not None:
+        from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
+
+        store = SqliteExtensionHealthStore(db_pool)
+        await store.ensure_schema()
+        return store
+
+    from maistro.extensions.health import InMemoryExtensionHealthStore
+
+    return InMemoryExtensionHealthStore()
 
 
 async def _wire_audit_log(*, pg_pool: Any, db_pool: Any) -> Any:
@@ -3558,6 +3677,8 @@ def build_node_resolver(
     a2a_delegator: Any = None,
     guest_peers: Any = None,
     run_store: RunStore | None = None,
+    warden: Any = None,
+    audit_log: Any = None,
     effect_context: CapabilityEffectContext | None = None,
     provider_registry: LLMProviderRegistry | None = None,
     llm_router: LLMRouter | None = None,
@@ -3630,6 +3751,12 @@ def build_node_resolver(
         "a2a_delegator": a2a_delegator,
         "guest_peers": guest_peers,
         "run_store": run_store,
+        # Inbound-content policy and its audit trail (#1137): composed
+        # delegation nodes scan peer payloads and record verdicts with the
+        # same warden/audit authorities the Container itself holds. Bare
+        # callers keep `None`, which `scan_inbound` fails closed on.
+        "warden": warden,
+        "audit_log": audit_log,
         "graph_run_store": graph_run_store,
         "effect_context": resolved_effect_context,
         # The Container's populated model authorities (#1079): a resolver-built

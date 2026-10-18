@@ -35,9 +35,17 @@ from maistro.a2a.normalize import (
     decide_settlement,
     normalize_remote_state,
 )
+from maistro.capabilities.binding import Binding
+from maistro.capabilities.effect_context import (
+    binding_scope_policy,
+    new_in_memory_effect_context,
+)
 from maistro.graph import Graph, Node
 from maistro.graph.nodes import NodeContext
-from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
+from maistro.graph.nodes.agent_delegate_remote import (
+    AGENT_DELEGATION_CAPABILITY,
+    AgentDelegateRemoteNode,
+)
 from maistro.http import override_transport
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore, RunStatus
@@ -46,6 +54,28 @@ from maistro.runtime import PythonExecutionRuntime
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 _WORKSPACE = "workspace-1"
+
+
+async def _governed_effects(project_id: str) -> Any:
+    """The governed admission wiring for a cross-instance dispatch (issue #959).
+
+    A dispatch is admitted only through an operator-declared `agent_delegation`
+    Binding in the dispatching Workspace/Project scope, so conformance drives
+    the external protocol through the same governed seam production uses. This
+    mirrors the delegation governance suite's canonical fixture
+    (`tests/graph/nodes/_delegation_governance.py`), which is importable only
+    inside that test package under importlib import mode.
+    """
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    await effects.bindings.put(
+        Binding(
+            binding_id="binding-hub",
+            workspace_id=_WORKSPACE,
+            project_id=project_id,
+            capability=AGENT_DELEGATION_CAPABILITY,
+        )
+    )
+    return effects
 
 
 class _ExternalStyleA2AAgent:
@@ -175,6 +205,9 @@ def _ctx(run_id: str, node_run_id: str, answer: dict[str, Any] | None = None) ->
         dag_id="dag-1",
         node_id="delegate-1",
         node_run_id=node_run_id,
+        # A governed dispatch records its Invocation on the dispatching
+        # Attempt (#959), so the context carries one like production does.
+        attempt_id="attempt-1",
         metadata=metadata,
     )
 
@@ -201,10 +234,19 @@ async def _dispatch(
     )
     node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
     ctx = _ctx(parent.run_id, node_run.node_run_id)
-    node = AgentDelegateRemoteNode(guest_peers=_peers(), run_store=store)
+    node = AgentDelegateRemoteNode(
+        guest_peers=_peers(),
+        run_store=store,
+        effect_context=await _governed_effects(project.project_id),
+    )
     with override_transport(httpx.MockTransport(agent.handler)):
         result = await node.run(
-            {"from_agent": "planner", "task": "research X", "peer_name": "ext"},
+            {
+                "from_agent": "planner",
+                "task": "research X",
+                "peer_name": "ext",
+                "binding_id": "binding-hub",
+            },
             ctx,
         )
     assert result.status == "paused"
@@ -455,8 +497,17 @@ async def test_a_lost_response_reconciles_the_receipt_without_a_second_post() ->
     )
     node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
     ctx = _ctx(parent.run_id, node_run.node_run_id)
-    node = AgentDelegateRemoteNode(guest_peers=_peers(), run_store=store)
-    inputs = {"from_agent": "planner", "task": "research X", "peer_name": "ext"}
+    node = AgentDelegateRemoteNode(
+        guest_peers=_peers(),
+        run_store=store,
+        effect_context=await _governed_effects(project.project_id),
+    )
+    inputs = {
+        "from_agent": "planner",
+        "task": "research X",
+        "peer_name": "ext",
+        "binding_id": "binding-hub",
+    }
     with override_transport(httpx.MockTransport(losing_handler)):
         first = await node.run(inputs, ctx)
     assert first.status == "paused"
