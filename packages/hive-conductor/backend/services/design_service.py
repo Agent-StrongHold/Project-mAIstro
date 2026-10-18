@@ -149,13 +149,25 @@ def _get_async_engine() -> AsyncEngine | None:
     rules are invented here.
 
     `None` means nothing is configured -- the supported no-database mode. A
-    URL that is configured but cannot build an engine raises
+    URL that is configured but fails resolution/validation (a `DB_*` value
+    pydantic rejects) or cannot build an engine raises
     `DesignStoreConfigurationError`, so the failure reports as what it is
     instead of becoming absence downstream.
     """
     from maistro.config.database import resolve_database_url, to_async_url
 
-    url = to_async_url(resolve_database_url())
+    try:
+        url = to_async_url(resolve_database_url())
+    except Exception as exc:
+        # Resolution is persistence-scoped too (#1826 review): a `DB_*` value
+        # that fails validation must reach the store-specific handler as a
+        # `DesignStoreConfigurationError`, not escape startup as a raw
+        # `ValidationError` and mark the whole service unready. Type name
+        # only -- same rule as `_store_failure_cause`, the message never
+        # interpolates the environment it failed on.
+        raise DesignStoreConfigurationError(
+            f"database URL could not be resolved from the environment: {type(exc).__name__}"
+        ) from exc
     if not url:
         logger.debug("No database URL configured — design persistence disabled")
         return None

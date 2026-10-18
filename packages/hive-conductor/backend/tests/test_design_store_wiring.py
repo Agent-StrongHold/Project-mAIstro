@@ -203,9 +203,10 @@ class TestConfiguredButBrokenIsNeverAbsence:
         treated as unparseable: scheme only, credentials nowhere."""
         netloc_less = "postgresql:user:secret@host/db"
         monkeypatch.setenv("DATABASE_URL", netloc_less)
-        with caplog.at_level(logging.WARNING, logger="hive.design_service"), pytest.raises(
-            design_service.DesignStoreConfigurationError
-        ) as excinfo:
+        with (
+            caplog.at_level(logging.WARNING, logger="hive.design_service"),
+            pytest.raises(design_service.DesignStoreConfigurationError) as excinfo,
+        ):
             design_service._get_async_engine()
         message = str(excinfo.value)
         assert "postgresql:<unparseable>" in message
@@ -249,6 +250,49 @@ class TestConfiguredButBrokenIsNeverAbsence:
         assert "ModuleNotFoundError" in excinfo.value.detail
         assert "not set" not in excinfo.value.detail
         assert "s3cret" not in excinfo.value.detail
+
+
+class TestAResolutionFailureIsAlsoConfiguration:
+    """Resolution is persistence-scoped too (#1826 salvage review).
+
+    `resolve_database_url` composes a URL from a `DB_*` set through pydantic,
+    so a value it rejects -- `DB_PORT=notaport`, say -- raises
+    `ValidationError` before any URL exists to build an engine from. Uncaught,
+    that error sailed past the store-scoped `except
+    DesignStoreConfigurationError` in `start_design_service` into the outer
+    handler, and a database typo marked the whole service -- the systems half
+    included -- unready.
+    """
+
+    async def test_an_invalid_db_value_raises_as_configuration(self, started, monkeypatch):
+        """The failure surfaces as `DesignStoreConfigurationError`, naming the
+        exception type and never the environment value that caused it -- the
+        same sanitization rule as the engine-build path."""
+        monkeypatch.setenv("DB_PORT", "notaport")
+        with pytest.raises(design_service.DesignStoreConfigurationError) as excinfo:
+            design_service._get_async_session_factory()
+        message = str(excinfo.value)
+        assert "could not be resolved" in message
+        assert "ValidationError" in message
+        assert "notaport" not in message
+
+    async def test_startup_degrades_only_the_store(self, started, monkeypatch):
+        """The systems half stays ready; the store is gone *with its cause*,
+        and the route answers with the actual failure -- never the no-database
+        words, never a durable success."""
+        monkeypatch.setenv("DB_PORT", "notaport")
+        await design_service.start_design_service(_Settings())
+        status = design_service.get_design_status()
+        assert status.ready
+        assert status.store_cause is not None
+        assert "ValidationError" in status.store_cause
+        with pytest.raises(RuntimeError, match="not initialized"):
+            design_service.get_design_store()
+        with pytest.raises(HTTPException) as excinfo:
+            design_routes._require_store()
+        assert excinfo.value.status_code == 503
+        assert "ValidationError" in excinfo.value.detail
+        assert "not set" not in excinfo.value.detail
 
 
 class TestTheStatusCarriesTheCauseToTheApi:

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +19
+  packages/hive-conductor/backend/tests: +22
 ---
 # 1826-design-db-url-normalization
 
@@ -16,9 +16,9 @@ same "no DATABASE_URL configured" startup line — as the supported no-database
 mode. `DesignServiceStatus` carries the new `store_cause`, and
 `routes.design._require_store` answers project routes with it.
 
-## What the 19 node IDs cover
+## What the 22 node IDs cover
 
-`test_design_store_wiring.py` (15, hermetic — `create_async_engine` selects a
+`test_design_store_wiring.py` (18, hermetic — `create_async_engine` selects a
 dialect from the URL alone, so no server is needed):
 
 - 2: the exact Compose spelling (`postgresql://maistro:…@postgres:5432/maistro`)
@@ -33,13 +33,19 @@ dialect from the URL alone, so no server is needed):
 - 3: an absent URL stays a supported, explicit mode — engine/factory `None`,
   startup `ready` with `store_cause is None`, route answers "no database URL
   configured".
-- 6: a configured URL that cannot build an engine (forced
-  `ModuleNotFoundError`, and a real malformed-URL `ValueError` from
-  SQLAlchemy) raises `DesignStoreConfigurationError`, startup degrades with
+- 7: a configured URL that cannot build an engine (forced
+  `ModuleNotFoundError`, a real malformed-URL `ValueError` from
+  SQLAlchemy, and a netloc-less spelling the shared redactor cannot parse)
+  raises `DesignStoreConfigurationError`, startup degrades with
   the recorded sanitized cause, the status dict carries it, and the route
   answers with the actual failure — never "not set", never the password
   (AC-7: the cause names the exception type against a redacted URL and never
   interpolates `str(exc)`).
+- 2: resolution is persistence-scoped too (salvage review) — a `DB_*` value
+  pydantic rejects (`DB_PORT=notaport`) raises `DesignStoreConfigurationError`
+  from the same boundary, naming the exception type and never the environment
+  value; startup degrades *only* the store, where an uncaught
+  `ValidationError` used to mark the whole service unready.
 
 `test_design_supported_path.py` (4, PostgreSQL — skip without
 `MAISTRO_TEST_PG_DSN`; `MAISTRO_REQUIRE_PG_LEGS` makes the skip a failure,
