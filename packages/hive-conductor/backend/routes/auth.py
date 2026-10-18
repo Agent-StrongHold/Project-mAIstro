@@ -7,6 +7,7 @@ when the task completes, fails, or is cancelled.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time as _time
 from datetime import UTC, datetime
@@ -124,6 +125,33 @@ _SESSION_COOKIE = "hive_session"
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 7
 _ELEVATION_TTL_SECONDS = 15 * 60
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_-]{3,32}$")
+
+
+def _elevation_ttl_seconds() -> int:
+    """Live elevation TTL for newly issued grants.
+
+    ``HIVE_ELEVATION_TTL_SECONDS`` lets a deployment shorten the window. It can
+    only SHORTEN it: the value is clamped to the 15-minute default from above
+    and to one second from below, so a stray or hostile env value can never
+    extend how long an elevation outlives its task. The clamp is also what the
+    authorization browser E2E uses to prove a grant expiring for real.
+    """
+    raw = os.getenv("HIVE_ELEVATION_TTL_SECONDS", "").strip()
+    if not raw:
+        return _ELEVATION_TTL_SECONDS
+    try:
+        requested = int(raw)
+    except ValueError:
+        return _ELEVATION_TTL_SECONDS
+    return max(1, min(requested, _ELEVATION_TTL_SECONDS))
+
+
+def _elevation_ttl_message(ttl_seconds: int) -> str:
+    if ttl_seconds % 60 == 0:
+        return f"They expire in {ttl_seconds // 60} minutes or when the task completes."
+    return f"They expire in {ttl_seconds} seconds or when the task completes."
+
+
 _OAUTH_CODE_MAX_LENGTH = 4096
 _OAUTH_FAILURE_DETAIL = "OAuth authentication failed"
 _OAUTH_LINK_COOKIE_PREFIX = "__Host-hive_oauth_link_"
@@ -912,7 +940,8 @@ def elevate(
     grants: dict[str, list[str]] = sess.get("elevated_grants", {})
     grants[body.task_id] = granted
     expiries = _grant_expiries(sess)
-    expiry = datetime.now(UTC).timestamp() + _ELEVATION_TTL_SECONDS
+    ttl_seconds = _elevation_ttl_seconds()
+    expiry = datetime.now(UTC).timestamp() + ttl_seconds
     expiries[body.task_id] = datetime.fromtimestamp(expiry, UTC).isoformat()
     stores.sessions[hive_session] = {
         **sess,
@@ -931,7 +960,7 @@ def elevate(
         "task_id": body.task_id,
         "elevated_permissions": granted,
         "elevated_until": expiries[body.task_id],
-        "message": "Permissions elevated for this task. They expire in 15 minutes or when the task completes.",
+        "message": f"Permissions elevated for this task. {_elevation_ttl_message(ttl_seconds)}",
     }
 
 

@@ -119,3 +119,27 @@ export async function loginAsPM(page: Page) {
     page.locator('form button[type="submit"]').click(),
   ]);
 }
+
+// The admin (break-glass) account from the same wizard Accounts step. The
+// selector discipline above is copied verbatim rather than factored: every
+// comment here records a selector that already went wrong once, and #371's
+// rule is "import these or rediscover the failures" — a parameterized login
+// would have to re-document all of them to be safe to touch.
+export async function loginAsAdmin(page: Page) {
+  await page.goto("/login");
+
+  const usernameInput = page.locator('input[autocomplete="username"]').first();
+  const passwordInput = page.locator('input[autocomplete="current-password"]').first();
+
+  await usernameInput.waitFor({ state: "visible" });
+  await usernameInput.fill(ADMIN_USER);
+  await passwordInput.fill(ADMIN_PASS);
+
+  await Promise.all([
+    page.waitForResponse(
+      (r) => r.url().includes("/v1/auth/login") && r.request().method() === "POST",
+      { timeout: 15000 },
+    ),
+    page.locator('form button[type="submit"]').click(),
+  ]);
+}

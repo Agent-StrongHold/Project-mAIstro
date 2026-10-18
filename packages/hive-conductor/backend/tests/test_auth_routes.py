@@ -82,6 +82,57 @@ class TestCapabilitySnapshot:
             stores.users["user"] = stores.users["user"].model_copy(update={"permissions": []})
 
 
+class TestElevationTtlOverride:
+    """HIVE_ELEVATION_TTL_SECONDS may only shorten the elevation window.
+
+    The authorization browser E2E drives a real grant to its expiry through
+    this override; the clamp is the security property under test: no env
+    value can make an elevation outlive the 15-minute default.
+    """
+
+    def test_default_ttl_is_15_minutes(self, monkeypatch):
+        from routes.auth import _ELEVATION_TTL_SECONDS, _elevation_ttl_seconds
+
+        monkeypatch.delenv("HIVE_ELEVATION_TTL_SECONDS", raising=False)
+        assert _elevation_ttl_seconds() == _ELEVATION_TTL_SECONDS == 900
+
+    def test_override_shortens_and_is_honored_by_elevate(self, monkeypatch, authed_client):
+        import time
+        from datetime import datetime
+
+        from routes.auth import _elevation_ttl_seconds, revoke_task_elevation
+
+        monkeypatch.setenv("HIVE_ELEVATION_TTL_SECONDS", "2")
+
+        assert _elevation_ttl_seconds() == 2
+
+        r = authed_client.post(
+            "/v1/auth/elevate",
+            json={"password": "testpass", "permissions": [], "task_id": "ttl-probe"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        session_id = str(authed_client.cookies.get("hive_session"))
+        try:
+            until = datetime.fromisoformat(body["elevated_until"])
+            assert until.timestamp() <= time.time() + 2
+            assert "2 seconds" in body["message"]
+        finally:
+            revoke_task_elevation(session_id, "ttl-probe")
+
+    def test_override_cannot_extend_past_default(self, monkeypatch):
+        from routes.auth import _ELEVATION_TTL_SECONDS, _elevation_ttl_seconds
+
+        monkeypatch.setenv("HIVE_ELEVATION_TTL_SECONDS", "999999")
+        assert _elevation_ttl_seconds() == _ELEVATION_TTL_SECONDS
+
+    def test_garbage_override_falls_back_to_default(self, monkeypatch):
+        from routes.auth import _ELEVATION_TTL_SECONDS, _elevation_ttl_seconds
+
+        monkeypatch.setenv("HIVE_ELEVATION_TTL_SECONDS", "not-a-number")
+        assert _elevation_ttl_seconds() == _ELEVATION_TTL_SECONDS
+
+
 class TestPermissionAssignment:
     """The grant flow that makes harness.execute/rsi.execute obtainable.
 

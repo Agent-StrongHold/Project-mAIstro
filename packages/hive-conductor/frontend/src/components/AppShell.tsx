@@ -130,10 +130,10 @@ export function AppShell({ children }: { children?: ReactNode }) {
             to={item.to}
             className={({ isActive }) => `nav-icon${isActive ? " active" : ""}`}
             end={item.to === "/cli"}
-            title={item.label}
+            title={item.surface && !authorization.can(authorization.surfacePermission(item.surface)) ? "Requires elevation" : item.label}
           >
             <span aria-hidden><item.icon size={16} strokeWidth={1.5} /></span>
-            <span className="nav-icon-label">{item.label}</span>
+            <span className="nav-icon-label">{item.label}{item.surface && !authorization.can(authorization.surfacePermission(item.surface)) ? " · locked" : ""}</span>
           </NavLink>
         ))}
         <div style={{ flex: 1 }} />
