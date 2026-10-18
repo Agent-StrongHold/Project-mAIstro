@@ -101,6 +101,74 @@ async def test_legacy_read_effect_resolves_through_binding_scope() -> None:
     assert invocation.result == {"committed": {"value": 2}}
 
 
+def _tool_binding() -> Binding:
+    return Binding(
+        binding_id="binding-tool-1",
+        workspace_id="ws-1",
+        project_id="project-1",
+        node_id="node-1",
+        capability="tool.deploy",
+    )
+
+
+@pytest.mark.asyncio
+async def test_irreversible_tool_admission_fact_requires_approval() -> None:
+    """The #57 tool floor: an irreversible tier carried as an admission fact is
+    gated at the canonical boundary, before any provider dispatch.
+
+    GovernedToolExecutor resolves the tier from the host-owned registry and
+    attaches it to the request as ``_tool_reversibility`` -- a caller-chosen
+    string must not be able to pick its own approval tier, and a tier the
+    registry resolved as irreversible must not inherit a workflow admission
+    approval (the same non-inheritance rule the legacy mutate/destroy floor
+    pins above).
+    """
+    context = new_effect_context(policy_evaluator=binding_scope_policy)
+    executed: list[Any] = []
+
+    async def executor(_provider: Any, request: Any) -> dict[str, Any]:
+        executed.append(request)
+        return {"committed": request}
+
+    with pytest.raises(InvocationApprovalRequired):
+        await context.invocations.invoke(
+            binding=_tool_binding(),
+            run_id="run-1",
+            node_run_id="node-run-1",
+            attempt_id="attempt-1",
+            effect_key="tool:deploy:1",
+            request={"_tool_reversibility": "irreversible", "arguments": {"env": "prod"}},
+            resolver=_resolver,
+            executor=executor,
+        )
+
+    assert executed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tier", ["internal", "reversible"])
+async def test_reversible_tool_admission_resolves_through_binding_scope(tier: str) -> None:
+    """Only the irreversible tier trips the floor; the others stay scope-gated."""
+    context = new_effect_context(policy_evaluator=binding_scope_policy)
+
+    async def executor(_provider: Any, request: Any) -> dict[str, Any]:
+        return {"committed": request}
+
+    request = {"_tool_reversibility": tier, "arguments": {"env": "staging"}}
+    invocation = await context.invocations.invoke(
+        binding=_tool_binding(),
+        run_id="run-1",
+        node_run_id="node-run-1",
+        attempt_id="attempt-1",
+        effect_key=f"tool:deploy:{tier}",
+        request=request,
+        resolver=_resolver,
+        executor=executor,
+    )
+
+    assert invocation.result == {"committed": request}
+
+
 class TestNestedContainersHandTheDefaultBack:
     """Containers nest, so the process default has to be a stack.
 

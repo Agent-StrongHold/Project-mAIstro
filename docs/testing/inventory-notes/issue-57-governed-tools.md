@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +11
+  packages/maistro-core/tests: +14
   packages/maistro-bootstrap/tests: +3
 ---
 # Issue 57 governed tool contracts
@@ -57,6 +57,38 @@ The preserved `origin/develop` sync conflict was resolved in place (commit
 - The suite-inventory delta is recorded against suite roots (+11 core, +3
   bootstrap); `check-suite-inventory.py` reports all 17 suites matching.
 
+## Gate-repair round (2026-10-18)
+
+Cleared every quality gate the branch was failing, each at its cause:
+
+- **Radon**: the seven new C-blocks were refactored, not granted (a grant needs
+  a trunk-landed authorization first). `ToolContract.__post_init__`,
+  `validate_tool_arguments`, `_validate_schema_value`,
+  `GovernedToolExecutor.execute`, `ReactStrategy.reason`,
+  `_execute_one_tool_call` and `agent_loop._dispatch_tool` each decomposed into
+  named single-purpose helpers; behavior is preserved and the governed-contract
+  and react suites pass. 145 -> 137 C-or-worse blocks.
+- **Vulture**: the argv cutover's orphaned `run_command` raw-string methods are
+  deleted (Protocol + both sandbox implementations), with the three test call
+  sites ported to `run_argv`; `ExpectedEffectEvidence._validate_evidence` joins
+  `_vulture_whitelist.py` beside `Binding._validate_binding` (Pydantic
+  decorator dispatch is invisible to the scanner), which also retires the
+  ledger's `invocation.py::_validate_evidence` row; the two
+  `reversibility_registry` rows are stale now that `tools/contracts.py`
+  constructs the registry. Ledger: 1322 -> 1318, exit 0 with no new grant.
+- **Reachability**: `maistro.tools.reversibility_registry` left the baseline
+  and its disposition group records the connection through
+  `maistro.tools.contracts`.
+- **Promotion surface**: `tools/contracts.py`,
+  `capabilities/expected_effect.py` and both reversibility modules are
+  *protected* in `sensitive_paths.py` rather than tolerated in the baseline, so
+  no trunk grant is consumed and a candidate editing the tool gate escalates.
+- **Coverage**: `binding_scope_policy`'s `tool.reversibility` floor (added in
+  the develop-sync round with no committed test) is now pinned: an irreversible
+  tier carried as an Invocation admission fact gets REQUIRE_APPROVAL before any
+  provider dispatch, while `internal`/`reversible` tiers resolve through
+  Binding scope. +3 core test cases (delta above updated +11 -> +14).
+
 Residual scope still open on #57 (not closed by this branch):
 
 - `GovernedToolExecutor` is library-only: no shipped production path constructs
@@ -71,10 +103,3 @@ Residual scope still open on #57 (not closed by this branch):
   egress work — current authoritative count is 6.)
 - Issue #847 (adversarial tool-name/schema/argument tests) must close before
   #57 closes.
-- Quality-ratchet posture (two-merge rule): the branch's new identities are
-  unauthorized against the trusted base (ab8b3737f) — vulture
-  (`expected_effect.py::_validate_evidence` pydantic validator, 3 orphaned
-  `BuilderSandbox.run_command` raw-command methods after the argv cutover),
-  radon (`tools/contracts.py` C-complexity blocks), promotion-surface and
-  reachability (`tools/reversibility_registry.py`). Grants must land on trunk
-  first; candidate-ledger edits in this lane cannot authorize them.
