@@ -4,12 +4,14 @@ in-memory sqlite3 DB (via aiosqlite)."""
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import replace
 
 import aiosqlite
 import pytest
 
 from maistro.persistence.sqlite_audit import SqliteAuditLog
 from maistro.security._types import AuditEntry as SentinelAuditEntry
+from maistro.security._types import Violation as SentinelViolation
 from maistro.types.security import AuditEntry
 
 
@@ -57,6 +59,39 @@ async def test_sentinel_entry_is_signed_and_durable(log: SqliteAuditLog) -> None
     [entry] = await log.get_entries(user_id="u1")
     assert entry.signature
     assert log.verify(entry)
+
+
+@pytest.mark.asyncio
+async def test_deny_with_violations_verifies_after_durable_roundtrip(
+    log: SqliteAuditLog,
+) -> None:
+    """Deny decisions are the records tamper evidence exists for.
+
+    The durable stores never serialize the violations tuple, so the proof must
+    verify against the persisted columns alone — a signature computed over
+    in-memory-only fields would leave every deny unverifiable after restart.
+    """
+    await log.log(
+        SentinelAuditEntry(
+            boundary="tool_call",
+            user_id="u1",
+            tool_name="bash",
+            verdict="denied",
+            violations=(
+                SentinelViolation(
+                    boundary="tool_call", rule="dangerous-command", severity="high", detail="d"
+                ),
+            ),
+        )
+    )
+
+    [entry] = await log.get_entries(user_id="u1")
+    assert entry.verdict == "denied"
+    assert entry.signature
+    assert log.verify(entry)
+
+    forged = replace(entry, detail="forged after retention")
+    assert not log.verify(forged)
 
 
 @pytest.mark.asyncio

@@ -23,7 +23,13 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 _SIGNING_KEY_ENV = "MAISTRO_AUDIT_SIGNING_KEY"
 _PROOF_TYPE = "Ed25519Signature2020"
 _SIGNATURE_FIELDS = frozenset({"signature", "signing_key_id", "proof_type"})
-_CANONICAL_METADATA_FIELDS = frozenset({"timestamp"})
+# Fields outside the persisted decision record. The durable stores serialize
+# neither the write-side timestamp nor the violations tuple (see the contract
+# note on ``maistro.types.security.AuditEntry``), so signing them would attach
+# a proof the stored row cannot reproduce — deny decisions, the records that
+# most need tamper evidence, would never verify after a round-trip. The proof
+# covers exactly the bytes a store retains.
+_CANONICAL_METADATA_FIELDS = frozenset({"timestamp", "violations"})
 
 
 class AuditSignatureError(ValueError):

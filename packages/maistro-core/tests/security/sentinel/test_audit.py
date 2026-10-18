@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+
 import pytest
 
 from maistro.security._types import AuditEntry
 from maistro.security.sentinel.audit import InMemoryAuditLog
-from maistro.security.sentinel.signing import AuditSigner
+from maistro.security.sentinel.signing import AuditSignatureError, AuditSigner
 
 
 class TestInMemoryAuditLog:
@@ -88,3 +90,54 @@ class TestInMemoryAuditLog:
 
         assert first.verify(stored)
         assert not second.verify(stored)
+
+
+class TestAuditSignerFromEnvironment:
+    """MAISTRO_AUDIT_SIGNING_KEY is the deployment contract for verifying
+    durable proofs after a restart; the seed parser must accept every
+    documented spelling and reject everything else loudly."""
+
+    def test_missing_key_generates_an_ephemeral_signer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("MAISTRO_AUDIT_SIGNING_KEY", raising=False)
+        signer = AuditSigner.from_environment()
+
+        assert signer.ephemeral is True
+
+    def test_base64url_seed_is_accepted_and_reproduces_the_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seed = b"s" * 32
+        monkeypatch.setenv(
+            "MAISTRO_AUDIT_SIGNING_KEY", base64.urlsafe_b64encode(seed).decode("ascii")
+        )
+
+        signer = AuditSigner.from_environment()
+
+        assert signer.ephemeral is False
+        assert signer.key_id == AuditSigner(seed).key_id
+        assert signer.public_key == AuditSigner(seed).public_key
+
+    def test_hex_seed_is_accepted_and_reproduces_the_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seed = bytes(range(32))
+        monkeypatch.setenv("MAISTRO_AUDIT_SIGNING_KEY", seed.hex())
+
+        signer = AuditSigner.from_environment()
+
+        assert signer.ephemeral is False
+        assert signer.key_id == AuditSigner(seed).key_id
+
+    def test_malformed_seed_is_rejected_loudly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MAISTRO_AUDIT_SIGNING_KEY", "not-a-key!!")
+
+        with pytest.raises(AuditSignatureError):
+            AuditSigner.from_environment()
+
+    def test_wrong_length_seed_is_rejected_loudly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MAISTRO_AUDIT_SIGNING_KEY", "00" * 31)
+
+        with pytest.raises(AuditSignatureError):
+            AuditSigner.from_environment()

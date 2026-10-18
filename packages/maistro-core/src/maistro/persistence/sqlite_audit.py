@@ -38,6 +38,11 @@ _ALLOWED_FILTER_COLUMNS: frozenset[str] = frozenset(
 )
 
 
+def _proof_from_row(row: Any) -> tuple[str, str, str]:
+    """Normalize the ADR-073 proof columns persisted alongside a decision."""
+    return (row[10] or "", row[11] or "", row[12] or "")
+
+
 class SqliteAuditLog:
     """SQLite-backed immutable audit log implementing the same protocol as PgAuditLog."""
 
@@ -122,26 +127,27 @@ class SqliteAuditLog:
         cursor = await self._conn.execute(query, params)
         rows = await cursor.fetchall()
 
-        from datetime import datetime
-
-        return [
-            AuditEntry(
-                timestamp=datetime.fromisoformat(r[0]),
-                boundary=r[1] or "",
-                user_id=r[2] or "",
-                team_id=r[3] or "",
-                agent_id=r[4] or "",
-                tool_name=r[5],
-                verdict=r[6] or "allowed",
-                detail=r[7] or "",
-                trace_id=r[8] or "",
-                request_id=r[9] or "",
-                signature=r[10] or "",
-                signing_key_id=r[11] or "",
-                proof_type=r[12] or "",
+        entries: list[AuditEntry] = []
+        for r in rows:
+            signature, signing_key_id, proof_type = _proof_from_row(r)
+            entries.append(
+                AuditEntry(
+                    timestamp=datetime.fromisoformat(r[0]),
+                    boundary=r[1] or "",
+                    user_id=r[2] or "",
+                    team_id=r[3] or "",
+                    agent_id=r[4] or "",
+                    tool_name=r[5],
+                    verdict=r[6] or "allowed",
+                    detail=r[7] or "",
+                    trace_id=r[8] or "",
+                    request_id=r[9] or "",
+                    signature=signature,
+                    signing_key_id=signing_key_id,
+                    proof_type=proof_type,
+                )
             )
-            for r in rows
-        ]
+        return entries
 
     def verify(self, entry: AuditEntry) -> bool:
         """Verify a row returned by this store against its configured key."""
