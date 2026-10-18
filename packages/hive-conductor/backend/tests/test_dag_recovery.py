@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from services.dag_execution_scope import DagExecutionScope
 
 from maistro.events.envelope import InMemoryEventStore
 from maistro.graph.definitions import Graph
@@ -101,6 +102,7 @@ async def test_recovery_owns_only_hive_legacy_admissions(monkeypatch: pytest.Mon
     assert captured["run_store"] is run_store
     assert captured["limit"] == 7
     assert isinstance(captured["events"], CanonicalRecoveryEventSink)
+    assert captured["admission_source"] == "hive_legacy_dag"
 
     owned, _ = _queued_run(source="hive_legacy_dag")
     foreign, _ = _queued_run(source="some_other_consumer")
@@ -150,7 +152,11 @@ async def test_admitted_run_persists_execution_mode_needed_after_restart(
     monkeypatch.setattr(runner, "get_run_store", lambda: object())
     monkeypatch.setattr(runner, "run_durable_graph", _run_durable_graph)
 
-    result = await runner.execute_dag(_legacy_dag(), execution_mode="interactive")
+    result = await runner.execute_dag(
+        _legacy_dag(),
+        execution_mode="interactive",
+        scope=DagExecutionScope(workspace_id="ws-1", project_id="project-1", user_id="user-1"),
+    )
 
     assert result["status"] == "waiting"
     assert seen["create"]["provenance"]["execution_mode"] == "interactive"

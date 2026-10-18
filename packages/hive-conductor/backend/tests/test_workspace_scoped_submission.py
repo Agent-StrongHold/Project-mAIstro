@@ -31,6 +31,10 @@ def _clear_state():
 
 class _FakeTaskRecord:
     id = "task-1"
+    # The canonical execution identity the underlying TaskRecord exposes
+    # (#41): a mission response that drops it is the regression this suite
+    # guards against.
+    run_id = "run-canonical-1"
     name = "n"
     description = "d"
     mission_status = "pending"
@@ -115,6 +119,80 @@ def test_an_unscoped_submission_names_the_default_explicitly(admin_client, monke
     # lets the engine's default answer it, rather than omitting the argument
     # and leaving the answer to whatever the call chain happens to default to.
     assert engine.calls[0]["workspace_id"] is None
+
+
+def test_the_mission_response_exposes_its_canonical_run_id(admin_client, monkeypatch) -> None:
+    """#41: admission yields a canonical run_id, and the /v1/tasks receipt
+    must carry it back — the UI's run links and the operator's run queries
+    both key off this field, so dropping it severs the mission-to-Run spine."""
+    import routes.missions as missions_routes
+
+    engine = _CapturingEngine()
+    monkeypatch.setattr(missions_routes, "get_engine", lambda: engine)
+
+    r = admin_client.post("/v1/tasks", json={"name": "Ship it"})
+
+    assert r.status_code == 200
+    assert r.json()["run_id"] == "run-canonical-1"
+
+
+def test_mission_creation_is_audited_to_the_authenticated_principal(
+    admin_client, monkeypatch
+) -> None:
+    """#41 provenance: the audit trail names the human who submitted the
+    work, not a literal "system" — workspace scoping and later forensic
+    queries both depend on the actor being the authenticated principal."""
+    import routes.missions as missions_routes
+    import stores
+
+    engine = _CapturingEngine()
+    monkeypatch.setattr(missions_routes, "get_engine", lambda: engine)
+    before = set(stores.audit_log.keys())
+
+    r = admin_client.post("/v1/tasks", json={"name": "Ship it"})
+
+    assert r.status_code == 200
+    new_keys = stores.audit_log.keys() - before
+    creates = [
+        stores.audit_log[k] for k in new_keys if stores.audit_log[k]["action"] == "mission_create"
+    ]
+    assert len(creates) == 1
+    assert creates[0]["actor"] == "admin"
+    assert creates[0]["target"] == "task-1"
+
+
+def test_mission_creation_on_the_in_memory_fallback_is_audited_to_the_principal(
+    admin_client, monkeypatch
+) -> None:
+    """#41 provenance holds on the engine-less fallback path too: when no
+    engine is configured the route still mints a mission into the in-memory
+    stores, and that receipt's audit entry must name the authenticated
+    principal — falling back to a literal "system" actor here would leave the
+    unconfigured tier's missions unattributable, exactly what the engine-path
+    test above forbids."""
+    import routes.missions as missions_routes
+    import stores
+
+    class _UnconfiguredEngine:
+        is_configured = False
+        _backend = None
+
+    monkeypatch.setattr(missions_routes, "get_engine", lambda: _UnconfiguredEngine())
+    before = set(stores.audit_log.keys())
+
+    r = admin_client.post("/v1/tasks", json={"name": "Ship it"})
+
+    assert r.status_code == 200
+    mission = r.json()
+    assert mission["id"]
+    assert mission["status"] == "pending"
+    new_keys = stores.audit_log.keys() - before
+    creates = [
+        stores.audit_log[k] for k in new_keys if stores.audit_log[k]["action"] == "mission_create"
+    ]
+    assert len(creates) == 1
+    assert creates[0]["actor"] == "admin"
+    assert creates[0]["target"] == mission["id"]
 
 
 # --- work items (POST /v1/work-items/{id}/confirm) ------------------------
@@ -215,12 +293,91 @@ async def test_the_http_backend_still_accepts_an_unscoped_submission(monkeypatch
             return _Response()
 
     monkeypatch.setattr(backend_mod, "shared_client", lambda **kw: _Client())
-    backend = backend_mod.MaistroServerTaskBackend(base_url="http://tasks.invalid", api_key=None)
+    backend = backend_mod.MaistroServerTaskBackend(
+        base_url="http://tasks.invalid", api_key=None, delegation_key="test-delegation"
+    )
 
     rec = await backend.submit(TaskCreate(description="d"), user_id="u")
 
     assert rec.id == "t-1"
     assert posted["url"].endswith("/tasks")
+
+
+# --- request correlation (#1063) -------------------------------------------
+
+
+class _FakeResponse:
+    status_code = 202
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return {
+            "task": {
+                "task_id": "t-1",
+                "status": "queued",
+                "description": "d",
+                "workspace": "/tmp/maistro-workspace",  # nosec B108
+                "tier": 2,
+                "created_at": "2026-01-01T00:00:00Z",
+            }
+        }
+
+
+class _CapturingClient:
+    def __init__(self, sink: dict[str, Any]) -> None:
+        self._sink = sink
+
+    async def __aenter__(self) -> _CapturingClient:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def post(self, url: str, **kwargs: Any) -> _FakeResponse:
+        self._sink["headers"] = kwargs.get("headers", {})
+        return _FakeResponse()
+
+
+async def test_the_http_backend_forwards_the_bound_request_id(monkeypatch) -> None:
+    """Correlation metadata only, never authorization/scope (#1063): the id
+    RequestIDMiddleware already bound reaches maistro-server's own
+    RequestIDMiddleware unsigned, the same way it reaches this process's logs."""
+    import adapters.task_backend as backend_mod
+
+    from maistro.observability.correlation import bind_execution_context
+    from maistro.tasks.models import TaskCreate
+
+    sink: dict[str, Any] = {}
+    monkeypatch.setattr(backend_mod, "shared_client", lambda **kw: _CapturingClient(sink))
+    backend = backend_mod.MaistroServerTaskBackend(
+        base_url="http://tasks.invalid", api_key=None, delegation_key="test-delegation"
+    )
+
+    with bind_execution_context(request_id="req-abc123"):
+        await backend.submit(TaskCreate(description="d"), user_id="u")
+
+    assert sink["headers"]["X-Request-ID"] == "req-abc123"
+
+
+async def test_the_http_backend_omits_the_header_with_no_request_in_scope(monkeypatch) -> None:
+    """No fabricated id: a caller outside any bound execution (a background
+    job that has not minted its own correlation root) sends nothing rather
+    than inventing a value maistro-server would treat as a real client id."""
+    import adapters.task_backend as backend_mod
+
+    from maistro.tasks.models import TaskCreate
+
+    sink: dict[str, Any] = {}
+    monkeypatch.setattr(backend_mod, "shared_client", lambda **kw: _CapturingClient(sink))
+    backend = backend_mod.MaistroServerTaskBackend(
+        base_url="http://tasks.invalid", api_key=None, delegation_key="test-delegation"
+    )
+
+    await backend.submit(TaskCreate(description="d"), user_id="u")
+
+    assert "X-Request-ID" not in sink["headers"]
 
 
 # --- review findings ------------------------------------------------------
@@ -258,3 +415,64 @@ def test_confirm_refuses_a_non_member_before_the_pm_gate(
     r = authed_client.post(f"/v1/work-items/does-not-matter/confirm?workspace_id={ws_id}")
 
     assert r.status_code == 403
+
+
+async def test_the_http_backend_refuses_user_scoped_calls_without_a_delegation_key(
+    monkeypatch,
+) -> None:
+    """Originating-principal propagation is not optional (#1057).
+
+    A backend that cannot sign the delegation envelope must refuse loudly
+    rather than quietly sending the request as the bare service credential —
+    that is the collapse-of-users failure this issue removes.
+    """
+    import adapters.task_backend as backend_mod
+
+    monkeypatch.delenv("MAISTRO_DELEGATION_KEY", raising=False)
+    backend = backend_mod.MaistroServerTaskBackend(
+        base_url="http://tasks.invalid", api_key="k", delegation_key=None
+    )
+
+    with pytest.raises(backend_mod.DelegationNotConfigured):
+        backend._headers(user_id="alice")
+    with pytest.raises(backend_mod.DelegationNotConfigured):
+        backend._headers(user_id=backend_mod.SYSTEM_PRINCIPAL)
+
+
+def test_the_http_backend_refuses_an_empty_service_principal(monkeypatch) -> None:
+    """The service claim is half of every delegation; it cannot be blank."""
+    import adapters.task_backend as backend_mod
+
+    monkeypatch.setattr(backend_mod, "MAISTRO_SERVICE_PRINCIPAL", "conductor", raising=False)
+    monkeypatch.setenv("MAISTRO_SERVICE_PRINCIPAL", "   ")
+
+    with pytest.raises(ValueError, match="MAISTRO_SERVICE_PRINCIPAL"):
+        backend_mod.MaistroServerTaskBackend(
+            base_url="http://tasks.invalid", api_key="k", service_principal="  "
+        )
+
+
+async def test_the_local_backend_refuses_a_cancel_of_someone_elses_task() -> None:
+    """The local backend scopes cancel exactly like the HTTP one does."""
+    from adapters.task_backend import LocalTaskBackend
+
+    from maistro.tasks.models import TaskCreate
+
+    backend = LocalTaskBackend(executor=lambda task: None)
+    record = await backend.submit(TaskCreate(description="d"), user_id="alice")
+
+    assert await backend.cancel(record.id, user_id="bob") is False
+    assert await backend.cancel(record.id, user_id="alice") is True
+
+
+async def test_the_local_backend_yields_no_events_for_a_foreign_task() -> None:
+    from adapters.task_backend import LocalTaskBackend
+
+    from maistro.tasks.models import TaskCreate
+
+    backend = LocalTaskBackend(executor=lambda task: None)
+    await backend.submit(TaskCreate(description="d"), user_id="alice")
+
+    events = [event async for event in backend.iter_events("missing-task", user_id="alice")]
+
+    assert events == []

@@ -23,6 +23,7 @@ import contextlib
 import logging
 from collections.abc import Callable
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -37,9 +38,18 @@ from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
 from maistro.runs.store import StaleExecutionFence
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 MESSAGES = [{"role": "user", "content": "hi"}]
+_CHAT_AUTH = SimpleNamespace(user_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+
+
+async def _route_request(
+    container: Container, messages: list[dict[str, Any]], **kwargs: Any
+) -> dict[str, Any]:
+    kwargs.setdefault("auth", _CHAT_AUTH)
+    return await container.route_request(messages, **kwargs)
 
 
 class _Conduit:
@@ -76,7 +86,9 @@ async def _container() -> Container:
 
 async def _open_run(container: Container) -> Any:
     """A chat Run admitted to RUNNING, as admission leaves it before dispatch."""
-    run = await container.chat_admitter.admit(MESSAGES)
+    run = await container.chat_admitter.admit(
+        MESSAGES, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
     return await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
 
@@ -146,7 +158,7 @@ class TestChatAttemptsAreLeased:
         container = await _container()
         container.conduit = _Conduit()
 
-        result = await container.route_request(MESSAGES)
+        result = await _route_request(container, MESSAGES)
 
         _, attempts = await _spine(container, result["run_id"])
         lease = attempts[0].execution_lease
@@ -168,7 +180,7 @@ class TestChatAttemptsAreLeased:
         container = await _container()
         container.conduit = _Conduit()
 
-        result = await container.route_request(MESSAGES)
+        result = await _route_request(container, MESSAGES)
 
         _, attempts = await _spine(container, result["run_id"])
         lease = attempts[0].execution_lease
@@ -444,7 +456,7 @@ class TestATerminalWriteFailureIsNotSwallowed:
             caplog.at_level(logging.WARNING, logger="maistro.container"),
             pytest.raises(RuntimeError, match="upstream exploded"),
         ):
-            await container.route_request(MESSAGES)
+            await _route_request(container, MESSAGES)
 
         assert "could not be terminalized" in caplog.text
         runs = list(container.run_store._runs.values())  # type: ignore[attr-defined]
@@ -477,9 +489,10 @@ class TestATerminalWriteFailureIsNotSwallowed:
 
         The turn answers; the Attempt completes and is accepted; then the store
         fails both Run writes that would have said so. The caller gets the
-        store error — never a success that did not happen — and what remains on
-        disk is the canonical evidence itself: a COMPLETED, accepted Attempt
-        under a RUNNING Run. The canonical reconciliation authority (the same
+        answer the model already produced, once (#1108) — the store error is
+        not a reason to discard it or to ask again — and what remains on disk
+        is the canonical evidence itself: a COMPLETED, accepted Attempt under a
+        RUNNING Run that claims no outcome. The canonical reconciliation authority (the same
         `AttemptLifecycleReconciler` the recovery sweep drives) re-derives the
         Run from those facts alone, from a freshly constructed instance —
         a restarted process reading nothing but durable state. No chat-private
@@ -489,13 +502,13 @@ class TestATerminalWriteFailureIsNotSwallowed:
         container.run_store = _MultiVetoStore(  # type: ignore[assignment]
             container.run_store, (RunStatus.COMPLETED, RunStatus.FAILED)
         )
-        container.conduit = _Conduit(content="the answer")
+        container.conduit = conduit = _Conduit(content="the answer")
 
-        with pytest.raises(RuntimeError, match="store hiccup"):
-            await container.route_request(MESSAGES)
+        result = await _route_request(container, MESSAGES)
 
-        runs = list(container.run_store._runs.values())  # type: ignore[attr-defined]
-        run_id = runs[0].run_id
+        assert result["choices"][0]["message"]["content"] == "the answer"
+        assert conduit.calls == 1
+        run_id = result["run_id"]
         node_run, attempts = await _spine(container, run_id)
 
         # Physical work is durable and authoritative: the Attempt completed with

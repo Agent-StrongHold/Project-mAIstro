@@ -23,16 +23,23 @@ unconfigured start is an error rather than a guess at `localhost` (#432).
 ```bash
 cp .env.example .env          # then set POSTGRES_PASSWORD to any value you choose
 docker compose up -d postgres # starts PostgreSQL with that password on host port 5441
-alembic upgrade head          # migrations read the same setting the app does
 npm ci && npm run dev         # Express + Vite on 5173
+```
+
+Schema comes from the authoritative root migration chain (#851, SPEC-230) —
+this directory ships no Alembic environment of its own. From the repository
+root, point the chain at this database once:
+
+```bash
+DATABASE_URL=postgresql+asyncpg://maistro:<password>@127.0.0.1:5441/canvas uv run alembic upgrade head
 ```
 
 `POSTGRES_PASSWORD` is the only thing to set. `server/config.py` composes the
 connection URL from it together with the user, database and port that
 `docker-compose.yml` fixes, so there is one source for "which database" rather
 than one per file. Before this there were two, and they had drifted: the
-application and `alembic.ini` each carried a copy authenticating as `mcp:mcp`,
-which no longer matched what Compose started.
+application and a since-retired `alembic.ini` each carried a copy
+authenticating as `mcp:mcp`, which no longer matched what Compose started.
 
 To reach a database somewhere else, set `DATABASE_URL` to a full
 `postgresql+asyncpg://` URL instead; it takes precedence and

@@ -25,8 +25,10 @@ from __future__ import annotations
 import asyncio
 import os
 
+import aiosqlite
 import pytest
 
+from maistro.events.consumer_cursor import InMemoryConsumerCursorStore, SqliteConsumerCursorStore
 from maistro.events.durable_log import InMemoryEventLog, SqliteEventLog
 from maistro.events.invocations import (
     HandlerInvocation,
@@ -65,8 +67,6 @@ def _require_postgres() -> str:
 
 
 async def _sqlite_conn():
-    import aiosqlite
-
     return await aiosqlite.connect(":memory:")
 
 
@@ -86,43 +86,144 @@ async def _pg_pool():
     return pool
 
 
+@pytest.fixture(autouse=True)
+def _fail_on_leaked_aiosqlite_connections(monkeypatch):
+    """Regression guard for #1077: every `aiosqlite` connection opened by this
+    module's fixtures must be closed by that fixture's own teardown, while the
+    test's event loop is still alive.
+
+    This fixture is set up before the store fixtures (autouse) and therefore
+    torn down after them, so any connection still open here was leaked by its
+    fixture — exactly the failure mode that used to surface much later as GC
+    ResourceWarnings and `Event loop is closed` callbacks in CI teardown,
+    attributed to whichever unrelated test happened to trigger the collection.
+
+    Ownership order is explicit: the sqlite-backed fixture that opens the
+    connection closes it; this guard only *observes*, after all of them have
+    finalized.
+
+    Closed-state is probed through aiosqlite internals because `Connection`
+    has no public accessor:
+      - `_connection is not None` → the sqlite handle is still held (open)
+      - `_running` with a released handle → the background thread was started
+        but the connection never awaited to open nor closed (leaked at birth)
+    A cleanly closed connection has `_connection is None` and `_running` False.
+    """
+
+    created: list[aiosqlite.Connection] = []
+    real_connect = aiosqlite.connect
+
+    def tracking_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        created.append(conn)
+        return conn
+
+    monkeypatch.setattr(aiosqlite, "connect", tracking_connect)
+    yield
+    leaked = [conn for conn in created if conn._connection is not None or conn._running]
+    assert not leaked, (
+        f"{len(leaked)} of {len(created)} aiosqlite connection(s) outlived their "
+        "fixture teardown (#1077); close the connection where it is owned — the "
+        "fixture — not via GC finalizers"
+    )
+
+
+# Fixture ownership (#1077): the sqlite legs of these fixtures open a real
+# `aiosqlite` connection and the postgres legs open a real asyncpg pool, so
+# each fixture that opens a resource closes it in its own teardown — an async
+# generator with `try/finally`, not a bare `return`. Returning a live store
+# used to leak one connection per parametrized instantiation; the connection's
+# background thread kept running into the loop's close and surfaced much later
+# as `Event loop is closed` teardown noise on CI. The autouse guard below
+# turns any regression back into a deterministic failure at the fixture's own
+# boundary.
 @pytest.fixture(params=BACKENDS)
 async def event_log(request):
     if request.param == "memory":
-        return InMemoryEventLog()
-    if request.param == "sqlite":
-        store = SqliteEventLog(await _sqlite_conn())
-        await store.ensure_schema()
-        return store
-    from maistro.events.pg_stores import PgEventLog
+        yield InMemoryEventLog()
+    elif request.param == "sqlite":
+        conn = await _sqlite_conn()
+        try:
+            store = SqliteEventLog(conn)
+            await store.ensure_schema()
+            yield store
+        finally:
+            await conn.close()
+    else:
+        from maistro.events.pg_stores import PgEventLog
 
-    return PgEventLog(await _pg_pool())
+        pool = await _pg_pool()
+        try:
+            yield PgEventLog(pool)
+        finally:
+            await pool.close()
 
 
 @pytest.fixture(params=BACKENDS)
 async def trigger_store(request):
     if request.param == "memory":
-        return InMemoryTriggerStore()
-    if request.param == "sqlite":
-        store = SqliteTriggerStore(await _sqlite_conn())
-        await store.ensure_schema()
-        return store
-    from maistro.events.pg_stores import PgTriggerStore
+        yield InMemoryTriggerStore()
+    elif request.param == "sqlite":
+        conn = await _sqlite_conn()
+        try:
+            store = SqliteTriggerStore(conn)
+            await store.ensure_schema()
+            yield store
+        finally:
+            await conn.close()
+    else:
+        from maistro.events.pg_stores import PgTriggerStore
 
-    return PgTriggerStore(await _pg_pool())
+        pool = await _pg_pool()
+        try:
+            yield PgTriggerStore(pool)
+        finally:
+            await pool.close()
 
 
 @pytest.fixture(params=BACKENDS)
 async def invocations(request):
     if request.param == "memory":
-        return InMemoryInvocationStore()
-    if request.param == "sqlite":
-        store = SqliteInvocationStore(await _sqlite_conn())
-        await store.ensure_schema()
-        return store
-    from maistro.events.pg_stores import PgInvocationStore
+        yield InMemoryInvocationStore()
+    elif request.param == "sqlite":
+        conn = await _sqlite_conn()
+        try:
+            store = SqliteInvocationStore(conn)
+            await store.ensure_schema()
+            yield store
+        finally:
+            await conn.close()
+    else:
+        from maistro.events.pg_stores import PgInvocationStore
 
-    return PgInvocationStore(await _pg_pool())
+        pool = await _pg_pool()
+        try:
+            yield PgInvocationStore(pool)
+        finally:
+            await pool.close()
+
+
+@pytest.fixture(params=BACKENDS)
+async def cursor_store(request):
+    if request.param == "memory":
+        yield InMemoryConsumerCursorStore()
+    elif request.param == "sqlite":
+        conn = await _sqlite_conn()
+        try:
+            store = SqliteConsumerCursorStore(conn)
+            await store.ensure_schema()
+            yield store
+        finally:
+            await conn.close()
+    else:
+        from maistro.events.pg_stores import PgConsumerCursorStore
+
+        pool = await _pg_pool()
+        try:
+            await pool.execute("TRUNCATE consumer_cursors")
+            yield PgConsumerCursorStore(pool)
+        finally:
+            await pool.close()
 
 
 class TestEventLog:
@@ -459,3 +560,95 @@ class TestIdempotencyUnderConcurrency:
         again = await invocations.get_or_create("t1", 1)
         assert again.status is InvocationStatus.SUCCESS
         assert len(await invocations.list_for_event(1)) == 1
+
+
+class TestConsumerCursorStore:
+    """The legacy-bridge replay cursor (#1163): a durable position plus a
+    claim lease, so a restart resumes near the last settled point and two
+    replicas ticking the bridge at once do not both redo the same range.
+
+    This is a resume *optimisation* on top of `InvocationStore`'s idempotency
+    guarantee (ADR-082426-82c7: "the occurrence is the claim, not the
+    cursor"), not a replacement for it — these tests are about the cursor
+    store's own contract in isolation.
+    """
+
+    async def test_a_fresh_consumer_starts_at_position_zero(self, cursor_store):
+        lease = await cursor_store.claim("c1", holder="h1")
+        assert lease is not None
+        assert lease.position == 0
+
+    async def test_advance_persists_the_position_for_the_next_claim(self, cursor_store):
+        lease = await cursor_store.claim("c1", holder="h1")
+        assert await cursor_store.advance("c1", fencing_token=lease.fencing_token, position=42)
+
+        again = await cursor_store.claim("c1", holder="h1")
+        assert again is not None
+        assert again.position == 42
+
+    async def test_a_second_holder_is_refused_while_the_lease_is_live(self, cursor_store):
+        first = await cursor_store.claim("c1", holder="h1")
+        assert first is not None
+        assert await cursor_store.claim("c1", holder="h2") is None
+
+    async def test_the_same_holder_can_renew_before_expiry(self, cursor_store):
+        """A replica ticking repeatedly must not lock itself out."""
+        first = await cursor_store.claim("c1", holder="h1")
+        assert first is not None
+        second = await cursor_store.claim("c1", holder="h1")
+        assert second is not None
+        assert second.fencing_token == first.fencing_token
+
+    async def test_an_expired_lease_can_be_taken_over(self, cursor_store):
+        expired = await cursor_store.claim("c1", holder="h1", lease_seconds=-1.0)
+        assert expired is not None
+
+        taken_over = await cursor_store.claim("c1", holder="h2")
+        assert taken_over is not None
+        assert taken_over.fencing_token != expired.fencing_token
+
+    async def test_a_stale_fencing_token_cannot_advance_the_cursor(self, cursor_store):
+        """Once a lease is taken over, the old holder's `advance` must be a
+        no-op rather than clobbering the new holder's position."""
+        stale = await cursor_store.claim("c1", holder="h1", lease_seconds=-1.0)
+        assert stale is not None
+        new_holder = await cursor_store.claim("c1", holder="h2")
+        assert new_holder is not None
+        await cursor_store.advance("c1", fencing_token=new_holder.fencing_token, position=10)
+
+        accepted = await cursor_store.advance("c1", fencing_token=stale.fencing_token, position=999)
+        assert accepted is False
+
+        current = await cursor_store.claim("c1", holder="h2")
+        assert current is not None
+        assert current.position == 10
+
+    async def test_advance_never_moves_the_position_backwards(self, cursor_store):
+        """A monotonic write as a second, independent guard against a stale
+        or reordered advance regressing the cursor (defence in depth beyond
+        the fencing-token check above)."""
+        lease = await cursor_store.claim("c1", holder="h1")
+        assert lease is not None
+        await cursor_store.advance("c1", fencing_token=lease.fencing_token, position=50)
+
+        await cursor_store.advance("c1", fencing_token=lease.fencing_token, position=10)
+
+        again = await cursor_store.claim("c1", holder="h1")
+        assert again is not None
+        assert again.position == 50
+
+    async def test_different_consumers_do_not_share_a_cursor(self, cursor_store):
+        lease_a = await cursor_store.claim("a", holder="h1")
+        assert lease_a is not None
+        await cursor_store.advance("a", fencing_token=lease_a.fencing_token, position=100)
+
+        lease_b = await cursor_store.claim("b", holder="h1")
+        assert lease_b is not None
+        assert lease_b.position == 0
+
+    async def test_only_one_of_many_racing_claims_succeeds(self, cursor_store):
+        claims = await asyncio.gather(
+            *(cursor_store.claim("c1", holder=f"h{i}") for i in range(16))
+        )
+        winners = [c for c in claims if c is not None]
+        assert len(winners) == 1, f"{len(winners)} replicas would have ticked concurrently"

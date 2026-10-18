@@ -3,12 +3,11 @@ id: SPEC-062126-d421
 title: "Medley import sanitization pipeline — scan, salvage-or-block, register, re-scan-on-use"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-06-21
 substrate:
   - maistro-engine#ADR-072
   - maistro-engine#ADR-073
-  - maistro-engine#ADR-083
 implements:
   - maistro-engine#ADR-083
 related:
@@ -18,6 +17,7 @@ related:
   - maistro-engine#ADR-070
   - maistro-engine#ADR-074
   - maistro-engine#ADR-093
+  - maistro-engine#ADR-083
 supersedes: []
 blocks: []
 blocked-by: []
@@ -29,6 +29,11 @@ tests:
 layer: Tools
 owners:
   - '@BlakeMatthews-dev'
+history:
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-062126-d421: Medley import sanitization pipeline
@@ -39,9 +44,12 @@ A user can bring a skill into the engine from many places: the Medley/ClawHub re
 arbitrary **URL**, a **file upload**, or **pasted text**. The supply-chain threat is live and at
 scale — OpenClaw's ClawHavoc campaign put 1,184 malicious skills (~1 in 5 packages at peak) on its
 registry, 341+ shipping the AMOS infostealer (see `docs/security/AGENT-FRAMEWORK-FLAWS-LEDGER.md`
-entry 13). ADR-072 names malicious third-party code as the #1 adversary; ADR-083 says skills must be
-signed, trust-tiered, and sandboxed; SPEC-005 specifies the *publisher VC / signing / revocation*
-trust chain.
+entry 13). ADR-072 names malicious third-party code as the #1 adversary; ADR-083 remains Proposed
+and is retained as design context only — it is not shipped authority for this SPEC; its
+signed/trust-tiered/sandboxed direction is made concrete (and its trust-tier *promotion* policy
+deferred) here; SPEC-005 remains Proposed and is likewise retained as design context only —
+not shipped authority for this SPEC; its *publisher VC / signing / revocation* trust chain is
+design direction, cited here for lineage rather than as active authority.
 
 What is **not** yet specified is the **content-safety pipeline** that every import — signed or not,
 registry or pasted — must pass before it can become a usable tool, and the **per-use re-scan** that

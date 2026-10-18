@@ -9,10 +9,12 @@ connected, and reachable on the container.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from maistro.container import Container, create_container
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 PERSONA_YAML = Path(__file__).parent / "personas" / "fixtures" / "plant_wellness_local_seller.yaml"
@@ -58,11 +60,64 @@ async def test_container_exposes_all_new_subsystems() -> None:
 
 async def test_sqlite_backend_wires_sqlite_durable_event_stores() -> None:
     container = await _container(database_url="sqlite://")
+    assert container.stores_memory_backed is True
+    assert type(container.elevation_store).__name__ == "SqliteElevationStore"
+    assert type(container.usage_log_persistence).__name__ == "SqliteUsageLog"
     assert type(container.durable_event_log).__name__ == "SqliteEventLog"
     assert type(container.trigger_store).__name__ == "SqliteTriggerStore"
     assert type(container.invocation_store).__name__ == "SqliteInvocationStore"
     event = await container.durable_event_log.append("task.created", source="test")
     assert (await container.durable_event_log.get(event.id)) is not None
+    container.usage_log.record("provider:model", input_tokens=7, now=1000.0)
+    await container.flush_usage_log()
+    restored = await container.usage_log_persistence.restore()
+    from maistro.quota.rate_profile import LimitUnit
+
+    assert restored.tokens_since("provider:model", 3600, LimitUnit.INPUT_TOKENS, now=1000.0) == 7
+
+
+async def test_flush_usage_log_is_a_noop_without_persistence() -> None:
+    """`None` persistence is the explicit ephemeral profile (#72).
+
+    Callers own the response boundary and call `flush_usage_log()`
+    unconditionally, so an ephemeral container absorbs the call instead of
+    making every boundary probe `usage_log_persistence` first — the same
+    contract `aclose()` already relies on at shutdown.
+    """
+    container = await _container()
+
+    assert container.usage_log_persistence is None
+    container.usage_log.record("provider:model", input_tokens=3, now=1000.0)
+    await container.flush_usage_log()  # must not raise
+    assert container.usage_log.events_for("provider:model") != ()
+
+
+async def test_context_assembly_uses_the_canonical_scope_store() -> None:
+    container = await _container(database_url="sqlite://")
+
+    assert container.project_store is container.project_scope_store
+    root = await container.project_scope_store.create_root("context-wiring")
+    assert await container.context_assembly_policy.layer0(root.project_id) == ""
+
+
+async def test_aclose_releases_working_memory_projections_but_never_the_log() -> None:
+    """The graphs are process-local caches over the durable log (#301).
+
+    Shutdown releases what the container took — the live projections — and
+    the observation log they were hydrated from stays exactly where it is.
+    """
+    container = await _container(database_url="sqlite://")
+    manager = container.working_log
+    assert manager is not None
+    await manager.observe("ws-shutdown", cycle=1, text="durable across shutdown")
+    await manager.projection("ws-shutdown")
+    assert manager.hot("ws-shutdown") is not None
+    # The entry is in the log, not only in the graph.
+    assert len(await manager.store.list_entries("ws-shutdown")) == 1
+
+    await container.aclose()
+
+    assert manager.hot("ws-shutdown") is None
 
 
 # --- Resilience (ADR-066) ----------------------------------------------------
@@ -127,43 +182,220 @@ async def test_durable_bridge_failure_is_explicit() -> None:
     assert container.event_bus.get_history() == []
 
 
-async def test_durable_replay_cursor_survives_container_restart(tmp_path: Path) -> None:
-    from maistro.events.bus import Event
+def _record_ids_caller(sink: list[int]):
+    async def _caller(trigger: object, event: Any) -> None:
+        sink.append(event.id)
+
+    return _caller
+
+
+async def test_durable_event_cursor_survives_a_restart(tmp_path: Path) -> None:
+    """#1163: a restart used to replay `durable_event_log` from zero every
+    time, because the cursor lived only as a plain `int` on the `Container`.
+    A fresh `Container` sharing the same durable SQLite database must instead
+    resume from the position the first container's tick durably committed.
+    """
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
     from maistro.events.trigger_store import TriggerDefinition
 
-    database_url = f"sqlite:///{tmp_path / 'container-events.db'}"
-    first = await _container(database_url=database_url)
-    first_delivered = []
+    db_url = f"sqlite:///{tmp_path / 'events.db'}"
+    delivered_first: list[int] = []
 
-    async def first_caller(_trigger: object, event: object) -> None:
-        first_delivered.append(event)
-
-    first.handler_caller = first_caller
-    await first.trigger_store.add(
-        TriggerDefinition(trigger_id="restart-trigger", event_pattern="agent.*")
-    )
-    await first.event_bus.emit(Event(event_type="agent.created"))
-    assert await first.process_durable_events() == 1
-    assert len(first_delivered) == 1
-    await first.aclose()
-
-    second = await _container(database_url=database_url)
-    second_delivered = []
-
-    async def second_caller(_trigger: object, event: object) -> None:
-        second_delivered.append(event)
-
-    second.handler_caller = second_caller
+    container1 = await _container(database_url=db_url)
     try:
-        # The acknowledged first event is not replayed after restart.
-        assert await second.process_durable_events() == 1
-        assert second_delivered == []
-
-        await second.event_bus.emit(Event(event_type="agent.created"))
-        assert await second.process_durable_events() == 2
-        assert len(second_delivered) == 1
+        container1.handler_caller = _record_ids_caller(delivered_first)  # type: ignore[assignment]
+        await container1.trigger_store.add(
+            TriggerDefinition(trigger_id="t1", event_pattern="agent.*")
+        )
+        await container1.durable_event_log.append("agent.created")
+        await container1.durable_event_log.append("agent.created")
+        cursor1 = await container1.process_durable_events()
+        assert cursor1 == 2
+        assert delivered_first == [1, 2]
+        # Simulate the old process being gone: its lease is renewed to an
+        # already-expired one rather than left at the normal 300s, standing
+        # in for however long a real restart takes to notice and wait out.
+        await container1.consumer_cursor_store.claim(
+            LEGACY_BRIDGE_CONSUMER_ID,
+            holder=container1._durable_events_holder,
+            lease_seconds=-1.0,
+        )
     finally:
-        await second.aclose()
+        if container1.db_pool is not None:
+            await container1.db_pool.close()
+
+    delivered_second: list[int] = []
+    container2 = await _container(database_url=db_url)
+    try:
+        # "Restart": a fresh Container/process (a different holder id), same
+        # underlying database, no tick performed yet. The durable position
+        # must already read back as 2, not 0 -- proving it is the store, not
+        # an in-process default, that answers the claim.
+        lease = await container2.consumer_cursor_store.claim(
+            LEGACY_BRIDGE_CONSUMER_ID, holder=container2._durable_events_holder
+        )
+        assert lease is not None
+        assert lease.position == 2
+
+        container2.handler_caller = _record_ids_caller(delivered_second)  # type: ignore[assignment]
+        await container2.trigger_store.add(
+            TriggerDefinition(trigger_id="t1", event_pattern="agent.*")
+        )
+        await container2.durable_event_log.append("agent.created")  # id 3
+        cursor2 = await container2.process_durable_events()
+
+        # Only the new event is redelivered -- restart did not replay ids 1-2.
+        assert cursor2 == 3
+        assert delivered_second == [3]
+    finally:
+        if container2.db_pool is not None:
+            await container2.db_pool.close()
+
+
+async def test_a_held_tick_lease_stops_a_second_replica_from_reticking() -> None:
+    """#1163: of several replicas that might tick the bridge at once, only
+    the lease holder should re-scan/redispatch this round -- ticking under a
+    live lease held by someone else must not repeat that work."""
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+
+    container = await _container()
+
+    other_replica_lease = await container.consumer_cursor_store.claim(
+        LEGACY_BRIDGE_CONSUMER_ID, holder="other-replica"
+    )
+    assert other_replica_lease is not None
+
+    cursor = await container.process_durable_events()
+
+    assert cursor == container.durable_event_cursor == 0
+
+
+async def test_a_tick_with_nothing_new_does_not_advance_the_stored_cursor() -> None:
+    """#1163: `process_durable_events` must not write to the cursor store at
+    all when nothing new settled this round (`new_cursor == lease.position`)
+    -- only a real advance is worth a write."""
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+
+    container = await _container()
+
+    cursor = await container.process_durable_events()
+    assert cursor == container.durable_event_cursor == 0
+
+    # A second claim (a different holder, after this container's own lease
+    # would need to have been renewed/expired) proves the store's own
+    # position is still untouched, not just the in-process cache.
+    lease = await container.consumer_cursor_store.claim(
+        LEGACY_BRIDGE_CONSUMER_ID, holder=container._durable_events_holder
+    )
+    assert lease is not None
+    assert lease.position == 0
+
+
+class _HidingLog:
+    """A durable log whose reads skip chosen ids -- PostgreSQL between a
+    `BIGSERIAL` allocation and that append's commit."""
+
+    def __init__(self, inner: Any, hidden: set[int]) -> None:
+        self._inner = inner
+        self.hidden = hidden
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def query(self, **kwargs: Any) -> Any:
+        return [e for e in await self._inner.query(**kwargs) if e.id not in self.hidden]
+
+
+async def _durable_position(container: Container) -> int:
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+
+    lease = await container.consumer_cursor_store.claim(
+        LEGACY_BRIDGE_CONSUMER_ID, holder=container._durable_events_holder
+    )
+    assert lease is not None
+    return lease.position
+
+
+async def test_the_durable_cursor_waits_below_an_id_the_log_has_not_committed() -> None:
+    """#1163 review: PostgreSQL allocates `BIGSERIAL` ids before commit, so id 3
+    can be readable while id 2 is still in an open transaction. Persisting 3
+    would exclude 2 from every later ``id > cursor`` read, restart included.
+    The durable position must stop at 1 until 2 appears, while the work on 3
+    itself is not delayed."""
+    from maistro.events.trigger_store import TriggerDefinition
+
+    container = await _container()
+    delivered: list[int] = []
+    container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
+    await container.trigger_store.add(TriggerDefinition(trigger_id="t1", event_pattern="agent.*"))
+    log = _HidingLog(container.durable_event_log, hidden={2})
+    container.durable_event_log = log  # type: ignore[assignment]
+    for _ in range(3):
+        await log.append("agent.created")
+
+    cursor = await container.process_durable_events()
+
+    assert delivered == [1, 3]
+    assert cursor == container.durable_event_cursor == 1
+    assert await _durable_position(container) == 1
+
+    # The append commits: id 2 becomes readable. The next tick resumes from
+    # below it, delivers it, dedupes 3 (already settled), and only now persists 3.
+    log.hidden.clear()
+    cursor = await container.process_durable_events()
+
+    assert delivered == [1, 3, 2]
+    assert cursor == container.durable_event_cursor == 3
+    assert await _durable_position(container) == 3
+
+
+async def test_a_hole_that_outlives_the_grace_is_an_aborted_append() -> None:
+    """An id that never commits (the append rolled back) must not pin the
+    resume point forever: once the hole has been seen for longer than
+    `durable_event_hole_grace_s`, the position moves past it."""
+    from maistro.events.trigger_store import TriggerDefinition
+
+    container = await _container()
+    delivered: list[int] = []
+    container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
+    await container.trigger_store.add(TriggerDefinition(trigger_id="t1", event_pattern="agent.*"))
+    log = _HidingLog(container.durable_event_log, hidden={2})
+    container.durable_event_log = log  # type: ignore[assignment]
+    for _ in range(3):
+        await log.append("agent.created")
+
+    assert await container.process_durable_events() == 1
+    assert await _durable_position(container) == 1
+
+    # Still within grace on the next tick: the position holds, and 3 is
+    # redelivered idempotently (deduped by the invocation store, so no call).
+    assert await container.process_durable_events() == 1
+    assert delivered == [1, 3]
+
+    # The grace lapses with the hole still open.
+    container.durable_event_hole_grace_s = 0.0
+    cursor = await container.process_durable_events()
+
+    assert cursor == container.durable_event_cursor == 3
+    assert await _durable_position(container) == 3
+    assert delivered == [1, 3]
+
+
+async def test_each_hole_gets_its_own_grace() -> None:
+    """Two open appends: the first lapsing must not let the position jump
+    past a second hole that was only just noticed."""
+    container = await _container()
+    container.durable_event_hole_grace_s = 10.0
+
+    # First tick: only hole 2 is visible below the cursor.
+    assert container._gap_safe_position(3, (2,), now=100.0) == 1
+    # Later tick: 2 is still open (past grace) and a fresh hole at 5 appeared.
+    assert container._gap_safe_position(6, (2, 5), now=111.0) == 4
+    # Later still: 5 also lapses; the position moves to the cursor.
+    assert container._gap_safe_position(6, (2, 5), now=122.0) == 6
+    # A hole that fills is forgotten, so a re-opened id restarts its grace.
+    assert container._gap_safe_position(6, (), now=123.0) == 6
+    assert container._gap_safe_position(6, (2,), now=124.0) == 1
 
 
 # --- LLM providers (SPEC-070226-cb8d) -----------------------------------------
@@ -250,9 +482,52 @@ async def test_issue_and_verify_capability_token_via_container() -> None:
 
     from maistro.identity.lifecycle import TokenRevokedError
 
+    assert container.token_store is not None
     await container.token_store.revoke(token)
     with pytest.raises(TokenRevokedError):
         await container.verify_capability_token(token)
+
+
+class _BlockBipUtils:
+    """Meta-path finder that makes `bip_utils` absent, as on the Python 3.14 Hive image."""
+
+    def find_spec(self, fullname: str, path: object = None, target: object = None) -> None:
+        if fullname.split(".")[0] == "bip_utils":
+            raise ModuleNotFoundError("No module named 'bip_utils'", name="bip_utils")
+        return None
+
+
+async def test_container_starts_without_the_identity_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#37: the Hive image cannot install the extra, and still needs a Container.
+
+    The stores stay unwired, and asking for an identity still raises the
+    ImportError that names the extra instead of failing somewhere quieter.
+    """
+    import sys
+
+    for name in list(sys.modules):
+        if name.split(".")[0] == "bip_utils" or name.startswith("maistro.identity"):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setattr(sys, "meta_path", [_BlockBipUtils(), *sys.meta_path])
+
+    container = await _container()
+
+    assert container.identity_store is None
+    assert container.token_store is None
+    assert container.secret_store is None
+    assert container.workspace_store is not None
+    with pytest.raises(ImportError, match=r"maistro-core\[identity\]"):
+        await container.create_agent_identity("agent-a")
+
+
+async def test_identity_calls_on_a_container_without_stores_fail_loudly() -> None:
+    container = await _container()
+    container.token_store = None
+
+    with pytest.raises(RuntimeError, match="identity lifecycle stores are not wired"):
+        await container.issue_capability_token("agent-a", "agent-b", "read")
 
 
 # --- A2A broker (ADR-058): retired from the Container (#225) -------------------
@@ -441,8 +716,18 @@ def test_build_node_resolver_resolves_spawn_harness_with_injected_adapters() -> 
     from maistro.container import build_node_resolver
     from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
 
-    fake_adapter = object()
-    resolver = build_node_resolver(harness_adapters={"rsi_cycle": fake_adapter})  # type: ignore[arg-type]
+    # The node shape-validates its adapter map at construction (#1613), so the
+    # identity sentinel must satisfy the HarnessAdapter protocol — unchanged
+    # by the wrapping, which is exactly what the equality asserts.
+    class _StubHarnessAdapter:
+        async def dispatch(self, request: object) -> object: ...
+
+        async def poll(self, handle: object) -> object: ...
+
+        async def cancel(self, handle: object) -> None: ...
+
+    fake_adapter = _StubHarnessAdapter()
+    resolver = build_node_resolver(harness_adapters={"rsi_cycle": fake_adapter})
 
     dag = {"nodes": [{"id": "n1", "kind": "agent.spawn_harness"}]}
     node = resolver("n1", dag)
@@ -598,7 +883,7 @@ async def test_the_container_sweeps_abandoned_attempts() -> None:
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")
@@ -646,7 +931,7 @@ async def test_the_sweep_parks_the_reclaimed_attempts_logical_records() -> None:
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")
@@ -708,7 +993,7 @@ async def test_the_sweep_survives_an_attempt_it_cannot_reconcile(
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")
