@@ -30,13 +30,13 @@ from models.schemas import (
     MCPServer,
     MCPTool,
     MemoryEntry,
-    MemoryNamespace,
     Mission,
     MissionStep,
     Schedule,
     Skill,
 )
 from models.workspace import Workspace
+from services.audit_query import IndexedAuditStore
 from services.model_store import JsonStore, ModelStore
 
 logger = logging.getLogger(__name__)
@@ -69,7 +69,8 @@ def _mission(
         progress=progress,
         steps_total=4,
         steps_completed=2,
-        assigned_agents=["agent-1"],
+        # Not a Run, so no agent. Naming "agent-1" made mission detail look assigned.
+        assigned_agents=[],
         tags=["demo"],
         metadata={},
     )
@@ -84,9 +85,6 @@ mcp_servers: ModelStore = ModelStore("mcp_servers", MCPServer)
 mcp_tools: ModelStore = ModelStore("mcp_tools", MCPTool)
 containers: ModelStore = ModelStore("containers", Container)
 memory_entries: ModelStore = ModelStore("memory_entries", MemoryEntry)
-memory_namespaces: dict[str, MemoryNamespace] = {
-    "default": MemoryNamespace(name="default", entry_count=1, size_bytes=1024)
-}
 # Persona/Workspace system — a user's live instantiations of adopted personas.
 workspaces: ModelStore = ModelStore("workspaces", Workspace)
 # Phase I: thumbs +/- + comment feedback, persisted per-persona (see
@@ -114,7 +112,7 @@ brief_interviews: JsonStore = JsonStore("brief_interviews")
 work_item_drafts: JsonStore = JsonStore("work_item_drafts")
 dags: JsonStore = JsonStore("dags")
 messages: JsonStore = JsonStore("messages")
-audit_log: JsonStore = JsonStore("audit_log")
+audit_log: JsonStore = IndexedAuditStore("audit_log")
 # Phase 5 Signal #3 — eval-judge verdicts keyed by run_id.
 eval_verdicts: JsonStore = JsonStore("eval_verdicts")
 # Phase 6 — optimizer proposals keyed by proposal_id.
@@ -218,7 +216,11 @@ def purge_all_sessions() -> int:
 
 
 def initialize_stores() -> None:
-    """Load persisted data, then seed if empty."""
+    """Migrate before serving requests, load persisted data, then seed if empty."""
+    if _persisted is not None:
+        from services.audit_query import ensure_audit_index
+
+        ensure_audit_index(_persisted)
     for store in _all_model_stores:
         store.initialize()
     for store in _all_json_stores:
@@ -286,7 +288,7 @@ def _seed_mission_steps() -> None:
                 description="Check env",
                 status="completed",
                 order=0,
-                agent_id="agent-1",
+                agent_id=None,
                 started_at=t,
                 completed_at=t,
                 output="ok",
@@ -299,7 +301,7 @@ def _seed_mission_steps() -> None:
                 description="Apply change",
                 status="running",
                 order=1,
-                agent_id="agent-1",
+                agent_id=None,
                 started_at=t,
                 completed_at=None,
                 output=None,
@@ -488,7 +490,10 @@ def _seed_mcp_servers() -> None:
             id="mcp-1",
             name="Filesystem",
             description="Local workspace tools",
-            url="http://127.0.0.1:9999/mcp",
+            # Loopback is the truthful origin for a fabricated "Local workspace
+            # tools" row; the health check that may dial it goes through the
+            # outbound guard and records the connection failure harmlessly.
+            url="http://127.0.0.1:9999/mcp",  # devskim: ignore DS162092 until 2027-12-31 -- fabricated demo seed row, never a production origin
             status="connected",
             tools_count=6,
             last_ping=t,
@@ -569,15 +574,28 @@ def _seed_dags() -> None:
 
 
 def _seed_messages() -> None:
+    """Fabricated inbox chatter -- demo mode only (#399).
+
+    One of these rows used to be a fabricated CRITICAL security finding
+    ("XSS in /v1/auth/callback" from "RedTeam"), so every fresh install
+    booted looking compromised and no reviewer could tell fiction from a
+    real finding. Production now seeds nothing here -- an empty inbox
+    renders as "no messages", the same honesty rule the audit log already
+    follows -- while the explicit demo mode (``hive_mode == "demo"``) keeps
+    the fixture, every row stamped machine-readably as synthetic and
+    carrying a deterministic ``msg-seed-*`` id so it is unmistakable and
+    trivially removable.
+    """
+    from config import get_settings
+
+    if get_settings().hive_mode != "demo":
+        return
     if len(messages) == 0:
         from routes.messages import Message
 
         t = now()
-        m1_id = str(uuid4())
-        m2_id = str(uuid4())
-        m3_id = str(uuid4())
-        messages[m1_id] = Message(
-            id=m1_id,
+        messages["msg-seed-1"] = Message(
+            id="msg-seed-1",
             from_agent="RedTeam",
             to="admin",
             subject="Vulnerability found in auth flow",
@@ -586,9 +604,10 @@ def _seed_messages() -> None:
             read=False,
             category="security",
             created_at=t,
+            synthetic=True,
         ).model_dump(mode="json")
-        messages[m2_id] = Message(
-            id=m2_id,
+        messages["msg-seed-2"] = Message(
+            id="msg-seed-2",
             from_agent="DreamLoop",
             to="all",
             subject="DreamLoop cycle 47 complete",
@@ -597,9 +616,10 @@ def _seed_messages() -> None:
             read=False,
             category="mission",
             created_at=t,
+            synthetic=True,
         ).model_dump(mode="json")
-        messages[m3_id] = Message(
-            id=m3_id,
+        messages["msg-seed-3"] = Message(
+            id="msg-seed-3",
             from_agent="Conductor",
             to="admin",
             subject="Anthropic quota at 25%",
@@ -608,6 +628,7 @@ def _seed_messages() -> None:
             read=True,
             category="quota",
             created_at=t,
+            synthetic=True,
         ).model_dump(mode="json")
 
 

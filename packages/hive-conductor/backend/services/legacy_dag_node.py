@@ -19,12 +19,15 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 
 from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding_store import register_boot_binding
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
     default_effect_context,
 )
 from maistro.graph.nodes.base import BaseNode, NodeContext
+from maistro.graph.policies import DEFAULT_NODE_TIMEOUT_S, resolve_node_timeout_s
 from maistro.http import shared_client
+from services.tool_executor import ModelCall
 
 logger = logging.getLogger(__name__)
 OnResponseHook = Callable[[dict[str, Any], httpx.Response], None]
@@ -82,6 +85,9 @@ model = os.environ.get("DAG_NODE_MODEL", "gemini-3.5-flash")
 system = os.environ.get("DAG_NODE_SYSTEM", "")
 task = os.environ.get("DAG_NODE_TASK", "")
 context = os.environ.get("DAG_NODE_CONTEXT", "")
+# Fallback mirrors the policy default for a bare sandbox run; canonical
+# execution always passes DAG_NODE_TIMEOUT_S (resolved by maistro.graph.policies).
+timeout = float(os.environ.get("DAG_NODE_TIMEOUT_S", "120"))
 user = "Task: " + task + "\\n\\nContext:\\n" + context
 r = httpx.post(
     base + "/chat/completions",
@@ -94,12 +100,29 @@ r = httpx.post(
         ],
         "response_format": {"type": "json_object"},
     },
-    timeout=120,
+    timeout=timeout,
 )
 r.raise_for_status()
 data = r.json()
 print(json.dumps({"content": data["choices"][0]["message"]["content"], "usage": data.get("usage")}))
 """
+
+
+def declared_raw_node_timeout_s(node: Mapping[str, Any]) -> float:
+    """The effective per-node timeout for one legacy raw node.
+
+    ``config.timeout_s`` resolves through the canonical bounded policy
+    (``maistro.graph.policies``); a node that declares nothing keeps the
+    incumbent default. This replaces the hard-coded 120-second constants this
+    module used to carry: the policy module is the only place the default
+    lives, so a declared value reaches the sandbox script, the isolation
+    executor, and the HTTP client as one number, and none of them can extend
+    work past the canonical Attempt deadline the durable walker enforces from
+    the same declaration (#1184).
+    """
+    config = node.get("config")
+    declared = config.get("timeout_s") if isinstance(config, Mapping) else None
+    return resolve_node_timeout_s(declared)
 
 
 def _parse_node_script_output(raw_output: str) -> tuple[str, dict[str, Any] | None]:
@@ -123,12 +146,17 @@ def _run_node_subprocess(
     from services.hyperlight_executor import get_executor
 
     model = node.get("model", "gemini-3.5-flash")
+    timeout_s = declared_raw_node_timeout_s(node)
     node_env = {
         **base_env,
         "DAG_NODE_MODEL": model,
         "DAG_NODE_SYSTEM": node.get("prompt", "") or "",
         "DAG_NODE_TASK": task_desc,
         "DAG_NODE_CONTEXT": context[:2000],
+        # Same resolved policy value the walker enforces at the Attempt
+        # boundary; the in-sandbox HTTP read cannot outwait the canonical
+        # deadline that is actually in charge (#1184).
+        "DAG_NODE_TIMEOUT_S": str(timeout_s),
     }
     try:
         executor = get_executor()
@@ -136,7 +164,7 @@ def _run_node_subprocess(
             executor.execute_node(
                 _NODE_SCRIPT,
                 env=node_env,
-                timeout_s=120,
+                timeout_s=int(timeout_s),
                 allow_network=True,
                 mode=execution_mode,
             )
@@ -168,7 +196,11 @@ def _run_node_subprocess(
 
 
 async def _tool_web_search(
-    tool_config: dict[str, Any], parent_outputs: dict[str, Any], task_desc: str
+    tool_config: dict[str, Any],
+    parent_outputs: dict[str, Any],
+    task_desc: str,
+    *,
+    model_call: ModelCall | None = None,
 ) -> str:
     iterate_over = tool_config.get("iterate_over", "")
     queries: list[str] = []
@@ -191,15 +223,19 @@ async def _tool_web_search(
     all_results = []
     max_r = tool_config.get("max_results", 5)
     for query in queries[:5]:
-        all_results.append(await web_search(query, max_results=max_r))
+        model_kwargs = {"model_call": model_call} if model_call is not None else {}
+        all_results.append(await web_search(query, max_results=max_r, **model_kwargs))
     return json.dumps(all_results, indent=2)
 
 
-async def _tool_clarify(tool_config: dict[str, Any], task_desc: str) -> str:
+async def _tool_clarify(
+    tool_config: dict[str, Any], task_desc: str, *, model_call: ModelCall | None = None
+) -> str:
     from services.tool_executor import clarify
 
     questions = tool_config.get("questions", [])
-    answers = await clarify(questions, {"input": task_desc})
+    model_kwargs = {"model_call": model_call} if model_call is not None else {}
+    answers = await clarify(questions, {"input": task_desc}, **model_kwargs)
     return "\n".join(
         f"Q: {question}\nA: {answers.get(str(index + 1), answers.get(question, 'Not specified'))}\n"
         for index, question in enumerate(questions)
@@ -256,6 +292,8 @@ async def _call_tool_node(
     inbound: dict[str, set[str]],
     results: dict[str, dict[str, Any]],
     task_desc: str,
+    *,
+    model_call: ModelCall | None = None,
 ) -> str:
     """Run the historical tool adapter, without deciding authorization."""
     tool_name = str(node.get("tool") or "")
@@ -273,13 +311,51 @@ async def _call_tool_node(
         if pid in results and results[pid].get("success")
     }
     if tool_name == "web_search":
-        return await _tool_web_search(tool_config, parent_outputs, task_desc)
+        return await _tool_web_search(tool_config, parent_outputs, task_desc, model_call=model_call)
     if tool_name == "clarify":
-        return await _tool_clarify(tool_config, task_desc)
+        return await _tool_clarify(tool_config, task_desc, model_call=model_call)
     if tool_name == "browse_url":
         return await _tool_browse_url(tool_config)
     result = await tool_fn(task_desc)
     return json.dumps(result) if isinstance(result, dict) else str(result)
+
+
+def _tool_model_caller(node: dict[str, Any], ctx: NodeContext, runtime: Any) -> ModelCall:
+    """Bind model sub-effects to this node without granting model authority."""
+    from maistro.capabilities.providers.llm_gateway import ModelChatRequest
+    from services.governed_model import dag_tool_completion
+
+    sequence = 0
+
+    async def call(request: ModelChatRequest) -> str:
+        nonlocal sequence
+        if runtime is None:
+            raise RuntimeError("model-backed DAG tool has no governed model runtime")
+        config = node.get("config", {})
+        configured_id = config.get("model_binding_id", "") if isinstance(config, dict) else ""
+        binding_id = str(node.get("model_binding_id") or configured_id)
+        sequence += 1
+        return await dag_tool_completion(
+            runtime,
+            ctx=ctx,
+            binding_id=binding_id,
+            effect_key=f"legacy-tool:{node.get('tool')}:model:{sequence}",
+            request=request,
+            timeout_s=min(30.0, declared_raw_node_timeout_s(node)),
+        )
+
+    return call
+
+
+async def _register_tool_binding(effects: CapabilityEffectContext, binding: Binding) -> Binding:
+    """Reconcile simultaneous first registrations through the same strict check."""
+    try:
+        return await register_boot_binding(effects.bindings, binding)
+    except ValueError:
+        # Two first users can both observe no record before one wins put().
+        # Re-read once through the canonical helper: only the exact immutable
+        # definition can be reused. A conflict or revocation still refuses.
+        return await register_boot_binding(effects.bindings, binding)
 
 
 async def _run_tool_node(
@@ -291,6 +367,7 @@ async def _run_tool_node(
     *,
     effect_context: CapabilityEffectContext | None = None,
     ctx: NodeContext | None = None,
+    governed_runtime: Any | None = None,
 ) -> None:
     role = node.get("role", "worker")
     tool_name = str(node.get("tool") or "")
@@ -324,7 +401,9 @@ async def _run_tool_node(
                 capability=f"legacy_tool:{tool_name}",
                 config={"effect": _legacy_tool_effect(tool_name)},
             )
-            await effect_context.bindings.put(binding)
+            # Repeated Runs reuse this immutable tool definition. A fresh
+            # registration timestamp must not make the second Run fail.
+            binding = await _register_tool_binding(effect_context, binding)
             provider = _LegacyToolProvider(tool_name)
 
             async def resolve(_binding: Binding) -> _LegacyToolProvider:
@@ -336,7 +415,14 @@ async def _run_tool_node(
                     for pid in inbound.get(nid, set())
                     if pid in results and results[pid].get("success")
                 }
-                return await _call_tool_node(node, nid, inbound, scratch, str(request["task"]))
+                return await _call_tool_node(
+                    node,
+                    nid,
+                    inbound,
+                    scratch,
+                    str(request["task"]),
+                    model_call=_tool_model_caller(node, ctx, governed_runtime),
+                )
 
             invocation = await effect_context.invocations.invoke(
                 binding=binding,
@@ -347,6 +433,7 @@ async def _run_tool_node(
                 request={"task": task_desc, "tool_config": node.get("tool_config", {})},
                 resolver=resolve,
                 executor=execute,
+                actor_id=str(ctx.user_id or ""),
             )
             response = str(invocation.result or "")
         else:
@@ -414,6 +501,7 @@ async def _run_llm_node(
     *,
     effect_context: CapabilityEffectContext | None = None,
     ctx: NodeContext | None = None,
+    governed_runtime: Any | None = None,
 ) -> None:
     role = node.get("role", "worker")
     if node.get("tool"):
@@ -425,6 +513,7 @@ async def _run_llm_node(
             task_desc,
             effect_context=effect_context,
             ctx=ctx,
+            governed_runtime=governed_runtime,
         )
         return
     model = node.get("model", os.environ.get("CHAT_DEFAULT_MODEL", "gemini-3.5-flash"))
@@ -438,14 +527,41 @@ async def _run_llm_node(
     if parent_outputs:
         user_content += "\n\nContext from previous steps:\n" + "\n---\n".join(parent_outputs[-3:])
     try:
-        builder = llm_builder or _build_llm_call
-        response = await builder(on_response)(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_content},
-            ],
-            model=model,
-        )
+        if governed_runtime is not None and ctx is not None and ctx.attempt_id:
+            # Canonical cutover (#718): the physical model call crosses the
+            # governed Binding -> Invocation egress, so its usage evidence is
+            # recorded once by the Invocation authority's terminalization
+            # recorder. This node supplies no callback of its own; the raw
+            # builder below is the compatibility fallback for callers with no
+            # canonical effect authority (standalone tests, direct calls).
+            from services.governed_model import dag_node_completion
+
+            response = await dag_node_completion(
+                governed_runtime,
+                run_id=ctx.run_id,
+                node_run_id=ctx.node_run_id,
+                attempt_id=ctx.attempt_id,
+                node_id=nid,
+                workspace_id=ctx.workspace_id or "default",
+                project_id=ctx.project_id or "agent-runtime",
+                system=system,
+                user=user_content,
+                model=model,
+            )
+        else:
+            builder = llm_builder or _build_llm_call
+            response = await builder(on_response)(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_content},
+                ],
+                model=model,
+                # The node's declared (resolved) timeout reaches the transport
+                # as data. The durable walker enforces the same resolved value
+                # as the Attempt's canonical deadline; a node-level transport
+                # timeout can only agree with it or lose the race (#1184).
+                timeout=declared_raw_node_timeout_s(node),
+            )
         results[nid] = {"role": role, "response": response, "success": True, "model": model}
     except Exception as exc:
         results[nid] = {"role": role, "response": str(exc), "success": False, "model": model}
@@ -529,7 +645,12 @@ def _build_llm_call(on_response: OnResponseHook | None = None):
             else {"type": "json_object"}
         )
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {raw_key}"}
-        async with shared_client(timeout=120.0) as client:
+        # The declared per-node timeout when the caller resolved one; the
+        # incumbent default otherwise. Never a local constant: the value comes
+        # from the shared budget policy so the transport cannot disagree with
+        # the canonical Attempt deadline (#1184).
+        timeout_s = float(kwargs.get("timeout") or DEFAULT_NODE_TIMEOUT_S)
+        async with shared_client(timeout=timeout_s) as client:
             response = await client.post(f"{base}/chat/completions", json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
@@ -601,6 +722,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         on_response: OnResponseHook | None,
         llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
         effect_context: CapabilityEffectContext | None = None,
+        governed_runtime: Any | None = None,
         progress: RunProgressHook | None = None,
     ) -> None:
         self._raw_node = dict(raw_node)
@@ -610,6 +732,10 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         self._on_response = on_response
         self._llm_builder = llm_builder
         self._effect_context = effect_context
+        # GovernedModelRuntime composed from the live Container; when present
+        # the node's model call crosses the canonical Invocation egress (#718)
+        # and ``_llm_builder``/``_on_response`` stay compatibility fallbacks.
+        self._governed_runtime = governed_runtime
         self._progress = progress
 
     async def _emit_progress(self, event: dict[str, Any]) -> None:
@@ -719,6 +845,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
                 llm_builder=self._llm_builder,
                 effect_context=self._effect_context,
                 ctx=ctx,
+                governed_runtime=self._governed_runtime,
             )
             result = scratch[node_id]
 

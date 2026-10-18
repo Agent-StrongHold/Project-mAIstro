@@ -10,8 +10,10 @@ dependencies = [
     "maistro-canvas>=0.9.0",
     "httpx>=0.28,<1",
     "pydantic>=2.4.0,<3",
-    # pyyaml was declared here and imported nowhere in `src/maistro_design`;
-    # maistro-core owns YAML parsing and declares it (#514).
+    # Re-declared (#514 removed an earlier, *unused* declaration): the domain
+    # pack registry (#793) parses its in-repo YAML manifests, so the dependency
+    # is now genuinely imported in `src/maistro_design/packs/registry.py`.
+    "pyyaml>=6.0,<7",
 ]
 
 [project.optional-dependencies]

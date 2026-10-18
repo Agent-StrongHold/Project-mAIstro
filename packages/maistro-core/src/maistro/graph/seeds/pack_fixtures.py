@@ -92,6 +92,7 @@ PACK_FIXTURES_PROJECT_NAME = "M7 pack fixtures"
 """Child Project under the Workspace root where the fixture Runs are filed."""
 
 PACK_FIXTURE_PROVENANCE_KEY = "pack_fixture"
+PACK_FIXTURE_ACTOR_PRINCIPAL_ID = "pack-fixture-seed"
 """Run.provenance key marking a Run as an M7 pack fixture (value: pack name)."""
 
 BOOK_PACK = "book"
@@ -348,6 +349,7 @@ async def seed_book_fixture(
     graph = _book_graph(project)
     run = await run_store.create_run(
         graph,
+        actor_principal_id=PACK_FIXTURE_ACTOR_PRINCIPAL_ID,
         provenance=_provenance(
             pack=BOOK_PACK,
             catalog=BOOK_CATALOG,
@@ -730,6 +732,7 @@ async def seed_game_fixture(
     graph = _game_graph(project)
     run = await run_store.create_run(
         graph,
+        actor_principal_id=PACK_FIXTURE_ACTOR_PRINCIPAL_ID,
         provenance=_provenance(
             pack=GAME_PACK,
             catalog=GAME_CATALOG,

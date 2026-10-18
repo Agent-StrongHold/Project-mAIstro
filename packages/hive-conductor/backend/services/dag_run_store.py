@@ -54,6 +54,12 @@ MAX_RESULT_CHARS = 2000
 #: that run's events under their own cap.
 MAX_RESULT_CHARS_PER_RUN = 50 * MAX_RESULT_CHARS
 
+#: When this process came up. The in-memory run history starts here, so a
+#: KPI counting "runs today" from a non-durable store can say when its own
+#: coverage began instead of passing a partial count off as a whole day
+#: (#380).
+_PROCESS_BOOT_TS = time.time()
+
 
 def _bounded(result: dict[str, Any] | None) -> dict[str, Any] | None:
     """A run result with its node responses truncated to `MAX_RESULT_CHARS`.
@@ -413,9 +419,74 @@ class DagRunStore:
                 run.result = result
             self._persist(run)
 
+    async def record_canonical_run(self, run_id: str, *, canonical_run_id: str) -> bool:
+        """Attach the canonical Run identity to an already-open projection row.
+
+        The chat workflow tool opens its history row with a fresh execution id
+        before the canonical Run exists, so the projection -> canonical Run
+        correlation can only be written when the canonical executor admits the
+        Run -- which is exactly when `execute_dag` fires its admission seam
+        (#1332). Written at admission, the correlation is already durable
+        while the DAG is still in flight, so a live Recent Runs entry cancels
+        through the canonical spine instead of sending the projection id to a
+        canonical store that never saw it.
+
+        First link wins: a row that already names a canonical Run keeps it.
+        Re-pointing a row at a different Run would be a cross-link (corrupt
+        or duplicate admission), and the read overlay in
+        `services.dag_run_inspection` already treats such a row as its own
+        lifecycle truth rather than trusting the link. Re-recording the same
+        id is idempotent. An empty id is refused: "no canonical Run" is the
+        row's honest state and must never be overwritten with a stored claim.
+
+        Returns whether the row now carries `canonical_run_id`. A missing row
+        (evicted, or finished and dropped between the write and this call)
+        records nothing and says so.
+        """
+        if not canonical_run_id:
+            return False
+        run = self._runs.get(run_id)
+        if run is None:
+            return False
+        if run.canonical_run_id == canonical_run_id:
+            return True
+        if run.canonical_run_id:
+            return False
+        run.canonical_run_id = canonical_run_id
+        self._persist(run)
+        return True
+
     def list_runs(self, *, limit: int = 25) -> list[dict[str, Any]]:
         recent = list(self._order)[-limit:]
         return [self._runs[rid].to_summary() for rid in reversed(recent) if rid in self._runs]
+
+    def count_since(self, *, user_id: str = "", started_after: float = 0.0) -> dict[str, Any]:
+        """Count this principal's working-set runs started after `started_after`.
+
+        The dashboard's "runs today" KPI reads this rather than
+        `list_runs(limit=25)`: a default page limit would cap the KPI at 25
+        and pass that off as a day total (#380). The scan is O(working set),
+        which MAX_RUNS bounds, and the reply says what the count is a count
+        *of*: the bound, whether the store is durable, and the newest
+        matching start. A caller whose count lands on the bound knows the
+        number is a floor, not a total.
+        """
+        count = 0
+        newest: float | None = None
+        for run in self._runs.values():
+            if user_id and run.user_id != user_id:
+                continue
+            if run.started_at < started_after:
+                continue
+            count += 1
+            if newest is None or run.started_at > newest:
+                newest = run.started_at
+        return {
+            "count": count,
+            "last_started_at": newest,
+            "bound": self._order.maxlen or 0,
+            "is_durable": self._records is not None,
+        }
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         run = self._runs.get(run_id)

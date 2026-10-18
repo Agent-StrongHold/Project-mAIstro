@@ -183,39 +183,12 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         self._router: LLMRouter = router if router is not None else CostAwareRouter(self._registry)
 
     async def _execute(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> LlmSummarizeOut:
-        # LLM gateway endpoint + key — pulled from env (maistro config layer
-        # already loads these). The node never hardcodes credentials.
-        base_url = (
-            os.environ.get("MAISTRO_LLM_BASE_URL")
-            or os.environ.get("LITELLM_URL")
-            or os.environ.get("LITELLM_API_BASE")
-            or ""
-        ).rstrip("/")
-        api_key = (
-            os.environ.get("MAISTRO_LLM_API_KEY")
-            or os.environ.get("LITELLM_API_KEY")
-            or os.environ.get("LITELLM_MASTER_KEY")
-            or ""
-        )
-        if not base_url:
-            raise RuntimeError("llm.summarize: no LLM base URL configured")
-
-        if not inputs.binding_id.strip():
-            raise BindingNotFound(
-                "llm.summarize requires a pre-authorized model.chat binding_id "
-                "before any model call"
-            )
-        binding = await self._effects.bindings.resolve(
-            inputs.binding_id,
-            workspace_id=str(ctx.workspace_id or ""),
-            project_id=str(ctx.project_id or ""),
-            node_id=ctx.node_id,
-            capability=MODEL_CHAT_CAPABILITY,
-        )
-
-        sys_prompt = _STYLE_PROMPTS.get(inputs.style, _STYLE_PROMPTS["bullet"])
-        if inputs.system_prompt_extra:
-            sys_prompt = sys_prompt + "\n\n" + inputs.system_prompt_extra
+        # Gateway configuration is read before the Binding is resolved, as it
+        # always was: a deployment with no gateway configured should be told
+        # that, not told its Binding is missing. Extracting these two steps
+        # for the complexity ratchet must not reorder them.
+        endpoint = _gateway_endpoint(timeout_s=inputs.timeout_s)
+        binding = await self._authorized_binding(inputs, ctx)
 
         # Verification-aware escalation (epic M4-I): when the executor's
         # supervision withheld a prior visit for missing its quality floor,
@@ -268,23 +241,11 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
             user_content: str | list[dict[str, Any]] = content_parts
         else:
             user_content = inputs.text
-
-        request = ModelChatRequest(
-            model=model_alias,
-            messages=[
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=inputs.temperature,
-            max_tokens=inputs.max_tokens,
-        )
         egress = ModelChatEgress(
             self._effects,
             registry=self._registry,
             router=self._router,
-            endpoint=GatewayEndpoint(
-                base_url=base_url, api_key=api_key, timeout_s=inputs.timeout_s
-            ),
+            endpoint=endpoint,
         )
         result = await egress.complete(
             binding=binding,
@@ -292,13 +253,18 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
             node_run_id=ctx.node_run_id,
             attempt_id=ctx.attempt_id,
             effect_key=f"llm.summarize.complete:{model_alias}",
-            request=request,
+            request=ModelChatRequest(
+                model=model_alias,
+                messages=[
+                    {"role": "system", "content": _system_prompt(inputs)},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=inputs.temperature,
+                max_tokens=inputs.max_tokens,
+            ),
+            actor_id=str(ctx.user_id or ""),
         )
-
-        data: dict[str, Any] = result.body
-        text = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "") or ""
-        usage = data.get("usage", {}) or {}
-        summary = text.strip()
+        out = _summarized(result.body, fallback_model=model_alias)
 
         # Quality self-report (epic M4-I): the deterministic score the
         # executor's escalation ladder supervises. Measured against everything
@@ -312,11 +278,73 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
             if route.modality == ObservationModality.TEXT
         ]
         source_for_quality = "\n\n".join([*text_payloads, inputs.text]).strip()
-        ctx.result_metadata[QUALITY_METADATA_KEY] = summarize_quality(source_for_quality, summary)
-
-        return LlmSummarizeOut(
-            summary=summary,
-            model_used=str(data.get("model") or model_alias),
-            tokens_in=int(usage.get("prompt_tokens") or 0),
-            tokens_out=int(usage.get("completion_tokens") or 0),
+        ctx.result_metadata[QUALITY_METADATA_KEY] = summarize_quality(
+            source_for_quality, out.summary
         )
+        return out
+
+    async def _authorized_binding(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> Any:
+        """The model.chat Binding this call runs under, refused before any call."""
+
+        if not inputs.binding_id.strip():
+            raise BindingNotFound(
+                "llm.summarize requires a pre-authorized model.chat binding_id "
+                "before any model call"
+            )
+        return await self._effects.bindings.resolve(
+            inputs.binding_id,
+            workspace_id=str(ctx.workspace_id or ""),
+            project_id=str(ctx.project_id or ""),
+            node_id=ctx.node_id,
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+
+
+def _env_first(*names: str) -> str:
+    """The first of these environment variables that is set and non-empty."""
+
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return ""
+
+
+def _gateway_endpoint(*, timeout_s: float) -> GatewayEndpoint:
+    """The gateway this node calls, from env; it never hardcodes credentials.
+
+    The maistro config layer already loads these, so reading them here is
+    reading configuration, not inventing it. No base URL is a refusal: a node
+    that silently called nothing would report an empty summary as a success.
+    """
+
+    base_url = _env_first("MAISTRO_LLM_BASE_URL", "LITELLM_URL", "LITELLM_API_BASE").rstrip("/")
+    if not base_url:
+        raise RuntimeError("llm.summarize: no LLM base URL configured")
+    return GatewayEndpoint(
+        base_url=base_url,
+        api_key=_env_first("MAISTRO_LLM_API_KEY", "LITELLM_API_KEY", "LITELLM_MASTER_KEY"),
+        timeout_s=timeout_s,
+    )
+
+
+def _system_prompt(inputs: LlmSummarizeIn) -> str:
+    """The style prompt, with the caller's extra instructions appended."""
+
+    prompt = _STYLE_PROMPTS.get(inputs.style, _STYLE_PROMPTS["bullet"])
+    if inputs.system_prompt_extra:
+        return prompt + "\n\n" + inputs.system_prompt_extra
+    return prompt
+
+
+def _summarized(data: dict[str, Any], *, fallback_model: str) -> LlmSummarizeOut:
+    """Read the gateway's response shape into this node's output."""
+
+    text = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "") or ""
+    usage = data.get("usage", {}) or {}
+    return LlmSummarizeOut(
+        summary=text.strip(),
+        model_used=str(data.get("model") or fallback_model),
+        tokens_in=int(usage.get("prompt_tokens") or 0),
+        tokens_out=int(usage.get("completion_tokens") or 0),
+    )

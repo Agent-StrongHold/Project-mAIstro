@@ -122,3 +122,13 @@ Two changes, both driven by executed evidence:
    tests (`pytest tests/tools/registry/ tests/tools/test_lint_lifecycle.py
    packages/maistro-registry/tests --confcutdir=tests/tools`) → 98 passed.
    `tests/test_release_guard.py` 23 passed at the same head.
+
+## Addendum — `scripts/install-maestro.sh` removed (#401)
+
+The `shellcheck -S error scripts/install-maestro.sh` line in the first round
+above refers to a file that no longer exists: #401 removed the placeholder
+bootstrap helper (it printed clone instructions behind a literal
+`<YOUR_REPO_URL>` / `<org>` placeholder and installed nothing). The supported
+install entrypoints are `get.sh` / `install.sh` (POSIX), `get.ps1`
+(Windows/WSL), and `maistro-install` in-repo;
+`tests/test_installer_entrypoints.py` (added by #401) pins that surface.
