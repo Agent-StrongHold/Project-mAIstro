@@ -14,6 +14,12 @@ Public surface of the ``maistro.extensions`` package, in two layers:
   this package ever imports extension code; activation runs only through the
   host-supplied :class:`ExtensionCodeLoader`, and only after explicit
   authorization.
+- **M9-G4 quarantine/health response (issue #972)**: the suspension
+  authority (:mod:`maistro.extensions.quarantine`) that turns canonical
+  security/health evidence into immediate, policy-driven quarantine or
+  version disable — with the extension structurally unable to write or clear
+  its own state, in-flight work dispositioned by policy, and an append-only
+  evidence ledger that re-enable never erases.
 
 Neither layer executes extension code: verification, evaluation and
 authorization all operate on bytes and declarations alone.
@@ -38,6 +44,28 @@ from maistro.extensions.manifest import (
     inspect_manifest,
     sha256_hex,
     verify_package_payload,
+)
+from maistro.extensions.quarantine import (
+    CANONICAL_VIOLATION_SOURCES,
+    ExtensionQuarantineAuthority,
+    ExtensionQuarantined,
+    ExtensionQuarantineError,
+    ExtensionViolationEvent,
+    HealthVerdict,
+    InFlightDisposition,
+    InMemoryQuarantineStore,
+    InvocationAdmission,
+    NonCanonicalViolationSource,
+    QuarantineNotActive,
+    QuarantinePolicy,
+    QuarantineRecord,
+    QuarantineState,
+    QuarantineStore,
+    QuarantineTransition,
+    UnauthorizedQuarantineActor,
+    ViolationKind,
+    ViolationSeverity,
+    severity_at_least,
 )
 from maistro.extensions.service import (
     ExtensionCodeLoader,
@@ -93,6 +121,7 @@ from maistro.extensions.types import (
 )
 
 __all__ = [
+    "CANONICAL_VIOLATION_SOURCES",
     "DIGEST_ALGORITHM",
     "SUPPORTED_MANIFEST_VERSION",
     "TERMINAL_STATES",
@@ -114,34 +143,52 @@ __all__ = [
     "ExtensionLifecycleError",
     "ExtensionManifest",
     "ExtensionPackage",
+    "ExtensionQuarantineAuthority",
+    "ExtensionQuarantineError",
+    "ExtensionQuarantined",
     "ExtensionRegistryError",
     "ExtensionScope",
     "ExtensionState",
     "ExtensionStore",
     "ExtensionTransition",
+    "ExtensionViolationEvent",
+    "HealthVerdict",
+    "InFlightDisposition",
     "InMemoryExtensionInstallStore",
     "InMemoryExtensionStore",
+    "InMemoryQuarantineStore",
     "InspectionConflict",
     "InstallRecord",
     "InstallRequest",
     "InvalidTransition",
+    "InvocationAdmission",
     "LoadedExtension",
     "ManifestRejected",
     "ManifestSnapshot",
+    "NonCanonicalViolationSource",
     "PackageDigestMismatch",
     "PackageIdentity",
     "PackageSignatureInvalid",
     "PublisherIdentity",
     "PublisherKeyConflict",
+    "QuarantineNotActive",
+    "QuarantinePolicy",
+    "QuarantineRecord",
+    "QuarantineState",
+    "QuarantineStore",
+    "QuarantineTransition",
     "RegistryProvenance",
     "SqliteExtensionInstallStore",
     "TrustClaim",
     "TrustEvidence",
     "TrustPolicy",
     "TrustReport",
+    "UnauthorizedQuarantineActor",
     "UnknownInstall",
     "UnknownPublisher",
     "UnwiredExtensionLoader",
+    "ViolationKind",
+    "ViolationSeverity",
     "assert_snapshot_intact",
     "canonical_install_payload",
     "compute_authority_delta",
@@ -151,6 +198,7 @@ __all__ = [
     "inspect_manifest",
     "manifest_snapshot",
     "normalize_permission",
+    "severity_at_least",
     "sha256_hex",
     "verify_package_payload",
 ]

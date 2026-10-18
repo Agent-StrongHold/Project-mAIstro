@@ -13,6 +13,12 @@ from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.cli._extensions import extensions_history, extensions_show
 from maistro.container import Container
+from maistro.extensions.quarantine import (
+    ExtensionQuarantineAuthority,
+    HealthVerdict,
+    InFlightDisposition,
+    InvocationAdmission,
+)
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
     ExtensionInstallStore,
@@ -296,4 +302,26 @@ _VULTURE_WHITELIST = (
     ExternalAgentRegistry.refresh_descriptor,
     ExternalAgentRegistry.report_availability,
     ExternalAgentRegistry.eligible_specialists,
+    # Extension quarantine/health-response authority (M9-G4, #972). Same
+    # contract-ships-first posture as the M9-B1 store seams above: the
+    # authority's operator/evidence/admission surfaces are consumed in-tree
+    # by the acceptance suite (packages/maistro-core/tests/extensions/
+    # test_quarantine_authority.py); the HTTP admin routes and the runtime
+    # admission call site are the M9-G slices that follow. Evidence fields
+    # are read back through the same suite's history queries.
+    Container.ensure_extension_quarantine_authority,
+    ExtensionQuarantineAuthority.admit_invocation,
+    ExtensionQuarantineAuthority.complete_invocation,
+    ExtensionQuarantineAuthority.record_security_violation,
+    ExtensionQuarantineAuthority.record_health_failure,
+    ExtensionQuarantineAuthority.reenable,
+    ExtensionQuarantineAuthority.violation_history,
+    ExtensionQuarantineAuthority.transition_history,
+    ExtensionQuarantineAuthority.invocation_history,
+    InvocationAdmission.admitted_at,  # type: ignore[misc]
+    InvocationAdmission.quarantined_at,
+    HealthVerdict.strikes_in_window,  # type: ignore[misc]
+    HealthVerdict.cumulative_failures,  # type: ignore[misc]
+    HealthVerdict.quarantined,  # type: ignore[misc]
+    InFlightDisposition.LET_FINISH,
 )

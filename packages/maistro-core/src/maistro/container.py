@@ -143,6 +143,10 @@ if TYPE_CHECKING:
     from maistro.events.invocations import InvocationStore
     from maistro.events.processing import HandlerCaller
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
+    from maistro.extensions.quarantine import (
+        ExtensionQuarantineAuthority,
+        InMemoryQuarantineStore,
+    )
     from maistro.extensions.service import ExtensionInstallService
     from maistro.extensions.store import InMemoryExtensionStore
     from maistro.graph.harness import HarnessAdapter
@@ -480,6 +484,11 @@ class Container:
     # this is a records-and-authority store, never an execution authority.
     extension_install_store: InMemoryExtensionStore | None = None
     extension_install_service: ExtensionInstallService | None = None
+    # Quarantine/health-response authority (#972, M9-G4). Process-lifetime
+    # in-memory evidence and suspension state; a records-and-authority store
+    # with no execution authority of its own.
+    extension_quarantine_store: InMemoryQuarantineStore | None = None
+    extension_quarantine_authority: ExtensionQuarantineAuthority | None = None
 
     def __post_init__(self) -> None:
         if self.conduit is None:
@@ -2050,6 +2059,26 @@ class Container:
                 loader=UnwiredExtensionLoader(),
             )
         return self.extension_install_service
+
+    def ensure_extension_quarantine_authority(self) -> ExtensionQuarantineAuthority:
+        """Return the extension quarantine/health-response authority (#972).
+
+        Lazily built over the process-lifetime in-memory store with the
+        default policy. Hosts that hold the canonical install registry wire
+        ``publisher_for`` (publisher attribution) and may replace
+        ``extension_quarantine_authority`` wholesale with one built over
+        their own store and policy.
+        """
+        from maistro.extensions.quarantine import (
+            ExtensionQuarantineAuthority,
+            InMemoryQuarantineStore,
+        )
+
+        if self.extension_quarantine_authority is None:
+            self.extension_quarantine_authority = ExtensionQuarantineAuthority(
+                self.extension_quarantine_store or InMemoryQuarantineStore(),
+            )
+        return self.extension_quarantine_authority
 
 
 def _wire_schedule_admission(
