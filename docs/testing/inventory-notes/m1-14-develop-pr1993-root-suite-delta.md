@@ -1,10 +1,18 @@
----
-inventory-delta:
-  tests/: +1
----
 # m1-14-develop-pr1993-root-suite-delta
 
-## develop's own merge under-recorded the root suite; recorded here, at the branch that measured it
+## Superseded by develop's own `1993-hive-permission-preset-inventory.md`
+
+**This note no longer carries an `inventory-delta` block.** develop has since
+recorded the same node ID itself — `1993-hive-permission-preset-inventory.md`
+(landed with PR #2155's merge, `1a2e1265`) grants `tests/: +1` for exactly the
+same test this note described. Keeping both blocks would double-count the +1
+after this branch merged develop: the gate answered
+`DRIFT  tests/: expected 5505, collected 5504` on a scratch merge of
+`origin/develop` into this branch's previous tip `c8fc6b80f`, off by exactly
+the duplicated +1. The block is therefore withdrawn so the recorded sum
+matches the collected tree; this file stays as the measurement record.
+
+## Original finding (for the record)
 
 Nothing stopped collecting and this lane added no root test. develop's own
 head `2f56be40a` (merge of PR #1993, commit `edb669149`) added exactly one
