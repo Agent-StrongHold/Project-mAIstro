@@ -325,12 +325,14 @@ async def visible_run_ids(user_id: str, run_ids: Iterable[str]) -> set[str]:
     store = get_dag_run_store()
     candidates = [str(run_id) for run_id in run_ids]
     visible: set[str] = set()
+    projectionless: list[str] = []
     for run_id in candidates:
         record = store.get_run(run_id)
-        if record is not None and _in_scope(record, allowed):
+        if record is None:
+            projectionless.append(run_id)
+        elif _in_scope(record, allowed):
             visible.add(run_id)
-    # One batched canonical read covers every id the projection cannot
-    # answer, so the batch never disagrees with the by-id fallback.
-    projectionless = [run_id for run_id in candidates if run_id not in visible]
+    # Match the by-ID readers: only an absent projection permits canonical
+    # fallback. An existing out-of-scope or unscoped row remains refused.
     visible |= set(await _readable_canonical_runs(projectionless, user_id))
     return visible

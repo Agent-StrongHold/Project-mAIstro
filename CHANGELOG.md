@@ -153,6 +153,10 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Conductor batch inspection respects existing projection scope (#1036).**
+  Canonical fallback applies only when no projection exists, keeping verdict-list
+  visibility consistent with detail and stream admission for colliding run IDs.
+
 - **Hive Graph execution refuses missing canonical authority (#1113).**
   Registered and stored DAGs now require the Container's RunStore and Graph
   continuation owner before admission or execution. Stub/degraded mode reports

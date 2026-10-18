@@ -308,3 +308,50 @@ async def test_standalone_projection_is_presentation_only(
     foreign = await list_visible_runs(_FOREIGN_USER, limit=25)
     assert all(row["id"] != _STANDALONE_ROW_ID for row in foreign)
     assert await visible_run_detail(_FOREIGN_USER, _STANDALONE_ROW_ID) is None
+
+
+@pytest.mark.parametrize("projection_workspace", ["foreign-workspace", None])
+async def test_existing_out_of_scope_projection_blocks_canonical_batch_fallback(
+    monkeypatch: pytest.MonkeyPatch, projection_workspace: str | None
+) -> None:
+    """A colliding projection must have the same scope decision in every reader."""
+    from services.dag_run_inspection import (
+        can_inspect_run,
+        visible_run_detail,
+        visible_run_ids,
+    )
+    from services.dag_run_store import get_dag_run_store
+    from services.workspace_authority import canonical_store_for_tests
+
+    from maistro.graph import Graph
+    from maistro.runs import InMemoryRunStore, RunExecutionService
+    from maistro.runs.scoped_reads import ScopedRunReader
+    from maistro.runtime import PythonExecutionRuntime
+
+    view = await _owned_workspace()
+    workspaces = canonical_store_for_tests()
+    projects = workspaces.project_store
+    project = await projects.root_for_workspace(view.id)
+    store = InMemoryRunStore(project_store=projects)
+    service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())
+    run = await service.create_run(
+        Graph(workspace_id=view.id, project_id=project.project_id, name="collision"),
+        actor_principal_id=_USER_ID,
+    )
+    _point_engine_at(monkeypatch, store, ScopedRunReader(store, workspaces, projects))
+
+    # Establish that the canonical Run is authorized before adding a colliding
+    # row. The failure is projection/batch policy drift, not a foreign Run read.
+    assert await visible_run_detail(_USER_ID, run.run_id) is not None
+    assert await can_inspect_run(_USER_ID, run.run_id)
+    assert await visible_run_ids(_USER_ID, [run.run_id]) == {run.run_id}
+
+    await get_dag_run_store().start_run(
+        run_id=run.run_id,
+        canonical_run_id=run.run_id,
+        user_id=_FOREIGN_USER,
+        workspace_id=projection_workspace,
+    )
+    assert await visible_run_detail(_USER_ID, run.run_id) is None
+    assert not await can_inspect_run(_USER_ID, run.run_id)
+    assert await visible_run_ids(_USER_ID, [run.run_id, "missing-run"]) == set()
