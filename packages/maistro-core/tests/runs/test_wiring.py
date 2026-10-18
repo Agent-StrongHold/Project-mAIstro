@@ -15,7 +15,7 @@ import pytest
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.store import InMemoryRunStore
-from maistro.runs.wiring import wire_execution_spine
+from maistro.runs.wiring import wire_execution_spine, wire_node_template_store
 from maistro.tasks.models import TaskCreate
 from maistro.tasks.queue import TaskQueue
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
@@ -120,6 +120,65 @@ async def test_the_workspace_is_the_one_asked_for() -> None:
 
 
 # --- selecting the PostgreSQL spine (#132) ---------------------------------
+
+
+async def test_node_template_wiring_uses_postgres_only_with_a_durable_spine() -> None:
+    """The node-template registry follows the same durable-spine probe.
+
+    A caller-owned pool with no canonical tables must not make a durable-looking
+    side registry; a migrated pool selects the PostgreSQL registry instead.
+    """
+    from maistro.graph.pg_templates import PgNodeTemplateStore
+    from maistro.graph.templates import InMemoryNodeTemplateStore
+
+    class _MigratedPool:
+        async def fetchval(self, _sql: str, _name: str) -> bool:
+            return True
+
+    assert isinstance(
+        await wire_node_template_store(None, pg_pool=_MigratedPool()), PgNodeTemplateStore
+    )
+    assert isinstance(await wire_node_template_store(None), InMemoryNodeTemplateStore)
+
+
+async def test_execution_spine_follows_the_public_migration_probe(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Claims and Runs agree on both outcomes of the public migration probe.
+
+    A pool without canonical tables must produce an in-memory Run store: task
+    claims then follow it rather than outliving Runs. A migrated caller-owned
+    pool must select the claiming PostgreSQL Run store. This drives the two
+    outcomes of the same probe the idempotency wiring imports, not a duplicate
+    private predicate.
+    """
+    import logging
+
+    from maistro.runs.consumer_claim import ClaimingPgRunStore
+    from maistro.runs.wiring import spine_is_migrated
+
+    class _PoolWithoutTheSpine:
+        async def fetchval(self, _sql: str, _name: str) -> bool:
+            return False
+
+    class _MigratedPool:
+        async def fetchval(self, _sql: str, _name: str) -> bool:
+            return True
+
+    with caplog.at_level(logging.WARNING):
+        assert await spine_is_migrated(_PoolWithoutTheSpine()) is False
+
+    assert "canonical_runs" in caplog.text
+    assert "alembic upgrade head" in caplog.text
+    (
+        *_before,
+        durable_runs,
+        _admitter,
+        _templates,
+        _schedules,
+        _continuations,
+    ) = await wire_execution_spine(None, workspace_id="w1", pg_pool=_MigratedPool(), prime=False)
+    assert isinstance(durable_runs, ClaimingPgRunStore)
 
 
 async def test_a_pool_without_the_spine_tables_falls_back_and_says_so(caplog) -> None:
