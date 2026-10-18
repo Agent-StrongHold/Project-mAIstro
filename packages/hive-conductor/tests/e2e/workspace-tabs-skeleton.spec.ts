@@ -361,3 +361,30 @@ test("a failed persona read settles into the degraded picker, not a permanent sk
   await expect(page.locator(".workspace-persona-none", { hasText: "No personas available" })).toBeVisible();
   await expect(page.getByTestId("persona-skeleton")).toHaveCount(0);
 });
+
+test("opening the form from the empty state shows the persona skeleton, not the degraded copy", async () => {
+  // First-run accounts reach the create form through the empty state's
+  // "Create workspace" button, not the "+" tab — the opener the earlier
+  // picker tests drive. Both openers start the same persona read, so both
+  // must raise the pending flag before the form paints: opening from here
+  // used to leave it showing "No personas available" until the read
+  // answered (#1421).
+  scriptWorkspaces({ status: 200, payload: [] });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.locator(".workspace-empty")).toBeVisible();
+
+  scriptTemplates({ status: 200, payload: PERSONAS, hold: true });
+  armTemplatesHold();
+  await page.locator(".workspace-empty-create").click();
+
+  const skeleton = page.getByTestId("persona-skeleton");
+  await expect(skeleton).toBeVisible();
+  await expect(skeleton).toHaveAttribute("aria-busy", "true");
+  // The degraded copy is a settled answer, never a pending one.
+  await expect(page.locator(".workspace-persona-none", { hasText: "No personas available" })).toHaveCount(0);
+
+  templatesRelease?.();
+  templatesHold = Promise.resolve();
+  await expect(page.locator(".workspace-persona-option", { hasText: "Greenhouse" })).toBeVisible();
+  await expect(page.getByTestId("persona-skeleton")).toHaveCount(0);
+});

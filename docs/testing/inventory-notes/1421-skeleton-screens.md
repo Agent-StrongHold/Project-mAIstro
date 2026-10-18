@@ -68,3 +68,26 @@ backend-dependent specs (`template-picker-skeleton`, `app-shell-loading`) pass
 narrow widths (loading vs resolved differ; loading frames show the styled
 skeletons, not blank regions). `scripts/check-suite-inventory.py` and
 `scripts/check-frontend-typed-client.py` both pass on the merged tree.
+
+## Salvage round 2026-10-18 (empty-state opener)
+
+Every persona-picker case above drove the "+" tab, but a first-run account
+reaches the create form through the empty state's "Create workspace" button —
+an opener that set `creating` without raising `templatesPending`, so the
+form's first paint showed "No personas available" for a read that had not
+answered. `WorkspaceTabs.tsx` now routes both openers through one
+`openCreate()` that raises the flag before the form can paint, and
+`workspace-tabs-skeleton.spec.ts` pins it with "opening the form from the
+empty state shows the persona skeleton, not the degraded copy".
+
+The delta stays `+0` (a case added to an existing non-pytest-collectible
+spec); the harness total is now 27 tests (9 tabs + 7 dashboard + 7 backlog).
+All 27 pass locally against the worktree (`E2E_SRC_ROOT`/`E2E_NODE_PATHS`
+pointed at it, `tests/e2e`'s own playwright 1.60 + chromium). The new case
+was shown to fail against the pre-salvage component —
+`getByTestId('persona-skeleton')` never visible after the empty-state click —
+while the other 8 cases in its spec still passed, so it pins this regression
+rather than passing for an environmental reason. Frontend `npm run lint`
+(94 warnings ≤ the 96 budget, 0 errors) and `npm run build` (both tsconfigs +
+vite) pass; `scripts/check-suite-inventory.py` and
+`scripts/check-frontend-typed-client.py` pass on the tree.

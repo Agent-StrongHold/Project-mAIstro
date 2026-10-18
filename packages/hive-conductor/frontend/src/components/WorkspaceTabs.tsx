@@ -61,6 +61,18 @@ export function WorkspaceTabs() {
     };
   }, [creating]);
 
+  // Both openers — the empty state's "Create workspace" button and the "+"
+  // tab — go through this one path. Opening the form is what starts the
+  // persona read, so the pending flag flips here rather than inside the read
+  // effect (which may not set state synchronously); keeping it in the shared
+  // path means the picker never flashes "No personas available" during that
+  // first read (#1421).
+  function openCreate() {
+    if (creating) return;
+    setTemplatesPending(true);
+    setCreating(true);
+  }
+
   // GET /v1/workspaces is still in flight (#1421): a sized placeholder strip
   // stands in for the tabs — the previous `null` collapsed the toolbar row
   // and then popped it open. The shapes are decorative; the region's
@@ -243,7 +255,7 @@ export function WorkspaceTabs() {
           <button
             type="button"
             className="workspace-empty-create"
-            onClick={() => setCreating(true)}
+            onClick={openCreate}
           >
             Create workspace
           </button>
@@ -253,13 +265,7 @@ export function WorkspaceTabs() {
         <button
           type="button"
           className="workspace-tab workspace-tab-add"
-          onClick={() => {
-            // Opening the form is what starts the persona read, so the
-            // pending flag flips here rather than inside the read effect
-            // (which may not set state synchronously).
-            if (!creating) setTemplatesPending(true);
-            setCreating((v) => !v);
-          }}
+          onClick={() => (creating ? setCreating(false) : openCreate())}
           aria-label="New workspace"
           aria-expanded={creating}
           title="New workspace"
