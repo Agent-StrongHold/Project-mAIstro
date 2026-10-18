@@ -505,6 +505,8 @@ class Container:
     strike_tracker: StrikeTracker | None = None
     strike_recovery: Any = None
     # One durable cursor identifies this reactor consumer across restarts. The
+    # authoritative position lives in the consumer-cursor store (#1163); this
+    # field is the in-process view of what this container's last tick advanced.
     durable_event_cursor: int = 0
     # Governed extension install lifecycle (#953, M9-B2). Process-lifetime
     # in-memory records until the B1 signing/identity substrate (#952) lands;
