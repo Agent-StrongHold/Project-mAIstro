@@ -166,3 +166,54 @@ The PR remains a partial convergence draft; #1113, #44 and the parent epics
 remain open. The separately published #1983/#1987 resolver composition must
 still retain the single captured Container and its model admission decisions
 when combined, and requires a combined retest.
+
+## Develop integration refresh (2026-10-18)
+
+The draft branch now includes
+`develop@c2a22e55db71efa7f75a4e2f07dd063d34ae7eb2`, including the landed
+#2144 Graph recovery-claim race repair, #2143 cancellation receipt repair and
+#2146 parity CI split. The only merge conflict was the changelog; both the
+canonical-authority and recovery-claim entries are retained. All six Hive
+production files and the existing #1991 tests are unchanged from published
+head `70da699be3f2e22b45aa12266b48a39f1f1094b8`. Core/server production,
+workflow and quality-ledger trees match the new develop base exactly.
+Independent source review confirmed the captured Container, mandatory
+admission, isolated `on_admitted` callback and canonical ScheduleStore
+contracts remain intact.
+
+Fresh local validation of this integrated tree:
+
+- Authority, admission/cancellation, recovery, HITL and fitness selection:
+  **122 passed, 11 skipped**.
+- Full core Graph suite plus Hive authority fitness: **1,963 passed,
+  131 skipped**. This includes the landed recovery-claim race regressions.
+- Full Hive suite: **3,640 passed, 26 skipped, 4 failed**. The four Docker
+  attestation failures were independently reproduced on untouched develop
+  `c2a22e55`: this executor has no Docker CLI. Their test, dispatch and
+  execution-policy files are byte-identical to develop. This is not an
+  all-green local full-suite claim.
+- The test harness removed inherited proxy variables and refused non-loopback
+  socket connections. Model HTTP fixtures used existing loopback fake servers.
+  No live PostgreSQL DSN was configured. The temporary harness's spawn entry
+  point was corrected before the clean full Hive run above; no repository test
+  was altered to accommodate the harness.
+- Full Ruff and formatting pass (**3,300 files**); CI-exact ten-package mypy
+  passes **1,057 source files**. Convergence, execution-lifecycle, model-egress,
+  foreign-harness-egress, wiring-read, contract-marker, agent-store-write,
+  release-consistency, cross-package-import, retired-guidance and document-link
+  gates pass.
+- Committed diff coverage against `c2a22e55` measures all **six** changed
+  production files and passes unchanged **90% line / 80% branch** floors.
+  Exact-base Vulture, radon, route-permission and principal-identity ratchets
+  pass: **1,322** reviewed Vulture identities and **137** reviewed C-or-worse
+  blocks, with no added or stale debt.
+- Inventories match: Hive **3,670**, core **16,423**, with no duplicate test
+  evidence. The original **+25 Hive / +2 core** deltas are unchanged. No test
+  inventory baseline, quality grant or ledger was modified.
+
+Fresh exact-head CI must validate the published refresh, including PostgreSQL
+and the Docker/browser jobs unavailable locally. The previous PostgreSQL claim
+race failure is not treated as current evidence. This remains a partial draft:
+#1113 and #44 remain open, and the SQLite reconnect tests still do not establish
+the outstanding PostgreSQL or distributed recovery acceptance. The separate
+#1983/#1987 model-caller composition and its combined retest remain outstanding.
