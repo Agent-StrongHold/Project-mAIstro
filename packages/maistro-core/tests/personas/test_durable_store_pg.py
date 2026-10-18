@@ -187,9 +187,9 @@ async def test_workspace_delete_purges_its_persona_through_the_ownership_path() 
         await pool.close()
 
 
-async def test_migration_034_cascade_is_enforced_by_the_database_itself() -> None:
+async def test_persona_migration_cascade_is_enforced_by_the_database_itself() -> None:
     """Deleting the Workspace row without any store code must still take the
-    Persona with it — the foreign key of migration 034 is the durable cleanup
+    Persona with it — the foreign key of migration 064 is the durable cleanup
     path, so a store that forgets `delete_for_workspace` cannot strand a
     Persona pointing at a deleted Workspace."""
     dsn = _require_pg_dsn()

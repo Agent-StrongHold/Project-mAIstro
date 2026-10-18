@@ -171,17 +171,33 @@ async def test_a_migrated_postgres_pool_yields_the_postgres_store() -> None:
 def test_every_implementation_satisfies_the_protocol() -> None:
     """`WorkspaceStore` is a runtime-checkable Protocol, so this is a real
     structural check rather than a declaration of intent."""
+    from maistro.projects.pg_scope_store import PgProjectScopeStore
+    from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
     from maistro.workspaces.pg_store import PgWorkspaceStore
     from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
 
-    scope_store = InMemoryProjectScopeStore()
     implementations = [
-        InMemoryWorkspaceStore(project_store=scope_store),
-        SqliteWorkspaceStore(None, project_store=scope_store),  # type: ignore[arg-type]
-        PgWorkspaceStore(None, project_store=scope_store),  # type: ignore[arg-type]
+        InMemoryWorkspaceStore(project_store=InMemoryProjectScopeStore()),
+        SqliteWorkspaceStore(None, project_store=SqliteProjectScopeStore(None)),  # type: ignore[arg-type]
+        PgWorkspaceStore(None, project_store=PgProjectScopeStore(None)),  # type: ignore[arg-type]
     ]
 
     assert [isinstance(store, WorkspaceStore) for store in implementations] == [True] * 3
+
+
+def test_a_durable_store_refuses_a_project_store_that_cannot_join_its_transaction() -> None:
+    """#1121: a Workspace and its Root Project are one transaction, and a
+    Project store with no transaction to join (the in-memory reference) would
+    put the two writes back on either side of a crash boundary. The wiring
+    never pairs them, so the pairing is refused where it would be made rather
+    than served by a compensating path that cannot keep the promise."""
+    from maistro.workspaces.pg_store import PgWorkspaceStore
+    from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
+
+    with pytest.raises(TypeError, match="#1121"):
+        SqliteWorkspaceStore(None, project_store=InMemoryProjectScopeStore())  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="#1121"):
+        PgWorkspaceStore(None, project_store=InMemoryProjectScopeStore())  # type: ignore[arg-type]
 
 
 def test_the_container_requires_the_workspace_tables_of_a_postgres_deployment() -> None:

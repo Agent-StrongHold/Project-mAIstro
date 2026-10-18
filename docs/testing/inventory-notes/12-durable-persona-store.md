@@ -13,7 +13,8 @@ deleted in both durable and in-memory ownership wiring.
 (`MAISTRO_TEST_PG_DSN`): a Persona survives the store object that wrote it, the
 Workspace uniqueness key refuses a second live Persona, updates are snapshots
 that persist from a fresh store, Workspace deletion purges the Persona through
-the wired ownership path, migration 034's foreign-key cascade removes a
+the wired ownership path, the Persona migration's foreign-key cascade (renumbered
+034 → 064 when develop's chain claimed the 034 slot first) removes a
 Persona when the Workspace row itself is deleted, and `wire_persona_store`
 selects the PostgreSQL store on a migrated pool. The leg skips without a
 server and fails closed under `MAISTRO_REQUIRE_PG_LEGS`.

@@ -28,10 +28,13 @@ def _sentinel(
     permission_table: dict[str, frozenset[str]] | None = None,
     tier_policy: dict[tuple[str, str], Tier] | None = None,
 ) -> Sentinel:
+    # COMPATIBILITY (#1165): this suite evaluates delegability translation of
+    # tier/budget outcomes, not permission-table misses.
     return Sentinel(
         warden=Warden(),
         permission_table=permission_table or {},
         tier_policy=tier_policy,
+        allow_on_miss=True,
     )
 
 

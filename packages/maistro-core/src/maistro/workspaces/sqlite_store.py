@@ -18,14 +18,34 @@ builds them with `datetime.now(UTC)` and a naive value compares unequal to what
 was written. So ordering columns are stored as ISO-8601 text — which sorts
 correctly for UTC — and the values callers actually read come back from the
 JSON payload, where pydantic restores the offset.
+
+**One connection, one lock, one transaction (#1121).** This store and the
+SQLite Project scope store write on the same aiosqlite connection, and a
+Workspace is rows in both: the Workspace, its owner membership, and its Root
+Project. They used to be written as commit-then-`create_root`, with an
+in-process compensator for an exception between the two and nothing for a
+crash there; `delete` was the same in reverse. Now, when the paired Project
+store is a `TransactionalProjectScopeStore` (the SQLite one is), every write
+here takes *its* `transaction()` -- its `asyncio.Lock`, its `BEGIN IMMEDIATE`,
+its commit or rollback -- and `create`/`delete` issue `create_root_in` /
+`purge_workspace_in` inside that same block. The lock has to be the scope
+store's rather than one of this store's own: two locks over one connection
+let two `BEGIN IMMEDIATE`s interleave, which SQLite reports as "cannot start a
+transaction within a transaction". A Project store that cannot join a
+transaction is refused at construction: the wiring never pairs one with this
+store, and a compensating path that is not crash-consistent by construction
+would be dead code carrying a promise it cannot keep.
 """
 
 from __future__ import annotations
 
-import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
+from maistro.projects.scope_store import DurableProjectScopeStore, TransactionalProjectScopeStore
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 from maistro.workspaces.model import (
     Workspace,
     WorkspaceAccessDenied,
@@ -91,15 +111,36 @@ class SqliteWorkspaceStore:
         project_store: ProjectScopeStore,
         persona_store: PersonaStore | None = None,
     ) -> None:
+        if not isinstance(project_store, TransactionalProjectScopeStore):
+            msg = (
+                "SqliteWorkspaceStore needs a Project store that can join its transaction "
+                f"(#1121); {type(project_store).__name__} cannot. Pair it with "
+                "SqliteProjectScopeStore on the same connection."
+            )
+            raise TypeError(msg)
         self._conn = conn
-        self.project_store: ProjectScopeStore = project_store
+        self._project_store: DurableProjectScopeStore = project_store
         self.persona_store = persona_store
-        self._write_lock = asyncio.Lock()
+
+    @property
+    def project_store(self) -> ProjectScopeStore:
+        """The paired Project store, satisfying `WorkspaceStore`'s read-only contract."""
+        return self._project_store
 
     async def ensure_schema(self) -> None:
         """Create the Workspace tables and their indexes."""
-        await self._conn.executescript(_SCHEMA)
-        await self._conn.commit()
+        await self._conn.execute("PRAGMA foreign_keys = ON")
+        async with serialized_schema_upgrade(self._conn):
+            await execute_schema_script(self._conn, _SCHEMA)
+
+    @asynccontextmanager
+    async def _write_transaction(self) -> AsyncIterator[aiosqlite.Connection]:
+        """The one write-critical section this connection has: the Project
+        store's, because the connection is shared and a second lock over it
+        is the "cannot start a transaction within a transaction" failure
+        (#1121)."""
+        async with self._project_store.transaction() as conn:
+            yield conn
 
     async def create(
         self,
@@ -125,74 +166,71 @@ class SqliteWorkspaceStore:
             role=WorkspaceRole.OWNER,
             added_at=workspace.created_at,
         )
-        await self._conn.execute(
-            """INSERT INTO canonical_workspaces
-                   (workspace_id, name, created_at, updated_at, payload)
-               VALUES (?, ?, ?, ?, ?)""",
-            (
-                workspace.workspace_id,
-                workspace.name,
-                _iso(workspace.created_at),
-                _iso(workspace.updated_at),
-                workspace.model_dump_json(),
-            ),
-        )
-        await self._write_membership(owner)
-        await self._conn.commit()
-
-        try:
-            await self.project_store.create_root(workspace.workspace_id)
-        except BaseException:
-            await self._conn.execute(
-                "DELETE FROM canonical_workspaces WHERE workspace_id = ?",
-                (workspace.workspace_id,),
-            )
-            await self._conn.commit()
-            raise
+        # One `BEGIN IMMEDIATE` ... `COMMIT` for all three rows (#1121). The
+        # Root Project is written last, inside the block, so a failure
+        # anywhere rolls the Workspace and membership back with it.
+        async with self._write_transaction() as conn:
+            await self._insert_workspace(workspace)
+            await self._write_membership(owner)
+            await self._project_store.create_root_in(conn, workspace.workspace_id)
         return workspace
 
-    async def get(self, workspace_id: str) -> Workspace | None:
+    async def get(self, workspace_id: str, *, principal_id: str | None = None) -> Workspace | None:
         """Return the Workspace, or ``None`` when no record has that id."""
+        from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
+        from maistro.workspaces.store_boundary import is_blank_principal, require_workspace_view
+
         async with self._conn.execute(
             "SELECT payload FROM canonical_workspaces WHERE workspace_id = ?",
             (workspace_id,),
         ) as cursor:
             row = await cursor.fetchone()
-        return Workspace.model_validate_json(row[0]) if row is not None else None
+        if row is None:
+            return None
+        if principal_id is not None:
+            if is_blank_principal(principal_id):
+                raise WorkspaceAuthorizationDenied
+            await require_workspace_view(self, workspace_id, principal_id)
+        return Workspace.model_validate_json(row[0])
 
-    async def update(self, workspace: Workspace) -> Workspace:
+    async def update(self, workspace: Workspace, *, principal_id: str | None = None) -> Workspace:
         """Persist a changed Workspace and stamp ``updated_at``."""
+        from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
+        from maistro.workspaces.store_boundary import is_blank_principal, require_workspace_view
+
+        if principal_id is not None:
+            if is_blank_principal(principal_id):
+                raise WorkspaceAuthorizationDenied
+            await require_workspace_view(self, workspace.workspace_id, principal_id)
         updated = workspace.model_copy(update={"updated_at": datetime.now(UTC)})
-        cursor = await self._conn.execute(
-            """UPDATE canonical_workspaces
-                  SET name = ?, updated_at = ?, payload = ?
-                WHERE workspace_id = ?""",
-            (
-                updated.name,
-                _iso(updated.updated_at),
-                updated.model_dump_json(),
-                updated.workspace_id,
-            ),
-        )
-        if cursor.rowcount == 0:
-            await self._conn.rollback()
-            raise WorkspaceNotFound(workspace.workspace_id)
-        await self._conn.commit()
+        async with self._write_transaction() as conn:
+            cursor = await conn.execute(
+                """UPDATE canonical_workspaces
+                      SET name = ?, updated_at = ?, payload = ?
+                    WHERE workspace_id = ?""",
+                (
+                    updated.name,
+                    _iso(updated.updated_at),
+                    updated.model_dump_json(),
+                    updated.workspace_id,
+                ),
+            )
+            if cursor.rowcount == 0:
+                raise WorkspaceNotFound(workspace.workspace_id)
         return updated
 
     async def delete(self, workspace_id: str) -> None:
         """Remove the Workspace, its memberships, and its Projects."""
-        cursor = await self._conn.execute(
-            "DELETE FROM canonical_workspaces WHERE workspace_id = ?",
-            (workspace_id,),
-        )
-        if cursor.rowcount == 0:
-            await self._conn.rollback()
-            raise WorkspaceNotFound(workspace_id)
-        await self._conn.commit()
-        if self.persona_store is not None:
-            await self.persona_store.delete_for_workspace(workspace_id)
-        await self.project_store.purge_workspace(workspace_id)
+        # Purge first, then the Workspace row, in one transaction (#1121).
+        # `WorkspaceNotFound` from the row delete rolls the purge back with
+        # it, so deleting an absent Workspace touches nothing. The live
+        # Persona leaves through its canonical store in the same window, so a
+        # Persona or Project failure rolls the whole delete back.
+        async with self._write_transaction() as conn:
+            await self._project_store.purge_workspace_in(conn, workspace_id)
+            if self.persona_store is not None:
+                await self.persona_store.delete_for_workspace(workspace_id)
+            await self._delete_workspace_row(conn, workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
         """Workspaces the user is a member of, newest first."""
@@ -243,57 +281,67 @@ class SqliteWorkspaceStore:
         user_id: str,
         role: WorkspaceRole,
     ) -> WorkspaceMembership:
-        """Create or re-role a membership, refusing to strip the last owner."""
-        async with self._write_lock:
-            await self._begin_immediate()
-            try:
-                await self._require_workspace(workspace_id)
-                existing = await self._membership(workspace_id, user_id)
-                if (
-                    existing is not None
-                    and existing.role is WorkspaceRole.OWNER
-                    and role is not WorkspaceRole.OWNER
-                ):
-                    await self._require_another_owner(workspace_id, excluding_user_id=user_id)
+        """Create or re-role a membership, refusing to strip the last owner.
 
-                membership = WorkspaceMembership(
-                    workspace_id=workspace_id,
-                    user_id=user_id,
-                    role=role,
-                    added_at=existing.added_at if existing is not None else datetime.now(UTC),
-                )
-                await self._write_membership(membership)
-            except BaseException:
-                await self._conn.rollback()
-                raise
-            await self._conn.commit()
-            return membership
+        The roster is read inside `BEGIN IMMEDIATE`, so the write lock is
+        taken before the owner count is asked, not after.
+        """
+        async with self._write_transaction():
+            await self._require_workspace(workspace_id)
+            existing = await self._membership(workspace_id, user_id)
+            if (
+                existing is not None
+                and existing.role is WorkspaceRole.OWNER
+                and role is not WorkspaceRole.OWNER
+            ):
+                await self._require_another_owner(workspace_id, excluding_user_id=user_id)
+
+            membership = WorkspaceMembership(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                role=role,
+                added_at=existing.added_at if existing is not None else datetime.now(UTC),
+            )
+            await self._write_membership(membership)
+        return membership
 
     async def remove_membership(self, workspace_id: str, *, user_id: str) -> None:
         """Drop a membership, refusing to strip the last owner."""
-        async with self._write_lock:
-            await self._begin_immediate()
-            try:
-                await self._require_workspace(workspace_id)
-                existing = await self._membership(workspace_id, user_id)
-                if existing is None:
-                    await self._conn.rollback()
-                    return
-                if existing.role is WorkspaceRole.OWNER:
-                    await self._require_another_owner(workspace_id, excluding_user_id=user_id)
-                await self._conn.execute(
-                    """DELETE FROM canonical_workspace_memberships
-                        WHERE workspace_id = ? AND user_id = ?""",
-                    (workspace_id, user_id),
-                )
-            except BaseException:
-                await self._conn.rollback()
-                raise
-            await self._conn.commit()
+        async with self._write_transaction() as conn:
+            await self._require_workspace(workspace_id)
+            existing = await self._membership(workspace_id, user_id)
+            if existing is None:
+                return
+            if existing.role is WorkspaceRole.OWNER:
+                await self._require_another_owner(workspace_id, excluding_user_id=user_id)
+            await conn.execute(
+                """DELETE FROM canonical_workspace_memberships
+                    WHERE workspace_id = ? AND user_id = ?""",
+                (workspace_id, user_id),
+            )
 
-    async def _begin_immediate(self) -> None:
-        """Take the write lock before reading the roster, not after."""
-        await self._conn.execute("BEGIN IMMEDIATE")
+    async def _insert_workspace(self, workspace: Workspace) -> None:
+        await self._conn.execute(
+            """INSERT INTO canonical_workspaces
+                   (workspace_id, name, created_at, updated_at, payload)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                workspace.workspace_id,
+                workspace.name,
+                _iso(workspace.created_at),
+                _iso(workspace.updated_at),
+                workspace.model_dump_json(),
+            ),
+        )
+
+    async def _delete_workspace_row(self, conn: aiosqlite.Connection, workspace_id: str) -> None:
+        """Delete the Workspace row (memberships cascade), or refuse."""
+        cursor = await conn.execute(
+            "DELETE FROM canonical_workspaces WHERE workspace_id = ?",
+            (workspace_id,),
+        )
+        if cursor.rowcount == 0:
+            raise WorkspaceNotFound(workspace_id)
 
     async def _write_membership(self, membership: WorkspaceMembership) -> None:
         await self._conn.execute(

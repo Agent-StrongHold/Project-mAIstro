@@ -150,16 +150,11 @@ Messages have priority levels (info, warning, critical). Critical messages are h
   {
     id: "quotas",
     title: "Quotas",
-    content: `Quotas show how much you're using each AI provider (OpenAI, Google, Mistral, etc.) this billing cycle.
+    content: `Quotas & Stats shows real AI usage measured by the LiteLLM gateway (per provider over the last 30 days, and per registered model).
 
-Each provider has:
-- **Used**: How many tokens (words) you've used
-- **Remaining**: How many are left
-- **Usage %**: How close you are to your limit
+The gateway does not expose hard token quotas, so there are no "remaining" or "usage %" bars: a provider card shows measured tokens used, and says so when the gateway does not report a request count. Outcome success/failure stats are currently unmeasured and the panel says so rather than showing zeros.
 
-If a provider runs out, the system automatically falls back to another provider. The "Models" tab shows usage per model, and the "Billing" tab shows cost estimates.
-
-You generally don't need to worry about this — the system manages it automatically. But if you're curious about costs or want to optimize, check here.`,
+If the gateway is unreachable, the panel shows a source error instead of an empty page. Usage numbers you see here are measured, or explicitly marked unavailable — never placeholders.`,
   },
   {
     id: "audit",
@@ -280,7 +275,7 @@ export default function Docs() {
       <div className="page-header">
         <div>
           <h1 style={{ fontFamily: "var(--hand)", fontSize: 28, fontWeight: 700 }}>Documentation</h1>
-          <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--pencil)", marginTop: 4 }}>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>
             Everything you need to know about Hive Conductor
           </div>
         </div>
@@ -309,7 +304,7 @@ export default function Docs() {
               {isOpen && (
                 <div style={{
                   padding: "0 4px 14px",
-                  fontFamily: "var(--mono)", fontSize: 11,
+                  fontFamily: "var(--mono)", fontSize: 12,
                   lineHeight: 1.7, color: "var(--ink)",
                   whiteSpace: "pre-wrap",
                 }}>
