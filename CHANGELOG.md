@@ -102,6 +102,12 @@ or placeholder-only section.
 
 ### Changed
 
+- **Quality and SAST checks can be retried independently (#1357).** Each Quality
+  obligation and SAST scanner has its own job. The existing required check names
+  now reject incomplete or unsuccessful dependency results, preserving branch
+  protection and merge-queue enforcement. One duplicate credential-authority
+  invocation is removed; scanner scopes and proof profiles stay unchanged.
+
 - **Evolve model effects require declared, execution-scoped authority (#1087).**
   Manual/request-scoped Evolve work now resolves an operator-declared `model.chat`
   Binding in its canonical Run's Workspace/Project/Node scope and records the real

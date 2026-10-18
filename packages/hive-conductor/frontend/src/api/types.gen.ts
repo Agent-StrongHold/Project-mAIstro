@@ -10095,6 +10095,19 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
+            /** @description Admission backpressure: too many active runs for this scope; retry after the interval named by Retry-After */
+            429: {
+                headers: {
+                    /** @description Seconds to wait before retrying the request */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        detail: string;
+                    };
+                };
+            };
         };
     };
     get_dag_v1_dags__dag_id__get: {
@@ -10407,6 +10420,19 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Admission backpressure: too many active runs for this scope; retry after the interval named by Retry-After */
+            429: {
+                headers: {
+                    /** @description Seconds to wait before retrying the request */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        detail: string;
+                    };
                 };
             };
         };
