@@ -321,3 +321,7 @@ class ReadyResponse(BaseModel):
 
     ready: bool
     checks: dict[str, bool]
+    # #290: actionable diagnostics for degraded-but-ready instances — a
+    # broken zone database or idle scheduler leaves `ready` keyed on its own
+    # checks, and this is where the reason lives. Empty when fully healthy.
+    warnings: list[str] = []

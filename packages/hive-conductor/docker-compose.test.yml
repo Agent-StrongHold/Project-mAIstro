@@ -58,7 +58,8 @@ services:
     depends_on:
       hive:
         condition: service_healthy
-    command: ["pytest", "tests/e2e/test_pm_workflow_api.py", "-v", "--tb=short"]
+    command:
+      ["pytest", "tests/e2e/test_pm_workflow_api.py", "tests/e2e/test_scheduler_timezone_container.py", "-v", "--tb=short"]
     profiles: ["test"]
 
   e2e-tests:

@@ -725,6 +725,31 @@ jobs:
         run: |
           docker compose -f docker-compose.test.yml --profile test up --build \
             --abort-on-container-exit --exit-code-from api-tests api-tests
+      # Scheduler timezone recovery across a real container restart (#290).
+      # `up --abort-on-container-exit` stops (not removes) hive when the
+      # api-tests container exits, so the durable state dir is intact and
+      # `start hive` is a process restart against persisted schedules. The
+      # restart-marked selection verifies persistence, cursor recomputation,
+      # and scheduler health on the other side of that restart.
+      - name: Restart hive and verify scheduler timezone recovery (#290)
+        if: success()
+        working-directory: packages/hive-conductor
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.test.yml start hive
+          cid=$(docker compose -f docker-compose.test.yml ps -q hive)
+          for i in $(seq 1 40); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null || echo starting)
+            [ "$status" = "healthy" ] && break
+            echo "waiting for hive health: $status ($i)"; sleep 3
+          done
+          [ "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = "healthy" ] \
+            || { echo "hive never became healthy after restart"; exit 1; }
+          docker compose -f docker-compose.test.yml run --rm --no-deps -T \
+            -e SCHED_TZ_AFTER_RESTART=1 \
+            api-tests pytest tests/e2e/test_scheduler_timezone_container.py \
+            -k restart_recovery -v --tb=short
       - name: Dump hive logs
         if: always()
         working-directory: packages/hive-conductor

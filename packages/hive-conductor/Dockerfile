@@ -72,6 +72,18 @@ RUN pip install --no-cache-dir \
 COPY packages/hive-conductor/backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt && \
     pip install --no-cache-dir "setuptools>=78.1.1"
+# Deliberate timezone database (#290). The scheduler resolves every schedule
+# zone through `zoneinfo.ZoneInfo`, INCLUDING `ZoneInfo("UTC")` — with no tz
+# database CPython raises `ZoneInfoNotFoundError` for even the UTC key, and
+# the Conductor catches scheduler startup failure and keeps serving, so a
+# zone-less image looks healthy while scheduling is silently down. The Debian
+# base happens to ship a transitive /usr/share/zoneinfo today, but nothing in
+# this file asked for it, so a base-image refresh could drop it unnoticed.
+# Pin the audited `tzdata` wheel inside the self-contained venv instead: it
+# travels with the one artifact the runtime stage copies, and the runtime
+# stage's PYTHONTZPATH below makes this wheel the ONLY source Python consults.
+ARG TZDATA_VERSION=2026.3
+RUN pip install --no-cache-dir "tzdata==${TZDATA_VERSION}"
 # Tracing is opt-in at build time, and this is the door (#668).
 #
 # `backend/adapters/telemetry_langfuse.py` speaks OTLP using the OpenTelemetry
@@ -108,7 +120,12 @@ ENV PATH="/app/venv/bin:$PATH" \
     PYTHONPATH=/app/backend:/app \
     CONDUCTOR_DATA_DIR=/data \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    # Timezone source contract (#290): the pinned `tzdata` wheel inside the
+    # venv is the single zone database. Removing the wheel fails the smoke
+    # test below at build time, and a runtime gap surfaces as degraded
+    # `tz_database` health on /health, never as a silently idle scheduler.
+    PYTHONTZPATH=/app/venv/lib/python3.13/site-packages/tzdata/zoneinfo
 COPY --from=pybuild /app/venv /app/venv
 COPY --from=agebuild /out/age /out/age-keygen /usr/bin/
 COPY packages/hive-conductor/backend/ /app/backend/
@@ -123,6 +140,12 @@ COPY agents/ /app/backend/agents/
 COPY --from=frontend /build/dist /app/frontend/dist
 # Persistent conductor state dir, pre-owned by the nonroot uid (see pybuild).
 COPY --from=pybuild --chown=65532:65532 /app/state_seed /data
+# Image smoke test (#290): the shipped runtime must resolve UTC and a real
+# region zone through the deliberate PYTHONTZPATH source, with DST-correct
+# offsets. A build that lost the tzdata wheel (or broke PYTHONTZPATH) fails
+# here instead of shipping a scheduler that silently never fires. Runs as
+# root only because it precedes the USER directive below.
+RUN python -c "import os, zoneinfo; assert os.path.isdir(os.environ['PYTHONTZPATH']), os.environ['PYTHONTZPATH']; utc = zoneinfo.ZoneInfo('UTC'); ny = zoneinfo.ZoneInfo('America/New_York'); berlin = zoneinfo.ZoneInfo('Europe/Berlin'); from datetime import datetime, timezone as tz; winter = datetime(2026, 1, 15, 12, 0, tzinfo=tz.utc).astimezone(berlin).utcoffset(); summer = datetime(2026, 7, 15, 12, 0, tzinfo=tz.utc).astimezone(berlin).utcoffset(); assert (winter.total_seconds(), summer.total_seconds()) == (3600.0, 7200.0), (winter, summer); print('tz smoke ok: UTC/America/New_York/Europe/Berlin via', os.environ['PYTHONTZPATH'])"
 EXPOSE 8101
 WORKDIR /app/backend
 # Keep the app nonroot even though the pinned runtime is a slim Python image.

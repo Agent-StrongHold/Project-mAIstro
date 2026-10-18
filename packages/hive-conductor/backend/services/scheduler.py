@@ -34,14 +34,53 @@ _DEFAULT_TIMEZONE = "UTC"
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 _runner: _ScheduleRunner | None = None
+# Last failure that kept the scheduler from starting or killed its loop.
+# /health reads this (#290): a zoneless or broken scheduler must be visible
+# independently from process liveness, because the lifespan swallows
+# `start_scheduler` failures by design — a Conductor that schedules nothing
+# still answers requests, and without this record nothing distinguishes it
+# from a healthy one.
+_start_error: str | None = None
+
+
+def scheduler_status() -> dict[str, Any]:
+    """Scheduler liveness for the health probes (#290).
+
+    `running` is true only while a start attempt has a live loop task; a
+    task that crashed mid-loop is reported with its exception, not silently
+    as healthy. `error` carries the actionable diagnostic (for a timezone
+    failure, that is the zoneinfo error naming the zone that could not load).
+    """
+    task = _runner.task if _runner is not None else None
+    task_error: str | None = None
+    if task is not None and task.done():
+        exc = task.exception()
+        if exc is not None:
+            task_error = f"{type(exc).__name__}: {exc}"
+    running = _runner is not None and task is not None and not task.done()
+    status: dict[str, Any] = {
+        "running": running,
+        "error": _start_error if _start_error is not None else task_error,
+    }
+    if _runner is not None and _runner._last_check is not None:
+        status["last_tick_at"] = _runner._last_check.isoformat()
+    return status
 
 
 def start_scheduler() -> None:
-    global _runner
+    global _runner, _start_error
     if _runner is not None:
         return
-    _runner = _ScheduleRunner()
-    _runner.task = asyncio.ensure_future(_runner.run())
+    _start_error = None
+    try:
+        _runner = _ScheduleRunner()
+        _runner.task = asyncio.ensure_future(_runner.run())
+    except Exception as exc:
+        _runner = None
+        # Record before re-raising: the lifespan logs-and-continues, so this
+        # module-level record is the only durable trace of the failure.
+        _start_error = f"{type(exc).__name__}: {exc}"
+        raise
 
 
 def stop_scheduler() -> None:
