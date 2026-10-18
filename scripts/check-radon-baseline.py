@@ -26,6 +26,13 @@ PASSING_RANKS = {"A", "B"}
 RATCHET = "radon"
 METRIC_DEFINITION_VERSION = "1"
 
+#: The analyzer this gate executes is an installed distribution, not bundled
+#: source: `_run_radon` invokes `sys.executable -m radon`, so the version that
+#: matters is the one installed in THIS interpreter, observed through
+#: importlib.metadata in this process -- never the lockfile's declared version
+#: (#319).
+ANALYZER_DISTRIBUTION = "radon"
+
 
 def _provenance() -> ModuleType:
     spec = importlib.util.spec_from_file_location("_ratchet_provenance", _PROVENANCE_SOURCE)
@@ -95,6 +102,12 @@ def _flatten(path: str, items: list[dict[str, Any]]) -> list[Block]:
             Block(path, item["lineno"], item["name"], classname, item["rank"], item["complexity"])
         )
     return blocks
+
+
+def _tool_version(prov: ModuleType) -> str:
+    """Installed analyzer identity observed in this gate's interpreter (#319)."""
+    version: str = prov.installed_distribution_version(ANALYZER_DISTRIBUTION)
+    return version
 
 
 def _run_radon(args: list[str]) -> list[Block]:
@@ -179,14 +192,35 @@ def _print_details(result: Comparison) -> None:
             print(f"  {key}", file=sys.stderr)
 
 
+#: Every shipped package's source, not just maistro-core. The gate watched one
+#: package while canvas, evolve, rsi and the rest carried every D and E block in
+#: production code -- the ledger read clean because nothing was looking. Vendored
+#: third-party source stays out: it is kept byte-faithful on purpose and is not
+#: this repository's complexity to ratchet.
+DEFAULT_SCAN = [
+    "-i",
+    "third_party",
+    "packages/maistro-bootstrap/src",
+    "packages/maistro-canvas/src",
+    "packages/maistro-core/src",
+    "packages/maistro-design/src",
+    "packages/maistro-evolve/src",
+    "packages/maistro-registry/src",
+    "packages/maistro-rsi/src",
+    "packages/maistro-server/src",
+    "packages/maistro-turing/src",
+]
+
+
 def main(argv: list[str]) -> int:
-    scan_args = argv or ["packages/maistro-core/src"]
+    scan_args = argv or list(DEFAULT_SCAN)
     candidate_loaded = _load_baseline()
     candidate = _entries(candidate_loaded)
     findings = [block for block in _run_radon(scan_args) if block.rank not in PASSING_RANKS]
 
     prov = _provenance()
     try:
+        tool_version = _tool_version(prov)
         trusted_ref = prov.resolve_baseline(BASELINE, root=ROOT)
         trusted_loaded = trusted_ref.loads(default={"entries": []})
         if not isinstance(trusted_loaded, dict):
@@ -212,6 +246,7 @@ def main(argv: list[str]) -> int:
             ratchet=RATCHET,
             baseline=trusted_ref,
             tool="radon cc -j",
+            tool_version=tool_version,
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=f"{len(trusted)} reviewed C-or-worse blocks",
             new_value=f"{len(findings)} C-or-worse blocks",

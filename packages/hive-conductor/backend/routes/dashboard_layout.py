@@ -22,7 +22,9 @@ from typing import ClassVar
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from services import dashboard_layouts
+from services.dashboard_metrics import build_dashboard_metrics
 from services.dashboard_safety import sanitize_dashboard_layout
+from services.request_principal import require_actor_id
 
 _DEMO_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
@@ -39,11 +41,7 @@ def _user_id(request: Request) -> str:
     path. The middleware does cover it today; the refusal is what keeps that
     true if it ever stops.
     """
-    user = getattr(request.state, "user", None) or {}
-    principal = user.get("id") or user.get("username")
-    if not principal:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return str(principal)
+    return require_actor_id(request)
 
 
 class WidgetConfig(BaseModel):
@@ -111,24 +109,18 @@ async def save_layout(request: Request, body: DashboardLayout) -> dict:
 
 
 @router.get("/metrics")
-async def get_metrics() -> dict:
-    """Get live dashboard metrics for the header KPI cards."""
-    from pathlib import Path
+async def get_metrics(request: Request) -> dict:
+    """This principal's dashboard KPI envelopes (#380).
 
-    agents_path = Path(__file__).parent.parent / "data" / "agents.json"
-    agent_count = 0
-    try:
-        agent_count = len(json.loads(agents_path.read_text()))
-    except Exception:
-        agent_count = 9  # fallback to configured agent count
-    return {
-        "active_agents": agent_count,
-        "runs_today": 0,
-        "avg_latency_ms": 0,
-        "total_cost": 0.0,
-        "approval_rate": None,
-        "ttft_ms": 0,
-    }
+    Every KPI names its authoritative query, scope, window, unit and
+    freshness, and is `ok`, `no_data`, `stale`, `unavailable` or `error` —
+    never a hard-coded stand-in. The old payload shipped `runs_today: 0`,
+    `ttft_ms: 0`, and a literal `9` when the agent roster file was missing,
+    so a deployment with activity read as idle and a missing source read as
+    healthy. See `services/dashboard_metrics.py` for the vocabulary.
+    """
+    principal = _user_id(request)
+    return build_dashboard_metrics(principal)
 
 
 @router.get("/widget-examples")

@@ -237,7 +237,13 @@ async def test_activate_route_delegates_to_governed_health_operation(
     settings = type("Settings", (), {"hive_default_workspace_id": "default"})()
     monkeypatch.setattr(config, "get_settings", lambda: settings)
 
-    response = await providers_mod.activate_provider("mistral")
+    from starlette.requests import Request
+
+    from maistro.identity import Principal
+
+    request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+    request.state.principal = Principal(user_id="test-admin")
+    response = await providers_mod.activate_provider("mistral", request)
 
     assert response["first_model_call"]["invocation_id"] == "inv-1"
     assert calls[0]["binding"].project_id == root.project_id

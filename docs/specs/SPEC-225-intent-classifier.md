@@ -20,7 +20,8 @@ blocked-by: []
 contracts:
   - behavioral
 tests:
-  - packages/maistro-core/tests/classifier/test_engine.py
+  - packages/maistro-core/tests/classifier/test_engine_priority.py
+  - packages/maistro-core/tests/classifier/test_engine_gaps.py
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
@@ -106,7 +107,11 @@ second, and returns the list of distinct task types found (empty unless
 
 ## Testing
 
-Covered by `packages/maistro-core/tests/classifier/test_engine.py`.
+Covered by `packages/maistro-core/tests/classifier/test_engine_priority.py`
+and `test_engine_gaps.py`. The single `test_engine.py` file this spec cited
+was split into those two during coverage hardening; the split files are the
+engine's proving tests — paths repointed when cited test paths were made to
+resolve (#812).
 
 ## Open questions
 

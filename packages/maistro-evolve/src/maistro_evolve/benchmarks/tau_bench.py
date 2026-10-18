@@ -181,5 +181,14 @@ async def run_tau_bench(genome: PipelineGenome, llm_call: Any) -> EvalResult:
         cost_usd=round(total_cost, 4),
         duration_seconds=round(elapsed, 3),
         samples_evaluated=evaluated,
-        metadata={"total_samples": samples, "fidelity": "proxy"},
+        metadata={
+            "total_samples": samples,
+            "fidelity": "proxy",
+            # Champion-selection provenance (#384): every point comes from the
+            # JSON-structured observed calls (#852). Outcomes in the
+            # multi-turn loop are harness-simulated (proxy fidelity), so the
+            # evidence says so explicitly rather than implying a real
+            # tool-execution trace.
+            "evidence": {"method": "structured-call-match", "outcomes": "simulated"},
+        },
     )
