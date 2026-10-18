@@ -52,9 +52,15 @@ state; it does not re-own leaf scope on the milestone branch.
    Workspace/Project/Goal Run identity with differing Graph hashes and
    Rubric catalogs).
 4. **Park / redirect / accept as a HITL fence on waiting NodeRuns — NOT
-   MET at runtime.** Packs declare `FencePoint`s (`packs/types.py`) and the
-   #989 fixture Runs demonstrate park/resume/accept through canonical
-   WAITING lifecycle moves, but there is no first-class fence-decision
+   MET at runtime.** Packs declare `FencePoint`s (`packs/types.py`). The
+   #989 game fixture demonstrates park/resume through canonical WAITING
+   lifecycle moves; the book fixture's accept decision is NOT such evidence:
+   its fence-NodeRun is created via `_complete_node`
+   (`pack_fixtures.py:291-332,578-603`), which transitions
+   QUEUED → RUNNING → COMPLETED without ever entering WAITING, so the
+   recorded `accept` is nonconforming fixture data and cannot evidence the
+   AC-7 rule that `accept` applies only to a waiting NodeRun. There is no
+   first-class fence-decision
    runtime/store: grep finds no `FenceDecision` type in production src;
    `graph/seeds/pack_fixtures.py` documents that fence decisions "have no
    durable stores of their own yet" and live in evidence fields
@@ -63,7 +69,8 @@ state; it does not re-own leaf scope on the milestone branch.
    #794/M7-A5 commit exists in `c5e070d97..ab8b3737f`.
 5. **One public proof with inspectable lineage — PARTIAL.** #989 (M7-A13)
    seeds inspectable book (accepted: wave eval records → refine Attempt 2 →
-   accept fence) and game (parked: failing dimension → park fence → resume
+   recorded accept decision, via direct completion — never WAITING) and
+   game (parked: failing dimension → park fence → resume
    across a SQLite reconnect) fixture Runs through canonical spine APIs
    only, listable/openable in the host surface —
    `packages/maistro-core/tests/graph/seeds/test_pack_fixtures.py` (7
