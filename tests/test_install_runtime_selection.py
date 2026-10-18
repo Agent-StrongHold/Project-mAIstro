@@ -37,6 +37,9 @@ _FUNCTIONS = (
     "selected_runtime_install_hint",
     "docker_only_preflight_checks",
     "ensure_compose_runtime",
+    "compose_line_cmd",
+    "write_recovery_md",
+    "print_success",
 )
 
 
@@ -67,6 +70,11 @@ check_docker_credential_helper() {{ echo cred-helper >> docker-only-checks.log; 
 record_docker_sock() {{ echo docker-sock >> docker-only-checks.log; }}
 COMPOSE_CMD=()
 COMPOSE_FILES=()
+COMPOSE_FILE=docker-compose.yml
+ENV_FILE=.env
+INSTALL_CLI=1
+ENGINE_BASE_URL=http://127.0.0.1:8000
+CONDUCTOR_BASE_URL=http://127.0.0.1:8101
 mkdir -p "$PLAN_DIR"
 source <(sed -n {extract!r} {install})
 {prelude}
@@ -430,3 +438,77 @@ def test_install_manifest_records_the_container_runtime() -> None:
     assert '"container_runtime": "$(selected_container_runtime)"' in body, (
         "install.sh stopped recording the honored runtime in the install manifest"
     )
+
+
+# --- generated recovery/success text honors an unresolved front-end ---------
+
+
+def test_recovery_md_names_selected_runtime_when_compose_cmd_unresolved(
+    tmp_path: Path,
+) -> None:
+    """A --no-start run never resolves COMPOSE_CMD, and the recovery text must
+    not fall back to the docker-first literal: a Podman install whose RECOVERY.md
+    says `docker compose` hands recovery to the other runtime. The docker shim
+    fully works here — under the old fallback text it was named anyway."""
+    plan = tmp_path / "plan"
+    _write_plan(plan, "podman")
+    _write_runtime_shim(tmp_path, "docker", compose=True, daemon=True)
+    _write_runtime_shim(
+        tmp_path, "podman", compose=False, daemon=False, canary="podman-invocations.log"
+    )
+    result = _run(tmp_path, plan, "write_recovery_md\n")
+    assert result.returncode == 0, result.stderr
+    recovery = (plan / "RECOVERY.md").read_text(encoding="utf-8")
+    assert "podman compose" in recovery, recovery
+    assert "docker compose" not in recovery, recovery
+
+
+def test_recovery_md_uses_the_resolved_front_end_when_present(tmp_path: Path) -> None:
+    plan = tmp_path / "plan"
+    _write_plan(plan, "podman")
+    result = _run(
+        tmp_path,
+        plan,
+        'COMPOSE_CMD=(podman compose)\nwrite_recovery_md\n',
+    )
+    assert result.returncode == 0, result.stderr
+    recovery = (plan / "RECOVERY.md").read_text(encoding="utf-8")
+    status_line = next(line for line in recovery.splitlines() if "ps" in line and "Status" in line)
+    assert status_line.startswith("| Status   | `podman compose"), status_line
+    assert "docker compose" not in recovery, recovery
+
+
+def test_recovery_md_auto_uses_the_documented_docker_first_order(
+    tmp_path: Path,
+) -> None:
+    """Unselected (auto) with both front-ends present names docker compose —
+    the same order every other auto probe uses."""
+    plan = tmp_path / "plan"
+    _write_plan(plan, "auto")
+    _write_runtime_shim(tmp_path, "docker", compose=True, daemon=True)
+    _write_runtime_shim(tmp_path, "podman", compose=True, daemon=True)
+    result = _run(tmp_path, plan, "write_recovery_md\n")
+    assert result.returncode == 0, result.stderr
+    recovery = (plan / "RECOVERY.md").read_text(encoding="utf-8")
+    status_line = next(line for line in recovery.splitlines() if "ps" in line and "Status" in line)
+    assert status_line.startswith("| Status   | `docker compose"), status_line
+
+
+def test_print_success_names_selected_runtime_without_resolved_front_end(
+    tmp_path: Path,
+) -> None:
+    """print_success's Logs/Stop lines are the commands an operator copies on
+    the very first day; with nothing resolved they must still name the
+    selection, not the docker-first literal."""
+    plan = tmp_path / "plan"
+    _write_plan(plan, "podman")
+    result = _run(
+        tmp_path,
+        plan,
+        "print_success\n",
+        # No runtime shim on PATH at all: the literal-selection branch.
+        prelude="",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "podman compose" in result.stdout, result.stdout
+    assert "docker compose" not in result.stdout, result.stdout

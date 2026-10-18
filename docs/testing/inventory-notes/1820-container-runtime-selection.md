@@ -2,7 +2,7 @@
 inventory-delta:
   packages/maistro-bootstrap/tests: +9
   packages/maistro-core/tests: +6
-  tests/: +16
+  tests/: +20
 ---
 # 1820-container-runtime-selection
 
@@ -24,7 +24,13 @@ old unconditional `[ok] Compose runtime`, selection precedence (persisted
 plan beats the transient env override; env fills the wizardless gap; unknown
 tokens warn and degrade to auto), legacy plans without the runtime key still
 resolving via auto, the docker-only preflight gate skipping under podman, and
-the manifest recording the honored runtime.
+the manifest recording the honored runtime. A follow-up repair added four
+more: the generated recovery/success text must name the selection even when
+no compose front-end was resolved — a `--no-start` run leaves COMPOSE_CMD
+empty, and the old `:-docker compose` fallback wrote Docker commands into a
+Podman install's RECOVERY.md and print_success output (proven to fail against
+the pre-fix install.sh: the two headline tests fail, the resolved-front-end
+and docker/auto-order ones pass on both, as they should).
 
 Two adjacent suites were updated rather than added to: `test_install_compose_floor.py`'s
 harness now also lifts `selected_container_runtime`/`runtime_compose_cmd`

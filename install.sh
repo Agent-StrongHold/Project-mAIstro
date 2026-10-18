@@ -2121,11 +2121,46 @@ MANIFEST_EOF
     fi
 }
 
+# The front-end recovery/success text names (#1820). A --no-start run
+# (MAISTRO_START_STACK=0/--no-start) never enters start_engine, so COMPOSE_CMD
+# is unresolved; the old `:-docker compose` fallback then printed Docker
+# commands for an install whose plan selected Podman — recovery text naming
+# the OTHER runtime is exactly what #1820 forbids. Prefer the resolved
+# front-end; else probe the selection's own CLI (a read-only `compose
+# version`, never a bootstrap); else name the selection literally, so the
+# text is actionable even on a machine where the front-end answers later.
+compose_line_cmd() {
+    if [[ -n "${COMPOSE_CMD[*]:-}" ]]; then
+        echo "${COMPOSE_CMD[*]}"
+        return 0
+    fi
+    local selected
+    selected="$(selected_container_runtime)"
+    case "$selected" in
+        docker | podman)
+            if runtime_compose_cmd "$selected"; then
+                echo "${COMPOSE_CMD[*]}"
+            else
+                echo "$selected compose"
+            fi
+            return 0
+            ;;
+    esac
+    # auto: the same documented docker-then-podman order detect_compose_cmd
+    # probes with; a literal fallback keeps the text honest when neither
+    # CLI answers right now.
+    if runtime_compose_cmd docker || runtime_compose_cmd podman; then
+        echo "${COMPOSE_CMD[*]}"
+        return 0
+    fi
+    echo "docker compose"
+}
+
 # Write operator recovery commands next to the plan artifacts and echo the
 # path in print_success (SPEC-072726-3439 Phase 3).
 write_recovery_md() {
     mkdir -p "$PLAN_DIR"
-    local compose_line="${COMPOSE_CMD[*]:-docker compose} ${COMPOSE_FILES[*]:--f $COMPOSE_FILE}"
+    local compose_line="$(compose_line_cmd) ${COMPOSE_FILES[*]:--f $COMPOSE_FILE}"
     cat > "$PLAN_DIR/RECOVERY.md" <<EOF
 # Maistro recovery & operations
 
@@ -2243,8 +2278,8 @@ print_success() {
     echo "  Plan dir:    $PLAN_DIR"
     echo ""
     echo "Commands:"
-    echo "  Logs:  ${COMPOSE_CMD[*]:-docker compose} ${COMPOSE_FILES[*]:--f $COMPOSE_FILE} logs -f maistro-engine"
-    echo "  Stop:  ${COMPOSE_CMD[*]:-docker compose} ${COMPOSE_FILES[*]:--f $COMPOSE_FILE} down"
+    echo "  Logs:  $(compose_line_cmd) ${COMPOSE_FILES[*]:--f $COMPOSE_FILE} logs -f maistro-engine"
+    echo "  Stop:  $(compose_line_cmd) ${COMPOSE_FILES[*]:--f $COMPOSE_FILE} down"
     echo ""
     if [[ "$INSTALL_CLI" != "0" && "$INSTALL_CLI" != "false" ]]; then
         echo "Local CLI:"
