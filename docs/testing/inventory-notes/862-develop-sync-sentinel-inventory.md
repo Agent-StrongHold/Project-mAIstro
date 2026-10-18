@@ -1,13 +1,22 @@
----
-inventory-delta:
-  tests/: +1
----
 
 # 862-develop-sync-sentinel-inventory
 
 One inherited test, recorded after the develop sync (origin/develop at
 `2f56be40a`) that this repair round performed. This branch added no test in
 this step.
+
+## Re-derived to zero (2026-10-18 CI repair)
+
+Develop later recorded the same +1 under its own slug:
+`1993-hive-permission-preset-inventory.md` (merged into this branch with the
+#2155 quality/SAST split, `1a2e12656`, during the sync to `ce2048cd2`). Both
+notes counting the same node left the ledger one test ahead of collection
+(`DRIFT tests/: expected 5545, collected 5544` — the only suite drift in the
+`test` gate at `d04e8776`). Per the idempotency contract below,
+`check-suite-inventory.py --update --note 862-develop-sync-sentinel-inventory
+--suite tests/` re-derived this note's delta from the actual drift; it is now
+zero and the front-matter block is intentionally gone. Upstream's `1993` note
+is the surviving record of the movement.
 
 ## What moved
 
@@ -30,4 +39,5 @@ what this issue changed. Recording the inherited delta under its own slug
 keeps each change's number pointing at its own cause, and the note is
 idempotent against later base moves: if develop records the same +1 under its
 own slug, the next `--update` re-derives this note's delta from the actual
-drift rather than accumulating.
+drift rather than accumulating. That re-derivation has now happened; see the
+section above.
