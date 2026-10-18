@@ -1,8 +1,8 @@
 ---
 inventory-delta:
-  packages/maistro-bootstrap/tests: +9
+  packages/maistro-bootstrap/tests: +12
   packages/maistro-core/tests: +6
-  tests/: +21
+  tests/: +25
 ---
 # 1820-container-runtime-selection
 
@@ -38,6 +38,23 @@ engine as `python -c import ...` — SyntaxError every probe, engine stuck
 unhealthy, conductor dependency never starting). The harness also became
 hermetic (shim dir + coreutils toolbin, no system PATH) so a host with
 real docker/podman binaries cannot flip the unavailable-selection tests.
+The CI-repair round added four more (`tests/` total +25): the install
+manifest must record the RESOLVED compose front-end, not the raw
+selection — `write_install_manifest` consumed
+`selected_container_runtime` via command substitution, so an `auto`
+install recorded the literal `auto` and `maistro upgrade` re-ran its
+docker-first lookup, handing a Podman-owned stack to a merely-present
+Docker CLI on the first upgrade. `manifest_container_runtime` prefers
+the front-end `start_engine` resolved, probes the documented
+docker-then-podman order read-only under `auto`, and keeps `auto` only
+when nothing answers (tests: auto landing on podman with a compose-less
+docker present, auto landing on docker, auto staying `auto` when no
+front-end answers, and an explicit podman selection surviving a working
+docker). The same round moved the unknown-runtime-token diagnostic to
+stderr — stdout must stay the bare token because every caller consumes
+it via command substitution — and the harness's `warn` stub now
+mirrors the real install.sh's stdout `warn` so that contract is pinned
+rather than masked.
 
 Two adjacent suites were updated rather than added to: `test_install_compose_floor.py`'s
 harness now also lifts `selected_container_runtime`/`runtime_compose_cmd`
@@ -56,7 +73,13 @@ the resolved runtime and the raw selection, the materialized `delivery.json`
 carrying them, Makefile/entrypoint artifacts naming only the selected runtime
 for both delivery modes, the renderer rejecting an unsupported runtime
 instead of defaulting to docker, the keyword-default keeping direct callers
-working, and the legacy-plan fallback to docker.
+working, and the legacy-plan fallback to docker. The CI-repair round added
+three degenerate-shape tests (+12 total): `_plan_runtime`'s isinstance guards
+are total over arbitrary plan dicts — missing/non-dict `generated_artifacts`,
+missing/non-dict `delivery`, an unrecognized runtime token, the podman happy
+path — and a corrupted delivery artifact still materializes on the docker
+default (the diff-coverage gate flagged the two untaken guard arcs at 50%;
+these take them).
 
 `packages/maistro-core/tests` (+6) pins the upgrade path onto the same
 contract: `maistro upgrade` used to re-derive its compose front-end with a

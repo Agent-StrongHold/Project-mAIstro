@@ -12,7 +12,7 @@ from maistro_bootstrap.delivery import (
     render_image_pull_compose,
     render_makefile,
 )
-from maistro_bootstrap.materialize import materialize_install_artifacts
+from maistro_bootstrap.materialize import _plan_runtime, materialize_install_artifacts
 from maistro_bootstrap.plan import build_install_plan
 from maistro_bootstrap.schema import parse_answers_dict
 
@@ -192,3 +192,40 @@ def test_materialize_falls_back_to_docker_only_for_legacy_plans(tmp_path: Path) 
     target = tmp_path / "out"
     materialize_install_artifacts(plan, target)
     assert "docker compose" in (target / "Makefile").read_text(encoding="utf-8")
+
+
+def test_plan_runtime_rejects_unexpected_delivery_shapes() -> None:
+    """_plan_runtime's guards are total over arbitrary plan-shaped dicts: a
+    missing/non-dict generated_artifacts and a missing/non-dict delivery each
+    fall back to docker (and an unrecognized token is not passed through).
+    materialize_install_artifacts raises earlier for a non-dict artifacts, so
+    the first two guards are reachable only through this reader directly."""
+    assert _plan_runtime({}) == "docker"
+    assert _plan_runtime({"generated_artifacts": None}) == "docker"
+    assert _plan_runtime({"generated_artifacts": {"delivery": None}}) == "docker"
+    assert _plan_runtime({"generated_artifacts": {"delivery": ["podman"]}}) == "docker"
+    assert (
+        _plan_runtime({"generated_artifacts": {"delivery": {"container_runtime": "nerdctl"}}})
+        == "docker"
+    )
+
+
+def test_plan_runtime_reads_the_delivery_recording() -> None:
+    """The happy path the fallback exists to protect: the delivery artifact's
+    recording is the resolved runtime, verbatim."""
+    plan = {"generated_artifacts": {"delivery": {"container_runtime": "podman"}}}
+    assert _plan_runtime(plan) == "podman"
+
+
+def test_materialize_survives_a_corrupted_delivery_artifact(tmp_path: Path) -> None:
+    """generated_artifacts present but delivery not a mapping (a hand-edited or
+    truncated plan file): materialization still completes on the docker
+    default instead of crashing the installer mid-write."""
+    root = _fake_repo(tmp_path)
+    answers = parse_answers_dict({"delivery_mode": "source_build"})
+    plan = build_install_plan(answers, repo_root=root)
+    plan["generated_artifacts"]["delivery"] = ["corrupted"]
+    target = tmp_path / "out"
+    materialize_install_artifacts(plan, target)
+    assert "docker compose" in (target / "Makefile").read_text(encoding="utf-8")
+    assert "docker compose" in (target / "install.sh").read_text(encoding="utf-8")
