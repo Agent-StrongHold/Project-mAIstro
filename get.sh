@@ -26,6 +26,13 @@ set -euo pipefail
 # The default used to be "clone branch main", which made "install v1.0.0"
 # inexpressible and meant two people running the same command a week apart got
 # different code. The default is now a tag, which is immutable.
+#
+# Re-running with a different selection (--channel dev after a stable install,
+# --branch my/topic, --version vX.Y.Z) switches the existing checkout to that
+# ref (#411): the requested ref is fetched by explicit refspec first, the
+# switch is refused while tracked source files carry uncommitted changes, and
+# a failed switch rolls the checkout back to where it was. Untracked files —
+# .env, data, anything else the user put there — are never touched.
 
 # SECURITY-REVIEW: MAISTRO_REPO selects an external GitHub source; every use
 # below remains a quoted URL or argv value and is never evaluated as shell code.
@@ -83,6 +90,11 @@ Version selection:
   --require-release   Fail instead of falling back to a branch when no release
                       tag can be resolved.
   -h, --help          Show this help.
+
+Re-running with a different channel switches the existing checkout to that
+ref (#411). The switch is refused while tracked source files carry
+uncommitted changes — commit or stash them first. Your .env, data, and other
+untracked files are kept on every path.
 
 Everything after `--`, and any unrecognized option, is passed straight through
 to install.sh (e.g. --answers-file, --skip-wizard, --no-start).
@@ -197,6 +209,110 @@ ensure_git_origin() {
     fi
 }
 
+# The checkout's current position, for messages and for rollback: the branch
+# name when HEAD is on one, else the short SHA of the detached commit.
+current_ref_label() {
+    local branch
+    branch="$(git -C "$INSTALL_DIR" symbolic-ref -q --short HEAD || true)"
+    if [[ -n "$branch" ]]; then
+        printf '%s' "$branch"
+    else
+        git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || printf 'unknown'
+    fi
+}
+
+# True when the checkout already sits on the requested ref: on branch $REF, or
+# at tag $REF. Anything else — another branch, another tag, a detached HEAD —
+# makes this run a channel change, which is the case that must not proceed on
+# a dirty tree.
+is_on_requested_ref() {
+    if [[ "$REF_KIND" == "tag" ]]; then
+        local tagged
+        # rev-list -n 1 peels an annotated tag to its commit, like ^{commit},
+        # without the brace syntax the install-function gate cannot tell from
+        # an invoked command.
+        tagged="$(git -C "$INSTALL_DIR" rev-list -n 1 "refs/tags/${REF}" 2>/dev/null || true)"
+        [[ -n "$tagged" && "$tagged" == "$(git -C "$INSTALL_DIR" rev-parse HEAD)" ]]
+    else
+        [[ "$(git -C "$INSTALL_DIR" symbolic-ref -q --short HEAD || true)" == "$REF" ]]
+    fi
+}
+
+# True when a tracked file differs from HEAD, staged or not. Untracked files
+# (.env, data, notes) never count: a checkout cannot touch them.
+has_dirty_tracked_changes() {
+    ! git -C "$INSTALL_DIR" diff-index --quiet HEAD --
+}
+
+# Fetch the requested ref into the ref the checkout step reads, by explicit
+# refspec.
+#
+# The bare `git fetch --depth 1 origin develop` this used to run is exactly
+# what broke a channel change (#411): the one-liner installs a single-branch
+# clone (`--depth 1 --branch <ref>`), whose remote.origin.fetch maps only that
+# one branch, so a named branch landed in FETCH_HEAD alone and
+# refs/remotes/origin/develop was never created — the `checkout -B develop
+# origin/develop` after it then died with "'origin/develop' is not a commit".
+# Naming the destination ref sidesteps the clone's refspec entirely, and
+# naming the source side (refs/heads/ or refs/tags/) keeps the fetch from ever
+# asking the remote for an arbitrary SHA. --force lets the target ref move
+# non-fast-forward, which a shallow tip routinely is relative to whatever a
+# previous channel left behind.
+fetch_requested_ref() {
+    local spec
+    if [[ "$REF_KIND" == "tag" ]]; then
+        spec="refs/tags/${REF}:refs/tags/${REF}"
+    else
+        spec="refs/heads/${REF}:refs/remotes/origin/${REF}"
+    fi
+    if ! git -C "$INSTALL_DIR" fetch --depth 1 --force origin "$spec"; then
+        fail "Could not fetch ${REF} from ${REPO_URL}. Your checkout is untouched, still on $(current_ref_label). Check the spelling of the ref and your network connection, then re-run."
+    fi
+}
+
+# Put the checkout back the way a failed switch found it. Never --force: the
+# switch is gated on a clean tree, so everything in the worktree is either the
+# user's (untracked files survive any checkout) or an artifact of the aborted
+# switch, and a plain checkout restores the position without discarding data.
+# If even that fails, hand the user the exact command to inspect.
+restore_previous_checkout() {
+    local prev_head="$1" prev_branch="$2"
+    warn "Switching to ${REF} failed; restoring the previous checkout..."
+    if [[ -n "$prev_branch" ]]; then
+        git -C "$INSTALL_DIR" checkout -q -B "$prev_branch" "$prev_head" && return 0
+    else
+        git -C "$INSTALL_DIR" checkout -q --detach "$prev_head" && return 0
+    fi
+    warn "Could not restore the previous checkout automatically — inspect 'git -C ${INSTALL_DIR} status'."
+}
+
+# Check out the fetched ref. On failure, restore the previous position and
+# stop: a channel change must never leave the tree half-switched (#411).
+switch_to_requested_ref() {
+    local prev_head prev_branch
+    prev_head="$(git -C "$INSTALL_DIR" rev-parse HEAD)"
+    prev_branch="$(git -C "$INSTALL_DIR" symbolic-ref -q --short HEAD || true)"
+    if [[ "$REF_KIND" == "tag" ]]; then
+        # --force so re-running with the same tag after an upstream retag
+        # (which should never happen — tags are immutable per ADR-073126-c4e1
+        # §2 — but would otherwise wedge the checkout) still converges. It
+        # stays off for a dirty tree: re-running with the same tag must never
+        # discard the user's uncommitted edits (#411); git then refuses only a
+        # real conflict, and the rollback below puts the position back.
+        local force_args=(--force)
+        if has_dirty_tracked_changes; then
+            force_args=()
+        fi
+        if ! git -C "$INSTALL_DIR" checkout ${force_args[@]+"${force_args[@]}"} --detach "refs/tags/${REF}"; then
+            restore_previous_checkout "$prev_head" "$prev_branch"
+            fail "Could not check out ${REF}; your checkout is back on $(current_ref_label)."
+        fi
+    elif ! git -C "$INSTALL_DIR" checkout -B "$REF" "refs/remotes/origin/${REF}"; then
+        restore_previous_checkout "$prev_head" "$prev_branch"
+        fail "Could not check out ${REF}; your checkout is back on $(current_ref_label)."
+    fi
+}
+
 # Files an earlier run of this installer can leave in $INSTALL_DIR without a
 # checkout ever landing there. Anything else in the directory might be the
 # user's, so it is never adopted.
@@ -251,16 +367,15 @@ download_with_git() {
     if [[ -d "$INSTALL_DIR/.git" ]]; then
         info "Updating existing maistro-engine checkout at $INSTALL_DIR..."
         ensure_git_origin
-        if [[ "$REF_KIND" == "tag" ]]; then
-            # --force so re-running with the same tag after an upstream retag
-            # (which should never happen — tags are immutable per ADR §2 — but
-            # would otherwise wedge the checkout) still converges.
-            git -C "$INSTALL_DIR" fetch --depth 1 --force origin "refs/tags/${REF}:refs/tags/${REF}"
-            git -C "$INSTALL_DIR" checkout --force --detach "refs/tags/${REF}"
-        else
-            git -C "$INSTALL_DIR" fetch --depth 1 origin "$REF"
-            git -C "$INSTALL_DIR" checkout -B "$REF" "origin/$REF"
+        # Refuse a channel change on a dirty tree: the user's uncommitted
+        # source edits would otherwise be silently discarded (the tag path
+        # ran checkout --force unconditionally) or half-mixed into the new
+        # ref (#411). A same-ref re-run keeps git's own protection, as before.
+        if ! is_on_requested_ref && has_dirty_tracked_changes; then
+            fail "The checkout at $INSTALL_DIR has uncommitted changes to tracked files, and switching from $(current_ref_label) to ${REF} would discard or mix them. Commit, stash, or remove the changes first (your .env and other untracked files are kept either way), then re-run."
         fi
+        fetch_requested_ref
+        switch_to_requested_ref
         ok "Updated source checkout to ${REF}."
         return
     fi
@@ -288,6 +403,13 @@ download_with_archive() {
     command -v tar >/dev/null 2>&1 || fail "tar is required when git is unavailable."
 
     if [[ -e "$INSTALL_DIR/$ARCHIVE_MARKER" ]]; then
+        # The marker records the ref it came from (readers only test for the
+        # file's existence), so a channel switch can be announced as one.
+        local previous_ref
+        previous_ref="$(head -1 "$INSTALL_DIR/$ARCHIVE_MARKER" 2>/dev/null || true)"
+        if [[ -n "$previous_ref" && "$previous_ref" != "$REF" ]]; then
+            info "Switching archive install from ${previous_ref} to ${REF} (only .env is preserved)."
+        fi
         info "Updating existing maistro-engine archive checkout at $INSTALL_DIR..."
     else
         info "Downloading maistro-engine ${REF} archive..."
@@ -304,7 +426,7 @@ download_with_archive() {
     mkdir -p "$INSTALL_DIR"
     cp -R "$tmp"/. "$INSTALL_DIR"/
     rm -rf "$tmp"
-    touch "$INSTALL_DIR/$ARCHIVE_MARKER"
+    printf '%s\n' "$REF" >"$INSTALL_DIR/$ARCHIVE_MARKER"
     ok "Source archive is up to date."
 }
 

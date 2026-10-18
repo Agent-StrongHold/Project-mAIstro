@@ -5,6 +5,8 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Onboarding } from "./components/Onboarding";
 import { ToastProvider } from "./components/shared";
 import { claimUiState } from "./lib/uiState";
+// #1420: the startup probes' explicit instrumentation (see lib/rum.ts).
+import { instrumentedGet } from "./lib/rum";
 import { WorkspaceProvider } from "./context/WorkspaceContext";
 import Login from "./pages/Login";
 import Setup from "./pages/Setup";
@@ -96,7 +98,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<UserInfo | null>(null);
 
   async function loadSession(): Promise<UserInfo | null> {
-    const whoRes = await fetch("/v1/auth/whoami", { credentials: "same-origin" });
+    const whoRes = await instrumentedGet("/v1/auth/whoami");
     return whoamiToUser(await whoRes.json());
   }
 
@@ -111,8 +113,8 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
         // Setup wizard: on a fresh, unconfigured instance a slow or
         // never-settling whoami must not hold up detecting that setup isn't
         // done, so whoami is only awaited once setup is confirmed complete.
-        const setupPromise = fetch("/v1/setup/status", { credentials: "same-origin" });
-        const whoPromise = fetch("/v1/auth/whoami", { credentials: "same-origin" });
+        const setupPromise = instrumentedGet("/v1/setup/status");
+        const whoPromise = instrumentedGet("/v1/auth/whoami");
         const setupData = await (await setupPromise).json();
         if (!setupData.setup_complete) {
           setSetupDone(false);
@@ -199,7 +201,12 @@ function AppRoutes() {
                   <Route path="mcp" element={<MCP />} />
                   <Route path="topology" element={<Topology />} />
                   <Route path="optimizer" element={<OptimizationInbox />} />
-                  <Route path="optimization-inbox" element={<OptimizationInbox />} />
+                  {/* #1417: /optimization-inbox is an alias, not a second
+                      surface -- it redirects to the canonical /optimizer so
+                      a direct hit lands on the one nav-linked destination
+                      instead of rendering the same page with no active nav
+                      entry. */}
+                  <Route path="optimization-inbox" element={<Navigate to="/optimizer" replace />} />
                   <Route path="messages" element={<MessageBoard />} />
                   <Route path="quotas" element={<Quotas />} />
                   <Route path="audit" element={<AuditLog />} />

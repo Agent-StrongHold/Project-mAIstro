@@ -181,6 +181,17 @@ class EngineService:
         return getattr(container, "task_admitter", None)
 
     @property
+    def task_idempotency(self) -> Any:
+        """The claim store paired with the canonical Run spine, or None.
+
+        Demo mode uses the same admission claim tier as maistro-server. Without
+        this bridge there is no durable Run to reconcile, so there is no claim
+        store to pass to the local queue.
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "task_idempotency", None)
+
+    @property
     def run_store(self) -> Any:
         """The core Container's canonical Run store, or None.
 
@@ -265,10 +276,13 @@ class EngineService:
         owns, or to a closed connection. `start()` decides the store for the
         engine it is starting; it does not inherit one.
         """
+        from maistro.memory.exposure import MemoryExposureMode
         from maistro.memory.outcomes import InMemoryOutcomeStore
         from services import feedback_service
 
-        store = self.outcome_store or InMemoryOutcomeStore()
+        store = self.outcome_store or InMemoryOutcomeStore(
+            exposure_mode=MemoryExposureMode.AGENT_MANAGED
+        )
         feedback_service.set_outcome_store(store)
         logger.info("feedback_outcome_store_bound store=%s", type(store).__name__)
 
@@ -463,6 +477,7 @@ class EngineService:
                 executor=governed_executor,
                 admitter=self.task_admitter,
                 run_store=self.run_store,
+                idempotency_store=self.task_idempotency,
             )
             try:
                 await backend.start()

@@ -42,12 +42,22 @@ class _Recorder:
         self.calls: list[tuple[list[str], str | None]] = []
         self.failures: dict[str, str] = {}
         self.fail_all = fail_all
+        # When set, the compose-capability probe (#407) answers with this
+        # version string even under fail_all — models a healthy Compose v2
+        # next to whatever the failing phase is.
+        self.compose_version_stdout: str | None = None
 
     def __call__(
         self, argv, *, cwd=None, env=None, capture_output=True, text=True, timeout=None, check=False
     ) -> SimpleNamespace:
         head = argv[0] if argv else ""
         self.calls.append((list(argv), cwd))
+        if (
+            self.compose_version_stdout is not None
+            and argv[-1] == "version"
+            and argv[:2] in (["docker", "compose"], ["podman", "compose"])
+        ):
+            return SimpleNamespace(returncode=0, stdout=self.compose_version_stdout, stderr="")
         if self.fail_all or head in self.failures:
             msg = self.failures.get(head, "simulated failure")
             return SimpleNamespace(returncode=1, stdout="", stderr=msg)
@@ -485,6 +495,11 @@ def test_failure_aborts_without_false_success(
     _write_manifest(root, manifest)
 
     recorder.fail_all = True  # every external command fails
+    # ...except the compose capability probe (#407): the regression here is a
+    # failing *phase*, so the front-end itself is healthy Compose v2. Without
+    # this the upgrade refuses at preflight — correct new behavior, but a
+    # different boundary than the one this test pins.
+    recorder.compose_version_stdout = "Docker Compose version v2.39.2"
     with pytest.raises(SystemExit) as exc_info:
         _drive(root, recorder)
     assert exc_info.value.code == 1
@@ -619,7 +634,11 @@ def test_source_cmds_unknown_type_plan_nothing(tmp_path: Path) -> None:
         ({"docker": "/usr/bin/docker", "podman": "/usr/bin/podman"}, "docker compose"),
         ({"docker": "/usr/bin/docker"}, "docker compose"),
         ({"podman": "/usr/bin/podman"}, "podman compose"),
-        ({"docker-compose": "/usr/bin/docker-compose"}, "docker-compose"),
+        # No Compose v1 fallback (#407): a host with only the legacy
+        # `docker-compose` binary resolves to the default v2 front-end, and
+        # the preflight capability probe refuses it with upgrade
+        # instructions instead of letting a phase fail mid-upgrade.
+        ({"docker-compose": "/usr/bin/docker-compose"}, "docker compose"),
         ({}, "docker compose"),
     ],
 )
@@ -632,6 +651,208 @@ def test_compose_runtime_resolution(
         lambda name: which.get(name),  # type: ignore[arg-type,return-value]
     )
     assert " ".join(upgrade_mod._resolve_compose_runtime()) == expected
+
+
+# -- compose capability probe (#407) --------------------------------------------
+
+
+class _ComposeFake:
+    """A stand-in for ``_RUN_SUBPROCESS`` that answers the compose probes.
+
+    The ``<compose> version`` probe returns ``version_output``; a ``missing``
+    fake raises ``FileNotFoundError`` like an absent binary would. Every other
+    command (the ``compose config`` schema probe, then all phases) returns
+    ``config_ok`` / success respectively.
+    """
+
+    def __init__(
+        self,
+        version_output: str | None = None,
+        *,
+        config_ok: bool = True,
+        missing: bool = False,
+        config_stderr: str = "services.depends_on contains an invalid type",
+    ) -> None:
+        self.version_output = version_output
+        self.config_ok = config_ok
+        self.missing = missing
+        self.config_stderr = config_stderr
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv, **kwargs: object):
+        self.calls.append(list(argv))
+        if argv[-1] == "version" and argv[:2] in (["docker", "compose"], ["podman", "compose"]):
+            if self.missing:
+                raise FileNotFoundError(2, "No such file or directory", argv[0])
+            return SimpleNamespace(
+                returncode=0 if self.version_output is not None else 1,
+                stdout=self.version_output or "",
+                stderr="",
+            )
+        if argv[-2:] == ["config", "--quiet"]:
+            return SimpleNamespace(
+                returncode=0 if self.config_ok else 1,
+                stdout="",
+                stderr=self.config_stderr,
+            )
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+
+@pytest.fixture
+def compose_fake(monkeypatch: pytest.MonkeyPatch):
+    """Install a ``_ComposeFake`` and pin the platform hint to plain Linux so
+    assertions on the upgrade instructions are host-independent (this repo's
+    dev boxes are WSL, CI runners are not)."""
+
+    def _install(fake: _ComposeFake) -> _ComposeFake:
+        monkeypatch.setattr(upgrade_mod, "_RUN_SUBPROCESS", fake)
+        monkeypatch.setattr(upgrade_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(upgrade_mod.platform, "release", lambda: "6.8.0-generic")
+        return fake
+
+    return _install
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Docker Compose version v2.39.2", (2, 39, 2)),
+        ("Docker Compose version v2.17.0", (2, 17, 0)),
+        ("v2.24.6-desktop.1", (2, 24, 6)),
+        ("2.5", (2, 5, 0)),
+        ("podman-compose version 1.0.6", (1, 0, 6)),
+        ("docker-compose version 1.29.2, build 5becea4c", (1, 29, 2)),
+        ("", None),
+        ("compose ready", None),
+    ],
+)
+def test_parse_compose_version_extracts_dotted_tokens(
+    text: str, expected: tuple[int, int, int] | None
+) -> None:
+    assert upgrade_mod._parse_compose_version(text) == expected
+
+
+def test_a_below_floor_compose_is_refused_with_upgrade_instructions(
+    compose_fake,
+) -> None:
+    fake = compose_fake(_ComposeFake("Docker Compose version v2.16.0"))
+    error = upgrade_mod._compose_support_error(["docker", "compose"], ["-f", "stack.yml"])
+    assert error is not None
+    assert "2.17.0" in error
+    assert "2.16.0" in error
+    assert "re-run `maistro upgrade`" in error
+    # Only the read-only probe ran; no config fallback was needed.
+    assert fake.calls == [["docker", "compose", "version"]]
+
+
+@pytest.mark.parametrize("version", ["v2.17.0", "Docker Compose version v2.24.6", "v3.0.0"])
+def test_compose_at_or_above_the_floor_is_accepted(compose_fake, version: str) -> None:
+    compose_fake(_ComposeFake(f"Docker Compose version {version}"))
+    assert upgrade_mod._compose_support_error(["docker", "compose"], ["-f", "stack.yml"]) is None
+
+
+def test_an_unparseable_version_feature_detects_the_schema_parse(compose_fake) -> None:
+    """Version strings are unreliable across front-ends; when none can be read,
+    the stack's own compose files decide: a frontend that parses the schema is
+    exactly the capability the version floor stands in for."""
+    compose_fake(_ComposeFake(""))
+    assert upgrade_mod._compose_support_error(["docker", "compose"], ["-f", "stack.yml"]) is None
+
+
+def test_an_unparseable_version_with_an_unparseable_schema_is_refused(
+    compose_fake,
+) -> None:
+    compose_fake(_ComposeFake("", config_ok=False))
+    error = upgrade_mod._compose_support_error(["docker", "compose"], ["-f", "stack.yml"])
+    assert error is not None
+    assert "conditional depends_on" in error
+    assert "2.17.0" in error
+    assert "docker compose" in error
+    # The refusal surfaces the compose error itself, so a missing .env
+    # variable is distinguishable from a v1-generation engine's schema gap.
+    assert "services.depends_on contains an invalid type" in error
+
+
+def test_an_absent_frontend_is_left_to_the_phase_time_error(compose_fake) -> None:
+    """A host with no compose at all fails its phases with the normal
+    ``command not found`` outcome; stacking a second refusal on top would
+    only obscure it."""
+    compose_fake(_ComposeFake(missing=True))
+    assert upgrade_mod._compose_support_error(["docker", "compose"], ["-f", "stack.yml"]) is None
+
+
+@pytest.mark.parametrize(
+    ("system", "release", "fragment"),
+    [
+        ("Darwin", "24.0.0", "On macOS"),
+        ("Windows", "11", "On Windows"),
+        ("Linux", "5.15.167.4-microsoft-standard-WSL2", "In WSL2"),
+        ("Linux", "6.8.0-generic", "On Linux"),
+    ],
+)
+def test_the_upgrade_hint_names_the_operators_platform(
+    monkeypatch: pytest.MonkeyPatch, system: str, release: str, fragment: str
+) -> None:
+    monkeypatch.setattr(upgrade_mod.platform, "system", lambda: system)
+    monkeypatch.setattr(upgrade_mod.platform, "release", lambda: release)
+    hint = upgrade_mod._compose_upgrade_hint()
+    assert fragment in hint
+    # Every platform's pointer names a concrete upgrade source.
+    assert "docker-compose-plugin" in hint or "Docker Desktop" in hint
+
+
+def test_a_silent_config_failure_still_refuses_and_says_so(compose_fake) -> None:
+    """A config probe that fails without any diagnostic still refuses, and the
+    message says no compose error was captured rather than inventing one."""
+    compose_fake(_ComposeFake("", config_ok=False, config_stderr=""))
+    error = upgrade_mod._compose_support_error(["docker", "compose"], ["-f", "stack.yml"])
+    assert error is not None
+    assert "The compose error was: none." in error
+
+
+def test_preflight_refuses_a_below_floor_compose_before_any_phase(
+    tmp_path: Path,
+    unrelated_cwd: Path,
+    recorder: _Recorder,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The definition of done: an upgrade must abort before it moves the
+    source tree when the compose engine cannot run the stack."""
+    root = tmp_path / "maistro-engine"
+    root.mkdir()
+    _write_manifest(root, _manifest(root, "git"))
+    # Pin the front-end resolution so the probe argv is deterministic.
+    monkeypatch.setattr(
+        upgrade_mod.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None
+    )
+    # The version probe must return a real (below-floor) version string, so a
+    # targeted fake answers only that command; every other command goes to the
+    # recorder — and must never be reached.
+    version_fake = _ComposeFake("Docker Compose version v2.16.0")
+
+    def dispatcher(argv, **kwargs: object):
+        if argv[-1] == "version" and argv[:2] == ["docker", "compose"]:
+            return version_fake(argv, **kwargs)
+        return recorder(argv, **kwargs)
+
+    monkeypatch.setattr(upgrade_mod, "_RUN_SUBPROCESS", dispatcher)  # type: ignore[arg-type]
+
+    with pytest.raises(SystemExit) as exc_info:
+        _drive(root, recorder)
+
+    assert exc_info.value.code == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Preflight failed" in out
+    assert "No changes were made" in out
+    assert "2.16.0" in out
+    assert recorder.calls == []
+
+
+# Package cutover is `uv tool upgrade`; its phases never drive compose, so a
+# package-only host is not asked for one — enforced by the existing
+# test_package_upgrade_runs_uv_tool_upgrade assertion that no recorded call
+# mentions compose at all.
 
 
 # -- preflight rejections per install type -------------------------------------

@@ -21,6 +21,7 @@ from middleware.request_log import RequestLogMiddleware
 from middleware.security_headers import SecurityHeadersMiddleware
 from routes import (
     agents,
+    api_docs,
     attention,
     audit,
     auth,
@@ -47,6 +48,7 @@ from routes import (
     program,
     providers,
     quotas,
+    rum,
     schedules,
     setup,
     setup_checklist,
@@ -66,6 +68,11 @@ from services import foundation as foundation_service
 from services.oauth_login import close_oauth_login_service
 from services.settings_store import SettingsPersistenceError
 
+from maistro.api_versioning import (
+    API_VERSIONS,
+    DEFAULT_API_VERSION,
+    VersionNegotiationMiddleware,
+)
 from maistro.observability.middleware import REQUEST_ID_HEADER, RequestIDMiddleware
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -285,7 +292,12 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> Respo
 
 def create_app() -> FastAPI:
     configure_logging()
-    app = FastAPI(title="Hive Conductor", version="0.9.0", lifespan=lifespan)
+    # docs_url=None retires FastAPI's default docs page, which loads Swagger UI
+    # from jsdelivr and inlines its bootstrap script — both refused by the
+    # enforced CSP, leaving a blank page full of violations (#1425).
+    # routes/api_docs serves the reference from vendored first-party assets
+    # under the unchanged policy instead; `/redoc` keeps FastAPI's default.
+    app = FastAPI(title="Hive Conductor", version="0.9.0", lifespan=lifespan, docs_url=None)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=get_settings().cors_origins,
@@ -317,6 +329,20 @@ def create_app() -> FastAPI:
     # (see `maistro.observability.middleware`), never an unvalidated pass-through.
     app.add_middleware(RequestIDMiddleware)
 
+    # API version negotiation (ADR-076) — the same maistro-core middleware
+    # maistro-server wires: the negotiated version is selected by Accept
+    # media type / api_version query / api_version JSON body field, the
+    # default is advertised on every response, and an unsupported selector
+    # is a 406 that never reaches a route handler. Infrastructure paths
+    # (health, docs) pass through untouched. Added before the security
+    # headers so it stays inside them: even a 406 carries the header set.
+    app.add_middleware(
+        VersionNegotiationMiddleware,
+        versions=API_VERSIONS,
+        default_version=DEFAULT_API_VERSION,
+        skip_prefixes=("/health", "/docs", "/redoc", "/openapi.json"),
+    )
+
     # Security headers — the true outermost middleware (added last), so
     # headers land on every response, including early rejections from the
     # middlewares added above (e.g. 401s from AuthMiddleware).
@@ -339,6 +365,9 @@ def create_app() -> FastAPI:
     app.add_exception_handler(Exception, unhandled_exception_handler)
 
     app.include_router(health.router)
+    # The API reference and its vendored assets (#1425). Public like FastAPI's
+    # default /docs was: AuthMiddleware gates only /v1/ and names /docs public.
+    app.include_router(api_docs.router)
     app.include_router(auth.router, prefix="/v1/auth")
     app.include_router(credentials.router, prefix="/v1/credentials")
     app.include_router(install.router, prefix="/v1/install")
@@ -389,6 +418,15 @@ def create_app() -> FastAPI:
     app.include_router(messages.router, prefix="/v1/messages")
     app.include_router(audit.router, prefix="/v1/audit")
     app.include_router(quotas.router, prefix="/v1/quotas")
+    # Perceived-load telemetry collector (#1420). The route exists even when
+    # ingest is disabled so an enabled client gets a bounded 202 instead of a
+    # 404 churn loop; services/rum_store.py decides whether anything is kept.
+    app.include_router(rum.router, prefix="/v1/rum")
+    # The ingest handler reads its body manually (byte cap before parsing),
+    # so the OpenAPI document needs the router's help to keep describing it;
+    # without this the generated client types silently lose the contract
+    # (#1048 drift gate).
+    rum.ensure_openapi_contract(app)
     # Optional feature slices degrade explicitly: a missing dependency may keep
     # the base API available, but it must never make an entire route family
     # disappear without an actionable startup log.

@@ -419,6 +419,43 @@ class DagRunStore:
                 run.result = result
             self._persist(run)
 
+    async def record_canonical_run(self, run_id: str, *, canonical_run_id: str) -> bool:
+        """Attach the canonical Run identity to an already-open projection row.
+
+        The chat workflow tool opens its history row with a fresh execution id
+        before the canonical Run exists, so the projection -> canonical Run
+        correlation can only be written when the canonical executor admits the
+        Run -- which is exactly when `execute_dag` fires its admission seam
+        (#1332). Written at admission, the correlation is already durable
+        while the DAG is still in flight, so a live Recent Runs entry cancels
+        through the canonical spine instead of sending the projection id to a
+        canonical store that never saw it.
+
+        First link wins: a row that already names a canonical Run keeps it.
+        Re-pointing a row at a different Run would be a cross-link (corrupt
+        or duplicate admission), and the read overlay in
+        `services.dag_run_inspection` already treats such a row as its own
+        lifecycle truth rather than trusting the link. Re-recording the same
+        id is idempotent. An empty id is refused: "no canonical Run" is the
+        row's honest state and must never be overwritten with a stored claim.
+
+        Returns whether the row now carries `canonical_run_id`. A missing row
+        (evicted, or finished and dropped between the write and this call)
+        records nothing and says so.
+        """
+        if not canonical_run_id:
+            return False
+        run = self._runs.get(run_id)
+        if run is None:
+            return False
+        if run.canonical_run_id == canonical_run_id:
+            return True
+        if run.canonical_run_id:
+            return False
+        run.canonical_run_id = canonical_run_id
+        self._persist(run)
+        return True
+
     def list_runs(self, *, limit: int = 25) -> list[dict[str, Any]]:
         recent = list(self._order)[-limit:]
         return [self._runs[rid].to_summary() for rid in reversed(recent) if rid in self._runs]

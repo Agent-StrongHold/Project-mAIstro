@@ -15,6 +15,43 @@ the same command a week apart get the same code.
 | A release candidate | `MAISTRO_VERSION=v1.0.0-rc1 ./get.sh` | `.\get.ps1 -Version v1.0.0-rc1` |
 | Contributor / unreleased | `./get.sh --channel dev` | `.\get.ps1 -Channel dev` |
 | A specific branch | `./get.sh --branch my/topic` | `.\get.ps1 -Branch my/topic` |
+| Fully unattended install | `./get.sh -- --answers-file answers.yaml` | `.\get.ps1 -AutoInstallDeps -AnswersFile answers.yaml` |
+
+## Unattended installs (answers file, #409)
+
+One versioned answers schema — `InstallAnswersV1` (`schema_version: "1"`,
+templates in [`examples/`](examples/)) — is consumed equivalently by both
+entrypoints. On Unix it rides get.sh's passthrough into install.sh; on Windows
+`get.ps1 -AnswersFile` validates it, translates the path to the distro's
+`/mnt` view of the Windows filesystem (`C:\Users\me\answers.yaml` becomes
+`/mnt/c/Users/me/answers.yaml`), and forwards it as the same `--answers-file`
+argument to get.sh inside WSL:
+
+- **Validated before mutation.** Both entrypoints check the answers contract
+  before anything is installed: missing file, answers path that is a
+  directory, and the `--answers-file` + skip-wizard conflict (a skipped
+  questionnaire never reads the answers file) are reported as one complete,
+  actionable error list — on Windows before any WSL setup, elevation prompt,
+  or reboot; in install.sh before dependency installation. Schema-level
+  unknown-key and type errors surface from `maistro-install` itself
+  (`extra="forbid"`, #810).
+- **No secrets in the answers file.** The schema carries names and flags only
+  (SPEC-180); a `*_password`/`*_key` field is a named validation error, and
+  the file is never placed on a command line where shell history could
+  capture it. First-run credentials use the staged 0600 credentials file
+  referenced by `MAISTRO_BOOTSTRAP_CREDENTIALS_FILE` (get.ps1 translates a
+  Windows-side path and forwards it by environment variable), or the UI
+  Setup wizard.
+- **Never prompts in noninteractive mode.** Combine `-AnswersFile` with
+  `-AutoInstallDeps` on Windows (or `--answers-file` with
+  `MAISTRO_AUTO_INSTALL_DEPS=1` on Unix); with no answers file and no
+  terminal, the installer fails with the actionable message above instead of
+  prompting. `-AnswersFile` survives the elevation relaunch and the
+  post-reboot resume, so an unattended install cannot turn interactive
+  mid-flight.
+- **Same fixture, same install.** The contract is pinned by
+  `tests/test_answers_parity_contract.py`, which runs one fixture through
+  both entrypoints and compares the rendered effective config.
 
 The latest release is resolved from the GitHub API's `/releases/latest`, which
 **excludes prereleases**: an rc has to be asked for by name and is never handed

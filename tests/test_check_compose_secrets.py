@@ -350,7 +350,7 @@ class TestNamesThatUsedToBeFalsePositives:
         assert _scan(check, f"      API_KEY: {spelling}") == []
 
 
-class TestTheTwoProfilesThisPrFixed:
+class TestTheRouterKeyProfiles:
     """Asserted against the real files, not against the gate's parse of them,
     so a future regression in either shows up as a failing test here."""
 
@@ -362,20 +362,35 @@ class TestTheTwoProfilesThisPrFixed:
         assert "POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?" in body
 
     def test_the_pm_poc_router_key_reads_the_token_not_the_key_list(self) -> None:
-        """`install.sh` writes `MAISTRO_ACCESS_TOKEN=<token>` and
-        `API_KEYS=["<token>"]`. Sending API_KEYS as the router's bearer
+        """`install.sh` writes `MAISTRO_ROUTER_API_KEY=<token>` and
+        `API_KEYS=["conductor:<token>"]`. Sending API_KEYS as the router's bearer
         credential presents the JSON array as the token, and every call gets
         401 -- so the overlay's `:?` made it refuse to start *and* not work
         when it did."""
         body = (ROOT / "docker-compose.pm-poc.yml").read_text(encoding="utf-8")
-        assert "MAISTRO_ROUTER_API_KEY=${MAISTRO_ACCESS_TOKEN:?" in body
+        assert "MAISTRO_ROUTER_API_KEY=${MAISTRO_ROUTER_API_KEY:?" in body
         assert "MAISTRO_ROUTER_API_KEY=${API_KEYS" not in body
 
-    def test_the_router_key_matches_what_the_base_profile_uses(self) -> None:
-        """The overlay departed from a convention the base profile already
-        had; the two must agree on which variable carries the token."""
+    def test_the_router_key_is_required_and_matches_what_the_installer_writes(self) -> None:
+        """The base profile interpolates the conductor's engine credential from
+        its own name -- the name `install.sh` writes and the conductor's
+        `Settings.maistro_router_api_key` reads (#402). Required (`:?`), not
+        `:-`: an empty key means the Workspace bridge silently never starts
+        (ADR-092326-97c4), and a refusal to boot is the honest failure."""
         base = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-        assert "MAISTRO_ROUTER_API_KEY=${MAISTRO_ACCESS_TOKEN" in base
+        assert "MAISTRO_ROUTER_API_KEY=${MAISTRO_ROUTER_API_KEY:?" in base
+
+    def test_the_dead_access_token_passthrough_is_gone(self) -> None:
+        """#402: the engine service was handed `MAISTRO_ACCESS_TOKEN` for months
+        while the engine's auth read `API_KEYS`. No line may pass it again:
+        a credential-looking variable with no reader is the false confidence
+        this issue removes. (Comment lines mentioning the name are prose.)"""
+        for compose in ("docker-compose.yml", "docker-compose.pm-poc.yml"):
+            for line in (ROOT / compose).read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                assert not stripped.startswith("- MAISTRO_ACCESS_TOKEN="), (
+                    f"{compose} passes MAISTRO_ACCESS_TOKEN again: {stripped!r}"
+                )
 
     def test_a_parameterised_password_whose_message_has_spaces_passes(self, check) -> None:
         """`${DB_PASSWORD:?Set DB_PASSWORD in .env}` is the exact spelling this
@@ -410,3 +425,95 @@ class TestTheTwoProfilesThisPrFixed:
 
     def test_a_password_containing_a_question_mark_is_reported(self, check) -> None:
         assert len(_scan(check, "      - DATABASE_URL=postgresql://mcp:hun?ter@db:5432/app")) == 1
+
+
+class TestASecretVariableMustHaveAReader:
+    """#402: `MAISTRO_ACCESS_TOKEN` rode in every Compose profile while the
+    engine's auth read `API_KEYS` — a well-formed variable, invisible to every
+    scanner, that operators rotated for nothing. The check that now prevents a
+    repeat: every secret-named name a tracked Compose file assigns or
+    interpolates must have a production reader, a tracked LiteLLM-config
+    reference, or a reviewed third-party consumer. Tests drive a synthetic
+    repo root, so the corpus is exactly what the test wrote — no hit can leak
+    in from this tree."""
+
+    @pytest.fixture
+    def repo(self, tmp_path: Path) -> Path:
+        (tmp_path / "docker-compose.yml").write_text(
+            "services:\n  app:\n    environment:\n"
+            "      - MAISTRO_GHOST_TOKEN=${MAISTRO_GHOST_TOKEN:-}\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    def _findings(self, check, repo: Path):
+        return check.unused_secret_findings(repo)
+
+    def test_a_variable_nothing_reads_is_reported(self, check, repo) -> None:
+        findings = self._findings(check, repo)
+        assert len(findings) == 1
+        assert findings[0].name == "MAISTRO_GHOST_TOKEN"
+        assert "no production reader" in findings[0].why
+        assert findings[0].path == "docker-compose.yml"
+        assert findings[0].line_no == 4
+        assert findings[0].value == ""
+
+    def test_a_variable_production_code_reads_passes(self, check, repo) -> None:
+        src = repo / "packages" / "app" / "src" / "app"
+        src.mkdir(parents=True)
+        # The realistic spelling: a pydantic-style field, not a string literal.
+        (src / "settings.py").write_text(
+            'class Settings:\n    maistro_ghost_token: str = ""\n',
+            encoding="utf-8",
+        )
+        assert self._findings(check, repo) == []
+
+    def test_an_allowlisted_third_party_consumer_passes(self, check, repo) -> None:
+        """postgres reads POSTGRES_PASSWORD; no code here does. The list is the
+        reviewed boundary for that — one entry per outside reader."""
+        (repo / "docker-compose.yml").write_text(
+            "services:\n  db:\n    environment:\n"
+            "      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}\n",
+            encoding="utf-8",
+        )
+        assert self._findings(check, repo) == []
+
+    def test_a_test_only_consumer_does_not_count(self, check, repo) -> None:
+        """A test asserting the var's name proves nothing reads it in
+        production; otherwise every dead variable could vote itself alive."""
+        tests = repo / "packages" / "app" / "tests"
+        tests.mkdir(parents=True)
+        (tests / "test_settings.py").write_text(
+            "MAISTRO_GHOST_TOKEN = 'x'\n",
+            encoding="utf-8",
+        )
+        findings = self._findings(check, repo)
+        assert len(findings) == 1
+        assert findings[0].name == "MAISTRO_GHOST_TOKEN"
+
+    def test_the_interpolation_source_is_checked_even_without_an_assignment(
+        self, check, repo
+    ) -> None:
+        """`${GHOST_TOKEN:?...}` in a command or label names a variable the
+        .env must supply; an assignment LHS is not required for a name to be
+        load-bearing."""
+        (repo / "docker-compose.yml").write_text(
+            "services:\n  app:\n    command: echo ${MAISTRO_GHOST_TOKEN:?set it}\n",
+            encoding="utf-8",
+        )
+        findings = self._findings(check, repo)
+        assert len(findings) == 1
+        assert findings[0].name == "MAISTRO_GHOST_TOKEN"
+
+    def test_a_commented_reference_is_not_a_use(self, check, repo) -> None:
+        """Documentation mentioning a name neither supplies it nor reads it."""
+        (repo / "docker-compose.yml").write_text(
+            "# MAISTRO_GHOST_TOKEN was removed here.\nservices:\n  app: {}\n",
+            encoding="utf-8",
+        )
+        assert self._findings(check, repo) == []
+
+    def test_the_real_tree_has_no_unused_secret_variables(self, check) -> None:
+        """The inventory gate over the actual profiles: every security-named
+        deployment variable resolves to a consumer, or the tree fails here."""
+        assert check.unused_secret_findings() == []

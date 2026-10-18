@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from .attribution import CandidateOrigin
 from .fixer_genome import FixerGenome
 
 
@@ -138,6 +139,11 @@ class PipelineGenome(BaseModel):
     # serving live traffic, and what to roll back to if it regresses.
     is_active: bool = False
     rollback_target_id: str | None = None
+    # M4-A8 producer attribution (#115): which generator/mutation/prompt/search
+    # operator produced this candidate, frozen at birth. None for seed genomes
+    # created before/outside the attribution system; old persisted genomes load
+    # unchanged (optional field).
+    origin: CandidateOrigin | None = None
 
 
 class EvalResult(BaseModel):

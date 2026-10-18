@@ -42,6 +42,11 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "each Dockerfile's disposition and named build/scan jobs rather than comparing "
         "against a tolerated prior-state oracle"
     ),
+    ("check-workflow-inventory.py", "quality/workflow-inventory.json"): (
+        "the workflow inventory is the reviewed current-tree specification: the checker validates "
+        "each workflow's disposition, declared triggers and reference liveness rather than "
+        "comparing against a tolerated prior-state oracle"
+    ),
     ("check-image-pins.py", "quality/image-pins.json"): (
         "the pin registry is the reviewed approval authority being changed (#349): every pin "
         "and exemption row is explicit policy, and a base update lands as the reviewable "
@@ -71,6 +76,20 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "the worktree copy is read only to reject stale or spent grants; permission to lower "
         "an AC-state floor is read separately from the trusted base by authorized_floors()"
     ),
+    ("check_enumerations.py", "quality/ratchet-authorizations.json"): (
+        "not a read: the string is a probe-path literal in the #109 evaluator-oracle "
+        "coverage check (check_evaluator_oracle_paths), asserting the oracle pattern "
+        "tier matches this ledger path so a candidate cannot quietly stop tracking "
+        "it; the script never opens the file, so there is no candidate-tree value "
+        "to resolve against a base"
+    ),
+    ("check_enumerations.py", "quality/vulture-baseline.json"): (
+        "not a read: the string is a probe-path literal in the #109 evaluator-oracle "
+        "coverage check (check_evaluator_oracle_paths), asserting the oracle pattern "
+        "tier matches this ledger path; the blocking vulture ratchet itself reads "
+        "the ledger through scripts/check-vulture-baseline.py with trusted-base "
+        "resolution, and this script never opens the file"
+    ),
     ("check-branch-independence.py", "quality/branch-independence.json"): (
         "the branch-independence registry is the reviewed representation specification; "
         "the checker separately compares its frozen legacy set against the trusted base"
@@ -95,6 +114,14 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "table the tree creates, so a prior-tree oracle would predate this tree's schema; "
         "a changed retention claim is the substantive change reviewers read"
     ),
+    ("check-backlog-consistency.py", "quality/backlog-authority.json"): (
+        "the authority marker is the reviewed operator-owned declaration of which work "
+        "source is authoritative (#102), not a prior-tree oracle: the gate reads it to "
+        "decide whether hand-edited BACKLOG.md content is still permitted or must match "
+        "the database digest. The marker moves only via the shipped `maistro backlog` "
+        "CLI (maistro.cli._backlog), so comparing it against the base revision would "
+        "measure a cutover that has not happened instead of the one this tree ships"
+    ),
     ("check-shipped-surface-truth.py", "quality/shipped-surface-truth.json"): (
         "the shipped-surface matrix is the reviewed per-surface truth specification being "
         "changed: every discovered route must carry an exact disposition, so comparing "
@@ -106,6 +133,13 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "changed: every entry must resolve to a live handler in this tree's route table, "
         "so a prior-tree oracle would predate the routes this tree ships; a changed "
         "disposition or contract is the substantive change reviewers read"
+    ),
+    ("bench_fleet_routing.py", "quality/model-egress.json"): (
+        "measurement input, not a comparison oracle: the #934 fleet bench reports "
+        "the frozen egress inventory's row count and the approved provider's "
+        "presence as its portability evidence and writes nothing; the blocking "
+        "two-way ratchet over this ledger is owned by check-model-egress.py with "
+        "its own provenance policy"
     ),
 }
 
