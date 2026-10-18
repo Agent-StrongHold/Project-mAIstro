@@ -182,6 +182,24 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         )
         self._router: LLMRouter = router if router is not None else CostAwareRouter(self._registry)
 
+    def logical_effect_key(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> str | None:
+        """The rung-scoped logical key for one governed completion.
+
+        Epic M4-I escalation re-visits a quality shortfall at the next ladder
+        rung; the node's Invocation for that re-visit files under a *new*
+        keyed effect (``llm.summarize.complete:{rung}``), never a blind
+        replay of an unbilled one — so the node-level key is rung-scoped too.
+        Within one visit the key is stable, so a lease-loss retry reconciles
+        against the same claim. Developing the key from the supervised
+        escalation decision (``escalated_model``) keeps the fail-closed
+        executor contract (#1194): an EFFECT_KEY node proves replay safety
+        with a concrete key, it does not merely label itself retryable.
+        """
+        supervised_rung = str(ctx.metadata.get(ESCALATED_MODEL_CONTEXT_KEY) or "").strip()
+        if not supervised_rung:
+            supervised_rung = inputs.model
+        return f"llm.summarize.complete:{supervised_rung}"
+
     async def _execute(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> LlmSummarizeOut:
         # Gateway configuration is read before the Binding is resolved, as it
         # always was: a deployment with no gateway configured should be told
@@ -194,8 +212,7 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         # supervision withheld a prior visit for missing its quality floor,
         # the re-visit is told which ladder rung to run. The node's own
         # ``model`` input stays the default for every first visit.
-        escalated = ctx.metadata.get(ESCALATED_MODEL_CONTEXT_KEY)
-        escalated_alias = str(escalated).strip() if escalated else ""
+        supervised_rung = str(ctx.metadata.get(ESCALATED_MODEL_CONTEXT_KEY) or "").strip()
 
         # Observation routing (epic M4-I): upstream payloads are classified
         # text-or-image, routed to the alias configured for their modality,
@@ -207,40 +224,9 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         # content part to a text-only alias fails at the provider and
         # re-encoding it as text would discard exactly what it carried.
         observations = list(inputs.observations or [])
-        routes: tuple[ObservationRoute, ...] = ()
-        if observations:
-            image_alias = inputs.image_model.strip()
-            has_image = any(
-                classify_observation(payload) == ObservationModality.IMAGE
-                for payload in observations
-            )
-            if has_image and not image_alias:
-                raise RuntimeError(
-                    "llm.summarize received an image observation but no image_model "
-                    "alias is configured; refusing to re-encode an image as text "
-                    "(epic M4-I observation routing)"
-                )
-            routes = route_observations(
-                observations,
-                text_model=inputs.text_model.strip() or inputs.model,
-                image_model=image_alias or inputs.model,
-            )
-
-        base_alias = inputs.model
-        if any(route.modality == ObservationModality.IMAGE for route in routes):
-            base_alias = inputs.image_model.strip()
-        model_alias = escalated_alias or base_alias
-
-        if observations:
-            content_parts: list[dict[str, Any]] = [
-                encode_observation(payload, route)
-                for payload, route in zip(observations, routes, strict=False)
-            ]
-            if inputs.text.strip():
-                content_parts.append({"type": "text", "text": inputs.text})
-            user_content: str | list[dict[str, Any]] = content_parts
-        else:
-            user_content = inputs.text
+        routes = _observation_routes(inputs, observations)
+        model_alias = _chosen_model_alias(inputs, supervised_rung, routes)
+        user_content = _observation_user_content(inputs, observations, routes)
         egress = ModelChatEgress(
             self._effects,
             registry=self._registry,
@@ -335,6 +321,63 @@ def _system_prompt(inputs: LlmSummarizeIn) -> str:
     if inputs.system_prompt_extra:
         return prompt + "\n\n" + inputs.system_prompt_extra
     return prompt
+
+
+def _observation_routes(
+    inputs: LlmSummarizeIn, observations: list[Any]
+) -> tuple[ObservationRoute, ...]:
+    """Route the declared observations; an image with no vision alias refuses.
+
+    Re-encoding an image as text would discard exactly what the observation
+    carried, so the misconfiguration is refused before any model call.
+    """
+    if not observations:
+        return ()
+    image_alias = inputs.image_model.strip()
+    has_image = any(
+        classify_observation(payload) == ObservationModality.IMAGE for payload in observations
+    )
+    if has_image and not image_alias:
+        raise RuntimeError(
+            "llm.summarize received an image observation but no image_model "
+            "alias is configured; refusing to re-encode an image as text "
+            "(epic M4-I observation routing)"
+        )
+    return route_observations(
+        observations,
+        text_model=inputs.text_model.strip() or inputs.model,
+        image_model=image_alias or inputs.model,
+    )
+
+
+def _chosen_model_alias(
+    inputs: LlmSummarizeIn,
+    supervised_rung: str,
+    routes: tuple[ObservationRoute, ...],
+) -> str:
+    """The alias this completion runs on: the supervised rung, else the modality floor."""
+    if supervised_rung:
+        return supervised_rung
+    if any(route.modality == ObservationModality.IMAGE for route in routes):
+        return inputs.image_model.strip()
+    return inputs.model
+
+
+def _observation_user_content(
+    inputs: LlmSummarizeIn,
+    observations: list[Any],
+    routes: tuple[ObservationRoute, ...],
+) -> str | list[dict[str, Any]]:
+    """Observations as content parts (plus the text input, when it speaks too)."""
+    if not observations:
+        return inputs.text
+    content_parts: list[dict[str, Any]] = [
+        encode_observation(payload, route)
+        for payload, route in zip(observations, routes, strict=False)
+    ]
+    if inputs.text.strip():
+        content_parts.append({"type": "text", "text": inputs.text})
+    return content_parts
 
 
 def _summarized(data: dict[str, Any], *, fallback_model: str) -> LlmSummarizeOut:

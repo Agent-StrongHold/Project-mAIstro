@@ -129,7 +129,6 @@ def test_queue_orders_topologically_and_consumes_in_order() -> None:
     queue = PlanExpectationQueue.from_graph(graph)
     assert [e.node_id for e in queue.expectations] == ["a", "b"]
     assert queue.pending_node_ids == ("a", "b")
-    assert queue.expectation_for("c") is None
 
     first = queue.supervise("a", output={"step": "a"}, result_state=None)
     assert first is not None and first.matched

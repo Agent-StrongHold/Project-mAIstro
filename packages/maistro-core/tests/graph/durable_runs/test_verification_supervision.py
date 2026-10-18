@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+import pytest
 from pydantic import BaseModel
 
 from maistro.graph import Graph, Node
@@ -20,6 +21,7 @@ from maistro.graph.nodes.base import ReplaySemantics
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 class _In(BaseModel):
@@ -85,7 +87,11 @@ async def _run(
         name=workspace,
         nodes=[Node(node_id="step", node_type=node.kind, policies=dict(policies))],
     )
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     record = await run_durable_graph(
         graph,
         store=InMemoryDurableRunStore(),
@@ -112,6 +118,7 @@ async def test_matching_expectation_completes() -> None:
     assert node.visit == 1
 
 
+@pytest.mark.contract("boundary")
 async def test_output_mismatch_halts_with_plan_mismatch() -> None:
     node = _ReportingNode(quality_by_visit=[None])
     record, _ = await _run(
@@ -261,6 +268,14 @@ class _SelfReportingNode(BaseNode[_In, _Out]):
     # so supervision may spend another visit when the graph declares a budget.
     replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
 
+    def logical_effect_key(self, inputs: _In, ctx: NodeContext) -> str | None:
+        # Same fail-closed contract as the shipped llm.summarize node: the
+        # rung-scoped key makes a supervision re-visit a *new* keyed effect.
+        escalated = ctx.metadata.get("escalated_model")
+        return "test.verification_self_report:{}".format(
+            str(escalated).strip() if escalated else "first"
+        )
+
     def __init__(self, *, quality_by_visit: list[float | None]) -> None:
         self._quality_by_visit = quality_by_visit
         self.visit: int = 0
@@ -278,6 +293,7 @@ class _SelfReportingNode(BaseNode[_In, _Out]):
         return _Out()
 
 
+@pytest.mark.contract("behavioral")
 async def test_production_self_report_channel_drives_escalation() -> None:
     """A node self-reporting through ``NodeContext.result_metadata`` — the
     channel shipped nodes use — is withheld and re-queued at the next rung

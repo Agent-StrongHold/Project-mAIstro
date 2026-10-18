@@ -67,15 +67,23 @@ def classify_result_state(result: NodeResult) -> ResultState | None:
 
     override = (result.metadata or {}).get(RESULT_STATE_METADATA_KEY)
     if override is not None:
-        try:
-            return ResultState(str(override))
-        except ValueError as exc:
-            raise ValueError(
-                f"node result metadata {RESULT_STATE_METADATA_KEY!r} must be one of "
-                f"{[state.value for state in ResultState]}, got {override!r}"
-            ) from exc
+        return _result_state_override(override)
+    return _result_state_from_metadata(result, dict(result.metadata or {}))
 
-    metadata: dict[str, Any] = dict(result.metadata or {})
+
+def _result_state_override(override: Any) -> ResultState:
+    """The declared result state, refused loudly when it names nothing real."""
+    try:
+        return ResultState(str(override))
+    except ValueError as exc:
+        raise ValueError(
+            f"node result metadata {RESULT_STATE_METADATA_KEY!r} must be one of "
+            f"{[state.value for state in ResultState]}, got {override!r}"
+        ) from exc
+
+
+def _result_state_from_metadata(result: NodeResult, metadata: dict[str, Any]) -> ResultState:
+    """The classified state from the result's own signals, in contract order."""
     if (
         result.status == "paused"
         and str(metadata.get("paused_reason") or "") in HUMAN_PAUSE_REASONS

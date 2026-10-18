@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from maistro.graph.definitions import Graph
 from maistro.graph.verification.taxonomy import ResultState
@@ -84,13 +84,6 @@ class PostStateExpectation(BaseModel):
     expected_output_contains: Mapping[str, str] = Field(default_factory=dict)
     description: str = ""
 
-    @field_validator("expected_output_contains")
-    @classmethod
-    def _validate_contains_strings(cls, value: Mapping[str, str]) -> Mapping[str, str]:
-        if any(not isinstance(item, str) for item in value.values()):
-            raise ValueError("expected_output_contains values must be strings")
-        return value
-
     def evaluate(
         self,
         *,
@@ -98,58 +91,13 @@ class PostStateExpectation(BaseModel):
         result_state: ResultState | None,
     ) -> ExpectationVerdict:
         """Compare an actual post-state against this prediction."""
-        violations: list[ExpectationViolation] = []
-        if self.expect_result_state is not None and result_state is not self.expect_result_state:
-            violations.append(
-                ExpectationViolation(
-                    kind="result_state",
-                    path="<result_state>",
-                    expected=self.expect_result_state.value,
-                    actual=result_state.value if result_state is not None else None,
-                )
-            )
         mapping = output if isinstance(output, Mapping) else None
-        for key, expected in self.expected_output.items():
-            if mapping is None:
-                violations.append(
-                    ExpectationViolation(
-                        kind="missing_output",
-                        path=str(key),
-                        expected=expected,
-                        actual=output,
-                    )
-                )
-                continue
-            actual: Any = _value_at_path(mapping, str(key))
-            if actual is _MISSING:
-                violations.append(
-                    ExpectationViolation(
-                        kind="missing_output",
-                        path=str(key),
-                        expected=expected,
-                        actual=None,
-                    )
-                )
-            elif not _json_equal(actual, expected):
-                violations.append(
-                    ExpectationViolation(
-                        kind="output_mismatch",
-                        path=str(key),
-                        expected=expected,
-                        actual=actual,
-                    )
-                )
-        for key, needle in self.expected_output_contains.items():
-            actual = None if mapping is None else _value_at_path(mapping, str(key))
-            if not isinstance(actual, str) or needle not in actual:
-                violations.append(
-                    ExpectationViolation(
-                        kind="output_not_contained",
-                        path=str(key),
-                        expected=needle,
-                        actual=actual,
-                    )
-                )
+        state_violation = _result_state_violation(self, result_state)
+        violations: list[ExpectationViolation] = (
+            [] if state_violation is None else [state_violation]
+        )
+        violations.extend(_output_violations(self, mapping, output))
+        violations.extend(_contains_violations(self, mapping))
         return ExpectationVerdict(
             node_id=self.node_id,
             matched=not violations,
@@ -181,6 +129,84 @@ def _json_equal(actual: Any, expected: Any) -> bool:
     if isinstance(actual, (list, tuple)) and isinstance(expected, (list, tuple)):
         return list(actual) == list(expected)
     return bool(actual == expected)
+
+
+def _result_state_violation(
+    expectation: PostStateExpectation, result_state: ResultState | None
+) -> ExpectationViolation | None:
+    """The result-state violation, or ``None`` when the state matches (or is undeclared)."""
+    if expectation.expect_result_state is None or result_state is expectation.expect_result_state:
+        return None
+    return ExpectationViolation(
+        kind="result_state",
+        path="<result_state>",
+        expected=expectation.expect_result_state.value,
+        actual=result_state.value if result_state is not None else None,
+    )
+
+
+def _output_violations(
+    expectation: PostStateExpectation,
+    mapping: Mapping[str, Any] | None,
+    output: object,
+) -> list[ExpectationViolation]:
+    """Exact-equality violations for the predicted output subset.
+
+    A non-mapping output misses every predicted path; the raw output is
+    carried as the actual so the evidence shows what *did* come out.
+    """
+    violations: list[ExpectationViolation] = []
+    for key, expected in expectation.expected_output.items():
+        if mapping is None:
+            violations.append(
+                ExpectationViolation(
+                    kind="missing_output",
+                    path=str(key),
+                    expected=expected,
+                    actual=output,
+                )
+            )
+            continue
+        actual: Any = _value_at_path(mapping, str(key))
+        if actual is _MISSING:
+            violations.append(
+                ExpectationViolation(
+                    kind="missing_output",
+                    path=str(key),
+                    expected=expected,
+                    actual=None,
+                )
+            )
+        elif not _json_equal(actual, expected):
+            violations.append(
+                ExpectationViolation(
+                    kind="output_mismatch",
+                    path=str(key),
+                    expected=expected,
+                    actual=actual,
+                )
+            )
+    return violations
+
+
+def _contains_violations(
+    expectation: PostStateExpectation,
+    mapping: Mapping[str, Any] | None,
+) -> list[ExpectationViolation]:
+    """Substring violations for the ``expected_output_contains`` assertions."""
+    violations: list[ExpectationViolation] = []
+    for key, needle in expectation.expected_output_contains.items():
+        actual = None if mapping is None else _value_at_path(mapping, str(key))
+        if not isinstance(actual, str) or needle not in actual:
+            violations.append(
+                ExpectationViolation(
+                    kind="output_not_contained",
+                    path=str(key),
+                    expected=needle,
+                    actual=actual,
+                )
+            )
+    return violations
 
 
 def expectation_from_policy(
@@ -247,9 +273,6 @@ class PlanExpectationQueue:
             if expectation.node_id not in self._consumed
         )
 
-    def expectation_for(self, node_id: str) -> PostStateExpectation | None:
-        return self._by_node_id.get(node_id)
-
     def supervise(
         self,
         node_id: str,
@@ -268,6 +291,22 @@ class PlanExpectationQueue:
         return expectation.evaluate(output=output, result_state=result_state)
 
 
+def _drain_ready_order(
+    ready: list[str], successors: dict[str, list[str]], indegree: dict[str, int]
+) -> list[str]:
+    """Pop the readiness queue in node-id order, unlocking successors as ids emit."""
+    ordered: list[str] = []
+    while ready:
+        current = ready.pop(0)
+        ordered.append(current)
+        for target in successors[current]:
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                ready.append(target)
+        ready.sort()
+    return ordered
+
+
 def _topological_node_ids(graph: Graph) -> tuple[str, ...]:
     """Deterministic topological order (Kahn's, node-id tie-break); cycles fall back to node-id order."""
     node_ids = [node.node_id for node in graph.nodes]
@@ -279,15 +318,7 @@ def _topological_node_ids(graph: Graph) -> tuple[str, ...]:
             successors[edge.from_node].append(edge.to_node)
             indegree[edge.to_node] += 1
     ready = sorted(node_id for node_id in node_ids if indegree[node_id] == 0)
-    ordered: list[str] = []
-    while ready:
-        current = ready.pop(0)
-        ordered.append(current)
-        for target in successors[current]:
-            indegree[target] -= 1
-            if indegree[target] == 0:
-                ready.append(target)
-        ready.sort()
+    ordered = _drain_ready_order(ready, successors, indegree)
     if len(ordered) < len(node_ids):
         cyclic = sorted(set(node_ids) - set(ordered))
         ordered.extend(cyclic)

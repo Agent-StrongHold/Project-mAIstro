@@ -66,8 +66,56 @@ def _plan_mismatch_error(
                 and item.spec.policies["expect_post_state"].get("description")
                 else ""
             )
-            return f"{verdict.describe()}{suffix}"
+            # The halt names what the plan still awaited: the durable
+            # explanation covers not just the contradicted prediction but the
+            # work the plan predicted had not happened yet.
+            pending = queue.pending_node_ids
+            pending_note = f" (plan still awaiting: {', '.join(pending)})" if pending else ""
+            return f"{verdict.describe()}{suffix}{pending_note}"
     return None
+
+
+def _visit_quality(item: traversal._FrontierItem) -> float | None:
+    """The visit's self-reported quality, or ``None`` when it reports none."""
+    from maistro.graph.verification.escalation import QUALITY_METADATA_KEY
+
+    raw_quality = (item.result.metadata or {}).get(QUALITY_METADATA_KEY)
+    if isinstance(raw_quality, (int, float)) and not isinstance(raw_quality, bool):
+        return float(raw_quality)
+    return None
+
+
+def _escalate_one_visit(
+    record: DurableRunRecord,
+    item: traversal._FrontierItem,
+    escalations: dict[str, Any],
+    declared: tuple[Any, Any],
+    quality: float,
+) -> bool:
+    """Record one visit's ladder decision; ``True`` when it re-queues at a rung.
+
+    The re-queued visit is a fresh NodeRun/Attempt whose context names the
+    chosen rung; a decision not to escalate (floor met, ladder exhausted, or
+    no visit left) clears any prior rung state so the acceptance is final.
+    """
+    from maistro.graph.verification.escalation import decide_escalation
+
+    ladder, gate = declared
+    current = escalations.get(item.node_id, {}).get("model")
+    decision = decide_escalation(ladder, current, quality, gate)
+    if not (
+        decision.escalate
+        and decision.to_model is not None
+        and traversal._may_revisit_after(record.graph_state, item)
+    ):
+        return False
+    escalations[item.node_id] = {
+        "model": decision.to_model,
+        "rung": ladder.index_of(decision.to_model),
+        "from_model": decision.from_model,
+        "quality": decision.quality,
+    }
+    return True
 
 
 def _escalate_quality_shortfalls(
@@ -88,8 +136,6 @@ def _escalate_quality_shortfalls(
     """
     from maistro.graph.verification.escalation import (
         ESCALATION_STATE_METADATA_KEY,
-        QUALITY_METADATA_KEY,
-        decide_escalation,
         escalation_from_policy,
     )
 
@@ -107,46 +153,36 @@ def _escalate_quality_shortfalls(
     changed = False
     for item in completed:
         declared = escalation_from_policy(item.spec.policies)
-        raw_quality = (item.result.metadata or {}).get(QUALITY_METADATA_KEY)
-        quality = (
-            raw_quality
-            if isinstance(raw_quality, (int, float)) and not isinstance(raw_quality, bool)
-            else None
-        )
+        quality = _visit_quality(item)
         if declared is None or quality is None:
             escalations.pop(item.node_id, None)
             advanced.append(item)
             continue
-        ladder, gate = declared
-        current = escalations.get(item.node_id, {}).get("model")
-        decision = decide_escalation(ladder, current, float(quality), gate)
-        may_retry = traversal._may_revisit_after(record.graph_state, item)
-        if decision.escalate and may_retry and decision.to_model is not None:
-            escalations[item.node_id] = {
-                "model": decision.to_model,
-                "rung": ladder.index_of(decision.to_model),
-                "from_model": decision.from_model,
-                "quality": decision.quality,
-            }
+        if _escalate_one_visit(record, item, escalations, declared, quality):
             requeued.append(item.node_id)
             changed = True
-            continue
-        escalations.pop(item.node_id, None)
-        advanced.append(item)
+        else:
+            escalations.pop(item.node_id, None)
+            advanced.append(item)
     if not changed:
         return record, completed, ()
+    return _commit_escalation_state(record, escalations), tuple(advanced), tuple(requeued)
+
+
+def _commit_escalation_state(
+    record: DurableRunRecord, escalations: dict[str, Any]
+) -> DurableRunRecord:
+    """Write the ladder decisions into graph state; an empty map clears them."""
+    from maistro.graph.verification.escalation import ESCALATION_STATE_METADATA_KEY
+
     metadata = dict(record.graph_state.metadata)
     if escalations:
         metadata[ESCALATION_STATE_METADATA_KEY] = escalations
     else:
         metadata.pop(ESCALATION_STATE_METADATA_KEY, None)
-    return (
-        traversal._replace_record(
-            record,
-            graph_state=traversal._replace_state(record.graph_state, metadata=metadata),
-        ),
-        tuple(advanced),
-        tuple(requeued),
+    return traversal._replace_record(
+        record,
+        graph_state=traversal._replace_state(record.graph_state, metadata=metadata),
     )
 
 

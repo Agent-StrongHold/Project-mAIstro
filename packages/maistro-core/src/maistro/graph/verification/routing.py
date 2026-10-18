@@ -16,9 +16,9 @@ and ``data:`` URIs are IMAGE; everything else is TEXT.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
 
 class ObservationModality:
@@ -35,28 +35,17 @@ _IMAGE_REFERENCE_KEYS = ("image_url", "image", "inline_data", "b64_json")
 
 
 class ObservationRoute(BaseModel):
-    """Where one observation goes: its modality and the model alias chosen for it."""
+    """Where one observation goes: its modality and the model alias chosen for it.
+
+    The constraints are declarative (pydantic validates them at model
+    construction): only the two modalities classify, and a route with no
+    model alias is a misconfiguration, not a destination.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    modality: str
-    model: str
-
-    @field_validator("modality")
-    @classmethod
-    def _validate_modality(cls, value: str) -> str:
-        if value not in (ObservationModality.TEXT, ObservationModality.IMAGE):
-            raise ValueError(
-                f"modality must be {ObservationModality.TEXT!r} or {ObservationModality.IMAGE!r}"
-            )
-        return value
-
-    @field_validator("model")
-    @classmethod
-    def _validate_model(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("model must be a non-empty string")
-        return value
+    modality: Literal["text", "image"]
+    model: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 def classify_observation(payload: object) -> str:
@@ -74,25 +63,34 @@ def classify_observation(payload: object) -> str:
             if payload.strip().lower().startswith("data:image/")
             else ObservationModality.TEXT
         )
-    if isinstance(payload, Mapping):
-        record: Mapping[str, Any] = payload
-        part_type = record.get("type")
-        if part_type == "image_url" or part_type == "input_image":
-            return ObservationModality.IMAGE
-        for key in _IMAGE_MIME_KEYS:
-            mime = record.get(key)
-            if isinstance(mime, str) and mime.strip().lower().startswith("image/"):
-                return ObservationModality.IMAGE
-        for key in _IMAGE_REFERENCE_KEYS:
-            if record.get(key) is not None:
-                return ObservationModality.IMAGE
-        # A content-parts list under any common key: an image part inside makes the payload image-bearing.
-        for value in record.values():
-            if isinstance(value, (list, tuple)) and any(
-                classify_observation(item) == ObservationModality.IMAGE for item in value
-            ):
-                return ObservationModality.IMAGE
+    if isinstance(payload, Mapping) and _mapping_carries_image(payload):
+        return ObservationModality.IMAGE
     return ObservationModality.TEXT
+
+
+def _mime_declares_image(record: Mapping[str, Any]) -> bool:
+    """Whether any of the payload's MIME-carrying keys names an ``image/*`` type."""
+    for key in _IMAGE_MIME_KEYS:
+        mime = record.get(key)
+        if isinstance(mime, str) and mime.strip().lower().startswith("image/"):
+            return True
+    return False
+
+
+def _mapping_carries_image(record: Mapping[str, Any]) -> bool:
+    """Whether a mapping payload is, or contains, an image observation."""
+    if record.get("type") in ("image_url", "input_image"):
+        return True
+    if _mime_declares_image(record):
+        return True
+    if any(record.get(key) is not None for key in _IMAGE_REFERENCE_KEYS):
+        return True
+    # A content-parts list under any common key: an image part inside makes the payload image-bearing.
+    return any(
+        isinstance(value, (list, tuple))
+        and any(classify_observation(item) == ObservationModality.IMAGE for item in value)
+        for value in record.values()
+    )
 
 
 def route_observation(
@@ -141,21 +139,39 @@ def _image_reference(payload: object) -> str:
     if isinstance(payload, str):
         return payload
     if isinstance(payload, Mapping):
-        for key in ("url", "image_url"):
-            nested = payload.get(key)
-            if isinstance(nested, str):
-                return nested
-            if isinstance(nested, Mapping) and isinstance(nested.get("url"), str):
-                return str(nested["url"])
-        inline = payload.get("inline_data")
-        if isinstance(inline, Mapping) and isinstance(inline.get("data"), str):
-            mime = inline.get("mime_type") or inline.get("mimetype") or "image/png"
-            return f"data:{mime};base64,{inline['data']}"
-        data = payload.get("data") or payload.get("b64_json")
-        if isinstance(data, str):
-            mime = payload.get("mime_type") or payload.get("mimetype") or "image/png"
-            return f"data:{mime};base64,{data}"
+        return _reference_from_mapping(payload)
     return ""
+
+
+def _reference_from_mapping(payload: Mapping[str, Any]) -> str:
+    """The image URL/base64 reference a mapping payload carries, if any."""
+    for key in ("url", "image_url"):
+        nested = payload.get(key)
+        if isinstance(nested, str):
+            return nested
+        if isinstance(nested, Mapping) and isinstance(nested.get("url"), str):
+            return str(nested["url"])
+    inline = _inline_data_reference(payload.get("inline_data"))
+    if inline is not None:
+        return inline
+    return _base64_reference(payload)
+
+
+def _inline_data_reference(inline: object) -> str | None:
+    """A Gemini-style ``inline_data`` part as a data URI, or ``None``."""
+    if not (isinstance(inline, Mapping) and isinstance(inline.get("data"), str)):
+        return None
+    mime = inline.get("mime_type") or inline.get("mimetype") or "image/png"
+    return f"data:{mime};base64,{inline['data']}"
+
+
+def _base64_reference(payload: Mapping[str, Any]) -> str:
+    """A bare base64 field as a data URI; an empty string when absent."""
+    data = payload.get("data") or payload.get("b64_json")
+    if not isinstance(data, str):
+        return ""
+    mime = payload.get("mime_type") or payload.get("mimetype") or "image/png"
+    return f"data:{mime};base64,{data}"
 
 
 def _text_summary(payload: object) -> str:
