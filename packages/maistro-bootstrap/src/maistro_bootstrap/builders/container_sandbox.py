@@ -36,6 +36,12 @@ import os
 import subprocess
 from pathlib import Path, PurePosixPath
 
+from maistro.tools.sandbox._capture import (
+    DEFAULT_MAX_OUTPUT_BYTES,
+    clamped_output_limit,
+    run_bounded,
+    truncation_notice,
+)
 from maistro_bootstrap.builders.errors import SandboxEscapeError
 
 DEFAULT_IMAGE = "maistro-builders:latest"
@@ -134,6 +140,11 @@ class ContainerBuilderSandbox:
         self._repo_root = Path(repo_root).resolve()
         self._image = image
         self._cid: str | None = None
+        # Host-selected bound (#1197) on retained command output, clamped to
+        # the protocol ceiling: candidate-influenced commands run here, so an
+        # unbounded emitter must not be able to grow host memory through the
+        # very path the isolation depends on.
+        self._output_limit = clamped_output_limit(DEFAULT_MAX_OUTPUT_BYTES)
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -317,13 +328,18 @@ class ContainerBuilderSandbox:
         return f"{_WORKDIR}/{p.as_posix()}"
 
     def _exec(self, argv: list[str], *, timeout: int = _DEFAULT_TIMEOUT) -> tuple[int, str]:
-        proc = subprocess.run(
+        # Bounded capture (#1197): run_bounded retains at most the output
+        # limit per stream and drains the rest, so a candidate command cannot
+        # wedge the loop against a full pipe nor exhaust host memory.
+        run = run_bounded(
             ["docker", *self._exec_prefix(), self._require_cid(), *argv],
-            capture_output=True,
-            text=True,
+            limit=self._output_limit,
             timeout=timeout,
         )
-        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+        output = (run.stdout.data + run.stderr.data).decode(errors="replace")
+        if run.stdout.truncated or run.stderr.truncated:
+            output += truncation_notice(self._output_limit)
+        return run.exit_code, output
 
     def _exec_prefix(self) -> list[str]:
         """Docker flags every agent-facing exec carries (#77).

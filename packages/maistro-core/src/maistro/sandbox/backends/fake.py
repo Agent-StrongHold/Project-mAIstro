@@ -7,11 +7,19 @@ to register in tests and so dev mode doesn't require KVM.
 from __future__ import annotations
 
 import asyncio
-import subprocess
+import logging
 import time
 from uuid import uuid4
 
-from maistro.sandbox.protocol import ExecResult, SandboxConfig, SandboxInstance
+from maistro.sandbox.protocol import (
+    ExecResult,
+    SandboxConfig,
+    SandboxInstance,
+    clamped_output_limit,
+)
+from maistro.tools.sandbox._capture import run_bounded
+
+logger = logging.getLogger("maistro.sandbox.backends.fake")
 
 
 class FakeSandboxBackend:
@@ -31,17 +39,19 @@ class FakeSandboxBackend:
         self, instance: SandboxInstance, command: list[str], *, timeout_s: int = 120
     ) -> ExecResult:
         start = time.monotonic()
-        try:
-            r = await asyncio.to_thread(
-                subprocess.run, command, capture_output=True, text=True, timeout=timeout_s
-            )
-            return ExecResult(
-                exit_code=r.returncode,
-                stdout=r.stdout,
-                stderr=r.stderr,
-                duration_ms=int((time.monotonic() - start) * 1000),
-            )
-        except subprocess.TimeoutExpired:
+        # Same contract as the real backends: an unknown/destroyed instance is
+        # a KeyError, and the retention bound comes from the spawned config.
+        config = self._instances[instance.id]
+        # Bounded capture (#1197): the fake runs without isolation, which is
+        # exactly why its host-side capture must obey the same bound as the
+        # real backends — the workload is untrusted in dev mode too.
+        r = await asyncio.to_thread(
+            run_bounded,
+            command,
+            limit=clamped_output_limit(config.max_output_bytes),
+            timeout=timeout_s,
+        )
+        if r.timed_out:
             return ExecResult(
                 exit_code=124,
                 stdout="",
@@ -49,6 +59,27 @@ class FakeSandboxBackend:
                 duration_ms=timeout_s * 1000,
                 timed_out=True,
             )
+        result = ExecResult(
+            exit_code=r.exit_code,
+            stdout=r.stdout.data.decode(errors="replace"),
+            stderr=r.stderr.data.decode(errors="replace"),
+            duration_ms=int((time.monotonic() - start) * 1000),
+            stdout_bytes=len(r.stdout.data),
+            stderr_bytes=len(r.stderr.data),
+            stdout_truncated=r.stdout.truncated,
+            stderr_truncated=r.stderr.truncated,
+        )
+        # Same audit contract as the real backends (#1197): a dev-mode fake
+        # runs untrusted workloads too, so partial evidence is declared where
+        # it happens, not silently passed upstream.
+        if note := result.truncation_summary():
+            logger.warning(
+                "sandbox_exec_output_truncated id=%s exit_code=%s: %s",
+                instance.id,
+                result.exit_code,
+                note,
+            )
+        return result
 
     async def write_file(self, instance: SandboxInstance, path: str, content: bytes) -> None:
         import pathlib

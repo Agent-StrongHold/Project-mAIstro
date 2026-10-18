@@ -18,6 +18,12 @@ import structlog
 
 from maistro.config.settings import SandboxSettings
 from maistro.security.dangerous_tools import is_dangerous_command
+from maistro.tools.sandbox._capture import (
+    DEFAULT_MAX_OUTPUT_BYTES,
+    clamped_output_limit,
+    communicate_bounded,
+    truncation_notice,
+)
 from maistro.tools.sandbox.env_sanitize import sanitize_env
 from maistro.tools.sandbox.workspace import CONTAINER_WORKSPACE, ensure_workspace
 
@@ -41,12 +47,17 @@ class SandboxContainer:
         workspace_host: str,
         workspace_container: str = CONTAINER_WORKSPACE,
         ttl: int = 3600,
+        max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
     ) -> None:
         self.container_id = container_id
         self.workspace_host = workspace_host
         self.workspace_container = workspace_container
         self.created_at = time.monotonic()
         self.ttl = ttl
+        # Host-selected policy (#1197): how much combined command output this
+        # container's execs may retain, clamped to the protocol ceiling so no
+        # settings source can raise the bound.
+        self.max_output_bytes = clamped_output_limit(max_output_bytes)
 
     @property
     def expired(self) -> bool:
@@ -83,8 +94,18 @@ class SandboxContainer:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            output = stdout.decode("utf-8", errors="replace") if stdout else ""
+            # Bounded capture (#1197): retain at most `max_output_bytes` of
+            # the merged stream; the rest is drained and discarded so the
+            # workload cannot wedge the executor against a full pipe or grow
+            # host memory while inside its container budget.
+            captured, _ = await asyncio.wait_for(
+                communicate_bounded(proc, self.max_output_bytes), timeout=timeout
+            )
+            output = captured.data.decode("utf-8", errors="replace")
+            if captured.truncated:
+                # The `(exit_code, output)` shape has no room for structured
+                # flags, so truncation is declared in the output itself.
+                output += truncation_notice(self.max_output_bytes)
             return proc.returncode or 0, output
         except TimeoutError:
             return 124, f"Command timed out after {timeout}s"
@@ -216,4 +237,5 @@ async def create_sandbox(
         container_id=container_id,
         workspace_host=str(host_path),
         ttl=settings.timeout,
+        max_output_bytes=settings.max_output_bytes,
     )

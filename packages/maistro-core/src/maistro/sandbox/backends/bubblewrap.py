@@ -35,7 +35,13 @@ from uuid import uuid4
 
 from maistro.sandbox.detect import BUBBLEWRAP_BINARY
 from maistro.sandbox.network import EgressMode, resolve_grant
-from maistro.sandbox.protocol import ExecResult, SandboxConfig, SandboxInstance
+from maistro.sandbox.protocol import (
+    ExecResult,
+    SandboxConfig,
+    SandboxInstance,
+    clamped_output_limit,
+)
+from maistro.tools.sandbox._capture import communicate_bounded
 
 logger = logging.getLogger("maistro.sandbox.bubblewrap")
 
@@ -266,7 +272,14 @@ class BubblewrapSandboxBackend:
             preexec_fn=preexec_for(limits),
         )
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_s)
+            # Bounded drain (#1197): at most the config's output limit is
+            # retained per stream; beyond it the drain continues and
+            # discards, so a `yes`-style workload can neither grow host
+            # memory nor block on a full pipe until the wall-clock timeout.
+            stdout, stderr = await asyncio.wait_for(
+                communicate_bounded(process, clamped_output_limit(config.max_output_bytes)),
+                timeout=timeout_s,
+            )
         except TimeoutError:
             # `--die-with-parent` makes the kill reach the whole sandbox rather
             # than only the `bwrap` process, so a timeout cannot leave the
@@ -281,12 +294,27 @@ class BubblewrapSandboxBackend:
                 timed_out=True,
             )
 
-        return ExecResult(
+        result = ExecResult(
             exit_code=process.returncode if process.returncode is not None else -1,
-            stdout=stdout.decode(errors="replace"),
-            stderr=stderr.decode(errors="replace"),
+            stdout=stdout.data.decode(errors="replace"),
+            stderr=stderr.data.decode(errors="replace"),
             duration_ms=int((time.monotonic() - start) * 1000),
+            stdout_bytes=len(stdout.data),
+            stderr_bytes=len(stderr.data),
+            stdout_truncated=stdout.truncated,
+            stderr_truncated=stderr.truncated,
         )
+        # The protocol contract says a truncated result is incomplete evidence;
+        # the backend is the one place that always sees the truncation, so it
+        # is the one place that can always say so in the audit trail (#1197).
+        if note := result.truncation_summary():
+            logger.warning(
+                "sandbox_exec_output_truncated id=%s exit_code=%s: %s",
+                instance.id,
+                result.exit_code,
+                note,
+            )
+        return result
 
     # --- files -------------------------------------------------------------
 

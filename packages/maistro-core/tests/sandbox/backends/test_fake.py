@@ -57,10 +57,17 @@ class TestExec:
         config = SandboxConfig()
         instance = await backend.spawn(config=config)
 
-        def raise_timeout(*args: object, **kwargs: object) -> None:
-            raise subprocess.TimeoutExpired(cmd="sleep", timeout=1)
+        # The capture seam is `run_bounded`'s Popen.wait: the first wait
+        # raises TimeoutExpired (as a real timed-out child would), the kill
+        # path's second wait returns normally.
+        def raise_then_return(*args: object, **kwargs: object) -> int:
+            if not raise_then_return.raised:  # type: ignore[attr-defined]
+                raise_then_return.raised = True  # type: ignore[attr-defined]
+                raise subprocess.TimeoutExpired(cmd="sleep", timeout=1)
+            return 0
 
-        monkeypatch.setattr(subprocess, "run", raise_timeout)
+        raise_then_return.raised = False  # type: ignore[attr-defined]
+        monkeypatch.setattr(subprocess.Popen, "wait", raise_then_return)
         result = await backend.exec(instance, ["sleep", "5"], timeout_s=1)
         assert result.exit_code == 124
         assert result.stdout == ""

@@ -3,10 +3,30 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from maistro.sandbox.fence import SandboxFence
 from maistro.sandbox.network import DENY_ALL, EgressGrant
+
+# Retained-output policy (#1197) is OWNED by the stdlib-only
+# `maistro.tools.sandbox._capture` — the executors (docker/microVM, the RSI
+# promotion path) import their bounds from there without initializing this
+# package — and re-exported here as the policy's public home. One definition,
+# two spellings; drift is impossible by construction.
+from maistro.tools.sandbox._capture import (
+    DEFAULT_MAX_OUTPUT_BYTES as DEFAULT_MAX_OUTPUT_BYTES,
+)
+from maistro.tools.sandbox._capture import (
+    MAX_OUTPUT_BYTES_CEILING as MAX_OUTPUT_BYTES_CEILING,
+)
+from maistro.tools.sandbox._capture import (
+    clamped_output_limit as clamped_output_limit,
+)
+
+if TYPE_CHECKING:
+    # Annotation-only: a runtime import here would close the cycle
+    # protocol -> fence -> runs -> graph -> capabilities -> opencode ->
+    # tools/sandbox.microvm -> capture -> protocol.
+    from maistro.sandbox.fence import SandboxFence
 
 # Type alias for clarity
 IsolationTier = str  # "vm" | "gvisor" | "container" | "bubblewrap" | "fake"
@@ -67,6 +87,12 @@ class SandboxConfig:
     #: the sandbox environment so anything it publishes can prove it is
     #: still the current execution. `None` for work with nothing to commit.
     fence: SandboxFence | None = None
+    #: Host-selected bound (#1197) on stdout/stderr bytes the backend retains.
+    #: Output past the limit is read and discarded (never buffered), so an
+    #: unbounded emitter cannot grow host memory nor wedge the executor on a
+    #: full pipe. Clamped to `MAX_OUTPUT_BYTES_CEILING` at the backend; a
+    #: workload cannot raise it.
+    max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES
 
 
 @dataclass
@@ -82,10 +108,42 @@ class SandboxInstance:
 
 @dataclass(frozen=True)
 class ExecResult:
-    """Result of a command execution in a sandbox."""
+    """Result of a command execution in a sandbox.
+
+    Truncation semantics (#1197): every backend retains at most
+    `SandboxConfig.max_output_bytes` per stream. Output beyond the limit is
+    read and *discarded* — not buffered — so the workload runs to its natural
+    completion (or its timeout) without blocking on a full pipe. `stdout` /
+    `stderr` therefore may be partial; `*_truncated` says so, and `*_bytes`
+    are the retained byte counts (the raw bytes captured, which after a
+    `errors="replace"` decode can differ from `len(stdout)`). Callers and
+    audit must treat a result with `*_truncated` as incomplete evidence.
+    """
 
     exit_code: int
     stdout: str
     stderr: str
     duration_ms: int
     timed_out: bool = False
+    #: Retained stdout/stderr bytes (post-clamp raw byte counts, #1197).
+    stdout_bytes: int = 0
+    stderr_bytes: int = 0
+    #: True when the stream exceeded the retained-output limit and the rest
+    #: was drained and discarded.
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+
+    def truncation_summary(self) -> str | None:
+        """Operator-facing truncation summary, or None when evidence is complete.
+
+        The contract line above — a truncated result is incomplete evidence —
+        needs a reader to be true: backends log this at the point of
+        truncation, so an audit trail always carries the fact that retained
+        output is partial and how much was kept.
+        """
+        parts: list[str] = []
+        if self.stdout_truncated:
+            parts.append(f"stdout truncated ({self.stdout_bytes} bytes retained)")
+        if self.stderr_truncated:
+            parts.append(f"stderr truncated ({self.stderr_bytes} bytes retained)")
+        return "; ".join(parts) if parts else None

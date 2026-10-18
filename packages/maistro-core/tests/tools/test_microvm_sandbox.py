@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from maistro.config.settings import SandboxSettings
+from maistro.sandbox.protocol import DEFAULT_MAX_OUTPUT_BYTES
 from maistro.tools.sandbox.microvm import (
     MicroVMConfig,
     MicroVMRunSpec,
@@ -148,3 +149,38 @@ def test_workspace_outside_allowlist_is_refused():
     for hostile in ("/etc", "/", "/home", "."):
         with pytest.raises(ValueError):
             MicroVMSandbox(launch, workspace=hostile)
+
+
+# --- retained-output bound (#1197) ------------------------------------------
+
+
+async def test_launcher_output_beyond_the_limit_is_cut_and_declared():
+    """The launcher seam returns one `(exit_code, output)` pair; the sandbox
+    enforces the retained-output bound on that result so an unbounded emitter
+    cannot flood the harness caller even when the launcher captured more."""
+    launcher = _FakeLauncher(result=(0, "z" * 50_000))
+    sandbox = MicroVMSandbox(
+        launcher,
+        config=MicroVMConfig(max_output_bytes=1000),
+        workspace="/tmp/maistro-workspace/t1",
+    )
+    code, out = await sandbox.exec("big")
+    assert code == 0
+    assert out.encode()[:1000] == b"z" * 1000
+    assert "truncated at 1000 bytes" in out
+    # The bound is bytes, not characters: a multi-byte tail cannot push the
+    # retained payload past the limit.
+    payload = out.split("\n[maistro:")[0].encode()
+    assert len(payload) <= 1000
+
+
+async def test_launcher_output_under_the_limit_is_untouched():
+    launcher = _FakeLauncher(result=(0, "exactly right"))
+    sandbox = MicroVMSandbox(launcher, workspace="/tmp/maistro-workspace/t1")
+    assert await sandbox.exec("ok") == (0, "exactly right")
+
+
+def test_from_settings_carries_the_output_bound():
+    config = MicroVMConfig.from_settings(SandboxSettings(max_output_bytes=2048))
+    assert config.max_output_bytes == 2048
+    assert MicroVMConfig().max_output_bytes == DEFAULT_MAX_OUTPUT_BYTES
