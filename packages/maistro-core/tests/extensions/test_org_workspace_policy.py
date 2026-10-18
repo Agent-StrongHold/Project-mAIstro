@@ -41,9 +41,8 @@ from maistro.extensions import (
     PolicyVerdict,
     TrustPolicy,
     UnknownInstall,
-    WorkspaceExtensionPolicy,
 )
-from maistro.extensions.policy import INHERITANCE_SEMANTICS
+from maistro.extensions.policy import INHERITANCE_SEMANTICS, WorkspaceExtensionPolicy
 from maistro.extensions.service import (
     ExtensionCodeLoader,
     ExtensionInstallService,

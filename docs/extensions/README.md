@@ -23,6 +23,33 @@ The reference extension lives at `extensions/reference-greeter/` — outside
 `packages/`, with its own `pyproject.toml`, because that is how every
 third-party extension looks from the outside.
 
+## Domain packs (M9-F, #966)
+
+A **domain pack** is an extension that ships reusable *defaults* — Graph
+shapes, Persona templates, Rubric dimension catalogs — as version-addressable
+assets instead of (or alongside) code. Its manifest is a governed-install
+subtype (`"kind": "domain-pack"`, parsed fail-closed from bytes by
+`maistro.extensions.packs.inspect_pack_manifest`, the M9-B machinery's
+namespace), and its contract is canonical-object-only: instantiation mints
+canonical `GraphTemplate`/`Persona`/`RubricSemantic` identities bound to
+caller-named Workspaces, the pack-local asset ids ride only in provenance
+(full exact-source identity: publisher, pack version, asset id/version, and
+the manifest digest — on `GraphTemplate` metadata, `Persona`
+`extension_metadata`/`source_template_*`, and the canonical
+`RubricProvenance` detail fields), dependencies resolve through the same
+compatibility evaluator every extension uses, and disabling a pack gates new
+use without touching anything already created. The manifest snapshot is
+anchored to its bytes — payload trees and rubric dimensions are frozen at
+parse time as pack-local immutable data (canonical models are minted fresh
+at every probe/instantiation), so a stored snapshot cannot be mutated away
+from the digest its provenance names. No pack can declare an executor, a
+store, or a Goal/Persona/Rubric
+authority — the schema has no such field, and instantiation persists nothing.
+The in-repo product/game/book packs of `maistro_design.packs` (#793) remain
+the shipped defaults; `maistro.extensions.packs` is the installable,
+out-of-tree generalization (M9-F1), whose Workspace-scoped activation
+lifecycle is M9-F3 (#968).
+
 ## Guides
 
 | Document | What it covers |
@@ -31,6 +58,8 @@ third-party extension looks from the outside.
 | [Manifest reference](manifest-reference.md) | Every `extension.json` field, the closed authority vocabulary, and the contract-versioning/deprecation rules. |
 | [Lifecycle](lifecycle.md) | What happens between discovery and teardown, and what an extension may do at each stage. |
 | [Capabilities](capabilities.md) | Worked examples for every capability, effect, and data scope — least authority by default. |
+| [Tool and Skill contracts](tool-skill-contracts.md) | How the host classifies `tool`/`skill` packages, who may call them, and the one governed path every call crosses (M9-E3). |
+| [Upgrade preflight](upgrade-preflight.md) | Evaluating installed extensions against a target host release before upgrading — compatible, deprecated, migration-required, or blocking. |
 
 The normative, machine-validatable manifest schema is the versioned extension
 SDK package itself (`maistro-ext-sdk`, M9-A1, #949); these guides explain how

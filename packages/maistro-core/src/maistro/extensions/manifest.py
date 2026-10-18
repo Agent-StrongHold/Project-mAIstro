@@ -155,8 +155,13 @@ def _parse_document(raw: bytes) -> dict[str, object]:
     missing = [key for key in _REQUIRED_KEYS if key not in document]
     if missing:
         raise _reject(f"missing manifest keys: {missing}")
-    if document["manifest_version"] != SUPPORTED_MANIFEST_VERSION:
-        raise _reject(f"unsupported manifest_version: {document['manifest_version']!r}")
+    manifest_version = document["manifest_version"]
+    if (
+        isinstance(manifest_version, bool)
+        or not isinstance(manifest_version, int)
+        or manifest_version != SUPPORTED_MANIFEST_VERSION
+    ):
+        raise _reject(f"unsupported manifest_version: {manifest_version!r}")
     return document
 
 

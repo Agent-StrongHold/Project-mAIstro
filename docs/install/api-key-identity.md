@@ -61,6 +61,25 @@ rate limits are keyed to the principal (not to the credential —
 [#842](https://github.com/Agent-StrongHold/Project-mAIstro/issues/842)),
 rotation does not reset that principal's quota or abuse history.
 
+## No-auth development mode (`API_KEYS` empty)
+
+With no `API_KEYS` configured, authentication is disabled and requests are
+**not** attributed to a principal — there is no synthetic "dev" principal.
+Rate limiting (#1101) keys every request to the bounded pre-auth client
+identity: the address the connection came from.
+
+* The `Authorization` header has no effect on the bucket. Headerless
+  requests, arbitrary Bearer values, and malformed schemes from one client
+  all share that client's single bucket — header content can neither mint a
+  second quota nor escape an exhausted one.
+* Two development clients at different addresses have independent buckets;
+  they never collapse into a shared synthetic-principal quota.
+* Delegation envelopes are not honoured in this mode (there is no
+  authenticated service principal to verify one against).
+
+This mode is for development only; a production deployment configures
+`API_KEYS` and gets the per-principal semantics above.
+
 ## Rules the server enforces
 
 * Every entry must parse as `principal:secret` (or `principal:admin:secret`);

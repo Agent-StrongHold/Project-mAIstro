@@ -40,6 +40,16 @@ jobs:
       # `tests/test_devskim_scan_scope.py` fails if any glob here matches a
       # file that is neither a test nor vendored.
       #
+      # `**/static/swagger-ui/**` (#1425) is the vendored swagger-ui-dist
+      # release served by `backend/routes/api_docs.py`. It is upstream's
+      # minified bundle, not code anyone reviews line-by-line here; its
+      # integrity is pinned by sha256 provenance in `routes/api_docs.py` and
+      # enforced by `backend/tests/test_docs_first_party.py`. Scanning it
+      # produced 35 alerts (weak-hash, hardcoded-key and setTimeout shapes
+      # inside the minified upstream JS) that no edit of ours can clear --
+      # same category as `**/third_party/**`, a location that is vendored
+      # by definition.
+      #
       # Setting this input REPLACES the action's default, so `**/.git/**` and
       # `**/bin/**` are repeated rather than inherited.
       #
@@ -51,7 +61,7 @@ jobs:
       - name: Run DevSkim scanner
         uses: microsoft/DevSkim-Action@v1
         with:
-          ignore-globs: "**/.git/**,**/bin/**,**/node_modules/**,**/dist/**,**/build/**,**/third_party/**,**/tests/**,**/__tests__/**,**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.test.yml"
+          ignore-globs: "**/.git/**,**/bin/**,**/node_modules/**,**/dist/**,**/build/**,**/third_party/**,**/static/swagger-ui/**,**/tests/**,**/__tests__/**,**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.test.yml"
 
       - name: Upload DevSkim scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4
