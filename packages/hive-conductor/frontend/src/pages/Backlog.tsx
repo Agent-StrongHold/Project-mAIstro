@@ -227,6 +227,8 @@ export default function Backlog() {
   // Only the newest opened detail may commit (#1421). Opening item B while
   // item A's read is in flight used to let A's late response overwrite the
   // modal with the wrong item; the sequence number drops the stale answer.
+  // The unmount guard is re-armed in the fetch effect's setup below, so a
+  // StrictMode cleanup/setup replay doesn't wedge it at `true` forever.
   const detailSeq = useRef(0);
   const detailUnmounted = useRef(false);
 
@@ -236,6 +238,9 @@ export default function Backlog() {
   // not allowed to grow the held warning count.
   useEffect(() => {
     let cancelled = false;
+    // StrictMode replays this effect in dev (cleanup then setup) without a
+    // real unmount; re-arm the guard so later openDetail reads still commit.
+    detailUnmounted.current = false;
     (async () => {
       try {
         const body = await apiGet<{ items: BacklogItem[]; authority: Authority }>(
