@@ -115,9 +115,7 @@ def required_permission(method: str, path: str) -> str | None:
     return None
 
 
-def principal_has_permission(
-    user: Principal | Mapping[str, Any], permission: str
-) -> bool:
+def principal_has_permission(user: Principal | Mapping[str, Any], permission: str) -> bool:
     """Mirror the middleware's effective grant check for contract responses."""
     if isinstance(user, Principal):
         return user.has_permission(permission)

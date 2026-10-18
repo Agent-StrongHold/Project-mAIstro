@@ -239,7 +239,6 @@ function AppRoutes() {
               </Routes>
             </Suspense>
           </AuthGuard>
-          </AuthGuard>
         }
       />
     </Routes>
