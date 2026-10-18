@@ -270,10 +270,10 @@ class BubblewrapSandboxBackend:
             # Expose a stable guest name, not the host pathname. The source is
             # canonicalized under an explicit host-owned root first (#1198).
             argv += ["--bind", str(extra), f"/work-extra-{index}"]
-        for extra in config.read_paths:
+        for ro in config.read_paths:
             # Read-only host exposure from a host-owned profile (#2014); never
             # a writable bind, so it cannot widen the sandbox's write surface.
-            argv += ["--ro-bind", extra, extra]
+            argv += ["--ro-bind", ro, ro]
         if config.egress.mode is EgressMode.HOST:
             # `--unshare-all` already removed the network namespace; sharing it
             # back is the only way this backend can grant egress, and it grants

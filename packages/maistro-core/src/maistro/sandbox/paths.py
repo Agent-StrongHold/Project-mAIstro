@@ -60,6 +60,48 @@ def _canonical_allowed_roots(extra_roots: Iterable[str | Path] = ()) -> tuple[Pa
     return tuple(roots)
 
 
+def _validated_shape(path: str | Path) -> Path:
+    """Reject spellings that cannot be authorized before any resolution.
+
+    Empty, NUL, and backslash paths are malformed; a relative path has no
+    host meaning; and a symlink at the requested path itself is refused —
+    its target must be spelled out, never smuggled in.
+    """
+    candidate = Path(path)
+    if not str(path) or "\x00" in str(path) or "\\" in str(path):
+        raise ValueError(f"sandbox host root has an invalid path: {path!r}")
+    if not candidate.is_absolute():
+        raise ValueError(f"sandbox host root must be absolute: {path!r}")
+    if candidate.is_symlink():
+        raise ValueError(f"sandbox host root must not be a symlink: {path}")
+    return candidate
+
+
+def _beneath_an_authorized_root(resolved: Path, roots: tuple[Path, ...]) -> bool:
+    return any(resolved == root or root in resolved.parents for root in roots)
+
+
+def _authorized_resolution(
+    candidate: Path, path: str | Path, roots: tuple[Path, ...], *, create: bool
+) -> Path:
+    """Resolve the candidate and require the target to sit under a root."""
+    try:
+        resolved = candidate.resolve(strict=create)
+    except FileNotFoundError as exc:
+        raise ValueError(f"sandbox host root does not exist: {path}") from exc
+    if not _beneath_an_authorized_root(resolved, roots):
+        raise ValueError(f"sandbox host root is not authorized: {path}")
+    return resolved
+
+
+def _created_resolution(candidate: Path, path: str | Path) -> Path:
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        return candidate.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(f"sandbox host root could not be created: {path}") from exc
+
+
 def validate_host_root(
     path: str | Path,
     *,
@@ -73,31 +115,13 @@ def validate_host_root(
     returned canonical path is what the mount builder uses, so it does not
     hand a later operation the original symlink spelling.
     """
-    candidate = Path(path)
-    if not str(path) or "\x00" in str(path) or "\\" in str(path):
-        raise ValueError(f"sandbox host root has an invalid path: {path!r}")
-    if not candidate.is_absolute():
-        raise ValueError(f"sandbox host root must be absolute: {path!r}")
-    if candidate.is_symlink():
-        raise ValueError(f"sandbox host root must not be a symlink: {path}")
-
+    candidate = _validated_shape(path)
     roots = _canonical_allowed_roots(allowed_roots)
     if not roots:
         raise ValueError(f"sandbox host root has no host-owned authorization: {path}")
-
-    try:
-        resolved = candidate.resolve(strict=create)
-    except FileNotFoundError as exc:
-        raise ValueError(f"sandbox host root does not exist: {path}") from exc
-
-    if not any(resolved == root or root in resolved.parents for root in roots):
-        raise ValueError(f"sandbox host root is not authorized: {path}")
+    resolved = _authorized_resolution(candidate, path, roots, create=create)
     if create:
-        try:
-            candidate.mkdir(parents=True, exist_ok=True)
-            resolved = candidate.resolve(strict=True)
-        except OSError as exc:
-            raise ValueError(f"sandbox host root could not be created: {path}") from exc
+        resolved = _created_resolution(candidate, path)
     if not resolved.is_dir():
         raise ValueError(f"sandbox host root is not a directory: {path}")
     return resolved
@@ -113,16 +137,27 @@ def authorized_host_mounts(
     return tuple(validate_host_root(path, allowed_roots=allowed_roots) for path in requested)
 
 
-def _relative_parts(path: str, *, mount: str = "/work") -> tuple[str, ...]:
-    """Parse a guest path without allowing lexical traversal or host paths."""
+def _checked_guest_string(path: object) -> str:
+    """Reject non-strings and spellings that cannot name a sandbox file."""
     if not isinstance(path, str) or not path or "\x00" in path or "\\" in path:
         raise ValueError(f"invalid sandbox path: {path!r}")
+    return path
+
+
+def _guest_under_mount(path: str, mount: str) -> PurePosixPath:
+    """Anchor an absolute guest path under its mount; refuse other mounts."""
     guest = PurePosixPath(path)
-    if guest.is_absolute():
-        try:
-            guest = guest.relative_to(mount)
-        except ValueError as exc:
-            raise ValueError(f"path {path!r} is outside sandbox mount {mount!r}") from exc
+    if not guest.is_absolute():
+        return guest
+    try:
+        return guest.relative_to(mount)
+    except ValueError as exc:
+        raise ValueError(f"path {path!r} is outside sandbox mount {mount!r}") from exc
+
+
+def _relative_parts(path: str, *, mount: str = "/work") -> tuple[str, ...]:
+    """Parse a guest path without allowing lexical traversal or host paths."""
+    guest = _guest_under_mount(_checked_guest_string(path), mount)
     if ".." in guest.parts:
         raise ValueError(f"path {path!r} escapes sandbox root")
     parts = tuple(part for part in guest.parts if part not in ("", "."))
