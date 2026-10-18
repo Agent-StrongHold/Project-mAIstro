@@ -147,6 +147,12 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Hive Graph execution refuses missing canonical authority (#1113).**
+  Registered and stored DAGs now require the Container's RunStore and Graph
+  continuation owner before admission or execution. Stub/degraded mode reports
+  Graph execution unavailability instead of creating process-local Runs.
+  Definition/resolver helpers and existing read-only legacy archives remain usable.
+
 - **Prevent competing Graph recovery ticks from stealing a persisted claim (#837).**
   Claim ownership is fenced before orphaned-attempt reconciliation, including
   the WAITING-to-RUNNING activation window. Losing readers leave the owner's
