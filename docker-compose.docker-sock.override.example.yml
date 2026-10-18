@@ -11,7 +11,13 @@
 # Usage:
 #   docker compose -f docker-compose.yml \
 #     -f docker-compose.docker-sock.override.example.yml up
-# or copy this file to docker-compose.override.yml (picked up automatically).
+# or copy this file to docker-compose.override.yml at the repo root, which
+# ./install.sh then includes automatically (it invokes compose with explicit
+# -f files, so Compose's own automatic override loading never applies; a bare
+# `docker compose up` with no -f is the only form that auto-loads it).
+# install.sh refuses an override the invoking user does not own, or that is
+# group/world-writable — this file can mount the host Docker socket, so
+# anything local users can rewrite must not run.
 #
 # MAISTRO_DOCKER_SOCK is detected by install.sh: Docker Desktop uses
 # /var/run/docker.sock, but Colima exposes it under ~/.colima/.../docker.sock.

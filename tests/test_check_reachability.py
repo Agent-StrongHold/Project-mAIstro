@@ -29,6 +29,42 @@ def check():
     return module
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _walk_once_per_distinct_arguments(check):
+    """Compute the module graph once per distinct argument set, not once per call.
+
+    Every public entry point re-walks the repository: ``unreachable_modules()``
+    and ``main()`` each call ``_reachability`` from scratch. Under the coverage
+    producer's tracing a walk costs ~9s, so a test that asks twice — the two
+    ratchet-direction tests call ``unreachable_modules()`` and then ``main()`` —
+    spent ~18s and exceeded the workflow's 30s per-test ceiling on slower
+    runners (quality.yml run 37879373619: both timed out and failed the
+    Coverage gate for every open PR that hour, including auto-978 and
+    auto-1852, whose diffs touch none of this).
+
+    The graph is a pure function of the tree, and this file deliberately keeps
+    the tree static — baseline changes are simulated by monkeypatching
+    ``BASELINE``, never by writing into ``packages/`` — so identical arguments
+    have identical results within a session. Memoizing them keeps every
+    assertion reading the real walk; it only stops paying for the same walk
+    repeatedly. Returns are copied because callers receive mutable dict/set
+    and must not alias one test's view into another's.
+    """
+    real = check._reachability
+    memo: dict[tuple, tuple[dict[str, Path], set[str]]] = {}
+
+    def _memoized(*args: object, **kwargs: object):
+        key = (args, tuple(sorted(kwargs.items())))
+        if key not in memo:
+            memo[key] = real(*args, **kwargs)  # type: ignore[arg-type]
+        mods, seen = memo[key]
+        return dict(mods), set(seen)
+
+    check._reachability = _memoized
+    yield
+    check._reachability = real
+
+
 def test_baseline_matches_the_tree(check):
     """The committed baseline is the current truth — otherwise the first CI run
     after any merge fails for reasons unrelated to that merge."""
@@ -68,6 +104,16 @@ def test_known_wired_subsystems_are_reachable(check):
         assert mod not in unreachable, f"{mod} lost its production call path"
 
 
+# Two whole-repo walks each — `unreachable_modules()` to borrow the baseline
+# entries, then `main()` to run the gate against them — and under the
+# coverage-gate producer every line of the walk itself is traced
+# (`--source=scripts`). Measured at ~7.5s untraced against the suite's 30s
+# default; the 2026-10-09 merge-queue run (37876585845) reded both at >30s on
+# a slower runner, so the margin is stated here rather than rediscovered per
+# runner. Same shape as test_check_cross_package_imports.py::120 and
+# test_check_execution_lifecycles.py::180. The assertions are untouched —
+# this widens only the latency bound on the self-check.
+@pytest.mark.timeout(180)
 def test_new_unreachable_module_fails_the_gate(check, tmp_path, monkeypatch, capsys):
     """The gate's whole job. Simulated by shrinking the baseline rather than
     writing a file into packages/, so a crashed test cannot leave a stray module
@@ -83,6 +129,7 @@ def test_new_unreachable_module_fails_the_gate(check, tmp_path, monkeypatch, cap
     assert unreachable[0] in capsys.readouterr().out
 
 
+@pytest.mark.timeout(180)
 def test_module_becoming_reachable_fails_until_the_baseline_is_pruned(
     check, tmp_path, monkeypatch, capsys
 ):
@@ -109,6 +156,52 @@ def test_module_becoming_reachable_fails_until_the_baseline_is_pruned(
     out = capsys.readouterr().out
     assert stale in out
     assert "must shrink" in out
+
+
+def test_an_identical_second_walk_reparses_nothing(check, monkeypatch):
+    """The walk is computed once per argument tuple, not once per call site.
+
+    Every consumer of this module paid a full walk per call: `main()` walked,
+    and the self-checks below each walked again to ask `unreachable_modules()`
+    a question `main()` had just answered. That doubled cost scaled with the
+    repository until it crossed the root suite's 30s per-test bound on a CI
+    runner under `--source=scripts` tracing (quality.yml run 37522612054 timed
+    the two baseline-manipulation tests above out at >30s each, reding the
+    coverage gate's combine step).
+
+    Pinned structurally, not by wall clock: counting `ast.parse` calls makes
+    the bound hold on any machine. The cache is cleared first so the first
+    walk here is a real full pass on any test order; the second, identical
+    call must parse nothing at all, and the first pass must not parse any
+    module twice. Against the pre-fix walk this test cannot pass — there is no
+    cache to clear, and the identical second call re-parses every module.
+    """
+    check._reachability_walk.cache_clear()
+    try:
+        parses = 0
+        real_parse = check.ast.parse
+
+        def counting_parse(*args: object, **kwargs: object) -> object:
+            nonlocal parses
+            parses += 1
+            return real_parse(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(check.ast, "parse", counting_parse)
+        first = check._reachability()
+        parses_after_first = parses
+        second = check._reachability()
+    finally:
+        check._reachability_walk.cache_clear()
+
+    # The bound is not vacuous: the first walk really did parse the tree, and
+    # did so at most once per module it found (tooling included).
+    assert first[0], "the walk must find modules for the parse bound to mean anything"
+    assert parses_after_first <= len(first[0])
+    # The regression this test names: a second identical walk re-parsing every
+    # module. Pre-fix this count doubles; post-fix it must not move at all.
+    assert parses == parses_after_first
+    # And the cached answer is the answer, not a degraded copy of it.
+    assert second == first
 
 
 class TestEagerImportSweep:
@@ -361,5 +454,16 @@ def test_tooling_entries_are_in_the_committed_baseline(check):
 def test_the_gate_scripts_themselves_are_reachable(check):
     """A gate CI runs must never read as dead — that would be the alarm failing."""
     unreachable, _ = check.unreachable_modules()
-    for gate in ("check-reachability", "check-ac-state", "check-wiring-reads"):
+    for gate in (
+        "check-reachability",
+        "check-ac-state",
+        "check-wiring-reads",
+        "check-citation-status",
+        "check_direct_effects",
+        # Wired via the quality.yml CLI conformance steps (#1878, #1879),
+        # which is also how the reachability ratchet sees them: workflow-named
+        # files.
+        "validate-installed-workspace-proof",
+        "installed_workspace_proof_contract",
+    ):
         assert f"@tool/{gate}" not in unreachable

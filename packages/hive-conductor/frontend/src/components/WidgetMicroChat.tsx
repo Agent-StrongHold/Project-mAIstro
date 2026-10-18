@@ -33,7 +33,7 @@ export function WidgetMicroChat({ widgetId, widgetTitle, widgetConfig, widgetDat
         onClick={() => { setExpanded(true); setTimeout(() => inputRef.current?.focus(), 50); }}
         aria-label={editing ? "Refine this widget" : "Ask about this data"}
         title={editing ? "Refine this widget" : "Ask about this data"}
-        style={{ background: "none", border: "none", cursor: "pointer", opacity: 0.4, fontSize: "0.65rem", padding: "4px 0", color: "var(--pencil)", transition: "opacity 0.15s" }}
+        style={{ background: "none", border: "none", cursor: "pointer", opacity: 0.4, fontSize: "var(--text-floor)", padding: "4px 0", color: "var(--pencil)", transition: "opacity 0.15s" }}
         onMouseEnter={e => (e.currentTarget.style.opacity = "1")}
         onMouseLeave={e => (e.currentTarget.style.opacity = "0.4")}
       >
@@ -53,9 +53,9 @@ export function WidgetMicroChat({ widgetId, widgetTitle, widgetConfig, widgetDat
         onBlur={() => { if (!value) setExpanded(false); }}
         placeholder={editing ? "Change this widget…" : "Ask about this data…"}
         maxLength={200}
-        style={{ flex: 1, fontSize: "0.65rem", padding: "3px 6px", border: "1px solid var(--rule)", borderRadius: 4, background: "var(--paper)", color: "var(--ink)", outline: "none" }}
+        style={{ flex: 1, fontSize: "var(--text-floor)", padding: "3px 6px", border: "1px solid var(--rule)", borderRadius: 4, background: "var(--paper)", color: "var(--ink)", outline: "none" }}
       />
-      <button onClick={submit} disabled={!value.trim()} style={{ fontSize: "0.6rem", padding: "2px 8px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", cursor: "pointer", opacity: value.trim() ? 1 : 0.3 }}>
+      <button onClick={submit} disabled={!value.trim()} style={{ fontSize: "var(--text-floor)", padding: "2px 8px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", cursor: "pointer", opacity: value.trim() ? 1 : 0.3 }}>
         →
       </button>
     </div>
