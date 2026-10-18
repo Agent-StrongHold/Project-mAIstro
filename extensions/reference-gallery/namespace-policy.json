@@ -40,6 +40,7 @@
     "maistro_canvas",
     "maistro_design",
     "maistro_evolve",
+    "maistro_ext_harness",
     "maistro_registry",
     "maistro_rsi",
     "maistro_server",
