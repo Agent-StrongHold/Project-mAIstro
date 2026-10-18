@@ -18,21 +18,23 @@ Workspace authority and the real durable stores. What these pin:
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 import stores
 from fastapi.testclient import TestClient
 from main import app
+from services import home_layouts, home_projections
 
 
 @pytest.fixture(autouse=True)
 def _clean_home_state():
-    for store in (stores.home_layouts, stores.home_adaptive_dismissals):
+    for store in (home_layouts.layout_store, home_projections.dismissal_store):
         for key in list(store.keys()):
             store.pop(key, None)
     yield
-    for store in (stores.home_layouts, stores.home_adaptive_dismissals):
+    for store in (home_layouts.layout_store, home_projections.dismissal_store):
         for key in list(store.keys()):
             store.pop(key, None)
 
@@ -260,6 +262,60 @@ def test_projections_are_membership_scoped(admin_client, authed_client) -> None:
     assert r.status_code == 404
 
 
+def test_the_goals_section_names_its_unavailable_rather_than_reading_the_retiring_store(
+    admin_client, authed_client
+) -> None:
+    """The only Goal rows in this backend live in `stores.missions`, a surface
+    the cutover retirement ledger (#1046) froze to new consumers — and Home's
+    projection reader is exactly the consumer the freeze exists to stop. The
+    section must therefore say why it cannot answer even when Goal rows sit
+    right there, and the adaptive half must offer no Goal candidate sourced
+    from them: an honest `unavailable` is the contract, a plausible projection
+    off a retiring store is the bug.
+    """
+    from models.schemas import Mission
+
+    ws = _create_workspace(admin_client)
+    _add_member(admin_client, ws, "user", "editor")
+
+    # The temptation this test pins the refusal against: rows that would
+    # project perfectly well if the reader reached for the retiring store.
+    t = datetime.now(UTC)
+    stores.missions["home-goal-seed"] = Mission(
+        id="home-goal-seed",
+        user_id="user",
+        name="A goal Home must not project from the retiring store",
+        description="present, but not Home's to read",
+        status="pending",
+        priority="medium",
+        created_at=t,
+        updated_at=t,
+        assigned_agents=[],
+        tags=[],
+        metadata={},
+    )
+    try:
+        body = authed_client.get(f"/v1/workspaces/{ws}/home/projections").json()
+        sections = {s["kind"]: s for s in body["sections"]}
+        goals = sections["goals"]
+        assert goals["status"] == "unavailable"
+        assert goals["items"] == []
+        assert "canonical Goal service" in goals["reason"]
+        assert "home-goal-seed" not in body_text_of(goals)
+
+        adaptive = authed_client.get(f"/v1/workspaces/{ws}/home/adaptive").json()
+        assert all(c["item_type"] != "goal" for c in adaptive["candidates"])
+    finally:
+        stores.missions.pop("home-goal-seed", None)
+
+
+def body_text_of(section: dict[str, Any]) -> str:
+    """Everything the section could leak a projected id through."""
+    import json
+
+    return json.dumps(section)
+
+
 # ---------------------------------------------------------------------------
 # Adaptive content: evidence, dismissal, and Agent/API parity
 # ---------------------------------------------------------------------------
@@ -299,7 +355,7 @@ def test_adaptive_candidates_explain_and_dismissal_is_backend_state(
     assert after["dismissed"][dismissed_key] == 1
 
     # The record is durable server state, not client-only: it is in the store.
-    assert stores.home_adaptive_dismissals[f"{ws}:backlog_item:{item['id']}"]["count"] == 1
+    assert home_projections.dismissal_store[f"{ws}:backlog_item:{item['id']}"]["count"] == 1
 
 
 def test_dismissal_through_the_agent_tool_and_the_route_land_in_one_place(
@@ -327,7 +383,7 @@ def test_dismissal_through_the_agent_tool_and_the_route_land_in_one_place(
     assert r.status_code == 200
     assert r.json()["dismissed"] == 2
 
-    record = stores.home_adaptive_dismissals[f"{ws}:goal:goal-1"]
+    record = home_projections.dismissal_store[f"{ws}:goal:goal-1"]
     assert record["count"] == 2
 
     # Without a Workspace context the tool refuses rather than guessing one.

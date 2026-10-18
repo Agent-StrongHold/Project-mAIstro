@@ -1982,10 +1982,11 @@ async def _tool_compose_home_adaptive(
             if not isinstance(raw, dict):
                 raise ValueError("each region must be an object")
             # The model never gets a `pinned` field to send (see the tool
-            # schema), but a proxying client could attach one; strip it so the
-            # payload cannot smuggle a pin past compose_adaptive's refusal.
-            payload = {k: v for k, v in raw.items() if k != "pinned"}
-            regions.append(home_layouts.HomeRegion.model_validate(payload))
+            # schema), but a proxying client could attach one. Validate the
+            # payload as-is and let compose_adaptive refuse it: a pinned
+            # payload must fail loudly (PinnedRegionWriteError), not be
+            # silently rewritten into an unpinned compose.
+            regions.append(home_layouts.HomeRegion.model_validate(raw))
     except Exception as exc:
         return {"composed": False, "error": f"region payload rejected: {exc}"}
     expected = args.get("expected_revision")

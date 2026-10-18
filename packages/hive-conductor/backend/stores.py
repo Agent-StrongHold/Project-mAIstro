@@ -125,15 +125,6 @@ user_provider_config: JsonStore = JsonStore("user_provider_config")
 #: deployment configures for durability (#340, ADR-082926-3b80); the route
 #: used to keep its own file inside the image.
 dashboard_layouts: JsonStore = JsonStore("dashboard_layouts")
-#: One entry per Workspace, holding that Workspace's Home layout (#1048) —
-#: the durable half of the adaptive-Home contract, written through
-#: `services.home_layouts` only.
-home_layouts: JsonStore = JsonStore("home_layouts")
-#: Dismissed adaptive Home candidates, keyed `workspace:item_type:item_id`
-#: (#1048). A preference record, not a domain object; written through
-#: `services.home_projections.record_dismissal` only, so "show me less of
-#: this" survives a restart and is shared by the API and the Agent tool.
-home_adaptive_dismissals: JsonStore = JsonStore("home_adaptive_dismissals")
 #: Stable OIDC identity links. Records contain no provider token or email.
 oauth_identity_links: JsonStore = JsonStore("oauth_identity_links")
 #: DAG run history — the records behind the "Live DAG Runs" page. In-memory
@@ -178,13 +169,38 @@ _all_json_stores: list[JsonStore] = [
     optimizer_proposals,
     user_provider_config,
     dashboard_layouts,
-    home_layouts,
-    home_adaptive_dismissals,
     oauth_identity_links,
     dag_runs,
     registration_invitations,
     username_claims,
 ]
+
+
+def register_json_store(store: JsonStore) -> JsonStore:
+    """Adopt a service-owned durable store into the central persistence wiring.
+
+    New durable state does not belong in this module: every `stores.py` store
+    is a row in the cutover retirement ledger (#1046) and a retiring surface
+    may not gain consumers, so a store added today would be born unable to
+    name a reader. Service-owned stores — `services.settings_store` since
+    #334, `services.home_layouts` and `services.home_projections` since
+    #1048 — declare their own `JsonStore` beside the only code that writes
+    it, and register here so `configure_persistence` and `initialize_stores`
+    still reach it: a store that missed the deployment's persistence
+    configuration would silently stop surviving a restart.
+
+    Registration is idempotent and ordered: before `configure_persistence`, an
+    append is enough because the central wiring runs later; after it, the
+    store is wired and initialized immediately so the caller's next write is
+    durable without waiting for a restart that will not come.
+    """
+    if any(existing is store for existing in _all_json_stores):
+        return store
+    _all_json_stores.append(store)
+    if _persisted is not None:
+        store._persisted = _persisted
+        store.initialize()
+    return store
 
 
 def configure_persistence(persisted_store: Any) -> None:

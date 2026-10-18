@@ -130,10 +130,41 @@ def test_a_saved_layout_survives_the_store_being_closed_and_reopened(
     assert regions["keep-me"].kind == "backlog"
 
 
-def test_the_home_store_is_registered_for_persistence() -> None:
-    """A `JsonStore` that `configure_persistence` never reaches is a dict."""
-    assert stores.home_layouts in stores._all_json_stores
-    assert stores.home_adaptive_dismissals in stores._all_json_stores
+def test_the_home_stores_are_service_owned_but_registered_for_persistence() -> None:
+    """Durable Home state lives beside the only code that writes it, but it
+    must still be reachable by the central persistence wiring: a `JsonStore`
+    that `configure_persistence` never reaches is a dict, and a store the
+    retirement ledger cannot see being written is exactly the leak #1046
+    freezes out (#1048, #334 precedent).
+    """
+    from services import home_layouts, home_projections
+
+    assert home_layouts.layout_store in stores._all_json_stores
+    assert home_projections.dismissal_store in stores._all_json_stores
+    # And the names are gone from `stores` itself, so the ledger's
+    # every-store scan has nothing unledgered to demand a row for.
+    assert not hasattr(stores, "home_layouts")
+    assert not hasattr(stores, "home_adaptive_dismissals")
+
+
+def test_a_second_registration_is_a_no_op_and_late_registration_wires_persistence() -> None:
+    """`register_json_store` is the one seam: idempotent, and after
+    `configure_persistence` it wires and initializes immediately — a store
+    registered late must not silently miss the configured backend."""
+    from services.model_store import JsonStore
+
+    late = stores.register_json_store(JsonStore("home_layouts_test_late"))
+    try:
+        assert late in stores._all_json_stores
+        assert stores.register_json_store(late) is late
+        assert stores._all_json_stores.count(late) == 1
+
+        backend = _RefusingStore()
+        stores.configure_persistence(backend)
+        assert late._persisted is backend
+    finally:
+        stores._all_json_stores.remove(late)
+        stores.configure_persistence(None)
 
 
 class _RefusingStore:

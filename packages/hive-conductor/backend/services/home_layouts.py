@@ -41,6 +41,7 @@ import threading
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+import stores
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from services.dashboard_layouts import (
@@ -49,6 +50,7 @@ from services.dashboard_layouts import (
     _backend,
     _settle,
 )
+from services.model_store import JsonStore
 
 logger = logging.getLogger("hive.home")
 
@@ -68,7 +70,6 @@ RegionKind = Literal[
     "backlog",
     "runs",
     "chat",
-    "sessions",
     "design",
     "attention",
     "note",
@@ -79,7 +80,6 @@ REGION_KINDS: tuple[str, ...] = (
     "backlog",
     "runs",
     "chat",
-    "sessions",
     "design",
     "attention",
     "note",
@@ -215,10 +215,19 @@ class HomeLayoutRecord(BaseModel):
 _save_lock = threading.RLock()
 
 
-def _store() -> Any:
-    import stores
+#: The durable layout store, owned by this service rather than `stores.py`.
+#: Every `stores.py` store is a row in the cutover retirement ledger (#1046)
+#: and a retiring surface may not gain consumers, so durable state added by
+#: #1048 lives beside the only code that writes it — the same move `settings`
+#: made out of `stores.py` (#334) — while `stores.register_json_store` keeps
+#: the deployment's persistence wiring and initialization centralized, so the
+#: store cannot silently miss the configured backend and stop surviving a
+#: restart.
+layout_store: JsonStore = stores.register_json_store(JsonStore(STORE_NAME))
 
-    return stores.home_layouts
+
+def _store() -> Any:
+    return layout_store
 
 
 def _empty() -> HomeLayoutRecord:
@@ -239,7 +248,6 @@ def default_layout() -> HomeLayout:
         "backlog",
         "runs",
         "chat",
-        "sessions",
         "design",
         "attention",
     ]

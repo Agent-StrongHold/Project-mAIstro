@@ -16,12 +16,12 @@ design service that is not open, or a canonical read that raises, reads as
 a plausible-looking zero.
 
 The adaptive half is deterministic on purpose in this slice: candidates come
-from the same canonical evidence (blocked backlog work, failed runs, dormant
-goals), each carrying an `explain` line built from that evidence — not an
-engagement feed, and no external content fetch. Dismissals are recorded
-backend-side (`stores.home_adaptive_dismissals`), so "show me less of this" is
-a durable preference the API and the Workspace Agent share, not client-only
-state.
+from the same canonical evidence (blocked backlog work, failed runs), each
+carrying an `explain` line built from that evidence — not an engagement feed,
+and no external content fetch. Dismissals are recorded backend-side (this
+module's own durable store, registered through `stores.register_json_store`),
+so "show me less of this" is a durable preference the API and the Workspace
+Agent share, not client-only state.
 """
 
 from __future__ import annotations
@@ -29,12 +29,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 import stores
 
 from services import workspace_authority
+from services.model_store import JsonStore
+from services.owned_records import Owner, owned_chat_sessions
 
 logger = logging.getLogger("hive.home")
 
@@ -47,10 +49,14 @@ PROJECTION_LIMIT = 6
 #: capping first would let a burst of foreign runs blank out this section.
 _RUN_WINDOW = 50
 
-#: A Goal untouched this long is a dormancy candidate.
-_DORMANT_AFTER = timedelta(days=14)
-
 DISMISSALS_STORE = "home_adaptive_dismissals"
+
+#: The durable dismissal store, owned by this service rather than `stores.py`:
+#: every `stores.py` store is a row in the cutover retirement ledger (#1046)
+#: and a retiring surface may not gain consumers, so durable state added by
+#: #1048 lives beside the only code that writes it, while
+#: `stores.register_json_store` keeps the persistence wiring centralized.
+dismissal_store: JsonStore = stores.register_json_store(JsonStore(DISMISSALS_STORE))
 
 
 class WorkspaceNotVisible(LookupError):
@@ -79,7 +85,7 @@ def record_dismissal(
     """
     if not item_type or not item_id:
         raise ValueError("an adaptive dismissal names the item type and id it dismisses")
-    store = stores.home_adaptive_dismissals
+    store = dismissal_store
     key = _dismissal_key(workspace_id, item_type, item_id)
     now = datetime.now(UTC)
     prior = store.get(key)
@@ -102,7 +108,7 @@ def dismissal_counts(workspace_id: str) -> dict[str, int]:
     """Dismissal counts for this Workspace, keyed `item_type:item_id`."""
     prefix = f"{workspace_id}:"
     counts: dict[str, int] = {}
-    for key, record in stores.home_adaptive_dismissals.items():
+    for key, record in dismissal_store.items():
         if not key.startswith(prefix) or not isinstance(record, dict):
             continue
         counts[key.removeprefix(prefix)] = int(record.get("count", 1))
@@ -131,17 +137,17 @@ def _section(kind: str, items: list[dict] | None, *, reason: str | None = None) 
     return {"kind": kind, "status": "ok" if items else "empty", "items": items or []}
 
 
-def _goals(user_id: str) -> list[dict]:
-    missions = [
-        mission
-        for mission in stores.missions.values()
-        if getattr(mission, "user_id", "") == user_id and mission.status != "completed"
-    ]
-    missions.sort(key=lambda m: m.updated_at, reverse=True)
-    return [
-        _item("goal", m.id, m.name, f"/missions?open={m.id}", m.updated_at)
-        for m in missions[:PROJECTION_LIMIT]
-    ]
+def _goals() -> tuple[list[dict], str | None]:
+    """The Goal section's one honest answer, or why it cannot answer.
+
+    The only Goal rows in this backend are the `missions` store the cutover
+    retirement ledger (#1046) froze to new consumers: a retiring surface may
+    not gain any, and none exists yet, so Home reads no Goal store at all
+    rather than read one it is the last straw for. The section says so
+    instead of projecting a store the cutover is deleting (#65 owns the
+    canonical Goal/Run inspection this section will consume).
+    """
+    return [], "the canonical Goal service is not available in this deployment"
 
 
 async def _backlog_items(user_id: str, workspace_id: str) -> list[dict]:
@@ -178,7 +184,11 @@ async def _run_items(user_id: str, workspace_id: str) -> list[dict]:
 
 
 def _chat_sessions(user_id: str) -> list[dict]:
-    sessions = [s for s in stores.chat_sessions.values() if getattr(s, "user_id", "") == user_id]
+    # The one door to the chat store: the scoping view, so the section can
+    # only ever see sessions that belong to the requesting principal — the
+    # same OwnedStore the chat routes read, never the raw module dict
+    # (#312, scripts/check-owned-store-access.py).
+    sessions = owned_chat_sessions(Owner(id=user_id)).values()
     sessions.sort(key=lambda s: s.updated_at, reverse=True)
 
     def _title(session: Any) -> str:
@@ -254,9 +264,12 @@ async def list_projections(user_id: str, workspace_id: str) -> dict[str, Any]:
         raise WorkspaceNotVisible(workspace_id)
 
     design_items, design_reason = _design()
+    goal_items, goal_reason = _goals()
 
     sections = await asyncio.gather(
-        _resolve("goals", asyncio.sleep(0, result=_goals(user_id))),
+        _resolve("goals", asyncio.sleep(0, result=goal_items))
+        if goal_reason is None
+        else asyncio.sleep(0, result=_section("goals", [], reason=goal_reason)),
         _resolve("backlog", _backlog_items(user_id, workspace_id)),
         _resolve("runs", _run_items(user_id, workspace_id)),
         _resolve("chat", asyncio.sleep(0, result=_chat_sessions(user_id))),
@@ -345,36 +358,16 @@ async def _collect_run_candidates(user_id: str, workspace_id: str) -> list[dict[
     return candidates
 
 
-def _goal_candidate(mission: Any, owner_id: str, now: datetime) -> dict[str, Any]:
-    """A dormant Goal's adaptive case, or {} when it is not dormant."""
-    if getattr(mission, "user_id", "") != owner_id or mission.status != "pending":
-        return {}
-    updated = mission.updated_at
-    if updated.tzinfo is None:
-        updated = updated.replace(tzinfo=UTC)
-    if updated >= now - _DORMANT_AFTER:
-        return {}
-    idle_days = max(0, (now - updated).days)
-    return {
-        "key": f"goal:{mission.id}",
-        "item_type": "goal",
-        "resource_id": mission.id,
-        "title": mission.name,
-        "explain": f"dormant Goal — untouched for {idle_days} days",
-        "href": f"/missions?open={mission.id}",
-    }
-
-
 async def adaptive_items(user_id: str, workspace_id: str) -> dict[str, Any]:
     """What the unpinned space could show now, with the evidence for each choice.
 
     Deterministic internal evidence only in this slice: each candidate names
     the canonical item it would project and a one-line `explain` derived from
-    that item's actual state (blocked, failed, dormant). Selecting is
-    usefulness-first by construction — there is no time-on-screen term to
-    optimize. Dismissed candidates are excluded and their dismissal counts
-    reported, so negative reinforcement is visible to whichever caller applies
-    it (route or Workspace Agent tool alike).
+    that item's actual state (blocked, failed). Selecting is usefulness-first
+    by construction — there is no time-on-screen term to optimize. Dismissed
+    candidates are excluded and their dismissal counts reported, so negative
+    reinforcement is visible to whichever caller applies it (route or
+    Workspace Agent tool alike).
     """
     if await workspace_authority.visible_view(user_id, workspace_id) is None:
         raise WorkspaceNotVisible(workspace_id)
@@ -383,18 +376,9 @@ async def adaptive_items(user_id: str, workspace_id: str) -> dict[str, Any]:
         _collect_backlog_candidates(user_id, workspace_id),
         _collect_run_candidates(user_id, workspace_id),
     )
-    now = datetime.now(UTC)
-    goal_candidates = [
-        c for c in (_goal_candidate(m, user_id, now) for m in stores.missions.values()) if c
-    ]
-
     counts = dismissal_counts(workspace_id)
     candidates = sorted(
-        (
-            c
-            for c in [*backlog_candidates, *run_candidates, *goal_candidates]
-            if c["key"] not in counts
-        ),
+        (c for c in [*backlog_candidates, *run_candidates] if c["key"] not in counts),
         key=lambda c: c["key"],
     )
     return {
