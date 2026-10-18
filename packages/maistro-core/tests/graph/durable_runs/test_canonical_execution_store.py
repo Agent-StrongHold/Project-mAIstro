@@ -626,3 +626,46 @@ async def test_a_same_status_transition_with_conflicting_evidence_surfaces_the_d
     assert canonical is not None and canonical.accepted_outcome is None
     mirrored = await execution_store.get_node_run(node_run_id)
     assert mirrored is not None and mirrored.accepted_outcome is None
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-2")
+async def test_a_cancellation_replay_over_the_cascade_settled_row_converges() -> None:
+    """A same-status CANCELLED replay carrying a different error text is a no-op.
+
+    `RunExecutionService.cancel_run` fences the Run through the canonical
+    store, whose cascade settles every open NodeRun with the cascade's own
+    error narrative. The walk's registered executor then replays the
+    cancellation through this adapter (`_cancel_settled_node_runs`) over a
+    projection that still reads running and with the caller's error text. The
+    store refuses to rewrite a closed Run's history -- so routing the replay
+    there cannot repair anything, only abort a cancellation that already
+    happened (#1332's end-to-end regression drives exactly this path).
+    """
+    store, run_store, execution_store, record, node_run_id = await _bound_store()
+    attempt = await execution_store.create_attempt(node_run_id, executor_id="graph.node")
+    await execution_store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+
+    # The route's fence: the raw canonical store terminalizes the Run and the
+    # cascade settles the node. The durable record is a separate store and
+    # stays stale until the replay converges it.
+    await run_store.transition_run(record.run_id, RunStatus.CANCELLED, error="execution cancelled")
+    canonical = await run_store.get_node_run(node_run_id)
+    assert canonical is not None and canonical.status is RunStatus.CANCELLED
+    assert canonical.error == "cancelled because its Run terminalized as cancelled"
+    stale = await execution_store.get_node_run(node_run_id)
+    assert stale is not None and stale.status is RunStatus.RUNNING
+
+    replayed = await execution_store.transition_node_run(
+        node_run_id, RunStatus.CANCELLED, error="execution cancelled"
+    )
+
+    # Converged, not raised: canonical truth wins, including its narrative.
+    assert replayed.status is RunStatus.CANCELLED
+    assert replayed.error == canonical.error
+    reread = await run_store.get_node_run(node_run_id)
+    assert reread is not None and reread.error == canonical.error
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    projected = next(item for item in persisted.node_runs if item.node_run_id == node_run_id)
+    assert projected.status is RunStatus.CANCELLED
+    assert projected.error == canonical.error

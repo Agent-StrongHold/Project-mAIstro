@@ -35,8 +35,13 @@ COPY frontend/src/pages/Backlog.tsx /tests/frontend/src/pages/Backlog.tsx
 COPY frontend/src/lib/widgetCapabilities.ts /tests/frontend/src/lib/widgetCapabilities.ts
 COPY frontend/src/components/SetupChecklist.tsx /tests/frontend/src/components/SetupChecklist.tsx
 COPY frontend/src/components/TemplatePicker.tsx /tests/frontend/src/components/TemplatePicker.tsx
+# #1414's toggle spec mounts the real shared.tsx Toggle (the component has no
+# routed consumer to drive); it imports only react, so this is the only
+# frontend file the harness needs. The #1421 workspace skeleton specs bundle
+# the shipped WorkspaceTabs/WorkspaceContext against the same shared.tsx.
 COPY frontend/src/components/WorkspaceTabs.tsx /tests/frontend/src/components/WorkspaceTabs.tsx
 COPY frontend/src/components/shared.tsx /tests/frontend/src/components/shared.tsx
+COPY frontend/src/components/RichTooltip.tsx /tests/frontend/src/components/RichTooltip.tsx
 COPY frontend/src/context/WorkspaceContext.tsx /tests/frontend/src/context/WorkspaceContext.tsx
 COPY frontend/src/lib/api.ts /tests/frontend/src/lib/api.ts
 COPY frontend/src/lib/appearance.ts /tests/frontend/src/lib/appearance.ts
