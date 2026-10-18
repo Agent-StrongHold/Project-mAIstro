@@ -13,6 +13,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
@@ -173,18 +174,39 @@ def _redacted_url(url: str) -> str:
     """The URL with its credentials dropped, for anything a human might read.
 
     `maistro.container._redact_url` is the shared implementation -- the one
-    `maistro.config.database` itself reaches for. The fallback covers inputs
-    that helper cannot parse without raising (a URL whose port is not a
-    number makes `urlsplit(...).port` raise `ValueError`): a broken deployment
-    is exactly as likely to have typed one of those as a working URL, and a
-    diagnostics path that dies on its own input reports nothing.
+    `maistro.config.database` itself reaches for. Two inputs defeat it, and
+    both fall back to the scheme alone, because a string whose credentials
+    cannot be promised away must not be echoed at all:
+
+    - inputs that helper cannot parse without raising (a URL whose port is
+      not a number makes `urlsplit(...).port` raise `ValueError`);
+    - inputs it returns unchanged, which is exactly its no-netloc case: a
+      malformed `postgresql:user:secret@host/db` (no `//`) files the whole
+      credential-bearing tail under *path*, so the helper hands it back
+      verbatim (#1826 review). ADR-064's log scrubber cannot rescue it
+      either -- its userinfo pattern anchors on `://`, which this spelling
+      does not contain.
+
+    A broken deployment is exactly as likely to have typed one of those as a
+    working URL, and a diagnostics path that dies on -- or leaks -- its own
+    input reports nothing, or reports too much.
     """
+
+    def _scheme_only() -> str:
+        return f"{url.split(':', 1)[0]}:<unparseable>"
+
     try:
         from maistro.container import _redact_url
 
-        return str(_redact_url(url))
+        redacted = str(_redact_url(url))
     except Exception:
-        return f"{url.split(':', 1)[0]}:<unparseable>"
+        return _scheme_only()
+    if not urlsplit(url).netloc:
+        # No authority component, so nothing was parsed as userinfo and the
+        # helper echoed its input. The credentials -- wherever they sit in
+        # the string -- survive only in what this returns, not in it.
+        return _scheme_only()
+    return redacted
 
 
 def _store_failure_cause(url: str, exc: Exception) -> str:

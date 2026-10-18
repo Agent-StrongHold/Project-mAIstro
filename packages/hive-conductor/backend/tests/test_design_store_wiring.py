@@ -16,6 +16,7 @@ boundary. The database-touching half of #1826 lives in
 
 from __future__ import annotations
 
+import logging
 import pathlib
 import sys
 
@@ -189,6 +190,28 @@ class TestConfiguredButBrokenIsNeverAbsence:
         message = str(excinfo.value)
         assert "failed to build" in message
         assert "s3cret" not in message
+
+    async def test_a_netloc_less_url_is_never_echoed(self, started, monkeypatch, caplog):
+        """A `DATABASE_URL` missing the `//` (e.g. `postgresql:user:secret@host/db`)
+        defeats the shared `_redact_url` differently: `urlsplit` files the whole
+        credential-bearing tail under *path* and reports an empty netloc, so the
+        helper returns its input unchanged instead of raising — the fallback for
+        a raised ValueError never fires. Both consumers interpolate this result:
+        the warning log and `store_cause`, which the project routes return in
+        their 503 detail. ADR-064's scrubber cannot rescue the log either (its
+        userinfo pattern anchors on `://`). So a no-netloc result must be
+        treated as unparseable: scheme only, credentials nowhere."""
+        netloc_less = "postgresql:user:secret@host/db"
+        monkeypatch.setenv("DATABASE_URL", netloc_less)
+        with caplog.at_level(logging.WARNING, logger="hive.design_service"), pytest.raises(
+            design_service.DesignStoreConfigurationError
+        ) as excinfo:
+            design_service._get_async_engine()
+        message = str(excinfo.value)
+        assert "postgresql:<unparseable>" in message
+        assert "secret" not in message
+        assert netloc_less not in message
+        assert all("secret" not in record.getMessage() for record in caplog.records)
 
     async def test_startup_degrades_with_the_recorded_cause(self, started, monkeypatch):
         """The service stays ready — the systems half needs no database — but
