@@ -84,14 +84,78 @@ test("the shell chrome appears before the auth chain finishes for a signed-in us
 }) => {
   await setupIfNeeded(page);
   await loginAsAdmin(page);
+
+  // Let the login page settle before this test starts measuring. Logging in
+  // fires two more whoami calls of its own -- AuthGuard's handleAuthenticated
+  // (loadSession) and Login.tsx's completeAuth each fetch /v1/auth/whoami
+  // after the login POST -- and both must be done before the steps below:
+  // the cache purge must come after the last cache-writing call, and the
+  // route further down must hold the navigation's whoami, not a login-page
+  // leftover. The shell being usable is the fact that proves the calls are
+  // done: the redirect they gate is what renders it.
+  await expect(page.getByRole("link", { name: "Chat", exact: true })).toBeVisible({
+    timeout: 15000,
+  });
+
+  // Each settled login-page whoami answered over the network and wrote the
+  // authenticated response into the browser's HTTP cache -- under the exact
+  // URL the navigation below fetches. A response served from cache never
+  // reaches the network layer, so a route cannot intercept it: the shell
+  // would then finish before this test has seen the skeleton, which is the
+  // #1801 flake (observed on a PR whose diff cannot reach the Conductor UI).
+  // Drop every cached entry so the navigation's whoami must go out over the
+  // network. The e2e project is chromium-only (playwright.config.ts), so a
+  // CDP session is available; the session cookie lives in cookie storage,
+  // not the cache, and survives the purge.
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Network.clearBrowserCache");
+  await cdp.detach();
+
+  // Hold whoami's RESPONSE open on a promise this test resolves after the
+  // skeleton assertions, instead of a fixed sleep: a fixed 400 ms made the
+  // loading window likely rather than certain, which is exactly the #1801
+  // failure. While held, AuthGuard's `ready` cannot flip (App.tsx awaits
+  // whoami once setup is confirmed complete), so the skeleton cannot unmount
+  // under the assertions below.
+  let releaseWhoami: () => void = () => {};
+  const whoamiReleased = new Promise<void>((resolve) => {
+    releaseWhoami = resolve;
+  });
+  let whoamiHeldResolve: () => void = () => {};
+  const whoamiHeld = new Promise<void>((resolve) => {
+    whoamiHeldResolve = resolve;
+  });
   await page.route("**/v1/auth/whoami", async (route) => {
-    await new Promise((r) => setTimeout(r, 400));
+    whoamiHeldResolve();
+    await whoamiReleased;
     await route.continue();
   });
 
   const navigation = page.goto("/", { waitUntil: "commit" });
+  // The interception is the fact the assertions stand on, so wait for it
+  // explicitly and bound the wait: a whoami that never reaches the route
+  // (a cache the purge missed, or a future cache layer) is then reported as
+  // that, not as a shell that silently never finished loading.
+  let interceptionTimeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      whoamiHeld,
+      new Promise<never>((_, reject) => {
+        interceptionTimeout = setTimeout(() => {
+          reject(
+            new Error(
+              "no /v1/auth/whoami request was intercepted during the navigation; the loading skeleton cannot be observed without one",
+            ),
+          );
+        }, 5000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(interceptionTimeout);
+  }
   await page.waitForSelector('[aria-label="Loading Hive Conductor"]', { timeout: 5000 });
   await expect(page.getByLabel("Loading Hive Conductor")).toBeVisible();
+  releaseWhoami();
   await navigation;
   // Workspace-independent, and present at any viewport width: a fresh admin
   // account may hold no workspace, so the tab bar is not guaranteed, and the
