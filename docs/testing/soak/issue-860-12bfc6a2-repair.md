@@ -118,3 +118,49 @@ requires another soak. Re-running this same preflight cannot close those gaps.
 
 Progress: `{checked: 1, done: 0, skipped: 0, errors: 1, next: RC prerequisites and inventory provenance}`.
 
+## Follow-up validation — job 0a8dafd2
+
+Starting HEAD `9e55b3bb9cb74fe040860aaf90162adb96b6680e` was clean.
+No driver `check-*.log` files were supplied. The following were executed again,
+not inferred from the preceding report (600-second validation timeouts):
+
+- Exact vulture command above: **PASS**, 1322 reviewed identities / findings,
+  zero unclassified and never-allowlist findings. No ledger change justified.
+- Ruff check and format check: **PASS**, 3306 files already formatted.
+- Inventory `--suite tests`: **FAIL**, expected 5353, collected 5354.
+- Soak promotion + production boot + server backpressure tests: **93 passed**.
+- Server rate-limit + backpressure tests: **27 passed** (the backpressure test
+  overlaps the preceding invocation; these are not 120 distinct tests).
+- `uv run python scripts/check-deployment-claims.py`: **PASS**, component/backend
+  names resolve; this does not establish deployed behavior.
+- Round-30 evidence re-evaluated with the current `failed_promotion_checks`:
+  **rejected** for `sustain_duration` and `exact_rc_artifact`, at 420.08 seconds.
+
+### Inventory provenance refinement
+
+The supplied develop ref is **not an ancestor** of this branch:
+`git merge-base 9a4b0c5cc0fc9a5b64589382c4b6b26cd0a183e4 HEAD` returns
+`2f56be40ad241262b0384ab0b97834ebd37fe4d7`. A triple-dot diff is therefore
+not a comparison against the supplied develop tree. Do not treat it as one.
+The triple-dot root-test diff contains only the soak, boot and gitleaks files;
+their fresh collections are respectively **84, 8 and 8**. The supplied base
+boot file contains seven unparametrized tests, and the changed inventory notes
+sum to **+93** for `tests/`. These counts do not identify the unexplained extra
+node or prove a clean collection of either base. The direct two-tree diff also
+includes CI-test changes absent from the triple-dot diff. Provenance remains
+**UNRESOLVED**; no guessed +1 note, baseline edit or test removal was made.
+
+All ten acceptance dispositions above remain unchanged. The production-middleware
+replica-selection tests executed again and still demonstrate independent budgets.
+Accepted ADR-081626-f383 does not authorize inventing lease-expiry takeover to
+satisfy the issue. No exact RC identity/configuration was supplied and no new
+promotion soak was run. This follow-up changes only this handoff, not production
+behavior, tests, gates or evidence artifacts. Logs and the frozen work notes are
+in `/home/dev/maistro/jobs/0a8dafd2e98e44e9a4610b144a5a524c/worker-*`.
+
+Disposition: **BLOCKED**, not a vulture repair or integration approval.
+Next: resolve inventory provenance, obtain the selected immutable RC and workload
+matrix, address replica-selectable rate budgets and production-path coverage,
+then execute the required sustained soak. Repeating a clean vulture scan or a
+short preflight cannot resolve these prerequisites.
+
