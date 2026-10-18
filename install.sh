@@ -1395,8 +1395,23 @@ ensure_compose_runtime() {
     # An explicit selection with no working Compose v2 front-end fails here,
     # naming the selection and its remedy (#1820): bootstrapping the OTHER
     # runtime is exactly the silent switch the selection forbids.
+    #
+    # But explicitness comes from the RAW wizard answer, not the resolved
+    # plan field: an auto default materializes as container_runtime: docker,
+    # and a fresh host has no front-end yet — treating that resolved token
+    # as a docker selection would exit here instead of offering the
+    # macOS/apt Docker bootstrap the unselected path documents (#1820
+    # review). Podman has no bootstrap path (the macOS picker offers Docker
+    # Desktop/Colima; apt installs Docker Engine), so an auto that resolved
+    # to podman keeps the same named-runtime failure an explicit podman
+    # selection gets.
     case "$selected" in
-        docker | podman)
+        docker)
+            if container_runtime_selection_is_explicit; then
+                fail "The selected container runtime ($selected) has no working Compose v2 front-end. $(selected_runtime_install_hint "$selected")"
+            fi
+            ;;
+        podman)
             fail "The selected container runtime ($selected) has no working Compose v2 front-end. $(selected_runtime_install_hint "$selected")"
             ;;
     esac
@@ -1508,6 +1523,31 @@ selected_container_runtime() {
             ;;
     esac
     echo "auto"
+}
+
+# True when the runtime was EXPLICITLY selected, as opposed to an auto that
+# merely resolved to a front-end: the raw wizard answer (delivery.json
+# `container_runtime_selection`, written by plan.py beside the resolved
+# `container_runtime`) names docker/podman, or the MAISTRO_CONTAINER_RUNTIME
+# pin does when no plan selection exists. The resolved field alone proves
+# nothing — the wizard materializes an unanswered "auto" as docker there, so
+# keying the fail-vs-bootstrap gate on it stranded fresh hosts before the
+# Docker bootstrap (#1820 review). A plan's raw selection outranks the
+# environment pin, same precedence selected_container_runtime documents.
+container_runtime_selection_is_explicit() {
+    local f="$PLAN_DIR/delivery.json" sel override
+    if [[ -f "$f" ]]; then
+        sel="$(grep -o '"container_runtime_selection"[[:space:]]*:[[:space:]]*"[a-z]*"' "$f" | head -1 | grep -o '[a-z]*"$' | tr -d '"')"
+        case "$sel" in
+            docker | podman) return 0 ;;
+            auto) return 1 ;;
+        esac
+    fi
+    override="${MAISTRO_CONTAINER_RUNTIME:-}"
+    case "$override" in
+        docker | podman) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 # Effective delivery mode the stack actually uses: image_pull only when the

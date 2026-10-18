@@ -2,12 +2,12 @@
 inventory-delta:
   packages/maistro-bootstrap/tests: +12
   packages/maistro-core/tests: +6
-  tests/: +25
+  tests/: +29
 ---
 # 1820-container-runtime-selection
 
 Issue #1820 (honor the selected container runtime and define non-elevated
-host installation) adds 25 node IDs across two suites.
+host installation) adds 29 node IDs across two suites.
 
 `tests/` (+16) is a new file, `tests/test_install_runtime_selection.py`, which
 lifts the runtime-selection functions out of `install.sh` verbatim — the same
@@ -55,6 +55,26 @@ stderr — stdout must stay the bare token because every caller consumes
 it via command substitution — and the harness's `warn` stub now
 mirrors the real install.sh's stdout `warn` so that contract is pinned
 rather than masked.
+
+A later repair round added three more (`tests/` total +28) after review
+flagged that the explicit-selection fail in `ensure_compose_runtime` keyed
+on the RESOLVED plan field: an unanswered ``auto`` materializes as
+``container_runtime: docker`` in delivery.json (the wizard's resolved
+default), so a fresh host — which by definition has no Compose front-end
+yet — failed naming a docker selection the operator never made, before the
+documented macOS/apt Docker bootstrap could be offered. The fix adds
+`container_runtime_selection_is_explicit`, which reads the RAW wizard
+answer (`container_runtime_selection`, written by plan.py beside the
+resolved field) and falls back to the `MAISTRO_CONTAINER_RUNTIME` pin: an
+explicit docker answer (or pin) still fails actionably without
+bootstrapping, an auto that RESOLVED to docker reaches the bootstrap, and
+an auto that resolved to podman keeps the named-runtime failure (no Podman
+bootstrap exists; installing Docker would be the silent switch). A fourth
+test pins the wizardless analogue: an explicit `MAISTRO_CONTAINER_RUNTIME`
+pin with no plan on a fresh host is a selection — it fails naming the pin
+instead of bootstrapping whatever installs. The
+headline test is proven to fail against the pre-fix install.sh (bootstrap
+absent, selection named) and pass after.
 
 Two adjacent suites were updated rather than added to: `test_install_compose_floor.py`'s
 harness now also lifts `selected_container_runtime`/`runtime_compose_cmd`

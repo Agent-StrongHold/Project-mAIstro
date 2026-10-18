@@ -29,6 +29,7 @@ INSTALL_SH = ROOT / "install.sh"
 _FUNCTIONS = (
     "delivery_mode",
     "selected_container_runtime",
+    "container_runtime_selection_is_explicit",
     "runtime_compose_cmd",
     "detect_compose_cmd",
     "docker_daemon_ready",
@@ -151,9 +152,13 @@ def _write_runtime_shim(
     shim.chmod(0o755)
 
 
-def _write_plan(plan_dir: Path, runtime: str | None) -> None:
+def _write_plan(plan_dir: Path, runtime: str | None, selection: str | None = None) -> None:
     """delivery.json as plan.py writes it (#1820 keys); None models a legacy
-    plan directory written before the field existed."""
+    plan directory written before the fields existed. ``selection`` models
+    the raw wizard answer when it differs from the resolved runtime — the
+    real shape of an auto install, where the wizard materializes the
+    resolved front-end in ``container_runtime`` but keeps ``auto`` in
+    ``container_runtime_selection``."""
     plan_dir.mkdir(parents=True, exist_ok=True)
     if runtime is None:
         (plan_dir / "delivery.json").write_text(
@@ -161,16 +166,90 @@ def _write_plan(plan_dir: Path, runtime: str | None) -> None:
             encoding="utf-8",
         )
         return
+    if selection is None:
+        selection = runtime
     (plan_dir / "delivery.json").write_text(
         "{"
         f'"mode": "image_pull", "container_runtime": "{runtime}", '
-        f'"container_runtime_selection": "{runtime}"'
+        f'"container_runtime_selection": "{selection}"'
         "}\n",
         encoding="utf-8",
     )
 
 
 # --- the headline regression -------------------------------------------------
+
+
+def test_auto_resolved_docker_bootstraps_on_a_fresh_host(tmp_path: Path) -> None:
+    """The fresh-install path (#1820 review): the wizard materializes an
+    unanswered ``auto`` as the RESOLVED ``container_runtime: docker`` while
+    keeping ``auto`` in ``container_runtime_selection``. That plan must not
+    read as an explicit docker selection — ensure_compose_runtime has to
+    reach the apt Docker bootstrap instead of failing naming a selection the
+    operator never made."""
+    plan = tmp_path / "plan"
+    _write_plan(plan, "docker", selection="auto")
+    result = _run(
+        tmp_path,
+        plan,
+        "ensure_compose_runtime\n",
+    )
+    # No shims on PATH: bootstrap installs Docker, but detection still finds
+    # no front-end in the harness, so the run ends at the generic failure.
+    # The regression is precisely whether the bootstrap was OFFERED first.
+    assert result.returncode != 0, result.stdout
+    assert "apt-docker-bootstrap" in (tmp_path / "bootstraps.log").read_text(), result.stdout
+    assert "selected container runtime" not in result.stderr, result.stderr
+
+
+def test_explicit_docker_selection_still_fails_without_bootstrapping(
+    tmp_path: Path,
+) -> None:
+    """An explicitly answered docker with no front-end fails naming the
+    selection — the bootstrap must stay reserved for unselected auto."""
+    plan = tmp_path / "plan"
+    _write_plan(plan, "docker", selection="docker")
+    result = _run(
+        tmp_path,
+        plan,
+        "ensure_compose_runtime\n",
+    )
+    assert result.returncode != 0, result.stdout
+    assert "selected container runtime (docker)" in result.stderr, result.stderr
+    assert not (tmp_path / "bootstraps.log").exists(), result.stdout
+
+
+def test_auto_resolved_podman_fails_without_docker_bootstrap(tmp_path: Path) -> None:
+    """An auto that resolved to podman (local_podman tier) with no front-end
+    keeps the named-runtime failure: there is no Podman bootstrap, and
+    installing Docker for a plan whose artifacts name podman compose would
+    be the silent switch the selection machinery forbids."""
+    plan = tmp_path / "plan"
+    _write_plan(plan, "podman", selection="auto")
+    result = _run(
+        tmp_path,
+        plan,
+        "ensure_compose_runtime\n",
+    )
+    assert result.returncode != 0, result.stdout
+    assert "selected container runtime (podman)" in result.stderr, result.stderr
+    assert not (tmp_path / "bootstraps.log").exists(), result.stdout
+
+
+def test_env_pin_on_a_fresh_host_fails_without_bootstrapping(tmp_path: Path) -> None:
+    """A wizardless (no plan) fresh host with an explicit
+    ``MAISTRO_CONTAINER_RUNTIME=docker`` pin counts as a selection: no
+    front-end fails naming it, and the apt Docker bootstrap must stay
+    reserved for the unselected path — an operator who pinned a runtime
+    asked for THAT runtime, not for "whatever installs"."""
+    result = _run(
+        tmp_path,
+        tmp_path / "plan",  # directory exists, but no delivery.json in it
+        "export MAISTRO_CONTAINER_RUNTIME=docker\nensure_compose_runtime\n",
+    )
+    assert result.returncode != 0, result.stdout
+    assert "selected container runtime (docker)" in result.stderr, result.stderr
+    assert not (tmp_path / "bootstraps.log").exists(), result.stdout
 
 
 def test_selected_podman_wins_when_both_clis_are_present(tmp_path: Path) -> None:
