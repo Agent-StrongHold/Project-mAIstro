@@ -30,23 +30,39 @@ worth being loud about.
 from __future__ import annotations
 
 import asyncio
+import json
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol
+from uuid import UUID
+
+from pydantic import ConfigDict, TypeAdapter
 
 from maistro.observability.correlation import current_execution_context
 from maistro.runs.admission import admit_direct_work, direct_work_graph
+from maistro.runs.admission_identity import CanonicalJsonObject, RootAdmissionEnvelope
+from maistro.runs.evidence_json import decode_evidence, encode_evidence, model_of_json, payload_of
 from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE
 from maistro.runs.task_kinds import resolve_direct_work
-from maistro.tasks.idempotency import IDEMPOTENCY_KEY_PROVENANCE
-from maistro.tasks.models import TaskStatus
+from maistro.tasks.idempotency import (
+    DEFAULT_REPLAY_WINDOW,
+    DERIVED_KEY_PREFIX,
+    IDEMPOTENCY_KEY_PROVENANCE,
+    TASK_SUBMIT_ACTION,
+    _to_us,
+    admission_scope_key,
+    normalize_idempotency_key,
+    request_fingerprint,
+)
+from maistro.tasks.models import TaskActorKind, TaskCreate, TaskProgress, TaskResponse, TaskStatus
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.agents.intents import IntentRegistry
+    from maistro.graph.definitions import Graph
     from maistro.projects.scope_store import ProjectScopeStore
     from maistro.runs.model import Run
     from maistro.runs.store import RunStore
-    from maistro.tasks.models import TaskResponse
     from maistro.tasks.pg_admission import PgRootAdmissionCoordinator
 
 #: How a task's state machine reads on the canonical Run.
@@ -76,6 +92,176 @@ TASK_ID_KEY = "task_id"
 TASK_PAYLOAD_KEY = "task_payload"
 SESSION_ID_KEY = "session_id"
 REQUEST_ID_KEY = "request_id"
+
+# Task models' default JSON mode maps non-finites to null. Serialize the
+# original arbitrary context separately before applying the shared evidence
+# tags; the shipped request_fingerprint remains deliberately unchanged.
+_PROGRAM_CONTEXT_JSON: TypeAdapter[dict[str, Any] | None] = TypeAdapter(
+    dict[str, Any] | None, config=ConfigDict(ser_json_inf_nan="constants")
+)
+
+
+class RootRunPreparer(Protocol):
+    """Task-agnostic canonical root preparation, including the Goal seam."""
+
+    async def __call__(
+        self,
+        graph: Graph,
+        *,
+        persona_id: str | None = None,
+        actor_principal_id: str | None = None,
+        provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
+    ) -> Run: ...
+
+
+def _build_unpublished_task(
+    request: TaskCreate,
+    *,
+    task_id: str,
+    created_at: datetime,
+    user_id: str = "",
+    service_principal_id: str | None = None,
+    delegation_id: str | None = None,
+    actor_kind: TaskActorKind = "user",
+    idempotency_key: str | None = None,
+) -> TaskResponse:
+    """Build the queued receipt before canonical Run admission publishes it."""
+    return TaskResponse(
+        task_id=task_id,
+        status=TaskStatus.QUEUED,
+        description=request.description,
+        workspace=request.workspace,
+        user_id=user_id or request.user_id or "",
+        service_principal_id=service_principal_id,
+        delegation_id=delegation_id,
+        actor_kind=actor_kind,
+        task_type=request.task_type,
+        agent_id=request.agent_id,
+        capability=request.capability,
+        program_context=request.program_context,
+        branch=request.branch,
+        constraints=list(request.constraints),
+        tier=request.tier or 2,
+        lane=request.lane,
+        priority_tier=request.priority_tier,
+        session_id=request.session_id,
+        idempotency_key=idempotency_key,
+        phase="queued",
+        progress=TaskProgress(),
+        created_at=created_at,
+    )
+
+
+def _task_snapshot(task: TaskCreate | TaskResponse) -> CanonicalJsonObject:
+    """Detach original task evidence into a canonical immutable snapshot."""
+    payload = payload_of(task)
+    payload["program_context"] = encode_evidence(
+        _PROGRAM_CONTEXT_JSON.dump_python(task.program_context, mode="json")
+    )
+    return CanonicalJsonObject(json.dumps(payload))
+
+
+def build_root_admission_envelope(
+    request: TaskCreate,
+    *,
+    workspace_id: str,
+    project_id: str,
+    generation_id: UUID,
+    receipt_id: str,
+    created_at: datetime,
+    origin_principal_id: str,
+    explicit_key: str | None,
+    service_principal_id: str | None,
+    delegation_id: str | None,
+    actor_kind: TaskActorKind,
+    request_id: str | None,
+) -> RootAdmissionEnvelope:
+    """Freeze one proposed generation after authorized scope resolution (#1845).
+
+    The fingerprint and request snapshot precede authenticated receipt overlays.
+    The shipped v1 scope deliberately excludes Project; the envelope freezes
+    that binding separately. Identity, UTC creation time and request correlation
+    come from the caller, never ambient retry state or a clock inside this helper.
+    """
+    created_at_us = _to_us(created_at)
+    fingerprint = request_fingerprint(request)
+    request_snapshot = _task_snapshot(request)
+    key = normalize_idempotency_key(explicit_key, request.idempotency_key)
+    receipt = _build_unpublished_task(
+        request,
+        task_id=receipt_id,
+        created_at=created_at,
+        user_id=origin_principal_id,
+        service_principal_id=service_principal_id,
+        delegation_id=delegation_id,
+        actor_kind=actor_kind,
+        idempotency_key=key,
+    )
+    receipt_snapshot = _task_snapshot(receipt)
+    provenance = {
+        **_task_provenance(receipt, request_id=request_id),
+        TASK_PAYLOAD_KEY: json.loads(receipt_snapshot.text),
+        ADMISSION_SOURCE: TASK_QUEUE_SOURCE,
+    }
+    return RootAdmissionEnvelope(
+        scope_key=admission_scope_key(
+            principal=origin_principal_id,
+            workspace_id=workspace_id,
+            action=TASK_SUBMIT_ACTION,
+            key=key if key is not None else f"{DERIVED_KEY_PREFIX}{fingerprint}",
+        ),
+        generation_id=generation_id,
+        fingerprint=fingerprint,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        origin_principal_id=origin_principal_id,
+        actor_principal_id=origin_principal_id,
+        action=TASK_SUBMIT_ACTION,
+        created_at_us=created_at_us,
+        expires_at_us=created_at_us + DEFAULT_REPLAY_WINDOW // timedelta(microseconds=1),
+        receipt_id=receipt_id,
+        request_snapshot=request_snapshot,
+        receipt_snapshot=receipt_snapshot,
+        provenance_snapshot=CanonicalJsonObject(json.dumps(encode_evidence(provenance))),
+    )
+
+
+async def prepare_task_root(
+    envelope: RootAdmissionEnvelope,
+    *,
+    prepare_root_run: RootRunPreparer,
+    intents: IntentRegistry | None = None,
+) -> Run:
+    """Prepare canonical work from persisted identity, without new scope resolution.
+
+    The coordinator invokes this outside its acquired connection. The supplied
+    canonical callback retains scope/actor validation and performs no INSERT;
+    this adapter makes no retry, release, legacy or caller-response decisions.
+    """
+    receipt = model_of_json(TaskResponse, envelope.receipt_snapshot.text)
+    work = resolve_direct_work(
+        description=receipt.description,
+        task_type=receipt.task_type,
+        agent_id=receipt.agent_id,
+        registry=intents,
+    )
+    return await prepare_root_run(
+        direct_work_graph(
+            workspace_id=envelope.workspace_id,
+            project_id=envelope.project_id,
+            node_type=work.node_type,
+            name=work.name,
+            parameters=work.parameters,
+            description=receipt.description,
+        ),
+        actor_principal_id=envelope.actor_principal_id,
+        provenance=decode_evidence(json.loads(envelope.provenance_snapshot.text)),
+        initial_status=RunStatus.QUEUED,
+    )
 
 
 def _must_resume_before_terminalizing(current: RunStatus, target: RunStatus) -> bool:
@@ -151,7 +337,7 @@ class TaskAdmitter(Protocol):
         ...
 
 
-def _admission_provenance(task: TaskResponse) -> dict[str, Any]:
+def _task_provenance(task: TaskResponse, *, request_id: str | None) -> dict[str, Any]:
     """The provenance every admitted task Run carries.
 
     Identity evidence (#1057) leads: the originating principal and the
@@ -178,13 +364,6 @@ def _admission_provenance(task: TaskResponse) -> dict[str, Any]:
         provenance["delegation_id"] = task.delegation_id
     if task.actor_kind:
         provenance["actor_kind"] = task.actor_kind
-    # The request that submitted this task, read off the ambient context
-    # rather than a TaskCreate/TaskResponse field (#1063): admit() runs
-    # inside the same coroutine chain RequestIDMiddleware bound it in
-    # (HTTP submission), or whatever a background caller explicitly
-    # bound (scheduled admission) -- either way, one vocabulary, not a
-    # second correlation path threaded through the task's own body.
-    request_id = current_execution_context().request_id
     if request_id:
         provenance[REQUEST_ID_KEY] = request_id
     if task.idempotency_key:
@@ -196,6 +375,11 @@ def _admission_provenance(task: TaskResponse) -> dict[str, Any]:
         # said.
         provenance[IDEMPOTENCY_KEY_PROVENANCE] = task.idempotency_key
     return provenance
+
+
+def _admission_provenance(task: TaskResponse) -> dict[str, Any]:
+    """Keep existing admission callers' ambient request correlation (#1063)."""
+    return _task_provenance(task, request_id=current_execution_context().request_id)
 
 
 class TaskRunAdmitter:
@@ -601,8 +785,11 @@ __all__ = [
     "TASK_ID_KEY",
     "TASK_PAYLOAD_KEY",
     "TASK_QUEUE_SOURCE",
+    "RootRunPreparer",
     "TaskAdmitter",
     "TaskRunAdmitter",
     "WorkspaceNotAdmissible",
     "WorkspaceRoutingAdmitter",
+    "build_root_admission_envelope",
+    "prepare_task_root",
 ]

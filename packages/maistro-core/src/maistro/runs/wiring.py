@@ -20,7 +20,7 @@ from maistro.runs.chat_admission import ChatRunAdmitter
 from maistro.runs.concurrency import RunConcurrencyLimits
 from maistro.runs.store import RunStore
 from maistro.scheduling.store import ScheduleStore
-from maistro.tasks.admission import WorkspaceRoutingAdmitter
+from maistro.tasks.admission import WorkspaceRoutingAdmitter, prepare_task_root
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.graph.durable_runs.continuation import GraphContinuationStore
@@ -30,7 +30,9 @@ __all__ = ["spine_is_migrated", "wire_chat_admission", "wire_execution_spine"]
 logger = logging.getLogger(__name__)
 
 
-def _wire_admission_coordinator(pg_pool: Any, run_store: RunStore) -> Any:
+def _wire_admission_coordinator(
+    pg_pool: Any, run_store: RunStore, *, intents: IntentRegistry | None = None
+) -> Any:
     """The atomic task-admission coordinator on the PG spine, else None (#1845).
 
     One per process: it owns the shared pool and the Run store's
@@ -45,7 +47,22 @@ def _wire_admission_coordinator(pg_pool: Any, run_store: RunStore) -> Any:
         return None
     from maistro.tasks.pg_admission import PgRootAdmissionCoordinator
 
-    return PgRootAdmissionCoordinator(pg_pool, insert_run=insert)
+    prepare = getattr(run_store, "prepare_root_run", None)
+    get_run = getattr(run_store, "get_run", None)
+    return PgRootAdmissionCoordinator(
+        pg_pool,
+        insert_run=insert,
+        prepare=(
+            lambda envelope: prepare_task_root(
+                envelope,
+                prepare_root_run=prepare,
+                intents=intents,
+            )
+        )
+        if prepare is not None
+        else None,
+        get_run=get_run,
+    )
 
 
 #: Tables the PostgreSQL spine needs before it may be selected. Defined here
@@ -332,7 +349,7 @@ async def wire_execution_spine(
         project_scope_store,
         default_workspace_id=workspace_id,
         intents=intents,
-        coordinator=_wire_admission_coordinator(pg_pool, run_store),
+        coordinator=_wire_admission_coordinator(pg_pool, run_store, intents=intents),
     )
     # Priming the default Workspace is what keeps the eager-Root guarantee in
     # the docstring above true for the case every deployment has. Workspaces a

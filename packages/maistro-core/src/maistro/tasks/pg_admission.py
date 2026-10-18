@@ -1,59 +1,116 @@
-"""Atomic task admission binding for the PostgreSQL spine (#1845).
+"""Tasks-owned immutable PostgreSQL admission generations (#1845).
 
-``TaskQueue._submit_idempotent`` used to make the canonical Run and the
-admission binding two commits: ``claim`` (commit 1), ``_submit_once`` — whose
-admitter commits the Run on its own connection (commit 2) — and a best-effort
-``complete`` (commit 3). A process death between commits 2 and 3 left a bound
-Run behind an unbound claim; when the pending lease lapsed, the takeover
-reset the row and the retry minted a *second* Run for one submission
-identity. No amount of guarding ``complete`` can close that window, because
-the binding happens after the Run and in a different transaction.
-
-This module closes it from the tasks side. :class:`PgRootAdmissionCoordinator`
-owns the ``task_idempotency`` SQL and one asyncpg READ COMMITTED transaction
-that, in order:
-
-1. locks the admission row (``SELECT … FOR UPDATE``) — first in the lock
-   order, before the Run store's Workspace/principal advisory locks;
-2. re-checks the fences against that locked current row: the scope
-   fingerprint (else the shared 409), then the binding (a bound row is a
-   same-identity replay, owner-independent), then the generation (an unbound
-   row that no longer matches this caller's claim was taken over by a
-   successor, and this caller is late);
-3. inserts the prepared canonical Run through the injected connection-owned
-   callback — root-admission advisory locks, the INSERT, and the root ceiling
-   count, exactly ``PgRunStore.create_run``'s transaction body, on this same
-   connection;
-4. writes ``task_id``/``run_id`` onto the admission row — the binding — on
-   the same connection.
-
-Commit is therefore the event that makes the Run replayable. A crash before
-it leaves the claim unbound and the takeover path honest (no Run was minted);
-a crash after it leaves the binding durable, so every later claim, takeover
-or late acknowledgement finds ``task_id`` set and replays instead of
-minting. The best-effort ``complete`` remains as evidence for the legacy
-path only; on this path nothing waits on it.
-
-The queue gets no database handles here: composition injects the pool and
-the narrow, task-agnostic insert callback, and each bound admitter supplies
-only a ``prepare_run`` callable that builds the Run *before* the transaction
-opens (graph/scope validation may acquire its own connection through the
-Project store). ``release_claim`` is the generation-fenced release the
-queue's failure path uses: it refuses bound rows and rows a successor now
-owns, so a late owner can neither release nor rewrite a successor's claim.
+Generation admission freezes original identity while lease ownership rotates.
+Preparation/hydration occur outside admission acquisitions; Run INSERT and
+binding share one row-first transaction. Unknown commits are resolved through
+fresh locking reads. Temporary old APIs are retained for source compatibility,
+not a mixed-writer rollout. Merge/activation prerequisites remain documented.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+import math
+import time
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
+from uuid import uuid4
 
-from maistro.runs.model import Run
-from maistro.tasks.idempotency import AdmissionRecord, IdempotencyKeyMismatch
+from maistro.runs import admission_identity as identity
+from maistro.runs.concurrency import RunConcurrencyExceeded
+from maistro.runs.evidence_json import decode_evidence, json_of, model_of_json
+from maistro.runs.model import Run, RunStatus, evidence_values_equal
+from maistro.runs.store import RunIntegrityError, RunNotFound
+from maistro.tasks.admission_codec import (
+    decode_admission_header,
+    decode_admission_record,
+    encode_admission_record,
+)
+from maistro.tasks.admission_generation import _assess
+from maistro.tasks.idempotency import (
+    IDEMPOTENCY_PURGE_INTERVAL_SECONDS,
+    IDEMPOTENCY_PURGE_LIMIT,
+    PENDING_LEASE,
+    AdmissionRecord,
+    IdempotencyKeyMismatch,
+    _to_us,
+    task_idempotency_purge_failures_total,
+)
+from maistro.tasks.models import TaskResponse
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
+
+logger = logging.getLogger(__name__)
+
+# Fixed forward columns: completed_at remains optional legacy evidence only.
+_V2_COLUMNS = (
+    "scope_key",
+    "format_version",
+    "fingerprint",
+    "created_at",
+    "expires_at",
+    "lease_expires_at",
+    "generation_id",
+    "claim_token",
+    "workspace_id",
+    "project_id",
+    "origin_principal_id",
+    "actor_principal_id",
+    "action",
+    "receipt_id",
+    "request",
+    "receipt_snapshot",
+    "provenance_snapshot",
+    "task_id",
+    "run_id",
+    "acknowledged_at",
+)
+_LOCK_GENERATION_SQL = (
+    f"SELECT {', '.join(_V2_COLUMNS)} FROM task_idempotency WHERE scope_key = $1 FOR UPDATE"
+)
+_INSERT_GENERATION_SQL = (
+    f"INSERT INTO task_idempotency ({', '.join(_V2_COLUMNS)}) VALUES ("
+    + ", ".join(f"${i}" for i in range(1, len(_V2_COLUMNS) + 1))
+    + ") ON CONFLICT (scope_key) DO NOTHING RETURNING scope_key"
+)
+_REPLACE_GENERATION_SQL = (
+    "UPDATE task_idempotency SET "
+    + ", ".join(f"{name} = ${i}" for i, name in enumerate(_V2_COLUMNS[1:], 2))
+    + " WHERE scope_key = $1"
+)
+
+
+def _parameters(record: identity.AdmissionRecordV2) -> list[object]:
+    encoded = encode_admission_record(record)
+    return [encoded[name] for name in _V2_COLUMNS]
+
+
+def _ticket(record: identity.AdmissionRecordV2) -> identity.AdmissionTicket:
+    return identity.AdmissionTicket(
+        record.envelope.scope_key, record.envelope.generation_id, record.owner_token
+    )
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _require_budget(deadline: float) -> None:
+    if not math.isfinite(deadline):
+        raise ValueError("admission deadline must be finite monotonic time")
+    if deadline <= asyncio.get_running_loop().time():
+        raise TimeoutError("admission submission deadline exhausted")
+
+
+class LegacyAdmissionUnresolvedError(RuntimeError):
+    """Unproven legacy binding is preserved for reviewed reconciliation; no HTTP mapping."""
+
 
 #: The admission row, read under the transaction's lock. Every fence below is
 # checked against this locked current row, never against a snapshot taken
@@ -184,14 +241,14 @@ def _same_generation(row: AdmissionRecord, claim: AdmissionRecord) -> bool:
 
 
 def _connection_errors() -> tuple[type[BaseException], ...]:
-    """The asyncpg failures that leave a transaction's commit outcome unknown.
+    """Driver and raw reconnect failures that leave a transaction outcome unknown.
 
     Imported lazily to match the other tasks modules: the dialect is a
     deployment fact, not an import-time dependency of the queue's package.
     """
     import asyncpg
 
-    return (asyncpg.exceptions.PostgresConnectionError, asyncpg.InterfaceError)
+    return (asyncpg.exceptions.PostgresConnectionError, asyncpg.InterfaceError, OSError)
 
 
 class PgRootAdmissionCoordinator:
@@ -201,9 +258,424 @@ class PgRootAdmissionCoordinator:
     shared one composition already holds; nothing here outlives the call.
     """
 
-    def __init__(self, pool: Any, *, insert_run: RunInsert) -> None:
+    def __init__(
+        self,
+        pool: Any,
+        *,
+        insert_run: RunInsert,
+        prepare: Callable[[identity.RootAdmissionEnvelope], Awaitable[Run]] | None = None,
+        get_run: Callable[[str], Awaitable[Run | None]] | None = None,
+        utc_clock: Callable[[], datetime] = _utc_now,
+    ) -> None:
         self._pool = pool
         self._insert_run = insert_run
+        self._prepare = prepare
+        self._get_run = get_run
+        self._utc_clock = utc_clock
+        self._last_purge = time.monotonic()
+        self._purge_backlog = False
+        self._purge_lock = asyncio.Lock()
+
+    @property
+    def generation_admission_ready(self) -> bool:
+        """Whether composition supplied the generation preparation and reader."""
+        return self._prepare is not None and self._get_run is not None
+
+    def _now_us(self) -> int:
+        return _to_us(self._utc_clock())
+
+    def _fresh_record(
+        self, envelope: identity.RootAdmissionEnvelope, now_us: int
+    ) -> identity.AdmissionRecordV2:
+        if envelope.expires_at_us <= now_us:
+            raise TimeoutError("the proposed admission generation has expired")
+        return identity.AdmissionRecordV2(
+            envelope=envelope,
+            owner_token=uuid4(),
+            lease_expires_at_us=min(
+                envelope.expires_at_us,
+                max(envelope.created_at_us, now_us + int(PENDING_LEASE.total_seconds() * 1e6)),
+            ),
+        )
+
+    async def claim(
+        self, candidate: identity.RootAdmissionEnvelope, *, deadline: float
+    ) -> identity.ClaimResult:
+        """Classify under a row lock, with expiry/mismatch before full decoding."""
+        _require_budget(deadline)
+        async with asyncio.timeout_at(deadline):
+            await self._maybe_purge_expired(candidate.scope_key, deadline=deadline)
+            _require_budget(deadline)
+            async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
+                while True:
+                    row = await conn.fetchrow(_LOCK_GENERATION_SQL, candidate.scope_key)
+                    now_us = self._now_us()
+                    if row is None:
+                        record = self._fresh_record(candidate, now_us)
+                        inserted = await conn.fetchval(_INSERT_GENERATION_SQL, *_parameters(record))
+                        if inserted is None:
+                            continue  # Concurrent absent-row winner: re-read in this transaction.
+                        record = replace(
+                            record,
+                            lease_expires_at_us=self._fresh_record(
+                                candidate, self._now_us()
+                            ).lease_expires_at_us,
+                        )
+                        await conn.execute(
+                            "UPDATE task_idempotency SET lease_expires_at = $2 WHERE scope_key = $1",
+                            candidate.scope_key,
+                            record.lease_expires_at_us,
+                        )
+                        return identity.Claimed(_ticket(record), record)
+                    header = decode_admission_header(row)
+                    if header.expires_at_us <= now_us:
+                        record = self._fresh_record(candidate, now_us)
+                        await conn.execute(_REPLACE_GENERATION_SQL, *_parameters(record))
+                        return identity.Claimed(_ticket(record), record)
+                    if header.fingerprint != candidate.fingerprint:
+                        raise IdempotencyKeyMismatch(
+                            "idempotency key already names another payload"
+                        )
+                    current = decode_admission_record(row, header=header)
+                    assessment = _assess(current, fingerprint=candidate.fingerprint, now_us=now_us)
+                    if assessment is identity.AdmissionAssessment.REPLAYED:
+                        return identity.Replayed(current)
+                    if isinstance(current, identity.LegacyAdmissionRecord):
+                        return identity.LegacyUnresolved(current)
+                    if assessment is identity.AdmissionAssessment.PENDING:
+                        return identity.Pending(current)
+                    if assessment is not identity.AdmissionAssessment.TAKEOVER:
+                        raise AssertionError("locked admission classification is inconsistent")
+                    rotated = replace(
+                        current,
+                        owner_token=uuid4(),
+                        lease_expires_at_us=min(
+                            current.envelope.expires_at_us,
+                            now_us + int(PENDING_LEASE.total_seconds() * 1e6),
+                        ),
+                    )
+                    await conn.execute(
+                        "UPDATE task_idempotency SET claim_token = $2, lease_expires_at = $3 "
+                        "WHERE scope_key = $1",
+                        candidate.scope_key,
+                        rotated.owner_token.hex,
+                        rotated.lease_expires_at_us,
+                    )
+                    return identity.Claimed(_ticket(rotated), rotated)
+
+    async def _maybe_purge_expired(self, submitted_scope: str, *, deadline: float) -> None:
+        """Preserve bounded TTL housekeeping, excluding unsupported/malformed headers."""
+        due = self._purge_backlog or (
+            time.monotonic() - self._last_purge >= IDEMPOTENCY_PURGE_INTERVAL_SECONDS
+        )
+        if not due or self._purge_lock.locked():
+            return
+        async with self._purge_lock:
+            self._last_purge = time.monotonic()
+            self._purge_backlog = False
+            try:
+                _require_budget(deadline)
+                async with (
+                    self._pool.acquire() as conn,
+                    conn.transaction(isolation="read_committed"),
+                ):
+                    tag = await conn.execute(
+                        """
+                        DELETE FROM task_idempotency WHERE scope_key IN (
+                            SELECT scope_key FROM task_idempotency
+                            WHERE expires_at <= $1 AND scope_key <> $3
+                              AND format_version IN (1, 2)
+                              AND scope_key ~ '^[0-9a-f]{64}$'
+                              AND fingerprint ~ '^[0-9a-f]{64}$'
+                            ORDER BY created_at, scope_key LIMIT $2
+                            FOR UPDATE SKIP LOCKED
+                        ) AND expires_at <= $1 AND format_version IN (1, 2)
+                        """,
+                        self._now_us(),
+                        IDEMPOTENCY_PURGE_LIMIT,
+                        submitted_scope,
+                    )
+            except Exception:
+                task_idempotency_purge_failures_total.inc()
+                logger.warning(
+                    "task_idempotency purge failed; retrying next interval", exc_info=True
+                )
+                return
+            self._purge_backlog = int(tag.rsplit(" ", 1)[-1]) >= IDEMPOTENCY_PURGE_LIMIT
+
+    async def complete(
+        self,
+        ticket: identity.AdmissionTicket,
+        binding: identity.AdmissionBinding,
+        *,
+        deadline: float,
+    ) -> identity.CompletionResult:
+        """Acknowledge an identical binding without creating or renewing it."""
+        _require_budget(deadline)
+        async with asyncio.timeout_at(deadline):
+            async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
+                row = await conn.fetchrow(_LOCK_GENERATION_SQL, ticket.scope_key)
+                if row is None:
+                    return identity.StaleOwner()
+                record = decode_admission_record(row, header=decode_admission_header(row))
+                if not isinstance(record, identity.AdmissionRecordV2) or not record.owns(ticket):
+                    return identity.StaleOwner()
+                if record.binding != binding:
+                    return identity.BindingMismatch()
+                if record.acknowledged_at_us is not None:
+                    return identity.AlreadyAcknowledged()
+                await conn.execute(
+                    "UPDATE task_idempotency SET acknowledged_at = $2 WHERE scope_key = $1",
+                    ticket.scope_key,
+                    max(record.envelope.created_at_us, self._now_us()),
+                )
+                return identity.Acknowledged()
+
+    async def release(
+        self, ticket: identity.AdmissionTicket, *, deadline: float
+    ) -> identity.ReleaseResult:
+        """Delete only this ticket's definitively unbound generation."""
+        _require_budget(deadline)
+        async with asyncio.timeout_at(deadline):
+            async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
+                row = await conn.fetchrow(_LOCK_GENERATION_SQL, ticket.scope_key)
+                if row is None:
+                    return identity.StaleOwner()
+                record = decode_admission_record(row, header=decode_admission_header(row))
+                if isinstance(record, identity.LegacyAdmissionRecord):
+                    if record.binding is not None:
+                        return identity.AlreadyBound(record.binding)
+                    return identity.LegacyUnresolved(record)
+                if not record.owns(ticket):
+                    return identity.StaleOwner()
+                if record.binding is not None:
+                    return identity.AlreadyBound(record.binding)
+                await conn.execute(
+                    "DELETE FROM task_idempotency WHERE scope_key = $1", ticket.scope_key
+                )
+                return identity.Released()
+
+    async def _generation_decision(
+        self, conn: Any, ticket: identity.AdmissionTicket, envelope: identity.RootAdmissionEnvelope
+    ) -> identity.AdmissionRecordV2 | identity.StaleOwner:
+        row = await conn.fetchrow(_LOCK_GENERATION_SQL, ticket.scope_key)
+        if row is None:
+            return identity.StaleOwner()
+        record = decode_admission_record(row, header=decode_admission_header(row))
+        if not isinstance(record, identity.AdmissionRecordV2) or record.envelope != envelope:
+            return identity.StaleOwner()
+        if (
+            record.envelope.scope_key != ticket.scope_key
+            or record.envelope.generation_id != ticket.generation_id
+        ):
+            return identity.StaleOwner()
+        if record.binding is not None:
+            return record  # Same-generation bound replay is owner independent.
+        if (
+            not record.owns(ticket)
+            or min(record.lease_expires_at_us, envelope.expires_at_us) <= self._now_us()
+        ):
+            return identity.StaleOwner()
+        return record
+
+    async def admit(
+        self,
+        ticket: identity.AdmissionTicket,
+        envelope: identity.RootAdmissionEnvelope,
+        *,
+        deadline: float,
+    ) -> identity.RootAdmissionResult | identity.StaleOwner:
+        """Prepare outside acquisition, then insert and bind in one row-first transaction."""
+        _require_budget(deadline)
+        async with asyncio.timeout_at(deadline):
+            async with self._pool.acquire() as conn, conn.transaction(isolation="read_committed"):
+                decision = await self._generation_decision(conn, ticket, envelope)
+            if isinstance(decision, identity.StaleOwner):
+                return decision
+            if decision.binding is not None:
+                return await self.replay(
+                    decision,
+                    origin_principal_id=envelope.origin_principal_id,
+                    workspace_id=envelope.workspace_id,
+                    deadline=deadline,
+                )
+            run = await self._prepare_claimed(ticket, decision.envelope, deadline=deadline)
+            while True:
+                created = False
+                try:
+                    async with (
+                        self._pool.acquire() as conn,
+                        conn.transaction(isolation="read_committed"),
+                    ):
+                        decision = await self._generation_decision(conn, ticket, envelope)
+                        if isinstance(decision, identity.StaleOwner):
+                            return decision
+                        if decision.binding is None:
+                            await self._insert_run(conn, run)
+                            binding = identity.AdmissionBinding(run.run_id, envelope.receipt_id)
+                            await conn.execute(
+                                "UPDATE task_idempotency SET task_id = $2, run_id = $3 WHERE scope_key = $1",
+                                ticket.scope_key,
+                                binding.receipt_id,
+                                binding.run_id,
+                            )
+                            decision = replace(decision, binding=binding)
+                            created = True
+                except _connection_errors():
+                    # A fresh locking read waits for the old transaction outcome.
+                    # Both old contexts have exited, including at pool size one.
+                    async with (
+                        self._pool.acquire() as conn,
+                        conn.transaction(isolation="read_committed"),
+                    ):
+                        decision = await self._generation_decision(conn, ticket, envelope)
+                    if isinstance(decision, identity.StaleOwner):
+                        return decision
+                    if decision.binding is None:
+                        continue  # Proven rollback: retry same private Run and budget.
+                    created = False
+                except RunConcurrencyExceeded:
+                    await self._release_refused(ticket, deadline=deadline)
+                    raise
+                result = await self.replay(
+                    decision,
+                    origin_principal_id=envelope.origin_principal_id,
+                    workspace_id=envelope.workspace_id,
+                    deadline=deadline,
+                )
+                return replace(result, created=created)
+
+    async def _release_refused(self, ticket: identity.AdmissionTicket, *, deadline: float) -> None:
+        if asyncio.get_running_loop().time() < deadline:
+            with suppress(Exception):
+                await self.release(ticket, deadline=deadline)
+
+    async def _prepare_claimed(
+        self,
+        ticket: identity.AdmissionTicket,
+        envelope: identity.RootAdmissionEnvelope,
+        *,
+        deadline: float,
+    ) -> Run:
+        try:
+            return await self._prepare_generation(envelope)
+        except _connection_errors():
+            raise
+        except TimeoutError:
+            raise
+        except Exception:
+            # Preparation is read-only; no mutating admission transaction began.
+            await self._release_refused(ticket, deadline=deadline)
+            raise
+
+    async def _prepare_generation(self, envelope: identity.RootAdmissionEnvelope) -> Run:
+        if self._prepare is None:
+            raise RuntimeError("generation admission requires the preparation callback")
+        run = await self._prepare(envelope)
+        self._validate_v2_run(run, envelope)
+        if run.status is not RunStatus.QUEUED:
+            raise RunIntegrityError("prepared task root must initially be queued")
+        return run
+
+    @staticmethod
+    def _validate_v2_run(run: Run, envelope: identity.RootAdmissionEnvelope) -> None:
+        PgRootAdmissionCoordinator._validate_root_identity(run, envelope)
+        PgRootAdmissionCoordinator._validate_original_provenance(run, envelope)
+        PgRootAdmissionCoordinator._validate_original_receipt(run, envelope)
+
+    @staticmethod
+    def _validate_root_identity(run: Run, envelope: identity.RootAdmissionEnvelope) -> None:
+        if (
+            run.workspace_id != envelope.workspace_id
+            or run.project_id != envelope.project_id
+            or run.actor_principal_id != envelope.actor_principal_id
+            or run.parent_run_id is not None
+            or run.parent_node_run_id is not None
+        ):
+            raise RunIntegrityError("bound Run scope or admitted actor differs from admission")
+
+    @staticmethod
+    def _validate_original_provenance(run: Run, envelope: identity.RootAdmissionEnvelope) -> None:
+        expected = decode_evidence(json.loads(envelope.provenance_snapshot.text))
+        if not all(
+            key in run.provenance and evidence_values_equal(run.provenance[key], value)
+            for key, value in expected.items()
+        ):
+            raise RunIntegrityError("bound Run original admission evidence differs")
+
+    @staticmethod
+    def _validate_original_receipt(run: Run, envelope: identity.RootAdmissionEnvelope) -> None:
+        receipt = model_of_json(TaskResponse, envelope.receipt_snapshot.text)
+        if (
+            receipt.task_id != envelope.receipt_id
+            or receipt.user_id != envelope.origin_principal_id
+            or run.provenance.get("task_id") != envelope.receipt_id
+            or run.provenance.get("user_id") != envelope.origin_principal_id
+            or not evidence_values_equal(
+                run.provenance.get("task_payload"),
+                decode_evidence(json.loads(envelope.receipt_snapshot.text)),
+            )
+        ):
+            raise RunIntegrityError("bound Run original receipt or principal differs")
+
+    async def replay(
+        self,
+        record: identity.AdmissionRecordV2 | identity.LegacyAdmissionRecord,
+        *,
+        origin_principal_id: str,
+        workspace_id: str,
+        deadline: float,
+    ) -> identity.RootAdmissionResult:
+        """Hydrate canonical/archive binding outside admission connections; never remint."""
+        binding = record.binding
+        if binding is None:
+            raise RunIntegrityError("replay requires a canonical binding")
+        if isinstance(record, identity.AdmissionRecordV2) and (
+            record.envelope.origin_principal_id != origin_principal_id
+            or record.envelope.workspace_id != workspace_id
+        ):
+            raise RunIntegrityError("admission is outside the authorized submission scope")
+        if self._get_run is None:
+            raise RuntimeError("generation replay requires the canonical reader callback")
+        _require_budget(deadline)
+        async with asyncio.timeout_at(deadline):
+            run = await self._get_run(binding.run_id)
+            if run is None:
+                raise RunNotFound(binding.run_id)
+            if run.run_id != binding.run_id or run.workspace_id != workspace_id:
+                raise RunIntegrityError("bound Run identity or Workspace differs")
+            if isinstance(record, identity.AdmissionRecordV2):
+                self._validate_v2_run(run, record.envelope)
+            else:
+                self._validate_legacy_run(run, binding, origin_principal_id)
+            return identity.RootAdmissionResult(
+                binding.run_id,
+                binding.receipt_id,
+                identity.CanonicalJsonObject(json_of(run)),
+                created=False,
+            )
+
+    @staticmethod
+    def _validate_legacy_run(
+        run: Run, binding: identity.AdmissionBinding, origin_principal_id: str
+    ) -> None:
+        payload = run.provenance.get("task_payload")
+        if not isinstance(payload, dict):
+            raise RunIntegrityError("legacy bound Run lacks its original receipt")
+        try:
+            receipt = TaskResponse.model_validate(payload)
+        except ValueError:
+            raise RunIntegrityError("legacy bound Run has invalid receipt evidence") from None
+        if (
+            run.parent_run_id is not None
+            or run.parent_node_run_id is not None
+            or run.actor_principal_id != origin_principal_id
+            or run.provenance.get("user_id") != origin_principal_id
+            or receipt.user_id != origin_principal_id
+            or receipt.task_id != binding.receipt_id
+            or run.provenance.get("task_id") != binding.receipt_id
+        ):
+            raise RunIntegrityError("legacy bound Run root, receipt or principal differs")
 
     async def bind_admission(
         self,
