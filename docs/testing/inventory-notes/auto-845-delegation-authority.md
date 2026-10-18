@@ -35,3 +35,7 @@ the sandbox floor; a configured grant cannot authorize a roleless principal
 carries host-resolved roles into its Principal); an untrusted node needs an
 explicit tier record, not just a permission grant; an explicit
 `ROLE_AUTO` record is the only path to inline execution.
+
+Core grant provisioning goes through the documented host-only mutation API
+(`InMemoryDelegationAuthority.add_host_grant`), keeping the trust boundary
+itself covered by tests rather than constructor backdoors.

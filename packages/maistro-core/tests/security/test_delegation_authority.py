@@ -102,7 +102,10 @@ def _request(*, actions: frozenset[str]) -> DelegationRequest:
 
 
 def test_host_grant_returns_only_the_explicit_action_subset() -> None:
-    authority = InMemoryDelegationAuthority([_grant(actions=frozenset({"read_file"}))])
+    # Grants enter only through the host-owned mutation API; no AgentIdentity
+    # or manifest field can provision one (#845).
+    authority = InMemoryDelegationAuthority()
+    authority.add_host_grant(_grant(actions=frozenset({"read_file"})))
     decision = authority.authorize(
         _request(actions=frozenset({"read_file", "write_file"})), now=datetime.now(UTC)
     )
@@ -113,7 +116,8 @@ def test_host_grant_returns_only_the_explicit_action_subset() -> None:
 
 
 def test_an_approval_for_another_artifact_cannot_be_reused() -> None:
-    authority = InMemoryDelegationAuthority([_grant(actions=frozenset({"read_file"}))])
+    authority = InMemoryDelegationAuthority()
+    authority.add_host_grant(_grant(actions=frozenset({"read_file"})))
     request = _request(actions=frozenset({"read_file"}))
     mismatched = request.__class__(**{**request.__dict__, "artifact": "different task"})
 
