@@ -23,6 +23,7 @@ the namespace.
 from __future__ import annotations
 
 import asyncio
+import os
 import resource
 from pathlib import Path
 
@@ -400,6 +401,57 @@ async def test_a_timeout_leaves_nothing_running(tmp_path: Path) -> None:
 
     assert result.timed_out is True
     assert workdir_of(tmp_path, instance) is None
+
+
+def _host_processes_carrying(marker: bytes) -> list[int]:
+    """Every live host process whose argv mentions `marker`, regardless of lineage.
+
+    A detached grandchild is re-parented away from us, so a PPID-scoped scan
+    is exactly the scan that cannot see it; the only honest probe matches the
+    whole process table. Zombies carry no cmdline, so they never match.
+    """
+    found: list[int] = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as cmdline:
+                argv = cmdline.read()
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue  # raced with exit, or not ours to read
+        if marker in argv:
+            found.append(int(entry))
+    return found
+
+
+@requires_bwrap
+async def test_a_setsid_grandchild_cannot_outlive_the_timeout(tmp_path: Path) -> None:
+    """A workload that forks and calls `setsid()` leaves the process group, so
+    the group kill cannot signal it directly. What contains it is the PID
+    namespace: `--unshare-all` makes `bwrap` the namespace's init, no syscall
+    can leave a PID namespace, and when init dies the kernel SIGKILLs every
+    process still inside it. The probe below scans the whole host table for a
+    detached grandchild's marker — the scan a session escape would have to beat.
+    """
+    marker = b"maistro-setsid-probe"
+    backend = BubblewrapSandboxBackend(root=tmp_path)
+    instance = await backend.spawn(config=SandboxConfig(timeout_s=1))
+    script = "/work/maistro-setsid-probe"  # literal argv, visible from the host
+    await backend.write_file(instance, script, b"#!/bin/sh\nsleep 30\n")
+    # `--fork` is the setsid(1) shape of fork+setsid: the grandchild holds the
+    # output pipes from its own new session while its parent exits the group.
+    result = await backend.exec(
+        instance,
+        ["sh", "-c", f"chmod +x {script} && exec setsid --fork {script}"],
+        timeout_s=1,
+    )
+    await backend.destroy(instance)
+
+    assert result.timed_out is True
+    deadline = asyncio.get_running_loop().time() + 3.0
+    while _host_processes_carrying(marker) and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+    assert _host_processes_carrying(marker) == [], "detached grandchild survived the kill"
 
 
 @requires_bwrap
