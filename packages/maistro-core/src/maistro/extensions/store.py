@@ -113,6 +113,16 @@ class ExtensionInstallStore(Protocol):
         """The record for an exact installed-version identity, or ``None``."""
         ...
 
+    async def all_installs(self) -> list[InstallRecord]:
+        """Every install record across every extension, oldest first per name.
+
+        The whole installed lock state in one read — the input surface the
+        upgrade preflight evaluates. Records from different extensions are
+        ordered by extension name; records for one extension keep install
+        order.
+        """
+        ...
+
 
 def make_trust_evidence(
     publisher: PublisherIdentity, identity: PackageIdentity, *, now: datetime
@@ -310,6 +320,13 @@ class InMemoryExtensionInstallStore:
                 return record
         return None
 
+    async def all_installs(self) -> list[InstallRecord]:
+        """Every install record across every extension, oldest first per name."""
+        records: list[InstallRecord] = []
+        for name in sorted(self._installs):
+            records.extend(self._installs[name])
+        return records
+
 
 # --------------------------------------------------------------------------
 # M9-B2: activation store (issue #953)
@@ -334,6 +351,26 @@ class ExtensionStore(Protocol):
         self, scope: ExtensionScope, extension_id: str
     ) -> ExtensionInstallRecord | None: ...
 
+    async def clear_active(self, scope: ExtensionScope, extension_id: str) -> None:
+        """Drop the scope's active pointer for the extension.
+
+        Disable and remove call this so "no active version" is structural:
+        hosts resolving through ``active_record`` cannot reach a suspended or
+        uninstalled extension, rather than being trusted to check a state.
+        Clearing a missing pointer is a no-op (idempotent sweeps).
+        """
+        ...
+
+    async def records_for_extension(
+        self, scope: ExtensionScope, extension_id: str
+    ) -> list[ExtensionInstallRecord]:
+        """Every record for one extension in the scope, oldest first.
+
+        The lifecycle reads this to find the pinned record and rollback
+        candidates without reaching into store internals.
+        """
+        ...
+
     async def set_active(self, record: ExtensionInstallRecord) -> None:
         """Swap the scope's active pointer for the record's extension id.
 
@@ -347,6 +384,17 @@ class ExtensionStore(Protocol):
         ...
 
     async def records_in_state(self, state: ExtensionState) -> list[ExtensionInstallRecord]: ...
+
+    async def records_in_scope(self, scope: ExtensionScope) -> list[ExtensionInstallRecord]:
+        """Every record in the scope, any state — the operational-view seam
+        the health projections (#978) enumerate extensions from."""
+        ...
+
+    async def records_for(
+        self, scope: ExtensionScope, extension_id: str
+    ) -> list[ExtensionInstallRecord]:
+        """Every record of one extension in the scope, any state."""
+        ...
 
     async def append_transition(self, transition: ExtensionTransition) -> None: ...
 
@@ -396,6 +444,27 @@ class InMemoryExtensionStore:
             return None
         return self._records.get(install_id)
 
+    async def clear_active(self, scope: ExtensionScope, extension_id: str) -> None:
+        self._active.pop((scope.org_id, scope.workspace_id, extension_id), None)
+
+    async def records_for_extension(
+        self, scope: ExtensionScope, extension_id: str
+    ) -> list[ExtensionInstallRecord]:
+        matches = [
+            record
+            for record in self._records.values()
+            if record.org_id == scope.org_id
+            and record.workspace_id == scope.workspace_id
+            and record.extension_id == extension_id
+        ]
+        return sorted(
+            matches,
+            key=lambda record: (
+                record.created_at or datetime.min.replace(tzinfo=UTC),
+                record.install_id,
+            ),
+        )
+
     async def set_active(self, record: ExtensionInstallRecord) -> None:
         self._active[(record.org_id, record.workspace_id, record.extension_id)] = record.install_id
 
@@ -412,6 +481,24 @@ class InMemoryExtensionStore:
 
     async def records_in_state(self, state: ExtensionState) -> list[ExtensionInstallRecord]:
         return [record for record in self._records.values() if record.state is state]
+
+    async def records_in_scope(self, scope: ExtensionScope) -> list[ExtensionInstallRecord]:
+        return [
+            record
+            for record in self._records.values()
+            if record.org_id == scope.org_id and record.workspace_id == scope.workspace_id
+        ]
+
+    async def records_for(
+        self, scope: ExtensionScope, extension_id: str
+    ) -> list[ExtensionInstallRecord]:
+        return [
+            record
+            for record in self._records.values()
+            if record.org_id == scope.org_id
+            and record.workspace_id == scope.workspace_id
+            and record.extension_id == extension_id
+        ]
 
     async def append_transition(self, transition: ExtensionTransition) -> None:
         self._transitions.append(transition)

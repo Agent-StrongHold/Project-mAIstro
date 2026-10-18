@@ -9,7 +9,6 @@ accepted: 2026-05-07
 substrate: [maistro-engine#ADR-019]
 implements: []
 related:
-  - maistro-engine#ADR-000
   - maistro-engine#ADR-032
   - maistro-engine#ADR-033
 supersedes: []

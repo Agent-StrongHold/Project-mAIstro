@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
     from maistro.memory.learnings.lifecycle import StageTransition
     from maistro.memory.user_model.types import UserModelFact
+    from maistro.persistence.audit_pages import AuditPage
     from maistro.types.memory import (
         DecaySweep,
         EpisodicMemory,
@@ -505,6 +506,8 @@ class ContextAssemblyPolicy(Protocol):
         session_id: str,
         query: str = "",
         budget_tokens: int | None = None,
+        *,
+        project_id: str = "",
     ) -> str:
         """Active task context: high-confidence episodic memories scoped to this agent.
 
@@ -515,6 +518,11 @@ class ContextAssemblyPolicy(Protocol):
         memory is no longer a unit and ADR-091's always-include band cannot be
         honoured. Both default so an existing caller keeps its behaviour: no
         query means no ranking, and no budget means unbounded, not zero.
+
+        A nonempty `project_id` restricts recall to memories attributed to
+        that Project, so one agent id serving several Workspaces does not carry
+        memories between them (#1047). An empty string keeps agent-wide recall;
+        nonempty values, including whitespace, are exact filters.
         """
         ...
 
@@ -553,6 +561,19 @@ class ContextAssemblyPolicy(Protocol):
 @runtime_checkable
 class AuditLog(Protocol):
     """Immutable audit log for boundary crossings."""
+
+    async def get_page(
+        self,
+        *,
+        org_id: str = "",
+        user_id: str | None = None,
+        boundary: str | None = None,
+        denied: bool | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> AuditPage:
+        """Exact-scope keyset page, ordered by timestamp and immutable row ID."""
+        ...
 
     async def log(self, entry: AuditEntry) -> None:
         """Record an audit entry."""

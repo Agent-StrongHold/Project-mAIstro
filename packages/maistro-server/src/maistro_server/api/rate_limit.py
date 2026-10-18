@@ -13,6 +13,13 @@ credential text. Consequences:
 * changing/omitting/forging an Authorization string cannot mint a fresh
   bucket — invalid credentials fall into the same pre-auth bucket as no
   credential at all;
+* with authentication disabled (``API_KEYS`` empty — the development
+  configuration), the Authorization header has no influence at all: no
+  principal exists to resolve, so every request from one client address
+  — headerless, arbitrary Bearer, or malformed scheme — shares that
+  address's one pre-auth bucket (#1101). Header text can neither mint a
+  synthetic ``principal:dev`` bucket beside the ``ip:`` bucket nor
+  collapse distinct development clients into one global bucket;
 * a verified Conductor delegation envelope keys the budget to the originating
   user while retaining the service credential as the authenticated caller;
 * key material never becomes a bucket id, label, or header.
@@ -63,6 +70,20 @@ from maistro_server.api.auth import resolve_token_principal
 from maistro_server.api.route_table import iter_effective_routes
 
 
+def _pre_auth_client_key(request: Request) -> str:
+    """The bounded pre-auth bucket: the connecting client's address.
+
+    A bounded identity no attacker-controlled header content can rotate;
+    also the unconditional bucket of the auth-disabled development
+    configuration (#1101). The value is an internal rate-limit bucket key
+    (never rendered to clients), so it is constructed via ``str.join``
+    rather than an f-string.
+    """
+    client = request.client
+    ip = client.host if client else "unknown"
+    return ":".join(("ip", ip))
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Per-client rate limiting via the shared sliding-window limiter."""
 
@@ -89,14 +110,34 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         falls back to the connecting client's address: a bounded identity
         that no attacker-controlled header content can rotate.
 
+        With no keys configured, resolution is skipped entirely (#1101):
+        ``resolve_token_principal`` would return the synthetic ``dev``
+        principal for *any* token, so a Bearer header would move the request
+        from its ``ip:<client>`` bucket into a global ``principal:dev``
+        bucket — two quotas for one client, and one shared quota for every
+        Bearer-sending development client. In auth-disabled mode there is no
+        authenticated identity to key on, so the bounded client identity is
+        used unconditionally (the #1101 stop condition: no identity is
+        invented merely to support rate limiting).
+
         The returned value is an internal rate-limit bucket key (never
         rendered to clients), so it is constructed via ``str.join`` rather
         than an f-string.
         """
+        settings = get_settings()
+        if not settings.api_keys:
+            # #1101: auth is disabled — no principal can be resolved, so the
+            # Authorization header (present or absent, valid or not) must not
+            # influence the bucket. The delegation envelope is ignored too:
+            # budgeting a delegation requires an authenticated service
+            # principal to verify against, and inventing one would rebuild
+            # exactly the synthetic bucket this branch removes.
+            return _pre_auth_client_key(request)
+
         auth = request.headers.get("authorization", "")
         scheme, _, token = auth.partition(" ")
         if scheme.lower() == "bearer" and token.strip():
-            principal = resolve_token_principal(token.strip(), get_settings())
+            principal = resolve_token_principal(token.strip(), settings)
             if principal is not None:
                 delegation = request.headers.get(DELEGATION_HEADER)
                 if delegation:
@@ -112,9 +153,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                         return ":".join(("delegated-principal", context.originating_principal))
                 return ":".join(("principal", principal.user_id))
 
-        client = request.client
-        ip = client.host if client else "unknown"
-        return ":".join(("ip", ip))
+        return _pre_auth_client_key(request)
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         # Skip rate limiting for health endpoints

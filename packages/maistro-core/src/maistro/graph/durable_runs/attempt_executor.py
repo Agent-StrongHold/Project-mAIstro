@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
+from maistro.capabilities.invocation import bind_logical_effect_scope
 from maistro.graph.definitions import Graph
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes.base import (
@@ -43,7 +44,7 @@ from .execution_store import DurableRunExecutionStore
 from .launch import require_admitted_launch_state
 from .protocol import DurableRunStore, RecoveryInfrastructureError
 from .spine import mirror_lifecycle
-from .types import DurableRunRecord
+from .types import RECOVERY_CLAIM_UNTIL_KEY, DurableRunRecord
 
 _RESUME_DISPOSITION_SOURCE = "maistro.graph.durable_runs.attempt_executor"
 
@@ -214,8 +215,15 @@ async def resume_durable_graph(
     run_store: RunStore | None = None,
     events: RecoveryEventSink | None = None,
     max_steps: int = DEFAULT_MAX_STEPS,
+    now: datetime | None = None,
 ) -> DurableRunRecord:
-    """Claim and resume persisted Graph work through canonical physical evidence."""
+    """Claim and resume persisted Graph work through canonical physical evidence.
+
+    ``now`` is the calling tick's moment: a recovery claim is live or expired
+    by the same clock the due scan used, not by this process's wall clock
+    (a fixed/simulated tick clock must keep judging claims it lists). Direct
+    resumes omit it and judge by the wall clock.
+    """
     # A direct resume can be the first process to observe a crash between the
     # continuation write and its canonical lifecycle mirror. Repair that
     # narrow split before interpreting the spine's status.
@@ -232,32 +240,55 @@ async def resume_durable_graph(
     }:
         raise ValueError(f"cannot resume run in status {record.run.status!r}")
 
-    spine = await traversal._canonical_spine(record, run_store)
-    record = await _reconcile_orphaned_attempts(record, store=store, run_store=spine, events=events)
+    # A claim is persisted before canonical WAITING/QUEUED is reactivated.
+    # Its marker distinguishes that window from an ordinary future timer.
+    # Keep the RUNNING predicate for older claims without the marker. Stealing
+    # it here (the due scan only saw the pre-claim listing) would bump the
+    # continuation version under the live worker, so its terminal write is
+    # refused as a version regression and the Run is left stranded RUNNING
+    # until the stolen claim itself expires. The refusal also precedes
+    # orphaned-Attempt reconciliation, which a non-owner must not run against
+    # work a live claim still owns. The claim TTL -- not a competing tick --
+    # owns the hand-on: an expired claim has ``resume_at <= now`` and stays
+    # stealable below, by the same moment the due scan used.
+    claim_now = now if now is not None else datetime.now(UTC)
+    if (
+        record.resume_at is not None
+        and record.resume_at > claim_now
+        and (
+            record.run.status is RunStatus.RUNNING
+            or record.graph_state.metadata.get(RECOVERY_CLAIM_UNTIL_KEY)
+            == record.resume_at.isoformat()
+        )
+    ):
+        raise LiveAttemptOwned(
+            f"cannot resume run {record.run_id!r}: a recovery claim held by "
+            f"another worker does not expire until {record.resume_at.isoformat()}"
+        )
 
-    claim_until = datetime.now(UTC) + GRAPH_RECOVERY_CLAIM_TTL
+    spine = await traversal._canonical_spine(record, run_store)
+    # Lease refusal stays read-only. Win the original optimistic version
+    # BEFORE reconciliation can mutate Attempts or reread a competing claim;
+    # adopting that newer version would let both callers become walkers.
+    _require_no_live_attempts(record, now=datetime.now(UTC))
+
+    claim_until = claim_now + GRAPH_RECOVERY_CLAIM_TTL
+    claim_state = traversal._replace_state(
+        record.graph_state,
+        metadata={
+            **record.graph_state.metadata,
+            RECOVERY_CLAIM_UNTIL_KEY: claim_until.isoformat(),
+        },
+    )
     record = await traversal._checkpoint(
         record,
         store=store,
         resume_at=claim_until,
+        graph_state=claim_state,
     )
 
-    run = record.run
-    if run.status in {RunStatus.WAITING, RunStatus.QUEUED}:
-        stepped: Run | None = None
-        if spine is not None:
-            canonical = await spine.get_run(run.run_id)
-            if canonical is not None:
-                for step in transition_path(canonical.status, RunStatus.RUNNING):
-                    canonical = await spine.transition_run(run.run_id, step)
-                stepped = canonical
-        if stepped is None:
-            record = traversal._replace_record(
-                record,
-                run=transition_run(run, RunStatus.RUNNING),
-            )
-        else:
-            record = traversal._replace_record(record, run=stepped)
+    record = await _reconcile_orphaned_attempts(record, store=store, run_store=spine, events=events)
+    record = await _reactivate_for_walk(record, spine)
 
     return await _walk(
         record,
@@ -267,6 +298,50 @@ async def resume_durable_graph(
         run_store=spine,
         max_steps=max_steps,
     )
+
+
+async def _reactivate_for_walk(
+    record: DurableRunRecord,
+    spine: RunStore | None,
+) -> DurableRunRecord:
+    """Mirror a resumable WAITING/QUEUED record onto RUNNING before the walk.
+
+    A canonical spine receives the full transition path hop by hop (each
+    transition audited on the lifecycle mirror); without one the durable
+    record moves directly. Records already RUNNING -- including one resumed
+    straight from a stolen-but-expired claim -- pass through untouched.
+    """
+    run = record.run
+    if run.status not in {RunStatus.WAITING, RunStatus.QUEUED}:
+        return record
+    stepped: Run | None = None
+    if spine is not None:
+        canonical = await spine.get_run(run.run_id)
+        if canonical is not None:
+            for step in transition_path(canonical.status, RunStatus.RUNNING):
+                canonical = await spine.transition_run(run.run_id, step)
+            stepped = canonical
+    if stepped is None:
+        return traversal._replace_record(
+            record,
+            run=transition_run(run, RunStatus.RUNNING),
+        )
+    return traversal._replace_record(record, run=stepped)
+
+
+def _require_no_live_attempts(record: DurableRunRecord, *, now: datetime) -> None:
+    """Refuse known live physical ownership without changing a checkpoint."""
+    for attempt in record.attempts:
+        if attempt.status not in {AttemptStatus.CREATED, AttemptStatus.RUNNING}:
+            continue
+        lease = attempt.execution_lease
+        if lease is not None and not lease_is_expired(attempt, now):
+            raise LiveAttemptOwned(
+                f"cannot resume run {record.run_id!r}: Attempt "
+                f"{attempt.attempt_id!r} holds a live execution lease "
+                f"(holder {lease.holder!r}); a demonstrably live worker owns "
+                "this work"
+            )
 
 
 async def _reconcile_orphaned_attempts(
@@ -289,15 +364,7 @@ async def _reconcile_orphaned_attempts(
         if attempt.status in {AttemptStatus.CREATED, AttemptStatus.RUNNING}
     )
     now = datetime.now(UTC)
-    for attempt in active:
-        lease = attempt.execution_lease
-        if lease is not None and not lease_is_expired(attempt, now):
-            raise LiveAttemptOwned(
-                f"cannot resume run {record.run_id!r}: Attempt "
-                f"{attempt.attempt_id!r} holds a live execution lease "
-                f"(holder {lease.holder!r}); a demonstrably live worker owns "
-                "this work"
-            )
+    _require_no_live_attempts(record, now=now)
 
     reclaimed = await execution_store.reclaim_expired_attempts(now=now)
     for attempt in reclaimed:
@@ -599,6 +666,30 @@ async def _persist_cancelled_run(
     return cancelled
 
 
+def _node_replay_semantics(node: Any) -> ReplaySemantics:
+    """The node's executable replay contract, read once per frontier visit."""
+    return ReplaySemantics(getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE))
+
+
+def _node_logical_effect_key(node: Any, inputs: dict[str, Any], ctx: NodeContext) -> str | None:
+    """The node's stable logical effect key, derived before any physical work.
+
+    Keyed effects reconcile retries through the Invocation claim whose identity
+    this key names; a node that exposes no key leaves ``None`` in place, and
+    the fold fails closed on any EFFECT_KEY revisit (#1194).
+    """
+    key_builder = getattr(node, "logical_effect_key", None)
+    if not callable(key_builder):
+        return None
+    input_schema = getattr(node, "input_schema", None)
+    key_inputs = input_schema.model_validate(inputs) if input_schema is not None else inputs
+    # The callable comes off a duck-typed node; BaseNode's protocol
+    # (``(inputs, ctx) -> str | None``) is the contract this cast restates, so
+    # pyright can verify the assignment without pinning ``node`` to a class.
+    key: str | None = cast("str | None", key_builder(key_inputs, ctx))
+    return key
+
+
 async def _execute_frontier(
     record: DurableRunRecord,
     graph: Graph,
@@ -628,10 +719,9 @@ async def _execute_frontier(
         inputs: dict[str, Any],
     ) -> Any:
         prior_completion_accepted = False
+        logical_effect_key = _node_logical_effect_key(node, inputs, ctx)
         attempts = await execution_store.list_attempts(node_run.node_run_id)
-        semantics = ReplaySemantics(
-            getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE)
-        )
+        semantics = _node_replay_semantics(node)
         if attempts and attempts[-1].status is AttemptStatus.COMPLETED:
             persisted_result = NodeResult.model_validate(attempts[-1].result)
             prior_completion_accepted = _requires_continuation_redispatch(
@@ -646,7 +736,10 @@ async def _execute_frontier(
                     node_run,
                     ctx,
                     persisted_result,
-                    semantics,
+                    ReplaySemantics(
+                        getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE)
+                    ),
+                    logical_effect_key,
                 )
 
         # A prior Attempt that never completed means this NodeRun's work was
@@ -673,7 +766,12 @@ async def _execute_frontier(
             if interrupted and not semantics.retryable:
                 raw_result = _replay_refused(node_id, attempts[-1], semantics)
                 return raw_result
-            result: NodeResult = await node.run(work_item, execution_context)
+            # Nested capability Invocations inherit this stable scope when
+            # their node omits an explicit one. Without the binding, their
+            # default per-NodeRun scope turns each graph retry into a fresh
+            # external effect despite this node's EFFECT_KEY contract (#1194).
+            with bind_logical_effect_scope(logical_effect_key):
+                result: NodeResult = await node.run(work_item, execution_context)
             raw_result = result
             return result
 
@@ -714,6 +812,7 @@ async def _execute_frontier(
             ctx,
             raw_result,
             semantics,
+            logical_effect_key,
         )
 
     return tuple(

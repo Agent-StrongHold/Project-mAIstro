@@ -132,7 +132,22 @@ class TaskAdmitter(Protocol):
         ...
 
     async def cancel_run(self, run_id: str) -> bool:
-        """Cancel the canonical Run and signal its physical Attempt owner."""
+        """Cancel the canonical Run and signal its physical Attempt owner.
+
+        Returns True only when the Run itself reached CANCELLED through the
+        canonical Run/Attempt service — a local no-op is not a cancellation.
+
+        Compatibility (#1338): this member joined the protocol after ``admit``
+        and ``record_transition``, so a downstream adapter compiled against
+        the earlier two-method shape remains a valid *runtime* citizen. The
+        queue probes the capability with ``getattr`` and, for an adapter
+        without it, refuses to cancel that adapter's admitted work — the
+        receipt stays open, the Run keeps its owner, and the refusal is
+        logged — rather than raising ``AttributeError`` or terminalizing
+        work nothing signalled. Implement the member to make cancellation
+        physically reach admitted Runs; leaving it absent opts out of
+        physical cancellation, visibly (cancel refuses), never silently.
+        """
         ...
 
 
@@ -239,6 +254,11 @@ class TaskRunAdmitter:
         """The single Workspace this admitter files work in."""
         return self._workspace_id
 
+    async def admission_scope(self, workspace_id: str | None = None) -> tuple[str, str]:
+        """Return the immutable Workspace/Project binding for admission keys."""
+        self._require_own_workspace(workspace_id)
+        return self._workspace_id, await self._resolve_project_id()
+
     @property
     def coordinator(self) -> PgRootAdmissionCoordinator | None:
         """The atomic admission coordinator, when this tier carries one."""
@@ -254,11 +274,8 @@ class TaskRunAdmitter:
     async def prepare_run(self, task: TaskResponse) -> Run:
         """Build this task's canonical Run without writing anything.
 
-        The admission half of :meth:`admit`, split for the atomic binding
-        (#1845): the coordinator's transaction calls this *before* it opens,
-        because Project resolution may acquire its own connection and must
-        not do so under the admission row's lock. The work resolution,
-        provenance and initial state are ``admit``'s, unchanged.
+        Preparation runs before the coordinator opens its transaction because
+        Project resolution may acquire a separate connection.
         """
         work = resolve_direct_work(
             description=task.description,
@@ -276,11 +293,6 @@ class TaskRunAdmitter:
                 description=task.description,
             ),
             actor_principal_id=task.user_id or None,
-            # The admission source stamped last, exactly as `admit_direct_work`
-            # does for the legacy path: with the spread last, a caller-supplied
-            # `admission_source` cannot claim an entry point the Run never
-            # touched — the one field an audit correlates on. The atomic lane's
-            # Runs must be indistinguishable from the legacy path's.
             provenance={**_admission_provenance(task), ADMISSION_SOURCE: TASK_QUEUE_SOURCE},
             initial_status=RunStatus.QUEUED,
         )
@@ -399,6 +411,20 @@ class TaskRunAdmitter:
             return False
         return True
 
+    async def run_for_task_receipt(self, task_id: str) -> str | None:
+        """The Run this admitter minted for one task receipt, or None.
+
+        The discovery seam behind admission idempotency (#1176): ``admit``
+        stamps the receipt id into the Run's provenance, so a claimant that
+        died between minting and recording leaves a Run that is *findable* by
+        the receipt its claim announced — which is what lets a retry resolve
+        the existing Run instead of minting a second one. None means no Run
+        names the receipt: it was never minted, and the claim may be taken
+        over safely.
+        """
+        run = await self._runs.find_run_by_task_receipt(task_id)
+        return run.run_id if run is not None else None
+
     async def lookup_run(self, run_id: str) -> Run | None:
         """The canonical Run behind a receipt, or None when it does not exist."""
         return await self._runs.get_run(run_id)
@@ -495,6 +521,11 @@ class WorkspaceRoutingAdmitter:
             self._by_workspace[resolved] = admitter
             return admitter
 
+    async def admission_scope(self, workspace_id: str | None = None) -> tuple[str, str]:
+        """Return the routed Workspace and its canonical Root Project."""
+        admitter = await self.admitter_for(workspace_id)
+        return await admitter.admission_scope()
+
     async def admit(self, task: TaskResponse, *, workspace_id: str | None = None) -> str:
         """Admit one task into the Workspace the submission named."""
         admitter = await self.admitter_for(workspace_id)
@@ -539,6 +570,18 @@ class WorkspaceRoutingAdmitter:
             error=error,
             previous_status=previous_status,
         )
+
+    async def run_for_task_receipt(self, task_id: str) -> str | None:
+        """Resolve one task receipt to its Run, Workspace-independently.
+
+        Same reasoning as ``record_transition``: by admission time the Run
+        exists and knows which Project it is filed in, and task ids are minted
+        globally, so routing the lookup through the default admitter reaches
+        the one implementation of the provenance search rather than a second
+        copy per Workspace.
+        """
+        admitter = await self.admitter_for(None)
+        return await admitter.run_for_task_receipt(task_id)
 
     async def lookup_run(self, run_id: str) -> Run | None:
         """Read the Run through the default admitter's store.
