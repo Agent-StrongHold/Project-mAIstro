@@ -452,6 +452,35 @@ class PoseGeometryMismatchError(CanvasError):
     code = "POSE_GEOMETRY_MISMATCH"
 
 
+# ── Image resource limits (#393) ─────────────────────────────────────
+
+
+class LayerScaleLimitError(CanvasError):
+    """A layer scale was rejected before any pixel allocation.
+
+    Covers non-numeric (string-encoded) values, NaN, ±infinity, zero and
+    negative scales, and scales above the server-configured maximum.
+    """
+
+    code = "LAYER_SCALE_OUT_OF_RANGE"
+
+
+class LayerPixelBudgetError(CanvasError):
+    """A computed resize target exceeded a server-configured pixel cap.
+
+    Covers per-side dimension overflow, per-image pixel overflow, and the
+    cumulative per-request multi-layer budget.
+    """
+
+    code = "LAYER_PIXEL_BUDGET_EXCEEDED"
+
+
+class CompositeTimeoutError(CanvasError):
+    """A decode/resize worker step ran past the server-configured timeout."""
+
+    code = "COMPOSITE_TIMEOUT"
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Validation helpers
 # ─────────────────────────────────────────────────────────────────────

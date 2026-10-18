@@ -48,6 +48,7 @@ from fastapi.responses import JSONResponse, Response
 from maistro.runs.store import RunIntegrityError
 from maistro.tasks.idempotency import InvalidIdempotencyKey, normalize_idempotency_key
 from maistro_canvas.auth import CurrentUser, get_current_user
+from maistro_canvas.canvas.limits import load_image_limits, validate_scale
 from maistro_canvas.types import (
     _MAX_GENERATE_COUNT,
     _VALID_EXPORT_FORMATS,
@@ -55,6 +56,7 @@ from maistro_canvas.types import (
     CanvasError,
     CanvasHasLayersError,
     CanvasNotFoundError,
+    CompositeTimeoutError,
     DuplicateZIndexError,
     IncompleteReorderError,
     JobAlreadyTerminalError,
@@ -64,6 +66,8 @@ from maistro_canvas.types import (
     LayerLimitExceededError,
     LayerLockedError,
     LayerNotFoundError,
+    LayerPixelBudgetError,
+    LayerScaleLimitError,
     PromptBlockedError,
     RefineNoSourceError,
     TextLayerNoGenError,
@@ -86,12 +90,26 @@ logger = logging.getLogger("maistro_canvas.canvas.routes")
 
 _POSITIONAL_FIELDS = frozenset({"x", "y", "scale", "rotation", "opacity"})
 
+
 # Simple body-field → (attribute, converter) updates for a layer.
+def _checked_scale(value: Any) -> float:
+    """Validate a client-supplied layer scale against server limits (#393).
+
+    Rejects string-encoded values, NaN/±infinity, zero/negative, and scales
+    above the server-configured maximum with an explicit 422 before the
+    value can be stored and later reach the resize worker.
+    """
+    try:
+        return validate_scale(value, load_image_limits())
+    except LayerScaleLimitError as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
+
+
 _SIMPLE_LAYER_FIELDS: dict[str, tuple[str, Callable[[Any], Any]]] = {
     "name": ("name", str),
     "x": ("x", float),
     "y": ("y", float),
-    "scale": ("scale", float),
+    "scale": ("scale", _checked_scale),
     "blend_mode": ("blend_mode", str),
     "visible": ("visible", bool),
     "locked": ("locked", bool),
@@ -124,6 +142,10 @@ _ERROR_STATUS_MAP: dict[type, int] = {
     DuplicateZIndexError: 422,
     IncompleteReorderError: 422,
     VariantIndexOutOfRangeError: 422,
+    # #393 image resource limits
+    LayerScaleLimitError: 422,
+    LayerPixelBudgetError: 422,
+    CompositeTimeoutError: 504,
 }
 
 
@@ -209,11 +231,16 @@ async def _export_image(
 ) -> Response:
     """Composite (on demand) and encode a canvas to the requested image format."""
     # Composite on-demand if nothing stored
-    comp = await store.latest_composite(canvas_id, org_id=org_id)
-    if comp is None:
-        layers = await store.list_layers(canvas_id, org_id=org_id)
-        comp = await compositor.composite(canvas, layers)
-        await store.save_composite(comp, org_id=org_id)
+    try:
+        comp = await store.latest_composite(canvas_id, org_id=org_id)
+        if comp is None:
+            layers = await store.list_layers(canvas_id, org_id=org_id)
+            comp = await compositor.composite(canvas, layers)
+            await store.save_composite(comp, org_id=org_id)
+    except (LayerScaleLimitError, LayerPixelBudgetError, CompositeTimeoutError) as exc:
+        # #393: a layer that violates the server image limits produces no
+        # composite and nothing is persisted.
+        return _error(exc)
 
     # Re-encode to the requested format
     from maistro_canvas.canvas.compositor import PilCompositorService
@@ -469,7 +496,7 @@ def _register_layer_routes(
                 z_index=body.get("z_index"),
                 x=float(body.get("x", 0.0)),
                 y=float(body.get("y", 0.0)),
-                scale=float(body.get("scale", 1.0)),
+                scale=_checked_scale(body.get("scale", 1.0)),
                 rotation=normalise_rotation(float(body.get("rotation", 0.0))),
                 opacity=float(body.get("opacity", 1.0)),
                 blend_mode=str(body.get("blend_mode", "normal")),
@@ -508,10 +535,10 @@ def _register_layer_routes(
                 )
             )
 
-        # Validate scale > 0
-        if "scale" in body and float(body["scale"]) <= 0.0:
-            raise HTTPException(status_code=422, detail="scale must be greater than 0")
-
+        # #393: full scale validation (finite, positive, within the
+        # configured maximum, not string-encoded) happens in the
+        # ``_apply_layer_updates`` converter below, replacing the previous
+        # ``scale > 0``-only check; nothing is persisted on rejection.
         _apply_layer_updates(layer, body)
 
         updated = await store.update_layer(layer, org_id=auth.org_id)
@@ -692,7 +719,12 @@ def _register_composite_routes(
     ) -> JSONResponse:
         canvas = await _require_canvas(store, canvas_id, auth.org_id)
         layers = await store.list_layers(canvas_id, org_id=auth.org_id)
-        result = await compositor.composite(canvas, layers)
+        try:
+            result = await compositor.composite(canvas, layers)
+        except (LayerScaleLimitError, LayerPixelBudgetError, CompositeTimeoutError) as exc:
+            # #393: explicit typed rejection — nothing is persisted when a
+            # layer's scale violates the server image limits.
+            return _error(exc)
         saved = await store.save_composite(result, org_id=auth.org_id)
         return JSONResponse(
             content={
