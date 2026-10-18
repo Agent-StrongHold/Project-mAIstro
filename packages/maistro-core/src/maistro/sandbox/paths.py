@@ -27,7 +27,7 @@ AUTHORIZED_HOST_ROOTS = (
 # narrower child can still be authorized explicitly.
 _SENSITIVE_ROOTS = {
     Path("/"),
-    Path("/tmp"),
+    Path("/tmp"),  # nosec B108 - denylisted, refused as a writable root
     Path("/private/tmp"),
     Path("/home"),
     Path("/root"),

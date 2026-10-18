@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +16
+  packages/maistro-core/tests: +26
 ---
 # #1198 — sandbox host-path boundary
 
@@ -53,6 +53,31 @@ sandbox suite 137 passed / 35 skipped (same host budget artifact as round 2);
 the denial evidence covered by the fd-relative unit cases. Gates re-run: ruff
 check/format, suite inventory (17 suites), vulture 1322 -> 1322, reachability,
 radon, direct-effects, model-egress, security-inventory.
+
+Round-6 CI repair (at the round-6 develop sync): hosted CI at `0bf126137`
+failed two gates, both reproduced and repaired locally.
+
+1. SAST / Bandit (strict 0 Medium+ baseline): bandit B108 flagged the
+   `Path("/tmp")` *denylist* literal in `_SENSITIVE_ROOTS`
+   (`paths.py:30`) as "insecure usage of temp file/directory". The literal
+   exists precisely to refuse a writable root resolving to `/tmp` — the same
+   false-positive class the module already annotates on its allowlist lines,
+   so the line now carries `# nosec B108 - denylisted, refused as a writable
+   root`. CI-exact bandit invocation reports Medium+ count 0 after the
+   change.
+2. Coverage gate, diff pillar: `paths.py` measured 76.2% of 126 changed
+   lines (floor 90%). Every uncovered statement was a real policy edge with
+   no test: invalid/relative root spellings, a sensitive *allowed root*,
+   allowed roots that do not exist or are not directories (fail closed),
+   the documented `create=True` exists-first contract, guest spellings that
+   name no file, the multi-component `O_NOFOLLOW` walk (read, refuse-missing,
+   provision-parents, symlinked middle component, non-directory abort with
+   descriptor cleanup), and the no-`O_NOFOLLOW` fail-closed guard. Ten tests
+   pin those behaviors (+10 here, delta 16 -> 26); re-running CI's exact
+   producer (`coverage run --branch --source=packages/maistro-core/src/maistro
+   -m pytest packages/maistro-core/tests`) and
+   `scripts/check-diff-coverage.py coverage.xml --base 420d503d4` reports
+   every measured file at or above 90% lines / 80% branch arcs.
 
 Round-4 independent re-validation (at `75845bad0`): the round-3 gate list above
 was stale for the root suite — the final sync merge (`f70cbba2f`) brought
