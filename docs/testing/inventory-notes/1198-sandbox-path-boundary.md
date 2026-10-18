@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +29
+  packages/maistro-core/tests: +30
 ---
 # #1198 — sandbox host-path boundary
 
@@ -85,8 +85,15 @@ the registry and locks, and the instance refuses further use). All three fail
 against the pre-fix head (`3e65811e2`, verified in a scratch worktree: the
 first two with the live `OSError(9, 'Bad file descriptor')` race, the third
 because the registry did not exist) and pass against the fix; the full
-boundary + conformance files report 33 passed / 26 skipped (28 passed within
-the boundary file alone). The round's develop sync (35a72ff54, uv bootstrap +
+boundary + conformance files report 34 passed / 26 skipped (29 tests in the
+boundary file alone). Follow-up in the same round: destroy originally popped
+the instance entry *before* waiting out the registered workers, so a destroy
+cancelled mid-wait left an instance with no handle to finish teardown; the
+entry is now popped only after the wait and a cancelled teardown closes
+nothing (descriptor stays live for the blocked worker) while an idempotent
+retry waits the same worker out — pinned by
+`test_cancelling_teardown_mid_wait_keeps_the_contract_repairable` (+1, delta
+29 -> 30). The round's develop sync (35a72ff54, uv bootstrap +
 canvas engine image) merged conflict-free as `030288017`; the named CI gate
 failures at the previous evaluation (SAST/Bandit at `0bf126137`) were already
 repaired at `3e65811e2` and re-proven with CI's exact bandit invocation
