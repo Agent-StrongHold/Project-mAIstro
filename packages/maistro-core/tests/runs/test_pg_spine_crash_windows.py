@@ -639,6 +639,65 @@ async def test_lost_success_write_preserves_live_ownership_then_parks(
     execute.assert_awaited_once()
 
 
+async def test_committed_success_with_lost_acknowledgement_replays_without_execution(
+    spine: _Spine, recovery_container: Container, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ordinary error after COMMIT cannot turn persisted success into failure."""
+    graph = spine.graph(_Step.kind, name="successful runtime, lost acknowledgement")
+    run_id = await _admit(spine, graph)
+    step = _Step()
+    execute = AsyncMock(wraps=step._execute)
+    monkeypatch.setattr(step, "_execute", execute)
+    transition = spine.walker.run_store.transition_attempt
+    committed = []
+
+    async def lose_acknowledgement(attempt_id: str, target: AttemptStatus, **kwargs: Any) -> Any:
+        result = await transition(attempt_id, target, **kwargs)
+        if target is AttemptStatus.COMPLETED:
+            # The independent reader must see the committed payload before
+            # the writer gets an error, not an assumed rollback or success.
+            persisted = await spine.recovery.run_store.get_attempt(attempt_id)
+            assert persisted is not None
+            assert persisted.model_dump(mode="json") == result.model_dump(mode="json")
+            committed.append(persisted)
+            raise OSError("injected lost completion acknowledgement after commit")
+        return result
+
+    monkeypatch.setattr(spine.walker.run_store, "transition_attempt", lose_acknowledgement)
+    record = await run_durable_graph(
+        graph,
+        store=spine.walker.durable(),
+        node_resolver=lambda _node_id, _graph: step,
+        run_id=run_id,
+        run_store=spine.walker.run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        max_steps=1,
+    )
+    execute.assert_awaited_once()
+    assert len(committed) == 1  # No second completion write or physical retry.
+    [attempt] = committed
+    assert attempt.status is AttemptStatus.COMPLETED
+    assert attempt.result["output"] == {"text": "done"}
+    assert record.run.status is RunStatus.COMPLETED
+    settled = await spine.recovery.run_store.get_run(run_id)
+    assert settled is not None and settled.status is RunStatus.COMPLETED
+    assert settled.result == {"text": "done"} and settled.error is None
+    [node] = await spine.recovery.run_store.list_node_runs(run_id)
+    assert node.status is RunStatus.COMPLETED and node.accepted_outcome is not None
+    assert node.accepted_outcome.attempt_result.attempt_id == attempt.attempt_id
+    assert await spine.recovery.run_store.list_attempts(node.node_run_id) == committed
+    continuation = await spine.recovery.continuations.get(run_id)
+    assert continuation is not None and continuation.status is RunStatus.COMPLETED
+    moment = datetime.now(UTC) + _RESTART_DELAY
+    assert await recovery_container.recover_abandoned_attempts(now=moment, limit=1) == 0
+    assert await spine.recovery.durable().reconcile_persistence(now=moment) == 0
+    assert await spine.recovery.run_store.get_run(run_id) == settled
+    assert await spine.recovery.run_store.list_node_runs(run_id) == [node]
+    assert await spine.recovery.run_store.list_attempts(node.node_run_id) == committed
+    assert await spine.recovery.continuations.get(run_id) == continuation
+    execute.assert_awaited_once()
+
+
 # ── the frontier whose checkpoint never landed ─────────────────────
 
 

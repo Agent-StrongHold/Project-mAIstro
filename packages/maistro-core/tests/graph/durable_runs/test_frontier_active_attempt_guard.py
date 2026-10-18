@@ -21,7 +21,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
+from unittest.mock import AsyncMock
 
+import pytest
 from pydantic import BaseModel
 
 from maistro.container import create_container
@@ -31,9 +33,12 @@ from maistro.graph.durable_runs import (
     InMemoryGraphContinuationStore,
     run_durable_graph,
 )
-from maistro.graph.nodes import BaseNode, NodeContext
+from maistro.graph.durable_runs.attempt_executor import _resolve_committed_result
+from maistro.graph.durable_runs.execution_store import DurableRunExecutionStore
+from maistro.graph.durable_runs.protocol import RecoveryInfrastructureError
+from maistro.graph.nodes import BaseNode, NodeContext, NodeResult
 from maistro.runs.lifecycle import lease_is_expired
-from maistro.runs.model import AttemptStatus, RunStatus
+from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, Attempt, AttemptStatus, RunStatus
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
@@ -131,3 +136,66 @@ async def test_terminal_write_failure_leaves_the_run_to_its_live_attempt() -> No
     assert parked_node_run is not None and parked_node_run.status is RunStatus.WAITING
     parked_run = await run_store.get_run(admitted.run_id)
     assert parked_run is not None and parked_run.status is RunStatus.WAITING
+
+
+@pytest.mark.parametrize(
+    "status", [None, *(status for status in AttemptStatus if status is not AttemptStatus.COMPLETED)]
+)
+async def test_acknowledgement_error_without_committed_completion_is_not_hidden(
+    status: AttemptStatus | None,
+) -> None:
+    store = AsyncMock(spec=DurableRunExecutionStore)
+    store.get_attempt.return_value = (
+        Attempt(
+            attempt_id="launched-attempt",
+            node_run_id="node",
+            ordinal=2,
+            status=status,
+            finished_at=datetime.now(UTC) if status in TERMINAL_ATTEMPT_STATUSES else None,
+        )
+        if status is not None
+        else None
+    )
+    error = OSError("completion not acknowledged")
+    with pytest.raises(OSError) as raised:
+        await _resolve_committed_result(store, "launched-attempt", cause=error)
+    assert raised.value is error
+    store.get_attempt.assert_awaited_once_with("launched-attempt")
+    store.list_attempts.assert_not_called()  # Never adopt an older successful ordinal.
+    store.transition_attempt.assert_not_called()
+
+
+@pytest.mark.parametrize("infrastructure_failure", [False, True])
+async def test_acknowledgement_resolution_refuses_without_safe_read_authority(
+    infrastructure_failure: bool,
+) -> None:
+    store = AsyncMock(spec=DurableRunExecutionStore)
+    error = (
+        RecoveryInfrastructureError("store unavailable")
+        if infrastructure_failure
+        else OSError("failed before launch")
+    )
+    attempt_id = "launched-attempt" if infrastructure_failure else None
+    with pytest.raises(type(error)) as raised:
+        await _resolve_committed_result(store, attempt_id, cause=error)
+    assert raised.value is error
+    assert not store.mock_calls
+
+
+async def test_committed_physical_completion_keeps_logical_failure_for_node_policy() -> None:
+    store = AsyncMock(spec=DurableRunExecutionStore)
+    result = NodeResult(success=False, error_code="DomainFailure", error_message="retry policy")
+    store.get_attempt.return_value = Attempt(
+        attempt_id="launched-attempt",
+        node_run_id="node",
+        ordinal=2,
+        status=AttemptStatus.COMPLETED,
+        finished_at=datetime.now(UTC),
+        result=result.model_dump(mode="json"),
+    )
+    resolved = await _resolve_committed_result(
+        store, "launched-attempt", cause=OSError("lost acknowledgement")
+    )
+    assert resolved == result and not resolved.success
+    store.get_attempt.assert_awaited_once_with("launched-attempt")
+    store.transition_attempt.assert_not_called()
