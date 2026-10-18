@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+import threading
+import time
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
 
+import maistro.sandbox.backends.bubblewrap as bubblewrap_module
 import maistro.sandbox.paths as sandbox_paths
 from maistro.sandbox.backends.bubblewrap import BubblewrapSandboxBackend
 from maistro.sandbox.paths import read_beneath, validate_host_root, write_beneath
-from maistro.sandbox.protocol import SandboxConfig
+from maistro.sandbox.protocol import SandboxConfig, SandboxInstance
 
 
 def _backend(root: Path) -> BubblewrapSandboxBackend:
@@ -301,5 +306,185 @@ async def test_backend_file_access_and_destroy_share_ownership_lock(tmp_path: Pa
     await backend.write_file(instance, "/work/result", b"safe")
     assert await backend.read_file(instance, "result") == b"safe"
     await backend.destroy(instance)
+    with pytest.raises(KeyError):
+        await backend.read_file(instance, "result")
+
+
+class _BlockedTransferWorker:
+    """Stop a transfer worker between submission and descriptor use.
+
+    The double records the descriptor it was handed and blocks until the test
+    releases it, so a test can cancel the submitting coroutine -- which
+    releases the backend's per-instance ownership lock -- while the worker
+    thread is still alive. Threads cannot be cancelled, exactly as in
+    production. After release it records what its operation actually touched,
+    so a test can pin the transfer to the workdir it was authorized against.
+    """
+
+    def __init__(self, mode: str, *, fail: bool = False) -> None:
+        self._mode = mode
+        self._fail = fail
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.seen_fd: int | None = None
+        self.performed_inode: int | None = None
+        self.error: BaseException | None = None
+
+    def __call__(self, fd: int, path: str, content: bytes = b"") -> object:
+        self.seen_fd = fd
+        self.started.set()
+        if not self.release.wait(timeout=30):
+            raise TimeoutError("test double was never released")
+        try:
+            if self._fail:
+                raise OSError("transfer worker failed as the test directed")
+            if self._mode == "write":
+                write_beneath(fd, path, content)
+                self.performed_inode = os.fstat(fd).st_ino
+                return None
+            payload = read_beneath(fd, path)
+            self.performed_inode = os.fstat(fd).st_ino
+            return payload
+        except BaseException as exc:
+            self.error = exc
+            raise
+
+
+async def _start_blocked_transfer(
+    backend: BubblewrapSandboxBackend,
+    instance: SandboxInstance,
+    worker: _BlockedTransferWorker,
+    *,
+    write: bool,
+) -> asyncio.Task[object]:
+    """Start a transfer whose worker is blocked, and cancel its caller.
+
+    Returns the cancelled task once the cancellation has been delivered -- the
+    ownership lock is released while the worker is still alive, which is the
+    state the descriptor-lifetime contract has to survive.
+    """
+    if write:
+        task: asyncio.Task[object] = asyncio.create_task(
+            backend.write_file(instance, "result", b"payload")
+        )
+    else:
+        task = asyncio.create_task(backend.read_file(instance, "result"))
+    # Yield to the loop while waiting: the submitting coroutine only runs when
+    # the event loop gets a turn.
+    deadline = time.monotonic() + 30
+    while not worker.started.is_set():
+        if time.monotonic() > deadline:  # pragma: no cover - scheduling guard
+            worker.release.set()
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+            pytest.fail("transfer worker never started")
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+    return task
+
+
+async def test_cancellation_during_transfer_keeps_the_workdir_descriptor_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Teardown may not close the workdir descriptor while a transfer worker
+    whose caller was cancelled still holds it.
+
+    A cancelled caller releases the ownership lock, but its worker keeps the
+    descriptor it was handed. If destroy closed that descriptor (and the
+    kernel reused the number) before the worker ran, the worker's
+    descriptor-relative walk would silently operate on a directory the
+    transfer was never authorized against. destroy therefore waits the
+    worker out first, so the descriptor stays live -- and still referring to
+    the checked workdir -- for the worker's whole lifetime.
+    """
+    backend = _backend(tmp_path)
+    instance = await backend.spawn(config=SandboxConfig())
+    worker = _BlockedTransferWorker("write")
+    monkeypatch.setattr(bubblewrap_module, "write_beneath", worker)
+
+    await _start_blocked_transfer(backend, instance, worker, write=True)
+
+    _config, workdir, workdir_fd = backend._require(instance)
+    workdir_inode = os.stat(workdir).st_ino
+    assert worker.seen_fd == workdir_fd
+
+    destroy_task = asyncio.create_task(backend.destroy(instance))
+    # While the worker is still blocked, teardown must be waiting -- not
+    # closing the descriptor or removing the workdir out from under it.
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        assert os.fstat(workdir_fd).st_ino == workdir_inode
+    assert not destroy_task.done()
+
+    worker.release.set()
+    await destroy_task
+    assert not workdir.exists()
+    # The workdir descriptor was closed exactly once, after the worker
+    # finished: no descriptor anywhere still resolves into the removed tree.
+    proc_fds = Path("/proc/self/fd")
+    if proc_fds.is_dir():
+        for entry in proc_fds.iterdir():
+            with suppress(FileNotFoundError):
+                # An entry can vanish between listing and readlink; only a
+                # stable link into the removed tree would be a leak.
+                assert not os.readlink(entry).startswith(str(workdir))
+
+
+async def test_cancelled_transfer_still_lands_in_the_checked_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write whose caller was cancelled still completes against the workdir
+    it was granted -- not against whatever a reused descriptor number would
+    point at."""
+    backend = _backend(tmp_path)
+    instance = await backend.spawn(config=SandboxConfig())
+    worker = _BlockedTransferWorker("write")
+    monkeypatch.setattr(bubblewrap_module, "write_beneath", worker)
+
+    await _start_blocked_transfer(backend, instance, worker, write=True)
+
+    _config, workdir, _workdir_fd = backend._require(instance)
+    workdir_inode = os.stat(workdir).st_ino
+    destroy_task = asyncio.create_task(backend.destroy(instance))
+    worker.release.set()
+    await destroy_task
+
+    # The abandoned write ran to completion, into the authorized workdir, and
+    # the worker saw no error even though teardown was racing it.
+    assert worker.error is None
+    assert worker.performed_inode == workdir_inode
+    assert not workdir.exists()
+
+
+async def test_cancellation_during_read_is_waited_out_by_teardown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The read path registers like the write path, and a transfer worker
+    that fails after its caller was cancelled does not leave the instance
+    half-destroyed: teardown waits it out, then completes."""
+    backend = _backend(tmp_path)
+    instance = await backend.spawn(config=SandboxConfig())
+    await backend.write_file(instance, "result", b"payload")
+    worker = _BlockedTransferWorker("read", fail=True)
+    monkeypatch.setattr(bubblewrap_module, "read_beneath", worker)
+
+    await _start_blocked_transfer(backend, instance, worker, write=False)
+
+    _config, workdir, workdir_fd = backend._require(instance)
+    workdir_inode = os.stat(workdir).st_ino
+    destroy_task = asyncio.create_task(backend.destroy(instance))
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        assert os.fstat(workdir_fd).st_ino == workdir_inode
+    assert not destroy_task.done()
+    worker.release.set()
+
+    await destroy_task
+    assert worker.error is not None  # the worker's failure was waited out
+    assert not backend._inflight_transfers
+    assert not backend._file_locks
     with pytest.raises(KeyError):
         await backend.read_file(instance, "result")

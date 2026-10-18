@@ -170,8 +170,11 @@ def _open_parent(root: Path | int, parts: tuple[str, ...], *, create: bool) -> t
     """Open each parent beneath ``root`` without following a symlink."""
     if not _NOFOLLOW or not hasattr(os, "O_DIRECTORY") or not hasattr(os, "open"):
         raise OSError("descriptor-relative no-follow file access is unavailable")
-    # A backend keeps the workdir descriptor for the instance lifetime. Duplicating
-    # it gives this operation ownership without reopening a raceable pathname.
+    # The caller hands this walk a workdir descriptor whose lifetime covers
+    # the whole operation: the backend registers each transfer before any await
+    # can release the ownership lock, and `destroy` waits the registered
+    # workers out before it closes the descriptor. Duplicating it here gives
+    # the walk its own descriptor without reopening a raceable pathname.
     fd = (
         os.dup(root)
         if isinstance(root, int)

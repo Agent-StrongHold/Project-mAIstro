@@ -168,7 +168,15 @@ are allowed only when canonical resolution remains below an authorized root.
 Sensitive or broad roots (`/`, `/home`, `/etc`, `/run`, `/dev`, and the generic
 `/tmp`) are never writable mount roots. File transfer, execution, and teardown
 serialize on a per-instance ownership lock, so teardown cannot remove the
-workdir while a host operation or bwrap process is using it.
+workdir while a host operation or bwrap process is using it. The lock alone
+cannot cover a caller that is *cancelled* mid-transfer: the worker thread
+outlives the cancelled await and releases the lock with it. So every transfer
+is registered on its instance before any await can release the lock, and
+teardown waits the registered transfer workers out before it closes the
+workdir descriptor — the descriptor a worker was handed stays open, and
+pointing at the checked workdir, for the worker's whole lifetime. A cancelled
+transfer therefore cannot be re-anchored onto a descriptor number the kernel
+has reused, and teardown closes exactly once, after the last worker finishes.
 
 ## Verification
 

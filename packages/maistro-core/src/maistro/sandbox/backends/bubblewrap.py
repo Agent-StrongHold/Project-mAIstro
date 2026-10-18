@@ -31,6 +31,7 @@ import resource
 import shutil
 import time
 from collections.abc import Callable, Iterable
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
@@ -164,6 +165,17 @@ class BubblewrapSandboxBackend:
             self._allowed_writable_roots += (root,)
         self._instances: dict[str, tuple[SandboxConfig, Path, int]] = {}
         self._file_locks: dict[str, asyncio.Lock] = {}
+        # Host-side transfers run on a backend-owned executor, and each
+        # submission's *real* `concurrent.futures.Future` is registered here
+        # in the same synchronous step that submits it. A caller whose await
+        # is cancelled releases the ownership lock while its worker may still
+        # be queued or running; `destroy` waits these futures out through a
+        # fresh `asyncio.wrap_future` before it closes the workdir descriptor,
+        # so the descriptor a worker was handed stays open for the worker's
+        # whole lifetime and its descriptor-relative walk can never dup a
+        # number the kernel has already handed to something else.
+        self._inflight_transfers: dict[str, set[Future[object]]] = {}
+        self._transfer_workers = ThreadPoolExecutor(thread_name_prefix="maistro-sandbox-transfer")
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -193,6 +205,7 @@ class BubblewrapSandboxBackend:
             raise
         self._instances[sid] = (config, workdir, workdir_fd)
         self._file_locks[sid] = asyncio.Lock()
+        self._inflight_transfers[sid] = set()
         logger.info(
             "sandbox_spawned id=%s tier=%s egress=%s",
             sid,
@@ -220,7 +233,17 @@ class BubblewrapSandboxBackend:
         return os.open(workdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 
     async def destroy(self, instance: SandboxInstance) -> None:
-        """Idempotent, as the protocol requires."""
+        """Idempotent, as the protocol requires.
+
+        A cancelled transfer releases the ownership lock while its worker
+        thread is still queued or running, so holding the lock alone does not
+        make teardown safe. Before closing the workdir descriptor, destroy
+        waits out every registered transfer future of this instance: the
+        descriptor a worker was handed therefore stays open -- and keeps
+        referring to the checked workdir -- for the worker's whole lifetime,
+        and the walk it performs can neither dup nor write through a
+        descriptor number that teardown has already released.
+        """
         lock = self._file_locks.get(instance.id)
         if lock is None:
             return
@@ -230,8 +253,25 @@ class BubblewrapSandboxBackend:
                 self._file_locks.pop(instance.id, None)
                 return
             _config, workdir, workdir_fd = entry
-            # File transfers hold the same lock, so teardown cannot remove the
-            # workdir while a descriptor-relative transfer is in progress.
+            for pending in self._inflight_transfers.pop(instance.id, set()):
+                try:
+                    await asyncio.wrap_future(pending)
+                except asyncio.CancelledError:
+                    if not pending.done():
+                        # Our own cancellation, not the transfer's.
+                        raise
+                    # The transfer was abandoned before its thread started;
+                    # it will never touch the descriptor, so nothing to wait
+                    # out.
+                except Exception:
+                    # A transfer whose caller is already gone fails however it
+                    # fails (its workdir may even be going away underneath it
+                    # in later teardowns); its error is teardown noise, not a
+                    # reason to leave the instance half-destroyed.
+                    pass
+            # Every in-flight descriptor-relative transfer has finished. File
+            # transfers and execution also hold the same lock, so nothing else
+            # can be using the workdir across these two steps.
             os.close(workdir_fd)
             await asyncio.to_thread(shutil.rmtree, workdir, True)
             self._file_locks.pop(instance.id, None)
@@ -354,16 +394,48 @@ class BubblewrapSandboxBackend:
     # --- files -------------------------------------------------------------
 
     async def write_file(self, instance: SandboxInstance, path: str, content: bytes) -> None:
-        lock = self._file_lock(instance)
-        async with lock:
-            _config, _workdir, workdir_fd = self._require(instance)
-            await asyncio.to_thread(write_beneath, workdir_fd, path, content)
+        def transfer(fd: int) -> None:
+            write_beneath(fd, path, content)
+
+        await self._run_transfer(instance, transfer)
 
     async def read_file(self, instance: SandboxInstance, path: str) -> bytes:
+        def transfer(fd: int) -> bytes:
+            return read_beneath(fd, path)
+
+        result = await self._run_transfer(instance, transfer)
+        assert isinstance(result, bytes)
+        return result
+
+    async def _run_transfer(
+        self, instance: SandboxInstance, transfer: Callable[[int], object]
+    ) -> object:
+        """Run one descriptor-relative transfer under the ownership lock.
+
+        Submission and registration are a single synchronous step while the
+        lock is held: no await point sits between them, so a cancellation can
+        never release the lock for a transfer that is not yet registered.
+        Cancellation of the *await* is a different matter -- the worker thread
+        cannot be stopped -- and is handled by contract rather than by force:
+        the future stays registered, and `destroy` waits it out before it
+        closes the workdir descriptor the worker operates on.
+        """
         lock = self._file_lock(instance)
         async with lock:
             _config, _workdir, workdir_fd = self._require(instance)
-            return await asyncio.to_thread(read_beneath, workdir_fd, path)
+            pending = self._transfer_workers.submit(transfer, workdir_fd)
+            inflight = self._inflight_transfers[instance.id]
+            inflight.add(pending)
+            try:
+                return await asyncio.wrap_future(pending)
+            finally:
+                # Deregister only when the *worker* is done. Cancellation of
+                # this await releases the lock while the thread may still be
+                # queued or running; the future must stay registered so
+                # `destroy` waits it out instead of closing the descriptor
+                # underneath it.
+                if pending.done():
+                    inflight.discard(pending)
 
     def _authorized_mounts(self, config: SandboxConfig) -> tuple[Path, ...]:
         return authorized_host_mounts(

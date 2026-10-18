@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +26
+  packages/maistro-core/tests: +29
 ---
 # #1198 — sandbox host-path boundary
 
@@ -53,6 +53,44 @@ sandbox suite 137 passed / 35 skipped (same host budget artifact as round 2);
 the denial evidence covered by the fd-relative unit cases. Gates re-run: ruff
 check/format, suite inventory (17 suites), vulture 1322 -> 1322, reachability,
 radon, direct-effects, model-egress, security-inventory.
+
+Round-7 repair (descriptor lifetime under cancellation): the round-6 verifier
+accepted the boundary but held NEEDS-REPAIR on one blocking defect class: the
+per-instance ownership lock is released when a transfer's caller is cancelled,
+while the `to_thread` worker cannot be stopped — so `destroy` could close
+`workdir_fd` (and rmtree the workdir) while a worker was still queued or
+running, and the worker's internal `os.dup(workdir_fd)` could capture a
+descriptor number the kernel had already reused. Repair, in
+`bubblewrap.py`: transfers now run on a backend-owned executor and each
+submission's real `concurrent.futures.Future` is registered on the instance
+in the same synchronous, lock-held step that submits it (no await between
+lock acquisition, `_require`, submission, and registration, so a cancellation
+cannot release the lock for an unregistered transfer); `destroy` pops the
+entry and then waits every registered future out through a fresh
+`asyncio.wrap_future` before `os.close(workdir_fd)` and rmtree, so the
+descriptor a worker was handed stays open — and pointing at the checked
+workdir — for the worker's whole lifetime. A deregistration happens only when
+the underlying future is actually done (`pending.done()`), because cancelling
+the awaiting wrapper neither stops the thread nor completes the future.
+The borrowed-descriptor contract of `read_beneath`/`write_beneath` is
+unchanged; `paths.py` only gained the comment that states the caller-side
+certificate. Three tests pin the contract (`test_host_path_boundary.py`):
+cancellation during a blocked write with concurrent destroy (descriptor stays
+`fstat`-valid with the workdir's inode for the whole blocked window, teardown
+is observed waiting, exactly-once close proven by no `/proc/self/fd` link into
+the removed tree), the abandoned write landing in the authorized workdir (the
+worker records the inode it wrote through; no worker error), and the read path
+with a worker that fails after cancellation (teardown waits, swallows, drains
+the registry and locks, and the instance refuses further use). All three fail
+against the pre-fix head (`3e65811e2`, verified in a scratch worktree: the
+first two with the live `OSError(9, 'Bad file descriptor')` race, the third
+because the registry did not exist) and pass against the fix; the full
+boundary + conformance files report 33 passed / 26 skipped (28 passed within
+the boundary file alone). The round's develop sync (35a72ff54, uv bootstrap +
+canvas engine image) merged conflict-free as `030288017`; the named CI gate
+failures at the previous evaluation (SAST/Bandit at `0bf126137`) were already
+repaired at `3e65811e2` and re-proven with CI's exact bandit invocation
+(Medium+ count 0) in this round.
 
 Round-6 CI repair (at the round-6 develop sync): hosted CI at `0bf126137`
 failed two gates, both reproduced and repaired locally.
