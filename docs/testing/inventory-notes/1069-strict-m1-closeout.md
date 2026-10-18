@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +10
+  tests/: +13
 ---
 # Issue #1069 strict M1 closeout parity
 
@@ -20,9 +20,9 @@ Adds the fail-closed M1 closeout layer for the cross-product parity suite:
   `wheels`/`pypi`/`images` depend on it, so a release cannot proceed on abstained
   scenarios.
 
-Test delta vs the develop-side suite (+10 in `tests/cross_product_parity/
+Test delta vs the develop-side suite (+13 in `tests/cross_product_parity/
 test_cross_product_parity.py`; node-ID delta vs merge base 420d503d4 is
-5549 -> 5559, re-measured after the develop-sync merge union):
+5549 -> 5562, re-measured after the develop-sync merge union):
 
 - 3 closeout-machinery tests (kept from this branch's implementation, unconflicted
   in the merge): unavailable dependency emits `FAILED` evidence without invoking the
@@ -36,3 +36,9 @@ test_cross_product_parity.py`; node-ID delta vs merge base 420d503d4 is
   cover every manifest-required scenario; `MAISTRO_PARITY_STRICT=1` combined with
   a conflicting explicit `MAISTRO_PARITY_MODE` is rejected; the strict-spelling
   plus explicit `m1-closeout` combination stays a valid strict invocation.
+- 3 success-path evidence tests (CI-repair round): an executed scenario emits a
+  machine-readable `PASSED`/`executed:true` record (pinning the success half of
+  the EXECUTED/PASSED-or-FAILED contract); the aggregate closeout report passes
+  only after real execution (`CloseoutReport.passed`, `as_dict` payload); and a
+  validator failure under strict mode is recorded as `FAILED` evidence with the
+  exception named instead of crashing without a record.

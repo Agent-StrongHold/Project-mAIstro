@@ -432,6 +432,96 @@ def test_strict_mode_fails_a_real_seam_that_abstains() -> None:
         execute_scenario_sync(scenario, mode=ParityMode.M1_CLOSEOUT)
 
 
+def test_executed_scenario_emits_passed_evidence(capsys) -> None:
+    """An executed scenario is machine-readable PASSED evidence (#1069).
+
+    The FAILED and abstention paths are pinned above; this pins the success
+    half of the EXECUTED/PASSED-or-FAILED contract, so a regression in the
+    success-path classification (or its JSON record) cannot silently turn a
+    really-executed scenario into any other recorded state.
+    """
+
+    def execute() -> ScenarioExecution:
+        return ScenarioExecution({"run_id": "run-real"})
+
+    def validate(observation: Mapping[str, object]) -> None:
+        assert observation["run_id"] == "run-real"
+
+    scenario = ParityScenario(
+        "strict-executed",
+        (Dependency(key="landed producer", issue=49, pr=None, description="", probes=()),),
+        execute,
+        validate_observation=validate,
+    )
+
+    evidence = execute_scenario_sync(scenario, mode=ParityMode.M1_CLOSEOUT)
+
+    assert evidence.status == "PASSED"
+    assert evidence.executed is True
+    record = json.loads(capsys.readouterr().out.split(" ", 1)[1])
+    assert record == {
+        "scenario": "strict-executed",
+        "status": "PASSED",
+        "executed": True,
+        "blockers": [],
+        "error": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_closeout_report_passes_only_after_real_execution() -> None:
+    """A green aggregate closeout requires the scenario to have executed."""
+
+    def execute() -> ScenarioExecution:
+        return ScenarioExecution({"run_id": "run-real"})
+
+    scenario = ParityScenario(
+        "only-required",
+        (Dependency(key="landed producer", issue=49, pr=None, description="", probes=()),),
+        execute,
+    )
+
+    report = await execute_closeout((scenario,))
+
+    assert report.passed is True
+    payload = report.as_dict()
+    assert payload["mode"] == "m1-closeout"
+    assert payload["scenarios"] == [
+        {
+            "scenario": "only-required",
+            "status": "PASSED",
+            "executed": True,
+            "blockers": [],
+            "error": None,
+        }
+    ]
+
+
+def test_strict_mode_records_validation_failure_as_failed_evidence(capsys) -> None:
+    """A real parity regression in strict mode is FAILED evidence, not a bare crash."""
+
+    def execute() -> ScenarioExecution:
+        return ScenarioExecution({"run_id": "run-real", "terminal_state": "completed"})
+
+    def reject(observation: Mapping[str, object]) -> None:
+        raise ParityContractError("terminal state diverged")
+
+    scenario = ParityScenario(
+        "strict-diverged",
+        (Dependency(key="landed producer", issue=49, pr=None, description="", probes=()),),
+        execute,
+        validate_observation=reject,
+    )
+
+    with pytest.raises(ParityContractError, match="terminal state diverged"):
+        execute_scenario_sync(scenario, mode=ParityMode.M1_CLOSEOUT)
+
+    record = json.loads(capsys.readouterr().out.split(" ", 1)[1])
+    assert record["status"] == "FAILED"
+    assert record["executed"] is False
+    assert "ParityContractError" in record["error"]
+
+
 @pytest.mark.asyncio
 async def test_strict_closeout_reports_every_required_scenario() -> None:
     """The aggregate closeout does not stop after the first unavailable seam."""
