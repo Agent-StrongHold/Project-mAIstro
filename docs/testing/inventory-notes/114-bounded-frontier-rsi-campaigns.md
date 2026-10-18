@@ -43,3 +43,28 @@ tests cover flag parsing, the ceilings mapping, and the refusal to dispatch
 without a configured gateway.
 
 No existing suite changed count; this is additive coverage on new modules.
+
+## Independent re-validation record (2026-10-18)
+
+Re-executed from scratch at the implementation head (no prior claim trusted):
+
+- `pytest packages/maistro-rsi/tests/test_campaign.py -q` → 46 passed; full
+  `pytest packages/maistro-rsi/tests -q` → 904 passed (matches the +46 delta
+  above; `check-suite-inventory.py` confirms all 14 suites).
+- Gates with CI-exact args, all exit 0: `ruff check .` / `ruff format --check .`
+  clean; `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` 1350→1350; `check-radon-baseline.py` 145→145;
+  `check-promotion-surface.py` ok; `check-reachability.py` ok.
+- Live CLI probes: unconfigured gateway refused with exit 2; a configured
+  two-arm run (frontier + free baseline, `--max-model-calls 4 --max-spend-usd
+  5.0 --allowed-path src/`) dispatched through the real gateway transport,
+  hit the production SSRF guard on loopback, recorded both arms' refusals as
+  interventions (rate 1.00), wrote a report JSON carrying ceilings, per-arm
+  attempts/regressions/interventions/cost, and the comparison block, exit 0.
+  A live *successful* frontier completion needs operator gateway credentials
+  and is out of scope for a lane without them; the refusal path is the
+  real-transport evidence available here.
+- Mutation check (temporary, byte-exact restored, sha256-verified): neutering
+  `BudgetState.stop_reason` and making `charge` a no-op fails 7 tests
+  (TestMechanicalStops + the canonical charge assertions), proving the
+  mechanical-stop and exactly-once-charge pins fail for the reason they name.
