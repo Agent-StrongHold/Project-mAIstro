@@ -31,19 +31,29 @@ database:
   Attempt holding it) is made due by the stalled-frontier repair and walked
   to completion by the due tick;
 - an Attempt completion committed before reconciliation settles NodeRun and
-  Run through `AttemptLifecycleReconciler`, with no new Attempt;
+  Run through the public `Container.recover_abandoned_attempts` tick, with no
+  new Attempt or Invocation and unchanged physical history;
 - a Run settlement lost after its last NodeRun committed settles from the
-  accepted outcome alone;
+  accepted outcome alone through that same public tick, preserving the full
+  accepted NodeRun and Attempt records across first and repeated recovery;
 - the RUNNING sweep pages past a 60-Run backlog in three bounded pages
   through the real `(created_at, run_id)` keyset;
 - two independent pools sweeping the same residue concurrently converge on
   exactly one settlement, the continuation version unchanged (the fence),
   and both replicas' follow-up ticks are no-ops.
 
-The walker writes and dies at one exact commit seam on its own pool; recovery
-runs the production seams (`reconcile_persistence`, `resume_due_graph_runs`,
-`AttemptLifecycleReconciler` over the bounded `list_by_status` enumeration) on
-a fresh pool built by the test, so every pre-recovery assertion is an
-independent committed read. No sleeps and no extra ticks: the only clock
-advanced is the tick's own `now`, past the quiet periods the production
-policy defines.
+The Graph walker is interrupted at a commit seam on its own pool; the two
+spine-only cases construct the exact committed residue through canonical
+store APIs. Recovery runs the production seams (`reconcile_persistence`,
+`resume_due_graph_runs`, `Container.recover_abandoned_attempts`) on a fresh
+pool built by the test, so every pre-recovery assertion is an independent
+committed read. Independent pools model restart; no OS process is killed.
+No sleeps and no extra ticks to obtain first progress: the only clock advanced
+is the tick's own `now`, past the quiet periods the production policy defines.
+Follow-up ticks assert fixed points, not eventual success.
+
+Current-round repair replaces the test-local terminal enumeration (which
+counted only parent settlement, unlike production) with the real Container
+entry point. Its unrelated services use memory, while every lifecycle query
+and mutation goes through the independent `PgRunStore`. The existing eleven
+collected nodes and this note's `+11` inventory delta are unchanged.

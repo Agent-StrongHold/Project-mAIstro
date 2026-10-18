@@ -5,8 +5,8 @@ authorities, and ``test_cross_store_crash_reconciliation.py``'s PostgreSQL legs
 pair a durable continuation store with an ``InMemoryRunStore``. Neither shape
 can show what #1151's acceptance actually asks: a Run stranded between two
 durable-writer commits has to be re-derived by a *different process*, from
-committed rows alone, on connections that share nothing with the walker that
-died.
+committed rows alone, on connections that share nothing with the interrupted
+walker. Independent pools model a restart; these are not OS-process kill tests.
 
 These proofs put both authorities on PostgreSQL -- ``PgRunStore`` for the
 Run/NodeRun/Attempt spine, ``PgGraphContinuationStore`` for Graph traversal by
@@ -19,10 +19,10 @@ walker's objects.
 
 The recovery seams are the shipped ones: the canonical RUNNING sweep
 (``CanonicalDurableRunStore.reconcile_persistence``), the due tick
-(``resume_due_graph_runs``), and the terminal-Attempt replay through
-``AttemptLifecycleReconciler`` over the same bounded ``list_by_status``
-enumeration the Container's tick pages. No second engine, no private repair
-loop, and no sleeps: the only clock any case advances is the tick's own
+(``resume_due_graph_runs``), and the public Container recovery tick
+(``Container.recover_abandoned_attempts``), including its terminal-Attempt
+replay. No second engine, no private repair loop, and no sleeps: the only clock
+any case advances is the tick's own
 ``now``, past the terminal-settle quiet period the production policy defines.
 
 Skipped unless ``MAISTRO_TEST_PG_DSN`` names a migrated database.
@@ -35,10 +35,12 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import BaseModel
 
+from maistro.container import Container, create_container
 from maistro.graph import Edge, Graph, Node
 from maistro.graph.durable_runs import (
     CanonicalDurableRunStore,
@@ -53,7 +55,6 @@ from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes import BaseNode, NodeContext
 from maistro.projects.pg_scope_store import PgProjectScopeStore
 from maistro.runs.concurrency import RunConcurrencyLimits
-from maistro.runs.lifecycle import has_live_execution_lease
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
@@ -62,10 +63,9 @@ from maistro.runs.model import (
     RunStatus,
 )
 from maistro.runs.pg_store import PgRunStore
-from maistro.runs.reconciliation import AttemptLifecycleReconciler
-from maistro.runs.store import run_cursor_key
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.testing.postgres import postgres_dsn
+from maistro.types.config import AgentConfig
 
 _WORKSPACE = "ws-pg-spine-crash"
 #: Room for the bounded-sweep case's RUNNING backlog; not what these cases test.
@@ -228,55 +228,33 @@ async def _die_at_terminal_write(
     return run_id
 
 
-async def _reconcile_terminal_attempts(
-    replica: _Replica, *, limit: int = 100, moment: datetime
-) -> int:
-    """One bounded pass of the Container's terminal-Attempt replay, verbatim.
+@pytest.fixture
+async def recovery_container(
+    spine: _Spine, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[Container]:
+    """Run the shipped tick against the independent pool, never a copied sweep.
 
-    The same shape `Container._reconcile_unreconciled_terminal_attempts` runs:
-    page canonical RUNNING Runs by cursor, and for each NodeRun replay the
-    latest COMPLETED Attempt through the production reconciler when no sibling
-    Attempt still executes it under a live lease. The decisions are all the
-    reconciler's; this only enumerates, the way the scheduled tick does.
+    Only unrelated Container services use memory; all recovery lifecycle reads
+    and writes go through the real PgRunStore. Refuse creation at this replica
+    so a passing repair cannot hide re-execution or replacement history.
     """
-    reconciler = AttemptLifecycleReconciler(replica.run_store, source="test.pg_spine_crash_windows")
-    changed = 0
-    after: tuple[str, str] | None = None
-    while changed < limit:
-        page = await replica.run_store.list_by_status(
-            RunStatus.RUNNING, limit=limit - changed, after=after
+    container = await create_container(
+        AgentConfig(router_api_key="test-key", database_url="memory://")
+    )
+    container.run_store = spine.recovery.run_store
+    for name in ("create_attempt", "create_node_run"):
+        monkeypatch.setattr(
+            container.run_store, name, AsyncMock(side_effect=AssertionError("new physical work"))
         )
-        if not page:
-            break
-        for run in page:
-            after = run_cursor_key(run)
-            for node_run in await replica.run_store.list_node_runs(run.run_id):
-                attempts = await replica.run_store.list_attempts(node_run.node_run_id)
-                if has_live_execution_lease(attempts, moment):
-                    continue
-                completed = next(
-                    (
-                        attempt
-                        for attempt in reversed(attempts)
-                        if attempt.status is AttemptStatus.COMPLETED
-                    ),
-                    None,
-                )
-                if completed is None:
-                    continue
-                before_run = await replica.run_store.get_run(node_run.run_id)
-                await reconciler.reconcile(completed)
-                after_run = await replica.run_store.get_run(node_run.run_id)
-                if (
-                    before_run is not None
-                    and after_run is not None
-                    and before_run.status not in TERMINAL_RUN_STATUSES
-                    and after_run.status in TERMINAL_RUN_STATUSES
-                ):
-                    changed += 1
-        if len(page) < limit - changed:
-            break
-    return changed
+    monkeypatch.setattr(
+        container.invocation_store,
+        "create",
+        AsyncMock(side_effect=AssertionError("new Invocation during recovery")),
+    )
+    try:
+        yield container
+    finally:
+        await container.aclose()
 
 
 # ── terminal-spine / stale-continuation window, both halves durable ─
@@ -487,7 +465,7 @@ async def _running_node_run(spine: _Spine) -> tuple[str, str]:
 
 
 async def test_an_attempt_completion_committed_before_reconciliation_settles(
-    spine: _Spine,
+    spine: _Spine, recovery_container: Container
 ) -> None:
     """The success write landed; the process died before reconciliation ran.
 
@@ -507,9 +485,11 @@ async def test_an_attempt_completion_committed_before_reconciliation_settles(
     assert stranded is not None and stranded.status is RunStatus.RUNNING
     [spine_node] = await spine.recovery.run_store.list_node_runs(run_id)
     assert spine_node.status is RunStatus.RUNNING
+    history = await spine.recovery.run_store.list_attempts(node_run_id)
+    assert len(history) == 1 and history[0].status is AttemptStatus.COMPLETED
 
     moment = datetime.now(UTC) + _RESTART_DELAY
-    assert await _reconcile_terminal_attempts(spine.recovery, moment=moment) == 1
+    assert await recovery_container.recover_abandoned_attempts(now=moment, limit=1) == 1
 
     settled = await spine.recovery.run_store.get_run(run_id)
     assert settled is not None and settled.status is RunStatus.COMPLETED
@@ -517,10 +497,16 @@ async def test_an_attempt_completion_committed_before_reconciliation_settles(
     [node_run] = await spine.recovery.run_store.list_node_runs(run_id)
     assert node_run.status is RunStatus.COMPLETED
     assert node_run.accepted_outcome is not None
-    assert await _reconcile_terminal_attempts(spine.recovery, moment=moment) == 0
+    assert await spine.recovery.run_store.list_attempts(node_run_id) == history
+    assert await recovery_container.recover_abandoned_attempts(now=moment, limit=1) == 0
+    assert await spine.recovery.run_store.get_run(run_id) == settled
+    assert await spine.recovery.run_store.list_node_runs(run_id) == [node_run]
+    assert await spine.recovery.run_store.list_attempts(node_run_id) == history
 
 
-async def test_run_settlement_lost_after_the_last_node_run_commits(spine: _Spine) -> None:
+async def test_run_settlement_lost_after_the_last_node_run_commits(
+    spine: _Spine, recovery_container: Container
+) -> None:
     """The NodeRun accepted its outcome; the Run's own settlement write was lost.
 
     Nothing about the Attempt is unfinished -- the lease sweep would never
@@ -546,13 +532,21 @@ async def test_run_settlement_lost_after_the_last_node_run_commits(spine: _Spine
     assert stranded is not None and stranded.status is RunStatus.RUNNING
     [terminal] = await spine.recovery.run_store.list_node_runs(run_id)
     assert terminal.status is RunStatus.COMPLETED
+    history = await spine.recovery.run_store.list_attempts(node_run_id)
+    assert history == [attempt]
 
     moment = datetime.now(UTC) + _RESTART_DELAY
-    assert await _reconcile_terminal_attempts(spine.recovery, moment=moment) == 1
+    assert await recovery_container.recover_abandoned_attempts(now=moment, limit=1) == 1
 
     settled = await spine.recovery.run_store.get_run(run_id)
     assert settled is not None and settled.status is RunStatus.COMPLETED
     assert settled.result == {"text": "done"}
+    assert await spine.recovery.run_store.list_node_runs(run_id) == [terminal]
+    assert await spine.recovery.run_store.list_attempts(node_run_id) == history
+    assert await recovery_container.recover_abandoned_attempts(now=moment, limit=1) == 0
+    assert await spine.recovery.run_store.get_run(run_id) == settled
+    assert await spine.recovery.run_store.list_node_runs(run_id) == [terminal]
+    assert await spine.recovery.run_store.list_attempts(node_run_id) == history
 
 
 # ── the frontier whose checkpoint never landed ─────────────────────
