@@ -77,3 +77,9 @@ files clean. Residual for the #805/#804 activation round: the mechanics
 store still persists its own control-plane Goal row rather than composing
 on #1572's Goal record — documented in the package docstrings, not silently
 assumed away.
+
+Follow-up in the same round: develop advanced 14 more commits past
+ab8b3737 (none touching the goals package or any resolved file — verified
+empty diff before merging); merged as bd4dd5f5d. Final tree re-verified:
+`packages/maistro-core/tests` 16495 collected, 15419 passed, 1073
+skipped, 3 xfailed, 0 failed; all gates and ruff/mypy re-run green.
