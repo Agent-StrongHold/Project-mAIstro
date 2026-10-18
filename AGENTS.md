@@ -9,7 +9,7 @@ Shared Python runtime and monorepo substrate for AI agent platforms: orchestrato
 - Python **3.12+** (strict typing with mypy)
 - **uv** workspace — root meta-package `maistro-workspace`; code in `packages/*`
 - **FastAPI**, **SQLAlchemy** (async) + **asyncpg**, **Alembic**, **LiteLLM**, **structlog**
-- Packages: `maistro-core`, `maistro-server`, `maistro-turing`, `maistro-canvas`, `maistro-bootstrap`, `maistro-registry`; reference app `packages/hive-conductor`
+- Packages: `maistro-core`, `maistro-server`, `maistro-turing`, `maistro-canvas`, `maistro-bootstrap`, `maistro-registry`, `maistro-ext-sdk`; reference app `packages/hive-conductor`
 
 ## Build and test commands
 
@@ -18,7 +18,7 @@ Shared Python runtime and monorepo substrate for AI agent platforms: orchestrato
 | Install deps | `uv sync` |
 | Run tests | `uv run pytest` |
 | Lint / format | `uv run ruff check .` and `uv run ruff format .` |
-| Typecheck | `uv run mypy packages/maistro-core/src packages/maistro-server/src packages/maistro-turing/src packages/maistro-canvas/src packages/maistro-bootstrap/src packages/maistro-registry/src` |
+| Typecheck | `uv run mypy packages/maistro-core/src packages/maistro-server/src packages/maistro-turing/src packages/maistro-canvas/src packages/maistro-bootstrap/src packages/maistro-registry/src packages/maistro-ext-sdk/src` |
 | Expected dirs | `./scripts/verify-monorepo-layout.sh` |
 | DB migrations | `uv run alembic upgrade head` (requires Postgres) |
 | Local stack | `docker compose up -d` (Postgres + LiteLLM + Langfuse per README) |
