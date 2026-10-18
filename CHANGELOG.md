@@ -102,6 +102,14 @@ or placeholder-only section.
 
 ### Changed
 
+- **PostgreSQL task admission generation integration proposal (#1845).**
+  Root admission freezes original identity and commits the canonical Run and
+  binding together, with fenced takeover and fail-closed active-generation
+  replay. Merging the wiring selects this path for configured PostgreSQL
+  stores. The proposal is not merge-ready: forward-schema startup, old-writer
+  drain/cutover/rollback, HTTP mapping and exact-head live PostgreSQL proof
+  remain required. See `docs/implementation/1845-generation-integration-proposal.md`.
+
 - **Evolve model effects require declared, execution-scoped authority (#1087).**
   Manual/request-scoped Evolve work now resolves an operator-declared `model.chat`
   Binding in its canonical Run's Workspace/Project/Node scope and records the real

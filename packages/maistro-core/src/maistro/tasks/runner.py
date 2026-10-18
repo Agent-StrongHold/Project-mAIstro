@@ -195,9 +195,27 @@ class TaskRunner:
                 break
 
             lane, tier = self._schedule_of(task_id)
-            t = asyncio.create_task(self._admit_and_run(task_id, lane, tier))
-            self._active_tasks.add(t)
-            t.add_done_callback(self._active_tasks.discard)
+            self._start_dispatch(task_id, lane, tier)
+
+    def _start_dispatch(self, task_id: str, lane: Lane, tier: str) -> asyncio.Task[None]:
+        """Own the hint even if cancellation precedes the worker's first step."""
+        started = False
+
+        async def run() -> None:
+            nonlocal started
+            started = True
+            await self._admit_and_run(task_id, lane, tier)
+
+        worker = asyncio.create_task(run())
+        self._active_tasks.add(worker)
+
+        def done(task: asyncio.Task[None]) -> None:
+            self._active_tasks.discard(task)
+            if not started:
+                self._queue.abandon_dispatch_hint(task_id)
+
+        worker.add_done_callback(done)
+        return worker
 
     async def _admit_and_run(self, task_id: str, lane: Lane, tier: str) -> None:
         """Wait for a permit in ``lane``, then execute.
@@ -210,6 +228,7 @@ class TaskRunner:
         try:
             await self._gate.acquire(lane, tier)
         except asyncio.CancelledError:
+            self._queue.abandon_dispatch_hint(task_id)
             return
         await self._run_with_permit(task_id, lane)
 

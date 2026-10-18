@@ -32,24 +32,31 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 import structlog
 
 from maistro.constants import DESCRIPTION_LOG_PREVIEW_LEN
 from maistro.memory.store import TaskRecord, get_async_session_factory
+from maistro.observability.correlation import current_execution_context
 from maistro.observability.metrics import (
     active_tasks,
     tasks_completed_total,
     tasks_failed_total,
     tasks_submitted_total,
 )
-from maistro.runs.model import RunStatus
+from maistro.runs import admission_identity as identity
+from maistro.runs.evidence_json import model_of_json
+from maistro.runs.model import Run, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE
+from maistro.runs.store import RunIntegrityError
 from maistro.tasks.admission import (
     TASK_ID_KEY,
     TASK_PAYLOAD_KEY,
     TASK_QUEUE_SOURCE,
     TaskAdmitter,
+    _build_unpublished_task,
+    build_root_admission_envelope,
 )
 from maistro.tasks.idempotency import (
     DEFAULT_REPLAY_WINDOW,
@@ -82,6 +89,7 @@ from maistro.tasks.pg_admission import (
     AdmissionOutcome,
     AdmissionRowMissing,
     AdmissionRowReplaced,
+    LegacyAdmissionUnresolvedError,
     PgRootAdmissionCoordinator,
 )
 from maistro.tasks.status import can_transition
@@ -94,44 +102,6 @@ logger = structlog.get_logger()
 #: retries, which for an honest backend means a takeover race landed between
 #: two of this caller's steps.
 ADMISSION_REACQUIRE_ROUNDS = 4
-
-
-def _build_unpublished_task(
-    request: TaskCreate,
-    *,
-    task_id: str,
-    created_at: datetime,
-    user_id: str = "",
-    service_principal_id: str | None = None,
-    delegation_id: str | None = None,
-    actor_kind: TaskActorKind = "user",
-    idempotency_key: str | None = None,
-) -> TaskResponse:
-    """Build the queued receipt before canonical Run admission publishes it."""
-    return TaskResponse(
-        task_id=task_id,
-        status=TaskStatus.QUEUED,
-        description=request.description,
-        workspace=request.workspace,
-        user_id=user_id or request.user_id or "",
-        service_principal_id=service_principal_id,
-        delegation_id=delegation_id,
-        actor_kind=actor_kind,
-        task_type=request.task_type,
-        agent_id=request.agent_id,
-        capability=request.capability,
-        program_context=request.program_context,
-        branch=request.branch,
-        constraints=list(request.constraints),
-        tier=request.tier or 2,
-        lane=request.lane,
-        priority_tier=request.priority_tier,
-        session_id=request.session_id,
-        idempotency_key=idempotency_key,
-        phase="queued",
-        progress=TaskProgress(),
-        created_at=created_at,
-    )
 
 
 def _record_values(task: TaskResponse) -> dict[str, Any]:
@@ -371,6 +341,8 @@ class TaskQueue:
         self._pending: asyncio.Queue[str] = asyncio.Queue()
         self._lock = asyncio.Lock()
         self._claimed: set[str] = set()
+        self._dispatch_hints: set[str] = set()
+        self._passive_receipts: set[str] = set()
         self._events: dict[str, asyncio.Event] = {}
         # In-flight fire-and-forget TaskRecord writes (ADR-018); referenced so
         # the event loop cannot garbage-collect them mid-write.
@@ -434,6 +406,8 @@ class TaskQueue:
                 to_remove.append(tid)
         for tid in to_remove:
             del self._tasks[tid]
+            self._dispatch_hints.discard(tid)
+            self._passive_receipts.discard(tid)
             self._events.pop(tid, None)
         if to_remove:
             logger.info("task_store_pruned", removed=len(to_remove), remaining=len(self._tasks))
@@ -552,6 +526,214 @@ class TaskQueue:
         return workspace, project.strip() if isinstance(project, str) else ""
 
     async def _submit_idempotent(
+        self,
+        request: TaskCreate,
+        key: str | None,
+        *,
+        user_id: str,
+        workspace_id: str | None,
+        service_principal_id: str | None = None,
+        delegation_id: str | None = None,
+        actor_kind: TaskActorKind = "user",
+    ) -> TaskResponse:
+        """Select the durable generation path before any legacy store mutation."""
+        deadline = asyncio.get_running_loop().time() + MAX_PENDING_POLLS * PENDING_POLL
+        request_id = current_execution_context().request_id
+        try:
+            async with asyncio.timeout_at(deadline):
+                atomic = await self._atomic_admission(workspace_id)
+                if (
+                    atomic is not None
+                    and getattr(atomic[0], "generation_admission_ready", False) is True
+                ):
+                    return await self._submit_generation(
+                        atomic[0],
+                        request,
+                        key,
+                        user_id=user_id,
+                        workspace_id=workspace_id,
+                        service_principal_id=service_principal_id,
+                        delegation_id=delegation_id,
+                        actor_kind=actor_kind,
+                        request_id=request_id,
+                        deadline=deadline,
+                    )
+        except TimeoutError as exc:
+            raise IdempotencyPendingTimeout("root admission exceeded its bounded wait") from exc
+        return await self._submit_legacy_idempotent(
+            request,
+            key,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            service_principal_id=service_principal_id,
+            delegation_id=delegation_id,
+            actor_kind=actor_kind,
+        )
+
+    async def _submit_generation(
+        self,
+        coordinator: PgRootAdmissionCoordinator,
+        request: TaskCreate,
+        key: str | None,
+        *,
+        user_id: str,
+        workspace_id: str | None,
+        service_principal_id: str | None,
+        delegation_id: str | None,
+        actor_kind: TaskActorKind,
+        request_id: str | None,
+        deadline: float,
+    ) -> TaskResponse:
+        """A single caller budget covers resolution, claim, admission and replay.
+
+        Only the persisted winning envelope reaches preparation; later proposals
+        never replace its Project, receipt, principal or correlation evidence.
+        Cancellation and ambiguous outcomes preserve the durable generation.
+        """
+        workspace, project = await self._scope_binding(workspace_id)
+        owner = user_id or request.user_id or ""
+        while True:
+            candidate = build_root_admission_envelope(
+                request,
+                workspace_id=workspace,
+                project_id=project,
+                generation_id=uuid4(),
+                receipt_id=TaskResponse.new_id(),
+                created_at=datetime.now(UTC),
+                origin_principal_id=owner,
+                explicit_key=key,
+                service_principal_id=service_principal_id,
+                delegation_id=delegation_id,
+                actor_kind=actor_kind,
+                request_id=request_id,
+            )
+            claim = await coordinator.claim(candidate, deadline=deadline)
+            if isinstance(claim, identity.Pending):
+                await asyncio.sleep(PENDING_POLL)
+                continue
+            if isinstance(claim, identity.LegacyUnresolved):
+                raise LegacyAdmissionUnresolvedError("legacy admission requires reconciliation")
+            result: identity.RootAdmissionResult | identity.StaleOwner
+            if isinstance(claim, identity.Replayed):
+                result = await coordinator.replay(
+                    claim.record,
+                    origin_principal_id=owner,
+                    workspace_id=workspace,
+                    deadline=deadline,
+                )
+            else:
+                result = await coordinator.admit(
+                    claim.ticket,
+                    claim.record.envelope,
+                    deadline=deadline,
+                )
+                if isinstance(result, identity.StaleOwner):
+                    continue
+            # Binding is the commit fact. Optional acknowledgement must not turn
+            # a successful admission into timeout or require another round trip.
+            return await self._materialize_generation(result)
+
+    async def _materialize_generation(self, result: identity.RootAdmissionResult) -> TaskResponse:
+        """Publish a projection only after canonical admission has resolved."""
+        run = model_of_json(Run, result.run_snapshot.text)
+        task = self._generation_receipt_projection(run, result.receipt_id)
+        terminal = task.status if task.status in _TERMINAL else None
+        changed = False
+        async with self._lock:
+            live = self._tasks.get(task.task_id)
+            if live is not None:
+                if live.run_id != task.run_id:
+                    raise RunIntegrityError("cached receipt names a different canonical Run")
+                if terminal is not None:
+                    changed = self._refresh_generation_terminal(live, task)
+                task = live
+            else:
+                self._tasks[task.task_id] = task
+                if task.status not in _TERMINAL:
+                    self._passive_receipts.add(task.task_id)
+                self._maybe_prune()
+                changed = True
+            if run.status in (RunStatus.CREATED, RunStatus.QUEUED):
+                changed = self._ensure_generation_hint(task) or changed
+        if changed:
+            self._persist(task)
+        return task
+
+    @staticmethod
+    def _generation_receipt_projection(run: Run, receipt_id: str) -> TaskResponse:
+        """Read the frozen admission receipt, projecting terminal canonical truth."""
+        task, reason = _task_from_run(run)
+        if task is None or task.task_id != receipt_id:
+            raise RunIntegrityError(reason or "admission receipt does not match canonical Run")
+        terminal = _TERMINAL_TASK_STATUS_BY_RUN.get(run.status)
+        if terminal is not None:
+            task.status = terminal
+            task.phase = terminal.value
+            task.started_at = run.started_at
+            task.completed_at = run.finished_at
+            task.result = _receipt_result_for_run(run, terminal)
+        return task
+
+    def _ensure_generation_hint(self, task: TaskResponse, *, count_submission: bool = True) -> bool:
+        """One local hint through dequeue/lane wait/claim; canonical dispatch owns execution."""
+        if (
+            task.status in _TERMINAL
+            or task.task_id in self._dispatch_hints
+            or task.task_id in self._claimed
+        ):
+            return False
+        task.status = TaskStatus.QUEUED
+        task.phase = "queued"
+        task.progress = TaskProgress()
+        task.started_at = task.completed_at = None
+        task.result = None
+        self._pending.put_nowait(task.task_id)
+        self._dispatch_hints.add(task.task_id)
+        if task.task_id in self._passive_receipts:
+            self._passive_receipts.discard(task.task_id)
+            active_tasks.inc()
+        if count_submission:
+            tasks_submitted_total.inc()
+        return True
+
+    def _refresh_generation_terminal(self, live: TaskResponse, canonical: TaskResponse) -> bool:
+        if live.status in _TERMINAL:
+            return False
+        self._receipt_status_effects(live, canonical.status)
+        live.status = canonical.status
+        live.phase = canonical.phase
+        live.started_at = canonical.started_at
+        live.completed_at = canonical.completed_at
+        live.result = canonical.result
+        self._notify(live.task_id)
+        return True
+
+    def _receipt_status_effects(self, task: TaskResponse, status: TaskStatus) -> None:
+        """Passive replay projections were never counted as active local work."""
+        if task.task_id in self._passive_receipts and status in _TERMINAL:
+            self._passive_receipts.discard(task.task_id)
+            task.completed_at = datetime.now(UTC)
+            if status is TaskStatus.COMPLETED:
+                tasks_completed_total.inc()
+            elif status is TaskStatus.FAILED:
+                tasks_failed_total.inc()
+            return
+        _apply_status_effects(task, status)
+
+    async def _recover_queued_receipt(self, task: TaskResponse) -> bool:
+        async with self._lock:
+            live = self._tasks.get(task.task_id)
+            if live is not None:
+                if live.run_id != task.run_id:
+                    raise RunIntegrityError("recovery receipt names a different canonical Run")
+                task = live
+            else:
+                self._tasks[task.task_id] = task
+                self._passive_receipts.add(task.task_id)
+                self._maybe_prune()
+            return self._ensure_generation_hint(task, count_submission=False)
+
+    async def _submit_legacy_idempotent(
         self,
         request: TaskCreate,
         key: str | None,
@@ -952,6 +1134,7 @@ class TaskQueue:
         task.run_id = bound.run_id
         async with self._lock:
             self._tasks[task.task_id] = task
+            self._dispatch_hints.add(task.task_id)
             self._maybe_prune()
         self._persist(task)
         await self._pending.put(task.task_id)
@@ -1173,6 +1356,7 @@ class TaskQueue:
         the idempotency layer without a trace in the task list."""
         async with self._lock:
             self._tasks[task.task_id] = task
+            self._dispatch_hints.add(task.task_id)
             self._maybe_prune()
         self._persist(task)
         await self._pending.put(task.task_id)
@@ -1250,13 +1434,8 @@ class TaskQueue:
                     await self._fail_unrecoverable_run(run_store, run.run_id, reason)
                     continue
                 assert task is not None
-                async with self._lock:
-                    if task.task_id in self._tasks:
-                        continue
-                    self._tasks[task.task_id] = task
-                    self._maybe_prune()
-                await self._pending.put(task.task_id)
-                active_tasks.inc()
+                if not await self._recover_queued_receipt(task):
+                    continue
                 recovered += 1
                 await logger.ainfo(
                     "task_recovered",
@@ -1349,7 +1528,7 @@ class TaskQueue:
         async with self._lock:
             live = self._tasks.get(task.task_id)
             if live is not None and live.status not in _TERMINAL:
-                _apply_status_effects(live, terminal)
+                self._receipt_status_effects(live, terminal)
                 live.status = terminal
                 live.phase = terminal.value
                 live.started_at = receipt.started_at
@@ -1523,7 +1702,7 @@ class TaskQueue:
 
             task.status = status
             task.phase = status.value
-            _apply_status_effects(task, status)
+            self._receipt_status_effects(task, status)
 
             self._persist(task)
 
@@ -1583,7 +1762,7 @@ class TaskQueue:
         # Effects first (they stamp completed_at with wall-clock time), then the
         # Run's own timestamps over the stamps: the canonical record of when
         # this work started and ended outranks the projection's clock.
-        _apply_status_effects(task, terminal)
+        self._receipt_status_effects(task, terminal)
         if run.started_at is not None:
             task.started_at = run.started_at
         task.completed_at = run.finished_at or task.completed_at
@@ -1615,7 +1794,7 @@ class TaskQueue:
         task.phase = TaskStatus.FAILED.value
         task.completed_at = datetime.now(UTC)
         task.result = TaskResult(error=error)
-        _apply_status_effects(task, TaskStatus.FAILED)
+        self._receipt_status_effects(task, TaskStatus.FAILED)
         self._persist(task)
         await logger.awarning(
             "task_receipt_failed_without_run",
@@ -1749,6 +1928,8 @@ class TaskQueue:
         del self._tasks[task_id]
         self._events.pop(task_id, None)
         self._claimed.discard(task_id)
+        self._dispatch_hints.discard(task_id)
+        self._passive_receipts.discard(task_id)
         return True
 
     def remove_where(self, *, status: TaskStatus | None = None) -> int:
@@ -1761,6 +1942,16 @@ class TaskQueue:
         for tid in to_remove:
             self.remove(tid)
         return len(to_remove)
+
+    def abandon_dispatch_hint(self, task_id: str) -> None:
+        """Release a dequeued hint when its waiter exits before local claim.
+
+        The receipt and canonical Run remain queued. A later replay/recovery
+        may publish a fresh hint without counting the same active work twice.
+        A live local claim retains its own reservation until its context exits.
+        """
+        if task_id not in self._claimed:
+            self._dispatch_hints.discard(task_id)
 
     async def next_task(self) -> str:
         """Block until a task is available, return its ID."""
@@ -1828,6 +2019,7 @@ class TaskQueue:
             raise
         finally:
             self._claimed.discard(task_id)
+            self._dispatch_hints.discard(task_id)
 
 
 # Singleton — replaced by DI in production

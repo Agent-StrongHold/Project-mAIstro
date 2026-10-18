@@ -369,6 +369,12 @@ jobs:
         run: uv run pytest packages/maistro-core/tests/persistence -v --tb=short
       - name: Container wires the PostgreSQL backend
         run: uv run pytest packages/maistro-core/tests/test_container_postgres.py -v --tb=short
+      # The generation suite must run against the migrated server on both
+      # majors; a missing DSN is a failed proof, never a green skipped leg.
+      - name: Atomic task admission generations on migrated PostgreSQL
+        env:
+          MAISTRO_REQUIRE_PG_LEGS: "1"
+        run: uv run pytest packages/maistro-core/tests/tasks/test_pg_admission_generations_live.py -v --tb=short
       # The canonical Workspace (#516). `MAISTRO_REQUIRE_PG_LEGS` here rather
       # than in the job env: the suites above predate it and a leg that has
       # never run must not start failing the job on this change. For this one
