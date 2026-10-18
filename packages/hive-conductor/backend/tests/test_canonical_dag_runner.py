@@ -10,14 +10,15 @@ import pytest
 from pydantic import ValidationError
 from services.dag_execution_scope import DagExecutionScope
 
-from maistro.graph.durable_runs import InMemoryDurableRunStore
 from maistro.runs.model import AttemptStatus
 
 
 @pytest.fixture
-def execution_scope() -> DagExecutionScope:
+def execution_scope(canonical_graph_spine) -> DagExecutionScope:
     return DagExecutionScope(
-        workspace_id="test-workspace", project_id="test-project", user_id="test-user"
+        workspace_id="test-workspace",
+        project_id=canonical_graph_spine.project_id,
+        user_id="test-user",
     )
 
 
@@ -180,9 +181,7 @@ async def test_required_node_failure_terminalizes_canonical_run_failed(
 ) -> None:
     import services.canonical_dag_runner as runner
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: store)
+    store = runner._container().graph_run_store
 
     result = await runner.execute_dag(
         {
@@ -209,9 +208,7 @@ async def test_fanout_runs_under_one_canonical_run(
 ) -> None:
     import services.canonical_dag_runner as runner
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: store)
+    store = runner._container().graph_run_store
 
     result = await runner.execute_dag(
         {
@@ -243,9 +240,7 @@ async def test_run_scout_executes_under_the_same_canonical_run(
 ) -> None:
     import services.canonical_dag_runner as runner
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: store)
+    store = runner._container().graph_run_store
 
     result = await runner.execute_dag(
         {
@@ -360,26 +355,28 @@ async def test_scope_uses_only_the_authorized_immutable_scope(
 ) -> None:
     import services.canonical_dag_runner as runner
 
-    class _Container:
-        run_store = "the-canonical-run-store"
-
     scope = DagExecutionScope(
         workspace_id="ws-authorized", project_id="root-project", user_id="user-1"
     )
-    monkeypatch.setattr(runner, "_container", lambda: _Container())
+    monkeypatch.setattr(runner, "_container", lambda: None)
 
-    workspace, project, run_store = await runner._scope(
+    workspace, project = await runner._scope(
         {"workspace_id": "legacy-injection", "project_id": "legacy-project"},
         scope=scope,
         workspace_id=None,
         project_id=None,
     )
 
-    assert (workspace, project, run_store) == (
+    assert (workspace, project) == (
         "ws-authorized",
         "root-project",
-        "the-canonical-run-store",
     )
+
+    # Read-only scope resolution remains usable without execution authority.
+    assert await runner.resolve_execution_scope(
+        {"workspace_id": "legacy-injection", "project_id": "legacy-project"},
+        scope=scope,
+    ) == (workspace, project)
 
 
 @pytest.mark.asyncio
@@ -530,10 +527,6 @@ async def test_a_metrics_recording_failure_never_fails_the_completed_run(
 
     import services.canonical_dag_runner as runner
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: store)
-
     def _metrics_down(_record: Any) -> int:
         raise RuntimeError("metrics store unavailable")
 
@@ -590,9 +583,7 @@ async def test_declared_max_cycles_is_enforced_and_reported(
     plus the canonical provenance both carry the effective value."""
     import services.canonical_dag_runner as runner
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: store)
+    store = runner._container().graph_run_store
 
     result = await runner.execute_dag(
         _two_step_dag(max_cycles=1),
@@ -620,9 +611,7 @@ async def test_a_budget_covering_the_depth_completes(
 ) -> None:
     import services.canonical_dag_runner as runner
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: store)
+    store = runner._container().graph_run_store
 
     result = await runner.execute_dag(
         _two_step_dag(max_cycles=2),
@@ -675,9 +664,7 @@ async def test_declared_node_timeout_becomes_the_canonical_attempt_deadline(
     hard-code (#1184)."""
     import services.canonical_dag_runner as runner
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: store)
+    store = runner._container().graph_run_store
 
     slow_node = _safe_node("a")
     slow_node["config"] = {"execution_tier": "safe", "timeout_s": 1}
@@ -710,9 +697,7 @@ async def test_changing_the_declared_node_timeout_changes_whether_work_survives(
 ) -> None:
     import services.canonical_dag_runner as runner
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: store)
+    store = runner._container().graph_run_store
 
     slow_node = _safe_node("a")
     slow_node["config"] = {"execution_tier": "safe", "timeout_s": 10}
