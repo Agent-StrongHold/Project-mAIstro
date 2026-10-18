@@ -415,10 +415,15 @@ async def test_outcomes_returns_seeded_non_empty_data(
     """A recorded outcome changes the panel: seeded query proves it (#389)."""
     from services import feedback_service
 
+    from maistro.memory.exposure import MemoryExposureMode
     from maistro.memory.outcomes import InMemoryOutcomeStore
 
     # A fresh store, so this proof is self-contained and leaks nothing.
-    monkeypatch.setattr(feedback_service, "_store", InMemoryOutcomeStore())
+    monkeypatch.setattr(
+        feedback_service,
+        "_store",
+        InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+    )
     await feedback_service.record_thumb(
         user_id="u1",
         project_id="p1",

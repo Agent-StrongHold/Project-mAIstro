@@ -19,6 +19,7 @@ import re
 import shlex
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from maistro_evolve._candidate_env import candidate_env
@@ -50,6 +51,8 @@ def measure_coverage_detailed(
     source: str = ".",
     pytest_args: str = "",
     timeout: int = 900,
+    interpreter: str | None = None,
+    execute: Callable[[list[str]], tuple[int, str, str]] | None = None,
 ) -> tuple[float | None, dict[str, list[int]]]:
     """Like :func:`measure_coverage`, but also returns each file's uncovered
     (missing) line numbers — the scout uses these to target real gaps instead
@@ -58,49 +61,71 @@ def measure_coverage_detailed(
     so they compare consistently across OS. One ``coverage run`` + ``coverage
     json`` invocation, same as ``measure_coverage`` — no extra cost.
 
+    ``interpreter``/``execute`` are the containment seam (#614): a caller that
+    must not run candidate code on the host composes the same two invocations
+    through ``execute`` (one builder, so a contained run cannot drift from the
+    host shape), against the interpreter the sandbox image provides. ``execute``
+    returns ``(exit_code, stdout, stderr)`` with the streams SEPARATED — the
+    report is parsed from stdout alone, so a stray stderr line from the runtime
+    cannot corrupt the JSON and silently erase a real coverage number. Parsing
+    below is unchanged otherwise: the coverage report crosses the boundary as
+    data.
+
     Returns ``(total_pct, {file: [missing_line, ...]})``; the dict is empty
     whenever coverage data can't be produced.
     """
     cwd = str(repo_dir)
-    # The pytest run executes the candidate's own code (conftest, plugins),
-    # so it runs behind the credential boundary (#78) — minimal base env,
-    # no ambient inheritance. The `coverage json` call only parses the data
-    # file the run produced, but it parses candidate-produced bytes, so it
-    # gets the same boundary rather than an exemption nobody asked for.
-    env = candidate_env()
-    try:
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "coverage",
-                "run",
-                f"--source={source}",
-                "-m",
-                "pytest",
-                *shlex.split(pytest_args),
-            ],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-        )
-        # Even if some tests fail, coverage data may still exist — read it anyway.
-        report = subprocess.run(
-            [sys.executable, "-m", "coverage", "json", "-o", "-"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=env,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    py = interpreter if interpreter is not None else sys.executable
+    run_argv = [
+        py,
+        "-m",
+        "coverage",
+        "run",
+        f"--source={source}",
+        "-m",
+        "pytest",
+        *shlex.split(pytest_args),
+    ]
+    report_argv = [py, "-m", "coverage", "json", "-o", "-"]
+    if execute is not None:
+        # A refusal raised by ``execute`` propagates (#614): a sandbox that
+        # cannot run is not a candidate whose coverage came back empty. The
+        # run's own exit/output are irrelevant — the report run decides.
+        execute(run_argv)
+        report_rc, report_out, _report_err = execute(report_argv)
+    else:
+        # The pytest run executes the candidate's own code (conftest, plugins),
+        # so it runs behind the credential boundary (#78) — minimal base env,
+        # no ambient inheritance. The `coverage json` call only parses the data
+        # file the run produced, but it parses candidate-produced bytes, so it
+        # gets the same boundary rather than an exemption nobody asked for.
+        env = candidate_env()
+        try:
+            subprocess.run(
+                run_argv,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+            )
+            # Even if some tests fail, coverage data may still exist — read it anyway.
+            report = subprocess.run(
+                report_argv,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=env,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None, {}
+        report_rc = report.returncode
+        report_out = report.stdout
+    if report_rc != 0 or not report_out.strip():
         return None, {}
-    if report.returncode != 0 or not report.stdout.strip():
-        return None, {}
     try:
-        payload = json.loads(report.stdout)
+        payload = json.loads(report_out)
         total = float(payload["totals"]["percent_covered"])
     except (json.JSONDecodeError, KeyError, ValueError, TypeError):
         return None, {}

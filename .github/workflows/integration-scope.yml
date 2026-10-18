@@ -20,15 +20,18 @@ jobs:
     # #869 demonstrated a 35-minute gap between this aggregator starting and
     # the last required specialized producer receiving a runner. docker-build
     # is bounded to 45 minutes (#899 coherence, raised for the maistro-core
-    # cold-rebuild path measured in run 36831116132). Give evidence 85 minutes
-    # to appear and complete (>= the 35-minute queue lag plus the producer's
-    # 45-minute ceiling), plus five minutes for checkout/scope resolution and
-    # cleanup.
-    timeout-minutes: 90
+    # cold-rebuild path measured in run 36831116132). Give evidence 120 minutes
+    # to appear and complete, plus five minutes for checkout/scope resolution
+    # and cleanup. The 60-minute window (issue #41 lane, run 36303867276)
+    # expired while specialized producers were queued 38–55 minutes; every
+    # required check later concluded success (docker-build 67 minutes after
+    # this aggregator started). The window must cover queue starvation, not
+    # just execution time; it does not weaken the required evidence.
+    timeout-minutes: 125
     env:
-      # A 30-second cadence preserves the 85-minute evidence window while
-      # bounding each aggregator to about 170 check-list requests per hour.
-      EVIDENCE_WAIT_ATTEMPTS: "170"
+      # A 30-second cadence preserves the 120-minute evidence window while
+      # bounding each aggregator to about 120 check-list requests per hour.
+      EVIDENCE_WAIT_ATTEMPTS: "240"
       EVIDENCE_WAIT_INTERVAL_MS: "30000"
     steps:
       - uses: actions/checkout@v7
@@ -44,9 +47,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_EVENT_NAME" == "merge_group" ]]; then
+          # Pull requests and merge groups are path-scoped by the same
+          # classifier (#1351): the required set is exactly the legs the
+          # candidate's changed files can affect. Missing or malformed
+          # evidence fails closed (ci_merge_group_scope.py/classify) to
+          # every specialized leg.
+          if [[ "$GITHUB_EVENT_NAME" == "merge_group" || "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             base_sha="$(python3 scripts/ci_base_revision.py)"
-            git diff --name-only "$base_sha"...HEAD > /tmp/changed-paths.txt
+            # --no-renames matches ci_merge_group_scope.py and workflow-lint:
+            # a rename folded to its destination would hide the source path
+            # from classification (#1351 review).
+            git diff --no-renames --name-only "$base_sha"...HEAD > /tmp/changed-paths.txt
             mapfile -t changed_paths < /tmp/changed-paths.txt
             scope_json="$(python3 scripts/ci_merge_group_scope.py --json "${changed_paths[@]}")"
           else

@@ -1,0 +1,18 @@
+{
+  "id": "reference.greeter",
+  "publisher": "reference",
+  "version": "1.0.0",
+  "title": "Reference greeter tool",
+  "description": "The out-of-tree reference extension (M9-A3): a tool family extension that reads nothing, writes nothing, and greets. Copies of this package start external extensions.",
+  "contract": ">=1.0.0,<2.0.0",
+  "family": "tool",
+  "capabilities": [],
+  "effects": ["read-only"],
+  "data": {
+    "scopes": []
+  },
+  "entrypoint": {
+    "module": "reference_greeter.plugin",
+    "object": "PLUGIN"
+  }
+}

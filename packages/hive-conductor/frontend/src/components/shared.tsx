@@ -523,7 +523,17 @@ export function ConfirmDialog({ open, onClose, onConfirm, title, message }: { op
 
 /* ── Toggle ──────────────────────────────────────────────────── */
 
-export function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
+// #1414 (WCAG 4.1.2 Name, Role, Value): the switch states its accessible
+// name on the button itself via aria-label, rather than relying on the
+// wrapping <label>'s implicit association with the text beside it — the
+// external audit (A11Y-21) observed the switch announcing unnamed, and that
+// association is the kind engines and assistive tech disagree on. The
+// announced name equals the visible label text, so voice control (2.5.3)
+// still matches; aria-checked stays the announced state. `label` is
+// required, not optional: React drops aria-label when the value is
+// undefined, and an optional label would let a consumer silently render an
+// unnamed switch.
+export function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
   return (
     <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer", fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink)" }}>
       <button
