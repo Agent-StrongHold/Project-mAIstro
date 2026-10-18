@@ -298,6 +298,99 @@ def test_openai_compatible_credential_lifecycle_and_non_persisting_test(
     assert deleted["config"] == {}
 
 
+def _closed_loopback_port() -> int:
+    """A loopback port with nothing listening on it (connection refused)."""
+
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def test_openai_compatible_probe_over_real_transport() -> None:
+    """Discovery and failure classification through the real guarded transport.
+
+    The other probe tests stub `routes.credentials.sync_client`, which proves
+    the route's classification logic but not the seam it documents: the probe
+    must actually leave through `maistro.http.sync_client`, reach a loopback
+    origin only because saving the config registered that exact origin with
+    the outbound policy (#67), classify a refused connection as
+    `connectivity`, and refuse a redirect hop to a destination the policy
+    never allowed. A loopback HTTP server exercises all three without any
+    external dependency.
+    """
+
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if self.path.startswith("/redirect-test/"):
+                # 302 to a private address no test ever registered. The saved
+                # origin is allowed; the redirect target is not, and the
+                # transport must refuse the hop rather than follow it (#67).
+                self.send_response(302)
+                self.send_header("Location", "http://10.203.0.7/v1/models")
+                self.end_headers()
+            elif self.path.endswith("/models"):
+                payload = json.dumps({"data": [{"id": "loopback-model"}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            return None
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        port = server.server_address[1]
+        c = _login()
+        saved = c.put(
+            "/v1/credentials/openai_compatible/config",
+            json={
+                "config": {
+                    "display_name": "Loopback",
+                    "base_url": f"http://127.0.0.1:{port}/v1",
+                }
+            },
+        )
+        assert saved.status_code == 200, saved.text
+
+        found = c.post("/v1/credentials/openai_compatible/test", json={"secret": "loopback-key"})
+        assert found.status_code == 200, found.text
+        assert found.json()["models"] == ["loopback-model"]
+
+        refused = c.post(
+            "/v1/credentials/openai_compatible/test",
+            json={
+                "config": {"base_url": f"http://127.0.0.1:{_closed_loopback_port()}/v1"},
+                "secret": "loopback-key",
+            },
+        )
+        assert refused.status_code == 502
+        assert refused.json()["detail"].startswith("connectivity:"), refused.text
+
+        redirected = c.post(
+            "/v1/credentials/openai_compatible/test",
+            json={
+                "config": {"base_url": f"http://127.0.0.1:{port}/redirect-test"},
+                "secret": "loopback-key",
+            },
+        )
+        assert redirected.status_code == 422
+        assert "policy rejection" in redirected.json()["detail"], redirected.text
+    finally:
+        server.shutdown()
+
+
 def test_openai_compatible_delete_removes_config_without_a_secret() -> None:
     c = _login()
     saved = c.put(

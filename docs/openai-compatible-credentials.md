@@ -11,11 +11,17 @@ responses never contain it.
 Environment configuration remains the deployment-wide default. A saved
 OpenAI-compatible credential is a user-scoped provider binding and does not
 rewrite `LITELLM_API_BASE`, `LITELLM_API_KEY`, or the environment's default
-model. Consumers that are explicitly bound to the user credential use its
-endpoint and key; otherwise the environment gateway keeps precedence. If a UI
-credential and environment gateway both exist, they are separate named
-providers rather than an implicit merge. Operators should select one binding,
-not expect API keys or model catalogs to be combined.
+model. Connectivity tests and model discovery return the credential as a
+canonical `model.chat` `Binding` (the same type the environment-configured
+gateway path authorizes through), but no shipped consumer resolves a saved UI
+credential into model invocation yet: Hive chat/voice still build their model
+port from the environment, and wiring saved credentials into that path lands
+with the canonical egress cutover tracked in #56/#1084 — this issue deliberately
+does not add a second invocation authority for it (#448, Wave 0). Until such a
+consumer exists, the environment gateway keeps precedence. If a UI credential
+and environment gateway both exist, they are separate named providers rather
+than an implicit merge: operators should select one binding, not expect API
+keys or model catalogs to be combined.
 
 Saving a base URL is an explicit endpoint decision. The exact origin is added
 to the canonical outbound policy so a private enterprise gateway can be used;

@@ -23,6 +23,17 @@ type CredentialRow = {
   config_values?: Record<string, string>;
 };
 
+/**
+ * Non-secret configuration saved before the first key. `configured` names the
+ * vault secret only, but the backend deletes a generic-gateway draft's config
+ * too (`DELETE` removes secret and metadata), so a config-only draft must stay
+ * deletable — otherwise a saved-but-keyless endpoint can only be removed by
+ * hand.
+ */
+function hasDraftConfig(row: CredentialRow): boolean {
+  return row.id === "openai_compatible" && Object.keys(row.config_values ?? {}).length > 0;
+}
+
 export default function Credentials() {
   const [rows, setRows] = useState<CredentialRow[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -256,7 +267,7 @@ export default function Credentials() {
                     {row.enabled ? "disable" : "enable"}
                   </button>
                 )}
-                {row.configured && (
+                {(row.configured || hasDraftConfig(row)) && (
                   <button
                     type="button"
                     className="btn"
