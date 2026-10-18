@@ -180,6 +180,8 @@ FIRST_PARTY_OWNERS: dict[str, set[str]] = {
     "maistro_canvas": {"maistro-canvas"},
     "maistro_design": {"maistro-design"},
     "maistro_evolve": {"maistro-evolve"},
+    "maistro_ext_harness": {"maistro-ext-harness"},
+    "maistro_ext_sdk": {"maistro-ext-sdk"},
     "maistro_registry": {"maistro-registry"},
     "maistro_rsi": {"maistro-rsi"},
     "maistro_server": {"maistro-server"},
@@ -240,6 +242,22 @@ REVIEWED_NAMESPACES: dict[str, Reviewed] = {
             "via scripts/prune-dependency-namespaces.py (Dockerfile, "
             "packages/hive-conductor/Dockerfile, Dockerfile.rsi-runner) and then run this gate "
             "with --production, which fails if the namespace is importable"
+        ),
+    ),
+    "doc": Reviewed(
+        distribution="crosshair-tool",
+        environments=(
+            "dev and CI sync environments only ([dependency-groups].dev at the workspace root, "
+            "and the RSI runner image, whose `uv sync --frozen` deliberately installs the dev "
+            "group to get the fitness toolchain; #890 research dependency)"
+        ),
+        mitigation=(
+            "crosshair-tool 0.0.111 records exactly one doc/ row (doc/source/conf.py, a Sphinx "
+            "config no production or test code imports or references); shipped images prune it "
+            "at build time via scripts/prune-dependency-namespaces.py (PRUNED_IN_PRODUCTION "
+            "below) and then run this gate with --production, which fails if doc is importable; "
+            "the engine, hive-conductor, and engine-research images pip-install from requirements "
+            "exports and never install the dev group, so they never see it"
         ),
     ),
 }
@@ -307,6 +325,7 @@ MULTI_OWNER_REVIEWED: dict[str, MultiOwnerReview] = {
 #: this exact mapping, so the prune and the strict check cannot disagree.
 PRUNED_IN_PRODUCTION: dict[str, str] = {
     "examples": "pytoniq-core-fork",
+    "doc": "crosshair-tool",
 }
 
 

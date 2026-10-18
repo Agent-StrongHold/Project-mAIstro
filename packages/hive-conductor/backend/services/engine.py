@@ -136,6 +136,10 @@ class EngineService:
             "agent_port": type(self._agent_port).__name__ if self._agent_port is not None else None,
             "task_backend": type(self._backend).__name__ if self._backend is not None else None,
             "bridge_configured": self._configured,
+            # Stub/read-only surfaces may remain usable without execution authority.
+            "graph_execution_available": (
+                self.run_store is not None and self.graph_run_store is not None
+            ),
         }
 
     def _record_degradation(self, component: str, exc: BaseException) -> None:
@@ -179,6 +183,17 @@ class EngineService:
         """
         container = getattr(self._agent_port, "container", None)
         return getattr(container, "task_admitter", None)
+
+    @property
+    def task_idempotency(self) -> Any:
+        """The claim store paired with the canonical Run spine, or None.
+
+        Demo mode uses the same admission claim tier as maistro-server. Without
+        this bridge there is no durable Run to reconcile, so there is no claim
+        store to pass to the local queue.
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "task_idempotency", None)
 
     @property
     def run_store(self) -> Any:
@@ -229,9 +244,9 @@ class EngineService:
         """The core Container's schedule admission seam, or None.
 
         None for the same reason as `schedule_store`: without the bridge there
-        is no canonical spine in this process, and the scheduler then keeps the
-        behavior it had — evaluate locally and run the registered DAG — rather
-        than failing every tick. With the bridge, this is what makes a firing
+        is no canonical spine in this process, so registered Graph execution
+        refuses rather than creating process-local work (#1113). With the
+        bridge, this is what makes a firing
         and its Run one act instead of two (#231).
         """
         container = getattr(getattr(self, "_agent_port", None), "container", None)
@@ -265,10 +280,13 @@ class EngineService:
         owns, or to a closed connection. `start()` decides the store for the
         engine it is starting; it does not inherit one.
         """
+        from maistro.memory.exposure import MemoryExposureMode
         from maistro.memory.outcomes import InMemoryOutcomeStore
         from services import feedback_service
 
-        store = self.outcome_store or InMemoryOutcomeStore()
+        store = self.outcome_store or InMemoryOutcomeStore(
+            exposure_mode=MemoryExposureMode.AGENT_MANAGED
+        )
         feedback_service.set_outcome_store(store)
         logger.info("feedback_outcome_store_bound store=%s", type(store).__name__)
 
@@ -463,6 +481,7 @@ class EngineService:
                 executor=governed_executor,
                 admitter=self.task_admitter,
                 run_store=self.run_store,
+                idempotency_store=self.task_idempotency,
             )
             try:
                 await backend.start()

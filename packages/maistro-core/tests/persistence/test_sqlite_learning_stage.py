@@ -15,6 +15,7 @@ from typing import Any
 import aiosqlite
 import pytest
 
+from maistro.memory.exposure import Actor, MemoryExposureMode, MemoryWriteDenied
 from maistro.memory.learnings.lifecycle import InvalidStageTransition
 from maistro.persistence.sqlite_learnings import SqliteLearningStore
 from maistro.types.memory import Learning, LearningStage
@@ -36,7 +37,7 @@ def make_learning(**overrides: object) -> Learning:
 
 async def _open(path: str) -> tuple[SqliteLearningStore, aiosqlite.Connection]:
     conn = await aiosqlite.connect(path)
-    store = SqliteLearningStore(conn)
+    store = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await store.ensure_schema()
     return store, conn
 
@@ -161,6 +162,53 @@ async def test_a_pre_ladder_database_is_upgraded_without_fabricated_provenance()
             assert advanced.stage is LearningStage.LEARNING
         finally:
             await conn2.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-2")
+async def test_a_denied_stage_move_writes_neither_row_nor_ledger() -> None:
+    """ADR-057 on the durable twin: the gate precedes every write (#390).
+
+    An agent-authority move under ``SYSTEM_MANAGED`` is denied before the
+    scoped read, the guarded UPDATE, or the ledger INSERT — the durable row
+    and its audit trail are exactly as they were.
+    """
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        store = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.SYSTEM_MANAGED)
+        await store.ensure_schema()
+        lid = await store.store(make_learning(), actor=Actor.SYSTEM)
+        with pytest.raises(MemoryWriteDenied):
+            await store.advance_stage(
+                lid, to_stage=LearningStage.LEARNING, actor="planner", org_id=ORG
+            )
+        rows = await store.list_all(org_id=ORG)
+        assert rows[0].stage is LearningStage.MEMORY
+        assert await store.stage_history(lid, org_id=ORG) == []
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.ac("SPEC-100426-b103/AC-2")
+async def test_a_system_authority_stage_move_is_allowed_under_system_managed() -> None:
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        store = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.SYSTEM_MANAGED)
+        await store.ensure_schema()
+        lid = await store.store(make_learning(), actor=Actor.SYSTEM)
+        learning = await store.advance_stage(
+            lid,
+            to_stage=LearningStage.LEARNING,
+            actor="curator",
+            org_id=ORG,
+            authority=Actor.SYSTEM,
+        )
+        assert learning.stage is LearningStage.LEARNING
+        history = await store.stage_history(lid, org_id=ORG)
+        assert history[0].actor == "curator"
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio

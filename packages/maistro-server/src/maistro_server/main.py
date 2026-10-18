@@ -33,6 +33,11 @@ from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.tasks.execution import TaskAttemptExecutor
+from maistro.tasks.http_contract import (
+    IDEMPOTENCY_KEY_HEADER,
+    WORKSPACE_ID_HEADER,
+    WORKSPACE_SCOPE_SIGNATURE_HEADER,
+)
 from maistro.tasks.models import TaskCreate
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, get_task_queue, reset_task_queue
@@ -41,12 +46,15 @@ from maistro.types.config import AgentConfig, ModelBindingConfig, SecurityConfig
 from maistro_server.api import (
     a2a,
     canvas,
+    catalog,
     chat_completions,
+    extensions,
     health,
     metrics,
     models,
     runs,
     tasks,
+    user_model,
     webhooks,
     workspaces,
     ws,
@@ -66,6 +74,38 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 _runner: TaskRunner | None = None
+
+
+async def _configure_user_model(spine_pool: Any) -> None:
+    """Bind the durable user-model service (#1047), or take the routes offline.
+
+    PostgreSQL-only by design (ADR-092526-4391): an in-process fallback would
+    silently forget that a fact must survive restart, so without a database
+    the routes stay offline (503) rather than serving a lookalike store.
+    """
+    from maistro_server.api import user_model
+
+    if spine_pool is None or memory_store.get_async_session_factory() is None:
+        user_model.configure_user_model_service(None)
+        await structlog.get_logger().awarning(
+            "user_model_offline",
+            detail=(
+                "no PostgreSQL database is configured, so /v1/user-model routes "
+                "answer 503 instead of serving facts that could not survive restart"
+            ),
+        )
+        return
+    from maistro.memory.user_model.pg_store import PostgresUserModelStore
+    from maistro.memory.user_model.service import UserModelService
+    from maistro.persistence.pg_audit import PgAuditLog
+
+    user_model.configure_user_model_service(
+        UserModelService(
+            store=PostgresUserModelStore(memory_store.get_async_session_factory()),
+            audit_log=PgAuditLog(spine_pool),
+        )
+    )
+
 
 # Single source of truth for version — read from installed package metadata
 try:
@@ -441,6 +481,7 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         workspace_id=settings.workspace_id,
     )
     workspaces.configure_workspace_store(container.workspace_store)
+    await _configure_user_model(spine_pool)
     # The OpenAI-compatible door now routes through the same Container (#142),
     # which owns the Gate scan, the Run admission and the terminalization that
     # #150 had to build here for want of one.
@@ -579,7 +620,21 @@ app.add_middleware(
     allow_origins=_settings.cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Request-ID",
+        # The task submission contract (#1176): the standard Idempotency-Key
+        # header is how a browser client carries a retry's identity, and the
+        # workspace-scope headers are how the trusted Hive boundary carries the
+        # Workspace binding across to maestro-server. Without these in the CORS
+        # allow-list, a preflight that carries any of them is rejected with
+        # "400 Disallowed CORS headers" and the cross-origin client cannot
+        # submit a task with an idempotency key at all.
+        IDEMPOTENCY_KEY_HEADER,
+        WORKSPACE_ID_HEADER,
+        WORKSPACE_SCOPE_SIGNATURE_HEADER,
+    ],
     # Response headers a browser client may actually read. Without this the
     # header is sent and then hidden: `response.headers` in browser JS only
     # exposes the CORS-safelisted set, so `X-Maistro-Run-Id` would have been
@@ -680,10 +735,15 @@ API_V1_PREFIX = "/v1"
 app.include_router(tasks.router, prefix=API_V1_PREFIX)
 app.include_router(runs.router, prefix=API_V1_PREFIX)
 app.include_router(workspaces.router, prefix=API_V1_PREFIX)
+# Governed extension install lifecycle (#953): inspect → authorize → install.
+# Every route is authenticated; Workspace-scoped writes require ADMINISTER.
+app.include_router(extensions.router, prefix=API_V1_PREFIX)
+app.include_router(catalog.router, prefix=API_V1_PREFIX)
 app.include_router(chat_completions.router, prefix=API_V1_PREFIX)
 app.include_router(models.router, prefix=API_V1_PREFIX)
 app.include_router(webhooks.router, prefix=API_V1_PREFIX)
 app.include_router(ws.router, prefix=API_V1_PREFIX)
+app.include_router(user_model.router, prefix=API_V1_PREFIX)
 
 # API v2 — canvas ability boundary (ADR-045 / SPEC-070226-8239 Phase 1).
 # The router carries its own /v2/canvas prefix (ADR-042 mount). Deployments
@@ -699,5 +759,6 @@ app.include_router(chat_completions.router)
 app.include_router(models.router)
 app.include_router(webhooks.router)
 app.include_router(ws.router)
+app.include_router(user_model.router)
 
 # Legacy Knights dashboard removed — Hive Conductor (port 8101) is the product UI.
