@@ -449,6 +449,37 @@ def _emit_evidence(evidence: ScenarioEvidence) -> None:
     print(f"M1_PARITY_EVIDENCE {json.dumps(evidence.as_dict(), sort_keys=True)}")
 
 
+def _blocked_evidence(
+    scenario: ParityScenario,
+    assessment: DependencyAssessment,
+    selected_mode: ParityMode,
+) -> ScenarioEvidence:
+    """Record a required scenario that never reached its producer boundary."""
+    status = "FAILED" if selected_mode is ParityMode.M1_CLOSEOUT else "BLOCKED"
+    return ScenarioEvidence(
+        name=scenario.name,
+        status=status,
+        executed=False,
+        blockers=assessment.blockers,
+    )
+
+
+def _failure_status(exc: BaseException, selected_mode: ParityMode) -> str:
+    """Classify an execution failure; raise through what must not be recorded.
+
+    Development mode only turns intentional abstentions into BLOCKED evidence;
+    execution and validation failures must stay visible so a real parity
+    regression cannot hide behind a green check.
+    """
+    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+        raise exc
+    if selected_mode is ParityMode.M1_CLOSEOUT:
+        return "FAILED"
+    if not isinstance(exc, ScenarioAbstained):
+        raise exc
+    return "BLOCKED"
+
+
 async def execute_scenario(
     scenario: ParityScenario,
     *,
@@ -464,13 +495,7 @@ async def execute_scenario(
     selected_mode = mode or parity_mode()
     assessment = _assess_dependencies(*scenario.dependencies)
     if assessment.blockers:
-        status = "FAILED" if selected_mode is ParityMode.M1_CLOSEOUT else "BLOCKED"
-        evidence = ScenarioEvidence(
-            name=scenario.name,
-            status=status,
-            executed=False,
-            blockers=assessment.blockers,
-        )
+        evidence = _blocked_evidence(scenario, assessment, selected_mode)
         _emit_evidence(evidence)
         if selected_mode is ParityMode.M1_CLOSEOUT and raise_on_failure:
             raise DependencyUnavailable(" | ".join(assessment.blockers))
@@ -489,17 +514,7 @@ async def execute_scenario(
                 raise ScenarioAbstained(f"{scenario.name} returned no product observation")
             scenario.validate_observation(result.observation)
     except BaseException as exc:
-        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-            raise
-        if selected_mode is ParityMode.M1_CLOSEOUT:
-            status = "FAILED"
-        elif not isinstance(exc, ScenarioAbstained):
-            # Development mode only turns intentional abstentions into BLOCKED
-            # evidence; execution and validation failures must stay visible so
-            # a real parity regression cannot hide behind a green check.
-            raise
-        else:
-            status = "BLOCKED"
+        status = _failure_status(exc, selected_mode)
         evidence = ScenarioEvidence(
             name=scenario.name,
             status=status,

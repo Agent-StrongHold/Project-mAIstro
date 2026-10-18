@@ -42,9 +42,9 @@ from tests.cross_product_parity.harness import (
     assert_ontology_identity_projection,
     dependency_assessment,
     execute_closeout,
-    parity_mode,
     execute_scenario_sync,
     open_durable_profile,
+    parity_mode,
     require_dependencies,
 )
 
@@ -78,9 +78,7 @@ def _golden_scenario() -> ScenarioExecution:
 def _required_golden_scenarios() -> tuple[tuple[str, str], ...]:
     """Every (product, scenario_id) the locked #463 manifest requires."""
     require_dependencies(GOLDEN_BASELINES)
-    manifest_path = (
-        Path(__file__).resolve().parents[1] / "golden_baselines" / "manifest.json"
-    )
+    manifest_path = Path(__file__).resolve().parents[1] / "golden_baselines" / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     fixtures = {item["product"]: item for item in manifest["fixtures"]}
     required: list[tuple[str, str]] = []
