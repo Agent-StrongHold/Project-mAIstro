@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from maistro.graph.definitions import Graph, Node
 from maistro.graph.durable_runs import InMemoryDurableRunStore, RunStatus, run_durable_graph
 from maistro.graph.nodes import BaseNode, NodeContext
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 class _EmptyIn(BaseModel):
@@ -47,7 +48,12 @@ def _resolver(node_id: str, graph: Any) -> _NoopNode:
 
 def test_launch_without_parentage_stays_root() -> None:
     record = asyncio.run(
-        run_durable_graph(_graph("root"), store=InMemoryDurableRunStore(), node_resolver=_resolver)
+        run_durable_graph(
+            _graph("root"),
+            store=InMemoryDurableRunStore(),
+            node_resolver=_resolver,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
     )
     assert record.run.status is RunStatus.COMPLETED
     assert record.run.parent_run_id is None
@@ -57,7 +63,12 @@ def test_launch_without_parentage_stays_root() -> None:
 def test_child_run_carries_and_persists_parent_identity() -> None:
     async def scenario() -> None:
         store = InMemoryDurableRunStore()
-        parent = await run_durable_graph(_graph("parent"), store=store, node_resolver=_resolver)
+        parent = await run_durable_graph(
+            _graph("parent"),
+            store=store,
+            node_resolver=_resolver,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
         parent_node_run = parent.node_runs[0]
 
         child = await run_durable_graph(
@@ -66,6 +77,7 @@ def test_child_run_carries_and_persists_parent_identity() -> None:
             node_resolver=_resolver,
             parent_run_id=parent.run.run_id,
             parent_node_run_id=parent_node_run.node_run_id,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         assert child.run.parent_run_id == parent.run.run_id
         assert child.run.parent_node_run_id == parent_node_run.node_run_id
@@ -88,6 +100,7 @@ def test_run_refuses_to_be_its_own_parent() -> None:
                 node_resolver=_resolver,
                 run_id="run-fixed",
                 parent_run_id="run-fixed",
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
             )
         )
 
@@ -123,6 +136,7 @@ def test_a_child_runs_trace_is_its_own_and_links_back_through_the_parent() -> No
                         node_resolver=_child_resolver,
                         parent_run_id=ctx.run_id,
                         parent_node_run_id=ctx.node_run_id,
+                        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
                     )
                     emitted["child_run_id"] = child.run.run_id
                 stored = await events.append(EventEnvelope(type="node.ran", workspace_id="w1"))
@@ -143,7 +157,10 @@ def test_a_child_runs_trace_is_its_own_and_links_back_through_the_parent() -> No
             return _ParentNode()
 
         parent = await run_durable_graph(
-            _graph("parent"), store=store, node_resolver=_parent_resolver
+            _graph("parent"),
+            store=store,
+            node_resolver=_parent_resolver,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
         # The parent's event names the parent; the child's names the child.

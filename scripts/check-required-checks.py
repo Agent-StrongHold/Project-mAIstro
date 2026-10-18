@@ -65,6 +65,11 @@ END = "<!-- /checks:table -->"
 # gate in the same reviewed change that edits `.github/merge-queue.json`.
 _MAX_ENTRIES_PER_GROUP = 3
 _REVIEWED_GROUP_WAITS_MINUTES = (0, 2, 3, 5)
+# Batching is only safe because every grouped candidate is judged on its own
+# entry: ALLGREEN merges a group only when each member's checks passed.
+# HEADGREEN would land every member on the strength of the head entry alone,
+# so the strategy is part of the reviewed posture, not a free knob.
+_GROUPING_STRATEGY = "ALLGREEN"
 
 
 def _json_int(value: object) -> TypeGuard[int]:
@@ -269,6 +274,13 @@ def _develop_queue_policy_gaps(policy: dict) -> list[str]:
         gaps.append(
             "develop merge queue min_entries_to_merge_wait_minutes must be a reviewed "
             f"value in minutes ({reviewed}); got {wait_minutes!r}"
+        )
+
+    grouping = policy.get("grouping_strategy")
+    if grouping != _GROUPING_STRATEGY:
+        gaps.append(
+            f"develop merge queue must use grouping_strategy={_GROUPING_STRATEGY} "
+            f"(every grouped candidate must pass its own checks); got {grouping!r}"
         )
     return gaps
 

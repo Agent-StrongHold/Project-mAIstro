@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+import re
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, cast, runtime_checkable
 
 from maistro.graph.execution_state import GraphExecutionState
-from maistro.graph.nodes.base import PAUSE_RESUME_CONDITIONS, RESUME_ON_ELAPSED
 from maistro.runs.model import Run, RunStatus
 from maistro.runs.recovery_events import RecoveryEventSink
 from maistro.runs.store import RunStore, run_cursor_key
@@ -24,9 +24,8 @@ from maistro.runtime import ExecutionRuntime
 from . import executor as traversal
 from .attempt_executor import LiveAttemptOwned, NodeResolver, resume_durable_graph
 from .fair_scan import DEFAULT_MAX_INSPECTED, ScanContinuation, ScanPage, fair_page_scan
-from .hitl import expire_remote_delegations
 from .launch import launch_state_from_run
-from .protocol import DurableRunStore
+from .protocol import DurableRunStore, RecoveryInfrastructureError
 from .types import DurableRunRecord
 
 logger = logging.getLogger(__name__)
@@ -35,14 +34,146 @@ QueuedRunPredicate = Callable[[Run], bool]
 QueuedNodeResolverFactory = Callable[[Run], NodeResolver]
 
 
+class _CandidateStore:
+    """Turn unclassified store failures into an explicit tick-wide failure.
+
+    Optimistic races are already represented by ``KeyError``/``ValueError``
+    and remain candidate-local. Other store exceptions mean the recovery
+    boundary cannot know whether the next candidate can be read or claimed.
+    """
+
+    def __init__(self, store: DurableRunStore) -> None:
+        self._store = store
+
+    def __getattr__(self, name: str) -> Any:
+        operation = getattr(self._store, name)
+
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await operation(*args, **kwargs)
+            except (KeyError, ValueError, RecoveryInfrastructureError):
+                raise
+            except Exception as exc:
+                raise RecoveryInfrastructureError(
+                    f"durable recovery store operation {name!r} failed"
+                ) from exc
+
+        return call
+
+
+class _CandidateRunStore:
+    """M1 product-local projection: Run
+
+    Apply the same boundary to canonical Run/NodeRun/Attempt persistence.
+
+    The durable continuation store is only half of the recovery path. Once a
+    canonical Run is present, execution reads and writes the separate
+    ``RunStore`` too. A raw database/session exception there is infrastructure
+    wide; lifecycle races and integrity errors remain candidate-local through
+    their ``KeyError``/``ValueError`` base classes.
+    """
+
+    def __init__(self, store: RunStore) -> None:
+        self._store = store
+
+    def __getattr__(self, name: str) -> Any:
+        operation = getattr(self._store, name)
+
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await operation(*args, **kwargs)
+            except (KeyError, ValueError, RecoveryInfrastructureError):
+                raise
+            except Exception as exc:
+                raise RecoveryInfrastructureError(
+                    f"canonical recovery RunStore operation {name!r} failed"
+                ) from exc
+
+        return call
+
+
+class NodeResolverUnavailable(RuntimeError):
+    """A candidate's node resolver could not be built from its Run.
+
+    The message is deliberately stable: it names the Run and the failure type
+    only, so the executor's failure boundary can persist it on the failed Run
+    without copying provider or credential text from the underlying error.
+    The original exception stays attached as ``__cause__`` for in-process
+    diagnosis.
+    """
+
+
+# ``key=value`` / ``key: value`` / ``'key': 'value'`` / ``Authorization: Bearer x``
+_SAFE_DETAIL = re.compile(
+    r"""(?ix)
+    ["']?\b(?P<key>password|passwd|token|secret|api[_-]?key|authorization)\b["']?
+    \s*[=:]\s*["']?
+    (?:bearer\s+)?
+    [^\s,;"'}\])]+["']?
+    """
+)
+# Bare ``Bearer <token>`` fragments that carry no header name.
+_SAFE_BEARER = re.compile(r"(?i)\bbearer\s+[^\s,;\"'}\])]+")
+# Provider-style key literals that identify themselves by prefix.
+_SAFE_KEY_LITERAL = re.compile(
+    r"\b(?:sk|pk|rk)-[A-Za-z0-9_\-]{6,}"
+    r"|\bgh[pousr]_[A-Za-z0-9]{16,}"
+    r"|\bxox[abprs]-[A-Za-z0-9\-]{8,}"
+    r"|\bAKIA[0-9A-Z]{16}\b"
+)
+
+
+def _redacted(detail: str) -> str:
+    detail = _SAFE_DETAIL.sub(lambda match: f"{match.group('key')}=<redacted>", detail)
+    detail = _SAFE_BEARER.sub("Bearer <redacted>", detail)
+    return _SAFE_KEY_LITERAL.sub("<redacted-key>", detail)
+
+
+def _sanitized_cause(exc: BaseException) -> str:
+    """Return bounded log evidence without copying provider/credential text."""
+    detail = str(exc).splitlines()[0].strip() if str(exc) else ""
+    detail = _redacted(detail)[:240]
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+
+
+def _lazy_resolver(
+    run: Run,
+    resolver_for: Callable[[Run], NodeResolver],
+) -> NodeResolver:
+    """Resolve a candidate only inside the executor's failure boundary.
+
+    A factory failure surfaces as :class:`NodeResolverUnavailable`, whose
+    stable message is what the boundary persists on the failed Run; the raw
+    factory error is never written to durable state.
+    """
+    resolved: NodeResolver | None = None
+
+    def resolve(node_id: str, graph: Any) -> Any:
+        nonlocal resolved
+        if resolved is None:
+            try:
+                resolved = resolver_for(run)
+            except Exception as exc:
+                raise NodeResolverUnavailable(
+                    f"node resolver could not be built for Run {run.run_id!r}: {type(exc).__name__}"
+                ) from exc
+        return resolved(node_id, graph)
+
+    return resolve
+
+
 @runtime_checkable
 class PersistenceReconciler(Protocol):
-    async def reconcile_persistence(self, *, limit: int = 100) -> int: ...
+    async def reconcile_persistence(
+        self, *, limit: int = 100, now: datetime | None = None
+    ) -> int: ...
 
 
-async def _reconcile_if_supported(store: DurableRunStore, *, limit: int) -> None:
+async def _reconcile_if_supported(
+    store: DurableRunStore, *, limit: int, now: datetime | None = None
+) -> None:
     if isinstance(store, PersistenceReconciler):
-        await store.reconcile_persistence(limit=limit)
+        await store.reconcile_persistence(limit=limit, now=now)
 
 
 @runtime_checkable
@@ -101,25 +232,10 @@ _RESUME_ELIGIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.RUNNING})
 
 
 def _is_resume_due(record: DurableRunRecord, moment: datetime) -> bool:
-    """Report whether a persisted wait is safe for elapsed re-entry."""
+    """Report whether `record` is in a resumable status with an elapsed wait."""
     if record.run.status not in _RESUME_ELIGIBLE_STATUSES:
         return False
-    if record.resume_at is None or record.resume_at > moment:
-        return False
-    graph_state = getattr(record, "graph_state", None)
-    if graph_state is None:
-        # Compatibility for pre-taxonomy recovery projections; real durable
-        # records always carry graph_state and are classified below.
-        return True
-    pauses = graph_state.metadata.get("pauses", {})
-    if not isinstance(pauses, Mapping):
-        return False
-    return any(
-        PAUSE_RESUME_CONDITIONS.get(str((pause.get("metadata") or {}).get("paused_reason") or ""))
-        == RESUME_ON_ELAPSED
-        for pause in pauses.values()
-        if isinstance(pause, Mapping)
-    )
+    return record.resume_at is not None and record.resume_at <= moment
 
 
 async def _is_still_resume_due(
@@ -132,7 +248,7 @@ async def _is_still_resume_due(
     return current is not None and _is_resume_due(current, moment)
 
 
-async def resume_due_graph_runs(  # noqa: C901
+async def resume_due_graph_runs(
     *,
     store: DurableRunStore,
     run_store: RunStore,
@@ -182,7 +298,11 @@ async def resume_due_graph_runs(  # noqa: C901
     still attempted (#1143). A failure raised while *listing* candidates —
     the store/session itself, not one candidate's resume — is never caught
     here and aborts the tick, because that failure invalidates the whole scan
-    rather than one Run.
+    rather than one Run. The same holds for a ``RecoveryInfrastructureError``
+    raised by a candidate's own store operations: an unclassified database or
+    session failure during one resume may invalidate every later candidate's
+    read and claim, so it is classified and propagates instead of being
+    isolated.
 
     ``events`` carries the resume's crash dispositions onto the canonical
     Event stream when the caller provides a sink.
@@ -192,11 +312,10 @@ async def resume_due_graph_runs(  # noqa: C901
     _require_resolver_choice(node_resolver, node_resolver_factory)
     resolver_for = _per_run_resolver(node_resolver, node_resolver_factory)
 
-    await _reconcile_if_supported(store, limit=limit)
     moment = now if now is not None else datetime.now(UTC)
-    # Answer-gated remote waits own their deadline here, rather than being
-    # re-entered by the elapsed timer path and dispatching a second child.
-    expired = await expire_remote_delegations(store, now=moment, limit=limit, eligible=eligible)
+    # The same moment as the due scan below, so a claim the scan treats as
+    # elapsed is one reconciliation has already made visible to it.
+    await _reconcile_if_supported(store, limit=limit, now=moment)
 
     def _combined_eligible(candidate: DurableRunRecord) -> bool:
         if not _is_resume_due(candidate, moment):
@@ -212,56 +331,84 @@ async def resume_due_graph_runs(  # noqa: C901
     )
     resumed = 0
 
-    # Expiry already has the answer needed to continue the exact NodeRun, so
-    # finish that same tick instead of requiring a second queued-run sweep.
-    for candidate in expired:
-        if candidate.run.status is not RunStatus.QUEUED:
-            continue
-        try:
-            await resume_durable_graph(
-                candidate.run_id,
-                store=store,
-                node_resolver=resolver_for(candidate.run),
-                runtime=runtime,
-                run_store=run_store,
-                events=events,
-            )
-        except LiveAttemptOwned:
-            continue
-        except (KeyError, ValueError):
-            latest = await store.get(candidate.run_id)
-            if latest is not None and latest.run.status is RunStatus.QUEUED:
-                raise
-            continue
-        resumed += 1
-
     for candidate in candidates:
-        try:
-            await resume_durable_graph(
-                candidate.run_id,
-                store=store,
-                node_resolver=resolver_for(candidate.run),
-                runtime=runtime,
-                run_store=run_store,
-                events=events,
-            )
-        except LiveAttemptOwned:
-            continue
-        except asyncio.CancelledError:
-            raise
-        except (KeyError, ValueError) as exc:
-            # Only a record still due after the failure is a real error; a
-            # record another actor already moved on is settled, not resumed.
-            if not await _is_still_resume_due(store, candidate.run_id, moment):
-                continue
-            _record_candidate_failure(candidate.run_id, seam="resume_due_graph_runs", error=exc)
-            continue
-        except Exception as exc:
-            _record_candidate_failure(candidate.run_id, seam="resume_due_graph_runs", error=exc)
-            continue
-        resumed += 1
+        if await _resume_due_candidate(
+            candidate,
+            store=store,
+            run_store=run_store,
+            resolver_for=resolver_for,
+            runtime=runtime,
+            moment=moment,
+            events=events,
+        ):
+            resumed += 1
 
     return resumed
+
+
+async def _resume_due_candidate(
+    candidate: DurableRunRecord,
+    *,
+    store: DurableRunStore,
+    run_store: RunStore | None,
+    resolver_for: Callable[[Run], NodeResolver],
+    runtime: ExecutionRuntime | None,
+    moment: datetime,
+    events: RecoveryEventSink | None,
+) -> bool:
+    """Attempt one candidate and isolate only failures that belong to it."""
+    candidate_store = cast(DurableRunStore, _CandidateStore(store))
+    candidate_run_store = (
+        cast(RunStore, _CandidateRunStore(run_store)) if run_store is not None else None
+    )
+    try:
+        result = await resume_durable_graph(
+            candidate.run_id,
+            store=candidate_store,
+            node_resolver=_lazy_resolver(candidate.run, resolver_for),
+            runtime=runtime,
+            run_store=candidate_run_store,
+            events=events,
+            now=moment,
+        )
+    except RecoveryInfrastructureError:
+        # A store/session failure invalidates the scan; claiming success for
+        # later candidates would make recovery evidence untruthful.
+        raise
+    except LiveAttemptOwned:
+        return False
+    except asyncio.CancelledError:
+        raise
+    except (KeyError, ValueError) as exc:
+        # Only a record still due after the failure is a real error; a
+        # record another actor already moved on is settled, not resumed.
+        if not await _is_still_resume_due(candidate_store, candidate.run_id, moment):
+            return False
+        _record_candidate_failure(candidate.run_id, seam="resume_due_graph_runs", error=exc)
+        return False
+    except Exception as exc:
+        # Resolver/event failures that escape the executor are local to this
+        # Run. Keep the candidate eligible for a later tick, but do not let it
+        # starve the rest of this bounded batch.
+        _record_candidate_failure(candidate.run_id, seam="resume_due_graph_runs", error=exc)
+        return False
+
+    _log_terminalized_candidate(candidate.run_id, result)
+    return True
+
+
+def _log_terminalized_candidate(run_id: str, result: DurableRunRecord | None) -> None:
+    """Make one executor-terminalized candidate observable without a traceback.
+
+    The executor persisted the failure disposition itself; the tick only
+    surfaces it, in sanitized form, before moving on to the next candidate.
+    """
+    if result is not None and result.run.status is RunStatus.FAILED:
+        _record_candidate_failure(
+            run_id,
+            seam="resume_due_graph_runs",
+            error=ValueError(result.run.error or "failed"),
+        )
 
 
 def _due_cursor_key(record: DurableRunRecord) -> tuple[str, str]:
@@ -284,14 +431,15 @@ def _record_candidate_failure(run_id: str, *, seam: str, error: BaseException) -
     has it: not silently dropped, not falsely marked succeeded. It remains
     eligible and is retried on a later tick. This call is the observability
     half of that guarantee — the failure must be inspectable, not merely
-    survived.
+    survived, and never in the provider's own words: the cause is sanitized
+    so credential text cannot reach the log through a resolver or store
+    error message.
     """
     logger.error(
-        "recovery candidate failed and was isolated: seam=%s run_id=%s error=%s: %s",
+        "recovery candidate failed and was isolated: seam=%s run_id=%s error=%s",
         seam,
         run_id,
-        type(error).__name__,
-        error,
+        _sanitized_cause(error),
     )
 
 
@@ -418,6 +566,7 @@ async def recover_queued_graph_runs(
     eligible: QueuedRunPredicate,
     runtime: ExecutionRuntime | None = None,
     limit: int = 100,
+    admission_source: str | None = None,
     events: RecoveryEventSink | None = None,
     scan: ScanContinuation[tuple[str, str]] | None = None,
 ) -> int:
@@ -428,6 +577,10 @@ async def recover_queued_graph_runs(
     the public admission helper before physical execution can start, so this
     recovery path never substitutes empty inputs for work the caller actually
     admitted.
+
+    ``admission_source`` is an optional durable ownership prefilter. The
+    callback remains a defense-in-depth policy check, while cursor paging makes
+    arbitrary additional predicates fair even when no source prefilter exists.
 
     ``limit`` bounds *eligible* QUEUED Runs recovered by this call, not a
     fixed prefix of every QUEUED Run in the store (#1127, #1098). Candidates
@@ -455,9 +608,15 @@ async def recover_queued_graph_runs(
         return 0
 
     await _reconcile_if_supported(store, limit=limit)
+    # Filter the ownership fact in the durable status query when the consumer
+    # has one. Cursor paging still makes an arbitrary callback fair when a
+    # caller needs additional policy beyond admission_source.
     candidates = await fair_page_scan(
         fetch_page=lambda cursor, page_size: run_store.list_by_status(
-            RunStatus.QUEUED, limit=page_size, after=cursor
+            RunStatus.QUEUED,
+            limit=page_size,
+            admission_source=admission_source,
+            after=cursor,
         ),
         cursor_of=run_cursor_key,
         eligible=eligible,
