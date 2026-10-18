@@ -129,17 +129,17 @@ class TestPoolSelectsThePostgresStores:
         """#1133 on PostgreSQL: recovery dispositions publish through the exact
         backend-selected canonical EventStore, never a second authority.
 
-        `CanonicalEventStoreSink` is a delivery wrapper only, so its store must
-        be the very object injected into the governed effect context, and that
-        object must be the durable PostgreSQL store.
+        `CanonicalEventPublisher` is a delivery wrapper only, so its store
+        must be the very object injected into the governed effect context,
+        and that object must be the durable PostgreSQL store.
         """
+        from maistro.events.publisher import CanonicalEventPublisher
         from maistro.events.pg_envelope import PgEventStore
-        from maistro.runs.recovery_events import CanonicalEventStoreSink
 
         container = await wire(_config(), pg_pool=pg_pool)
 
         publisher = container.canonical_event_publisher
-        assert isinstance(publisher, CanonicalEventStoreSink)
+        assert isinstance(publisher, CanonicalEventPublisher)
         assert isinstance(publisher.store, PgEventStore)
         assert publisher.store is container.capability_effects.event_store
 

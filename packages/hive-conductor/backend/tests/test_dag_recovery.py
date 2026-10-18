@@ -6,10 +6,12 @@ from types import SimpleNamespace
 import pytest
 from services.dag_execution_scope import DagExecutionScope
 
+from maistro.events.bus import EventBus
+from maistro.events.publisher import CanonicalEventPublisher
 from maistro.events.envelope import InMemoryEventStore
 from maistro.graph.definitions import Graph
 from maistro.runs.model import GraphSnapshot, Run, RunStatus
-from maistro.runs.recovery_events import CanonicalEventStoreSink, CanonicalRecoveryEventSink
+from maistro.runs.recovery_events import CanonicalRecoveryEventSink
 
 
 def _legacy_dag() -> dict:
@@ -82,7 +84,7 @@ async def test_recovery_owns_only_hive_legacy_admissions(monkeypatch: pytest.Mon
 
     graph_store = object()
     run_store = object()
-    canonical_events = CanonicalEventStoreSink(InMemoryEventStore())
+    canonical_events = CanonicalEventPublisher(InMemoryEventStore(), legacy_bus=EventBus())
     container = SimpleNamespace(
         graph_run_store=graph_store,
         run_store=run_store,
@@ -292,7 +294,7 @@ async def test_wakeup_owns_only_hive_legacy_admissions(monkeypatch: pytest.Monke
     reports its crash dispositions on the Container's canonical EventStore."""
     import services.canonical_dag_runner as runner
 
-    canonical_events = CanonicalEventStoreSink(InMemoryEventStore())
+    canonical_events = CanonicalEventPublisher(InMemoryEventStore(), legacy_bus=EventBus())
     container = SimpleNamespace(
         graph_run_store=object(),
         run_store=object(),

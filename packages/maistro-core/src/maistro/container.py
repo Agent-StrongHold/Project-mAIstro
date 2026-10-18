@@ -98,7 +98,7 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
-from maistro.runs.recovery_events import CanonicalEventStoreSink
+from maistro.events.publisher import CanonicalEventPublisher
 from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.runs.store import RunIntegrityError, RunNotFound, RunStore
 from maistro.runs.wiring import (
@@ -453,8 +453,10 @@ class Container:
     # Durable events (ADR-086): bus bridge + log/trigger/invocation stores.
     event_bus: EventBus = None  # type: ignore[assignment]
     # Canonical Event authority shared by governed effects and recovery. The
-    # publisher wraps the exact EventStore selected by the effect context.
-    canonical_event_publisher: CanonicalEventStoreSink = None  # type: ignore[assignment]
+    # publisher wraps the exact EventStore selected by the effect context and
+    # projects each inserted Event onto `event_bus`, so the durable log bridge
+    # and legacy triggers/subscribers keep observing recovery facts.
+    canonical_event_publisher: CanonicalEventPublisher = None  # type: ignore[assignment]
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
     invocation_store: Any = None
@@ -2641,8 +2643,12 @@ async def create_container(
     # Governed effects hold the backend-selected canonical EventStore chosen
     # by `_wire_capability_effects` (#1133); the recovery publisher below is
     # only a delivery wrapper over that exact object (#16) — never a second
-    # sequencing authority.
-    canonical_event_publisher = CanonicalEventStoreSink(capability_effects.event_store)
+    # sequencing authority. It projects each inserted Event onto `event_bus`
+    # so the durable-log bridge and legacy trigger/notification fan-out keep
+    # firing on recovery facts, as the pre-canonical path delivered them.
+    canonical_event_publisher = CanonicalEventPublisher(
+        capability_effects.event_store, legacy_bus=event_bus
+    )
     # Operator-declared model.chat Bindings (#1079/#1522) load into the same
     # canonical Binding authority the provisioning seam above built, so model
     # egress and PM polling egress share one fail-closed door.
