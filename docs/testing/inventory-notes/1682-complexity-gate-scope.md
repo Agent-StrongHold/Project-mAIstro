@@ -96,3 +96,40 @@ the gate output `137 -> 139`, the grants consumed. The other acceptance
 surfaces (scan scope, xenon's three axes, interrogate floors, ledger/ceiling
 parity) are verified above and pinned by the five tests this note's delta
 records.
+
+## Independent verification record, round 2 (2026-10-18, head `ee73349f5ca3`)
+
+Re-executed at the lane's assigned head (delta vs `cff35e317db1` is the docs
+commit that carries the record above, so every code surface is identical).
+`origin/develop` re-confirmed at `ce2048cd2430` by `git ls-remote` (live), so
+the trusted base still carries **zero** `maistro-ext-sdk` grants and the
+two-merge state stands.
+
+| Check (CI-exact invocation) | Result |
+|---|---|
+| `uv sync --locked --extra dev` | ok |
+| `pytest tests/test_complexity_gate_scope.py` | 5 passed |
+| `pytest tests/test_ci_quality_split.py` | 96 passed |
+| `pytest test_ratchet_provenance{,_integration_base} + autonomous_merge_policy_inputs + m1_542 edges/policy` | 117 passed |
+| `ruff check .` | clean |
+| `check-radon-baseline.py` | **exit 1** — exactly the two SDK identities unauthorized on the base (`_validate_least_authority` C(14) at `manifest.py:395`, `VersionRange.satisfied_by` C(12) at `ranges.py:53`); candidate bookkeeping clean, i.e. the 139-entry candidate ledger matches the scan exactly |
+| xenon, exact workflow args (ten roots, `-i third_party`) | 139 block / 0 module / 0 average; identities equal the ledger's 139 one-for-one (path + function, bare-name normalized) rank for rank; the 31 line-number diffs are xenon/radon start-line reporting, not identity drift |
+| interrogate, all 13 floors | 13/13 exit 0 |
+| `check-suite-inventory.py` | ok, 17 suites |
+| `check-ratchet-provenance.py` | exit 0 |
+| `check-shipped-surface-truth.py` | exit 0 |
+| `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | exit 0, 1322 identities |
+| `check-backlog-consistency.py` | exit 0 |
+
+Hosted checks captured at this head (`checks API`, 2026-10-18T15:07Z): 59
+success, `integration-scope` **success**, 3 in-progress, 1 queued, 7 skipped,
+and exactly one failure — `Quality / Radon`, which is the two-merge state
+reproduced above, not a code defect on this branch. No commit message between
+`ce2048cd` and this head contains a closure keyword; the PR body says "Refs
+#1682" only.
+
+Conclusion unchanged and still evidence-backed: this branch needs **no code
+change**; the unblock is the grants-only PR to `develop` (the two verbatim
+authorization entries), merged before this branch. Until that lands, the
+failing `Quality / Radon` run is the two-merge rule doing what #534 and #1682
+specified, not a repair debt.
