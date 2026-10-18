@@ -64,6 +64,34 @@ Against the worktree's own build served by an isolated backend
 - `scripts/check-shipped-surface-truth.py` → complete; `scripts/check-suite-inventory.py`
   → ok; `ruff check`/`format --check` on the new test file → clean.
 
+## Re-validation round (independent reproduction)
+
+The whole battery was re-run from scratch on a fresh harness in the same
+worktree (pgvector/pg18 container on 127.0.0.1:18844, alembic-upgraded, backend
+`uvicorn main:app` on 127.0.0.1:18990 serving this tree's rebuilt
+`frontend/dist`, no route stubs unless a test installs its own):
+
+- Contract test `3 passed`; ruff check + format clean; `tsc --noEmit` clean;
+  `eslint DesignStudio.tsx --max-warnings 0` clean.
+- `scripts/check-frontend-api-routes.py` → ok (166 call sites / 215 routes);
+  `check-shipped-surface-truth.py` complete; `check-suite-inventory.py` ok
+  (14 suites).
+- `design-studio-loop-start.spec.ts` → `3 passed`; regression
+  `design-studio-truthfulness.spec.ts` + `design-studio-keyboard.spec.ts` →
+  `9 passed`.
+- Negative controls re-proven in a synthetic tree outside the repo with the
+  real scanner module: clean frontend copy passes; each of a `DesignRun` type
+  declaration, a `hive_design_loop` localStorage key, an object-literal
+  `[{ path: "/book" }]` route in App.tsx, and an `Atelier.tsx` page is caught.
+- Real-backend honest-disabled journey (ad-hoc spec, no request interception
+  at all): logged in against the live server, all four canonical surfaces
+  report `unavailable` with `HTTP 404 from /v1/goals`, `/v1/creative-briefs`,
+  `/v1/design/packs`, `/v1/runs` — verified server-side too (authenticated
+  curl → 404 on all four; OpenAPI lists none of them among its 203 paths), the
+  start control stays disabled past a 2.5 s wait, and zero mint POSTs fire.
+  This closes the gap where the shipped spec's missing-surface journey stubs
+  the 404s: the stub shape and the server's real answer are now both proven.
+
 Repair note (this round): the E2E recorder originally counted any request
 whose URL contained `/v1/design/projects` or `/v1/chat` as a "model call";
 the page's legitimate mount-time `GET /v1/design/projects` listing
