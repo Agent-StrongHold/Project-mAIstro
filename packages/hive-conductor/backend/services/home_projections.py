@@ -42,6 +42,11 @@ logger = logging.getLogger("hive.home")
 #: full surface owns the scroll.
 PROJECTION_LIMIT = 6
 
+#: Run summaries are fetched across the caller's authorized universe and then
+#: narrowed to the requested Workspace, so fetch a window wider than the cap:
+#: capping first would let a burst of foreign runs blank out this section.
+_RUN_WINDOW = 50
+
 #: A Goal untouched this long is a dormancy candidate.
 _DORMANT_AFTER = timedelta(days=14)
 
@@ -149,12 +154,14 @@ async def _backlog_items(user_id: str, workspace_id: str) -> list[dict]:
     ]
 
 
-async def _run_items(user_id: str) -> list[dict]:
+async def _run_items(user_id: str, workspace_id: str) -> list[dict]:
     from services import dag_run_inspection
 
-    summaries = await dag_run_inspection.list_visible_runs(user_id, limit=PROJECTION_LIMIT)
+    summaries = await dag_run_inspection.list_visible_runs(user_id, limit=_RUN_WINDOW)
     out: list[dict] = []
     for summary in summaries:
+        if str(summary.get("workspace_id") or "") != workspace_id:
+            continue
         run_id = str(summary.get("id") or "")
         if not run_id:
             continue
@@ -167,7 +174,7 @@ async def _run_items(user_id: str) -> list[dict]:
                 summary.get("started_at"),
             )
         )
-    return out
+    return out[:PROJECTION_LIMIT]
 
 
 def _chat_sessions(user_id: str) -> list[dict]:
@@ -251,7 +258,7 @@ async def list_projections(user_id: str, workspace_id: str) -> dict[str, Any]:
     sections = await asyncio.gather(
         _resolve("goals", asyncio.sleep(0, result=_goals(user_id))),
         _resolve("backlog", _backlog_items(user_id, workspace_id)),
-        _resolve("runs", _run_items(user_id)),
+        _resolve("runs", _run_items(user_id, workspace_id)),
         _resolve("chat", asyncio.sleep(0, result=_chat_sessions(user_id))),
         _resolve("design", asyncio.sleep(0, result=design_items))
         if design_reason is None
@@ -310,17 +317,19 @@ async def _collect_backlog_candidates(user_id: str, workspace_id: str) -> list[d
     return [c for c in (_backlog_candidate(item) for item in items) if c]
 
 
-async def _collect_run_candidates(user_id: str) -> list[dict[str, Any]]:
+async def _collect_run_candidates(user_id: str, workspace_id: str) -> list[dict[str, Any]]:
     """A failed run is a usefulness candidate: the user will want to know."""
     from services import dag_run_inspection
 
     try:
-        summaries = await dag_run_inspection.list_visible_runs(user_id, limit=20)
+        summaries = await dag_run_inspection.list_visible_runs(user_id, limit=_RUN_WINDOW)
     except Exception as exc:
         logger.warning("adaptive run candidates unavailable: %s", exc)
         return []
     candidates: list[dict[str, Any]] = []
     for summary in summaries:
+        if str(summary.get("workspace_id") or "") != workspace_id:
+            continue
         run_id = str(summary.get("id") or "")
         if run_id and str(summary.get("status") or "") == "failed":
             candidates.append(
@@ -372,7 +381,7 @@ async def adaptive_items(user_id: str, workspace_id: str) -> dict[str, Any]:
 
     backlog_candidates, run_candidates = await asyncio.gather(
         _collect_backlog_candidates(user_id, workspace_id),
-        _collect_run_candidates(user_id),
+        _collect_run_candidates(user_id, workspace_id),
     )
     now = datetime.now(UTC)
     goal_candidates = [
