@@ -31,7 +31,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "secret_env.py"
 
-TOKEN = "MAISTRO_ACCESS_TOKEN=s3cr3t-do-not-leak\n"
+TOKEN = "MAISTRO_ROUTER_API_KEY=s3cr3t-do-not-leak\n"
 
 
 @pytest.fixture(scope="module")
@@ -393,6 +393,42 @@ class TestMigrateApiKeys:
             secret_env.migrate_api_keys(env_path, "tok", "conductor")
 
 
+class TestRemoveKey:
+    """#402: the installer renames the conductor's credential by carrying its
+    value to the new name and deleting the old line. The deletion rewrites a
+    credential file, so it goes through the same 0600 discipline as every
+    other write here."""
+
+    def test_the_named_line_is_dropped_and_the_mode_stays_0600(
+        self, secret_env, env_path, permissive_umask
+    ) -> None:
+        secret_env.create_exclusive(env_path, TOKEN + "OTHER=1\n")
+        assert secret_env.remove_key(env_path, "MAISTRO_ROUTER_API_KEY") is True
+        assert env_path.read_text(encoding="utf-8") == "OTHER=1\n"
+        assert _mode(env_path) == 0o600
+
+    def test_a_longer_name_with_the_same_prefix_is_not_touched(self, secret_env, env_path) -> None:
+        """The match is on `key=` as a prefix, so `..._OLD=` survives."""
+        secret_env.create_exclusive(env_path, "MAISTRO_ROUTER_API_KEY_OLD=1\n")
+        assert secret_env.remove_key(env_path, "MAISTRO_ROUTER_API_KEY") is False
+        assert env_path.read_text(encoding="utf-8") == "MAISTRO_ROUTER_API_KEY_OLD=1\n"
+
+    def test_an_absent_key_is_a_no_op_that_reports_false(self, secret_env, env_path) -> None:
+        """The ordinary re-run must not rewrite (and re-fsync) a file it did
+        not change."""
+        before = "A=1\n"
+        secret_env.create_exclusive(env_path, before)
+        assert secret_env.remove_key(env_path, "B") is False
+        assert env_path.read_text(encoding="utf-8") == before
+
+    def test_the_command_line_dispatches_remove_key(self, secret_env, env_path) -> None:
+        """install.sh reaches this module only through the CLI, so the
+        dispatch table entry is production code on the rename's path."""
+        secret_env.create_exclusive(env_path, TOKEN)
+        assert secret_env.main(["remove-key", str(env_path), "MAISTRO_ROUTER_API_KEY"]) == 0
+        assert env_path.read_text(encoding="utf-8") == ""
+
+
 class TestTheInstallersUseIt:
     """A helper nothing calls fixes nothing — the same shape as the guards in
     #419, which needed tests at their call sites rather than on the module."""
@@ -462,6 +498,34 @@ class TestTheCommandLine:
         secret_env.create_exclusive(env_path, "A=keep\n")
         assert secret_env.main(["set-key", str(env_path), "A", "no", "--only-if-blank"]) == 0
         assert env_path.read_text(encoding="utf-8") == "A=keep\n"
+
+    def test_a_value_starting_with_a_dash_is_a_value_after_the_marker(
+        self, secret_env, env_path
+    ) -> None:
+        """random_secret emits urlsafe text, which starts with '-' one time in
+        64. Without the end-of-options marker install.sh now passes, argparse
+        read such a value as an option string and the repair failed with "the
+        following arguments are required: value" — about one repair run in
+        eight, intermittently, on machines whose generated secrets drew an
+        unlucky first character."""
+        secret_env.create_exclusive(env_path, "A=1\n")
+        assert secret_env.main(["set-key", "--", str(env_path), "A", "-abc123"]) == 0
+        assert env_path.read_text(encoding="utf-8") == "A=-abc123\n"
+
+    def test_a_dash_value_with_only_if_blank(self, secret_env, env_path) -> None:
+        """The spelling install.sh's fill_env_value uses: flag first, marker,
+        then positionals — so a dash-leading value survives and the flag still
+        parses."""
+        secret_env.create_exclusive(env_path, "A=keep\n")
+        assert secret_env.main(["set-key", "--only-if-blank", "--", str(env_path), "A", "-no"]) == 0
+        assert env_path.read_text(encoding="utf-8") == "A=keep\n"
+
+    def test_ensure_api_keys_accepts_a_dash_token_after_the_marker(
+        self, secret_env, env_path
+    ) -> None:
+        secret_env.create_exclusive(env_path, "API_KEYS=[]\n")
+        assert secret_env.main(["ensure-api-keys", "--", str(env_path), "-tok"]) == 0
+        assert 'API_KEYS=["-tok"]' in env_path.read_text(encoding="utf-8")
 
     def test_append_once(self, secret_env, env_path) -> None:
         secret_env.create_exclusive(env_path, "A=1\n")
@@ -581,9 +645,11 @@ class TestTheRealShellPath:
         "ensure_python",
         "secret_env_run",
         "env_has",
+        "env_get",
         "append_env_once",
         "fill_env_value",
         "set_env_value",
+        "remove_env_key",
         "ensure_api_keys_contains",
         "verify_env_file",
     )
@@ -617,7 +683,7 @@ source <(sed -n {extract!r} "$SCRIPT_DIR/install.sh")
         writes = (
             (
                 "secret_env_run create",
-                """printf 'MAISTRO_ACCESS_TOKEN=tok\\nAPI_KEYS=["tok"]\\n' |
+                """printf 'MAISTRO_ROUTER_API_KEY=tok\\nAPI_KEYS=["tok"]\\n' |
 secret_env_run create""",
             ),
             ("append_env_once", "append_env_once NEWKEY hello"),
@@ -667,6 +733,76 @@ cat .env
         result = self._run(tmp_path, "verify_env_file")
         assert "did not pass the credential-file safety check" in result.stderr
         assert "s3cr3t-do-not-leak" not in result.stdout + result.stderr
+
+
+class TestTheInstallerRenameMigration(TestTheRealShellPath):
+    """#402: `install.sh` used to write the conductor's engine credential as
+    `MAISTRO_ACCESS_TOKEN`, a name nothing in production read. The repair path
+    must carry the existing value to `MAISTRO_ROUTER_API_KEY` — so clients
+    already presenting the token keep authenticating instead of being rotated
+    out — delete the dead line, and leave `API_KEYS` intact. Like
+    `TestTheRealShellPath`, this sources the real function out of install.sh:
+    a rewiring mistake fails a PR check rather than a release."""
+
+    _FUNCTIONS = (
+        *TestTheRealShellPath._FUNCTIONS,
+        "random_secret",
+        "append_provider_placeholders",
+        "repair_existing_env",
+    )
+
+    LEGACY = 'MAISTRO_ACCESS_TOKEN=legacytok\nAPI_KEYS=["conductor:legacytok"]\n'
+
+    def _harness(self) -> str:
+        """The installer resolves ports before repairing; the harness supplies
+        the same defaults main() would have."""
+        return (
+            super()._harness()
+            + '\nBIND_HOST="127.0.0.1"\nPORT="8000"\nDEFAULT_CONDUCTOR_PORT="8101"\n'
+        )
+
+    def _repair(self, tmp_path: Path, initial: str) -> subprocess.CompletedProcess[str]:
+        env = tmp_path / ".env"
+        env.write_text(initial, encoding="utf-8")
+        env.chmod(0o600)
+        # main() runs ensure_python before anything generates a secret;
+        # random_secret consumes the interpreter it resolves.
+        return self._run(tmp_path, "ensure_python\nrepair_existing_env")
+
+    def test_the_value_is_carried_over_and_the_dead_line_is_gone(self, tmp_path: Path) -> None:
+        result = self._repair(tmp_path, self.LEGACY)
+        assert result.returncode == 0, result.stderr
+        content = (tmp_path / ".env").read_text(encoding="utf-8")
+        assert "MAISTRO_ROUTER_API_KEY=legacytok" in content, (
+            "the rename must not rotate the credential clients already hold"
+        )
+        assert "MAISTRO_ACCESS_TOKEN" not in content, (
+            "a dead credential-shaped alias must not survive the repair"
+        )
+        assert '"conductor:legacytok"' in content, "API_KEYS must be preserved"
+
+    def test_an_install_without_either_name_generates_and_registers_a_fresh_key(
+        self, tmp_path: Path
+    ) -> None:
+        result = self._repair(tmp_path, 'API_KEYS=["ops:manual"]\n')
+        assert result.returncode == 0, result.stderr
+        content = (tmp_path / ".env").read_text(encoding="utf-8")
+        line = next(
+            line for line in content.splitlines() if line.startswith("MAISTRO_ROUTER_API_KEY=")
+        )
+        fresh = line.split("=", 1)[1]
+        assert len(fresh) >= 32
+        assert f'"conductor:{fresh}"' in content, (
+            "the fresh key is useless unless the engine's API_KEYS accepts it"
+        )
+        assert '"ops:manual"' in content, "manual keys are the operator's; never drop them"
+
+    def test_an_existing_new_name_is_never_overwritten(self, tmp_path: Path) -> None:
+        initial = 'MAISTRO_ROUTER_API_KEY=alreadynew\nAPI_KEYS=["conductor:alreadynew"]\n'
+        result = self._repair(tmp_path, initial)
+        assert result.returncode == 0, result.stderr
+        content = (tmp_path / ".env").read_text(encoding="utf-8")
+        assert "MAISTRO_ROUTER_API_KEY=alreadynew" in content
 
 
 class TestReservingAPathForAnotherProgram:

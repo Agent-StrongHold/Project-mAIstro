@@ -76,8 +76,7 @@ async def wire():
         yield _build
     finally:
         for container in built:
-            if container.db_pool is not None:
-                await container.db_pool.close()
+            await container.aclose()
 
 
 @pytest.fixture
@@ -99,7 +98,7 @@ class TestPoolSelectsThePostgresStores:
 
         assert isinstance(container.durable_event_log, PgEventLog)
         assert isinstance(container.trigger_store, PgTriggerStore)
-        assert isinstance(container.invocation_store, PgInvocationStore)
+        assert isinstance(container.handler_invocation_store, PgInvocationStore)
 
     async def test_the_wired_stores_reach_the_server(self, pg_pool, wire):
         """Types alone would pass against a store holding a dead pool."""
@@ -123,8 +122,8 @@ class TestPoolSelectsThePostgresStores:
         )
         container = await wire(_config(), pg_pool=pg_pool)
 
-        await container.invocation_store.get_or_create("t1", 1)
-        assert len(await container.invocation_store.list_for_event(1)) == 1
+        await container.handler_invocation_store.get_or_create("t1", 1)
+        assert len(await container.handler_invocation_store.list_for_event(1)) == 1
 
 
 class TestTheOtherTwoBackendsAreUnchanged:
@@ -135,14 +134,14 @@ class TestTheOtherTwoBackendsAreUnchanged:
 
         assert isinstance(container.durable_event_log, InMemoryEventLog)
         assert isinstance(container.trigger_store, InMemoryTriggerStore)
-        assert isinstance(container.invocation_store, InMemoryInvocationStore)
+        assert isinstance(container.handler_invocation_store, InMemoryInvocationStore)
 
     async def test_a_sqlite_url_and_no_pool_stays_on_sqlite(self, wire):
         container = await wire(_config("sqlite://"))
 
         assert isinstance(container.durable_event_log, SqliteEventLog)
         assert isinstance(container.trigger_store, SqliteTriggerStore)
-        assert isinstance(container.invocation_store, SqliteInvocationStore)
+        assert isinstance(container.handler_invocation_store, SqliteInvocationStore)
 
     async def test_a_pool_wins_over_a_sqlite_connection(self, pg_pool, wire):
         """Both can be set at once — they cover different stores. Preferring
@@ -153,3 +152,33 @@ class TestTheOtherTwoBackendsAreUnchanged:
         container = await wire(_config("sqlite://"), pg_pool=pg_pool)
 
         assert isinstance(container.durable_event_log, PgEventLog)
+
+    async def test_wiring_a_bare_pool_also_creates_the_goal_schema(self, pg_pool, wire):
+        """The Container composes Goals on the pool too (#1572), and a Goal
+        store that refused a database without migration 063 used to kill the
+        whole Container before the event schema existed — every test in this
+        file went red on a bare service. The contract is the same one the
+        event stores ship: wiring creates the schema it needs, and Goals stay
+        on the durable PostgreSQL the pool selected — never in memory, never
+        on the SQLite tier."""
+        from maistro.goals import GoalRevisionDraft
+        from maistro.goals.pg_store import PgGoalStore
+
+        # Put the pool's database back to bare first: earlier tests in this
+        # file wired Containers, and wiring now creates the Goal tables.
+        await pg_pool.execute(
+            "DROP TABLE IF EXISTS "
+            "canonical_goal_transitions, canonical_goal_revisions, canonical_goals"
+        )
+
+        container = await wire(_config(), pg_pool=pg_pool)
+
+        assert isinstance(container.goal_store, PgGoalStore)
+        goal = await container.goal_store.create_goal(
+            workspace_id="ws-events",
+            project_id="prj-events",
+            agent_id="agent-1",
+            draft=GoalRevisionDraft(desired_state="durable", author="op"),
+        )
+        read = await container.goal_store.get_goal(goal.goal_id)
+        assert read is not None and read.current_revision == 1

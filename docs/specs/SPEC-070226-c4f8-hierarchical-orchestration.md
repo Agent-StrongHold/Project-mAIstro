@@ -3,18 +3,18 @@ id: SPEC-070226-c4f8
 title: "Hierarchical orchestration: agent/skill portability across harnesses"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-07-02
 substrate:
-  - maistro-engine#ADR-058
-  - maistro-engine#ADR-061526-f383
-  - maistro-engine#ADR-101
   - maistro-engine#SPEC-208
 implements:
   - maistro-engine#ADR-101
 related:
   - maistro-engine#ADR-062
   - maistro-engine#ADR-070
+  - maistro-engine#ADR-058
+  - maistro-engine#ADR-061526-f383
+  - maistro-engine#ADR-101
 supersedes: []
 blocks: []
 blocked-by: []
@@ -25,15 +25,22 @@ tests:
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
+history:
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-070226-c4f8: Hierarchical orchestration — agent/skill portability across harnesses
 
 ## Context
 
-ADR-101 specifies portability: an agent built for one harness (e.g., Claude Code Conductor) can be
+ADR-101 proposes portability: an agent built for one harness (e.g., Claude Code Conductor) can be
 exported and run on another harness (e.g., Pi, OpenClaw). Hierarchical orchestration means a parent
-harness can spawn sub-agents on foreign harnesses and collect results.
+harness can spawn sub-agents on foreign harnesses and collect results. ADR-101 remains Proposed
+and is retained as design context only; it is not shipped authority for this SPEC — the operative
+authority is this SPEC under its Accepted substrate (SPEC-208).
 
 SPEC-208 (foreign harness adapter) exports agents. This SPEC completes the hierarchical part:
 parent orchestrator discovers available foreign harnesses, selects one, spawns agents, and
