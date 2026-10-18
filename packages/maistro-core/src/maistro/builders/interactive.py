@@ -8,6 +8,7 @@ NodeRun -> Attempt execution rather than letting it own execution identity.
 from __future__ import annotations
 
 import asyncio
+import getpass
 import os
 import uuid
 from dataclasses import dataclass
@@ -29,6 +30,26 @@ from maistro.runs.wiring import wire_execution_spine
 _DEFAULT_WORKSPACE_ID = "default"
 _DEFAULT_DATABASE_PATH = Path.home() / ".maistro" / "builders.db"
 _TURN_NODE_NAME = "interactive-turn"
+_ACTOR_PRINCIPAL_ENV = "MAISTRO_BUILDERS_ACTOR_PRINCIPAL"
+
+
+def resolve_local_operator_principal(override: str | None = None) -> str:
+    """Actor identity for the local ``maistro builders`` operator.
+
+    Canonical Run admission (#364) requires an admitted actor principal on
+    every store backend, including SQLite. The interactive CLI has no HTTP
+    principal, so the operator is identified by a stable local identity:
+    explicit argument, then ``MAISTRO_BUILDERS_ACTOR_PRINCIPAL``, then the OS
+    user. This is audit identity only — it grants nothing by itself.
+    """
+    explicit = override or os.environ.get(_ACTOR_PRINCIPAL_ENV)
+    if explicit and explicit.strip():
+        return explicit.strip()
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = ""
+    return f"builders-local:{user}" if user else "builders-local"
 
 
 @dataclass(frozen=True)
@@ -102,11 +123,17 @@ class CanonicalInteractiveTurnExecutor:
         durable_store: Any,
         workspace_id: str,
         project_id: str,
+        actor_principal_id: str | None = None,
     ) -> None:
         self._run_store = run_store
         self._durable_store = durable_store
         self._workspace_id = workspace_id
         self._project_id = project_id
+        self._actor_principal_id = (
+            resolve_local_operator_principal(actor_principal_id)
+            if actor_principal_id is not None
+            else actor_principal_id
+        )
 
     async def execute(
         self,
@@ -155,6 +182,7 @@ class CanonicalInteractiveTurnExecutor:
             durable_store=self._durable_store,
             workspace_id=self._workspace_id,
             project_id=self._project_id,
+            actor_principal_id=self._actor_principal_id,
         ).execute(graph, domain_run)
         return InteractiveTurnResult(
             run_id=record.run_id,
@@ -173,6 +201,7 @@ class BuildersExecutionSpine:
     project_id: str
     run_store: RunStore
     durable_store: Any
+    actor_principal_id: str
     _close: Any
 
     @classmethod
@@ -181,6 +210,7 @@ class BuildersExecutionSpine:
         *,
         workspace_id: str = _DEFAULT_WORKSPACE_ID,
         database_url: str | None = None,
+        actor_principal_id: str | None = None,
     ) -> BuildersExecutionSpine:
         """Open the configured canonical backend for the Builders CLI scope.
 
@@ -236,6 +266,7 @@ class BuildersExecutionSpine:
             project_id=project.project_id,
             run_store=run_store,
             durable_store=CanonicalDurableRunStore(run_store, continuations),
+            actor_principal_id=resolve_local_operator_principal(actor_principal_id),
             _close=closer,
         )
 
@@ -248,6 +279,7 @@ class BuildersExecutionSpine:
             durable_store=self.durable_store,
             workspace_id=self.workspace_id,
             project_id=self.project_id,
+            actor_principal_id=self.actor_principal_id,
         )
 
 
@@ -255,4 +287,5 @@ __all__ = [
     "BuildersExecutionSpine",
     "CanonicalInteractiveTurnExecutor",
     "InteractiveTurnResult",
+    "resolve_local_operator_principal",
 ]

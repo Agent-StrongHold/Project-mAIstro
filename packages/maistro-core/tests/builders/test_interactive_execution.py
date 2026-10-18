@@ -10,6 +10,7 @@ import pytest
 from maistro.builders.interactive import (
     BuildersExecutionSpine,
     CanonicalInteractiveTurnExecutor,
+    resolve_local_operator_principal,
 )
 from maistro.graph.durable_runs import (
     CanonicalDurableRunStore,
@@ -18,8 +19,6 @@ from maistro.graph.durable_runs import (
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore
-
-pytestmark = pytest.mark.contract("behavioral")
 
 
 @dataclass
@@ -51,6 +50,7 @@ async def _executor() -> tuple[CanonicalInteractiveTurnExecutor, InMemoryRunStor
     )
 
 
+@pytest.mark.contract("behavioral")
 @pytest.mark.asyncio
 async def test_react_turn_is_admitted_as_one_canonical_run_and_physical_attempt() -> None:
     executor, runs = await _executor()
@@ -79,12 +79,14 @@ async def test_react_turn_is_admitted_as_one_canonical_run_and_physical_attempt(
     assert attempts[0].status is AttemptStatus.COMPLETED
 
 
+@pytest.mark.contract("behavioral")
 @pytest.mark.asyncio
 async def test_cli_spine_retains_run_identity_across_reopen(tmp_path: Any) -> None:
     database_url = f"sqlite:///{tmp_path / 'builders.db'}"
     spine = await BuildersExecutionSpine.open(
         workspace_id="builders-cli",
         database_url=database_url,
+        actor_principal_id="builders-local:test-operator",
     )
     try:
         runner = _Runner({"content": "persisted", "stop_reason": "end_turn"})
@@ -101,16 +103,21 @@ async def test_cli_spine_retains_run_identity_across_reopen(tmp_path: Any) -> No
     reopened = await BuildersExecutionSpine.open(
         workspace_id="builders-cli",
         database_url=database_url,
+        actor_principal_id="builders-local:test-operator",
     )
     try:
         stored = await reopened.run_store.get_run(result.run_id)
         assert stored is not None
         assert stored.status is RunStatus.COMPLETED
         assert stored.workspace_id == "builders-cli"
+        # The spine admits with a real local-operator actor principal (#364),
+        # not a test shim: the SQLite backend enforces admission itself.
+        assert stored.actor_principal_id == "builders-local:test-operator"
     finally:
         await reopened.close()
 
 
+@pytest.mark.contract("behavioral")
 @pytest.mark.asyncio
 async def test_react_failure_cannot_project_success_without_canonical_evidence() -> None:
     executor, runs = await _executor()
@@ -137,3 +144,24 @@ async def test_react_failure_cannot_project_success_without_canonical_evidence()
     assert attempts[0].status is AttemptStatus.COMPLETED
     assert attempts[0].result is not None
     assert attempts[0].result.status == "failed"
+
+
+def test_local_operator_principal_resolution_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MAISTRO_BUILDERS_ACTOR_PRINCIPAL", raising=False)
+
+    # Explicit argument wins and is normalized; the CLI never admits a Run
+    # without a non-empty operator identity (#364 store admission).
+    assert resolve_local_operator_principal("  explicit-op ") == "explicit-op"
+
+    monkeypatch.setenv("MAISTRO_BUILDERS_ACTOR_PRINCIPAL", "env-op")
+    assert resolve_local_operator_principal() == "env-op"
+    assert resolve_local_operator_principal("explicit-op") == "explicit-op"
+
+    # No argument and no env: fall back to a stable non-empty local identity
+    # derived from the OS user rather than an empty principal.
+    monkeypatch.delenv("MAISTRO_BUILDERS_ACTOR_PRINCIPAL", raising=False)
+    fallback = resolve_local_operator_principal()
+    assert fallback.startswith("builders-local:")
+    assert fallback.removeprefix("builders-local:").strip() != ""

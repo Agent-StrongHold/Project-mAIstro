@@ -5,7 +5,7 @@ Issue: #1068
 Parent: #49
 
 inventory-delta:
-  packages/maistro-core/tests: +4
+  packages/maistro-core/tests: +5
 ---
 
 ## Claim and collision boundary
@@ -29,6 +29,17 @@ execution identity.
 one interactive turn creates a scoped canonical Run, one Builders NodeRun and
 one completed Attempt. The failure test proves the ReAct `max_turns` failure
 settles the canonical Run and Attempt as failed rather than returning success.
+
+`test_cli_spine_retains_run_identity_across_reopen` runs against the real
+SQLite-backed spine from `wire_execution_spine` — no in-memory test shim —
+and proves the persisted Run carries the local-operator actor principal
+(`builders-local:<user>`, `MAISTRO_BUILDERS_ACTOR_PRINCIPAL`, or an explicit
+argument, per `resolve_local_operator_principal`). Develop's #364/#1841 store
+boundary rejects admission without a principal, so the shipped TUI path
+admits through a real operator identity rather than a test default.
+`test_local_operator_principal_resolution_precedence` pins the
+explicit-argument > env > OS-user precedence and that the fallback identity is
+never empty.
 
 Cancellation remains owned by `run_durable_graph`: its cancellation handler
 settles open physical work and the canonical Run before propagating the task

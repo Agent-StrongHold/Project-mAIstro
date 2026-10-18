@@ -93,3 +93,50 @@ inherited and needs a reviewed grant this lane cannot authorize.
 Residual: live configured-provider TUI turn execution and the #459 strict-mode
 real CLI/TUI producer path remain environment-gated (no provider credentials
 in this lane), unchanged from the prior round's findings.
+
+## Second develop sync (base `2f56be40ad`, merge `af84c28fb`)
+
+Merged `origin/develop` tip `2f56be40a` (20 commits over the prior base
+`ab8b3737f`). No conflicts: the only file both sides touched was
+`docs/architecture/CONVERGENCE-MATRIX.md`, auto-merged with the Builders rows
+intact. Develop's new range does not touch `maistro.builders`/`maistro.cli`
+builders surfaces.
+
+This round also lands the salvage from the rate-limit-interrupted job
+`51f586cb` (uncommitted diff against `fd88802ae`, backed up before work):
+`resolve_local_operator_principal` plus actor-principal plumbing through
+`BuildersExecutionSpine`/`CanonicalInteractiveTurnExecutor`. Evidence it was
+required, not cosmetic: at `fd88802ae`,
+`test_cli_spine_retains_run_identity_across_reopen` fails with
+`ValueError: actor_principal_id is required` (develop's #364/#1841 store
+boundary; `maistro/runs/sqlite_store.py` enforces it independently of the
+`maistro.runs.store` import the builders test conftest monkeypatches), so the
+shipped SQLite-backed TUI spine could not admit any turn. The in-memory
+executor tests passed only through the conftest's
+`DEFAULT_TEST_ACTOR_PRINCIPAL_ID` substitution. The spine now always admits
+with a resolved local-operator identity.
+
+### Gate reconciliations on the merged candidate
+
+- Vulture (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`):
+  the TUI now calls `BuilderSession.add_user`, so
+  `maistro_bootstrap/builders/session.py::unused method 'add_user'` is no
+  longer a finding and was pruned from `quality/vulture-baseline.json`
+  (1322 -> 1321 reviewed identities), as the gate's own output instructs for
+  fixed debt.
+- Suite inventory: this branch records `packages/maistro-core/tests: +5`
+  (3 interactive-execution tests, 1 CLI architecture test, 1 principal
+  precedence unit test). Pure develop tip `2f56be40a` itself carries
+  `tests/: +1` drift (expected 5260, collected 5261), reproduced in an
+  isolated worktree at that revision; identical on this branch, inherited,
+  and not repairable from this lane.
+
+### Validation on the merged candidate (second sync)
+
+`ruff check .` and `ruff format --check .` clean; `mypy packages/maistro-core/src`
+clean (790 files); builders+cli+runs 1689 passed / 290 skipped / 1 xfailed;
+`tests/cross_product_parity` 12 passed (development mode, ci.yml arguments);
+`check-execution-lifecycles.py`, `check-reachability-provenance.py`,
+`check-reachability-dispositions-provenance.py`,
+`check-contract-markers-provenance.py`, and the vulture gate all OK against
+base `2f56be40ad`.
