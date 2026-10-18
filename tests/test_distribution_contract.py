@@ -68,7 +68,7 @@ def test_image_pins_supported_python_and_installs_identity() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     python_tags = re.findall(r"^FROM python:(3\.\d+\.\d+)-slim-bookworm", dockerfile, re.MULTILINE)
 
-    assert python_tags == ["3.13.15", "3.13.15"]
+    assert python_tags == ["3.13.16", "3.13.16"]
     assert "maistro-core[identity,llm,sandbox,observability]" in dockerfile
     assert 'ENTRYPOINT ["python", "-m", "maistro_server.entrypoint"]' in dockerfile
 
@@ -81,3 +81,15 @@ def test_docker_build_job_boots_the_image_it_built() -> None:
     ready = workflow.index("/health/ready", live)
 
     assert build < boot < live < ready
+
+
+def test_hive_image_and_workflow_pin_the_same_python_patch() -> None:
+    dockerfile = (ROOT / "packages/hive-conductor/Dockerfile").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github/workflows/security.yml").read_text(encoding="utf-8")
+    tags = re.findall(r"^FROM python:(3\.\d+\.\d+)-slim-bookworm", dockerfile, re.MULTILINE)
+    assert tags == ["3.13.16", "3.13.16"]
+    expected = tuple(int(part) for part in tags[0].split("."))
+    for text in (dockerfile, workflow):
+        assertions = re.findall(r"sys\.version_info\[:3\] == \((\d+), (\d+), (\d+)\)", text)
+        assert assertions, "missing exact live Python smoke assertion"
+        assert all(tuple(map(int, version)) == expected for version in assertions)
