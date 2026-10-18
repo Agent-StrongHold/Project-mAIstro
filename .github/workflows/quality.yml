@@ -865,7 +865,13 @@ jobs:
           # is the point: the two tools measure the same blocks over the same
           # scope, so a divergence between this count and the ledger's length is
           # itself a signal that one of them stopped looking.
-          XENON_BASELINE: 145
+          #
+          # 145 -> 142: #1791 took the three consistency-evaluator blocks in
+          # maistro-design (consistency.py::_build_refinement,
+          # _check_sibling_contradictions, evaluate_project_snapshot) from C
+          # (17/16/15) to B (8/6/6), and the radon ledger dropped the same
+          # three rows -- the same move #1674 made for tau_bench.
+          XENON_BASELINE: 142
           # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in
           # silence; widening the scope surfaced one.
