@@ -1,15 +1,15 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +9
+  packages/maistro-core/tests: +14
 ---
 # L1856: failed Container construction keeps the live default effect context
 
 Issue #1856 (parent #55) at branch `auto-1856`; this note's delta covers the
-nine lifecycle tests the lane added on top of develop (eight for the effect
-context and resource cleanup at head `31d891a5`, plus the quota-tracker
-default test at head `26a4ec3c3`). Develop base now `420d503d4` after two
-conflict-free `origin/develop` sync merges (`33dd02f`, then the
-deps-bump-only merge `b2787cf89`).
+fourteen lifecycle tests the lane added on top of develop (eight for the effect
+context and resource cleanup at head `31d891a5`, the quota-tracker default
+test at head `26a4ec3c3`, and five repair-round tests for the failed-startup
+cleanup helpers described at the end). Develop base now `35a72ff54d` after
+the conflict-free `origin/develop` sync merge `b91f589fa`.
 
 Eight `packages/maistro-core/tests` node IDs arrive in
 `test_container_effect_context_lifecycle.py`, all pinning one boundary: a
@@ -66,3 +66,32 @@ Gates re-run with CI's exact arguments: ruff check/format clean, mypy
 inventory 17/17, radon ledger 137→137, xenon 137 blocks = baseline with
 module and average axes clean, vulture ledger 1322→1322, promotion surface
 ok, reachability ok.
+
+Coverage-gate repair round (2026-10-18, head `b91f589fa` + this change):
+the merge-queue evaluation failed the Coverage gate's diff-coverage step —
+`container.py` at 88.8% of 152 changed lines (need 90%), uncovering only
+the defensive branches of the failed-startup cleanup helpers (uncovered
+lines 3309–3317, 3332, 3335–3336, 3432–3443): the PostgreSQL release arm
+of `_release_failed_startup_resources`, the None-skip and failing-close
+arms of `_close_startup_sqlite_connections`, and `_wire_sqlite_backend`'s
+own mid-wiring cleanup handler. Those branches are reachable only when a
+startup fails between connects or a release/close itself fails, and the
+two PostgreSQL-gated end-to-end tests skip in every CI coverage job (the
+full core suite runs once, in the no-services producer), so no existing
+test could cover them. Five tests now drive the helpers directly with the
+registry-seeded fake-pool pattern `test_container_pool_ownership.py`
+established; `create_container` itself is untouched. Sensitivity is
+mutation-proven, not just green: dropping `forget_pool` reds
+`..._pg_release_survives_a_failing_close_and_forgets` (a stale registry
+alias survives); dropping the handler's `raise`, removing the None skip,
+or letting a close failure propagate each red the matching midwiring or
+closer test. Gate evidence at this head: the no-services core producer
+under `coverage run --branch --source=packages/maistro-core/src/maistro`
+collected 15396 passed, 1078 skipped, 3 xfailed, and
+`check-diff-coverage.py coverage.xml --base 35a72ff54d4f…` reports ok
+(every measured file ≥90% lines / ≥80% branch arcs; the CI combine adds
+only more producers for the same `--source`, so it cannot score lower).
+The issue's validation command re-run: 33 passed, 3 skipped without
+PostgreSQL; 36 passed, 0 skipped against a freshly migrated
+pgvector/pg18 database (`maistro_r1856b` on the same service), lifecycle
+file alone 19/19 with the pool-ownership cases executing.

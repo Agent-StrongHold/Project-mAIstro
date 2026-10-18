@@ -7,8 +7,10 @@ from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
+import aiosqlite
 import pytest
 
+import maistro.persistence as persistence_module
 from maistro import container as container_module
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.effect_context import (
@@ -334,6 +336,186 @@ async def test_failed_startup_leaves_a_supplied_pg_pool_open() -> None:
     assert await supplied.fetchval("SELECT 1") == 1
     # The test's own hold is the only one left, so this closes it for real.
     assert await release_pool(supplied) is True
+
+
+# ----------------------------------------------------------------------------
+# The failed-startup cleanup helpers, directly.
+#
+# The end-to-end cases above prove `create_container` hands the right objects
+# to `_release_failed_startup_resources` on the PostgreSQL path, but its own
+# branches only execute with a server, which no CI coverage job has. These
+# drive the helpers with the registry-seeded fake-pool pattern
+# test_container_pool_ownership.py established, so the defensive arcs — a pool
+# whose close fails mid-release, a connection that is None, a close that
+# raises — are executed in the no-services producer too.
+# ----------------------------------------------------------------------------
+
+
+class _CloseCountingPool:
+    """Pool stand-in that counts its closes; `close_raises` fails one."""
+
+    def __init__(self, *, close_raises: bool = False) -> None:
+        self.closes = 0
+        self._close_raises = close_raises
+
+    async def close(self) -> None:
+        self.closes += 1
+        if self._close_raises:
+            raise RuntimeError("the pool refused to close")
+
+
+class _CloseCountingConnection:
+    """Connection stand-in whose close() raises, like a broken aiosqlite."""
+
+    def __init__(self) -> None:
+        self.close_attempts = 0
+
+    async def close(self) -> None:
+        self.close_attempts += 1
+        raise RuntimeError("the connection refused to close")
+
+
+async def _release_for_failed_startup(**overrides: Any) -> None:
+    """Call `_release_failed_startup_resources` with nothing held by default."""
+    kwargs: dict[str, Any] = {
+        "holds_pg_pool": False,
+        "pg_pool": None,
+        "holds_db_pool": False,
+        "db_pool": None,
+        "session_conn": None,
+        "schedule_conn": None,
+        "history_conn": None,
+    }
+    kwargs.update(overrides)
+    await container_module._release_failed_startup_resources(**kwargs)
+
+
+@pytest.mark.usefixtures("_clean_pg_pool_registry")
+async def test_failed_startup_pg_release_closes_the_registered_pool_once() -> None:
+    """A pool the failed attempt registered is released through the registry.
+
+    The helper must not close the pool behind the registry's back: one
+    `release_pool` drops the last user, and the registry's own close is the
+    one that runs.
+    """
+    pool = _CloseCountingPool()
+    dsn = "registered://failed-startup"
+    persistence_module._pools[dsn] = pool
+    persistence_module._users[dsn] = 1
+
+    await _release_for_failed_startup(holds_pg_pool=True, pg_pool=pool)
+
+    assert pool.closes == 1
+    assert pool_count() == 0
+
+
+@pytest.mark.usefixtures("_clean_pg_pool_registry")
+async def test_failed_startup_pg_release_survives_a_failing_close_and_forgets() -> None:
+    """A pool that refuses to close is forgotten, and the failure is not fatal.
+
+    Same rule as `aclose`: a close that failed half way must not be handed to
+    the next `get_pool`, and one broken pool must not strand the SQLite
+    connections the same failed startup still has to close. The registry is
+    seeded with a second alias of the same pool because `release_pool` drops
+    the DSN it releases before it closes — the forgotten-alias half is the
+    observable difference `forget_pool` makes here.
+    """
+    pool = _CloseCountingPool(close_raises=True)
+    released_dsn = "registered://failed-startup-broken-close"
+    stale_alias = "registered://failed-startup-broken-close-alias"
+    persistence_module._pools[released_dsn] = pool
+    persistence_module._users[released_dsn] = 1
+    persistence_module._pools[stale_alias] = pool
+    persistence_module._users[stale_alias] = 1
+
+    await _release_for_failed_startup(holds_pg_pool=True, pg_pool=pool)
+
+    assert pool.closes == 1
+    # Forgotten rather than kept: a retry must open a fresh pool, not
+    # receive the one whose close already failed.
+    assert pool_count() == 0
+
+
+async def test_startup_sqlite_closer_skips_none_and_survives_a_failing_close(
+    tmp_path: Path,
+) -> None:
+    """None slots pass through and one refusing close does not strand the rest.
+
+    The helper receives all four slots `_wire_sqlite_backend` may have
+    opened; the ones a failure happened before are None, and a close that
+    raises must still leave the remaining connections closed.
+    """
+    exploding = _CloseCountingConnection()
+    real = await aiosqlite.connect(tmp_path / "closer.db")
+
+    await container_module._close_startup_sqlite_connections(None, exploding, real)
+
+    assert exploding.close_attempts == 1
+    with pytest.raises((ValueError, sqlite3.ProgrammingError)):
+        await real.execute("SELECT 1")
+
+
+async def test_sqlite_backend_midwiring_failure_closes_what_it_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure between connects closes the earlier connections, then raises.
+
+    `create_container` never sees a connection `_wire_sqlite_backend` opened
+    and lost, so the function itself must clean up: the two connections
+    opened before the third connect refused must be closed when the original
+    error propagates.
+    """
+    real_connect = aiosqlite.connect
+    opened: list[Any] = []
+
+    async def third_connect_refuses(*args: Any, **kwargs: Any) -> Any:
+        if len(opened) == 2:
+            raise OSError("the schedule connect refused")
+        connection = await real_connect(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(aiosqlite, "connect", third_connect_refuses)
+
+    with pytest.raises(OSError):
+        await container_module._wire_sqlite_backend(f"sqlite:///{tmp_path / 'midwiring.db'}")
+
+    # The two connects that succeeded (the stores' shared connection and the
+    # session store's own) were closed before the error escaped; the third
+    # connect never produced one.
+    assert len(opened) == 2
+    for connection in opened:
+        with pytest.raises((ValueError, sqlite3.ProgrammingError)):
+            await connection.execute("SELECT 1")
+
+
+async def test_sqlite_backend_midwiring_failure_survives_a_failing_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The original wiring failure propagates even when a close also fails.
+
+    A close that raises during the cleanup loop must not replace the error
+    that caused the cleanup: the caller configures against the wiring
+    failure, not against a symptom of the cleanup.
+    """
+    exploding = _CloseCountingConnection()
+    attempts = {"n": 0}
+
+    async def stub_then_refuse(*_args: Any, **_kwargs: Any) -> Any:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return exploding
+        raise ValueError("the session connect refused")
+
+    monkeypatch.setattr(aiosqlite, "connect", stub_then_refuse)
+
+    with pytest.raises(ValueError):
+        await container_module._wire_sqlite_backend(
+            f"sqlite:///{tmp_path / 'midwiring-broken-close.db'}"
+        )
+
+    assert attempts["n"] == 2
+    assert exploding.close_attempts == 1
 
 
 async def test_cache_clear_drops_a_published_sqlite_context_after_connection_close(
