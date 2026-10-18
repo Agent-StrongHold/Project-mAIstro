@@ -46,9 +46,20 @@ _FUNCTIONS = (
 def _harness(shim_dir: Path, plan_dir: Path, prelude: str = "") -> str:
     extract = ";".join(f"/^{name}()/,/^}}/p" for name in _FUNCTIONS)
     install = shlex.quote(str(INSTALL_SH))
+    # Hermetic PATH: the shim dir plus a toolbin holding just the coreutils
+    # the lifted functions use. A real docker/podman on the host must never
+    # leak into a test that models its absence — a dev machine or CI image
+    # with both CLIs installed would otherwise flip the "unavailable
+    # selection" tests — so no system PATH entry is reachable at all.
+    toolbin = shim_dir / ".toolbin"
+    toolbin.mkdir(exist_ok=True)
+    for tool in ("bash", "grep", "tr", "head", "sed", "mkdir", "date", "cat", "uname"):
+        link = toolbin / tool
+        if not link.exists():
+            link.symlink_to(f"/usr/bin/{tool}")
     return f"""
 set -uo pipefail
-PATH={shlex.quote(str(shim_dir))}:$PATH
+PATH={shlex.quote(str(shim_dir))}:{shlex.quote(str(toolbin))}
 PLAN_DIR={shlex.quote(str(plan_dir))}
 export MAISTRO_INSTALL_PLAN_DIR="$PLAN_DIR"
 ok() {{ echo "[ok] $*"; }}
@@ -512,3 +523,32 @@ def test_print_success_names_selected_runtime_without_resolved_front_end(
     assert result.returncode == 0, result.stderr
     assert "podman compose" in result.stdout, result.stdout
     assert "docker compose" not in result.stdout, result.stdout
+
+
+# --- stack healthchecks must survive podman's compose provider -------------
+
+
+def test_stack_healthchecks_are_podman_safe() -> None:
+    """podman's compose provider word-splits exec-form healthcheck args, so
+    `["CMD", "python", "-c", "import urllib..."]` reached the engine as
+    `python -c import ...` — a SyntaxError every probe, the engine stuck
+    "unhealthy", and `compose up` failing on the conductor dependency. Found
+    by running the rootless-Podman profile end to end from a clean account
+    (docs/install/runtime-selection-evidence-1820.md); pin the CMD-SHELL form
+    with the payload quoted so the file cannot regress to the exec form."""
+    import yaml
+
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    python_probes = 0
+    for name, service in compose["services"].items():
+        test = (service.get("healthcheck") or {}).get("test")
+        if not test:
+            continue
+        assert isinstance(test, list) and test[0] in ("CMD-SHELL", "CMD"), (
+            f"{name}: unexpected healthcheck form {test!r}"
+        )
+        if "python" in " ".join(test):
+            python_probes += 1
+            assert test[0] == "CMD-SHELL", f"{name}: {test!r} is word-split by podman"
+            assert 'python -c "' in test[1], f"{name}: payload must be quoted: {test!r}"
+    assert python_probes >= 2, "expected the engine and conductor health probes"

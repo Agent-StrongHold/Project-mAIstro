@@ -83,7 +83,15 @@ services:
     stop_grace_period: 30s
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')"]
+      # CMD-SHELL with explicit quoting, not exec-form: podman's compose
+      # provider joins exec-form healthcheck args with spaces and re-splits
+      # them, so ["CMD", "python", "-c", "import urllib..."] reached podman as
+      # `python -c import urllib...` — a SyntaxError every probe, the engine
+      # permanently "unhealthy", and the conductor dependency never starting
+      # (#1820: the rootless-Podman profile must actually complete). Docker
+      # runs CMD-SHELL through sh unchanged, so both runtimes probe the same
+      # endpoint the same way.
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')\""]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -266,7 +274,8 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8101/health/ready')"]
+      # Same podman-safe quoting as the engine healthcheck above (#1820).
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8101/health/ready')\""]
       interval: 15s
       timeout: 5s
       retries: 3

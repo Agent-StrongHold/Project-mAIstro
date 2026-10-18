@@ -2,7 +2,7 @@
 inventory-delta:
   packages/maistro-bootstrap/tests: +9
   packages/maistro-core/tests: +6
-  tests/: +20
+  tests/: +21
 ---
 # 1820-container-runtime-selection
 
@@ -30,7 +30,14 @@ no compose front-end was resolved — a `--no-start` run leaves COMPOSE_CMD
 empty, and the old `:-docker compose` fallback wrote Docker commands into a
 Podman install's RECOVERY.md and print_success output (proven to fail against
 the pre-fix install.sh: the two headline tests fail, the resolved-front-end
-and docker/auto-order ones pass on both, as they should).
+and docker/auto-order ones pass on both, as they should). A fifth test
+pins the stack healthchecks to the CMD-SHELL form after the rootless-
+Podman transcript showed podman's compose provider word-splitting
+exec-form args (`["CMD", "python", "-c", "import ..."]` reached the
+engine as `python -c import ...` — SyntaxError every probe, engine stuck
+unhealthy, conductor dependency never starting). The harness also became
+hermetic (shim dir + coreutils toolbin, no system PATH) so a host with
+real docker/podman binaries cannot flip the unavailable-selection tests.
 
 Two adjacent suites were updated rather than added to: `test_install_compose_floor.py`'s
 harness now also lifts `selected_container_runtime`/`runtime_compose_cmd`
