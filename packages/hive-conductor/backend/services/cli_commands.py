@@ -74,10 +74,14 @@ def sanitize_cli_output(lines: list[str]) -> list[str]:
 async def _status_lines(request: Request) -> list[str]:
     """`hctl status` — the same operating state the `/health` probe serves."""
     from routes.health import health as health_payload
+    from routes.mcp import list_servers
 
     payload = health_payload(request)
     agents = [a for a in stores.agents.values() if a.workspace_id is None]
-    servers = list(stores.mcp_servers.values())
+    # Health-check through the same bounded fan-out projection the MCP page
+    # serves (`GET /v1/mcp/servers`); reading the store directly would report
+    # stale connection states (#292 review).
+    servers = await list_servers(request)
     connected = sum(1 for s in servers if s.status == "connected")
     lines = [
         f"\u2713 hive-conductor running (uptime {int(payload['uptime_seconds'])}s)",
