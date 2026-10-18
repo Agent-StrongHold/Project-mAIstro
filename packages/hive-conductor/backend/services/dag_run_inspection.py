@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
+from dataclasses import asdict
 from typing import Any
 
 from services.dag_run_store import MAX_EVENTS_PER_RUN, MAX_RUNS, get_dag_run_store
@@ -64,12 +65,87 @@ def _overlay(record: dict[str, Any], run: Any) -> dict[str, Any]:
     # even when the caller can read both Workspaces.
     if run.workspace_id != str(record.get("workspace_id") or ""):
         return record
+    creative = _creative_run_provenance(run)
     return {
         **record,
+        # Canonical lifecycle truth replaces the projection row's wholesale
+        # (#1877): status, result, error AND finished_at all come from the
+        # canonical Run now. A null canonical result/error overwrites a stale
+        # projection value instead of letting it stand, a nonterminal Run
+        # clears any stale finished_at (the Run model forbids finished_at on
+        # nonterminal Runs), and a terminal Run's finished_at converts to the
+        # epoch-seconds shape the projection already serves -- derived from
+        # the canonical timestamp only, never a wall-clock value minted at
+        # read time.
         "status": run.status.value,
-        **({"result": run.result} if run.result is not None else {}),
-        **({"error": run.error} if run.error else {}),
+        "result": run.result,
+        "error": run.error,
+        "finished_at": (run.finished_at.timestamp() if run.finished_at is not None else None),
+        **({"creative_provenance": creative} if creative else {}),
     }
+
+
+_CREATIVE_PROVENANCE_KEYS: tuple[str, ...] = (
+    "goal_id",
+    "goal_revision",
+    "brief_id",
+    "brief_lineage_id",
+    "brief_version",
+    "goal_owner_agent_id",
+    "goal_delegation_ref",
+    "persona_id",
+    "design_system_slug",
+    "graph_template",
+)
+
+
+def _creative_run_provenance(run: Any) -> dict[str, Any]:
+    """The creative-fulfillment lineage a readable canonical Run carries (#775).
+
+    `maistro_design.creative_graph.run_creative_graph` records a
+    `goal_run_evidence` provenance block on the canonical Run (the #458
+    Goal-Run evidence relationship): the exact Goal identity/revision it
+    fulfills, the CreativeBrief lineage/version that plans it, and the
+    accountable/delegated Agent. Inspection relays that block verbatim so
+    Conductor's Graph inspection can say which Goal revision, brief version
+    and Agent delegation stand behind a run — no Design-Studio-private read,
+    and no lineage for runs that never carried one.
+    """
+    provenance = dict(getattr(run, "provenance", None) or {})
+    if provenance.get("relationship") != "goal_run_evidence":
+        return {}
+    return {key: provenance[key] for key in _CREATIVE_PROVENANCE_KEYS if key in provenance}
+
+
+async def _creative_artifacts(canonical_run_id: str) -> list[dict[str, Any]]:
+    """Per-artifact lineage from the persisted canonical durable record (#775).
+
+    Reads the DurableRunRecord the canonical executor already checkpointed —
+    Run provenance, NodeRuns, Attempts, graph snapshot, blackboard snapshot —
+    through `maistro_design.creative_graph.artifact_provenance`, so each
+    artifact names the Goal revision, CreativeBrief version, consumed
+    shared-decision identities and Agent delegation that produced it, plus
+    its status and attempt count. Reconstruction from persisted state only:
+    no workflow replay, no client memory. The store read is keyed by a run id
+    the scoped reader has already authorized for this caller, so this opens
+    no second authorization door.
+    """
+    try:
+        from maistro_design.creative_graph import artifact_provenance
+        from services.engine import get_engine
+
+        durable_store = get_engine().graph_run_store
+        if durable_store is None:
+            return []
+        durable_record = await durable_store.get(canonical_run_id)
+    except Exception:
+        # Inspection stays available without the durable graph spine, exactly
+        # like the canonical-status overlay above; it then answers without
+        # per-artifact graph state rather than inventing any.
+        return []
+    if durable_record is None:
+        return []
+    return [asdict(item) for item in artifact_provenance(durable_record)]
 
 
 async def _canonical_projection(record: dict[str, Any], user_id: str) -> dict[str, Any]:
@@ -147,7 +223,14 @@ async def visible_run_detail(user_id: str, run_id: str) -> dict[str, Any] | None
     allowed = await authorized_workspace_ids(user_id)
     if not _in_scope(record, allowed):
         return None
-    return await _canonical_projection(record, user_id)
+    detail = await _canonical_projection(record, user_id)
+    # AC-10 (#775): Graph inspection in Conductor explains each artifact's
+    # lineage. Only reachable when the creative block survived the scoped
+    # overlay — i.e. the caller just read the canonical Run — so per-artifact
+    # state is never exposed beyond the run-level authorization above.
+    if detail.get("creative_provenance"):
+        detail["artifacts"] = await _creative_artifacts(_canonical_run_id(record))
+    return detail
 
 
 async def canonical_runs_for(user_id: str, run_ids: Iterable[str]) -> dict[str, Any]:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from maistro.persistence.learning_contract import (
     LEARNING_GENERATED_FIELDS,
     LEARNING_PERSISTED_FIELDS,
@@ -19,6 +21,8 @@ from maistro.persistence.sqlite_learnings import (
 )
 from maistro.types.memory import Learning
 
+pytestmark = [pytest.mark.contract("behavioral")]
+
 
 def _sqlite_columns() -> set[str]:
     columns: set[str] = set()
@@ -30,6 +34,7 @@ def _sqlite_columns() -> set[str]:
     return columns
 
 
+@pytest.mark.ac("SPEC-100126-5445/AC-6")
 def test_every_declared_learning_field_has_an_explicit_disposition() -> None:
     """The disposition sets form a complete partition of the dataclass.
 
@@ -49,6 +54,7 @@ def test_every_declared_learning_field_has_an_explicit_disposition() -> None:
     assert not (declared - LEARNING_GENERATED_FIELDS) - LEARNING_PERSISTED_FIELDS
 
 
+@pytest.mark.ac("SPEC-100126-5445/AC-6")
 def test_sql_twins_declare_the_same_complete_persistence_contract() -> None:
     declared = set(Learning.__dataclass_fields__)
     persisted = declared - LEARNING_GENERATED_FIELDS

@@ -100,7 +100,7 @@
     },
     {
       "id": "pre-durable-run-graph",
-      "pattern": "(?i)(from\\s+maistro\\.graph[\\w.]*\\s+import\\s+[^\\n]*\\brun_graph\\b|\\bmaistro\\.graph\\.run_graph\\b)",
+      "pattern": "(?i)(from\\s+maistro\\.graph[\\w.]*\\s+import\\s+[^\\n]*\\brun_graph\\b|\\bmaistro\\.graph\\.run_graph\\b|^\\s*run_graph\\s*[,)]?\\s*(#.*)?$)",
       "retired_by": "#1154",
       "also_recorded_in": [
         "docs/adr/ADR-062-graph-execution-protocol.md, \"Top-level API\" retirement note",

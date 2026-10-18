@@ -7,6 +7,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from maistro.runs.model import RunStatus
 
+from .fair_scan import DEFAULT_MAX_INSPECTED, ScanPage
 from .hitl import HitlAuthorization
 from .types import DurableRunRecord
 
@@ -62,6 +63,45 @@ class DurableRunStore(Protocol):
         limit: int = 100,
     ) -> list[DurableRunRecord]:
         """Return due paused Runs visible to the effective principal."""
+        ...
+
+    async def list_hitl_paused(
+        self,
+        *,
+        limit: int = 100,
+        project_id: str | None = None,
+        workspace_id: str | None = None,
+        after: tuple[str, str] | None = None,
+        max_inspected: int = DEFAULT_MAX_INSPECTED,
+    ) -> ScanPage[DurableRunRecord, tuple[str, str]]:
+        """Paused Runs whose durable frontier holds a human pause (#1109).
+
+        Eligibility is queryable before ``limit``: the pause-kind projection
+        answers "is any active node waiting on a person" from indexed state,
+        so machine-only PAUSED Runs never occupy a page that human work behind
+        them needs. It is a projection, not a second queue — each returned
+        record is assembled from canonical state and revalidated against it;
+        the pause entry, not the index, remains the source of truth.
+
+        ``after`` is the same ``(created_at_iso, run_id)`` keyset cursor
+        ``list_by_status`` uses.
+
+        This is a :class:`ScanPage`, not a plain list, because this read
+        filters rows of its own read: scope (``workspace_id`` on stores whose
+        index cannot carry it) and projection staleness drop assembled rows
+        after the index page was cut, so an empty list cannot say whether the
+        projection ended. The page therefore carries the walk's progress
+        separately — ``resume_after`` is the keyset position of the last row
+        the read got to (eligible or not), ``inspected`` counts projected rows
+        read, and ``exhausted`` is true only when the projection itself ran
+        out. A caller walking pages advances by ``resume_after`` and so gets
+        past a page that assembled to nothing eligible, instead of rereading
+        it forever or mistaking it for the end (#1109).
+
+        ``max_inspected`` bounds the rows one call may look at, so one call
+        stays a bounded read however long an ineligible prefix is; reaching it
+        ends the call with whatever was found and ``exhausted=False``.
+        """
         ...
 
     async def list_for_project(
