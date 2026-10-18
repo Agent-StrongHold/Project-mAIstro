@@ -1987,6 +1987,38 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             ],
         )
 
+    def _scan_detail(
+        self,
+        inputs: DelegateRemoteIn,
+        ctx: NodeContext,
+        *,
+        verdict: Any,
+        decision: str,
+        task_id: str,
+        child_run_id: str,
+    ) -> dict[str, Any]:
+        """Correlation fields for one inbound verdict — identifiers only.
+
+        No scanned content may enter an audit record (#1139's rule at the A2A
+        boundary): the payload's own text never appears here, only who sent
+        it, which canonical execution it crossed, and which policy decided.
+        """
+        return {
+            "decision": decision,
+            "parent_run_id": ctx.run_id,
+            "child_run_id": child_run_id,
+            "node_run_id": ctx.node_run_id,
+            "attempt_id": ctx.attempt_id,
+            "principal": inputs.from_agent,
+            "peer": inputs.peer_name or "",
+            "transport": "guest_peer" if inputs.peer_name is not None else "in_process",
+            "task_id": task_id,
+            "workspace_id": inputs.to_workspace_id or ctx.workspace_id or "",
+            "project_id": inputs.to_project_id or ctx.project_id or "",
+            "policy_version": getattr(self._warden, "policy_version", "warden-default"),
+            "flags": list(verdict.flags),
+        }
+
     async def _record_scan(
         self,
         inputs: DelegateRemoteIn,
@@ -2005,21 +2037,14 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         from maistro.types.security import AuditEntry
 
         detail = json.dumps(
-            {
-                "decision": decision,
-                "parent_run_id": ctx.run_id,
-                "child_run_id": child_run_id,
-                "node_run_id": ctx.node_run_id,
-                "attempt_id": ctx.attempt_id,
-                "principal": inputs.from_agent,
-                "peer": inputs.peer_name or "",
-                "transport": "guest_peer" if inputs.peer_name is not None else "in_process",
-                "task_id": task_id,
-                "workspace_id": inputs.to_workspace_id or ctx.workspace_id or "",
-                "project_id": inputs.to_project_id or ctx.project_id or "",
-                "policy_version": getattr(self._warden, "policy_version", "warden-default"),
-                "flags": list(verdict.flags),
-            },
+            self._scan_detail(
+                inputs,
+                ctx,
+                verdict=verdict,
+                decision=decision,
+                task_id=task_id,
+                child_run_id=child_run_id,
+            ),
             sort_keys=True,
             separators=(",", ":"),
         )
