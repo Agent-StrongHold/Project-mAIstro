@@ -199,7 +199,18 @@ routed model accepts (`encode_observation`). Rules:
   replay semantics.
 - The quality heuristic is a floor, not a verdict. Workloads that find it
   wrong simply declare no ladder; the score rides along as evidence.
-- Comparing adaptive escalation/routing against a fixed-routing baseline on
-  a real workload (task success, cost, latency, failure cases) remains open
-  for the next slice; this ADR records the contracts that comparison will
-  exercise.
+- The comparison against fixed-routing baselines is recorded in
+  [`docs/benchmarks/m4i-adaptive-vs-fixed-baseline.json`](../benchmarks/m4i-adaptive-vs-fixed-baseline.json):
+  the same workload runs through this ADR's production path (real
+  `llm.summarize`, governed egress, supervision fold) under an adaptive arm
+  and three fixed single-alias arms, against a deterministic model-dependent
+  stub gateway — offline and reproducible via
+  `scripts/bench_m4i_adaptive_vs_fixed.py`, asserted in
+  `tests/graph/verification/test_adaptive_vs_fixed_baseline.py`. On that
+  workload the adaptive arm matches the strongest fixed baseline's task
+  success at lower cost and modeled latency, escalated tasks honestly pay
+  double (their cheap visit was already billed), and every fixed alias
+  records the failure cases adaptivity avoids (shipped shortfalls; refused
+  image tasks). The stub's numbers are workload- and rate-dependent, not a
+  universal claim; live-provider telemetry would land beside them, not
+  replace the contract.
