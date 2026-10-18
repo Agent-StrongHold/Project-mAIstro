@@ -260,16 +260,22 @@ async def test_a_non_terminal_run_caps_the_shared_read_at_not_done(
     replicas = await _two_replicas(monkeypatch, shared_records=records)
 
     # A durable row claiming a terminal outcome over a Run that is still
-    # executing is stale in the dangerous direction.
+    # executing is stale in the dangerous direction. The accepting replica's
+    # own row is drained first and REPLACED in place — appending a duplicate
+    # would leave the landed row first in the sink and the read would never
+    # see the stale claim.
     running = await replicas.accepting.submit(TaskCreate(description="still running"))
+    for task in list(replicas.accepting._persist_writes):
+        await task
     stale = running.model_copy(
         update={
             "status": TaskStatus.COMPLETED,
             "phase": TaskStatus.COMPLETED.value,
             "result": TaskResult(files_changed=["premature.py"]),
+            "completed_at": datetime.now(UTC),
         }
     )
-    records.append(_record_for(stale))
+    _replace_row(records, stale)
 
     await replicas.runs.transition_run(running.run_id or "", RunStatus.RUNNING)
     receipt = await replicas.peer.get_shared(running.task_id)
@@ -282,7 +288,12 @@ async def test_a_non_terminal_run_caps_the_shared_read_at_not_done(
     # A Run still queued keeps even a terminal-claiming row at queued — a
     # dispatch that has not begun cannot be read as finished work.
     queued = await replicas.accepting.submit(TaskCreate(description="never dispatched"))
-    records.append(_record_for(queued.model_copy(update={"status": TaskStatus.FAILED})))
+    for task in list(replicas.accepting._persist_writes):
+        await task
+    _replace_row(
+        records,
+        queued.model_copy(update={"status": TaskStatus.FAILED, "phase": TaskStatus.FAILED.value}),
+    )
     queued_read = await replicas.peer.get_shared(queued.task_id)
     assert queued_read is not None
     assert queued_read.status is TaskStatus.QUEUED
@@ -412,11 +423,153 @@ async def test_an_admitter_store_outage_degrades_to_the_durable_row(
     assert receipt.status is TaskStatus.QUEUED
 
 
+async def test_a_queue_without_an_admitter_or_without_the_finder_still_serves_the_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shared read predates neither seam: absence contributes nothing."""
+    records: list[TaskRecord] = []
+    replicas = await _two_replicas(monkeypatch, shared_records=records)
+    created = await replicas.accepting.submit(TaskCreate(description="no finder here"))
+    for task in list(replicas.accepting._persist_writes):
+        await task
+    assert records, "the row-backed leg needs the durable row to exist"
+
+    # No admitter at all: the Run lookup is skipped, the row answers.
+    bare = TaskQueue()
+    receipt = await bare.get_shared(created.task_id)
+    assert receipt is not None and receipt.task_id == created.task_id
+    assert receipt.status is TaskStatus.QUEUED
+
+    # An admitter from before `find_task_run` existed (a custom
+    # implementation, say): the missing finder contributes nothing rather
+    # than failing the read.
+    class _PreFinderAdmitter:
+        async def lookup_run(self, run_id: str) -> None:
+            return None
+
+    old = TaskQueue(admitter=_PreFinderAdmitter())  # type: ignore[arg-type]
+    receipt = await old.get_shared(created.task_id)
+    assert receipt is not None and receipt.task_id == created.task_id
+
+
+def test_owner_evidence_falls_back_to_the_task_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pure owner rule: provenance user_id, else the payload's, else none."""
+    from maistro.tasks.queue import _receipt_owner_of_run
+
+    def _run_stub(provenance: dict[str, Any]) -> Any:
+        class _Run:
+            pass
+
+        run = _Run()
+        run.provenance = provenance
+        return run
+
+    # The admission provenance names the owner outright.
+    assert _receipt_owner_of_run(_run_stub({"user_id": "alice"})) == "alice"
+    # No top-level claim: the immutable task payload carries it.
+    assert (
+        _receipt_owner_of_run(_run_stub({TASK_PAYLOAD_KEY: {"user_id": "bob", "description": "x"}}))
+        == "bob"
+    )
+    # A non-string top-level claim is not an owner; the payload still is.
+    assert (
+        _receipt_owner_of_run(_run_stub({"user_id": 7, TASK_PAYLOAD_KEY: {"user_id": "carol"}}))
+        == "carol"
+    )
+    # A payload that is not a dict contributes nothing either.
+    assert _receipt_owner_of_run(_run_stub({TASK_PAYLOAD_KEY: "garbage"})) == ""
+
+
+async def test_an_ownerless_run_is_visible_only_to_empty_scoping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No principal claim anywhere: a named caller learns nothing (#1690)."""
+    replicas = await _two_replicas(monkeypatch)
+    created = await replicas.accepting.submit(TaskCreate(description="nobody's"))
+    stored = replicas.runs._runs[created.run_id or ""]  # type: ignore[attr-defined]
+    del stored.provenance["user_id"]
+    # The payload stays a valid receipt snapshot; it simply names nobody.
+    payload = created.model_dump(mode="json")
+    payload.pop("user_id", None)
+    stored.provenance[TASK_PAYLOAD_KEY] = payload
+
+    # A principal who names themselves is refused — an empty owner matches
+    # only a caller who scopes by empty, never one who names a principal.
+    assert await replicas.peer.get_shared(created.task_id, user_id="mallory") is None
+    unscoped = await replicas.peer.get_shared(created.task_id)
+    assert unscoped is not None and unscoped.task_id == created.task_id
+
+
+async def test_cancel_shared_cancels_a_locally_held_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The local half of `cancel_shared` is `cancel`, unchanged."""
+    replicas = await _two_replicas(monkeypatch)
+    created = await replicas.accepting.submit(TaskCreate(description="cancel me locally"))
+
+    outcome = await replicas.accepting.cancel_shared(
+        created.task_id, user_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+    assert outcome is True
+    run = await replicas.runs.get_run(created.run_id or "")
+    assert run is not None and run.status is RunStatus.CANCELLED
+
+
+async def test_a_durable_receipt_with_no_run_behind_it_is_not_cancellable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No execution identity, no canonical authority to cancel through."""
+    records: list[TaskRecord] = []
+    replicas = await _two_replicas(monkeypatch, shared_records=records)
+    created = await replicas.accepting.submit(TaskCreate(description="unanchored"))
+    for task in list(replicas.accepting._persist_writes):
+        await task
+
+    # A row whose run_id is absent: the queue does not fabricate an anchor.
+    # The Run lookup must contribute nothing for the row to be the whole
+    # story — here the admitter predates the finder, as a custom
+    # implementation might.
+    class _PreFinderAdmitter:
+        async def lookup_run(self, run_id: str) -> None:
+            return None
+
+        async def cancel_run(self, run_id: str) -> bool:
+            raise AssertionError("no anchor means cancel_run is never reached")
+
+    anchorless = created.model_copy(update={"run_id": None})
+    _replace_row(records, anchorless)
+    finderless = TaskQueue(admitter=_PreFinderAdmitter())  # type: ignore[arg-type]
+    assert await finderless.cancel_shared(created.task_id) is False
+
+    # Nor does a queue with no admitter cancel through a row that has one.
+    _replace_row(records, created)
+    bare = TaskQueue()
+    assert await bare.cancel_shared(created.task_id) is False
+
+
 def _record_for(task: TaskResponse) -> TaskRecord:
     """The durable row one receipt writes, via the queue's own snapshot."""
     from maistro.tasks.queue import _record_values
 
     return TaskRecord(**_record_values(task))
+
+
+def _row_index(records: list[TaskRecord], task_id: str) -> int:
+    """The sink position of one task's row (TaskRecord equality is identity)."""
+    return next(i for i, record in enumerate(records) if record.id == task_id)
+
+
+def _replace_row(records: list[TaskRecord], task: TaskResponse) -> None:
+    """Overwrite one task's row in place, preserving its server timestamp.
+
+    The fake session stamps `created_at` (a server default) only on `merge`,
+    so a row built outside it carries None where the database would never
+    allow it — and `_task_from_record` refuses that row outright.
+    """
+    old = records[_row_index(records, task.task_id)]
+    fresh = _record_for(task)
+    fresh.created_at = old.created_at
+    records[_row_index(records, task.task_id)] = fresh
 
 
 def _unpublished(task_id: str, description: str) -> TaskResponse:

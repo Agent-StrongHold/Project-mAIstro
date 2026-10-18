@@ -232,3 +232,21 @@ async def test_the_router_reports_a_lookup_of_a_run_that_never_existed(spine) ->
     _projects, _runs, router = spine
 
     assert await router.lookup_run("run-never-was") is None
+
+
+# --- task receipt lookup routed through the shared seam (#1690) -------------
+
+
+async def test_the_router_resolves_a_task_receipt_through_the_default_binding(spine) -> None:
+    """A task's Run knows its own Workspace, so the read needs none of the request."""
+    _projects, runs, router = spine
+    queue = TaskQueue(admitter=router)
+    task = await queue.submit(TaskCreate(description="Routed receipt"), workspace_id="w-receipt")
+
+    found = await router.find_task_run(task.task_id)
+    assert found is not None
+    assert found.run_id == task.run_id
+    assert found.workspace_id == "w-receipt"
+    # A receipt id nobody admitted is a plain None, the same as lookup_run's.
+    assert await router.find_task_run("task-never-was") is None
+    assert found == await runs.get_run(task.run_id or "")

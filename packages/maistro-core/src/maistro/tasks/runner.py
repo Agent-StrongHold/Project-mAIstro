@@ -372,36 +372,39 @@ class TaskRunner:
                 result = exc.output
 
             if not claim_lost:
-                # Phase 1 is single-pass — transition to COMPLETED or FAILED
-                # directly. The outcome goes to both: the Run because it is the
-                # execution identity a caller follows, the receipt because that
-                # is what the /tasks API returns. Passing it only to
-                # `set_result` left every terminal Run reporting result=None and
-                # error=None.
-                if result.success:
-                    files_changed = result.code.files_changed if result.code else []
-                    await self._queue.update_status(
-                        task_id,
-                        TaskStatus.COMPLETED,
-                        result={"files_changed": files_changed},
-                    )
-                    self._queue.set_result(
-                        task_id,
-                        TaskResult(files_changed=files_changed),
-                    )
-                    await self._emit_progress_webhook(task_id)
-                else:
-                    await self._queue.update_status(
-                        task_id, TaskStatus.FAILED, error=result.final_answer
-                    )
-                    self._queue.set_result(
-                        task_id,
-                        TaskResult(error=result.final_answer),
-                    )
-                    await self._emit_progress_webhook(task_id)
+                await self._settle_outcome(task_id, result)
 
         if claim_lost:
             # Past the local claim's release, so `abandon_local_receipt` sees
             # the task as unclaimed. The durable projection takes over the
             # reads; the winner's worker owns every further write.
             self._queue.abandon_local_receipt(task_id)
+
+    async def _settle_outcome(self, task_id: str, result: ConductorOutput) -> None:
+        """Write one finished execution's outcome to the Run and the receipt.
+
+        Phase 1 is single-pass — transition to COMPLETED or FAILED directly.
+        The outcome goes to both: the Run because it is the execution identity
+        a caller follows, the receipt because that is what the /tasks API
+        returns. Passing it only to `set_result` left every terminal Run
+        reporting result=None and error=None.
+        """
+        if result.success:
+            files_changed = result.code.files_changed if result.code else []
+            await self._queue.update_status(
+                task_id,
+                TaskStatus.COMPLETED,
+                result={"files_changed": files_changed},
+            )
+            self._queue.set_result(
+                task_id,
+                TaskResult(files_changed=files_changed),
+            )
+            await self._emit_progress_webhook(task_id)
+        else:
+            await self._queue.update_status(task_id, TaskStatus.FAILED, error=result.final_answer)
+            self._queue.set_result(
+                task_id,
+                TaskResult(error=result.final_answer),
+            )
+            await self._emit_progress_webhook(task_id)

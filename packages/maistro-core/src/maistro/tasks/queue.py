@@ -1370,15 +1370,7 @@ class TaskQueue:
         the finder contributes nothing rather than failing the read. Either
         alone serves; both together are reconciled with the Run winning.
         """
-        receipt = await self._persisted_receipt(task_id)
-        if receipt is not None and user_id is not None and receipt.user_id != user_id:
-            receipt = None
-        run = await self._find_task_run(task_id)
-        if run is not None and user_id is not None and _receipt_owner_of_run(run) != user_id:
-            # Fail closed on the Run side too: visibility is the admission's
-            # originating principal (#1057), and the durable lookup must not
-            # hand a foreign caller a receipt its own process would refuse it.
-            run = None
+        receipt, run = await self._durable_sources(task_id, user_id=user_id)
         if receipt is None and run is None:
             return None
         if receipt is None:
@@ -1398,6 +1390,24 @@ class TaskQueue:
         if run is not None:
             receipt = _project_run_onto_receipt(receipt, run)
         return receipt
+
+    async def _durable_sources(
+        self, task_id: str, *, user_id: str | None = None
+    ) -> tuple[TaskResponse | None, Any | None]:
+        """The shared tier's two answers for one receipt id, principal-scoped.
+
+        Each source is refused independently when it names another owner:
+        visibility is the admission's originating principal (#1057), and the
+        durable lookup must not hand a foreign caller a receipt this process
+        would refuse it (#1690).
+        """
+        receipt = await self._persisted_receipt(task_id)
+        if receipt is not None and user_id is not None and receipt.user_id != user_id:
+            receipt = None
+        run = await self._find_task_run(task_id)
+        if run is not None and user_id is not None and _receipt_owner_of_run(run) != user_id:
+            run = None
+        return receipt, run
 
     async def _find_task_run(self, task_id: str) -> Any | None:
         """The canonical Run admitted for this receipt id, best-effort.
