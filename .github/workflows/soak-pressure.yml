@@ -1,0 +1,61 @@
+name: Release soak pressure case
+
+# Manual only, on purpose (same pattern as fleet-routing-bench.yml).
+#
+# This runs scripts/soak-compose-pressure.py — the #862 executable
+# memory/PID pressure case that the #860 release soak drives against a real
+# Docker/Podman daemon. The driver reads the containment ceiling of a shipped
+# Compose service straight out of the profile (failing closed when it is out
+# of policy), replays that exact ceiling onto a disposable container, drives
+# the cgroup into OOM and PID exhaustion, and records the evidence JSON that
+# the soak record keeps. It is not a gate and not a per-PR job: a fork bomb
+# plus a deliberate OOM is release evidence, run deliberately when the
+# deployment profiles or the containment policy change.
+#
+# It is also what makes `scripts/soak-compose-pressure.py` a *real* entry
+# point rather than a script nobody can reach: `scripts/check-reachability.py`
+# roots tooling at the workflow steps that execute it, matching on filename.
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Shipped Compose profile to read the ceiling from"
+        required: false
+        default: "docker-compose.yml"
+        type: string
+      service:
+        description: "Service whose ceiling the soak replays"
+        required: false
+        default: "maistro-engine"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soak-pressure
+  cancel-in-progress: true
+
+jobs:
+  soak:
+    name: soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+      - name: uv sync (dev deps)
+        run: uv sync --locked --extra dev
+      - name: Drive memory/PID pressure under the shipped ceiling
+        run: >-
+          uv run python scripts/soak-compose-pressure.py
+          --profile "${{ inputs.profile || 'docker-compose.yml' }}"
+          --service "${{ inputs.service || 'maistro-engine' }}"
+          --output soak-evidence.json
+      - name: Upload soak evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: soak-evidence
+          path: soak-evidence.json
+          if-no-files-found: warn
