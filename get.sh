@@ -440,13 +440,23 @@ migrate_legacy_install() {
     [[ -f "$INSTALL_DIR/.env" ]] && return 0
 
     warn "Found legacy install at $LEGACY_DIR — migrating .env to $INSTALL_DIR."
+    # The migration runs scripts/secret_env.py, so it needs an interpreter —
+    # resolved through the same bootstrap contract install.sh uses (#1821).
+    # This used to be a bare `python3`, invoked before install.sh could fix
+    # anything up: on a host without Python the migration died mid-flight;
+    # on PEP 668 hosts the old pip-based uv fallback would have refused.
+    # Resolution happens BEFORE anything is created, so a failure below
+    # leaves both .env files exactly as they were.
+    # shellcheck source=scripts/bootstrap-runtime.sh
+    source "$INSTALL_DIR/scripts/bootstrap-runtime.sh"
+    ensure_python
     mkdir -p "$INSTALL_DIR"
     # `cp` creates under the caller's umask and the old `chmod 600` ran after
     # the credentials were already on disk (#357). Pipe through the installer's
     # helper instead, which creates the destination at 0600 with O_CREAT|O_EXCL
     # before the first byte. `|| true` is gone with it: a migration that
     # silently failed left the user believing their keys had moved.
-    if ! python3 "$INSTALL_DIR/scripts/secret_env.py" create "$INSTALL_DIR/.env" \
+    if ! "${PYTHON_CMD[@]}" "$INSTALL_DIR/scripts/secret_env.py" create "$INSTALL_DIR/.env" \
             < "$LEGACY_DIR/.env"; then
         fail "Could not migrate $LEGACY_DIR/.env to $INSTALL_DIR/.env (see above). Your existing file is untouched."
     fi
