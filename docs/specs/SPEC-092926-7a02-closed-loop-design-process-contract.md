@@ -49,8 +49,8 @@ M7 waves (#791–#796) inherit one contract instead of re-negotiating it.
 
 | Object | Kind | Owner | Boundary |
 |---|---|---|---|
-| Goal | product ontology object (#458) | workspace/product | Rubric binds to a Goal revision; M7 never re-owns Goal |
-| Rubric | ontology kind (lands #791) | `maistro.ontology` | distinct from persona RubricEval (ADR-060) and CreativeBrief (#774) |
+| Goal | canonical ontology kind (#458) | `maistro.goals` | Rubric binds to a Goal revision; M7 never re-owns Goal |
+| Rubric | Goal-acceptance facet of `maistro.goals` (lands #791) | `maistro.goals` | distinct from persona RubricEval (ADR-060) and CreativeBrief (#774) |
 | Pack | Graph/skill pack of one Run (#793) | graph/skills | not a package, route, or product identity |
 | Fence | decision on a waiting NodeRun (#794) | runs lifecycle (ADR-097) | extends #48/#737 pause machinery; no new pause universe |
 | eval-on-Run | evidence on Run/NodeRun/Attempt (#792) | runs records | no side store, client cache, or product verdict table |
