@@ -241,8 +241,9 @@ class TestEpicCanonicalExecution:
             proof.artifacts[f"acme.notary@{executed_version}"]
         )
 
-        # Pinned lineage: the discover-stage lock pin (1.1.0) — also the
-        # record the rollback stage leaves active at the end of the run.
+        # Pinned lineage: the discover-stage lock pin (1.1.0) — the record
+        # the rollback stage re-activates before the stage's final
+        # active-pointer uninstall retires it, so read it from the store.
         assert proof.lock is not None
         pin = proof.lock.get("acme.notary")
         assert pin is not None and pin.package_sha256 is not None
@@ -256,8 +257,11 @@ class TestEpicCanonicalExecution:
         assert pin.package_sha256 == proof_module.sha256_hex(
             proof.artifacts[f"acme.notary@{pin.semantic_version}"]
         )
-        record = await proof.service.active(proof.scope, "acme.notary")
-        assert record is not None
+        record = next(
+            r
+            for r in await proof.store.records_in_state(ExtensionState.REMOVED)
+            if r.version == pin.semantic_version
+        )
         assert record.version == pin.semantic_version == "1.1.0"
         assert record.artifact_sha256 == pin.package_sha256
 
@@ -397,11 +401,14 @@ class TestPostInstallLifecycle:
             "remove-uninstalls-one-record-terminal",
             "removal-preserves-historical-evidence",
             "remove-is-idempotent",
+            "remove-active-record-clears-the-active-pointer",
         } <= check_ids
         post_install = stage["evidence"]["post_install"]
         assert post_install["rolled_back_to"]["version"] == "1.1.0"
         assert post_install["removed"]["version"] == "2.0.0"
         assert post_install["removed"]["terminal"] is True
+        assert post_install["removed_active"]["version"] == "1.1.0"
+        assert post_install["removed_active"]["active_pointer_cleared"] is True
 
     async def test_removed_record_keeps_evidence_and_grant_narrowed(
         self, proof_module, tmp_path: Path
@@ -409,9 +416,10 @@ class TestPostInstallLifecycle:
         """Re-derive the end state from the store, not the stage's own claims.
 
         Removal is terminal yet evidence-preserving (digest, frozen grant,
-        audited trail), rollback left the narrower 1.1.0 active under an
-        empty grant, and the rolled-back artifact's reach for the superseded
-        grant is an observed denial.
+        audited trail) for both retired records — the superseded 2.0.0 and
+        the *active* 1.1.0 the stage uninstalls last, which leaves the scope
+        with no active pointer at all — and the rolled-back artifact's reach
+        for the superseded grant was an observed denial before that removal.
         """
         proof = proof_module.LifecycleProof(tmp_path / "scratch")
         report = await proof.run()
@@ -420,9 +428,9 @@ class TestPostInstallLifecycle:
             for record in await proof.store.records_in_state(ExtensionState.REMOVED)
             if record.extension_id == "acme.notary"
         ]
-        assert len(removed) == 1
-        record = removed[0]
-        assert record.version == "2.0.0"
+        assert len(removed) == 2
+        by_version = {record.version: record for record in removed}
+        record = by_version["2.0.0"]
         assert record.artifact_sha256 == proof_module.sha256_hex(
             proof.artifacts["acme.notary@2.0.0"]
         )
@@ -431,10 +439,14 @@ class TestPostInstallLifecycle:
         assert trail[-1].to_state is ExtensionState.REMOVED
         assert "hygiene" in trail[-1].reason
 
-        active = await proof.service.active(proof.scope, "acme.notary")
-        assert active is not None
-        assert active.version == "1.1.0"
-        assert active.granted_permissions == ()
+        # The active-pointer cleanup path: the run ends by uninstalling the
+        # record that *is* the active pointer, so nothing stays authoritative.
+        active_record = by_version["1.1.0"]
+        assert active_record.granted_permissions == ()
+        active_trail = await proof.store.transitions_for(active_record.install_id)
+        assert active_trail[-1].from_state is ExtensionState.ACTIVE
+        assert active_trail[-1].to_state is ExtensionState.REMOVED
+        assert await proof.service.active(proof.scope, "acme.notary") is None
 
         denials = [
             o

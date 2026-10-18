@@ -26,21 +26,25 @@ production `ExtensionInstallService` seam —
   (`RollbackRefused`) before anything is touched;
 - **remove** is terminal for the record's authority, idempotent on retry,
   and preserves the record's digest, frozen grant, manifest snapshot, and
-  full audited trail as historical evidence while the active 1.1.0 keeps
-  running.
+  full audited trail as historical evidence — proven first for the
+  already-superseded 2.0.0 while the active 1.1.0 keeps running, then for
+  the 1.1.0 record that *is* the active pointer, whose uninstall exercises
+  the production active-pointer cleanup path and leaves the scope with no
+  active version at all (`remove-active-record-clears-the-active-pointer`).
 
 **+2 `packages/maistro-core/tests/extensions/test_lifecycle_proof.py`**
 (collect verified; module total 15 → 17):
 
 - `TestPostInstallLifecycle.test_disable_rollback_remove_stage_proves` —
-  the stage proves all nine checks and its evidence names the rolled-back
+  the stage proves all ten checks and its evidence names the rolled-back
   1.1.0 and the terminally removed 2.0.0;
 - `TestPostInstallLifecycle.test_removed_record_keeps_evidence_and_grant_narrowed`
   — re-derives the end state from the store rather than the stage's own
-  claims: the removed record keeps the 2.0.0 artifact digest and its
-  storage grant with a REMOVED-terminated trail; 1.1.0 is active again
-  under an empty grant; and the rolled-back artifact's storage reach is an
-  observed `denied:undeclared-capability` invocation.
+  claims: both removed records (the 2.0.0 and the active-pointer 1.1.0)
+  keep their artifact digests and frozen grants with REMOVED-terminated
+  trails; the run ends with no active notary record; and the rolled-back
+  artifact's storage reach is an observed `denied:undeclared-capability`
+  invocation.
 
 Pre-existing pins updated in place: `EXPECTED_STAGES` gains
 `disable-rollback-remove` (12 → 13 stages); `docs/extensions/lifecycle-proof.md`

@@ -30,7 +30,8 @@ loader seam with the same bound artifact, rollback restores a superseded
 version and truthfully narrows authority back (and cannot smuggle broader
 frozen authority), and removal is terminal for authority while preserving
 the record, its grant, digests, and full audited trail as historical
-evidence.
+evidence — including the removal of the record that *is* the active
+pointer, which leaves the scope with no runtime authority at all.
 
 What "no source-tree modification / editable-install bypass" means here,
 mechanically:
@@ -1629,7 +1630,10 @@ class LifecycleProof:
         handler is refused again); a rollback that would smuggle broader
         frozen authority back is refused; removal is terminal for authority
         yet preserves the record, its grant, digests, and full trail as
-        historical evidence.
+        historical evidence — first for the already-superseded 2.0.0 record,
+        then for the record that *is* the active pointer, proving the
+        production active-pointer cleanup path leaves no runtime authority
+        behind.
         """
         stage = self._stage("disable-rollback-remove")
         active = await self.service.active(self.scope, "acme.notary")
@@ -1794,6 +1798,34 @@ class LifecycleProof:
             and len(trail_after_retry) == len(removed_trail),
             "removing an already-removed record is an idempotent no-op that records nothing new",
         )
+
+        # The authority-revocation path proper: uninstall the record that
+        # *is* the active pointer (the rollback re-activated 1.1.0), not
+        # merely an already-inactive historical record — this is the branch
+        # of production remove() that clears the scope's active pointer.
+        running = await self.service.active(self.scope, "acme.notary")
+        removed_active = await self.service.remove(
+            rolled_back.install_id,
+            actor=OPERATOR,
+            scope=self.scope,
+            reason="uninstall the running version; authority dies with the record",
+        )
+        pointer_after = await self.service.active(self.scope, "acme.notary")
+        active_trail = await self.store.transitions_for(rolled_back.install_id)
+        stage.check(
+            "remove-active-record-clears-the-active-pointer",
+            running is not None
+            and running.install_id == rolled_back.install_id
+            and removed_active.state is ExtensionState.REMOVED
+            and pointer_after is None
+            and active_trail[-1].from_state is ExtensionState.ACTIVE
+            and active_trail[-1].to_state is ExtensionState.REMOVED,
+            "removing the record that holds the active pointer revokes "
+            "runtime authority in the same stroke: the scope is left with "
+            "no active notary version at all, and the trail records one "
+            "audited ACTIVE→REMOVED event — removal is terminal even when "
+            "the record being removed is the one currently running",
+        )
         stage.evidence["post_install"] = {
             "disabled_then_resumed": {
                 "install_id": resumed.install_id,
@@ -1804,6 +1836,11 @@ class LifecycleProof:
                 "install_id": removal_candidate.install_id,
                 "version": removal_candidate.version,
                 "terminal": True,
+            },
+            "removed_active": {
+                "install_id": rolled_back.install_id,
+                "version": "1.1.0",
+                "active_pointer_cleared": True,
             },
         }
         return stage
