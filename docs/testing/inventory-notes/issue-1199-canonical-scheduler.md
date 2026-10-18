@@ -28,4 +28,23 @@ recorded. Acceptance coverage on the merged tree:
   (`test_scheduler_canonical_admission.py::test_restart_executes_the_queued_run_once`,
   `test_restart_after_a_cursor_crash_keeps_the_same_run`);
 - a stale Hive row cannot force a schedule that is not due
-  (`test_hive_row_cannot_force_a_schedule_that_is_not_due`).
+  (`test_hive_row_cannot_force_a_schedule_that_is_not_due`);
+- occurrence uniqueness stays owned by the Run store's `(schedule_id,
+  scheduled_for)` claim (#850/#220), not the tick: two concurrent tick
+  evaluations of one schedule produce one Run and one counted fire
+  (`test_scheduler_canonical_admission.py::test_two_live_runners_claim_one_occurrence`);
+- the real tick runs on both supported SQL backends
+  (`test_scheduler_canonical_due.py`, parametrized over `SqliteScheduleStore`
+  and `PgScheduleStore` on the real alembic schema).
+
+First-party re-validation of this head (pgvector:pg18 container, real alembic
+chain to head): the core scheduling suite passes with the PostgreSQL legs live
+(311 passed, 0 skipped), `test_scheduler_canonical_due.py` passes 28/28
+against PostgreSQL, and
+`test_concurrent_record_fire_on_one_store_does_not_lose_an_increment` passes
+across the memory, SQLite, and PostgreSQL parametrizations. The repo-wide
+suite-inventory gate reports `DRIFT tests/: expected 5260, collected 5261` on
+this tree; collecting `tests/` at the synced base commit (2f56be40) in the
+same environment also yields 5261, so that one-test drift is inherited from
+the base, not introduced by this branch (whose diff is this note and the ADR
+status update only).
