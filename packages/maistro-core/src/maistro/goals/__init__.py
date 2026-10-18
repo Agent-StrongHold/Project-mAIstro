@@ -1,63 +1,43 @@
-"""Canonical Goal reconciliation control-loop mechanics (M3 #806).
+"""The canonical Goal store (`maistro.goals`, #1572).
 
-This package owns the *mechanics* of the Workspace Agent reconciliation loop:
-durable wakeups, one claim/lease/fence per Goal, idempotent decisions,
-bounded sweeps, and restart-safe convergence. It does not own what a
-reconciliation *decision* means (#805) and it is not a second scheduler,
-execution authority, or execution queue: physical work stays canonical
-``Goal -> Graph -> Run -> NodeRun -> Attempt`` (SPEC-177), and this module
-only records derived control metadata about which reconciler may act for a
-Goal and when.
+Ontology owner of the shared ``Goal`` concept (`INTEROP_ONTOLOGY_V1`):
+`Goal`, its append-only `GoalRevision` chain, Subgoal lineage through
+``parent_goal_id``, and the recorded lifecycle/ownership transitions. One
+:class:`GoalStore` protocol with an in-memory reference and SQLite and
+PostgreSQL twins; principal-carrying access through
+:class:`ScopedGoalStore` over the canonical Workspace authorization seam.
 """
 
+from maistro.goals.authorization import GoalNotVisible, ScopedGoalStore
 from maistro.goals.model import (
+    TERMINAL_GOAL_STATUSES,
     Goal,
-    GoalAdmission,
-    GoalClaim,
-    GoalFacts,
+    GoalNotFound,
+    GoalParentInvalid,
+    GoalRevision,
+    GoalRevisionConflict,
+    GoalRevisionDraft,
     GoalStatus,
-    WakeFact,
-    WakeReason,
+    GoalTransitionError,
+    GoalTransitionKind,
+    GoalTransitionRecord,
 )
-from maistro.goals.reconciler import (
-    GoalReconciler,
-    PlannedAdmission,
-    PolicyDecision,
-    ReconciliationOutcome,
-    ReconciliationPolicy,
-)
-from maistro.goals.store import (
-    GoalBudgetExhausted,
-    GoalCancelled,
-    GoalDeadlinePassed,
-    GoalReconciliationStore,
-    InMemoryGoalStore,
-    SqliteGoalStore,
-    StaleGoalFence,
-)
-from maistro.goals.wiring import GOAL_WAKE_PATTERNS, wake_reason_for_event
+from maistro.goals.store import GoalStore, InMemoryGoalStore
 
 __all__ = [
-    "GOAL_WAKE_PATTERNS",
+    "TERMINAL_GOAL_STATUSES",
     "Goal",
-    "GoalAdmission",
-    "GoalAlreadyClaimed",
-    "GoalBudgetExhausted",
-    "GoalCancelled",
-    "GoalClaim",
-    "GoalDeadlinePassed",
-    "GoalFacts",
-    "GoalReconciler",
-    "GoalReconciliationStore",
+    "GoalNotFound",
+    "GoalNotVisible",
+    "GoalParentInvalid",
+    "GoalRevision",
+    "GoalRevisionConflict",
+    "GoalRevisionDraft",
     "GoalStatus",
+    "GoalStore",
+    "GoalTransitionError",
+    "GoalTransitionKind",
+    "GoalTransitionRecord",
     "InMemoryGoalStore",
-    "PlannedAdmission",
-    "PolicyDecision",
-    "ReconciliationOutcome",
-    "ReconciliationPolicy",
-    "SqliteGoalStore",
-    "StaleGoalFence",
-    "WakeFact",
-    "WakeReason",
-    "wake_reason_for_event",
+    "ScopedGoalStore",
 ]

@@ -20,16 +20,24 @@ from typing import Any
 from maistro.runs.aggregation import terminal_run_payload
 from maistro.runs.lifecycle import (
     InvalidLifecycleTransition,
+    has_live_execution_lease,
     settle_open_node_run,
     transition_node_run,
     transition_run,
 )
-from maistro.runs.model import TERMINAL_RUN_STATUSES, Attempt, NodeRun, Run, RunStatus
+from maistro.runs.model import (
+    TERMINAL_RUN_STATUSES,
+    Attempt,
+    NodeRun,
+    Run,
+    RunStatus,
+)
 from maistro.runs.store import RunCursor, RunIntegrityError, RunStore, run_cursor_key
 
 from .continuation import GraphContinuation, GraphContinuationStore
 from .fair_scan import (
     DEFAULT_MAX_INSPECTED,
+    DEFAULT_PAGE_SIZE,
     ScanContinuation,
     ScanPage,
     cursor_time,
@@ -38,11 +46,20 @@ from .fair_scan import (
 from .hitl import (
     HitlAuthorization,
     earliest_hitl_deadline,
+    record_has_hitl_pause,
     require_hitl_authorization,
     settlement_time,
 )
 from .spine import mirror_lifecycle
 from .stores import answer_record, settle_hitl_record
+from .time_travel import (
+    GraphStateLoad,
+    UnknownGraphRunError,
+    fork_provenance,
+    forked_child_state,
+    load_state,
+    state_epoch_appended,
+)
 from .types import DurableRunRecord
 
 _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
@@ -231,7 +248,13 @@ class CanonicalDurableRunStore:
                 f"Run {record.run_id!r} is not on the canonical spine; durable graph "
                 "execution must obtain its Run from RunStore before checkpointing"
             )
-        await self._continuations.create(GraphContinuation.of(record))
+        await self._continuations.create(
+            state_epoch_appended(
+                GraphContinuation.of(record),
+                previous=None,
+                graph_snapshot_hash=record.run.graph.content_hash,
+            )
+        )
         await mirror_lifecycle(record, run_store=self._run_store)
         return await self._require(record.run_id)
 
@@ -260,9 +283,90 @@ class CanonicalDurableRunStore:
 
     async def update(self, record: DurableRunRecord) -> DurableRunRecord:
         async with self._lock:
-            await self._continuations.update(GraphContinuation.of(record))
+            await self._continuations.update(
+                state_epoch_appended(
+                    GraphContinuation.of(record),
+                    previous=await self._continuations.get(record.run_id),
+                    graph_snapshot_hash=record.run.graph.content_hash,
+                )
+            )
             await mirror_lifecycle(record, run_store=self._run_store)
             return await self._require(record.run_id)
+
+    async def load_state(self, run_id: str, sequence: int) -> GraphStateLoad:
+        """Read the durable Graph state at event position ``sequence`` (#1612).
+
+        Observation only: no provider call, no tool dispatch, no lease claim,
+        no store write. Deterministic -- the same persisted timeline yields the
+        same result, and pruned or tampered evidence fails closed.
+        """
+        return await load_state(
+            run_id=run_id,
+            sequence=sequence,
+            continuations=self._continuations,
+            run_store=self._run_store,
+        )
+
+    async def fork_from_state(
+        self,
+        run_id: str,
+        sequence: int,
+        reason: str,
+        *,
+        actor_principal_id: str | None = None,
+    ) -> DurableRunRecord:
+        """Fork a child Run from the state at event position ``sequence`` (#1612).
+
+        The fork always creates a child Run -- never a new Attempt on the
+        source, which is reserved for recovery and HITL resume -- and it never
+        writes the source Run: its history, settled or live, stays exactly as
+        it is. The child is admitted QUEUED with the fork fact in its
+        provenance and a continuation whose first timeline epoch is the
+        historical state, all before this call returns; the fork itself starts
+        no work. New effects begin only when the child is explicitly resumed
+        through the ordinary durable executor, under the canonical
+        Attempt/Invocation firewall.
+
+        A crash between the child Run's spine row and its continuation write
+        leaves the same admission window every admitted Run has: the queued
+        child bootstrap-recovers from its recorded launch provenance.
+        """
+        if not reason.strip():
+            raise ValueError("a fork requires a non-blank reason")
+        snapshot = await self.load_state(run_id, sequence)
+        parent = await self._run_store.get_run(run_id)
+        if parent is None:  # pragma: no cover - load_state already verified this
+            raise UnknownGraphRunError(f"run {run_id!r} is not on the canonical spine")
+        scores = await self._run_store.list_eval_scores(run_id)
+        latest_eval = (
+            {
+                key: getattr(max(scores, key=lambda item: (item.scored_at, item.eval_id)), key)
+                for key in ("goal_id", "goal_revision", "rubric_id", "rubric_revision")
+            }
+            if scores
+            else None
+        )
+        child = await self._run_store.create_run(
+            parent.graph.materialize(),
+            parent_run_id=run_id,
+            actor_principal_id=actor_principal_id or parent.actor_principal_id,
+            provenance=fork_provenance(
+                parent=parent,
+                source_sequence=snapshot.sequence,
+                source_state_hash=snapshot.state_hash,
+                reason=reason,
+                latest_eval=latest_eval,
+                forked_at=datetime.now(UTC),
+            ),
+            initial_status=RunStatus.QUEUED,
+        )
+        return await self.create(
+            DurableRunRecord(
+                run=child,
+                graph_state=forked_child_state(snapshot.graph_state, child_run_id=child.run_id),
+                version=1,
+            )
+        )
 
     async def reconcile_run(self, run_id: str) -> bool:
         """Repair one known Run without depending on scan ordering."""
@@ -384,6 +488,8 @@ class CanonicalDurableRunStore:
             return True
         if await self._reconcile_terminal_graph(continuation, canonical, moment):
             return True
+        if await self._reconcile_stalled_active_frontier(continuation, canonical, moment):
+            return True
         if await self._reconcile_unstarted_claim(continuation, canonical, moment):
             return True
         if canonical.status is RunStatus.RUNNING and continuation.status in {
@@ -492,10 +598,12 @@ class CanonicalDurableRunStore:
             return False
         if target is RunStatus.CANCELLED and _matching_hitl_settlement(continuation, target):
             return False
-        if not self._terminal_long_observed(continuation, moment):
-            return False
         record = await self.get(run_id)
         if record is None or not self._spine_is_quiet(record, moment):
+            return False
+        if not self._continuation_ahead_of_spine(
+            record, continuation
+        ) and not self._terminal_long_observed(continuation, moment):
             return False
         if target is RunStatus.COMPLETED:
             result, error = terminal_run_payload(record.node_runs, target)
@@ -510,6 +618,77 @@ class CanonicalDurableRunStore:
         settled = await self._mirror_terminal_hitl(desired, run_id, target)
         self._terminal_first_seen.pop(run_id, None)
         return settled
+
+    @staticmethod
+    def _continuation_ahead_of_spine(
+        record: DurableRunRecord,
+        continuation: GraphContinuation,
+    ) -> bool:
+        """Whether the continuation settled while open NodeRuns remain on the spine."""
+        if continuation.status not in _GRAPH_TERMINAL_STATUSES:
+            return False
+        if record.run.status in TERMINAL_RUN_STATUSES:
+            return False
+        return any(node_run.status not in TERMINAL_RUN_STATUSES for node_run in record.node_runs)
+
+    async def _reconcile_stalled_active_frontier(
+        self,
+        continuation: GraphContinuation,
+        canonical: Run,
+        moment: datetime,
+    ) -> bool:
+        """Re-queue graph work after a frontier NodeRun landed without its checkpoint."""
+        if (
+            continuation.status is not RunStatus.RUNNING
+            or canonical.status is not RunStatus.RUNNING
+        ):
+            return False
+        if continuation.resume_at is not None:
+            return False
+        record = await self.get(continuation.run_id)
+        if record is None or not self._has_stalled_active_frontier(record, moment):
+            return False
+        visible = continuation.model_copy(
+            update={"resume_at": moment, "version": continuation.version + 1}
+        )
+        try:
+            await self._continuations.update(visible)
+        except ValueError:
+            return False
+        return True
+
+    def _has_stalled_active_frontier(self, record: DurableRunRecord, moment: datetime) -> bool:
+        """Whether active NodeRuns exist with no live Attempt holding them.
+
+        An empty active frontier is not by itself evidence of a stall: a live
+        walker that has committed its final empty-frontier checkpoint sits in
+        exactly this state while it writes its terminal Run checkpoint (#1861).
+        Claiming that continuation would advance the version under the walker
+        and kill its final checkpoint with a version regression, so the empty
+        frontier is claimed only once the spine has been quiet for the
+        terminal-settle period -- the same span past which no live walker is
+        assumed anywhere else in this store. A walker that really died in that
+        window is recovered on the first tick after the period; a live one
+        never spends that long between two adjacent writes.
+        """
+        active_node_runs = [
+            node_run
+            for node_run in record.node_runs
+            if node_run.status in {RunStatus.CREATED, RunStatus.QUEUED, RunStatus.RUNNING}
+        ]
+        if not active_node_runs:
+            return self._spine_is_quiet(record, moment)
+        for node_run in active_node_runs:
+            attempts = [
+                attempt
+                for attempt in record.attempts
+                if attempt.node_run_id == node_run.node_run_id
+            ]
+            if not attempts:
+                return True
+            if has_live_execution_lease(attempts, moment):
+                return False
+        return True
 
     def _terminal_long_observed(self, continuation: GraphContinuation, moment: datetime) -> bool:
         """Whether this terminal continuation version has been seen for the quiet period.
@@ -631,6 +810,102 @@ class CanonicalDurableRunStore:
             run_ids = [run.run_id for run in runs]
         records = await self._assemble_all(run_ids)
         return [record for record in records if record.run.status is status]
+
+    async def list_hitl_paused(
+        self,
+        *,
+        limit: int = 100,
+        project_id: str | None = None,
+        workspace_id: str | None = None,
+        after: tuple[str, str] | None = None,
+        max_inspected: int = DEFAULT_MAX_INSPECTED,
+    ) -> ScanPage[DurableRunRecord, tuple[str, str]]:
+        """Paused Runs holding a human pause, oldest-created-first (#1109).
+
+        Pages the pause-kind projection so human eligibility is decided before
+        the limit: a prefix of machine-only PAUSED Runs, however long, costs
+        this query nothing. The index is a projection, so each candidate is
+        still revalidated below against the assembled canonical record — a
+        stale row whose Run has moved on contributes no item and costs only
+        its place in the page.
+
+        ``workspace_id`` is canonical Run scope (#1240). The continuation
+        index cannot carry it, so — like staleness — it filters the read
+        after assembly, which is why this returns a :class:`ScanPage` and
+        keeps walking index pages past the rows it drops, up to
+        ``max_inspected``: a page that assembles to nothing eligible is
+        progress through the projection, not the end of it, and ``exhausted``
+        is set only when the projection itself ran out. A Workspace-wide walk
+        (no ``project_id``) over a large multi-tenant store can still spend
+        ``max_inspected`` on foreign rows before reaching its own — callers
+        should pass ``project_id`` (a Project belongs to exactly one
+        Workspace) so the keyset itself runs over eligible rows only.
+        """
+        if limit <= 0 or max_inspected <= 0:
+            return ScanPage(items=[], resume_after=after, inspected=0)
+        items: list[DurableRunRecord] = []
+        cursor = after
+        inspected = 0
+        while len(items) < limit and inspected < max_inspected:
+            # Minimum rows per projection read, so a small item target does
+            # not force one round trip per ineligible row.
+            requested = min(
+                max(limit, DEFAULT_PAGE_SIZE),
+                max_inspected - inspected,
+            )
+            run_ids = await self._continuations.list_hitl_paused_run_ids(
+                limit=requested,
+                project_id=project_id,
+                after=cursor,
+            )
+            if not run_ids:
+                return ScanPage(
+                    items=items,
+                    resume_after=cursor,
+                    inspected=inspected,
+                    exhausted=True,
+                )
+            for run_id in run_ids:
+                inspected += 1
+                candidate = await self._hitl_paused_candidate(run_id, workspace_id)
+                if candidate is None:
+                    # Deleted between the index read and this read: there is
+                    # no row left to page past, the same disposition
+                    # `scan_due_page` gives its own vanished candidates.
+                    continue
+                cursor, record = candidate
+                if record is None:
+                    continue
+                items.append(record)
+                if len(items) >= limit:
+                    break
+        return ScanPage(items=items, resume_after=cursor, inspected=inspected)
+
+    async def _hitl_paused_candidate(
+        self,
+        run_id: str,
+        workspace_id: str | None,
+    ) -> tuple[tuple[str, str], DurableRunRecord | None] | None:
+        """One projection row's keyset position, and its record if eligible.
+
+        The record is not ``None`` only when the assembled canonical Run
+        still agrees with the projection: PAUSED, carrying a human pause,
+        and inside the caller's Workspace when one is given (#1109, #1240).
+        ``None`` means the row contributes no position: its Run was deleted
+        between the index read and this read, the same disposition
+        ``scan_due_page`` gives its own vanished candidates.
+        """
+        record = await self.get(run_id)
+        if record is None:
+            return None
+        position = (cursor_time(record.run.created_at), record.run_id)
+        if (
+            record.run.status is RunStatus.PAUSED
+            and record_has_hitl_pause(record)
+            and (workspace_id is None or record.run.workspace_id == workspace_id)
+        ):
+            return position, record
+        return position, None
 
     async def list_due(
         self,
@@ -867,7 +1142,13 @@ class CanonicalDurableRunStore:
             ):
                 raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
             updated = mutate(current)
-            await self._continuations.update(GraphContinuation.of(updated))
+            await self._continuations.update(
+                state_epoch_appended(
+                    GraphContinuation.of(updated),
+                    previous=await self._continuations.get(run_id),
+                    graph_snapshot_hash=updated.run.graph.content_hash,
+                )
+            )
             await mirror_lifecycle(updated, run_store=self._run_store)
             return await self._require(run_id)
 

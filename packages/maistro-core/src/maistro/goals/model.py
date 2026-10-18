@@ -1,186 +1,266 @@
-"""Durable Goal and reconciliation control records (M3 #806).
+"""The canonical Goal and its immutable revisions (`maistro.goals`, #1572).
 
-A :class:`Goal` is the canonical Goal identity from the interop ontology
-(``maistro.goals`` / ``goal_id`` / ``goal_revision``, ADR-019 and
-``maistro.interop.contract``). The reconciliation control records here
-(:class:`GoalClaim`, :class:`WakeFact`, :class:`GoalAdmission`) are *derived
-control metadata* over that identity: they never redefine Goal lifecycle and
-never carry Run/NodeRun/Attempt state — physical execution lineage stays in
-the canonical Run store under ``Goal -> Graph -> Run -> NodeRun -> Attempt``.
+`INTEROP_ONTOLOGY_V1` names this module the one owner of the shared ``Goal``
+concept — ``goal_id``, parented on a Project, revisioned by ``goal_revision``
+(`maistro.interop.contract`). Every Goal-consuming surface projects from here;
+none of them redefines the concept or keeps a product-private Goal lifecycle.
+
+The Goal is **desired state and accountability, not work**. It owns what is
+wanted, when it is satisfied, and when to stop; the canonical
+`Goal -> Graph -> Run -> NodeRun -> Attempt` spine owns the doing. Nothing on
+a Run's outcome writes Goal state implicitly — the only writer of a lifecycle
+transition is an explicit, authorized :meth:`GoalStore.transition_goal` call —
+and no execution state (running, queued, failed attempt) appears in the
+vocabulary below on purpose.
+
+Revisions are **append-only**: an accepted update appends a new immutable
+:class:`GoalRevision` and moves the Goal's ``current_revision`` pointer onto
+it. Nothing rewrites or deletes a revision, so the desired state a consumer
+acted on stays readable after the Goal moved on — the same rule
+``RunEvalScore`` holds its eval evidence to. Every mutation is a
+compare-and-set on ``current_revision``: a caller that read revision N may
+only mutate while the Goal still sits at N, and two concurrent mutators
+produce exactly one winner.
+
+Lifecycle states are **domain state, deliberately not a work lifecycle**:
+``active`` is the only mutable state, and every other state is terminal and
+final — a satisfied, cancelled, failed or superseded Goal never mutates again.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-from enum import StrEnum
-from typing import Any
-from uuid import uuid4
+import enum
+import uuid
+from datetime import UTC, datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-def _utcnow() -> datetime:
+def _now() -> datetime:
     return datetime.now(UTC)
 
 
-class GoalStatus(StrEnum):
-    """Reconciliation posture of a Goal — deliberately *not* an execution lifecycle.
+def _new_id() -> str:
+    return uuid.uuid4().hex
 
-    The vocabulary avoids Run/NodeRun/Attempt lifecycle words on purpose:
-    ``Goal -> Graph -> Run -> NodeRun -> Attempt`` is the one execution
-    identity (SPEC-177, check-execution-lifecycles), and this control-loop
-    state must never read as a second one. A posture says whether the
-    reconciler may claim and decide:
 
-    - ``READY`` — the Goal may be claimed and decided now.
-    - ``DORMANT`` — asleep until a relevant state change or the bounded
-      safety sweep; consumes no decisions (and no model calls).
-    - ``GATED`` — fenced off by a stop condition or an external gate (for
-      example waiting on a human); sleeps until the gate resolves.
-    - ``WITHDRAWN`` — stopped by policy or a person; fences admission
-      across restarts.
-    - ``SETTLED`` — the stop condition is satisfied; terminal.
-    """
+def _require_non_empty(value: str, label: str) -> None:
+    if not value or not value.strip():
+        raise ValueError(f"{label} must be a non-empty string")
 
-    READY = "ready"
-    DORMANT = "dormant"
-    GATED = "gated"
-    WITHDRAWN = "withdrawn"
-    SETTLED = "settled"
 
-    @classmethod
-    def sleeping(cls) -> tuple[GoalStatus, ...]:
-        return (cls.DORMANT, cls.GATED)
+class GoalStatus:
+    """The domain lifecycle of a Goal. ``ACTIVE`` is the only state a Goal can
+    leave; the rest are terminal, and a terminal Goal is immutable."""
 
-    @classmethod
-    def terminal(cls) -> tuple[GoalStatus, ...]:
-        return (cls.WITHDRAWN, cls.SETTLED)
+    ACTIVE = "active"
+    SATISFIED = "satisfied"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+    SUPERSEDED = "superseded"
+
+
+#: The states a Goal may never leave. "Terminal states are final" is enforced
+#: by every store backend and by the conformance suite, not by convention.
+TERMINAL_GOAL_STATUSES: frozenset[str] = frozenset(
+    {
+        GoalStatus.SATISFIED,
+        GoalStatus.CANCELLED,
+        GoalStatus.FAILED,
+        GoalStatus.SUPERSEDED,
+    }
+)
+
+#: Where a lifecycle transition may go. Keys are the only states a mutation
+#: can start from; terminal states have no row, so any transition out of one
+#: is illegal by construction rather than by a second check to keep in step.
+_ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
+    GoalStatus.ACTIVE: frozenset(TERMINAL_GOAL_STATUSES),
+}
+
+
+def transition_is_legal(current: str, target: str) -> bool:
+    """Whether a Goal in ``current`` may move to ``target``."""
+    return target in _ALLOWED_TRANSITIONS.get(current, frozenset())
+
+
+# The condition-list fields carrying inline vulture ``V107`` markers below are
+# the Goal revision's serialization surface: the store writes the record once
+# via ``model_dump``/payload, and consumers (the conformance suite, then the
+# Goal-enumeration and interview-commit consumers #805/#806/#1823) read them
+# back through the payload round-trip. Vulture cannot see framework-driven
+# serialization reads, so the declarations carry inline vulture markers
+# instead of ledger debt — the same disposition the #779 result contract uses.
+
+
+class GoalRevisionDraft(BaseModel):
+    """The desired state a proposer appends — everything a revision carries
+    except the pointer number and its acceptance time, which the store stamps
+    under the compare-and-set so two proposers cannot claim one number."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    desired_state: str
+    success_conditions: tuple[str, ...] = ()  # noqa: V107
+    stop_conditions: tuple[str, ...] = ()  # noqa: V107
+    author: str
+
+    @model_validator(mode="after")  # noqa: V105
+    def _validate_draft(self) -> GoalRevisionDraft:
+        _require_non_empty(self.desired_state, "GoalRevisionDraft.desired_state")
+        _require_non_empty(self.author, "GoalRevisionDraft.author")
+        return self
+
+
+class GoalRevision(GoalRevisionDraft):
+    """One immutable desired state. ``revision`` is the 1-based pointer value
+    the Goal names while this is current; the chain ``[1, 2, ...]`` is
+    append-only and every earlier entry stays exactly as accepted."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    revision: int = Field(ge=1)
+    created_at: datetime = Field(default_factory=_now)
 
 
 class Goal(BaseModel):
-    """Canonical Goal record with reconciliation-relevant control fields."""
+    """The canonical Goal (`maistro.goals`): stable identity, Project scope,
+    an accountable Agent, optional Subgoal lineage, and a lifecycle state.
 
-    goal_id: str
-    workspace_id: str = ""
-    project_id: str = ""
-    owning_agent_id: str = ""
-    revision: int = 1
-    status: GoalStatus = GoalStatus.READY
-    runs_admitted: int = 0
-    budget_max_runs: int | None = None
-    deadline_at: datetime | None = None
-    stop_condition: str | None = None
-    blocked_reason: str | None = None
-    awake_after: datetime | None = None
-    cancelled_reason: str | None = None
-    created_at: datetime = Field(default_factory=_utcnow)
-    updated_at: datetime = Field(default_factory=_utcnow)
-
-    def budget_exhausted(self) -> bool:
-        return self.budget_max_runs is not None and self.runs_admitted >= self.budget_max_runs
-
-    def deadline_passed(self, now: datetime) -> bool:
-        return self.deadline_at is not None and now >= self.deadline_at
-
-    def awake(self, now: datetime) -> bool:
-        """Whether the bounded safety sweep should consider this Goal due."""
-        return self.awake_after is not None and now >= self.awake_after
-
-
-class GoalClaim(BaseModel):
-    """The one durable claim/lease/fence deciding which reconciler may act.
-
-    Mirrors the generic leasing contract (ADR-081626-f383, ADR-082526-b36a):
-    a monotonic ``fence_epoch`` plus an opaque ``fencing_token``. A holder
-    must present the current token to admit work; losing or expiring the
-    claim makes every earlier token stale, so a superseded reconciler cannot
-    start a later Run even if its process keeps running.
+    ``current_revision`` is the explicit pointer into the append-only revision
+    chain; it is also the compare-and-set token every mutation is guarded by.
     """
 
-    goal_id: str
-    holder: str
-    fence_epoch: int
-    fencing_token: str = Field(default_factory=lambda: uuid4().hex)
-    acquired_at: datetime = Field(default_factory=_utcnow)
-    expires_at: datetime | None = None
+    model_config = ConfigDict(extra="forbid")
 
-    def lapsed(self, now: datetime) -> bool:
-        return self.expires_at is not None and now >= self.expires_at
+    goal_id: str = Field(default_factory=_new_id)
+    workspace_id: str
+    project_id: str
+    agent_id: str
+    parent_goal_id: str | None = None
+    status: str = Field(default=GoalStatus.ACTIVE)
+    current_revision: int = Field(default=1, ge=1)
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+    @model_validator(mode="after")  # noqa: V105
+    def _validate_goal(self) -> Goal:
+        _require_non_empty(self.goal_id, "Goal.goal_id")
+        _require_non_empty(self.workspace_id, "Goal.workspace_id")
+        _require_non_empty(self.project_id, "Goal.project_id")
+        _require_non_empty(self.agent_id, "Goal.agent_id")
+        if self.parent_goal_id is not None:
+            _require_non_empty(self.parent_goal_id, "Goal.parent_goal_id")
+            if self.parent_goal_id == self.goal_id:
+                raise ValueError("Goal cannot be its own parent")
+        # Validate that status is one of the allowed values
+        if self.status not in {
+            GoalStatus.ACTIVE,
+            GoalStatus.SATISFIED,
+            GoalStatus.CANCELLED,
+            GoalStatus.FAILED,
+            GoalStatus.SUPERSEDED,
+        }:
+            raise ValueError(f"Invalid status: {self.status}")
+        return self
 
 
-class WakeReason(StrEnum):
-    """Why the owning Workspace Agent should reconcile a Goal now."""
+class GoalTransitionKind(enum.StrEnum):
+    """The two explicit, recorded mutations that are not revision appends.
 
-    GOAL_REVISION = "goal.revision"
-    RUN_TERMINAL = "run.terminal"
-    SUBGOAL_TRANSITION = "goal.subgoal.transition"
-    HITL_RESOLVED = "goal.hitl.resolved"
-    EVIDENCE_UPDATED = "goal.evidence.updated"
-    SAFETY_SWEEP = "safety.sweep"
-    MANUAL = "manual"
-
-
-class WakeFact(BaseModel):
-    """One durable wakeup fact for a Goal.
-
-    ``wake_id`` is derived from the canonical correlation id (typically the
-    ``event_id`` of the canonical Event that caused the change), so replayed
-    or duplicated delivery of the same Event collapses to one wake fact.
+    A status move is the lifecycle transition itself; an agent reassign is how
+    accountability changes hands. Both are attributed records, never in-place
+    edits — the history below is what makes "changing the owning Agent is an
+    explicit, recorded transition" auditable rather than asserted.
     """
 
-    wake_id: str
-    goal_id: str
-    reason: WakeReason
-    correlation_id: str = ""
-    unblocks: bool = False
-    created_at: datetime = Field(default_factory=_utcnow)
-    dispatched_at: datetime | None = None
+    STATUS = "status"
+    AGENT_REASSIGN = "agent-reassign"
 
 
-class GoalAdmission(BaseModel):
-    """A durable, idempotent record that a decision admitted next work.
+class GoalTransitionRecord(BaseModel):
+    """One recorded, attributed Goal mutation (audit surface #805/#806 read).
 
-    ``decision_key`` is the idempotency key: the same decision replayed after
-    a duplicate Event or a restart resolves to the same admission row instead
-    of a second admission. ``physical_ref`` names the canonical artifact the
-    caller created (a ``run_id`` for a Run, a ``goal_id`` for a delegated
-    Subgoal); reconciliation records the reference, it never *is* the
-    execution.
+    The fields a kind does not use stay ``None`` rather than growing per-kind
+    shapes: one append-only record type, one read path. The fields below are
+    written once here and read back through the stores' payload round-trip;
+    they are the record's contract, not dead weight.
     """
 
-    admission_id: str = Field(default_factory=lambda: uuid4().hex)
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     goal_id: str
-    revision: int
-    fence_epoch: int
-    decision_key: str
-    kind: str = "run"
-    correlation_id: str = ""
-    admitted_at: datetime = Field(default_factory=_utcnow)
-    completed_at: datetime | None = None
-    physical_ref: str | None = None
+    kind: GoalTransitionKind
+    at: datetime = Field(default_factory=_now)
+    actor: str
+    #: The Goal's revision pointer after the recorded mutation — the state the
+    #: actor had to hold for the compare-and-set to accept the change.
+    revision: int = Field(ge=1)
+    from_status: str | None = None  # noqa: V107
+    to_status: str | None = None  # noqa: V107
+    from_agent_id: str | None = None  # noqa: V107
+    to_agent_id: str | None = None  # noqa: V107
+
+    @model_validator(mode="after")  # noqa: V105
+    def _validate_record(self) -> GoalTransitionRecord:
+        _require_non_empty(self.goal_id, "GoalTransitionRecord.goal_id")
+        _require_non_empty(self.actor, "GoalTransitionRecord.actor")
+        if self.kind is GoalTransitionKind.STATUS and (
+            self.from_status is None or self.to_status is None
+        ):
+            raise ValueError("a status transition records both sides of the move")
+        if self.kind is GoalTransitionKind.AGENT_REASSIGN and (
+            self.from_agent_id is None or self.to_agent_id is None
+        ):
+            raise ValueError("an agent reassignment records both sides of the move")
+        return self
 
 
-class GoalFacts(BaseModel):
-    """Durable facts a policy sees when deciding. No process-local queue."""
+class GoalNotFound(KeyError):
+    """No Goal carries this id."""
 
-    goal: Goal
-    pending_wakes: tuple[WakeFact, ...] = ()
-    pending_admissions: tuple[GoalAdmission, ...] = ()
-    now: datetime = Field(default_factory=_utcnow)
-
-
-def default_lease_ttl() -> timedelta:
-    """Default claim TTL: two missed renewals lapse the lease (ADR-082526-b36a cadence guidance)."""
-    return timedelta(seconds=30)
+    def __init__(self, goal_id: str) -> None:
+        super().__init__(goal_id)
+        self.goal_id = goal_id
 
 
-def wake_id_for(goal_id: str, correlation_id: str) -> str:
-    """Deterministic wake id: same Goal + same canonical event = same fact."""
-    return f"{goal_id}:{correlation_id}"
+class GoalRevisionConflict(LookupError):
+    """The compare-and-set lost: the Goal moved before this caller's write
+    landed. ``expected_revision`` is what the caller held; ``current_revision``
+    is what the store has now. A stale update and the loser of a concurrent
+    race are the same refusal — neither says whether the other writer was
+    another process or another principal."""
+
+    def __init__(self, goal_id: str, expected_revision: int, current_revision: int) -> None:
+        super().__init__(
+            f"{goal_id}: holding revision {expected_revision}, current is {current_revision}"
+        )
+        self.goal_id = goal_id
+        self.expected_revision = expected_revision
+        self.current_revision = current_revision
 
 
-def coerce_datetime(value: Any) -> datetime:
-    """Parse a stored datetime that may have been serialized as text."""
-    if isinstance(value, datetime):
-        return value
-    return datetime.fromisoformat(str(value))
+class GoalTransitionError(ValueError):
+    """A lifecycle move the vocabulary refuses: out of a terminal state, into
+    the state already held, or a reassignment that reassigns nothing."""
+
+
+class GoalParentInvalid(ValueError):
+    """A Subgoal lineage that would not preserve the parent Goal's scope: the
+    parent does not exist, or lives in another Workspace or Project."""
+
+
+__all__ = [
+    "TERMINAL_GOAL_STATUSES",
+    "Goal",
+    "GoalNotFound",
+    "GoalParentInvalid",
+    "GoalRevision",
+    "GoalRevisionConflict",
+    "GoalRevisionDraft",
+    "GoalStatus",
+    "GoalTransitionError",
+    "GoalTransitionKind",
+    "GoalTransitionRecord",
+    "transition_is_legal",
+]

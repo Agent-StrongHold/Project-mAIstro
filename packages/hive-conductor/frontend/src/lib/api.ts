@@ -1,5 +1,7 @@
 /** Relative API base (Vite proxies /v1 and /health in dev). */
 import { debugApi } from "./debug";
+import { rumApiRequest } from "./rum";
+import { sanitizeRequestId } from "./rumSchema";
 
 export const API_BASE = "";
 
@@ -61,7 +63,18 @@ async function request<T>(
     // `detail` from -- so it gets the same human treatment as a bad status
     // (#1436), not a raw `TypeError: Failed to fetch` or `AbortError`.
     const timedOut = err instanceof DOMException && err.name === "AbortError";
-    debugApi(method, path, 0, performance.now() - started, timedOut ? "timed out" : err);
+    const failedMs = performance.now() - started;
+    debugApi(method, path, 0, failedMs, timedOut ? "timed out" : err);
+    // #1420: a transport failure is its own outcome and carries NO request
+    // id -- there was no response, so none is fabricated.
+    rumApiRequest({
+      method,
+      path,
+      status: 0,
+      outcome: timedOut ? "timeout" : "network_error",
+      durationMs: failedMs,
+      rawRequestId: null,
+    });
     throw new ApiError(
       timedOut
         ? "This took too long and was cancelled. Try again."
@@ -73,6 +86,18 @@ async function request<T>(
     clearTimeout(timeout);
   }
   const ms = performance.now() - started;
+  // #1420: the correlation id the response already carries -- the same one
+  // RequestIDMiddleware stamps on every backend response and log line.
+  // Validated against the middleware's own charset before it can go anywhere.
+  const requestId = sanitizeRequestId(r.headers.get("X-Request-ID"));
+  rumApiRequest({
+    method,
+    path,
+    status: r.status,
+    outcome: r.ok ? "ok" : "http_error",
+    durationMs: ms,
+    rawRequestId: requestId,
+  });
   let parsed: unknown;
   if (text && r.status !== 204) {
     try {
