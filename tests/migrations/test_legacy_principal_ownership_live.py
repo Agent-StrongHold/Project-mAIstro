@@ -82,14 +82,21 @@ values ('m-p1-default', 'ws1', 'proj1', 'default', '{"principal_id":"default","g
        ('m-p1-conductor', 'ws1', 'proj1', 'conductor', '{"principal_id":"conductor","grants":["write"],"denies":["delete"],"delegable_grants":[]}'),
        ('m-p2-default', 'ws2', 'proj2', 'default', '{"principal_id":"default","grants":["run"],"denies":[],"delegable_grants":[]}');
 
-insert into learnings (trigger_keys, learning, tool_name, user_id)
-values ('["k"]', 'legacy learning', 'tool', 'default'), ('["k2"]', 'new learning', 'tool', 'conductor');
+insert into learnings (trigger_keys, learning, tool_name, user_id, org_id)
+values ('["k"]', 'legacy learning', 'tool', 'default', 'default'), ('["k2"]', 'new learning', 'tool', 'conductor', 'conductor');
 
-insert into episodic_memories (memory_id, tier, content, user_id)
-values ('mem-default', 'hot', 'legacy memory', 'default'), ('mem-conductor', 'hot', 'new memory', 'conductor');
+insert into episodic_memories (memory_id, tier, content, user_id, org_id)
+values ('mem-default', 'hot', 'legacy memory', 'default', 'default'), ('mem-conductor', 'hot', 'new memory', 'conductor', 'conductor');
 
-insert into outcomes (request_id, user_id) values ('req-default', 'default'), ('req-conductor', 'conductor');
-insert into audit_log (user_id) values ('default'), ('conductor');
+insert into outcomes (request_id, user_id, org_id) values ('req-default', 'default', 'default'), ('req-conductor', 'conductor', 'conductor');
+insert into audit_log (user_id, org_id) values ('default', 'default'), ('conductor', 'conductor');
+
+-- Task visibility is scoped by the authenticated principal (the API passes
+-- ``user_id=owner`` into every task read), so a task owned by the installer-era
+-- principal must follow the identity or the migrated operator loses it.
+insert into tasks (id, status, description, workspace, user_id, actor_kind, lane, priority_tier)
+values ('task-default', 'queued', 'legacy task', 'ws1', 'default', 'user', 'interactive', 'P2'),
+       ('task-conductor', 'queued', 'new task', 'ws1', 'conductor', 'user', 'interactive', 'P2');
 
 insert into design_projects (name, skill_slug, design_system_slug, org_id)
 values ('Legacy', 's', 'ds', 'default'), ('New', 's', 'ds', 'conductor');
@@ -101,6 +108,17 @@ insert into asset_instances (instance_id, canvas_id, definition_id, org_id)
 values ('ai-default', 'canvas1', 'ad-default', 'default'), ('ai-conductor', 'canvas1', 'ad-conductor', 'conductor');
 insert into books (book_id, title, world_style, org_id)
 values ('book-default', 'Legacy Book', '{}', 'default'), ('book-conductor', 'New Book', '{}', 'conductor');
+
+-- The Canvas owner column is the authenticated principal (`_owner_id(auth)`);
+-- a canvas whose org_id no longer matches 404s for the migrated operator.
+insert into canvases (id, name, width, height, org_id)
+values ('canvas-default', 'Legacy Canvas', 1024, 768, 'default'),
+       ('canvas-conductor', 'New Canvas', 1024, 768, 'conductor');
+
+-- Durable elevation grants name who may hold an elevated capability.
+insert into elevation_grants (principal_id, action_class, kind, granted_at, ttl_seconds, signed_by)
+values ('default', 'tool.invoke', 'temporary', '2026-01-01T00:00:00Z'::timestamptz, 3600, 'test-signer'),
+       ('conductor', 'tool.invoke', 'temporary', '2026-01-02T00:00:00Z'::timestamptz, 3600, 'test-signer');
 
 -- default carries more strikes but is not disabled; conductor is. The merged
 -- principal must sum the history and stay disabled: neither side's abuse state
@@ -252,9 +270,11 @@ def _assert_losslessly_migrated() -> None:
     # proj2's grants moved with it.
     assert json.loads(proj2)["grants"] == ["run"]
 
-    # Append-only evidence: both rows survive, retargeted, none dropped.
+    # Append-only evidence: both rows survive, retargeted, none dropped. The
+    # org scope labels ride the same identity (same installer-era value).
     for table in ("learnings", "episodic_memories", "outcomes", "audit_log"):
         assert _column_values(table, "user_id") == ["conductor", "conductor"], table
+        assert _column_values(table, "org_id") == ["conductor", "conductor"], table
     for table in (
         "design_projects",
         "child_profiles",
@@ -263,6 +283,21 @@ def _assert_losslessly_migrated() -> None:
         "books",
     ):
         assert _column_values(table, "org_id") == ["conductor", "conductor"], table
+
+    # Task ownership follows the identity: the migrated operator still sees
+    # every task the legacy principal owned, and loses none to the rename.
+    assert _column_values("tasks", "user_id") == ["conductor", "conductor"]
+    # Canvas ownership too: org_id is the authenticated owner, and a stale one
+    # 404s the operator out of their own canvas.
+    assert _query("select id, org_id from canvases order by id") == [
+        ("canvas-conductor", "conductor"),
+        ("canvas-default", "conductor"),
+    ]
+    # Durable elevation grants keep granting to the migrated principal.
+    assert _query("select principal_id from elevation_grants order by id") == [
+        ("conductor",),
+        ("conductor",),
+    ]
 
     # Abuse state summed, never reset: 2 + 1 strikes, still disabled, the
     # later violation timestamp, and the violation row retargeted with it.
@@ -356,6 +391,8 @@ class TestForcedProcessDeathIsRestartReconcilable:
                 "select payload->>'actor_principal_id' from canonical_runs"
                 " where run_id = 'run-default'"
             ) == [("default",)]
+            # Task ownership untouched too.
+            assert _column_values("tasks", "user_id") == ["conductor", "default"]
         finally:
             if migration.poll() is None:  # pragma: no cover - only on assertion failure
                 migration.kill()

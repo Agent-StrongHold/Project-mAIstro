@@ -140,30 +140,51 @@ def upgrade() -> None:
 
     # Direct principal ownership columns.  These tables are either append-only
     # evidence or have no uniqueness boundary, so an in-place update is lossless.
-    for table in (
-        "learnings",
-        "episodic_memories",
-        "outcomes",
-        "audit_log",
-        "design_projects",
-        "child_profiles",
-        "asset_definitions",
-        "asset_instances",
-        "books",
+    # ``tasks.user_id`` is the task-visibility boundary (the API scopes every
+    # task read to the authenticated principal) and ``canvases.org_id`` is the
+    # Canvas owner (`_owner_id(auth)`; reads 404 unless it matches), so both
+    # follow the identity. The ``org_id`` columns are scope labels written from
+    # the same authenticated principal (episodic/memory/audit scope filters,
+    # Design artifact ownership), and ``elevation_grants.principal_id`` names
+    # who may hold a durable elevation — leaving any of them behind would
+    # strand the legacy principal's resources after the credential moves.
+    for table, column in (
+        ("learnings", "user_id"),
+        ("episodic_memories", "user_id"),
+        ("outcomes", "user_id"),
+        ("audit_log", "user_id"),
+        ("tasks", "user_id"),
+        ("canvases", "org_id"),
+        ("learnings", "org_id"),
+        ("episodic_memories", "org_id"),
+        ("outcomes", "org_id"),
+        ("audit_log", "org_id"),
+        ("learning_stage_transitions", "org_id"),
+        ("design_projects", "org_id"),
+        ("design_artifact_locks", "org_id"),
+        ("design_artifact_versions", "org_id"),
+        ("design_branch_controls", "org_id"),
+        ("design_project_guidance", "org_id"),
+        ("child_profiles", "org_id"),
+        ("asset_definitions", "org_id"),
+        ("asset_instances", "org_id"),
+        ("books", "org_id"),
     ):
-        column = (
-            "org_id"
-            if table
-            in {
-                "design_projects",
-                "child_profiles",
-                "asset_definitions",
-                "asset_instances",
-                "books",
-            }
-            else "user_id"
-        )
         op.execute(f"UPDATE {table} SET {column} = 'conductor' WHERE {column} = 'default'")
+
+    # Durable elevation grants name who may hold an elevated capability; the
+    # grant must follow the principal or the migrated operator loses it.
+    op.execute(
+        "UPDATE elevation_grants SET principal_id = 'conductor' WHERE principal_id = 'default'"
+    )
+
+    # Deliberately NOT migrated: ``task_idempotency``'s principal columns and
+    # its sha256 ``scope_key``. A claim is TTL-bounded and can only be matched
+    # by a request authenticating as its principal; the retired credential no
+    # longer resolves, so the rows are unreachable history that the existing
+    # ``expires_at`` purge retires. Recomputing the digest in SQL would be the
+    # riskier path. The mapping row is the resolver for anything else that
+    # reads a historical principal string out of an immutable payload.
 
     # Strike state is keyed by principal and has a foreign-keyed violation log.
     # Merge state first, retarget violations second, then remove the old key.
