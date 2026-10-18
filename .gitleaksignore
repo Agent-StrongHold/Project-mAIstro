@@ -121,4 +121,9 @@ f83de3b7a431523a47234102499d35218b9881fe:docs/testing/inventory-notes/837-persis
 # exact value the smoke proves is accepted (and the control assertion that a
 # request WITHOUT a key is refused). Fingerprint scoped to the introducing
 # commit, path, rule and line; later edits to the file are still scanned.
+# Recorded twice because #2201 landed twice: 13e8d307 is the PR-branch
+# commit (unreachable once the squash-merge landed) and c6d2fbdba is the
+# squash-merge actually reachable from develop, where the same line sits at
+# 164. Range scans over merged history only ever see the latter.
 13e8d307574e3c7e634caf181f49c3b37767e9ab:scripts/smoke-engine-canvas.sh:generic-api-key:153
+c6d2fbdba48c38cc5ab86f2b537c8ee047e26c8d:scripts/smoke-engine-canvas.sh:generic-api-key:164
