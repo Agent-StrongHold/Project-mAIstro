@@ -45,7 +45,7 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 
 **What is not checked.** A cell may instead describe a non-module owner in prose — “age-encrypted file”, “OS file permissions”, “per-route”. Those are honest and unverifiable, and pretending otherwise would be the same defect this section fixes. The census below is checked, so the size of that gap cannot drift: of the 156 owner cells, 52 name a module, 73 declare there is no module owner, and 31 are prose the checker cannot reach.
 
-<!-- matrix:ownership-census claims=52 declared=73 prose=31 -->
+<!-- matrix:ownership-census claims=53 declared=73 prose=30 -->
 <!-- matrix:ownership -->
 | Subsystem | Modules | Canonical concept | Lifecycle owner | Persistence owner | Authorization owner |
 |---|---|---|---|---|---|
