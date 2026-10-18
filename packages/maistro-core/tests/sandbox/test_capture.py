@@ -166,6 +166,51 @@ async def test_communicate_bounded_handles_merged_stderr() -> None:
     assert stderr == BoundedCapture(b"", False)
 
 
+async def test_communicate_bounded_waits_for_child_past_stream_eof() -> None:
+    """EOF on both streams is not exit: a child that closes fds 1 and 2 and
+    keeps running must not be reported until it actually exits. Without the
+    reap inside `communicate_bounded` the returncode here is still `None` —
+    docker/RSI then read `returncode or 0` as success while the workload
+    lives on, and bubblewrap leaks it entirely."""
+    proc = await asyncio.create_subprocess_exec(
+        "python3",
+        "-c",
+        "import os, sys, time\n"
+        "os.close(1); os.close(2)\n"
+        "sys.stdout = sys.stderr = None\n"
+        "time.sleep(0.5)\n"
+        "sys.exit(7)\n",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    start = time.monotonic()
+    stdout, stderr = await communicate_bounded(proc, limit=1024)
+    # The child held its exit 0.5s beyond EOF; the helper must not have
+    # returned before the process was reaped.
+    assert time.monotonic() - start >= 0.4
+    assert proc.returncode == 7
+    assert (stdout, stderr) == (BoundedCapture(b"", False), BoundedCapture(b"", False))
+
+
+async def test_communicate_bounded_stays_inside_caller_wait_for() -> None:
+    """The reap belongs under the caller's `wait_for`: a fd-closing child that
+    never exits must surface as TimeoutError (so the executor's kill path
+    fires) rather than a phantom success."""
+    proc = await asyncio.create_subprocess_exec(
+        "python3",
+        "-c",
+        "import os, time\nos.close(1); os.close(2)\ntime.sleep(30)\n",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    start = time.monotonic()
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(communicate_bounded(proc, limit=1024), timeout=1)
+    assert time.monotonic() - start < 15
+    proc.kill()
+    await proc.wait()
+
+
 def test_capture_fd_sync_bounds_a_raw_fd() -> None:
     r, w = os.pipe()
     try:
@@ -192,6 +237,24 @@ def test_run_bounded_timeout_kills_without_wedging() -> None:
     elapsed = time.monotonic() - start
     assert run.timed_out
     assert elapsed < 15
+
+
+def test_run_bounded_preserves_output_when_descendant_holds_pipe() -> None:
+    # The child exits after backgrounding a descendant that inherited stdout,
+    # so the capture pipe never reaches EOF at join time. The bytes already
+    # drained must still be returned (not the initial empty capture), the
+    # call must return at the join bound (not wait out the descendant), and
+    # the still-live drain's descriptor must not be closed under it.
+    start = time.monotonic()
+    run = run_bounded(
+        ["sh", "-c", "sleep 30 & printf captured"],
+        limit=1024,
+        drain_join_timeout=0.5,
+    )
+    elapsed = time.monotonic() - start
+    assert run.exit_code == 0 and not run.timed_out
+    assert run.stdout == BoundedCapture(b"captured", False)
+    assert elapsed < 5
 
 
 # --- backends enforce the same contract -------------------------------------

@@ -42,7 +42,8 @@ import asyncio
 import os
 import subprocess
 import threading
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 
 #: Read/drain chunk size. Small enough that a chunk never meaningfully
 #: overshoots the limit, large enough that draining a discarded stream is not
@@ -124,6 +125,15 @@ async def communicate_bounded(
     on either while we drain the other — a sequential drain can deadlock
     exactly in the simultaneous-output case #1197's tests exercise. A `None`
     stream (merged `stderr=STDOUT`, or no pipe) yields an empty capture.
+
+    Reaps the child before returning: EOF on both streams only proves the
+    child closed its fds, not that it exited. Without the wait, a child that
+    closes stdout/stderr and keeps running (``exec 1>&- 2>&-; sleep n``)
+    would be reported by callers from a still-`None` `returncode` — docker
+    and RSI read ``returncode or 0`` (false success) — and outlive `exec`
+    unsupervised, since the caller's `wait_for` covers only this coroutine.
+    Waiting here keeps that `wait_for` authoritative through exit, so the
+    timeout kill paths in the executors stay reachable.
     """
     streams = (process.stdout, process.stderr)
     results = await asyncio.gather(
@@ -132,6 +142,9 @@ async def communicate_bounded(
             for stream in streams
         )
     )
+    # Safe against a full-pipe deadlock: both streams are already at EOF, so
+    # `wait()` only reaps — it can no longer block on an undrained pipe.
+    await process.wait()
     stdout, stderr = results
     return stdout, stderr
 
@@ -157,6 +170,27 @@ def capture_fd_sync(fd: int, limit: int) -> BoundedCapture:
     return BoundedCapture(b"".join(chunks), truncated)
 
 
+@dataclass
+class _DrainState:
+    """Incrementally visible capture for one drained fd (see `run_bounded`).
+
+    The drain thread records every chunk under `lock` as it reads it, so the
+    bytes read before a join deadline are already visible to the caller —
+    they do not live only in the thread's stack until its final return.
+    """
+
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    chunks: list[bytes] = field(default_factory=list)
+    retained: int = 0
+    truncated: bool = False
+    #: True once the drain reached EOF (not merely once the join expired).
+    done: bool = False
+
+    def snapshot(self) -> BoundedCapture:
+        with self.lock:
+            return BoundedCapture(b"".join(self.chunks), self.truncated)
+
+
 @dataclass(frozen=True)
 class BoundedRun:
     """Outcome of `run_bounded` — the sync bounded analogue of `communicate`."""
@@ -172,6 +206,7 @@ def run_bounded(
     *,
     limit: int,
     timeout: float | None = None,
+    drain_join_timeout: float = 5.0,
 ) -> BoundedRun:
     """Run `argv` capturing stdout/stderr with a per-stream retention bound.
 
@@ -187,10 +222,27 @@ def run_bounded(
     limit = clamped_output_limit(limit)
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     assert proc.stdout is not None and proc.stderr is not None
-    results: list[BoundedCapture] = [BoundedCapture(b"", False), BoundedCapture(b"", False)]
+    # A child that spawned a descendant inheriting stdout/stderr (e.g. a
+    # backgrounded server) leaves the pipes open after its own exit: EOF —
+    # and therefore the drain thread's final assignment — never arrives while
+    # the descendant lives. Capture state is hence shared and updated per
+    # chunk, so whatever was read before the join deadline is returned rather
+    # than lost with the lingering thread.
+    states = [_DrainState(), _DrainState()]
 
     def drain(index: int, fd: int) -> None:
-        results[index] = capture_fd_sync(fd, limit)
+        state = states[index]
+        while chunk := os.read(fd, _CHUNK):
+            with state.lock:
+                if state.retained < limit:
+                    take = chunk[: limit - state.retained]
+                    state.chunks.append(take)
+                    state.retained += len(take)
+                    if len(take) < len(chunk):
+                        state.truncated = True
+                else:
+                    state.truncated = True
+        state.done = True
 
     threads = [
         threading.Thread(target=drain, args=(i, fd), daemon=True)
@@ -207,18 +259,26 @@ def run_bounded(
         proc.kill()
         exit_code = proc.wait()
 
+    # One deadline shared across both joins: a descendant holding the pipes
+    # keeps EOF away no matter how long we wait, so the bound must not
+    # multiply per stream. Normally the child is dead (or killed) and both
+    # drains reach EOF long before it; the bound only caps the pathological
+    # descendant case. A daemon thread that lingers must not wedge the
+    # caller, hence daemon=True above.
+    deadline = time.monotonic() + drain_join_timeout
     for t in threads:
-        # The child is dead (or killed), so both pipes reach EOF and the
-        # drains finish; the join only bounds thread scheduling, not the
-        # child. A daemon thread that somehow lingered must not wedge the
-        # caller, hence daemon=True above.
-        t.join(timeout=5)
-    proc.stdout.close()
-    proc.stderr.close()
+        t.join(timeout=max(0.0, deadline - time.monotonic()))
+    for index, stream in enumerate((proc.stdout, proc.stderr)):
+        # Close only drains that reached EOF; closing a descriptor another
+        # thread is still blocked reading is undefined behavior. A still-live
+        # daemon drain keeps its fd until the descendant exits and its read
+        # hits EOF, at which point the thread (and the fd) go away.
+        if states[index].done:
+            stream.close()
     return BoundedRun(
         exit_code=exit_code,
-        stdout=results[0],
-        stderr=results[1],
+        stdout=states[0].snapshot(),
+        stderr=states[1].snapshot(),
         timed_out=timed_out,
     )
 

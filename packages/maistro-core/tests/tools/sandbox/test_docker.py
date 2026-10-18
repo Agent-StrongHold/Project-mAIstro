@@ -30,6 +30,12 @@ class _FakeProc:
     async def communicate(self) -> tuple[bytes, bytes]:
         return self._stdout, self._stderr
 
+    async def wait(self) -> int | None:
+        # communicate_bounded reaps the child after both streams reach EOF
+        # (#1197 review): a fake has no real child, so the reap just publishes
+        # the terminal code the way the real Process.wait does.
+        return self.returncode
+
 
 def _reader_with(data: bytes) -> asyncio.StreamReader:
     reader = asyncio.StreamReader()

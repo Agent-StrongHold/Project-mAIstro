@@ -105,6 +105,12 @@ async def communicate_bounded(
     on either while we drain the other — a sequential drain can deadlock
     exactly in the simultaneous-output case. A `None` stream (merged
     `stderr=STDOUT`, or no pipe) yields an empty capture.
+
+    Reaps the child before returning: EOF on both streams only proves the
+    child closed its fds, not that it exited — without the wait, a child that
+    closes stdout/stderr and keeps running would be reported from a still-
+    `None` `returncode` (``returncode or 0`` reads as false success) and
+    outlive `exec` unsupervised. Mirrors the canonical module exactly.
     """
     streams = (process.stdout, process.stderr)
     results = await asyncio.gather(
@@ -113,6 +119,7 @@ async def communicate_bounded(
             for stream in streams
         )
     )
+    await process.wait()
     stdout, stderr = results
     return stdout, stderr
 

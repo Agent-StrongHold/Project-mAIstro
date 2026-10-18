@@ -88,9 +88,7 @@ def test_read_file_under_the_limit_is_verbatim(tmp_path: Path, monkeypatch) -> N
     assert sandbox.read_file("note.txt") == "modest file body"
 
 
-def test_read_file_over_limit_errors_without_truncation_notice(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_read_file_over_limit_errors_without_truncation_notice(tmp_path: Path, monkeypatch) -> None:
     """An over-limit file must raise, not return "prefix + notice" as content."""
     sandbox = _sandbox_whose_cat_emits(tmp_path, monkeypatch, "o" * 3000000)
 
@@ -98,9 +96,7 @@ def test_read_file_over_limit_errors_without_truncation_notice(
         sandbox.read_file("big.txt")
 
 
-def test_edit_file_refuses_oversized_file_before_any_write(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_edit_file_refuses_oversized_file_before_any_write(tmp_path: Path, monkeypatch) -> None:
     """The P1 scenario: a match inside the retained prefix must not let
     edit_file write the truncated text back and destroy the file's tail."""
     body = "original " + "x" * 3000000
