@@ -18,6 +18,10 @@ from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import uuid4
 
+from uuid import uuid4
+
+from maistro.sqlite_schema import serialized_schema_upgrade
+
 
 class HandlerDeliveryContract(StrEnum):
     """External-effect contract required before the reactor may replay.
@@ -30,6 +34,7 @@ class HandlerDeliveryContract(StrEnum):
 
     AT_LEAST_ONCE_IDEMPOTENT = "at_least_once_idempotent"
     UNSAFE = "unsafe"
+
 
 
 if TYPE_CHECKING:
@@ -143,17 +148,18 @@ class SqliteTriggerStore:
         self._conn = conn
 
     async def ensure_schema(self) -> None:
-        await self._conn.execute(_SCHEMA)
-        # Existing installations predate the explicit replay contract. Keep
-        # those handlers disabled for automatic replay until opted in.
-        columns = await self._conn.execute("PRAGMA table_info(trigger_definitions)")
-        names = {str(row[1]) for row in await columns.fetchall()}
-        if "delivery_contract" not in names:
-            await self._conn.execute(
-                "ALTER TABLE trigger_definitions ADD COLUMN delivery_contract TEXT "
-                "NOT NULL DEFAULT 'unsafe'"
-            )
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await self._conn.execute(_SCHEMA)
+            # Existing installations predate the explicit replay contract. Keep
+            # those handlers disabled for automatic replay until opted in.
+            columns = await self._conn.execute("PRAGMA table_info(trigger_definitions)")
+            names = {str(row[1]) for row in await columns.fetchall()}
+            if "delivery_contract" not in names:
+                await self._conn.execute(
+                    "ALTER TABLE trigger_definitions ADD COLUMN delivery_contract TEXT "
+                    "NOT NULL DEFAULT 'unsafe'"
+                )
+            await self._conn.commit()
 
     async def add(self, trigger: TriggerDefinition) -> None:
         await self._conn.execute(

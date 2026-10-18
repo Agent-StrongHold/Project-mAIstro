@@ -7,6 +7,7 @@ gauge publication get example-based locks.
 
 from __future__ import annotations
 
+import hashlib
 import math
 
 import pytest
@@ -316,8 +317,9 @@ def test_throttles_above_double_burn_sustained_over_the_lookback() -> None:
 # --- gauge publication ----------------------------------------------------------
 
 
-def test_recording_publishes_remaining_budget_gauge() -> None:
-    budget = ErrorBudget(SloDefinition(service_key="gauge-svc", slo="availability", target=0.999))
+def test_recording_publishes_opaque_service_key_label() -> None:
+    service_key = "sk-svc-sensitive-secret"
+    budget = ErrorBudget(SloDefinition(service_key=service_key, slo="availability", target=0.999))
     now = 1_000_000.0
     budget.record_downtime(60.0, now=now)
     expected = budget.definition.total_budget_seconds - 60.0
@@ -325,7 +327,9 @@ def test_recording_publishes_remaining_budget_gauge() -> None:
         (s["labels"]["service_key"], s["labels"]["slo"]): s["value"]
         for s in maistro_slo_remaining_budget_seconds.collect()
     }
-    assert samples[("gauge-svc", "availability")] == pytest.approx(expected)
+    service_key_label = hashlib.sha256(service_key.encode("utf-8")).hexdigest()[:16]
+    assert samples[(service_key_label, "availability")] == pytest.approx(expected)
+    assert service_key not in samples
 
 
 def test_the_periodic_throttle_check_refreshes_a_recovered_budget() -> None:
@@ -346,7 +350,8 @@ def test_the_periodic_throttle_check_refreshes_a_recovered_budget() -> None:
 
 
 def _gauge(service_key: str) -> float:
+    label = hashlib.sha256(service_key.encode("utf-8")).hexdigest()[:16]
     for sample in maistro_slo_remaining_budget_seconds.collect():
-        if sample["labels"]["service_key"] == service_key:
+        if sample["labels"]["service_key"] == label:
             return float(sample["value"])
     raise AssertionError(f"no gauge sample for {service_key!r}")

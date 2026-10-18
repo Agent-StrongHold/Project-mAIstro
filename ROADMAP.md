@@ -48,9 +48,42 @@ Every roadmap and backlog item is tagged by the part of the product it belongs t
 
 ## Horizons
 
-- **v1.0** — 3 months. Each variant reaches its MVP; substrate code parity reached.
-- **v1.1–1.3** — 3–12 months. Hardening and inventory drainage.
-- **v2.0** — 12 months. Inventory-clear: every accepted ADR/spec is `Implemented`, `Superseded`, or `Abandoned`.
+- **v1.0** — Workspaces product replaces the legacy Conductor page tree; M1 run/invocation convergence; honest surfaces (no stub facades). Library + product ship together.
+- **v1.1** — Turing Workspace Agent variant, team memory scope, multi-replica task queue, RLPHD.
+- **v1.2** — Evolution UI returns; memory v2 if surfaced; tournament scaffolding.
+- **v1.5 (engine)** — Stronghold / hard multi-tenancy layer begins (downstream product, not in this repo yet).
+- **v2.0** — Inventory-clear: every accepted ADR/spec is `Implemented`, `Superseded`, or `Abandoned`.
+
+---
+
+## v1.0 release contract (ratified 2026-10-01)
+
+Ship **maistro-engine v1.0.0** as a stable library **and** a **Workspaces** product (`packages/hive-conductor`) that **deletes** legacy Conductor routes — not a rebrand. Item detail: [`BACKLOG.md`](BACKLOG.md) `[conductor-402]`–`[conductor-413]`, `[engine-112]`–`[engine-115]`. Cutover mechanics: [`docs/architecture/WORKSPACE-CUTOVER-PLAN.md`](docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Per-feature Workspace-UI/API/CLI availability and owned gaps: [`docs/architecture/FEATURE-PARITY-MATRIX.md`](docs/architecture/FEATURE-PARITY-MATRIX.md) (#1874) — no parity or gap-completion claim counts without its executable evidence.
+
+### Release blockers
+
+| Area | Requirement |
+|---|---|
+| Workspaces shell | Home ([#1048](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1048)), Agent chat ([#1037](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1037)), Attention ([#1049](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1049)), Backlog ([#82](https://github.com/Agent-StrongHold/Project-mAIstro/issues/82)) |
+| Capabilities | Unified surface; retire separate Agents/MCP/Skills pages ([#59](https://github.com/Agent-StrongHold/Project-mAIstro/issues/59)) |
+| Execution spine | Single canonical `RunStore` — no parallel `DurableRunStore` for new work ([#251](https://github.com/Agent-StrongHold/Project-mAIstro/issues/251)) |
+| Workspace Agent | Persistent goals + reconciliation (M3-D / [#804](https://github.com/Agent-StrongHold/Project-mAIstro/issues/804)) |
+| Canvas + Design Studio | `/v2/canvas` operable in default compose; Design Studio beyond discovery-only |
+| Memory | Unified protocol; scopes **workspace + user + global** (team → v1.1); retrieval as graph NodeRuns |
+| Facades | Forge, MCP, launch TUI, memory reinforce/decay — implement or remove (policy: implement) |
+| Governance | All ADRs indexed in ADR-INDEX before tag |
+
+### Explicit non-goals for v1.0
+
+Evolution UI hidden until v1.2 · Turing/autonoetic agent v1.1 · Stronghold v1.5 · team memory scope v1.1 · task-queue recovery on restart deferred ([#91](https://github.com/Agent-StrongHold/Project-mAIstro/issues/91)) · ADR-068 authz implementation post-v1.0.
+
+### Critical path when conflicts arise
+
+```text
+Phase 0 (contract)  →  M1 RunStore unification (#251)  →  Workspaces cutover  →  M2 security on Workspace Agent path  →  v1.0.0 tag
+```
+
+If forced to choose: **M1 before M2** — security hardening follows the Workspace Agent path, not legacy `Chat.tsx`.
 
 ---
 
@@ -108,19 +141,35 @@ The three engine ADRs that closed `gap-spec` items (036/037/038) become `Impleme
 
 Each variant has its own v1.0 acceptance gate; item detail lives in [`BACKLOG.md`](BACKLOG.md).
 
-#### Conductor variant v1.0 — multi-user with hard isolation + setup wizard
+#### Workspaces product v1.0 — replaces legacy Conductor page tree
 
-Dominant constraint: ease of self-hosting. Ships as `packages/hive-conductor`.
+Dominant constraint: ease of self-hosting with an honest product surface. Ships as `packages/hive-conductor`. Phase 0 contract + M1 convergence gate all UI work per [`WORKSPACE-CUTOVER-PLAN.md`](docs/architecture/WORKSPACE-CUTOVER-PLAN.md).
 
 | Item | Status | Detail |
 |---|---|---|
-| `[conductor-001]` Setup wizard | Implemented |v1.0 critical path |
+| `[conductor-001]` Setup wizard | Implemented | v1.0 critical path |
 | `[conductor-002]` Per-user memory isolation | Implemented | Hard boundary; cross-user retrieval impossible by construction |
-| `[conductor-003]` Multi-user auth (Keycloak / JWT) | Implemented | , ,  |
-| `[conductor-004]` Native install + Podman + systemd | Proposed | ,  |
-| `[conductor-005]` Tailscale-native networking | Proposed |  |
+| `[conductor-003]` Multi-user auth (Keycloak / JWT) | Implemented | |
+| `[conductor-004]` Native install + Podman + systemd | Proposed | |
+| `[conductor-005]` Tailscale-native networking | Proposed | |
 | `[conductor-006]` Setup-wizard property test | Proposed | A new household can complete setup in < 30 min |
 | `[conductor-007]` Per-user isolation property test | Implemented | Cross-user retrieval is structurally impossible |
+| `[conductor-402]` Workspaces cutover epic | Accepted; `gap-impl` | #1046 — delete legacy routes; default landing → Workspace Home |
+| `[conductor-403]` Workspace Home | Proposed; `gap-impl` | #1048 — v1.0 blocker |
+| `[conductor-404]` Workspace Agent chat | Proposed; `gap-impl` | #1037 / M3-D — v1.0 blocker |
+| `[conductor-405]` Attention surface | Proposed; `gap-impl` | #1049 — v1.0 blocker |
+| `[conductor-406]` Backlog / work items | Proposed; `gap-impl` | #82 / M3-C — v1.0 blocker |
+| `[conductor-407]` Capabilities unified surface | Proposed; `gap-impl` | #59 — replaces Agents/MCP/Skills pages |
+| `[conductor-408]` Legacy page retirement | Accepted; `gap-impl` | Ledger-enforced deletes per cutover plan §9 |
+| `[conductor-409]` Design Studio v1.0 scope | Proposed; `gap-impl` | Beyond discovery-only; persona template framework |
+| `[conductor-410]` Canvas v2 in default compose | Proposed; `gap-impl` | #735 / M3-B — `/v2/canvas` not 503 |
+| `[conductor-411]` Hide Evolution UI | Proposed | Remove from nav/routes until v1.2 |
+| `[conductor-412]` Tool binding dispatch | Proposed; `gap-impl` | Persona overrides at dispatch (`tool_binding.py`) |
+| `[conductor-413]` Hive service wiring | Proposed; `gap-impl` | `repo_scanner`, `pipeline_orchestrator`, `chatbot_integration` |
+| `[engine-112]` RunStore unification | Accepted; `gap-impl` | #251 — single canonical run browser; no new `DurableRunStore` callers |
+| `[engine-113]` ADR-INDEX completeness | Implemented | All ADRs indexed; CI enforces completeness |
+| `[engine-114]` Memory scopes v1.0 | Proposed; `gap-impl` | Workspace + user + global; team axis deferred |
+| `[engine-115]` Default compose OTEL → Langfuse | Proposed; `gap-impl` | Observability wired in default stack |
 
 #### Autonoetic variant v1.0 — measurable autonoesis
 
@@ -253,32 +302,28 @@ Per [`engine#ADR-032`](docs/adr/ADR-032-contracts-as-acceptance-criteria.md). Mu
 ## Cross-repo dependency graph (v1.0 critical path)
 
 ```
+Phase 0 (contract: principal, routes, types, audit, effect context)
+    │
+    ├─→ engine-112 (RunStore unification #251)
+    │       └─→ conductor-403..406 (Home, Agent, Attention, Backlog)
+    ├─→ conductor-407 (Capabilities #59)
+    ├─→ conductor-410 (Canvas v2 #735)
+    └─→ engine-114 (Memory scopes)
+
+conductor-402 (cutover epic #1046)
+    │
+    ├─→ conductor-408 (legacy page retirement)
+    ├─→ conductor-411 (hide Evolution)
+    └─→ conductor-413 (hive service wiring)
+
+M2 security (#66) — parallel after conductor-404 (Workspace Agent #1037)
+
 engine-001 (Registry CI)
-    │
-    ├─→ engine-002 (INVENTORY auto-regen)
-    ├─→ engine-021 (Memory dedup)
-    │       └─→ turing-091 + maistro-091 (Substrate recast)
-    ├─→ engine-022 (Catalog dedup)
-    │       └─→ maistro-092 (catalog Substrate recast)
-    ├─→ turing-090 + sh-090 + maistro-090 (front-matter)
-    └─→ (CI flips hard at day 30)
+    └─→ engine-113 (ADR-INDEX completeness)
 
-engine-010/011/012 (Copier templates)
-    │
-    ├─→ maistro-095 (bootstrap into single-tenant template)
-    ├─→ turing-043 (bootstrap into autonoetic template)
-    └─→ sh-080 (bootstrap into multi-tenant template)
+Turing v1.0 (turing-001..035) — deferred to v1.1; not on v1.0 tag path
 
-engine-030 (Ontology)
-    └─→ turing-004 (SelfModel/Mood/Drive ontology registration)
-
-engine-031 (Observability)
-    ├─→ turing-020 (self-talk loop instrumentation)
-    └─→ sh-060 (audit chain)
-
-engine-032 (Reliability)
-    ├─→ turing-035 (30-day staging run stability)
-    └─→ sh-050 (on-prem + cloud parity)
+Stronghold (sh-001..) — engine v1.5; not on v1.0 tag path
 
 ```
 
@@ -291,7 +336,7 @@ Phase A Foundation enforcement      [x] ██████████ 100%   Re
 Phase B Templates bootstrapped      [~] ███░░░░░░░  30%   Three templates scaffolded; documented knobs + round-trip CI outstanding
 Phase C Drift closure                [x] ██████████ 100%   Engine ADRs canonical; the product-side spec items are obsolete (those specs are not in this repo)
 Phase D Substrate code parity        [~] ███████░░░  70%   Ontology Semantic done; reliability 5/5 substrate (router throttle wiring pending); observability primitives + 3/6 baseline metrics
-Phase E.conductor Conductor v1.0     [~] ███████░░░  70%   Setup wizard, per-user isolation (+property test), JWT auth, DID identity shipped
+Phase E.workspaces Workspaces v1.0   [~] ████░░░░░░  40%   Auth/isolation shipped; cutover Phase 0 + M1 + shell surfaces in flight
 Phase E.turing  Autonoetic v1.0      [~] ████░░░░░░  40%   Trait/facet model, weight floors, provenance shipped; loops + property tests pending
 Phase E.sh      Multi-tenant v1.0    [·] ░░░░░░░░░░   n/a  Planned downstream build; engine-level COMPLIANCE.md controls shipped
 Phase F Contracts as the bar         [~] ███░░░░░░░  30%   Spec type + mutation testing in place; substrate adoption pending

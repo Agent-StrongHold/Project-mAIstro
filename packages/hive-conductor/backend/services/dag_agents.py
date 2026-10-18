@@ -21,7 +21,6 @@ from maistro.graph.dag_registry import DagRegistry
 from maistro.graph.definitions import Graph
 from maistro.graph.durable_runs import (
     DurableRunStore,
-    InMemoryDurableRunStore,
     RunStatus,
     run_durable_graph,
 )
@@ -67,7 +66,6 @@ _registry: DagRegistry | None = None
 # time there is no Container to ask. By the time a DAG runs, Hive has one,
 # reached the way services/engine.py already reaches run_store and
 # task_admitter (ADR-082526-3ca6).
-_fallback_node_resolver = build_node_resolver()
 
 
 def _container() -> Any:
@@ -81,63 +79,69 @@ def _container() -> Any:
         return None
 
 
-def _resolve_nodes_with() -> Callable[[str, Any], Any]:
+def _resolve_nodes_with(*, container: Any = None) -> Callable[[str, Any], Any]:
     """The node resolver for this execution, wired from the Container if there is one.
 
-    Without the bridge there is no Container, and the no-arg resolver is
-    returned unchanged — a Conductor running standalone behaves exactly as it
-    did rather than failing to start.
+    Construction without a bridge remains available for inspection and test
+    fixtures. Shipped execution separately requires the canonical spine; a
+    callable resolver is not permission to start work.
 
     `run_store` is deliberately the container's **canonical** RunStore. This
-    module also holds an `InMemoryDurableRunStore`, whose name is one word away
-    and whose methods share nothing; build_node_resolver's own docstring records
+    module also reads the graph-continuation store, whose methods share
+    nothing with RunStore; build_node_resolver's own docstring records
     that passing the wrong one type-checks and then raises AttributeError after
     the delegation has already been dispatched.
     """
-    container = _container()
     if container is None:
-        return _fallback_node_resolver
+        container = _container()
+    if container is None:
+        return build_node_resolver()
     # Read as attributes rather than through getattr(): the Container dataclass
-    # always defines all three, and check-wiring-reads.py (#236) walks attribute
-    # loads, so a getattr("name") read is invisible to it and the fields would
-    # report as wired-but-unread. Naming them here is what makes the gate able
-    # to hold this wiring in place.
+    # always defines these collaborators, and check-wiring-reads.py (#236)
+    # walks attribute loads, so a getattr("name") read is invisible to it and
+    # the fields would report as wired-but-unread. Naming them here is what
+    # makes the gate able to hold this wiring in place.
     return build_node_resolver(
+        harness_adapters=container.harness_adapters,
         a2a_delegator=container.a2a_delegator,
         guest_peers=container.guest_peers,
         run_store=container.run_store,
+        effect_context=container.capability_effects,
+        provider_registry=container.provider_registry,
+        llm_router=container.llm_router,
+        # The durable graph store, which `agent.synth_dag` declares as
+        # required (#1193): without it the resolver refuses that kind instead
+        # of constructing one that reports success for a sub-graph nothing
+        # ran. Distinct from `run_store` on purpose — see get_run_store().
+        graph_run_store=container.graph_run_store,
     )
 
 
-# The last-resort store, for a Conductor booted without a Container. It is
-# process-local and that is the defect, not the design: a restart empties the
-# HITL queue and two workers disagree about what is paused. It survives only
-# because a standalone Conductor has no canonical spine to project onto, and
-# it is reached only when `_container()` returns nothing.
-_fallback_run_store = InMemoryDurableRunStore()
+class CanonicalGraphUnavailable(RuntimeError):
+    """The canonical Run or graph continuation owner is not available."""
+
+
+def require_graph_execution_spine(container: Any) -> None:
+    """Refuse new Graph work unless both canonical execution owners are wired.
+
+    Do this before admission or node construction. Admitting without a graph
+    continuation owner strands work; traversing without a RunStore invents a
+    second lifecycle. Legacy archives and resolver-only fixtures stay separate.
+    """
+    if container is None or container.run_store is None or container.graph_run_store is None:
+        raise CanonicalGraphUnavailable("canonical graph execution spine is unavailable")
+
+
+def get_canonical_run_store() -> DurableRunStore:
+    """Return the Container's graph projection, never a process-local fallback."""
+    container = _container()
+    require_graph_execution_spine(container)
+    return container.graph_run_store  # type: ignore[no-any-return]
 
 
 def get_run_store() -> DurableRunStore:
-    """The durable store backing registered-DAG execution.
-
-    The Container's `graph_run_store` when there is one -- a `DurableRunStore`
-    in interface only, whose Run, NodeRuns and Attempts are rows on the
-    canonical spine (#44). That is what makes a DAG this process ran findable
-    through `GET /v1/runs/{id}`, sweepable by retention, and resumable by
-    another replica; the module-level in-memory store this replaces could do
-    none of those, and its records did not outlive the process that made them.
-    """
-    container = _container()
-    if container is None:
-        return _fallback_run_store
-    # An attribute load, not getattr(): check-wiring-reads.py (#236) walks
-    # attribute loads, so a getattr("graph_run_store") read is invisible to it
-    # and the Container field would report as wired-but-unread. Naming it here
-    # is what holds this wiring in place.
-    store = container.graph_run_store
-    if store is None:
-        return _fallback_run_store
-    return store  # type: ignore[no-any-return]
+    """Compatibility accessor for the same canonical graph projection."""
+    return get_canonical_run_store()
 
 
 def get_registry() -> DagRegistry:
@@ -178,34 +182,28 @@ async def run_registered_dag(
     descriptor = get_registry().get(dag_id)
     if descriptor is None:
         raise KeyError(f"No DAG registered for {dag_id!r}")
+    container = _container()
+    require_graph_execution_spine(container)
+    run_store = container.run_store
     template = descriptor_to_template(descriptor, workspace_id=workspace_id)
     graph = template.instantiate(project_id=project_id)
     if configure is not None:
         configure(graph)
-    container = _container()
-    run_store = container.run_store if container is not None else None
-    # Admission first, then execution. Traversal consumes an admitted Run
-    # rather than creating one (#44): the create and the first traversal
-    # checkpoint are writes to two stores, so a crash between them would leave
-    # a canonical Run RUNNING with nothing to resume it. Admitting here leaves
-    # a QUEUED Run instead, which #251's consumer tick can pick up. Without a
-    # Container there is no spine, and execution takes the pre-convergence
-    # path rather than failing to start.
-    admitted_run_id = None
-    if run_store is not None:
-        admitted = await run_store.create_run(
-            graph,
-            initial_status=RunStatus.QUEUED,
-            actor_principal_id=user_id,
-            parent_run_id=parent_run_id,
-            parent_node_run_id=parent_node_run_id,
-            provenance={**dict(provenance or {}), "executor": "durable_graph"},
-        )
-        admitted_run_id = admitted.run_id
+    # Admission first, then execution. A crash before checkpoint 1 leaves a
+    # canonical QUEUED Run for the existing recovery consumer to pick up.
+    admitted = await run_store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=user_id,
+        parent_run_id=parent_run_id,
+        parent_node_run_id=parent_node_run_id,
+        provenance={**dict(provenance or {}), "executor": "durable_graph"},
+    )
+    admitted_run_id = admitted.run_id
     record = await run_durable_graph(
         graph,
-        store=get_run_store(),
-        node_resolver=_resolve_nodes_with(),
+        store=container.graph_run_store,
+        node_resolver=_resolve_nodes_with(container=container),
         actor_principal_id=user_id,
         run_id=admitted_run_id,
         run_store=run_store,
