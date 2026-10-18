@@ -45,6 +45,7 @@ from maistro.graph import Edge, Graph, Node
 from maistro.graph.durable_runs import (
     CanonicalDurableRunStore,
     resume_due_graph_runs,
+    resume_durable_graph,
     run_durable_graph,
 )
 from maistro.graph.durable_runs.canonical_store import TERMINAL_SETTLE_QUIET_PERIOD
@@ -52,7 +53,7 @@ from maistro.graph.durable_runs.continuation import GraphContinuation
 from maistro.graph.durable_runs.spine import mirror_node_run
 from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.execution_state import GraphExecutionState
-from maistro.graph.nodes import BaseNode, NodeContext
+from maistro.graph.nodes import BaseNode, NodeContext, ReplaySemantics
 from maistro.projects.pg_scope_store import PgProjectScopeStore
 from maistro.runs.concurrency import RunConcurrencyLimits
 from maistro.runs.model import (
@@ -552,19 +553,25 @@ async def test_run_settlement_lost_after_the_last_node_run_commits(
 # ── successful runtime, failed physical completion write ───────────
 
 
+@pytest.mark.parametrize("semantics", [ReplaySemantics.PURE, ReplaySemantics.NON_RETRYABLE])
 async def test_lost_success_write_preserves_live_ownership_then_parks(
-    spine: _Spine, recovery_container: Container, monkeypatch: pytest.MonkeyPatch
+    spine: _Spine,
+    recovery_container: Container,
+    monkeypatch: pytest.MonkeyPatch,
+    semantics: ReplaySemantics,
 ) -> None:
     """An ordinary store failure must not make a FAILED Run over live work.
 
     Unlike the committed-success replay above, this output never reaches the
     canonical Attempt. Recovery may reclaim and park, but cannot reconstruct
-    success. This proves durable ownership/recoverability, NOT preservation of
-    the uncommitted Graph result or permission to retry the node.
+    success. A fresh resumer then consumes the node's replay contract: pure
+    work may execute on a new fence, but non-retryable work records refusal
+    without repeating its effect. The lost output is never fabricated.
     """
     graph = spine.graph(_Step.kind, name="successful runtime, lost completion")
     run_id = await _admit(spine, graph)
     step = _Step()
+    monkeypatch.setattr(step, "replay_semantics", semantics)
     execute = AsyncMock(wraps=step._execute)
     monkeypatch.setattr(step, "_execute", execute)
     transition = spine.walker.run_store.transition_attempt
@@ -637,6 +644,52 @@ async def test_lost_success_write_preserves_live_ownership_then_parks(
     assert await spine.recovery.run_store.list_attempts(node.node_run_id) == [reclaimed]
     assert await spine.recovery.continuations.get(run_id) == continuation
     execute.assert_awaited_once()
+
+    # Neither the failing writer nor the sweep authorizes another execution.
+    # Explicit resume on fresh canonical/continuation owners applies the
+    # existing replay contract, with no inherited in-process output.
+    peer_pool = await _fresh_pool()
+    try:
+        peer = _replica(peer_pool)
+        resumed = await resume_durable_graph(
+            run_id,
+            store=peer.durable(),
+            run_store=peer.run_store,
+            node_resolver=lambda _node_id, _graph: step,
+            now=max(lease.expires_at, continuation.resume_at or lease.expires_at),
+        )
+        history = await spine.recovery.run_store.list_attempts(node.node_run_id)
+        assert len(history) == 2
+        assert history[0] == reclaimed
+        retry = history[1]
+        assert retry.ordinal == attempt.ordinal + 1
+        assert retry.attempt_id != attempt.attempt_id
+        assert retry.execution_lease is not None
+        assert retry.execution_lease.fencing_token != lease.fencing_token
+        assert retry.status is AttemptStatus.COMPLETED
+        expected = RunStatus.COMPLETED if semantics.retryable else RunStatus.FAILED
+        assert resumed.run.status is expected
+        settled = await spine.recovery.run_store.get_run(run_id)
+        assert settled is not None and settled.status is expected
+        [settled_node] = await spine.recovery.run_store.list_node_runs(run_id)
+        assert settled_node.status is expected
+        assert settled_node.accepted_outcome is not None
+        assert settled_node.accepted_outcome.attempt_result.attempt_id == retry.attempt_id
+        if semantics.retryable:
+            assert execute.await_count == 2
+            assert retry.result["output"] == {"text": "done"}
+            assert settled.result == {"text": "done"}
+        else:
+            execute.assert_awaited_once()
+            assert retry.result["error_code"] == "ReplayRefused"
+            assert settled.result is None
+            assert (settled.error or "").startswith("ReplayRefused:")
+        projected = await spine.recovery.continuations.get(run_id)
+        assert projected is not None and projected.status is expected
+        assert await recovery_container.recover_abandoned_attempts(now=lease.expires_at) == 0
+        assert await spine.recovery.run_store.list_attempts(node.node_run_id) == history
+    finally:
+        await peer_pool.close()
 
 
 async def test_committed_success_with_lost_acknowledgement_replays_without_execution(
