@@ -111,6 +111,25 @@ failed one exists, move an Attempt under a Run that paused. No counterexample
 from that space survived the store — but the space is now being searched every
 CI pass.
 
+## Trust-boundary implications
+
+None introduced; the artifact is test-only, per the research guardrails:
+
+- **No product code changed.** The module lives in `formal/models/`, imports
+  only the published transition tables and `PgRunStore`, and
+  `scripts/check-formal-oracle-independence.py` verifies it touches no oracle
+  or security-implementation path.
+- **The private import is read-only and test-scoped.** `_ACTIVE_ATTEMPT_STATUSES`
+  is read from a PYTHONPATH-shadowed copy of `packages/maistro-core/src` (the
+  same mechanism as the mutant battery); the shipped module is never modified,
+  and the machine fails loudly if the live set drifts rather than silently
+  widening what it treats as authoritative.
+- **No new authority surface.** The machine drives only public store mutators
+  against a throwaway, migrated PostgreSQL (local pgvector container via
+  `MAISTRO_TEST_PG_DSN`); it holds no credentials, bypasses no gate, and
+  writes nothing a production caller trusts. INCUBATE (not GRADUATE) keeps it
+  evidence, not a canonical authority.
+
 ## Disposition: INCUBATE
 
 Keep the module in `formal/models/` and let it run in PR CI as-is. It earns
