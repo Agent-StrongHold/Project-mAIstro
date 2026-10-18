@@ -21,6 +21,7 @@ from maistro.backlog.pg_store import PgBacklogStore
 from maistro.backlog.sqlite_store import SqliteBacklogStore
 from maistro.backlog.store import BacklogStore, InMemoryBacklogStore
 from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.expected_effect import ExpectedEffectEvidence
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.cli._backlog import RoleChoice
 from maistro.cli._backlog import cutover as backlog_cutover_command
@@ -158,6 +159,11 @@ _VULTURE_WHITELIST = (
     ResolvedBinding.resolved_at,
     Invocation._validate_invocation,
     InvocationExecutionService.invoke,
+    # The expected-effect evidence model (#57) validates its cross-field
+    # digest contract through Pydantic decorator dispatch; no scanned call
+    # site names the validator (same shape as Binding._validate_binding
+    # above).
+    ExpectedEffectEvidence._validate_evidence,
     # PersistedStore's atomic username-claim transactions (#1061). The durable
     # backend is reached from packages/hive-conductor's username_registry via
     # getattr(backend, ...) duck-typing, so no scanned call site names these

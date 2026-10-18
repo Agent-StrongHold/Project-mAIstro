@@ -384,6 +384,20 @@ def _dispatch_safe_tool(sandbox: Any, name: str, inputs: dict[str, Any]) -> str 
     return None
 
 
+def _run_command_argv(inputs: dict[str, Any]) -> str | None:
+    """Return a tool error string, if any, for a model-supplied ``run_command`` argv."""
+    argv = inputs.get("argv")
+    if (
+        not isinstance(argv, list)
+        or not argv
+        or not all(isinstance(token, str) and token for token in argv)
+    ):
+        return "[tool error] run_command requires a non-empty string argv"
+    if any(token in {";", "|", "&", "<", ">", "`"} for token in argv):
+        return "[tool error] shell metacharacters are not valid argv"
+    return None
+
+
 def _dispatch_tool(session: BuilderSession, name: str, inputs: dict[str, Any]) -> str:
     sandbox = session.sandbox
     try:
@@ -391,18 +405,12 @@ def _dispatch_tool(session: BuilderSession, name: str, inputs: dict[str, Any]) -
         if result is not None:
             return result
         if name == "run_command":
-            argv = inputs.get("argv")
-            if (
-                not isinstance(argv, list)
-                or not argv
-                or not all(isinstance(token, str) and token for token in argv)
-            ):
-                return "[tool error] run_command requires a non-empty string argv"
-            if any(token in {";", "|", "&", "<", ">", "`"} for token in argv):
-                return "[tool error] shell metacharacters are not valid argv"
             # This is deliberately run_argv: a model-authored command string
             # must never become an implicit ``sh -c`` invocation.
-            return str(sandbox.run_argv(argv, timeout=inputs.get("timeout", 30)))
+            argv_error = _run_command_argv(inputs)
+            if argv_error is not None:
+                return argv_error
+            return str(sandbox.run_argv(inputs["argv"], timeout=inputs.get("timeout", 30)))
     except Exception as exc:
         return f"[tool error] {exc}"
     return f"[unknown tool] {name}"

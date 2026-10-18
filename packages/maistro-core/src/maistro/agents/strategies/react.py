@@ -74,6 +74,27 @@ def _find_tool_schema(
     return {}
 
 
+def _model_message(response: dict[str, Any]) -> tuple[dict[str, Any], list[Any]]:
+    """Extract the assistant message and its tool calls from one completion."""
+    choices = response.get("choices", [])
+    choice = choices[0] if choices else {}
+    message = choice.get("message", {})
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return message, []
+    return message, tool_calls
+
+
+def _truncate_tool_result(tool_result: Any) -> str:
+    tool_result_str = str(tool_result)
+    if len(tool_result_str) <= 16384:
+        return tool_result_str
+    return (
+        tool_result_str[:16384]
+        + f"\n[... truncated, {len(str(tool_result)) - 16384} bytes omitted]"
+    )
+
+
 class ReactStrategy:
     """ReAct loop: LLM call -> tool dispatch -> feed back -> repeat."""
 
@@ -127,12 +148,7 @@ class ReactStrategy:
                 total_output_tokens += reported[1]
                 reported_calls += 1
 
-            choices = response.get("choices", [])
-            choice = choices[0] if choices else {}
-            message = choice.get("message", {})
-            tool_calls = message.get("tool_calls")
-            if not isinstance(tool_calls, list):
-                tool_calls = []
+            message, tool_calls = _model_message(response)
 
             if not tool_calls or round_num >= self.max_rounds:
                 content = message.get("content", "")
@@ -310,6 +326,29 @@ class ReactStrategy:
             pass
         return tool_result_str
 
+    async def _sentinel_admission(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        tool_schema: dict[str, Any],
+        *,
+        sentinel: Any,
+        auth: Any,
+    ) -> tuple[dict[str, Any], str | None]:
+        """Run Sentinel pre-call admission; returns ``(args, refusal_or_None)``."""
+        sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, tool_schema)
+        if not sentinel_verdict.allowed:
+            return tool_args, f"Error: Permission denied for tool '{tool_name}'"
+        if not sentinel_verdict.repaired_data:
+            return tool_args, None
+        repaired = sentinel_verdict.repaired_data
+        if tool_schema:
+            try:
+                validate_tool_arguments(tool_schema, repaired)
+            except ToolArgumentError as exc:
+                return tool_args, f"Error: repaired arguments are invalid: {exc}"
+        return repaired, None
+
     async def _execute_one_tool_call(
         self,
         tc: dict[str, Any],
@@ -341,25 +380,17 @@ class ReactStrategy:
         tool_result: Any = refusal or error_result
         tool_blocked = tool_blocked or error_result is not None
 
-        if not tool_blocked and not security_pipeline and (sentinel is None or auth is None):
-            logger.warning(
-                "Denied tool '%s': no Sentinel or caller auth to authorize it", tool_name
-            )
-            tool_result = f"Error: Permission denied for tool '{tool_name}'"
-            tool_blocked = True
-        elif not tool_blocked and not security_pipeline:
-            sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, tool_schema)
-            if not sentinel_verdict.allowed:
-                tool_result = f"Error: Permission denied for tool '{tool_name}'"
-                tool_blocked = True
-            elif sentinel_verdict.repaired_data:
-                tool_args = sentinel_verdict.repaired_data
-                if tool_schema:
-                    try:
-                        validate_tool_arguments(tool_schema, tool_args)
-                    except ToolArgumentError as exc:
-                        tool_result = f"Error: repaired arguments are invalid: {exc}"
-                        tool_blocked = True
+        if not tool_blocked and not security_pipeline:
+            if sentinel is None or auth is None:
+                logger.warning(
+                    "Denied tool '%s': no Sentinel or caller auth to authorize it", tool_name
+                )
+                refusal = f"Error: Permission denied for tool '{tool_name}'"
+            else:
+                tool_args, refusal = await self._sentinel_admission(
+                    tool_name, tool_args, tool_schema, sentinel=sentinel, auth=auth
+                )
+            tool_blocked = tool_blocked or refusal is not None
 
         if not tool_blocked:
             tool_result = await self._run_tool(
@@ -370,13 +401,10 @@ class ReactStrategy:
                 tool_call_id=tc.get("id", ""),
                 tool_round=tool_round,
             )
+        elif refusal is not None:
+            tool_result = refusal
 
-        tool_result_str = str(tool_result)
-        if len(tool_result_str) > 16384:
-            tool_result_str = (
-                tool_result_str[:16384]
-                + f"\n[... truncated, {len(str(tool_result)) - 16384} bytes omitted]"
-            )
+        tool_result_str = _truncate_tool_result(tool_result)
 
         tool_result_str = await self._sanitize_tool_result(
             tool_name,

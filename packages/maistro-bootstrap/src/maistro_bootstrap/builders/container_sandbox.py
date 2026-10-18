@@ -374,11 +374,6 @@ class ContainerBuilderSandbox:
         self.write_file(path, text.replace(old_string, new_string, 1))
         return f"edited {path} (1 replacement)"
 
-    def run_command(self, cmd: str, *, timeout: int = _DEFAULT_TIMEOUT) -> str:
-        # Shell runs *inside* the container — the container is the trust boundary.
-        _, out = self._exec(["sh", "-c", cmd], timeout=timeout)
-        return out
-
     def run_argv(self, argv: list[str], *, timeout: int = _DEFAULT_TIMEOUT) -> str:
         return self.run_argv_status(argv, timeout=timeout)[1]
 

@@ -66,12 +66,16 @@ class ToolContract:
     pre_state: PreState | None = None
     observed_post_state: ObservedPostState | None = None
 
-    def __post_init__(self) -> None:
+    def _require_identity(self) -> None:
         if not self.name.strip() or not self.capability.strip() or not self.provider_name.strip():
             raise ValueError("tool contract name, capability, and provider_name are required")
+
+    def _require_object_schema(self) -> None:
         if not isinstance(self.schema, dict) or self.schema.get("type") != "object":
             raise ValueError("tool contract schema must be an object JSON schema")
-        if self.high_impact and (
+
+    def _require_prediction_contract(self) -> None:
+        if (
             not self.policy_version.strip()
             or self.expected_post_state is None
             or self.pre_state is None
@@ -81,6 +85,12 @@ class ToolContract:
                 f"high-impact tool {self.name!r} requires policy version, pre-state, "
                 "expected post-state, and observation callbacks"
             )
+
+    def __post_init__(self) -> None:
+        self._require_identity()
+        self._require_object_schema()
+        if self.high_impact:
+            self._require_prediction_contract()
 
 
 class ToolContractRegistry:
@@ -159,6 +169,23 @@ async def _resolve_provider(binding: Binding, contract: ToolContract) -> _ToolPr
     return _ToolProvider(name=contract.provider_name, slot=contract.capability)
 
 
+def _reject_missing_arguments(
+    properties: Mapping[str, Any], required: list[Any], arguments: Mapping[str, Any]
+) -> None:
+    missing = [name for name in required if name not in arguments]
+    if missing:
+        raise ToolArgumentError(f"missing required tool arguments: {', '.join(map(str, missing))}")
+
+
+def _reject_unknown_arguments(
+    schema: Mapping[str, Any], properties: Mapping[str, Any], arguments: Mapping[str, Any]
+) -> None:
+    if schema.get("additionalProperties") is False:
+        unknown = sorted(set(arguments) - set(properties))
+        if unknown:
+            raise ToolArgumentError(f"unknown tool arguments: {', '.join(unknown)}")
+
+
 def validate_tool_arguments(schema: Mapping[str, Any], arguments: Any, *, path: str = "$") -> None:
     """Validate the JSON-schema subset used at the model/provider boundary."""
 
@@ -168,35 +195,50 @@ def validate_tool_arguments(schema: Mapping[str, Any], arguments: Any, *, path: 
     required = schema.get("required", [])
     if not isinstance(properties, dict) or not isinstance(required, list):
         raise ToolArgumentError("tool schema has invalid properties/required declarations")
-    missing = [name for name in required if name not in arguments]
-    if missing:
-        raise ToolArgumentError(f"missing required tool arguments: {', '.join(map(str, missing))}")
-    if schema.get("additionalProperties") is False:
-        unknown = sorted(set(arguments) - set(properties))
-        if unknown:
-            raise ToolArgumentError(f"unknown tool arguments: {', '.join(unknown)}")
+    _reject_missing_arguments(properties, required, arguments)
+    _reject_unknown_arguments(schema, properties, arguments)
     for name, value in arguments.items():
         if name in properties:
             _validate_schema_value(properties[name], value, f"$.{name}")
 
 
+def _is_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+_SCHEMA_TYPE_CHECKS: dict[str, Callable[[Any], bool]] = {
+    "object": lambda value: isinstance(value, dict),
+    "array": lambda value: isinstance(value, list),
+    "string": lambda value: isinstance(value, str),
+    "integer": _is_integer,
+    "number": _is_number,
+    "boolean": lambda value: isinstance(value, bool),
+    "null": lambda value: value is None,
+}
+
+
+def _reject_wrong_enum(schema: dict[str, Any], value: Any, path: str) -> None:
+    if "enum" in schema and value not in schema["enum"]:
+        raise ToolArgumentError(f"{path} is not one of the permitted values")
+
+
+def _reject_wrong_type(schema: dict[str, Any], value: Any, path: str) -> None:
+    expected = schema.get("type")
+    type_ok = _SCHEMA_TYPE_CHECKS.get(expected, lambda value: True)
+    if expected and not type_ok(value):
+        raise ToolArgumentError(f"{path} must be a {expected}")
+
+
 def _validate_schema_value(schema: Any, value: Any, path: str) -> None:
     if not isinstance(schema, dict):
         raise ToolArgumentError(f"{path} has no valid host-owned schema")
-    if "enum" in schema and value not in schema["enum"]:
-        raise ToolArgumentError(f"{path} is not one of the permitted values")
+    _reject_wrong_enum(schema, value, path)
+    _reject_wrong_type(schema, value, path)
     expected = schema.get("type")
-    type_ok = {
-        "object": isinstance(value, dict),
-        "array": isinstance(value, list),
-        "string": isinstance(value, str),
-        "integer": isinstance(value, int) and not isinstance(value, bool),
-        "number": isinstance(value, (int, float)) and not isinstance(value, bool),
-        "boolean": isinstance(value, bool),
-        "null": value is None,
-    }
-    if expected and not type_ok.get(expected, False):
-        raise ToolArgumentError(f"{path} must be a {expected}")
     if expected == "object":
         validate_tool_arguments(schema, value, path=path)
     if expected == "array" and "items" in schema:
@@ -240,14 +282,14 @@ class GovernedToolExecutor:
                 "tool Binding is not registered in the canonical store"
             ) from exc
 
-    async def execute(
+    async def _admit_call(
         self,
         tool_name: str,
         arguments: dict[str, Any],
-        *,
         context: ToolInvocationContext,
         authorized_tools: frozenset[str] | set[str] | tuple[str, ...],
-    ) -> Any:
+    ) -> tuple[ToolContract, Binding]:
+        """Allowlist, host schema and canonical Binding admission before dispatch."""
         if tool_name not in authorized_tools:
             raise ToolNotAuthorized(f"tool {tool_name!r} is outside the Agent effective allowlist")
         contract = self._contracts.require(tool_name)
@@ -255,17 +297,38 @@ class GovernedToolExecutor:
         binding = await self._binding_for(contract, context)
         if binding is None:
             raise ToolNotAuthorized(f"no authorized Binding exists for tool {tool_name!r}")
-        binding = await self._authorized_binding(contract, binding, context)
+        return contract, await self._authorized_binding(contract, binding, context)
 
+    def _expected_evidence(self, contract: ToolContract, arguments: dict[str, Any]) -> Any:
+        """Persist-before-dispatch prediction evidence for high-impact contracts."""
+        if not contract.high_impact:
+            return None
         pre_state = contract.pre_state(arguments) if contract.pre_state is not None else None
         expected = (
             contract.expected_post_state(arguments)
             if contract.expected_post_state is not None
             else None
         )
-        reversibility = self._contracts.reversibility_of(tool_name)
+        return ExpectedEffectEvidence(
+            capability=contract.capability,
+            provider=contract.provider_name,
+            materialized_arguments=arguments,
+            pre_state_digest=canonical_digest(pre_state),
+            expected_post_state=expected,
+            policy_version=contract.policy_version,
+        )
+
+    async def _invoke_admitted(
+        self,
+        contract: ToolContract,
+        binding: Binding,
+        context: ToolInvocationContext,
+        arguments: dict[str, Any],
+        expected_evidence: Any,
+    ) -> Any:
+        reversibility = self._contracts.reversibility_of(contract.name)
         request = {
-            "_tool_name": tool_name,
+            "_tool_name": contract.name,
             "_tool_reversibility": reversibility.value,
             "arguments": arguments,
         }
@@ -274,55 +337,69 @@ class GovernedToolExecutor:
             return await _resolve_provider(_binding, contract)
 
         async def execute_provider(_provider: ResolvedCapabilityProvider, _request: Any) -> Any:
-            return await self._backend(tool_name, arguments)
+            return await self._backend(contract.name, arguments)
 
         # A high-impact contract is persisted before dispatch, including the
         # exact arguments and pre-state digest. The Invocation id/provider are
         # filled by the canonical lifecycle service once its Binding resolves.
-        expected_evidence = None
-        if contract.high_impact:
-            expected_evidence = ExpectedEffectEvidence(
-                capability=contract.capability,
-                provider=contract.provider_name,
-                materialized_arguments=arguments,
-                pre_state_digest=canonical_digest(pre_state),
-                expected_post_state=expected,
-                policy_version=contract.policy_version,
-            )
-        invocation = await self._effects.invocations.invoke(
+        return await self._effects.invocations.invoke(
             binding=binding,
             run_id=context.run_id,
             node_run_id=context.node_run_id,
             attempt_id=context.attempt_id,
-            effect_key=f"tool:{tool_name}:{canonical_digest(arguments)}",
+            effect_key=f"tool:{contract.name}:{canonical_digest(arguments)}",
             request=request,
             resolver=resolver,
             executor=execute_provider,
             expected_effect=expected_evidence,
         )
-        if contract.high_impact and contract.observed_post_state is not None:
-            observed = contract.observed_post_state(invocation.result)
-            was_observed = (
-                invocation.expected_effect is not None
-                and invocation.expected_effect.matched is not None
+
+    @staticmethod
+    def _mismatched(evidence: Any) -> bool:
+        return evidence is not None and evidence.matched is False
+
+    async def _record_mismatch_event(self, contract: ToolContract, settled: Any) -> None:
+        evidence = settled.expected_effect
+        if evidence is None or evidence.matched is not False:
+            return
+        await self._effects.event_store.append(
+            self._effects.invocations.expected_effect_mismatch_event(
+                settled, tool_name=contract.name
             )
-            settled = await self._effects.invocations.record_expected_effect_observation(
-                invocation.invocation_id, observed
-            )
-            if (
-                not was_observed
-                and settled.expected_effect is not None
-                and settled.expected_effect.matched is False
-            ):
-                await self._effects.event_store.append(
-                    self._effects.invocations.expected_effect_mismatch_event(
-                        settled, tool_name=tool_name
-                    )
-                )
-            if settled.expected_effect is not None and settled.expected_effect.matched is False:
-                raise PredictionMismatch(f"expected effect mismatch for tool {tool_name!r}")
-            invocation = settled
-        return invocation.result
+        )
+
+    async def _settle_observation(self, contract: ToolContract, invocation: Any) -> Any:
+        """Record the host observation for high-impact contracts and fail loud."""
+        if not (contract.high_impact and contract.observed_post_state is not None):
+            return invocation.result
+        observed = contract.observed_post_state(invocation.result)
+        was_observed = (
+            invocation.expected_effect is not None
+            and invocation.expected_effect.matched is not None
+        )
+        settled = await self._effects.invocations.record_expected_effect_observation(
+            invocation.invocation_id, observed
+        )
+        if not was_observed:
+            await self._record_mismatch_event(contract, settled)
+        if self._mismatched(settled.expected_effect):
+            raise PredictionMismatch(f"expected effect mismatch for tool {contract.name!r}")
+        return settled.result
+
+    async def execute(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        context: ToolInvocationContext,
+        authorized_tools: frozenset[str] | set[str] | tuple[str, ...],
+    ) -> Any:
+        contract, binding = await self._admit_call(tool_name, arguments, context, authorized_tools)
+        expected_evidence = self._expected_evidence(contract, arguments)
+        invocation = await self._invoke_admitted(
+            contract, binding, context, arguments, expected_evidence
+        )
+        return await self._settle_observation(contract, invocation)
 
 
 __all__ = [

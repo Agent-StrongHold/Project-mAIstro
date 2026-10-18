@@ -111,7 +111,7 @@ def test_the_only_root_exec_is_the_pre_seed_chown(recorder: _Recording, tmp_path
     with ContainerBuilderSandbox(tmp_path) as sb:
         sb.read_file("x.py")
         sb.write_file("y.py", "y = 1\n")
-        sb.run_command("ls")
+        sb.run_argv(["ls"])
         sb.run_argv(["git", "status"])
         sb.search("y = 1")
         sb.diff()
@@ -208,7 +208,7 @@ def test_container_env_is_home_and_nothing_else(recorder: _Recording, tmp_path: 
     HOME is the one exception, pointed at /tmp — not the operator's home."""
     with ContainerBuilderSandbox(tmp_path) as sb:
         sb.read_file("x.py")
-        sb.run_command("ls")
+        sb.run_argv(["ls"])
 
     for argv in _docker_calls(recorder):
         envs = _env_assignments(argv)
