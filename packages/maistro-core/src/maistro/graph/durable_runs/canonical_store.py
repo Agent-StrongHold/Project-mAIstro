@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from maistro.runs.aggregation import terminal_run_payload
+from maistro.runs.fence import FenceRedirectTarget
 from maistro.runs.lifecycle import (
     InvalidLifecycleTransition,
     settle_open_node_run,
@@ -42,7 +43,7 @@ from .hitl import (
     settlement_time,
 )
 from .spine import mirror_lifecycle
-from .stores import answer_record, settle_hitl_record
+from .stores import accept_record, answer_record, park_record, redirect_record, settle_hitl_record
 from .types import DurableRunRecord
 
 _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
@@ -843,6 +844,88 @@ class CanonicalDurableRunStore:
         return await self._mutate_hitl(
             run_id,
             lambda current: settle_hitl_record(current, node_id, "cancelled", at=at),
+            workspace_id=workspace_id,
+            authorization=authorization,
+        )
+
+    async def park_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        note: str = "",
+    ) -> DurableRunRecord:
+        """Record a park decision on a waiting fence; the Run stays waiting."""
+        return await self._mutate_hitl(
+            run_id,
+            lambda current: park_record(
+                current,
+                node_id,
+                decided_by=authorization.effective_principal,
+                note=note,
+                at=at,
+            ),
+            workspace_id=workspace_id,
+            authorization=authorization,
+        )
+
+    async def redirect_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        target: str,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        new_goal_revision: int | None = None,
+        new_rubric_revision: int | None = None,
+        new_brief_version: int | None = None,
+    ) -> DurableRunRecord:
+        """Record a targeted redirect and resolve the waiting fence toward it."""
+        return await self._mutate_hitl(
+            run_id,
+            lambda current: redirect_record(
+                current,
+                node_id,
+                target=FenceRedirectTarget(target),
+                decided_by=authorization.effective_principal,
+                new_goal_revision=new_goal_revision,
+                new_rubric_revision=new_rubric_revision,
+                new_brief_version=new_brief_version,
+                at=at,
+            ),
+            workspace_id=workspace_id,
+            authorization=authorization,
+        )
+
+    async def accept_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        gate_passed: bool,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        failing_dimensions: tuple[str, ...] = (),
+        rationale: str = "",
+    ) -> DurableRunRecord:
+        """Record an accept; a failing gate carries recorded rationale."""
+        return await self._mutate_hitl(
+            run_id,
+            lambda current: accept_record(
+                current,
+                node_id,
+                decided_by=authorization.effective_principal,
+                gate_passed=gate_passed,
+                failing_dimensions=failing_dimensions,
+                rationale=rationale,
+                at=at,
+            ),
             workspace_id=workspace_id,
             authorization=authorization,
         )

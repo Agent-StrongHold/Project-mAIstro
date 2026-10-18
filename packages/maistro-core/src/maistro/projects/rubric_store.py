@@ -342,16 +342,23 @@ class RubricStore:
             provenance=provenance,
         )
 
-        entity = OntologyEntity(
-            id=rubric_entity_id(rubric_id, revision), kind=RUBRIC_KIND, revision=revision
-        ).with_semantic(semantic.model_dump(mode="json"))
-        existing = self._ontology.get(entity.id)
+        # Idempotent-write guard: a retried create()/update_dimensions() rebuilds
+        # identical caller-controlled content, but mints a fresh `created_at`
+        # default. Adopt the stored revision's timestamp before comparing so the
+        # retry is recognized as idempotent (and the stored timestamp is never
+        # rewritten), while any content difference still conflicts.
+        entity_id = rubric_entity_id(rubric_id, revision)
+        existing = self._ontology.get(entity_id)
         if existing is not None:
             prior = RubricSemantic.model_validate(existing.get_semantic())
+            semantic = semantic.model_copy(update={"created_at": prior.created_at})
             if prior != semantic:
                 raise RubricRevisionConflictError(
                     f"rubric {rubric_id!r} revision {revision} already exists with "
                     "different content; revisions are immutable"
                 )
+        entity = OntologyEntity(id=entity_id, kind=RUBRIC_KIND, revision=revision).with_semantic(
+            semantic.model_dump(mode="json")
+        )
         self._ontology.upsert(entity)
         return semantic

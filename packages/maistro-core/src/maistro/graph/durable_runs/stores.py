@@ -7,11 +7,20 @@ import sqlite3
 from collections.abc import Callable, Mapping, ValuesView
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
+
+from pydantic import ValidationError
 
 from maistro.graph.execution_state import GraphExecutionState, thaw_json_value
+from maistro.runs.fence import (
+    FenceDecision,
+    FenceDecisionKind,
+    FenceError,
+    FenceNotWaitingError,
+    FenceRedirectTarget,
+)
 from maistro.runs.lifecycle import settle_open_node_run, transition_node_run, transition_run
-from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+from maistro.runs.model import TERMINAL_RUN_STATUSES, NodeRun, Run, RunStatus
 from maistro.sqlite_schema import (
     execute_schema_script_sync,
     serialized_schema_upgrade_sync,
@@ -338,6 +347,307 @@ def settle_hitl_record(
     )
 
 
+def _fence_decision_metadata(record: DurableRunRecord) -> list[Mapping[str, Any]]:
+    """The append-only ``fence_decisions`` list from durable state.
+
+    The graph state freezes sequences, so persisted decisions read back as a
+    tuple of mappings, not a list.
+    """
+    raw = record.graph_state.metadata.get("fence_decisions", [])
+    if isinstance(raw, (list, tuple)):
+        return [entry for entry in raw if isinstance(entry, Mapping)]
+    return []
+
+
+def fence_decisions_of(record: DurableRunRecord) -> tuple[FenceDecision, ...]:
+    """Every fence decision recorded on the Run, oldest first.
+
+    Decisions are immutable-by-history: this is a projection of durable
+    evidence, never of product or UI state.
+    """
+    decisions: list[FenceDecision] = []
+    for entry in _fence_decision_metadata(record):
+        try:
+            decisions.append(FenceDecision.model_validate(dict(entry)))
+        except ValueError:
+            continue
+    return tuple(decisions)
+
+
+def fence_binding(record: DurableRunRecord) -> dict[str, Any]:
+    """The Goal/Rubric/brief revisions this Run currently consumes.
+
+    They ride the Run's provenance (the same keys pack Graphs launch with).
+    A Run without the binding was not launched as a loop Run and cannot take
+    a fence decision that cites or mints revisions.
+    """
+    provenance = record.run.provenance
+    missing = [
+        key
+        for key in ("goal_id", "goal_revision", "rubric_id", "rubric_revision")
+        if key not in provenance
+    ]
+    if missing:
+        raise FenceNotWaitingError(
+            f"run {record.run_id!r} has no loop binding in provenance (missing {missing}); "
+            "a fence decision requires the Goal/Rubric revisions the Run consumes"
+        )
+    return dict(provenance)
+
+
+def _append_fence_decision(
+    metadata: dict[str, Any],
+    decision: FenceDecision,
+) -> None:
+    decisions = metadata.get("fence_decisions")
+    if not isinstance(decisions, (list, tuple)):
+        decisions = ()
+    metadata["fence_decisions"] = [*decisions, decision.model_dump(mode="json")]
+
+
+def _consume_fence_pause(
+    record: DurableRunRecord,
+    node_id: str,
+    paused_index: int,
+    metadata: dict[str, Any],
+    moment: datetime,
+    answer: dict[str, Any],
+) -> tuple[list[NodeRun], Run, GraphExecutionState]:
+    """Resolve one waiting fence NodeRun toward the new graph eligibility.
+
+    Shared by redirect and accept: the pause entry is consumed exactly like an
+    answer's, the NodeRun returns to QUEUED (the walker — not this write —
+    completes it and routes successors on resume), and the decision rides the
+    node's ``hitl_answers`` payload so the resuming node sees what was decided.
+    """
+    pauses_before = record.graph_state.metadata.get("pauses", {})
+    own_pause = pauses_before.get(node_id) if isinstance(pauses_before, Mapping) else None
+    answered: dict[str, Any] = {
+        **answer,
+        "answered_at": moment.isoformat(),
+        "fence_decision": True,
+    }
+    if isinstance(own_pause, Mapping):
+        answered["_pause"] = dict(own_pause)
+    answers = dict(record.hitl_answers)
+    answers[node_id] = answered
+    metadata["hitl_answers"] = answers
+    metadata = _pause_metadata_after_answer(record, metadata, node_id)
+
+    node_runs = list(record.node_runs)
+    node_runs[paused_index] = transition_node_run(
+        node_runs[paused_index],
+        RunStatus.QUEUED,
+        at=moment,
+    )
+    remaining_paused = any(node_run.status is RunStatus.PAUSED for node_run in node_runs)
+    run = (
+        record.run if remaining_paused else transition_run(record.run, RunStatus.QUEUED, at=moment)
+    )
+    graph_state = _replace_state(record.graph_state, metadata=metadata)
+    return node_runs, run, graph_state
+
+
+def _rethrow_fence_validation(exc: ValidationError) -> NoReturn:
+    """Surface the model's own fence error instead of pydantic's wrapper.
+
+    :class:`FenceDecision` is the single place the fence rules live; this
+    keeps its precise refusals (missing redirect target, missing override
+    rationale) observable to callers and HTTP translation instead of hiding
+    them inside a generic validation error.
+    """
+    for error in exc.errors():
+        original = (error.get("ctx") or {}).get("error")
+        if isinstance(original, FenceError):
+            raise original
+    raise exc
+
+
+def _build_fence_decision(**fields: Any) -> FenceDecision:
+    try:
+        return FenceDecision(**fields)
+    except ValidationError as exc:
+        _rethrow_fence_validation(exc)
+
+
+def park_record(
+    record: DurableRunRecord,
+    node_id: str,
+    *,
+    decided_by: str,
+    note: str = "",
+    at: datetime | None = None,
+) -> DurableRunRecord:
+    """Record a park decision on a waiting fence and keep the Run waiting.
+
+    Park writes only the decision record: the human pause, the frontier, the
+    Goal/Rubric binding, eval evidence, and artifacts are all untouched, so a
+    later answer (or redirect/accept) resumes the same Run from the same
+    waiting NodeRun. The #737 deadline stays authoritative — park neither
+    extends it nor defuses the expiry tick.
+    """
+    moment = _answerable_moment(record, node_id, at)
+    paused_index = _paused_node_run_index(record, node_id)
+    binding = fence_binding(record)
+    decision = _build_fence_decision(
+        run_id=record.run_id,
+        node_id=node_id,
+        node_run_id=record.node_runs[paused_index].node_run_id,
+        decision=FenceDecisionKind.PARK,
+        goal_id=str(binding["goal_id"]),
+        goal_revision=int(binding["goal_revision"]),
+        rubric_id=str(binding["rubric_id"]),
+        rubric_revision=int(binding["rubric_revision"]),
+        decided_by=decided_by,
+        decided_at=moment,
+        rationale=note,
+    )
+    metadata = dict(record.graph_state.metadata)
+    _append_fence_decision(metadata, decision)
+    graph_state = _replace_state(record.graph_state, metadata=metadata)
+    return _replace_record(record, graph_state=graph_state, version=record.version + 1)
+
+
+def redirect_record(
+    record: DurableRunRecord,
+    node_id: str,
+    *,
+    target: FenceRedirectTarget,
+    decided_by: str,
+    new_goal_revision: int | None = None,
+    new_rubric_revision: int | None = None,
+    new_brief_version: int | None = None,
+    at: datetime | None = None,
+) -> DurableRunRecord:
+    """Record a redirect and resolve the waiting fence toward the new revisions.
+
+    The caller supplies the revisions already minted through their canonical
+    owners (Goal lineage port, ``RubricStore``, the brief surface); this write
+    validates that exactly the target's revisions moved, records the decision,
+    and — only for newly eligible work — updates the Run's binding. Prior
+    eval scores, NodeRuns, Attempts, and decisions keep the revisions they
+    consumed: history is not rewritten.
+    """
+    moment = _answerable_moment(record, node_id, at)
+    paused_index = _paused_node_run_index(record, node_id)
+    binding = fence_binding(record)
+    decision = _build_fence_decision(
+        run_id=record.run_id,
+        node_id=node_id,
+        node_run_id=record.node_runs[paused_index].node_run_id,
+        decision=FenceDecisionKind.REDIRECT,
+        redirect_target=target,
+        goal_id=str(binding["goal_id"]),
+        goal_revision=int(binding["goal_revision"]),
+        rubric_id=str(binding["rubric_id"]),
+        rubric_revision=int(binding["rubric_revision"]),
+        new_goal_revision=new_goal_revision,
+        new_rubric_revision=new_rubric_revision,
+        new_brief_version=new_brief_version,
+        decided_by=decided_by,
+        decided_at=moment,
+    )
+
+    metadata = dict(record.graph_state.metadata)
+    _append_fence_decision(metadata, decision)
+    node_runs, run, graph_state = _consume_fence_pause(
+        record,
+        node_id,
+        paused_index,
+        metadata,
+        moment,
+        answer={
+            "decision": FenceDecisionKind.REDIRECT.value,
+            "redirect_target": target.value,
+            "new_goal_revision": new_goal_revision,
+            "new_rubric_revision": new_rubric_revision,
+            "new_brief_version": new_brief_version,
+        },
+    )
+    provenance = dict(record.run.provenance)
+    if new_goal_revision is not None:
+        provenance["goal_revision"] = new_goal_revision
+    if new_rubric_revision is not None:
+        provenance["rubric_revision"] = new_rubric_revision
+    if new_brief_version is not None:
+        provenance["brief_version"] = new_brief_version
+    run = run.model_copy(update={"provenance": provenance, "updated_at": moment})
+    return _replace_record(
+        record,
+        run=run,
+        graph_state=graph_state,
+        node_runs=tuple(node_runs),
+        resume_at=record.resume_at
+        if any(node_run.status is RunStatus.PAUSED for node_run in node_runs)
+        else None,
+        version=record.version + 1,
+    )
+
+
+def accept_record(
+    record: DurableRunRecord,
+    node_id: str,
+    *,
+    decided_by: str,
+    gate_passed: bool,
+    failing_dimensions: tuple[str, ...] = (),
+    rationale: str = "",
+    at: datetime | None = None,
+) -> DurableRunRecord:
+    """Record an accept and resolve the waiting fence so downstream may proceed.
+
+    ``gate_passed`` and ``failing_dimensions`` are the Run's persisted eval
+    evidence, derived by the caller from eval records — never asserted UI
+    state. A failing gate accept carries a non-empty ``rationale`` (validated
+    by :class:`FenceDecision` itself, so no caller can bypass it) and grants
+    no Capability: the accept is a scoring verdict, and Capability/Binding
+    still govern every external effect.
+    """
+    moment = _answerable_moment(record, node_id, at)
+    paused_index = _paused_node_run_index(record, node_id)
+    binding = fence_binding(record)
+    decision = _build_fence_decision(
+        run_id=record.run_id,
+        node_id=node_id,
+        node_run_id=record.node_runs[paused_index].node_run_id,
+        decision=FenceDecisionKind.ACCEPT,
+        goal_id=str(binding["goal_id"]),
+        goal_revision=int(binding["goal_revision"]),
+        rubric_id=str(binding["rubric_id"]),
+        rubric_revision=int(binding["rubric_revision"]),
+        gate_passed=gate_passed,
+        failing_dimensions=failing_dimensions,
+        rationale=rationale,
+        decided_by=decided_by,
+        decided_at=moment,
+    )
+    metadata = dict(record.graph_state.metadata)
+    _append_fence_decision(metadata, decision)
+    node_runs, run, graph_state = _consume_fence_pause(
+        record,
+        node_id,
+        paused_index,
+        metadata,
+        moment,
+        answer={
+            "decision": FenceDecisionKind.ACCEPT.value,
+            "gate_passed": gate_passed,
+            "failing_dimensions": list(failing_dimensions),
+            "rationale": rationale,
+        },
+    )
+    return _replace_record(
+        record,
+        run=run,
+        graph_state=graph_state,
+        node_runs=tuple(node_runs),
+        resume_at=record.resume_at
+        if any(node_run.status is RunStatus.PAUSED for node_run in node_runs)
+        else None,
+        version=record.version + 1,
+    )
+
+
 class InMemoryDurableRunStore:
     """In-process optimistic-concurrency checkpoint store."""
 
@@ -465,6 +775,84 @@ class InMemoryDurableRunStore:
         return await self._mutate_authorized_hitl(
             run_id,
             lambda current: settle_hitl_record(current, node_id, "cancelled", at=at),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
+
+    async def park_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        note: str = "",
+    ) -> DurableRunRecord:
+        """Record a park decision on a waiting fence; the Run stays waiting."""
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: park_record(
+                current, node_id, decided_by=authorization.effective_principal, note=note, at=at
+            ),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
+
+    async def redirect_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        target: str,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        new_goal_revision: int | None = None,
+        new_rubric_revision: int | None = None,
+        new_brief_version: int | None = None,
+    ) -> DurableRunRecord:
+        """Record a targeted redirect and resolve the waiting fence toward it."""
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: redirect_record(
+                current,
+                node_id,
+                target=FenceRedirectTarget(target),
+                decided_by=authorization.effective_principal,
+                new_goal_revision=new_goal_revision,
+                new_rubric_revision=new_rubric_revision,
+                new_brief_version=new_brief_version,
+                at=at,
+            ),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
+
+    async def accept_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        gate_passed: bool,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        failing_dimensions: tuple[str, ...] = (),
+        rationale: str = "",
+    ) -> DurableRunRecord:
+        """Record an accept; a failing gate carries recorded rationale."""
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: accept_record(
+                current,
+                node_id,
+                decided_by=authorization.effective_principal,
+                gate_passed=gate_passed,
+                failing_dimensions=failing_dimensions,
+                rationale=rationale,
+                at=at,
+            ),
             authorization=authorization,
             workspace_id=workspace_id,
         )
@@ -732,6 +1120,88 @@ class SqliteDurableRunStore:
         return await self._mutate_authorized_hitl(
             run_id,
             lambda current: settle_hitl_record(current, node_id, "cancelled", at=at),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
+
+    async def park_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        note: str = "",
+    ) -> DurableRunRecord:
+        """Record a park decision on a waiting fence; the Run stays waiting."""
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: park_record(
+                current,
+                node_id,
+                decided_by=authorization.effective_principal,
+                note=note,
+                at=at,
+            ),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
+
+    async def redirect_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        target: str,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        new_goal_revision: int | None = None,
+        new_rubric_revision: int | None = None,
+        new_brief_version: int | None = None,
+    ) -> DurableRunRecord:
+        """Record a targeted redirect and resolve the waiting fence toward it."""
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: redirect_record(
+                current,
+                node_id,
+                target=FenceRedirectTarget(target),
+                decided_by=authorization.effective_principal,
+                new_goal_revision=new_goal_revision,
+                new_rubric_revision=new_rubric_revision,
+                new_brief_version=new_brief_version,
+                at=at,
+            ),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
+
+    async def accept_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        gate_passed: bool,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        failing_dimensions: tuple[str, ...] = (),
+        rationale: str = "",
+    ) -> DurableRunRecord:
+        """Record an accept; a failing gate carries recorded rationale."""
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: accept_record(
+                current,
+                node_id,
+                decided_by=authorization.effective_principal,
+                gate_passed=gate_passed,
+                failing_dimensions=failing_dimensions,
+                rationale=rationale,
+                at=at,
+            ),
             authorization=authorization,
             workspace_id=workspace_id,
         )

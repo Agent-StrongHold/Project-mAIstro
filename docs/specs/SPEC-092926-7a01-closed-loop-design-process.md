@@ -26,8 +26,10 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-core/tests/ontology/test_design_loop_kind_fencing.py
+  - packages/maistro-core/tests/graph/durable_runs/test_fence_decisions.py
 source:
   - packages/maistro-core/tests/ontology/test_design_loop_kind_fencing.py
+  - packages/maistro-core/tests/graph/durable_runs/test_fence_decisions.py
 layer: Orchestration
 ac-modules:
   AC-1: maistro.ontology.registry

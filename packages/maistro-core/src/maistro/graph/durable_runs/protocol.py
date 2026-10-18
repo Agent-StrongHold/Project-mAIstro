@@ -105,6 +105,50 @@ class DurableRunStore(Protocol):
         """Terminalize a human pause by explicit cancellation."""
         ...
 
+    async def park_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        note: str = "",
+    ) -> DurableRunRecord:
+        """Record a park decision on a waiting fence; the Run stays waiting."""
+        ...
+
+    async def redirect_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        target: str,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        new_goal_revision: int | None = None,
+        new_rubric_revision: int | None = None,
+        new_brief_version: int | None = None,
+    ) -> DurableRunRecord:
+        """Record a targeted redirect and resolve the waiting fence toward it."""
+        ...
+
+    async def accept_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        gate_passed: bool,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        failing_dimensions: tuple[str, ...] = (),
+        rationale: str = "",
+    ) -> DurableRunRecord:
+        """Record an accept; a failing gate carries recorded rationale."""
+        ...
+
 
 class RecoveryInfrastructureError(RuntimeError):
     """A persistence failure that makes continuing the recovery scan unsafe.
