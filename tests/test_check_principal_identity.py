@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -59,3 +61,44 @@ def test_new_violation_needs_a_grant_landed_at_the_base(gate) -> None:
 def test_candidate_ledger_must_match_the_tree(gate) -> None:
     failures = gate.compare({"a"}, {"a", "fixed"}, {"a", "fixed"}, set())
     assert failures == ["fixed: fixed -- delete it from the candidate ledger"]
+
+
+def test_main_reaches_verdicts_through_the_bundled_identity(
+    gate, monkeypatch, tmp_path, capsys
+) -> None:
+    """#319: main() resolves the implementation identity before judging.
+
+    Drives the whole verdict path with a fake provenance namespace that, like
+    the real one, carries bundled_implementation_fingerprint: the identity
+    resolves first inside the trusted-state try block, the record prints, and
+    both a clean pass and an unauthorized-debt fail reach their exit code.
+    """
+    baseline = tmp_path / "principal-identity-baseline.json"
+    baseline.write_text(json.dumps({"tolerated": {}}), encoding="utf-8")
+    monkeypatch.setattr(gate, "BASELINE", baseline)
+    trusted = SimpleNamespace(base_sha="0" * 40, loads=lambda default=None: {"tolerated": {}})
+    provenance = SimpleNamespace(
+        RatchetProvenanceError=RuntimeError,
+        resolve_baseline=lambda *_a, **_k: trusted,
+        require_measurement=lambda *_a, **_k: None,
+        require_metric_version=lambda *_a, **_k: None,
+        load_authorizations=lambda *_a, **_k: {},
+        head_sha=lambda *_a: "c" * 40,
+        Provenance=lambda **_k: SimpleNamespace(render=lambda: "fixture provenance"),
+        bundled_implementation_fingerprint=lambda *_a, **_k: "bundled-sha256:fake",
+    )
+    monkeypatch.setattr(gate, "_provenance", lambda: provenance)
+    monkeypatch.setattr(sys, "argv", ["check-principal-identity.py"])
+
+    monkeypatch.setattr(gate, "collect_violations", lambda: ([], 3))
+    assert gate.main() == 0
+    out = capsys.readouterr().out
+    assert "fixture provenance" in out
+    assert "ok: 0 tolerated principal-identity violation(s), none new" in out
+
+    violation = gate.Violation(
+        "state_user_access", "packages/hive-conductor/backend/routes/new.py", "", "1 access"
+    )
+    monkeypatch.setattr(gate, "collect_violations", lambda: ([violation], 3))
+    assert gate.main() == 1
+    assert "NEW parallel principal surface" in capsys.readouterr().err

@@ -47,16 +47,52 @@ compose() { docker compose -f "${COMPOSE_FILE}" "$@"; }
 
 echo "[backup] ${STAMP} -> ${DEST}"
 
-# ── 1. PostgreSQL full dump ──────────────────────────────────────────────────
-# Custom-format dump (restorable via pg_restore, supports parallel restore).
-compose exec -T "${PG_SERVICE}" pg_dump -U "${PG_USER}" -d "${PG_DB}" -Fc \
+# ── 1. PostgreSQL full dump + snapshot-bound verification evidence (#1881) ──
+# The authoritative custom-format archive and the semantic verification
+# evidence are taken from the SAME exported snapshot, so concurrent writes
+# cannot make them describe different states (the previous script hashed a
+# second, unconstrained plain-text dump; PostgreSQL >= 17 also embeds a
+# random psql restrict key in plain output, so raw dump bytes are not a
+# stable restore oracle — see pg-semantic-oracle.sh).
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pg-semantic-oracle.sh"
+oracle_psql() { compose exec -T "${PG_SERVICE}" psql -X -U "${PG_USER}" -d "${PG_DB}" "$@"; }
+# Line buffering must be applied inside the container: psql block-buffers when
+# its stdout is a pipe, and the snapshot-export session is read mid-flight.
+oracle_psql_coproc() { compose exec -T "${PG_SERVICE}" stdbuf -oL psql -X -U "${PG_USER}" -d "${PG_DB}" "$@"; }
+
+SNAPSHOT_ID=""
+oracle_begin_snapshot                 # sets ORACLE_SNAPSHOT; must run in the main shell
+SNAPSHOT_ID="${ORACLE_SNAPSHOT}"
+
+# Artifact provenance: which state, which server, which tools produced it.
+{
+  echo "snapshot=${SNAPSHOT_ID}"
+  echo "backup_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  oracle_psql -X -Atq -v ON_ERROR_STOP=1 -c "SELECT 'server_version=' || current_setting('server_version');"
+  compose exec -T "${PG_SERVICE}" pg_dump -V
+  compose exec -T "${PG_SERVICE}" psql -V
+} > "${DEST}/postgres-${PG_DB}.provenance"
+
+# Custom-format dump (restorable via pg_restore, supports parallel restore),
+# taken from the exported snapshot while oracle_begin_snapshot's transaction
+# is still open.
+compose exec -T "${PG_SERVICE}" pg_dump -U "${PG_USER}" -d "${PG_DB}" -Fc --snapshot="${SNAPSHOT_ID}" \
   > "${DEST}/postgres-${PG_DB}.dump"
 
-# Plain-text dump used for the bit-for-bit consistency hash property
-# ("backup restore always produces identical pg_dump output").
-compose exec -T "${PG_SERVICE}" pg_dump -U "${PG_USER}" -d "${PG_DB}" --no-owner \
-  > "${DEST}/postgres-${PG_DB}.sql"
-sha256sum "${DEST}/postgres-${PG_DB}.sql" > "${DEST}/postgres-${PG_DB}.sql.sha256"
+# Semantic evidence from the same snapshot: schema inventory + exact row counts.
+oracle_collect_evidence \
+  "${DEST}/postgres-${PG_DB}.schema" \
+  "${DEST}/postgres-${PG_DB}.rowcounts" \
+  "${SNAPSHOT_ID}"
+
+oracle_end_snapshot
+
+# At-rest integrity hashes for the archive and its evidence. These pin the
+# artifacts against bit-rot in the backup store; they are NOT the restore
+# oracle — verify-restore.sh compares semantic evidence, not dump bytes.
+sha256sum "${DEST}/postgres-${PG_DB}.dump" > "${DEST}/postgres-${PG_DB}.dump.sha256"
+sha256sum "${DEST}/postgres-${PG_DB}.schema" > "${DEST}/postgres-${PG_DB}.schema.sha256"
+sha256sum "${DEST}/postgres-${PG_DB}.rowcounts" > "${DEST}/postgres-${PG_DB}.rowcounts.sha256"
 
 # WAL archival note: archive_command on the primary continuously copies WAL
 # segments into the wal-archive volume; sync them next to the daily dump so a
