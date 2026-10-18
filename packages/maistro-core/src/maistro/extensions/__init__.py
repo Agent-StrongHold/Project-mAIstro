@@ -357,6 +357,8 @@ from maistro.extensions.policy import (
     PolicyLayer,
     PolicyRuleOutcome,
     PolicyVerdict,
+)
+from maistro.extensions.policy import (
     WorkspaceExtensionPolicy as WorkspaceExtensionEnablementPolicy,
 )
 from maistro.extensions.preflight import (
@@ -403,6 +405,7 @@ from maistro.extensions.semver import (
 from maistro.extensions.service import (
     ExtensionCodeLoader,
     ExtensionInstallService,
+    ExtensionPolicyViolation,
     LoadedExtension,
     OwnedResourceJanitor,
     RetainAllJanitor,
@@ -512,6 +515,7 @@ __all__ = [
     "HEALTHY_STATES",
     "HEALTH_WINDOW",
     "HOST_FEATURES",
+    "INHERITANCE_SEMANTICS",
     "LOCK_FORMAT",
     "MANIFEST_PROFILE",
     "NETWORK_OUTBOUND_PERMISSION",
@@ -623,6 +627,7 @@ __all__ = [
     "ExtensionPin",
     "ExtensionPinned",
     "ExtensionPolicyEngine",
+    "ExtensionPolicyViolation",
     "ExtensionProgress",
     "ExtensionQuotaBalance",
     "ExtensionQuotaConflict",
@@ -654,7 +659,6 @@ __all__ = [
     "GovernedRoute",
     "HostContractMetadata",
     "HostExtensionPolicy",
-    "INHERITANCE_SEMANTICS",
     "ImportPolicy",
     "InMemoryExtensionHealthStore",
     "InMemoryExtensionInstallStore",

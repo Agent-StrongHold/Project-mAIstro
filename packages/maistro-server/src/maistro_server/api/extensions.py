@@ -61,6 +61,7 @@ from maistro.extensions import (
     UnknownInstall,
     state_for_action,
 )
+
 # The #971 org/Workspace policy engine's Workspace layer. Imported from its
 # module path, not the package root: at the root the name
 # ``WorkspaceExtensionPolicy`` is the #969 effective-authority input, and

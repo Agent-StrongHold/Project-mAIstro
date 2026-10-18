@@ -151,7 +151,7 @@ if TYPE_CHECKING:
     from maistro.extensions.policy import ExtensionPolicyEngine
     from maistro.extensions.service import ExtensionInstallService
     from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
-    from maistro.extensions.store import ExtensionStore, InMemoryExtensionStore
+    from maistro.extensions.store import ExtensionStore
     from maistro.extensions.tenancy import TenantScopedExtensionState
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (

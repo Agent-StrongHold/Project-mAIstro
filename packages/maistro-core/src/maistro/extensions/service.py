@@ -534,49 +534,63 @@ class ExtensionInstallService:
 
         # The grant is frozen from the immutable snapshot, never from a
         # mutable copy: verify the bytes still hash to the inspected digest.
+        assert_snapshot_intact(record.manifest)
+
         # The whole decision — policy re-check and grant — sits inside the
         # org's enforcement window, so a policy change cannot land between
         # "policy allowed it" and "the grant was recorded" (and a deny that
         # lands first wins: org policy overrides a Workspace enable request).
-        assert_snapshot_intact(record.manifest)
-
-        # The org/Workspace policy decision (#971) and the grant sit inside
-        # the org's enforcement window, so a policy change cannot land between
-        # "policy allowed it" and "the grant was recorded" (and a deny that
-        # lands first wins: org policy overrides a Workspace enable request).
         async with self._policy_window(scope.org_id):
-            decision = self._policy_decision(scope, record.manifest, actor=actor)
-            if decision is not None and not decision.allowed:
-                return await self._transition(
-                    record,
-                    ExtensionState.DENIED,
-                    actor=actor,
-                    reason=f"denied: extension policy overrides this enablement: "
-                    f"{decision.explanation}",
-                    now=now,
-                )
+            return await self._grant_within_policy_window(
+                record, actor=actor, scope=scope, reason=reason, now=now
+            )
 
-            # #969: when the deployment supplies authority inputs, the grant is
-            # frozen to the effective authority — the intersection of manifest,
-            # publisher trust, host policy, caller delegation and Workspace
-            # policy — never to the request alone.
-            if self._authority_inputs is not None:
-                return await self._authorize_with_effective_authority(
-                    record, actor=actor, reason=reason, now=now
-                )
+    async def _grant_within_policy_window(
+        self,
+        record: ExtensionInstallRecord,
+        *,
+        actor: str,
+        scope: ExtensionScope,
+        reason: str,
+        now: datetime,
+    ) -> ExtensionInstallRecord:
+        """Grant — or policy-refuse — one approved request inside the window.
 
+        The #971 org/Workspace policy decides first: a deny is terminal and
+        overrides any Workspace enablement. When the policy allows and the
+        deployment supplies #969 authority inputs, the grant is frozen to the
+        effective authority — the intersection of manifest, publisher trust,
+        host policy, caller delegation and Workspace policy — never to the
+        request alone.
+        """
+        decision = self._policy_decision(scope, record.manifest, actor=actor)
+        if decision is not None and not decision.allowed:
             return await self._transition(
                 record,
-                ExtensionState.AUTHORIZED,
+                ExtensionState.DENIED,
                 actor=actor,
-                reason=f"authorized: {reason}",
+                reason=f"denied: extension policy overrides this enablement: "
+                f"{decision.explanation}",
                 now=now,
-                mutate=lambda r: replace(
-                    r,
-                    granted_permissions=r.requested_permissions,
-                    authorized_by=actor,
-                ),
             )
+
+        if self._authority_inputs is not None:
+            return await self._authorize_with_effective_authority(
+                record, actor=actor, reason=reason, now=now
+            )
+
+        return await self._transition(
+            record,
+            ExtensionState.AUTHORIZED,
+            actor=actor,
+            reason=f"authorized: {reason}",
+            now=now,
+            mutate=lambda r: replace(
+                r,
+                granted_permissions=r.requested_permissions,
+                authorized_by=actor,
+            ),
+        )
 
     async def _authorize_with_effective_authority(
         self,
@@ -879,6 +893,8 @@ class ExtensionInstallService:
                 payload_digest=payload_digest,
                 install_id=install_id,
                 now=now,
+                why=why,
+                detail=detail,
             )
 
     async def _activate_locked(
@@ -891,8 +907,15 @@ class ExtensionInstallService:
         payload_digest: str,
         install_id: str,
         now: datetime,
+        why: str,
+        detail: str,
     ) -> ExtensionInstallRecord:
-        """Run the activation sequence; the caller holds both locks."""
+        """Run the activation sequence; the caller holds both locks.
+
+        The org's enforcement window is held by the caller, so the policy
+        refusal below is ordered against concurrent policy changes: a deny
+        that lands first wins and no activation ever starts.
+        """
         decision = self._policy_decision(scope, record.manifest, actor=actor)
         if decision is not None and not decision.allowed:
             raise ExtensionPolicyViolation(
