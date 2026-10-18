@@ -15,6 +15,7 @@ import pytest
 
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
 from maistro.memory.episodic.store import InMemoryEpisodicStore
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.memory.types import MemoryTier
 from maistro.memory.working.manager import WorkingMemoryManager
@@ -31,7 +32,7 @@ def _policy(
 ) -> DefaultContextAssemblyPolicy:
     return DefaultContextAssemblyPolicy(
         episodic_store=store,
-        outcome_store=InMemoryOutcomeStore(),
+        outcome_store=InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
         project_store=InMemoryProjectStore(),
         embedding_client=client,
         working_memory=manager,
@@ -55,7 +56,7 @@ def _manager(
 
 class TestLayer1HotPath:
     async def test_query_recall_goes_through_the_hot_projection(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_mem("PostgreSQL needs pgvector for similarity", memory_id="pg"))
         await store.store(_mem("Kafka partitions and brokers", memory_id="kf"))
         client = TopicEmbeddingClient()
@@ -73,7 +74,7 @@ class TestLayer1HotPath:
         assert manager.projection().stats.records == 2
 
     async def test_empty_query_keeps_store_listing_semantics(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_mem("PostgreSQL needs pgvector", memory_id="pg"))
         client = TopicEmbeddingClient()
         manager = _manager(store, client=client)
@@ -82,7 +83,7 @@ class TestLayer1HotPath:
         assert "pgvector" in text
 
     async def test_scope_visibility_narrows_on_the_hot_path(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_mem("PostgreSQL secrets for agent-1", memory_id="m1"))
         manager = _manager(store)
         policy = _policy(store, manager=manager)
@@ -102,7 +103,7 @@ class TestLayer1HotPath:
     ) -> None:
         import maistro.memory.working.manager as manager_module
 
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_mem("PostgreSQL needs pgvector", memory_id="pg"))
         manager = _manager(store)
 
@@ -123,7 +124,7 @@ class TestLayer1HotPath:
         )
 
     async def test_no_manager_behaves_exactly_as_before(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_mem("PostgreSQL needs pgvector", memory_id="pg"))
         policy = _policy(store)
         text = await policy.layer1(
@@ -134,7 +135,7 @@ class TestLayer1HotPath:
     async def test_mid_read_failure_heals_by_rebuild_for_the_next_call(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_mem("PostgreSQL needs pgvector", memory_id="pg"))
         manager = _manager(store)
         policy = _policy(store, manager=manager)
@@ -171,10 +172,61 @@ class TestLayer1HotPath:
         assert "pgvector" in second
         assert calls["count"] == 2
 
+    @pytest.mark.parametrize("failure", ["none", "hydration", "recall"])
+    async def test_project_scope_survives_hot_recall_and_durable_fallback(
+        self, failure: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        await store.store(_mem("widget alpha secret", memory_id="a", project_id="A"))
+        await store.store(_mem("widget beta plan", memory_id="b", project_id="B"))
+        manager = _manager(store)
+        policy = _policy(store, manager=manager)
+        assert await manager.ensure_hydrated()
+        projection = manager.projection()
+        original_recall = type(projection).recall
+        calls: list[dict[str, Any]] = []
+
+        async def recall(self: Any, query: str, **kwargs: Any) -> Any:
+            calls.append(kwargs)
+            if failure == "recall":
+                raise RuntimeError("projection unavailable")
+            return await original_recall(self, query, **kwargs)
+
+        async def unavailable() -> bool:
+            return False
+
+        monkeypatch.setattr(type(projection), "recall", recall)
+        if failure == "hydration":
+            monkeypatch.setattr(manager, "ensure_hydrated", unavailable)
+        text = await policy.layer1("r1", "agent-1", "s1", "widget", project_id="B")
+        assert text == "widget beta plan"
+        if failure == "hydration":
+            assert calls == []
+        else:
+            assert len(calls) == 1
+            assert calls[0]["project_id"] == "B"
+            assert calls[0]["agent_id"] == "agent-1"
+        assert len(await store.list_by_scope()) == 2
+
+    async def test_empty_scoped_hot_result_does_not_fall_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        await store.store(_mem("widget alpha secret", memory_id="a", project_id="A"))
+        manager = _manager(store)
+        policy = _policy(store, manager=manager)
+
+        async def unexpected_retrieval(*args: Any, **kwargs: Any) -> Any:
+            pytest.fail("An empty healthy projection must not trigger durable retrieval")
+
+        monkeypatch.setattr(policy._retrieval, "retrieve", unexpected_retrieval)
+        assert await policy.layer1("r1", "agent-1", "s1", "widget", project_id="B") == ""
+        assert manager.projection().stats.records == 1
+
 
 class TestLayer4GraphContext:
     async def test_populated_workspace_gets_real_graph_context(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_mem("PostgreSQL and LadybugDB split the memory tiers", memory_id="m1"))
         await store.store(_mem("PostgreSQL migration finished on time", memory_id="m2"))
         manager = _manager(store)
@@ -189,7 +241,7 @@ class TestLayer4GraphContext:
         assert "[lesson w=0.70, run run-1]" in text  # canonical provenance rendered
 
     async def test_project_filter_narrows_citing_memories(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_mem("PostgreSQL migration notes", memory_id="mine", project_id="proj-1"))
         await store.store(_mem("PostgreSQL rollback drill", memory_id="other", project_id="proj-2"))
         manager = _manager(store)
@@ -200,13 +252,13 @@ class TestLayer4GraphContext:
         assert "rollback drill" not in text
 
     async def test_empty_workspace_returns_empty_string(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         manager = _manager(store)
         policy = _policy(store, manager=manager)
         assert await policy.layer4(project_id="proj-1") == ""
 
     async def test_no_manager_still_returns_empty_string(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         policy = _policy(store)
         assert await policy.layer4(project_id="proj-1") == ""
 
@@ -215,7 +267,7 @@ class TestLayer4GraphContext:
     ) -> None:
         import maistro.memory.working.manager as manager_module
 
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_mem("PostgreSQL and LadybugDB", memory_id="m1"))
         manager = _manager(store)
 
@@ -230,7 +282,7 @@ class TestLayer4GraphContext:
 
 class TestLayer4FailureAndRendering:
     async def test_long_memory_snippets_are_truncated_not_dumped(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         filler = "x" * 400
         await store.store(_mem(f"PostgreSQL note with a long body {filler}", memory_id="m1"))
         policy = _policy(store, manager=_manager(store))
@@ -248,7 +300,7 @@ class TestLayer4FailureAndRendering:
         """A mid-read entity-context failure is the layer4 corruption signal:
         serve none, log loudly, and run the ADR §6 discard-and-rebuild so the
         next call is hot again — with no durable write anywhere."""
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_mem("PostgreSQL and LadybugDB split the tiers", memory_id="m1"))
         manager = _manager(store)
         policy = _policy(store, manager=manager)
@@ -276,7 +328,7 @@ class TestLayer4FailureAndRendering:
         """When even the corruption-heal rebuild fails, the policy must say so
         and keep answering from the durable path — and a deterministically
         failing read must not turn every retrieval into a re-index attempt."""
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_mem("PostgreSQL and LadybugDB split the tiers", memory_id="m1"))
         manager = _manager(store)
         policy = _policy(store, manager=manager)
@@ -311,7 +363,7 @@ class TestLayer4FailureAndRendering:
 
 class TestAssembleIntegration:
     async def test_assemble_includes_layer4_when_wired(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_mem("PostgreSQL and LadybugDB split the tiers", memory_id="m1"))
         manager = _manager(store)
         policy = _policy(store, manager=manager)
@@ -329,7 +381,7 @@ class TestAssembleIntegration:
         assert "associated with" in text
 
     async def test_hypothesis_tier_reaches_layer1_hot_recall(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(
             _mem(
                 "PostgreSQL sharding hypothesis needs measurement",
@@ -348,7 +400,7 @@ class TestAssembleIntegration:
 
 class TestNoSilentPretense:
     async def test_projection_with_no_embeddings_never_claims_vector_ready(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         manager = _manager(store)  # no embedding client
         policy = _policy(store, manager=manager)
         await policy.layer1(run_id="r1", agent_id="agent-1", session_id="s1", query="anything")

@@ -135,6 +135,7 @@ class _StubContainer:
         # model that real Container contract rather than making production DI
         # optional just to satisfy older tests.
         self.capability_effects = new_in_memory_effect_context()
+        self.harness_adapters = {}
         self.provider_registry = InMemoryProviderRegistry()
         self.llm_router = CostAwareRouter(self.provider_registry)
 
@@ -184,6 +185,34 @@ def test_the_delegate_node_is_wired_from_the_container(monkeypatch) -> None:
     assert node._a2a_delegator is container.a2a_delegator
     assert node._guest_peers is container.guest_peers
     assert node._run_store is container.run_store
+
+
+def test_the_harness_node_receives_the_container_adapter_on_each_resolution(monkeypatch) -> None:
+    """A timer wake must reconstruct the same configured provider authority."""
+    import services.dag_agents as dag_agents
+
+    class Adapter:
+        async def dispatch(self, request):
+            raise AssertionError("composition must not dispatch")
+
+        async def poll(self, handle):
+            raise AssertionError("composition must not poll")
+
+        async def cancel(self, handle):
+            raise AssertionError("composition must not cancel")
+
+    adapter = Adapter()
+    container = _StubContainer()
+    container.harness_adapters = {"proof": adapter}
+    _with_container(monkeypatch, container)
+    graph = {"nodes": [{"id": "h", "kind": "agent.spawn_harness"}]}
+
+    first = dag_agents._resolve_nodes_with()("h", graph)
+    recovered = dag_agents._resolve_nodes_with()("h", graph)
+
+    assert first is not recovered
+    assert first._adapters == recovered._adapters == {"proof": adapter}
+    assert recovered._effects is container.capability_effects
 
 
 @pytest.mark.ac("ADR-082526-3ca6/AC-4")
