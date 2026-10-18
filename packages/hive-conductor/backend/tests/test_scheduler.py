@@ -19,6 +19,8 @@ from typing import Any, ClassVar
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("_explicit_graph_fixture")
+
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -32,6 +34,43 @@ def _reset_singleton():
     sched._runner = None
     yield
     sched._runner = prev
+
+
+@pytest.fixture
+def _explicit_graph_fixture(canonical_graph_spine, monkeypatch):
+    """Exercise legacy schedule translation over explicit canonical test owners.
+
+    The schedule unit tests isolate their old definition/cursor adapter from
+    the configured scheduler path below. Their Graph calls still use the real
+    registered-DAG entrypoint, with a fixture-owned canonical Project. Only
+    the dedicated no-bridge regression disables that execution authority.
+    """
+    from adapters.maistro_core import StubAgentPort
+    from services import dag_agents
+    from services.engine import get_engine
+
+    monkeypatch.setattr(get_engine(), "_agent_port", StubAgentPort())
+    monkeypatch.setattr(dag_agents, "_container", lambda: canonical_graph_spine)
+    original = dag_agents.run_registered_dag
+
+    async def scoped_fixture(dag_id, **kwargs):
+        kwargs["workspace_id"] = canonical_graph_spine.workspace_id
+        kwargs["project_id"] = canonical_graph_spine.project_id
+        return await original(dag_id, **kwargs)
+
+    monkeypatch.setattr(dag_agents, "run_registered_dag", scoped_fixture)
+
+
+def _canonical_fixture_runs():
+    from services.dag_agents import _container
+
+    from maistro.runs.model import RunStatus
+
+    async def read_runs():
+        runs = _container().run_store
+        return [run for status in RunStatus for run in await runs.list_by_status(status)]
+
+    return asyncio.run(read_runs())
 
 
 def _schedule_stub(
@@ -406,11 +445,8 @@ def test_a_scheduled_run_records_its_schedule_on_the_run() -> None:
             )
         )
 
-        # The fallback store, because this test boots no Container: with one,
-        # the Run is a row on the canonical spine instead (#44).
-        from services.dag_agents import _fallback_run_store
-
-        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
+        # Read the explicit canonical fixture, not a product fallback.
+        runs = _canonical_fixture_runs()
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-prov"]
         assert len(scheduled) == 1, "exactly one Run, and it names its schedule"
         provenance = scheduled[0].provenance
@@ -461,9 +497,7 @@ def test_a_schedule_firing_mints_its_own_request_id() -> None:
                 _ScheduleRunner()._fire_schedule("s-reqid", stub, scheduled_for=scheduled_for)
             )
 
-        from services.dag_agents import _fallback_run_store
-
-        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
+        runs = _canonical_fixture_runs()
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-reqid"]
         assert len(scheduled) == 1
         request_id = scheduled[0].provenance.get("request_id")
@@ -504,9 +538,7 @@ def test_two_firings_of_the_same_schedule_get_different_request_ids() -> None:
             )
         )
 
-        from services.dag_agents import _fallback_run_store
-
-        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
+        runs = _canonical_fixture_runs()
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-reqid-2"]
         assert len(scheduled) == 2
         ids = {r.provenance.get("request_id") for r in scheduled}
@@ -772,8 +804,11 @@ def test_the_durable_cursor_outranks_the_in_memory_row() -> None:
         stores.schedules._data.pop("s-restart", None)  # type: ignore[attr-defined]
 
 
-def test_without_a_bridge_the_scheduler_still_fires() -> None:
-    """No Container, no canonical store — the loop degrades, it does not stop."""
+def test_without_a_bridge_the_scheduler_leaves_the_occurrence_owed(monkeypatch) -> None:
+    """No spine means no new execution and no false cursor advancement."""
+    from services import dag_agents
+
+    monkeypatch.setattr(dag_agents, "_container", lambda: None)
     import stores
 
     _register("sched-no-bridge")
@@ -785,7 +820,7 @@ def test_without_a_bridge_the_scheduler_still_fires() -> None:
     try:
         _run_evaluate("s-nb", stub, now=now, store=None)
         row = stores.schedules._data["s-nb"]  # type: ignore[attr-defined]
-        assert row.last_run == datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+        assert row.last_run == now - timedelta(hours=1)
     finally:
         stores.schedules._data.pop("s-nb", None)  # type: ignore[attr-defined]
 
@@ -1056,9 +1091,7 @@ def test_a_manual_run_preserves_the_http_requests_id(monkeypatch: pytest.MonkeyP
         with bind_execution_context(request_id="http-req-42"):
             run_id = asyncio.run(fire_now("s-man-reqid"))
 
-        from services.dag_agents import _fallback_run_store
-
-        run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
+        run = next(row for row in _canonical_fixture_runs() if row.run_id == run_id)
         assert run.provenance["request_id"] == "http-req-42"
     finally:
         stores.schedules._data.pop("s-man-reqid", None)  # type: ignore[attr-defined]
@@ -1082,9 +1115,7 @@ def test_a_manual_run_with_no_ambient_request_mints_its_own(
     try:
         run_id = asyncio.run(fire_now("s-man-noreqid"))
 
-        from services.dag_agents import _fallback_run_store
-
-        run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
+        run = next(row for row in _canonical_fixture_runs() if row.run_id == run_id)
         assert run.provenance.get("request_id")
     finally:
         stores.schedules._data.pop("s-man-noreqid", None)  # type: ignore[attr-defined]
