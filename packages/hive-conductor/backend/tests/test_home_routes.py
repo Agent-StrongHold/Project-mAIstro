@@ -702,7 +702,10 @@ def test_the_dismiss_tool_refuses_an_empty_identity_without_a_record() -> None:
         _set_tool_workspace(None)
     assert refused["dismissed"] is False
     assert "names the item type and id" in refused["error"]
-    assert not any(key.startswith("ws-dismiss-shape:") for key in home_projections.dismissal_store)
+    # Read back through the service's own view: no record exists for this
+    # Workspace, so the refusal stored nothing. (A bare iteration over the
+    # store is not an option: JsonStore has keys()/items(), not __iter__.)
+    assert home_projections.dismissal_counts("ws-dismiss-shape") == {}
 
 
 # ---------------------------------------------------------------------------
