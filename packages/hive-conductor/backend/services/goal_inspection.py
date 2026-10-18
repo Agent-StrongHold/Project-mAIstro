@@ -31,12 +31,79 @@ that does not exist for them.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NotRequired
+
+from typing_extensions import TypedDict
 
 from maistro.runs.goal_context import GoalContext, goal_context_of
 from maistro.runs.model import Run, RunStatus
 from services.dag_run_inspection import canonical_runs_for, list_visible_runs
 from services.dag_run_store import MAX_RUNS
+
+
+class GoalRunEvidence(TypedDict):
+    """Transport projection of canonical Run evidence, not a lifecycle owner."""
+
+    run_id: str
+    canonical_run_id: str
+    status: str
+    goal_revision: str
+    dag_id: str
+    started_at: float | None
+    finished_at: float | None
+    error: str | None
+    parent_run_id: str | None
+    parent_node_run_id: str | None
+    actor_principal_id: str | None
+    persona_id: str | None
+    graph_id: str | None
+    graph_name: str | None
+    provenance: dict[str, Any]
+
+
+class GoalExecutionBlocker(TypedDict):
+    run_id: str
+    canonical_run_id: str
+    status: str
+    error: str | None
+
+
+class GoalSelectedGraph(TypedDict):
+    graph_id: str
+    name: str | None
+
+
+class GoalEvidenceScope(TypedDict):
+    workspace_id: str | None
+    project_id: str | None
+
+
+class GoalInspectionView(TypedDict):
+    """The generated client's Goal inspection contract; all facts are read-only."""
+
+    goal_id: str
+    workspace_id: str | None
+    project_id: str | None
+    goal_state: str | None
+    goal_state_source: str
+    goal_revision_seen: str | None
+    goal_revisions: list[str]
+    accountable_agent_id: str | None
+    desired_state: str | None
+    success_condition: str | None
+    stop_condition: str | None
+    success_conditions: list[str]
+    stop_conditions: list[str]
+    parent_goal_id: str | None
+    execution_disposition: str
+    blocker: GoalExecutionBlocker | None
+    selected_graphs: list[GoalSelectedGraph]
+    unmatched_pipelines: list[str]
+    subgoals: list[str]
+    run_count: int
+    runs: list[GoalRunEvidence]
+    also_in: NotRequired[list[GoalEvidenceScope]]
+
 
 #: How many runs of evidence one page of goals may be built from. The window
 #: the #1036 list door serves; grouping never widens it.

@@ -65,7 +65,36 @@ function RunRow({ run, onOpen }: { run: RunEvidence; onOpen: (id: string) => voi
         {run.goal_revision}
       </td>
       <td style={{ padding: "6px 8px", fontSize: 12 }}>{fmtTime(run.started_at)}</td>
-      <td style={{ padding: "6px 8px", fontSize: 12 }}>{lineage.join(" · ") || "—"}</td>
+      <td style={{ padding: "6px 8px", fontSize: 12 }}>
+        {lineage.length > 0 && <div>{lineage.join(" · ")}</div>}
+        {(run.parent_run_id || run.parent_node_run_id || Object.keys(run.provenance).length > 0) && (
+          <details onClick={(event) => event.stopPropagation()}>
+            <summary>Recorded provenance</summary>
+            {run.parent_run_id && (
+              <div>
+                Parent run:{" "}
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onOpen(run.parent_run_id as string);
+                  }}
+                >
+                  {run.parent_run_id}
+                </button>
+              </div>
+            )}
+            {run.parent_node_run_id && <div>Parent step: {run.parent_node_run_id}</div>}
+            {Object.keys(run.provenance).length > 0 && (
+              <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxWidth: 360 }}>
+                {JSON.stringify(run.provenance, null, 2)}
+              </pre>
+            )}
+          </details>
+        )}
+        {!run.parent_run_id && !run.parent_node_run_id && lineage.length === 0 &&
+          Object.keys(run.provenance).length === 0 && "—"}
+      </td>
       <td style={{ padding: "6px 8px", fontSize: 12, color: "#c4452a", maxWidth: 260 }}>
         {run.error ? String(run.error) : ""}
       </td>

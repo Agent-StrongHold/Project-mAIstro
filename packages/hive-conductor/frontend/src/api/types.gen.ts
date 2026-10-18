@@ -6127,6 +6127,118 @@ export interface components {
             /** Description */
             description: string;
         };
+        /** GoalEvidenceScope */
+        GoalEvidenceScope: {
+            /** Project Id */
+            project_id: string | null;
+            /** Workspace Id */
+            workspace_id: string | null;
+        };
+        /** GoalExecutionBlocker */
+        GoalExecutionBlocker: {
+            /** Canonical Run Id */
+            canonical_run_id: string;
+            /** Error */
+            error: string | null;
+            /** Run Id */
+            run_id: string;
+            /** Status */
+            status: string;
+        };
+        /**
+         * GoalInspectionView
+         * @description The generated client's Goal inspection contract; all facts are read-only.
+         */
+        GoalInspectionView: {
+            /** Accountable Agent Id */
+            accountable_agent_id: string | null;
+            /** Also In */
+            also_in?: components["schemas"]["GoalEvidenceScope"][];
+            blocker: components["schemas"]["GoalExecutionBlocker"] | null;
+            /** Desired State */
+            desired_state: string | null;
+            /** Execution Disposition */
+            execution_disposition: string;
+            /** Goal Id */
+            goal_id: string;
+            /** Goal Revision Seen */
+            goal_revision_seen: string | null;
+            /** Goal Revisions */
+            goal_revisions: string[];
+            /** Goal State */
+            goal_state: string | null;
+            /** Goal State Source */
+            goal_state_source: string;
+            /** Parent Goal Id */
+            parent_goal_id: string | null;
+            /** Project Id */
+            project_id: string | null;
+            /** Run Count */
+            run_count: number;
+            /** Runs */
+            runs: components["schemas"]["GoalRunEvidence"][];
+            /** Selected Graphs */
+            selected_graphs: components["schemas"]["GoalSelectedGraph"][];
+            /** Stop Condition */
+            stop_condition: string | null;
+            /** Stop Conditions */
+            stop_conditions: string[];
+            /** Subgoals */
+            subgoals: string[];
+            /** Success Condition */
+            success_condition: string | null;
+            /** Success Conditions */
+            success_conditions: string[];
+            /** Unmatched Pipelines */
+            unmatched_pipelines: string[];
+            /** Workspace Id */
+            workspace_id: string | null;
+        };
+        /**
+         * GoalRunEvidence
+         * @description Transport projection of canonical Run evidence, not a lifecycle owner.
+         */
+        GoalRunEvidence: {
+            /** Actor Principal Id */
+            actor_principal_id: string | null;
+            /** Canonical Run Id */
+            canonical_run_id: string;
+            /** Dag Id */
+            dag_id: string;
+            /** Error */
+            error: string | null;
+            /** Finished At */
+            finished_at: number | null;
+            /** Goal Revision */
+            goal_revision: string;
+            /** Graph Id */
+            graph_id: string | null;
+            /** Graph Name */
+            graph_name: string | null;
+            /** Parent Node Run Id */
+            parent_node_run_id: string | null;
+            /** Parent Run Id */
+            parent_run_id: string | null;
+            /** Persona Id */
+            persona_id: string | null;
+            /** Provenance */
+            provenance: {
+                [key: string]: unknown;
+            };
+            /** Run Id */
+            run_id: string;
+            /** Started At */
+            started_at: number | null;
+            /** Status */
+            status: string;
+        };
+        /** GoalSelectedGraph */
+        GoalSelectedGraph: {
+            /** Graph Id */
+            graph_id: string;
+            /** Name */
+            name: string | null;
+        };
         /** GrantPermissionsBody */
         GrantPermissionsBody: {
             /** Permissions */
@@ -16129,9 +16241,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    }[];
+                    "application/json": components["schemas"]["GoalInspectionView"][];
                 };
             };
             /** @description Validation Error */
@@ -16163,9 +16273,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["GoalInspectionView"];
                 };
             };
             /** @description Validation Error */

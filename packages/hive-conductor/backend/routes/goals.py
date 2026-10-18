@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from services.goal_inspection import goal_view, list_goal_views
+from services.goal_inspection import GoalInspectionView, goal_view, list_goal_views
 from services.request_principal import require_actor_id
 from services.workspace_authority import visible_view
 
@@ -46,13 +46,13 @@ async def _require_member(request: Request, workspace_id: str) -> str:
     return user_id
 
 
-@router.get("/{workspace_id}/goals")
+@router.get("/{workspace_id}/goals", response_model=list[GoalInspectionView])
 async def list_goals(workspace_id: str, request: Request, limit: int = 25) -> list[dict[str, Any]]:
     uid = await _require_member(request, workspace_id)
     return await list_goal_views(uid, limit=max(1, min(limit, 100)), workspace_id=workspace_id)
 
 
-@router.get("/{workspace_id}/goals/{goal_id}")
+@router.get("/{workspace_id}/goals/{goal_id}", response_model=GoalInspectionView)
 async def get_goal(workspace_id: str, goal_id: str, request: Request) -> dict[str, Any]:
     uid = await _require_member(request, workspace_id)
     view = await goal_view(uid, goal_id, workspace_id=workspace_id)

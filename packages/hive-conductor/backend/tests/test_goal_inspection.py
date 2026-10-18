@@ -778,7 +778,70 @@ async def test_projection_persists_nothing(
     assert before == after, "a read-time projection must not write"
 
 
+async def test_canonical_only_run_detail_preserves_goal_backlink(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Run need not have a product projection row to name its canonical Goal."""
+    from services.dag_run_inspection import visible_run_detail
+
+    from maistro.graph import Graph, Node
+
+    scene = await _make_scene(monkeypatch)
+    root = await scene.workspaces.project_store.root_for_workspace(scene.view.id)
+    run = await scene.store.create_run(
+        Graph(
+            workspace_id=scene.view.id,
+            project_id=root.project_id,
+            name="Canonical-only Goal evidence",
+            nodes=[Node(node_id="n", node_type="agent")],
+        ),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        goal_id="canonical-only-goal",
+        goal_revision=3,
+        provenance={"goal_id": "stale-goal", "goal_revision": "1"},
+    )
+    detail = await visible_run_detail(_USER_ID, run.run_id)
+    assert detail is not None
+    assert detail["id"] == run.run_id
+    assert detail["canonical_run_id"] == run.run_id
+    assert detail["goal_context"] == {"goal_id": "canonical-only-goal", "goal_revision": "3"}
+    assert await visible_run_detail("not-a-member", run.run_id) is None
+
+
 # ─── HTTP door ───────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("detail", [False, True], ids=["list", "detail"])
+def test_goal_openapi_owns_the_nested_inspection_contract(authed_client: Any, detail: bool) -> None:
+    """Generated clients must see named Goal/Run fields, not dict[str, Any]."""
+    from main import app
+
+    schema = app.openapi()
+    path = "/v1/workspaces/{workspace_id}/goals" + ("/{goal_id}" if detail else "")
+    response = schema["paths"][path]["get"]["responses"]["200"]["content"]["application/json"][
+        "schema"
+    ]
+    if not detail:
+        assert response["type"] == "array"
+        response = response["items"]
+    assert "$ref" in response, "Goal inspection must expose a generated entity schema"
+    goal = schema["components"]["schemas"][response["$ref"].rsplit("/", 1)[1]]
+    assert {"goal_id", "goal_revision_seen", "goal_state", "runs", "subgoals"} <= set(
+        goal["required"]
+    )
+    run_ref = goal["properties"]["runs"]["items"]["$ref"]
+    run = schema["components"]["schemas"][run_ref.rsplit("/", 1)[1]]
+    assert {
+        "run_id",
+        "canonical_run_id",
+        "goal_revision",
+        "parent_node_run_id",
+        "provenance",
+    } <= set(run["required"])
+    assert run["properties"]["goal_revision"]["type"] == "string"
+    assert run["properties"]["provenance"]["type"] == "object"
+    assert "also_in" in goal["properties"]
+    assert "also_in" not in goal["required"]
 
 
 async def _member_route_scene(
@@ -818,6 +881,39 @@ async def test_goals_routes_are_scoped_and_read_only(
     # Read-only surface: no mutating verb is offered on the router.
     refused = authed_client.post(f"/v1/workspaces/{scene.view.id}/goals", json={})
     assert refused.status_code >= 400
+
+
+async def test_goal_http_contract_preserves_nullable_and_nested_evidence(
+    monkeypatch: pytest.MonkeyPatch, authed_client: Any
+) -> None:
+    """Response validation must not strip evidence or optional detail-only scope."""
+    from services.goal_inspection import goal_view, list_goal_views
+
+    from maistro.runs import RunStatus
+
+    scene = await _member_route_scene(monkeypatch)
+    goal_id = _next_id("goal")
+    await scene.add_goal_run(
+        goal_id=goal_id,
+        status=RunStatus.PAUSED,
+        provenance_extra={
+            "retry_of": "prior-run",
+            "replan": {"reason": "review requested"},
+            "pause": {"waiting_on": "human_review", "requested_by": "reviewer-7"},
+        },
+    )
+    path = f"/v1/workspaces/{scene.view.id}/goals"
+    listed = authed_client.get(path)
+    assert listed.status_code == 200
+    assert listed.json() == await list_goal_views("user", workspace_id=scene.view.id)
+    detail = authed_client.get(f"{path}/{goal_id}")
+    assert detail.status_code == 200
+    assert detail.json() == await goal_view("user", goal_id, workspace_id=scene.view.id)
+    row = detail.json()["runs"][0]
+    assert row["parent_node_run_id"] is None
+    assert row["finished_at"] is None
+    assert row["provenance"]["pause"]["waiting_on"] == "human_review"
+    assert detail.json()["also_in"] == []
 
 
 async def test_goal_route_prefix_lives_under_the_declared_workspaces_mount(

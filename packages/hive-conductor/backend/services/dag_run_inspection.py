@@ -330,6 +330,7 @@ def _canonical_only_detail(run: Any) -> dict[str, Any]:
     gap rather than filling it with fabricated events (#1036).
     """
     creative = _creative_run_provenance(run)
+    goal_context = _goal_context_identity(run)
     return {
         "id": run.run_id,
         "canonical_run_id": run.run_id,
@@ -346,6 +347,7 @@ def _canonical_only_detail(run: Any) -> dict[str, Any]:
         "node_states": {},
         "events": [],
         **({"creative_provenance": creative} if creative else {}),
+        **({"goal_context": goal_context} if goal_context else {}),
     }
 
 
