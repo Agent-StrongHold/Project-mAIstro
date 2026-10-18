@@ -1,11 +1,14 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +8
+  packages/maistro-core/tests: +9
 ---
 # L1856: failed Container construction keeps the live default effect context
 
-Issue #1856 (parent #55) at branch `auto-1856`, head `31d891a561dffd6db1312ea4a85c4835c8048440`
-plus the fix commit on top; develop base `ce2048cd2430bf99a5896b229fd1999976dc07dd`.
+Issue #1856 (parent #55) at branch `auto-1856`; this note's delta covers the
+nine lifecycle tests the lane added on top of develop (eight for the effect
+context and resource cleanup at head `31d891a5`, plus the quota-tracker
+default test at head `26a4ec3c3`); develop base now `6b631928b` after the
+conflict-free `origin/develop` sync (sandbox-capture commit `6b631928b`).
 
 Eight `packages/maistro-core/tests` node IDs arrive in
 `test_container_effect_context_lifecycle.py`, all pinning one boundary: a
