@@ -1205,6 +1205,13 @@ class Container:
             a2a_delegator=self.a2a_delegator,
             guest_peers=self.guest_peers,
             run_store=self.run_store,
+            # The inbound A2A warden and the security audit log (#1137): the
+            # delegate node scans peer-controlled payloads at the canonical
+            # boundary and records verdicts beside the canonical audit trail,
+            # so resolver-composed delegation carries the same policy the
+            # rest of the Container is wired with.
+            warden=self.warden,
+            audit_log=self.audit_log,
             effect_context=self.capability_effects,
             graph_run_store=self.graph_run_store,
             provider_registry=self.provider_registry,
@@ -2680,7 +2687,7 @@ async def create_container(
     # GuestPeerManager defaults its own audit logger. There is no configuration
     # decision behind either, so neither is made optional (ADR-082526-3ca6).
     a2a_delegator = A2ADelegator()
-    guest_peers = GuestPeerManager()
+    guest_peers = GuestPeerManager(warden=warden)
 
     container = Container(
         config=config,
@@ -3696,6 +3703,8 @@ def build_node_resolver(
     a2a_delegator: Any = None,
     guest_peers: Any = None,
     run_store: RunStore | None = None,
+    warden: Any = None,
+    audit_log: Any = None,
     effect_context: CapabilityEffectContext | None = None,
     provider_registry: LLMProviderRegistry | None = None,
     llm_router: LLMRouter | None = None,
@@ -3768,6 +3777,12 @@ def build_node_resolver(
         "a2a_delegator": a2a_delegator,
         "guest_peers": guest_peers,
         "run_store": run_store,
+        # Inbound-content policy and its audit trail (#1137): composed
+        # delegation nodes scan peer payloads and record verdicts with the
+        # same warden/audit authorities the Container itself holds. Bare
+        # callers keep `None`, which `scan_inbound` fails closed on.
+        "warden": warden,
+        "audit_log": audit_log,
         "graph_run_store": graph_run_store,
         "effect_context": resolved_effect_context,
         # The Container's populated model authorities (#1079): a resolver-built
