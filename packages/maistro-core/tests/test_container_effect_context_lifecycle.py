@@ -12,11 +12,10 @@ import pytest
 from maistro import container as container_module
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.effect_context import (
-    bind_container_effect_context,
+    configure_default_effect_context,
     default_effect_context,
     new_effect_context,
-    new_in_memory_effect_context,
-    unbind_container_effect_context,
+    release_default_effect_context,
 )
 from maistro.container import create_container
 from maistro.persistence import get_pool, pool_count, release_pool
@@ -100,26 +99,26 @@ async def test_container_lifetimes_preserve_the_other_live_context(close_inner_f
 def test_explicit_bind_reset_clears_published_contexts_and_fallback() -> None:
     previous_fallback = default_effect_context()
     outer, inner = new_effect_context(), new_effect_context()
-    bind_container_effect_context(outer)
-    bind_container_effect_context(inner)
+    configure_default_effect_context(outer)
+    configure_default_effect_context(inner)
     assert default_effect_context() is inner
 
-    bind_container_effect_context(None)
+    default_effect_context.cache_clear()
 
     fallback = default_effect_context()
     assert all(fallback is not context for context in (outer, inner, previous_fallback))
-    unbind_container_effect_context(inner)
-    unbind_container_effect_context(outer)
+    release_default_effect_context(inner)
+    release_default_effect_context(outer)
     assert default_effect_context() is fallback
 
 
 def test_republishing_does_not_leave_a_stale_duplicate() -> None:
     outer, inner = new_effect_context(), new_effect_context()
-    bind_container_effect_context(outer)
-    bind_container_effect_context(inner)
-    bind_container_effect_context(outer)
+    configure_default_effect_context(outer)
+    configure_default_effect_context(inner)
+    configure_default_effect_context(outer)
     assert default_effect_context() is outer
-    unbind_container_effect_context(outer)
+    release_default_effect_context(outer)
     assert default_effect_context() is inner
 
 
@@ -195,7 +194,7 @@ async def test_failed_startup_does_not_mutate_an_injected_effect_context() -> No
     injected authority must hold nothing afterward -- and an injected context
     is published only by a successful construction, never by the attempt.
     """
-    injected = new_in_memory_effect_context()
+    injected = new_effect_context()
 
     with pytest.raises(ConfigError):
         await create_container(_failing_config(), effect_context=injected)

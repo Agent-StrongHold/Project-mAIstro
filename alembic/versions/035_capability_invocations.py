@@ -6,7 +6,13 @@ Revises: 034
 Renumbered from 034 after develop took that id: #1341 landed
 `034_hitl_deadline_index` while this branch was open, and both declared
 `down_revision = "033"`, so the chain had two heads. Only the identifiers
-change; the DDL this applies is untouched.
+change; the DDL this applies is untouched apart from the #42/#1194 effect-claim
+scope corrections below (the ``effect_scope`` column and the scope-keyed claim
+index), which keep the deployment schema truth identical to the durable stores'
+``ensure_schema`` DDL. Databases already migrated by the earlier revision of
+035 gain the same shape at runtime through
+``PgInvocationStore.ensure_schema`` (column ALTER + scope backfill + index
+replacement), so no data migration is required here.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ def upgrade() -> None:
         sa.Column("attempt_id", sa.Text, nullable=False),
         sa.Column("binding_id", sa.Text, nullable=False),
         sa.Column("effect_key", sa.Text, nullable=False),
+        sa.Column("effect_scope", sa.Text, nullable=False, server_default=""),
         sa.Column("status", sa.Text, nullable=False),
         sa.Column("revision", sa.BigInteger, nullable=False, server_default="0"),
         sa.Column("created_at", sa.Float(precision=53), nullable=False),
@@ -46,9 +53,20 @@ def upgrade() -> None:
         ["attempt_id", "created_at", "invocation_id"],
     )
     op.execute(
+        """UPDATE capability_invocations SET effect_scope = node_run_id
+           WHERE effect_scope = ''"""
+    )
+    op.execute("""DROP INDEX IF EXISTS uq_capability_invocation_active_effect""")
+    # The active-effect claim spans NodeRun visits (#42, #1194): the logical
+    # identity is ``effect_scope or node_run_id`` and every store write
+    # normalizes the column, so the partial unique index enforces one canonical
+    # claim per stable effect rather than per physical visit. Every non-FAILED
+    # status is covered: a completed prior record must also refuse a second
+    # claim, closing the check-then-insert race window.
+    op.execute(
         """CREATE UNIQUE INDEX uq_capability_invocation_active_effect
-           ON capability_invocations (run_id, node_run_id, binding_id, effect_key)
-           WHERE status IN ('created', 'running', 'unknown')"""
+           ON capability_invocations (run_id, effect_scope, binding_id, effect_key)
+           WHERE status IN ('created', 'running', 'completed', 'unknown')"""
     )
 
 

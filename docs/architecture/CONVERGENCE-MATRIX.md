@@ -43,7 +43,7 @@ A bare claim asserts a **current, reached** owner. To say anything else, annotat
 
 Three further rules follow from the columns' meanings. A `KEEP` column whose every owner is unreachable or planned owns nothing today, so it is not `KEEP`. A module may be the current, undelegated **lifecycle** owner of at most one subsystem — two rows claiming one work-state record is the contradiction the convergence program exists to remove. And a cell that opens with a declared absence (`—`, `n/a`, `none`, `itself`) may not also name a module.
 
-**What is not checked.** A cell may instead describe a non-module owner in prose — “age-encrypted file”, “OS file permissions”, “per-route”. Those are honest and unverifiable, and pretending otherwise would be the same defect this section fixes. The census below is checked, so the size of that gap cannot drift: of the 156 owner cells, 53 name a module, 73 declare there is no module owner, and 30 are prose the checker cannot reach.
+**What is not checked.** A cell may instead describe a non-module owner in prose — “age-encrypted file”, “OS file permissions”, “per-route”. Those are honest and unverifiable, and pretending otherwise would be the same defect this section fixes. The census below is checked, so the size of that gap cannot drift: of the 156 owner cells, 52 name a module, 73 declare there is no module owner, and 31 are prose the checker cannot reach.
 
 <!-- matrix:ownership-census claims=52 declared=73 prose=31 -->
 <!-- matrix:ownership -->
@@ -65,7 +65,7 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 | Router and classifier | `maistro.router`, `maistro.classifier` | Provider selection policy | n/a (pure decision) | — | — |
 | Tool execution | `maistro.tools` | Invocation | direct call sites | — | `tools.approval` (unreachable), `tools.reversibility_registry` (unreachable) |
 | Sandbox isolation | `maistro.sandbox` | ExecutionRuntime implementation | its own session records | — | — |
-| Skills, code registry, repertoire | `maistro.skills`, `maistro.code_registry`, `maistro.repertoire` | Capability supply chain | per-package registries | `skills.marketplace` stores | `code_registry` signing + trust tiers |
+| Skills, code registry, repertoire | `maistro.skills`, `maistro.code_registry`, `maistro.repertoire`, `maistro.extensions`, `maistro_ext_sdk`, `maistro_ext_harness` | Capability supply chain; the published extension SDK is the family's out-of-tree author contract, and the host harness (#974) is its local conformance runner over those public contracts | per-package registries | `skills.marketplace` stores | `code_registry` signing + trust tiers |
 | Credentials | `maistro.credentials` | Binding material | `credentials.router` scoped rotation state, reached from Provider selection on the Invocation path (#58) | encrypted per-user store | — |
 | Quota and billing | `maistro.quota` | Invocation cost accounting | `quota.tracker` | `persistence.pg_quota`, `persistence.sqlite_quota`, `quota.sqlite_usage_log` | — |
 | External integrations | `maistro.integrations` | Provider implementations | n/a | — | — |
@@ -126,7 +126,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Request front door and DI | `maistro.container.route_request` | `none` | MIGRATE — Conduit is constructed but no shipped product routes through it | ADR-019, ADR-096 | a real Conductor chat turn that traverses Conduit and yields a `run_id` | #41, #53 |
 | Task queue and runner | `maistro_server.main`, `adapters.task_backend` | `none` | MIGRATE — becomes an admission receipt over a canonical Run; with a database, admission already commits the Run first and restart recovers it (#91) | ADR-018, ADR-056, ADR-097 | task submission returns a `run_id`; `TaskRecord` no longer holds terminal truth | #41, #43 |
 | A2A delegation | `maistro.a2a` exported API; no shipped caller | `none` | MIGRATE — delegation must create child Runs | — | one local and one remote delegation with durable `parent_run_id` correlation | #47 |
-| Recurrence / schedules | `services.scheduler` background loop | `none` | KEEP — converging: the cursor is canonical and durable, execution is not | ADR-082126-f69c (supersedes ADR-046) | `services/scheduler.py` advances the canonical `ScheduleStore` only after a Run exists (#231). Recurring ticks and manual `fire_now` both admit through the canonical spine (#231, #1120): a manual fire claims `(schedule_id, "manual:" + fire_id)` as a first-class occurrence instead of executing through `run_registered_dag`, which survives only as the no-Container standalone fallback (#1113). Admitted Runs execute via the #251 consumer tick, which manual fire triggers promptly; multi-node Runs still wait on durable Graph traversal — #44/#34 | #46, #62, #231, #251, #1120 |
+| Recurrence / schedules | `services.scheduler` background loop | `none` | KEEP — converging: the cursor is canonical and durable, execution is not | ADR-082126-f69c (supersedes ADR-046) | `services/scheduler.py` advances the canonical `ScheduleStore` only after a Run exists (#231). Recurring ticks and manual `fire_now` both admit through the canonical spine (#231, #1120): a manual fire claims `(schedule_id, "manual:" + fire_id)` as a first-class occurrence instead of executing through `run_registered_dag`, which now also requires the canonical Run/continuation owners and refuses without a Container (#1113). Admitted Runs execute via the #251 consumer tick, which manual fire triggers promptly; multi-node Runs still wait on durable Graph traversal — #44/#34 | #46, #62, #231, #251, #1120 |
 | Repo tooling | the `.github/workflows/*.yml` step that executes the script | `few` | KEEP — the 43 rooted scripts are the gate set; the 19 unrooted are dispositioned, 10 of them behind a disabled workflow and 1 reached only through a shell installer | ADR-082526-aef8 | `scripts/check-reachability.py` roots tooling at the workflow steps that run it; `tests/test_check_reachability.py` | #33, #236, #249 |
 | Planning and wave orchestration | `maistro.orchestrator` exported API | `some` | MIGRATE — wave fan-out/fan-in belongs to Graph nodes | — | a wave plan that executes as a Graph with per-branch NodeRuns | #44, #34 |
 | Builders pipeline | none | `all` | MIGRATE — wholly unreachable and owns a duplicate executor | ADR-090 | Builders stages appear as NodeRuns; `builders.graph_executor` deleted | #49, #35 |
@@ -137,7 +137,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Router and classifier | `maistro.container.route_request` | `few` | KEEP — pure decision layer | ADR-007, ADR-089 | scoring tests; router chooses Provider, never executes | — |
 | Tool execution | `services.tool_executor`, `maistro.container` | `some` | MIGRATE — tool calls must be governed Invocations | ADR-050, ADR-051, SPEC-252 | tool call produces Invocation + authorization + expected-effect evidence | #57, #59 |
 | Sandbox isolation | `maistro.cli` `sandbox status`; no execution path yet | `none` | CONNECT — ExecutionRuntime story needs it | ADR-093, ADR-054 | Attempt executes inside sandbox with enforced budgets | #42, #34 |
-| Skills, code registry, repertoire | `routes.skills`, `services.mcp_client` | `most` | MIGRATE — one governed supply-chain path (trust-policy design context in Proposed ADR-083, not shipped authority) | ADR-069, ADR-070 | signed-code verification on real register/load path | #59, #34 |
+| Skills, code registry, repertoire | `routes.skills`, `services.mcp_client`; out-of-tree author surface: `maistro-ext-sdk` console script (`maistro_ext_sdk.cli`); out-of-tree conformance runner: `maistro-ext-harness` console script (`maistro_ext_harness.cli`, `python -m maistro_ext_harness`) | `few` | MIGRATE — one governed supply-chain path (trust-policy design context in Proposed ADR-083, not shipped authority); the published SDK module prefix is the family's out-of-tree author contract — the monorepo product has no caller in it by design, and the no-product-import rule is gated (`packages/maistro-ext-sdk/tests/test_import_hygiene.py`); the harness module prefix is the local host harness over those same public contracts (#974), likewise product-free by design (`packages/maistro-ext-harness/tests/test_import_hygiene.py`) | ADR-069, ADR-070 | signed-code verification on real register/load path; SDK manifest parsed and rejected before any extension import, unknown authority fails explicitly, and the shipped `examples/minimal-extension` validates from a copied directory (#949) | #59, #34, #949, #974 |
 | Credentials | `routes.credentials`, `services.user_credentials` | `none` | KEEP — `credential_store_v2` is retired by #1186; the live Hive surface uses the canonical per-user encrypted `UserCredentialStore`, while pool/rotation converged onto Provider selection (#58) | ADR-063 | real Invocation outcome triggers scoped rotation — proven in `tests/capabilities/test_credential_routing.py` (#58); live CRUD remains owner-scoped through `UserCredentialStore` | #56, #57 |
 | Quota and billing | `routes.quotas`, `maistro.container` | `some` | MIGRATE — cost attaches to Invocation; #718 wired the recorder at Invocation terminalization, the explicit-verifier half stays unwired (Mistral's admin verifier additionally waits on a confirmed response-schema contract, #1205) | ADR-085 | token/cost metadata on Invocation | #56, #63 |
 | External integrations | exported API | `all` | CONNECT — bridges with no shipped caller | ADR-029 | one integration reached from product route | #34 |
@@ -153,7 +153,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Local state writer | `maistro.reactor`, CLI | `none` | KEEP | — | single-writer concurrency tests | — |
 | Ontology | `maistro.ontology` public API via `maistro.projects` exports | `none` | CONNECT — accepted design; the registry's first process consumer is still owed. The M7-A2 Rubric kind/store made the modules import-reachable (`maistro.projects` exports the store beside `InMemoryProjectStore`), so the CONNECT baseline rows were pruned per the disposition gate's own rule while the #34 wiring debt stays recorded here | ADR-036 | subsystem resolves semantic object through registry | #34, #791 |
 | Portability / backup | none | `all` | CONNECT | — | backup/restore preserves canonical correlated records | #62, #34 |
-| Events and checkpoints | `maistro.container`, `events.durable_log` | `some` | KEEP — canonical envelope, incompletely adopted | ADR-081226-7248 | migrated event families share envelope + Workspace sequence | #61, #62 |
+| Events and checkpoints | `maistro.container`, `events.durable_log` | `few` | KEEP — canonical envelope, incompletely adopted | ADR-081226-7248 | migrated event families share envelope + Workspace sequence | #61, #62 |
 | Observability | `maistro_server` middleware, `adapters` Langfuse | `none` | KEEP | ADR-037, ADR-082 | one trace spans request → Run → NodeRun → Attempt → Invocation | #63 |
 | Resilience | `maistro.container`, `resilience.slo` | `some` | KEEP | ADR-038 | circuit/SLO primitives wired to real producers | #63 |
 | Collaboration | none | `all` | CONNECT | — | collaborative edit correlated to Run | #34 |
@@ -179,9 +179,9 @@ A share rather than the `19/62` this column used to carry, because the denominat
 - Every unreachable production module is classified. Executing CONNECT/RETIRE dispositions is M1 work under #34/#35; M0 does not pretend that the migration is complete.
 - maistro-server chat is now a real Container/Conduit product path (#222), while Hive/Conductor remains the product migration target (#53/#66).
 - PostgreSQL strike state is wired through the Gate-compatible tracker (#217); security convergence still has product-path work rather than a persistence fiction.
-- Core scheduling owns occurrence identity and exact-one Run claims (#229). The **live Hive scheduler** now sends both its recurring ticks (#231) and its manual `fire_now` surface (#1120) through that seam — manual fires carry a first-class `schedule_fire_id` occurrence identity so a retried or concurrent double submit reconciles to one Run — leaving the in-process path only as the explicit no-Container standalone fallback (#1113).
+- Core scheduling owns occurrence identity and exact-one Run claims (#229). The **live Hive scheduler** now sends both its recurring ticks (#231) and its manual `fire_now` surface (#1120) through that seam — manual fires carry a first-class `schedule_fire_id` occurrence identity so a retried or concurrent double submit reconciles to one Run — with registered-DAG execution refusing when the canonical Container, RunStore or Graph continuation owner is absent (#1113).
 - Relational persistence is fully reached: PostgreSQL is the canonical durable backend, while SQLite remains the explicit single-instance/homelab backend; prompt and audit persistence now follow the selected backend rather than silently falling back to memory.
-- The matrix checker proves structure, reachability counts, reference integrity and — since #378 — that every module named as a current owner is one a product path reaches. What it still cannot prove is a cell that names no module: 30 of the 156 owner cells describe a non-module owner in prose, and that count is itself checked so the gap cannot widen quietly. #31's acceptance-state machinery governs machine-verifiable completion claims, and material ownership changes must update this human-reviewed planning surface.
+- The matrix checker proves structure, reachability counts, reference integrity and — since #378 — that every module named as a current owner is one a product path reaches. What it still cannot prove is a cell that names no module: 31 of the 156 owner cells describe a non-module owner in prose, and that count is itself checked so the gap cannot widen quietly. #31's acceptance-state machinery governs machine-verifiable completion claims, and material ownership changes must update this human-reviewed planning surface.
 
 ## Related
 
@@ -191,3 +191,29 @@ A share rather than the `19/62` this column used to carry, because the denominat
 - `quality/execution-lifecycles.json` — classified work-state Enum and status-shaped Literal vocabularies (#36/#1136).
 - `docs/quality-gates.md` — enforcement boundaries and known limitations.
 - `docs/adr/ADR-092926-7a01-closed-loop-design-process.md` + `docs/specs/SPEC-092926-7a01-closed-loop-design-process.md` — the M7 design-loop contract (#790): the closed loop is Graphs and Runs over the one execution identity above, with the M7 kind table (Goal, Rubric, CreativeBrief, Pack, FenceDecision, EvalRecord, Canvas-as-tool, Design Studio-as-host) fenced to the #458 ontology; gates M7 A2–A7.
+
+### Hive Graph admission after standalone fallback retirement (#1113)
+
+New work through `services.dag_agents.run_registered_dag` and
+`services.canonical_dag_runner.execute_dag` requires the Container's canonical
+RunStore and Graph continuation owner before admission, configuration hooks or
+node execution. Hive no longer selects a process-local document store for new
+Graph work. Stub/degraded engine health reports `graph_execution_available=false`;
+Graph calls raise `CanonicalGraphUnavailable`. Non-executing definition translation
+and resolver construction remain usable without the bridge.
+
+This patch changes no storage-backend or migration policy. Canonical in-memory
+stores and SQLite are explicit test fixtures here. Hermetic SQLite
+second-connection/reconnect tests in
+`packages/hive-conductor/backend/tests/test_graph_execution_authority.py` cover
+checkpoint-zero recovery for both execution surfaces; this is not a claim of
+new PostgreSQL or multi-process distributed verification. The blocking fitness
+test `packages/maistro-core/tests/fitness/test_hive_graph_authority.py` requires
+unconditional canonical admission and rejects the retired fallback.
+
+Historical pre-convergence data keeps the existing
+[ADR-082826-d9f5 AC-6](../adr/ADR-082826-d9f5-durable-graph-store-as-canonical-projection.md)
+archive contract: readable/reproducible, explicitly non-resumable as
+`LegacyRunNotResumable`, with no replacement identity minted. Current canonical
+Runs keep the existing recovery/wake owners. This retirement does not introduce
+a new migration or reopen archived work.
