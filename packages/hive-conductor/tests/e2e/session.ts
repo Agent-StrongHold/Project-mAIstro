@@ -36,6 +36,18 @@ export async function setupIfNeeded(page: Page) {
 
   // 1/5 — Hive
   await conductorName.fill("PM Test Hive");
+  // #287: a failed gateway model discovery no longer lets Next through
+  // silently — the wizard disables it until "availability is UNVERIFIED" is
+  // explicitly acknowledged. The harness ships no gateway, so discovery
+  // fails on every cold boot and the checkbox always renders here; wait for
+  // it and check it. If a real catalog is ever discovered the checkbox never
+  // appears, the bounded wait gives up, and the step was already unlocked.
+  const unverifiedAck = page.getByTestId("unverified-ack").getByRole("checkbox");
+  const ackVisible = await unverifiedAck
+    .waitFor({ state: "visible", timeout: 10000 })
+    .then(() => true)
+    .catch(() => false);
+  if (ackVisible) await unverifiedAck.check();
   await page.locator("button", { hasText: /next/i }).click();
 
   // 2/5 — Hardware
@@ -120,11 +132,18 @@ export async function loginAsPM(page: Page) {
   ]);
 }
 
-// The admin (break-glass) account from the same wizard Accounts step. The
-// selector discipline above is copied verbatim rather than factored: every
-// comment here records a selector that already went wrong once, and #371's
-// rule is "import these or rediscover the failures" — a parameterized login
-// would have to re-document all of them to be safe to touch.
+/**
+ * The admin (break-glass) account from the same wizard Accounts step. Admin
+ * holds every permission without task-scoped elevation
+ * (middleware/auth.py `principal_has_permission`), which is what a spec needs
+ * when the action under test is a protected write the daily-user account is
+ * never granted -- archiving a workspace, saving its tool bindings.
+ *
+ * The selector discipline above is copied verbatim rather than factored: every
+ * comment here records a selector that already went wrong once, and #371's
+ * rule is "import these or rediscover the failures" — a parameterized login
+ * would have to re-document all of them to be safe to touch.
+ */
 export async function loginAsAdmin(page: Page) {
   await page.goto("/login");
 

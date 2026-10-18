@@ -1,9 +1,10 @@
 import { type ReactNode, useState } from "react";
+import { clearUiState } from "../lib/uiState";
 import { NavLink, Outlet } from "react-router-dom";
 import { useUser } from "../App";
 import { useAuthorization } from "../context/AuthorizationContext";
-import { ModeToggle } from "./ModeToggle";
 import { AppearanceToggle } from "./AppearanceToggle";
+import { DegradedBanner } from "./DegradedBanner";
 import { WorkspaceTabs } from "./WorkspaceTabs";
 import { WorkspaceShare } from "./WorkspaceShare";
 import { WorkspaceToolBindings } from "./WorkspaceToolBindings";
@@ -15,6 +16,7 @@ import {
   Brain,
   Plug,
   KeyRound,
+  Palette,
   Settings,
   Workflow,
   PlayCircle,
@@ -22,37 +24,80 @@ import {
   Network,
   Zap,
   Repeat,
+  ListTodo,
+  CalendarClock,
+  Inbox,
+  Gauge,
+  ScrollText,
+  Terminal,
+  Container,
 } from "lucide-react";
 
 const fullNav = [
   { to: "/chat", icon: MessageCircle, label: "Chat" },
   { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
+  // #95: Design Studio is the parent creative-production surface, so it is a
+  // first-class nav destination at its canonical route. Canvas is a tool it
+  // consumes, not a sibling studio; the implementation-era /cli/canvas path is
+  // only a compatibility redirect (App.tsx).
+  { to: "/design-studio", icon: Palette, label: "Design Studio" },
   { to: "/dags", icon: Workflow, label: "DAG Builder" },
   { to: "/dag-runs", icon: PlayCircle, label: "DAG Runs" },
+  // #1417: Schedules is a retained shipped surface (retirement ledger:
+  // PROJECT onto the canonical ScheduleStore, #92) that no link anywhere
+  // reached; it is entry-point discoverability, not a promotion decision —
+  // its replacement still owns the cutover, see docs/route-inventory.md.
+  // `scope` mirrors AuthMiddleware's mutation gate so the entry only shows
+  // for sessions that can actually act on the page (#1417 review).
+  { to: "/schedules", icon: CalendarClock, label: "Schedules", scope: "schedules.write" },
   // Missions was reachable only from `pocNav`, so retiring POC mode left a
   // live route with no entry point anywhere in the app — the page still
   // renders, `App.tsx` still registers it, and a repo-wide search finds no
   // other Link or NavLink to it (#129).
   { to: "/missions", icon: Target, label: "Missions" },
+  // #99: editable backlog (board/list/detail) over the canonical service.
+  { to: "/backlog", icon: ListTodo, label: "Backlog" },
   { to: "/agents", icon: Bot, label: "Agents" },
   { to: "/topology", icon: Network, label: "Topology" },
   { to: "/optimizer", icon: Zap, label: "Optimizer" },
+  // #1417: Messages, Quotas, Containers, CLI and Audit were all registered,
+  // implemented routes with no navigation entry (audit GLO-01). Each is a
+  // retained surface per the cutover plan (PROJECT rows, and CLI/Containers
+  // under contracts #292/#382), so they get discoverable entries here; the
+  // legacy pages scheduled for replacement (Skills, Work Items, Memory,
+  // Evolution) deliberately stay off this list — docs/route-inventory.md
+  // records their URL-only dispositions and owning issues.
+  { to: "/messages", icon: Inbox, label: "Messages" },
+  { to: "/quotas", icon: Gauge, label: "Quotas" },
   { to: "/knowledge", icon: Brain, label: "Inner Temple" },
   // M0 containment for #311: Deck Builder is intentionally absent until
   // model-authored HTML/SVG has a canonical sanitizer/structured renderer.
   { to: "/rsi", icon: Repeat, label: "RSI", surface: "rsi" },
   { to: "/mcp", icon: Plug, label: "Integrations" },
+  // #1417: CLI and Containers keep their v1.0 contract lanes (#292, #382),
+  // so they stay shipped and must stay reachable while those run.
+  // `scope` as above: every Containers mutation requires containers.control
+  // (backend/middleware/auth.py), so hide the entry without it.
+  { to: "/containers", icon: Container, label: "Containers", scope: "containers.control" },
+  { to: "/cli", icon: Terminal, label: "CLI" },
   { to: "/credentials", icon: KeyRound, label: "Credentials" },
+  { to: "/audit", icon: ScrollText, label: "Audit" },
   { to: "/settings", icon: Settings, label: "Settings" },
 ];
 
 
+// #1417 review: gated entries are only shown for sessions the canonical
+// authorization policy lets act on them (admins pass every gate, as in the
+// backend), so the nav never advertises a screen whose mutations all 403.
 async function logout() {
   try {
+    // frontend-typed-client: allow pre-existing banked raw fetch (was :60); line shifted by the #97 DegradedBanner import/render above.
     await fetch("/v1/auth/logout", { method: "POST", credentials: "same-origin" });
   } catch {
     // best effort — even if it fails, redirecting lets the user log in fresh.
   }
+  // Nothing of this account's stays behind for the next one (#1418).
+  clearUiState();
   // Stay inside the Hive app (which auto-shows Login when no session); going
   // to "/" dumps the user at the external catalog page with no obvious way back.
   window.location.href = import.meta.env.BASE_URL || "/";
@@ -63,9 +108,18 @@ export function AppShell({ children }: { children?: ReactNode }) {
   const authorization = useAuthorization();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const nav = fullNav.filter((item) => {
-    if (!item.surface) return true;
-    const permission = authorization.surfacePermission(item.surface);
-    if (!permission) return false;
+    // One canonical filter for both gating spellings: `surface` resolves
+    // through the SURFACE_POLICY contract served at /v1/auth/capabilities,
+    // `scope` (#1417) names the same API-enforced permission directly. UI
+    // filtering is convenience only — the API re-checks every request (#373).
+    const permission = item.surface
+      ? authorization.surfacePermission(item.surface)
+      : item.scope;
+    if (!permission) {
+      // A gated entry whose permission cannot be resolved fails closed;
+      // ungated entries stay for every authenticated session.
+      return !item.surface && !item.scope;
+    }
     // Keep a grant that only needs self-elevation reachable so the user can
     // see the explanation and elevate; hide surfaces they cannot ever use.
     return authorization.can(permission) || authorization.canElevate(permission);
@@ -87,18 +141,17 @@ export function AppShell({ children }: { children?: ReactNode }) {
       <nav className={`drawer${drawerOpen ? " open" : ""}`}>
         <div className="drawer-header">
           <span style={{ fontFamily: "var(--hand)", fontSize: 20, fontWeight: 700 }}>{shellTitle}</span>
-          <ModeToggle />
           <AppearanceToggle />
           <button className="drawer-close" onClick={() => setDrawerOpen(false)} aria-label="Close menu">&#x2715;</button>
         </div>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 8, color: "var(--pencil)", padding: "0 12px 8px" }}>
+        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", padding: "0 12px 8px" }}>
           Multi-agent · multi-MCP · Force Convergence sandbox
         </div>
         {user && (
           <div className="drawer-user">
             <span className="hex-badge" style={{ background: user.role === "admin" ? "var(--danger)" : "var(--accent)", color: "var(--paper)" }}>{user.role}</span>
-            <NavLink to="/profile" style={{ fontFamily: "var(--mono)", fontSize: 10, color: "inherit", textDecoration: "none" }}>{user.username}</NavLink>
-            {user.did && <span style={{ fontSize: 8, opacity: 0.6 }} title={user.did}>DID</span>}
+            <NavLink to="/profile" style={{ fontFamily: "var(--mono)", fontSize: 12, color: "inherit", textDecoration: "none" }}>{user.username}</NavLink>
+            {user.did && <span style={{ fontSize: 12, opacity: 0.6 }} title={user.did}>DID</span>}
           </div>
         )}
         <div className="drawer-nav">
@@ -143,7 +196,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
             className="nav-icon"
             style={{
               color: "var(--pencil)",
-              fontSize: 9,
+              fontSize: 12,
               fontFamily: "var(--mono)",
               lineHeight: 1.2,
               textAlign: "center",
@@ -161,13 +214,13 @@ export function AppShell({ children }: { children?: ReactNode }) {
                 background: user.role === "admin" ? "var(--danger)" : "var(--accent)",
                 color: "var(--paper)",
                 fontWeight: 700,
-                fontSize: 7,
+                fontSize: 12,
                 letterSpacing: 0.5,
               }}
             >
               {(user.role || "user").toUpperCase()}
             </span>
-            <div style={{ fontSize: 8, marginTop: 3, color: "var(--ink)" }}>
+            <div style={{ fontSize: 12, marginTop: 3, color: "var(--ink)" }}>
               {user.username}
             </div>
           </div>
@@ -192,6 +245,10 @@ export function AppShell({ children }: { children?: ReactNode }) {
         </button>
       </nav>
       <main className="main-content">
+        {/* M3-B7 (#97): degraded mode is a user-facing operating state —
+            the banner names every degraded optional capability from
+            /health and disappears on its own when they recover. */}
+        <DegradedBanner />
         <div className="workspace-toolbar">
           <WorkspaceTabs />
           <WorkspaceShare />

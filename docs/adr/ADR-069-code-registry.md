@@ -57,7 +57,7 @@ history:
 > that can express "specified, partially built, blocked".
 
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-30
 **Resolves:** the dangling "code registry" abstraction referenced by ADR-050, ADR-051,
 ADR-053, and ADR-056 but never defined (owner, storage, ref resolution, or the security of

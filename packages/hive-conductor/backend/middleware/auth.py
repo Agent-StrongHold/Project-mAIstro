@@ -20,6 +20,8 @@ from services import authorization, voice_identity
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
 
+from maistro.identity import Principal
+
 logger = logging.getLogger("hive.auth_middleware")
 
 _PUBLIC_PREFIXES = (
@@ -57,6 +59,8 @@ _PUBLIC_EXACT = frozenset(
 _ADMIN_CHAT_BLOCKED = ("/v1/chat/",)
 
 # Compatibility export for tests and callers that inspect the policy table.
+# scripts/check_enumerations.py imports this alias; the single table lives in
+# services/authorization.py beside the UI contract it feeds.
 _PROTECTED_OPS = authorization.PROTECTED_OPS
 
 
@@ -87,18 +91,26 @@ def _is_public_oauth_get(method: str, path: str) -> bool:
     return provider in get_settings().oauth_providers
 
 
-def resolve_principal(
-    cookies: Mapping[str, str], authorization: str | None
-) -> dict[str, Any] | None:
+def _session_id(cookies: Mapping[str, str], authorization: str | None) -> str | None:
     session_id = cookies.get("hive_session")
     if not session_id:
         auth_header = authorization or ""
         if auth_header.startswith("Bearer "):
             session_id = auth_header[7:]
+    return session_id or None
+
+
+def resolve_principal(
+    cookies: Mapping[str, str],
+    authorization: str | None,
+    *,
+    refresh_activity: bool = False,
+) -> dict[str, Any] | None:
+    session_id = _session_id(cookies, authorization)
     if not session_id:
         return None
     try:
-        return auth_routes.get_current_user(session_id)
+        return auth_routes.get_current_user(session_id, refresh_activity=refresh_activity)
     except Exception:
         return None
 
@@ -164,6 +176,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if path.startswith("/v1/"):
+            # Resolve first without touching the session. A permission-denied
+            # request is authenticated but is not eligible activity: refreshing
+            # here would let rejected polling keep a session alive.
             user = self._get_user(request)
             if user is None:
                 return JSONResponse(
@@ -171,9 +186,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     content={"detail": "Authentication required"},
                 )
 
-            request.state.user = user
+            principal = Principal.from_legacy_dict(user)
+            request.state.principal = principal
 
-            if user["role"] == "admin" and self._is_chat(path):
+            if principal.is_admin and self._is_chat(path):
                 return JSONResponse(
                     status_code=403,
                     content={
@@ -189,7 +205,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 request.method == "GET"
                 and path.startswith("/v1/workspaces/persona-templates/")
                 and path.endswith("/feedback")
-                and user.get("role") != "admin"
+                and not principal.is_admin
             ):
                 return JSONResponse(
                     status_code=403,
@@ -197,12 +213,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 )
 
             required_perm = self._required_permission(request)
-            if required_perm and not self._check_permission(user, required_perm):
+            if required_perm and not self._check_permission(principal, required_perm):
                 return JSONResponse(
                     status_code=403,
                     content={
                         "detail": f"Permission '{required_perm}' required. Elevate to proceed."
                     },
+                )
+
+            # Touch only after the request has passed the authentication and
+            # middleware authorization boundary. WebSocket handshakes use the
+            # same server-side decision directly in routes.ws.
+            session_id = getattr(request.state, "session_id", None)
+            if (
+                self._is_eligible_activity(request)
+                and session_id is not None
+                and not auth_routes.refresh_session_activity(session_id)
+            ):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Authentication required"},
                 )
 
         return await call_next(request)
@@ -214,11 +244,22 @@ class AuthMiddleware(BaseHTTPMiddleware):
             # Fail closed: if setup state can't be read, require auth.
             return True
 
-    def _get_user(self, request: Request) -> dict[str, Any] | None:
+    def _get_user(
+        self, request: Request, *, refresh_activity: bool = False
+    ) -> dict[str, Any] | None:
         authorization = request.headers.get("Authorization")
-        user = resolve_principal(request.cookies, authorization)
+        session_id = _session_id(request.cookies, authorization)
+        user = resolve_principal(
+            request.cookies,
+            authorization,
+            refresh_activity=refresh_activity,
+        )
         if user is not None:
+            # Keep the source explicit so a voice credential on /v1/voice/*
+            # is not mistaken for an opaque session that must be touched.
+            request.state.session_id = session_id
             return user
+        request.state.session_id = None
         # Scoped to the voice prefix on purpose. Resolving the device
         # credential for every path would make one key a second way into the
         # whole API; here it opens the surface it was issued for and nothing
@@ -228,11 +269,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return voice_identity.principal_for(authorization)
         return None
 
+    def _is_eligible_activity(self, request: Request) -> bool:
+        """Only an authenticated API request, not a health probe, slides idle expiry.
+
+        ``whoami`` is used by SPA startup and restoration and is deliberately
+        observational. CORS preflight is bypassed before this point, while
+        WebSocket handshakes opt in explicitly in ``routes.ws``.
+        """
+        return (
+            request.method not in {"OPTIONS", "HEAD"}
+            and request.url.path not in auth_routes._SESSION_ACTIVITY_EXCLUDED_PATHS
+        )
+
     def _is_chat(self, path: str) -> bool:
         return any(path.startswith(p) for p in _ADMIN_CHAT_BLOCKED)
 
     def _required_permission(self, request: Request) -> str | None:
+        # The single policy table and its reviewed carve-outs live in
+        # services/authorization.py beside the browser contract; the
+        # middleware and /v1/auth/capabilities must never drift apart (#373).
         return authorization.required_permission(request.method, request.url.path)
 
-    def _check_permission(self, user: dict[str, Any], perm: str) -> bool:
+    def _check_permission(self, user: Principal | Mapping[str, Any], perm: str) -> bool:
         return principal_has_permission(user, perm)

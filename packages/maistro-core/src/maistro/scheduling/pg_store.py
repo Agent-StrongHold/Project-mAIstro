@@ -23,11 +23,10 @@ from typing import TYPE_CHECKING, Any
 from maistro.runs.evidence_json import json_of, model_of
 from maistro.scheduling.model import Schedule
 from maistro.scheduling.store import (
-    FireReservation,
     _advance,
     _merged,
     _reserve,
-    _settle,
+    _settle_pending,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -107,17 +106,20 @@ class PgScheduleStore:
         return [_schedule_of(row["payload"]) for row in rows]
 
     async def due(self, *, now: datetime) -> list[Schedule]:
-        """Enabled schedules whose cursor has arrived, plus those with none.
+        """Enabled schedules needing recurrence evaluation or manual recovery.
 
         `next_due_at IS NULL` is included deliberately, matching the protocol:
         an unknown cursor must be evaluated. A schedule written by `put` before
         its first tick has one, and treating it as not-due would mean a brand
-        new schedule never fires.
+        new schedule never fires. Pending manual-fire markers are selected
+        independently of the recurrence cursor, so a crashed manual fire is
+        reconciled on the next tick; admission still checks the marker lease.
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT payload FROM schedules
-                   WHERE enabled AND (next_due_at IS NULL OR next_due_at <= $1)
+                   WHERE enabled AND (next_due_at IS NULL OR next_due_at <= $1
+                       OR jsonb_array_length(COALESCE(payload->'pending_fires', '[]'::jsonb)) > 0)
                    ORDER BY schedule_id""",
                 now,
             )
@@ -132,6 +134,7 @@ class PgScheduleStore:
         next_due_at: datetime | None,
         fires: int | None = None,
         disable: bool = False,
+        recovered: frozenset[datetime] = frozenset(),
     ) -> Schedule | None:
         """Advance the cursors under a row lock, so a concurrent tick cannot lose them."""
         async with self._pool.acquire() as conn, conn.transaction():
@@ -148,6 +151,7 @@ class PgScheduleStore:
                 next_due_at=next_due_at,
                 fires=fires,
                 disable=disable,
+                recovered=recovered,
             )
             await conn.execute(
                 """UPDATE schedules
@@ -161,23 +165,9 @@ class PgScheduleStore:
         return advanced
 
     async def reserve_fire(
-        self, schedule_id: str, *, fires: int = 1
-    ) -> tuple[Schedule, FireReservation] | None:
-        """Claim under the row lock, so two manual fires cannot both take the last run."""
-        async with self._pool.acquire() as conn, conn.transaction():
-            payload = await conn.fetchval(
-                "SELECT payload FROM schedules WHERE schedule_id = $1 FOR UPDATE",
-                schedule_id,
-            )
-            if payload is None:
-                return None
-            reserved, reservation = _reserve(_schedule_of(payload), fires=fires)
-            await self._write(conn, reserved)
-        return reserved, reservation
-
-    async def settle_fire(
-        self, schedule_id: str, reservation: FireReservation, *, run_id: str | None
+        self, schedule_id: str, *, fires: int = 1, fire_id: str
     ) -> Schedule | None:
+        """Hold under the row lock, so two manual fires cannot both take the last run."""
         async with self._pool.acquire() as conn, conn.transaction():
             payload = await conn.fetchval(
                 "SELECT payload FROM schedules WHERE schedule_id = $1 FOR UPDATE",
@@ -185,7 +175,24 @@ class PgScheduleStore:
             )
             if payload is None:
                 return None
-            settled = _settle(_schedule_of(payload), reservation, run_id=run_id)
+            reserved = _reserve(_schedule_of(payload), fires=fires, fire_id=fire_id)
+            await self._write(conn, reserved)
+        return reserved
+
+    async def settle_pending_fire(
+        self, schedule_id: str, fire_id: str, *, run_id: str | None
+    ) -> Schedule | None:
+        """Close one marker under the row lock; None when there is nothing to close."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            payload = await conn.fetchval(
+                "SELECT payload FROM schedules WHERE schedule_id = $1 FOR UPDATE",
+                schedule_id,
+            )
+            if payload is None:
+                return None
+            settled = _settle_pending(_schedule_of(payload), fire_id, run_id=run_id)
+            if settled is None:
+                return None
             await self._write(conn, settled)
         return settled
 

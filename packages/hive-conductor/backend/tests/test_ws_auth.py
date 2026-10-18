@@ -128,8 +128,13 @@ def test_dag_run_stream_accepts_admin(admin_client: TestClient) -> None:
     Without this, replacing the `dags.write` check with an unconditional deny
     would leave every DAG-socket test green while the feature was dead.
     """
+    workspace_id = admin_client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "WS auth"}
+    ).json()["id"]
     with (
-        admin_client.websocket_connect("/v1/ws/dags/no-such-dag/run") as ws,
+        admin_client.websocket_connect(
+            f"/v1/ws/dags/no-such-dag/run?workspace_id={workspace_id}"
+        ) as ws,
         pytest.raises(WebSocketDisconnect) as exc,
     ):
         assert ws.receive_json() == {"error": "dag not found"}
@@ -155,20 +160,27 @@ def test_dag_run_stream_preserves_authenticated_actor(
         "edges": [],
     }
     captured: dict[str, Any] = {}
+    workspace_id = admin_client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "WS actor"}
+    ).json()["id"]
 
     async def fake_stream(dag_data: dict[str, Any], **kwargs: Any):
         captured["dag_id"] = dag_data["id"]
-        captured["user_id"] = kwargs.get("user_id")
+        captured["scope"] = kwargs.get("scope")
         yield {"status": "completed", "run_id": "run-ws-actor"}
 
     monkeypatch.setattr(graph_runner, "execute_dag_streaming", fake_stream)
     try:
-        with admin_client.websocket_connect(f"/v1/ws/dags/{dag_id}/run") as ws:
+        with admin_client.websocket_connect(
+            f"/v1/ws/dags/{dag_id}/run?workspace_id={workspace_id}"
+        ) as ws:
             assert ws.receive_json() == {"status": "completed", "run_id": "run-ws-actor"}
     finally:
         stores.dags.pop(dag_id, None)
 
-    assert captured == {"dag_id": dag_id, "user_id": "admin"}
+    assert captured["dag_id"] == dag_id
+    assert captured["scope"].workspace_id == workspace_id
+    assert captured["scope"].user_id == "admin"
 
 
 @pytest.mark.contract("behavioral")
@@ -219,9 +231,14 @@ def test_dag_run_stream_closes_cleanly_when_the_run_ends_without_a_terminal_even
     async def ending_stream(dag_data: dict[str, Any], **kwargs: Any):
         yield {"status": "node_complete", "node_id": "n1", "success": True}
 
+    workspace_id = admin_client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "WS ending"}
+    ).json()["id"]
     monkeypatch.setattr(graph_runner, "execute_dag_streaming", ending_stream)
     try:
-        with admin_client.websocket_connect(f"/v1/ws/dags/{dag_id}/run") as ws:
+        with admin_client.websocket_connect(
+            f"/v1/ws/dags/{dag_id}/run?workspace_id={workspace_id}"
+        ) as ws:
             assert ws.receive_json() == {
                 "status": "node_complete",
                 "node_id": "n1",

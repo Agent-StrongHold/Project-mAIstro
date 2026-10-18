@@ -274,6 +274,10 @@ def frontend_files() -> list[Path]:
         for path in FRONTEND.rglob(pattern):
             if _SKIP_PARTS.intersection(path.parts):
                 continue
+            # OpenAPI output (types.gen.ts) embeds route paths in JSDoc; those
+            # are schema metadata, not call sites (#1048 / S1.3).
+            if path.name.endswith(".gen.ts"):
+                continue
             files.append(path)
     return sorted(files)
 
@@ -361,7 +365,9 @@ def registered_routes() -> tuple[dict[str, frozenset[str]], list[str]]:
         if cause is not None
     ]
     table: dict[str, set[str]] = {}
-    for route in app.routes:
+    from maistro_server.api.route_table import iter_effective_routes
+
+    for route in iter_effective_routes(app.routes):
         path = getattr(route, "path", None)
         if path is None:
             continue

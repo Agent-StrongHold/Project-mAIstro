@@ -6,7 +6,10 @@ request still passes through ``required_permission`` in AuthMiddleware.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
+
+from maistro.identity import Principal
 
 # One policy table for the HTTP boundary. Keep this importable without routes
 # or middleware so the auth snapshot cannot create an alternate enforcement
@@ -17,6 +20,10 @@ PROTECTED_OPS: dict[str, dict[str, str]] = {
         "/v1/rsi": "rsi.execute",
         "/v1/evolution": "rsi.execute",
         "/v1/hitl": "dags.write",
+        # Cross-principal RUM aggregate read-back (develop #1420); ingest
+        # POST stays authenticated-only by design (ROUTE_EXEMPT in
+        # scripts/check_enumerations.py records that reasoning).
+        "/v1/rum": "rum.read",
     },
     "DELETE": {
         "/v1/settings": "config.delete",
@@ -42,9 +49,17 @@ PROTECTED_OPS: dict[str, dict[str, str]] = {
         "/v1/schedules": "schedules.write",
         "/v1/workspaces": "workspaces.write",
         "/v1/evolution": "rsi.execute",
+        # Chat workflow execution creates durable Run history and can invoke
+        # mutating nodes through the shared approval capability (develop).
+        "/v1/chat/workflows": "dags.write",
         "/v1/audit": "audit.write",
         "/v1/harness": "harness.execute",
         "/v1/rsi": "rsi.execute",
+        # Resolution of a capability approval is an authority-bearing
+        # decision with its own approver scope (develop); discovery and
+        # provider configuration stay config writes. The more specific
+        # prefix is listed first because matching is ordered startswith.
+        "/v1/capabilities/approvals": "approvals.resolve",
         "/v1/capabilities": "config.write",
         "/v1/providers": "config.write",
     },
@@ -83,7 +98,12 @@ def required_permission(method: str, path: str) -> str | None:
     method = method.upper()
     if method == "POST" and path.rstrip("/") == "/v1/workspaces":
         return None
-    if path.endswith("/invoke") or path.endswith("/feedback"):
+    # No URL-suffix carve-outs (#403): the former endswith("/invoke")
+    # exemption granted any future route with that suffix a silent elevation
+    # bypass decided purely by URL naming. Elevation binds only to the
+    # capability identifiers registered above plus the named, reviewed
+    # exceptions below; a path's spelling grants no authority.
+    if path.endswith("/feedback"):
         return None
     if method == "GET" and (path == "/v1/dag-runs" or path.startswith("/v1/dag-runs/")):
         return None
@@ -95,8 +115,12 @@ def required_permission(method: str, path: str) -> str | None:
     return None
 
 
-def principal_has_permission(user: dict[str, Any], permission: str) -> bool:
+def principal_has_permission(
+    user: Principal | Mapping[str, Any], permission: str
+) -> bool:
     """Mirror the middleware's effective grant check for contract responses."""
+    if isinstance(user, Principal):
+        return user.has_permission(permission)
     if user.get("role") == "admin":
         return True
     assigned = user.get("permissions", [])

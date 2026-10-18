@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAuthorization } from "../context/AuthorizationContext";
 import { AuthorizationNotice } from "./Authorization";
+import { fallbackMessage } from "../lib/api";
 import { SecretField } from "./shared";
 
 interface ProviderRow {
@@ -52,7 +53,7 @@ export function LlmProviders() {
         body: JSON.stringify({ api_key: keys[name] || "" }),
       });
       const body = await r.json();
-      if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
+      if (!r.ok) throw new Error(body.detail || fallbackMessage(r.status));
       setKeys((k) => ({ ...k, [name]: "" }));
       setNotice({ kind: "ok", text: `${name}: key stored in the encrypted vault.` });
       await load();
@@ -72,7 +73,7 @@ export function LlmProviders() {
         credentials: "same-origin",
       });
       const body = await r.json();
-      if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
+      if (!r.ok) throw new Error(body.detail || fallbackMessage(r.status));
       const model = body.first_model_call?.model ?? "";
       setNotice({ kind: "ok", text: `${name}: activated — first model call succeeded on ${model}.` });
       await load();
@@ -87,7 +88,7 @@ export function LlmProviders() {
     <>
       <AuthorizationNotice permission="config.write" label="LLM provider changes" />
       <div className="card" style={{ marginBottom: 14, padding: 12, borderLeft: "3px solid var(--accent)" }}>
-      <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 6 }}>
+      <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 6 }}>
         LLM PROVIDERS
       </div>
       <div style={{ fontFamily: "var(--hand)", fontSize: 12, lineHeight: 1.4, marginBottom: 10 }}>
@@ -103,7 +104,7 @@ export function LlmProviders() {
         <div
           style={{
             fontFamily: "var(--mono)",
-            fontSize: 9,
+            fontSize: 12,
             marginBottom: 8,
             color: notice.kind === "ok" ? "var(--ok)" : "var(--danger)",
           }}
@@ -133,7 +134,7 @@ export function LlmProviders() {
               className="btn"
               onClick={() => saveKey(p.name)}
               disabled={!can("config.write") || !data.vault_available || !keys[p.name] || busy === p.name}
-              style={{ fontSize: 10, padding: "3px 10px" }}
+              style={{ fontSize: 12, padding: "3px 10px" }}
             >
               Save key
             </button>
@@ -141,12 +142,12 @@ export function LlmProviders() {
               className="btn-primary"
               onClick={() => activate(p.name)}
               disabled={!can("config.write") || !p.has_key || busy === p.name}
-              style={{ fontSize: 10, padding: "3px 10px" }}
+              style={{ fontSize: 12, padding: "3px 10px" }}
             >
               {busy === p.name ? "…" : p.activated ? "Re-test" : "Activate"}
             </button>
             {p.activated && (
-              <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--ok)" }}>● active</span>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--ok)" }}>● active</span>
             )}
           </div>
         ))}

@@ -31,7 +31,7 @@ history:
 
 # ADR-026: Internal Trust Root — Local CA from Conductor Seed
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-07
 **Depends on:** ADR-021 (Conductor Seed), ADR-024 (DID/VC Identity)
 
