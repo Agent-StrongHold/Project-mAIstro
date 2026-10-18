@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -136,7 +137,11 @@ class ChatSessionRegistry:
         self._clock = clock
         self._lock = threading.Lock()
         self._sessions: dict[tuple[str, str], TuringChatSession] = {}
-        self._last_used: dict[tuple[str, str], float] = {}
+        # Ordered LRU: recency is tracked by position (move_to_end), not by the
+        # timestamp value, so an injected or coarse clock that returns equal
+        # values for several operations still yields an unambiguous eviction
+        # order instead of falling back to dict insertion order.
+        self._last_used: OrderedDict[tuple[str, str], float] = OrderedDict()
 
     def get_or_create(self, principal_id: str, session_id: str) -> TuringChatSession:
         """Return the principal's session for ``session_id``, or a new one.
@@ -155,6 +160,7 @@ class ChatSessionRegistry:
             session = self._sessions.get(key)
             if session is not None:
                 self._last_used[key] = now
+                self._last_used.move_to_end(key)
                 return session
             while len(self._sessions) >= self._max_sessions:
                 self._evict_one()
@@ -175,10 +181,15 @@ class ChatSessionRegistry:
             self._last_used.pop(key, None)
 
     def _evict_one(self) -> None:
-        """Drop the least-recently-used session. Caller holds the lock."""
+        """Drop the least-recently-used session. Caller holds the lock.
+
+        Recency is the OrderedDict position — every hit does ``move_to_end``
+        and every create appends — so the front entry is the true LRU even
+        when timestamps tie under a coarse or frozen clock.
+        """
         if not self._last_used:
             return
-        oldest = min(self._last_used, key=self._last_used.__getitem__)
+        oldest = next(iter(self._last_used))
         self._sessions.pop(oldest, None)
         self._last_used.pop(oldest, None)
 

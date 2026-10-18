@@ -98,6 +98,38 @@ def test_set_facet_rejects_out_of_range_and_unknown_facets_at_the_seam():
     assert st.facet_scores("admin-a")["creativity"] == 3.0
 
 
+def test_rejected_writes_do_not_install_a_scope_for_an_unseen_principal():
+    """A rejected write leaves no default entry behind for a new principal.
+
+    Regression: _self_model_scope() used to install the default scope before
+    the Mood constructor / facet bounds validated, so every rejected write on
+    a previously unseen principal leaked a map entry.
+    """
+    from ..state import get_state
+
+    st = get_state()
+
+    def refuse(call, exc_type, match):  # type: ignore[no-untyped-def]
+        try:
+            call()
+        except exc_type as exc:
+            assert match in str(exc)
+        else:
+            raise AssertionError(f"{call} must be refused")
+
+    refuse(lambda: st.set_mood("ghost-a", valence=5.0), ValueError, "out of range")
+    refuse(
+        lambda: st.set_facet("ghost-b", "not-a-facet", 3.0),
+        KeyError,
+        "not-a-facet",
+    )
+    refuse(lambda: st.set_facet("ghost-b", "creativity", 9.0), ValueError, "out of range")
+
+    with st._lock:
+        assert "ghost-a" not in st._scopes
+        assert "ghost-b" not in st._scopes
+
+
 # ------------------------------------------------------------ route wiring --
 
 
@@ -163,6 +195,22 @@ def test_chat_session_registry_is_bounded_by_capacity():
 
     replacement = reg.get_or_create("p", "s1")
     assert replacement is not first
+
+
+def test_chat_session_registry_lru_order_survives_timestamp_ties():
+    # A frozen (or coarse) clock gives every operation the same timestamp, so
+    # eviction must follow tracked recency order, not timestamp comparison
+    # falling back to insertion order (review P2).
+    clock = _Clock()
+    reg, _made = _registry(max_sessions=2, clock=clock)
+
+    first = reg.get_or_create("p", "s1")
+    second = reg.get_or_create("p", "s2")
+    assert reg.get_or_create("p", "s1") is first  # s1 is now the LRU-ordered MRU
+    reg.get_or_create("p", "s3")  # at capacity -> the true LRU (s2) is evicted
+
+    assert reg.get_or_create("p", "s1") is first  # s1 survived: it was just used
+    assert reg.get_or_create("p", "s2") is not second  # s2 was the one evicted
 
 
 def test_chat_session_registry_expires_idle_sessions():
