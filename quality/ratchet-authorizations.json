@@ -1069,16 +1069,6 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1817",
       "reason": "Post-merge reconciliation, the same #1817 gap as the grant above: this block landed in the same commit with no radon grant. Decides whether a durable Run's active NodeRuns have gone quiet with no Attempt still holding them -- short-circuiting on no active NodeRuns, then per NodeRun checking for zero Attempts (stalled) or a live, unexpired lease (not stalled) before concluding every active NodeRun is abandoned. This grant authorizes this one complexity identity only, at its already-merged value."
-    },
-    "packages/maistro-ext-sdk/src/maistro_ext_sdk/manifest.py::_validate_least_authority@14": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#1682",
-      "reason": "Newly visible, not newly complex (#1682). The #1683 widening batch keyed its grants to the nine trees the widened scan covered, but the shipped SDK's src/ was left to xenon alone: xenon counted this block from the start while the radon ledger did not look there, so the two instruments disagreed by exactly these two blocks. Recorded at the complexity it already had on the day the scan widened (C, 14; re-measured at the landing base). Authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here. Two-merge rule observed: this grant must land on the trusted base before any candidate that banks the ledger row; it is inert until then because the scan that surfaces the block does not run in the change that adds this grant."
-    },
-    "packages/maistro-ext-sdk/src/maistro_ext_sdk/ranges.py::VersionRange.satisfied_by@12": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#1682",
-      "reason": "Newly visible, not newly complex (#1682). The second of the two shipped-SDK blocks xenon already counted while the radon ledger did not look there; see the manifest.py grant above for the full rationale. Recorded at the complexity it already had on the day the scan widened (C, 12; re-measured at the landing base), pinned as an exact ledger identity, expected to come down under the Boy Scout ratchet. Two-merge rule observed: this grant lands on the trusted base before any candidate that banks its ledger row."
     }
   },
   "contract-markers": {

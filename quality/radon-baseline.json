@@ -793,26 +793,6 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
-      "key": "packages/maistro-ext-sdk/src/maistro_ext_sdk/manifest.py::_validate_least_authority",
-      "path": "packages/maistro-ext-sdk/src/maistro_ext_sdk/manifest.py",
-      "line": 395,
-      "name": "_validate_least_authority",
-      "classname": null,
-      "rank": "C",
-      "complexity": 14,
-      "rationale": "Newly visible when the radon scan widened to the shipped maistro-ext-sdk: xenon already counted this tree, but the ledger did not look there. Recorded at the complexity it already had so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
-      "key": "packages/maistro-ext-sdk/src/maistro_ext_sdk/ranges.py::VersionRange.satisfied_by",
-      "path": "packages/maistro-ext-sdk/src/maistro_ext_sdk/ranges.py",
-      "line": 53,
-      "name": "satisfied_by",
-      "classname": "VersionRange",
-      "rank": "C",
-      "complexity": 12,
-      "rationale": "Newly visible when the radon scan widened to the shipped maistro-ext-sdk: xenon already counted this tree, but the ledger did not look there. Recorded at the complexity it already had so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
       "key": "packages/maistro-evolve/src/maistro_evolve/architecture_fit.py::_parse_doc",
       "path": "packages/maistro-evolve/src/maistro_evolve/architecture_fit.py",
       "line": 51,

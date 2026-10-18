@@ -27,17 +27,19 @@ the comments:
 
 This change closes both: the radon scan adds `packages/maistro-ext-sdk/src`
 (`packages/maistro-ext-harness` stays out by name — stdlib-only CI tooling, not
-shipped product source), banks the two SDK blocks at their measured complexity,
-re-pins the ceiling at 139 (137 + 2, re-measured: xenon reports 139 block
-identities one-for-one with the ledger, 0 module and 0 average violations), and
-floors the SDK's docstrings at their measured 73%. The two new ledger
-identities carry grants in `quality/ratchet-authorizations.json`; per the
-two-merge rule the grants must be on the trusted base before this branch's
-radon ratchet passes, so this branch is blocked on its own grants landing
-first — the gate says so itself ("Land a grant keyed as
-'<qualified-block>@<new-complexity>' first"), and the grants are inert here
-because the authorizations are read from the base revision, never the
-candidate.
+shipped product source), re-pins the ceiling at 137 (re-measured: xenon reports
+137 block identities one-for-one with the ledger, 0 module and 0 average
+violations), and floors the SDK's docstrings at their measured 73%. The SDK's
+two C blocks surfaced by the widened scan were **decomposed under the Boy
+Scout ratchet rather than banked**: `_validate_least_authority` split into its
+two one-directional halves (`_validate_capability_requires_scope` B(7),
+`_validate_scope_requires_capability` B(8)) and
+`VersionRange.satisfied_by` became an operator dispatch over `_OPS` (A), so
+the widening surfaced no new debt, the ledger needed no new rows, and no
+guards were required — dissolving the two-merge dependency an earlier
+iteration of this branch carried (banked rows plus same-branch grants, which
+the radon ratchet rejects because it reads authorizations from the trusted
+base, never the candidate).
 
 `tests/test_complexity_gate_scope.py` is new (+5 tests in `tests/`), pinning
 the widened state structurally instead of by re-running the scanners:
@@ -48,7 +50,7 @@ the widened state structurally instead of by re-running the scanners:
 2. the xenon step scans exactly the same root set, also excluding
    `third_party`.
 3. `XENON_BASELINE` equals the radon ledger's length, so an improvement must
-   lower both in the same PR (the ceiling now reads 139).
+   lower both in the same PR (the ceiling now reads 137).
 4. the xenon step still enforces all three axes — block count, module rank
    (identity ledger, both `comm` directions), and a project average that
    fails above 0 and actually raises the step's `fail` flag — the two axes
@@ -133,3 +135,48 @@ change**; the unblock is the grants-only PR to `develop` (the two verbatim
 authorization entries), merged before this branch. Until that lands, the
 failing `Quality / Radon` run is the two-merge rule doing what #534 and #1682
 specified, not a repair debt.
+
+## Repair round 3 (2026-10-18, this head): the debt was taken down instead
+
+The round-2 conclusion assumed a grants-only PR could land first. This lane
+cannot open one, so the branch removed its own need for grants: the two SDK C
+blocks the widened scan surfaced were **decomposed under the Boy Scout
+ratchet** (the issue's own "then ratchet down" end state) rather than banked.
+Code changes, all behavior-preserving and covered by the existing suites:
+
+- `maistro_ext_sdk/manifest.py`: `_validate_least_authority` split into
+  `_validate_capability_requires_scope` (B, 7) and
+  `_validate_scope_requires_capability` (B, 8), called in the original order so
+  the first error raised is unchanged; the wrapper keeps the name its call site
+  uses. The C(14) identity no longer exists.
+- `maistro_ext_sdk/ranges.py`: `VersionRange.satisfied_by` (was C, 12) is now
+  `all(_OPS[op](version, bound) ...)` over an operator-dispatch table keyed by
+  the exact tokens `_OP_RE` accepts — A(2).
+- `quality/radon-baseline.json`: the two banked rows withdrawn (the identities
+  no longer exist; leaving them would fail the gate's stale-row rule).
+- `quality/ratchet-authorizations.json`: the two `@14`/`@12` grants withdrawn —
+  spent before landing, and the radon ratchet reads authorizations from the
+  trusted base, so same-branch grants could never have authorized these rows.
+- `.github/workflows/quality.yml`: `XENON_BASELINE` 139 -> 137, history comment
+  extended; `tests/fixtures/ci_quality_obligations.json` xenon-step digest
+  re-pinned to match.
+
+Re-executed battery at this head (CI-exact invocations):
+
+| Check | Result |
+|---|---|
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-radon-baseline.py` | **exit 0** — 137 C+ blocks, 137 ledger entries, 0 new / 0 regressed / 0 improved / 0 stale, base `ce2048cd2430` |
+| xenon (workflow args, ten roots, `-i third_party`) | 137 block / 0 module / 0 average; equals the ledger and the re-pinned ceiling |
+| `pytest packages/maistro-ext-sdk/tests` | 147 passed |
+| `pytest tests/test_complexity_gate_scope.py tests/test_ci_quality_split.py` | 5 + 96 passed |
+| `pytest tests/test_ratchet_provenance{,_integration_base}.py` | 82 passed |
+| interrogate, all 13 floors incl. `-f 73 packages/maistro-ext-sdk/src` | 13/13 exit 0 |
+| `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | exit 0, 1322 -> 1322 |
+| `check-ratchet-provenance.py` | exit 0 |
+| `check-suite-inventory.py` | ok, 17 suites (no test-count change; delta stays `+5`) |
+| `check-shipped-surface-truth.py` / `check-backlog-consistency.py` | exit 0 / exit 0 |
+| `ruff check .` / `ruff format --check .` | clean / clean |
+| `mypy packages/maistro-ext-sdk/src` | no issues |
+
+The two-merge conflict is dissolved rather than deferred: nothing in this
+branch's diff requires an authorization that is absent from the trusted base.

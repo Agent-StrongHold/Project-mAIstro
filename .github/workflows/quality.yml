@@ -1314,17 +1314,22 @@ jobs:
           # 143 xenon block identities matching the ledger's 143 entries
           # one-for-one, rank for rank.
           #
-          # 143 -> 139 (this PR), two moves in one. First, the ledger followed the
-          # Boy Scout waves after 2026-10-04 down to 137 while this ceiling sat
-          # at 143 -- exactly the drift the ledger pin exists to catch, and the
-          # pin test failed here until this PR re-pinned it. Second, the radon
-          # scan widened to packages/maistro-ext-sdk/src, which xenon already
-          # counted but the radon ledger did not look at: the SDK's two C blocks
-          # (_validate_least_authority 14, VersionRange.satisfied_by 12) are now
-          # banked as ledger rows, so 137 + 2 = 139. Re-measured at HEAD: 139
-          # block identities, xenon and the ledger one-for-one, module and
-          # average axes clean.
-          XENON_BASELINE: 139
+          # 143 -> 139: the pin test caught the ceiling drifted from the ledger
+          # it mirrors (143 vs a ledger the post-2026-10-04 Boy Scout waves had
+          # pulled down to 137), and the radon scan widened to
+          # packages/maistro-ext-sdk/src, banking the SDK's two C blocks
+          # (_validate_least_authority 14, VersionRange.satisfied_by 12) as
+          # ledger rows: 137 + 2 = 139.
+          #
+          # 139 -> 137 (this PR): those two SDK blocks did not stay debt. The
+          # Boy Scout ratchet took them down instead of banking them --
+          # _validate_least_authority split into its two one-directional halves
+          # and VersionRange.satisfied_by became an operator dispatch, both now
+          # B or better -- so the scan widening surfaced no new debt and the
+          # two ledger rows and their grants were withdrawn as never landed.
+          # Re-measured at HEAD: 137 block identities, xenon and the ledger
+          # one-for-one, module and average axes clean.
+          XENON_BASELINE: 137
           # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in
           # silence; widening the scope surfaced one.
