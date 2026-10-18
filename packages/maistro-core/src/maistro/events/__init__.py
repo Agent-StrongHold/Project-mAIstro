@@ -18,10 +18,14 @@ from maistro.events.durable_log import (
     append_from_bus_event,
 )
 from maistro.events.envelope import (
+    MAX_EVENT_FIELD_BYTES,
+    MAX_EVENT_FIELD_DEPTH,
     EventEnvelope,
+    EventPayloadTooLarge,
     EventStore,
     InMemoryEventStore,
     SqliteEventStore,
+    reconstruct_persisted_event,
 )
 from maistro.events.invocations import (
     MAX_ATTEMPTS,
@@ -37,8 +41,10 @@ from maistro.events.processing import (
     HandlerCaller,
     HandlerCallError,
     HTTPHandlerCaller,
+    ProcessedBatch,
     handler_idempotency_key,
     process_events,
+    process_events_batch,
 )
 from maistro.events.trigger_store import (
     HandlerDeliveryContract,
@@ -67,12 +73,15 @@ _OUTBOX_OPERATIONS = (
 __all__ = [
     "HANDLER_FAILED_EVENT",
     "MAX_ATTEMPTS",
+    "MAX_EVENT_FIELD_BYTES",
+    "MAX_EVENT_FIELD_DEPTH",
     "ActionHandler",
     "Event",
     "EventBus",
     "EventCategory",
     "EventEnvelope",
     "EventLogStore",
+    "EventPayloadTooLarge",
     "EventStore",
     "HTTPHandlerCaller",
     "HandlerCallError",
@@ -86,6 +95,7 @@ __all__ = [
     "InvocationStatus",
     "InvocationStore",
     "LoggedEvent",
+    "ProcessedBatch",
     "SqliteEventLog",
     "SqliteEventOutbox",
     "SqliteEventStore",
@@ -101,4 +111,6 @@ __all__ = [
     "handler_idempotency_key",
     "pattern_matches",
     "process_events",
+    "process_events_batch",
+    "reconstruct_persisted_event",
 ]

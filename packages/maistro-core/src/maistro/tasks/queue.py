@@ -329,6 +329,21 @@ class TaskQueue:
             self._notify(task_id)
 
     async def cancel(self, task_id: str) -> bool:
+        """Cancel the canonical Run before updating its task receipt.
+
+        The receipt is a projection. For admitted work, cancellation must
+        first reach the Run/Attempt service so an in-flight provider receives
+        the same signal as a queued task that has not started yet.
+        """
+        task = self._tasks.get(task_id)
+        if task is None:
+            return False
+        if (
+            self._admitter is not None
+            and task.run_id
+            and not await self._admitter.cancel_run(task.run_id)
+        ):
+            return False
         return await self.update_status(task_id, TaskStatus.CANCELLED)
 
     def remove(self, task_id: str) -> bool:

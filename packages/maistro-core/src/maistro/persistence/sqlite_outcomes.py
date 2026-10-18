@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import json
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -134,6 +136,10 @@ class SqliteOutcomeStore:
             "CREATE INDEX IF NOT EXISTS idx_outcomes_scope_task_time "
             "ON outcomes (org_id, project_id, task_type, created_at)"
         )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_outcomes_scope_thumb_time "
+            "ON outcomes (org_id, project_id, thumb, created_at)"
+        )
         await self._conn.commit()
 
     async def record(self, outcome: Outcome) -> int:
@@ -159,7 +165,11 @@ class SqliteOutcomeStore:
                 outcome.task_type,
                 outcome.model_used,
                 outcome.provider,
-                str(outcome.tool_calls),
+                # Keep the SQLite representation valid JSON so reads can
+                # return the same tool-call metadata as PostgreSQL. The
+                # literal-eval fallback in `_load_tool_calls` preserves rows
+                # written by older versions that used Python repr (#844).
+                json.dumps(outcome.tool_calls),
                 1 if outcome.success else 0,
                 outcome.error_type,
                 outcome.response_time_ms,
@@ -207,6 +217,7 @@ class SqliteOutcomeStore:
         task_type: str = "",
         days: int = 7,
         org_id: str = "",
+        project_id: str = "",
     ) -> dict[str, Any]:
         """Get completion rate stats."""
         cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
@@ -215,7 +226,7 @@ class SqliteOutcomeStore:
         if task_type:
             query += " AND task_type = ?"
             params.append(task_type)
-        query += _scope_clause(params, org_id)
+        query += _scope_clause(params, org_id, project_id)
         cursor = await self._conn.execute(query, params)
         columns = [d[0] for d in cursor.description]
         raw_rows = await cursor.fetchall()
@@ -249,6 +260,7 @@ class SqliteOutcomeStore:
         group_by: str = "user_id",
         days: int = 7,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[dict[str, Any]]:
         """Aggregate token usage grouped by a dimension."""
         if group_by not in _ALLOWED_GROUP_COLUMNS:
@@ -267,7 +279,7 @@ class SqliteOutcomeStore:
         if days > 0:
             cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
             params = [cutoff]
-            scope = _scope_clause(params, org_id)
+            scope = _scope_clause(params, org_id, project_id)
             cursor = await self._conn.execute(
                 f"""{select_cols}
                    WHERE created_at >= ?{scope}
@@ -280,7 +292,7 @@ class SqliteOutcomeStore:
             # than extend one. `days <= 0` means "all time", not "all orgs" —
             # the same rule the PostgreSQL twin states for its own branch.
             params = []
-            scope = _scope_clause(params, org_id).replace(" AND ", " WHERE ", 1)
+            scope = _scope_clause(params, org_id, project_id).replace(" AND ", " WHERE ", 1)
             cursor = await self._conn.execute(
                 f"""{select_cols}{scope}
                    GROUP BY {group_by}
@@ -308,12 +320,13 @@ class SqliteOutcomeStore:
         group_by: str = "",
         days: int = 7,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[dict[str, Any]]:
         """Daily token usage timeseries."""
         has_group = group_by in _ALLOWED_GROUP_COLUMNS
         cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
         params: list[Any] = [cutoff]
-        scope = _scope_clause(params, org_id)
+        scope = _scope_clause(params, org_id, project_id)
 
         if has_group:
             query = f"""
@@ -385,21 +398,51 @@ class SqliteOutcomeStore:
         from another tenant's project cannot reach this one's prompt — the
         defect this read existed with on this backend (#844).
         """
+        from maistro.memory.outcomes import _format_failure_lines, _format_thumb_lines
+
         cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
         params: list[Any] = [task_type, cutoff]
-        query = """SELECT error_type, model_used FROM outcomes
-               WHERE task_type = ? AND success = 0
-               AND created_at >= ?"""
+        query = """SELECT * FROM outcomes
+               WHERE task_type = ? AND created_at >= ?"""
         query += _scope_clause(params, org_id, project_id)
-        query += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
-        cursor = await self._conn.execute(query, params)
-        rows = await cursor.fetchall()
-        if not rows:
-            return ""
-        lines = ["Recent failures:"]
-        for r in rows:
-            lines.append(f"- {r[0]}: model={r[1]}")
+        if tool_name:
+            # SQLite stores tool calls as JSON text. Guard legacy Python-repr
+            # rows before handing the value to JSON1; those rows remain
+            # readable, but cannot satisfy a structured tool-name search.
+            query += """
+               AND EXISTS (
+                   SELECT 1
+                   FROM json_each(
+                       CASE WHEN json_valid(tool_calls) THEN tool_calls ELSE '[]' END
+                   )
+                   WHERE json_extract(json_each.value, '$.name') = ?
+               )"""
+            params.append(tool_name)
+
+        order = " ORDER BY created_at DESC, id DESC LIMIT ?"
+        failure_params = [*params, limit]
+        thumb_params = [*params, limit]
+        failure_cursor = await self._conn.execute(f"{query} AND success = 0{order}", failure_params)
+        failures = list(await failure_cursor.fetchall())
+        thumb_cursor = await self._conn.execute(
+            f"{query} AND success = 1 AND thumb = 'down'{order}", thumb_params
+        )
+        thumbs = list(await thumb_cursor.fetchall())
+
+        columns = [d[0] for d in failure_cursor.description]
+        failure_outcomes = [
+            _row_to_outcome(dict(zip(columns, row, strict=True))) for row in reversed(failures)
+        ]
+        columns = [d[0] for d in thumb_cursor.description]
+        thumb_outcomes = [
+            _row_to_outcome(dict(zip(columns, row, strict=True))) for row in reversed(thumbs)
+        ]
+        lines = _format_failure_lines(failure_outcomes)
+        thumb_lines = _format_thumb_lines(thumb_outcomes)
+        if thumb_lines:
+            if lines:
+                lines.append("")
+            lines.extend(thumb_lines)
         return "\n".join(lines)
 
     async def list_outcomes(
@@ -408,6 +451,7 @@ class SqliteOutcomeStore:
         days: int = 7,
         limit: int = 50,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[Outcome]:
         """List recent outcomes."""
         cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
@@ -416,7 +460,7 @@ class SqliteOutcomeStore:
         if task_type:
             query += " AND task_type = ?"
             params.append(task_type)
-        query += _scope_clause(params, org_id)
+        query += _scope_clause(params, org_id, project_id)
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         cursor = await self._conn.execute(query, params)
@@ -432,6 +476,7 @@ class SqliteOutcomeStore:
         days: int = THUMB_WINDOW_DAYS,
         limit: int = THUMB_LIMIT,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[Outcome]:
         """Outcomes carrying a thumb, most recent first.
 
@@ -446,7 +491,7 @@ class SqliteOutcomeStore:
         if dag_id:
             query += " AND (dag_id = ? OR dag_id = '')"
             params.append(dag_id)
-        query += _scope_clause(params, org_id)
+        query += _scope_clause(params, org_id, project_id)
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         cursor = await self._conn.execute(query, params)
@@ -466,6 +511,27 @@ def _utc_text(moment: datetime) -> str:
     if moment.tzinfo is None:
         return moment.replace(tzinfo=UTC).isoformat()
     return moment.astimezone(UTC).isoformat()
+
+
+def _load_tool_calls(raw: object) -> list[dict[str, object]]:
+    """Decode current JSON and legacy Python-repr tool-call rows safely."""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return [call for call in raw if isinstance(call, dict)]
+    if not isinstance(raw, str | bytes | bytearray):
+        return []
+    try:
+        decoded = json.loads(raw)
+    except (ValueError, TypeError):
+        try:
+            legacy_text = raw if isinstance(raw, str) else bytes(raw).decode()
+            decoded = ast.literal_eval(legacy_text)
+        except (UnicodeDecodeError, ValueError, SyntaxError):
+            return []
+    if not isinstance(decoded, list):
+        return []
+    return [call for call in decoded if isinstance(call, dict)]
 
 
 def _text(row: dict[str, Any], name: str) -> str:
@@ -498,6 +564,7 @@ def _row_to_outcome(r: dict[str, Any]) -> Outcome:
         task_type=r.get("task_type", ""),
         model_used=r.get("model_used", ""),
         provider=r.get("provider", ""),
+        tool_calls=_load_tool_calls(r.get("tool_calls")),
         success=bool(r["success"]),
         error_type=r.get("error_type", ""),
         response_time_ms=r.get("response_time_ms", 0),

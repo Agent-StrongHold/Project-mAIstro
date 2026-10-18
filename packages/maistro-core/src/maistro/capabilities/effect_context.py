@@ -75,8 +75,9 @@ class CapabilityEffectContext:
         return CredentialRouting(self.credentials)
 
 
-def new_in_memory_effect_context(
+def new_effect_context(
     *,
+    invocation_store: InvocationStore | None = None,
     policy_evaluator: PolicyEvaluator | None = None,
     credentials: CredentialRouter | None = None,
 ) -> CapabilityEffectContext:
@@ -88,9 +89,9 @@ def new_in_memory_effect_context(
     """
 
     binding_store = InMemoryBindingStore()
-    invocation_store = InMemoryInvocationStore()
+    store = invocation_store or InMemoryInvocationStore()
     event_store = InMemoryEventStore()
-    invocation_service = InvocationExecutionService(store=invocation_store)
+    invocation_service = InvocationExecutionService(store=store)
     governed = GovernedInvocationExecutionService(
         invocation_service=invocation_service,
         event_store=event_store,
@@ -99,7 +100,7 @@ def new_in_memory_effect_context(
     return CapabilityEffectContext(
         bindings=binding_store,
         invocations=governed,
-        invocation_store=invocation_store,
+        invocation_store=store,
         event_store=event_store,
         credentials=credentials or CredentialRouter(),
     )
@@ -114,11 +115,15 @@ def default_effect_context() -> CapabilityEffectContext:
     ledger. No default Binding is created here; absence remains a hard refusal.
     """
 
-    return new_in_memory_effect_context()
+    return new_effect_context()
+
+
+new_in_memory_effect_context = new_effect_context
 
 
 __all__ = [
     "CapabilityEffectContext",
     "default_effect_context",
+    "new_effect_context",
     "new_in_memory_effect_context",
 ]

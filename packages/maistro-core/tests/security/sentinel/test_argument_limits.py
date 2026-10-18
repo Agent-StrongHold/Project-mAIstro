@@ -185,6 +185,7 @@ async def test_sentinel_denies_and_audits_oversized_arguments() -> None:
         permission_table={},
         audit_log=audit,
         argument_limits=ToolArgumentLimits(max_bytes=80, max_depth=8),
+        allow_on_miss=True,  # COMPATIBILITY (#1165): this suite tests argument limits
     )
     verdict = await sentinel.pre_call(
         "tool",
@@ -206,6 +207,7 @@ async def test_sentinel_preserves_normal_valid_tool_call_behavior() -> None:
         permission_table={},
         audit_log=audit,
         argument_limits=ToolArgumentLimits(max_bytes=1024, max_depth=8),
+        allow_on_miss=True,  # COMPATIBILITY (#1165): this suite tests argument limits
     )
     verdict = await sentinel.pre_call(
         "tool",

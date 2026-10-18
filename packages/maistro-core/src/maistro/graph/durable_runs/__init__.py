@@ -27,6 +27,7 @@ from .continuation import (
     SqliteGraphContinuationStore,
 )
 from .execution_store import DurableRunExecutionStore
+from .fair_scan import ScanContinuation, cursor_time
 from .hitl import (
     HitlDeadlineElapsed,
     HitlDeadlinePending,
@@ -61,8 +62,10 @@ __all__ = [
     "LegacyRunNotResumable",
     "NodeResolver",
     "RunStatus",
+    "ScanContinuation",
     "SqliteDurableRunStore",
     "SqliteGraphContinuationStore",
+    "cursor_time",
     "durable_graph_launch_provenance",
     "expire_hitl_pauses",
     "recover_queued_graph_runs",
