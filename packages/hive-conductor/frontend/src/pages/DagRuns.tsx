@@ -34,8 +34,39 @@ interface RunSummary {
   node_states: Record<string, string>;
 }
 
+type AttemptEvidence = {
+  attempt_id: string;
+  ordinal: number;
+  status: string;
+  runtime_id: string;
+  executor_id: string;
+  error: string | null;
+  cancellation_cause: string | null;
+};
+
+type NodeRunEvidence = {
+  node_run_id: string;
+  node_id: string;
+  ordinal: number;
+  status: string;
+  error: string | null;
+  attempts: AttemptEvidence[];
+};
+
+type ArtifactEvidence = {
+  artifact_id: string;
+  request_id: string;
+  status: string;
+  attempt_count: number;
+  node_run_ids: string[];
+};
+
 interface RunDetail extends RunSummary {
   events: DagEvent[];
+  // Physical execution records are optional: projection-only historical rows
+  // have legacy events but no readable canonical NodeRun/Attempt tree.
+  node_runs?: NodeRunEvidence[];
+  artifacts?: ArtifactEvidence[];
   // The Workspace this run executes in, from the same seam response — the
   // Goal round trip names it (?ws=) so the Goals page opens in the scope the
   // goal's history lives in (#65).
@@ -206,10 +237,9 @@ export default function DagRuns() {
     <div style={{ padding: 16 }}>
       <h2 style={{ marginTop: 0 }}>Live DAG Runs</h2>
       <p style={{ color: "#6b7280", marginTop: -6 }}>
-        Live view of the bundled demo pipeline (intake → research → delivery → reporting). Each node = one
-        (role, capability) invocation. States stream over SSE from /v1/dag-runs/{`{id}`}/events. This view
-        shows that fixed pipeline only — workflows you create yourself (via Chat or the DAG Builder) run, but
-        aren't visualized here yet.
+        Inspect the canonical execution evidence for a run. The activity sketch below preserves legacy PM event
+        playback; the execution evidence panel lists the actual NodeRuns, Attempts, and recorded artifacts for
+        every canonical run the inspection seam can read.
       </p>
 
       {error && (
@@ -288,6 +318,47 @@ export default function DagRuns() {
                 </button>
               )}
             </div>
+          )}
+          {detail?.node_runs && (
+            <section
+              aria-label="Canonical execution evidence"
+              style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: 12, marginBottom: 12 }}
+            >
+              <h3 style={{ margin: "0 0 8px", fontSize: 14 }}>Execution evidence</h3>
+              {detail.node_runs.length === 0 ? (
+                <p style={{ color: "#6b7280", margin: 0, fontSize: 13 }}>No NodeRuns recorded yet.</p>
+              ) : (
+                <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 8 }}>
+                  {detail.node_runs.map((nodeRun) => (
+                    <li key={nodeRun.node_run_id} style={{ fontSize: 12 }}>
+                      <strong>{nodeRun.node_id}</strong> · {nodeRun.status} · node run {nodeRun.node_run_id}
+                      {nodeRun.error ? ` — ${nodeRun.error}` : ""}
+                      <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                        {nodeRun.attempts.map((attempt) => (
+                          <li key={attempt.attempt_id}>
+                            Attempt {attempt.ordinal}: {attempt.status} · {attempt.runtime_id} · {attempt.attempt_id}
+                            {attempt.cancellation_cause ? ` (${attempt.cancellation_cause})` : ""}
+                            {attempt.error ? ` — ${attempt.error}` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {detail.artifacts && detail.artifacts.length > 0 && (
+                <>
+                  <h4 style={{ margin: "12px 0 6px", fontSize: 13 }}>Recorded artifacts</h4>
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12 }}>
+                    {detail.artifacts.map((artifact) => (
+                      <li key={artifact.artifact_id}>
+                        {artifact.request_id}: {artifact.status} · {artifact.artifact_id} · {artifact.attempt_count} attempts
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </section>
           )}
           <svg
             width={width}

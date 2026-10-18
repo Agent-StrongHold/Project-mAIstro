@@ -212,6 +212,73 @@ async def _canonical_projection(record: dict[str, Any], user_id: str) -> dict[st
     return _overlay(record, runs.get(run_id))
 
 
+def _timestamp(value: Any) -> float | None:
+    """The inspection API's timestamp shape, without minting a timestamp."""
+    return value.timestamp() if value is not None else None
+
+
+async def _execution_evidence(run_id: str, user_id: str) -> list[dict[str, Any]] | None:
+    """Read the canonical NodeRun/Attempt tree through the scoped Run seam.
+
+    The list is deliberately absent, rather than fabricated as empty, when
+    the canonical reader cannot answer.  A projection-only DAG row records
+    legacy events but is not evidence that no physical NodeRuns or Attempts
+    exist.  The detail route already authorizes the Run before calling this;
+    each child read still goes through ``ScopedRunReader`` so a child id cannot
+    escape that Run or Workspace.
+    """
+    try:
+        from services.engine import get_engine
+
+        reader = get_engine().run_reader
+        if reader is None:
+            return None
+        node_runs = await reader.list_node_runs(run_id, principal_id=user_id)
+        rows: list[dict[str, Any]] = []
+        for node_run in node_runs:
+            attempts = await reader.list_attempts(
+                run_id, node_run.node_run_id, principal_id=user_id
+            )
+            rows.append(
+                {
+                    "node_run_id": node_run.node_run_id,
+                    "node_id": node_run.node_id,
+                    "ordinal": node_run.ordinal,
+                    "status": node_run.status.value,
+                    "started_at": _timestamp(node_run.started_at),
+                    "finished_at": _timestamp(node_run.finished_at),
+                    "result": node_run.result,
+                    "error": node_run.error,
+                    "attempts": [
+                        {
+                            "attempt_id": attempt.attempt_id,
+                            "ordinal": attempt.ordinal,
+                            "status": attempt.status.value,
+                            "runtime_id": attempt.runtime_id,
+                            "executor_id": attempt.executor_id,
+                            "started_at": _timestamp(attempt.started_at),
+                            "finished_at": _timestamp(attempt.finished_at),
+                            "result": attempt.result,
+                            "error": attempt.error,
+                            "cancellation_cause": (
+                                attempt.cancellation_cause.value
+                                if attempt.cancellation_cause is not None
+                                else None
+                            ),
+                        }
+                        for attempt in attempts
+                    ],
+                }
+            )
+        return rows
+    except Exception:
+        # A child read can disappear behind retention or a temporarily
+        # unavailable bridge after the run detail was authorized.  Omit this
+        # optional evidence rather than making the projection claim no work
+        # occurred or opening a raw-store fallback around the scoped seam.
+        return None
+
+
 async def authorized_workspace_ids(user_id: str) -> set[str]:
     """The canonical Workspaces whose runs `user_id` may inspect.
 
@@ -315,6 +382,9 @@ async def visible_run_detail(user_id: str, run_id: str) -> dict[str, Any] | None
         if run is None:
             return None
         detail = _canonical_only_detail(run)
+        evidence = await _execution_evidence(run.run_id, user_id)
+        if evidence is not None:
+            detail["node_runs"] = evidence
         # AC-10 (#775), same rule as the projection path below: per-artifact
         # state is only reachable when the caller just read the canonical Run.
         if detail.get("creative_provenance"):
@@ -324,6 +394,9 @@ async def visible_run_detail(user_id: str, run_id: str) -> dict[str, Any] | None
     if not _in_scope(record, allowed):
         return None
     detail = await _canonical_projection(record, user_id)
+    evidence = await _execution_evidence(_canonical_run_id(record), user_id)
+    if evidence is not None:
+        detail["node_runs"] = evidence
     # AC-10 (#775): Graph inspection in Conductor explains each artifact's
     # lineage. Only reachable when the creative block survived the scoped
     # overlay — i.e. the caller just read the canonical Run — so per-artifact

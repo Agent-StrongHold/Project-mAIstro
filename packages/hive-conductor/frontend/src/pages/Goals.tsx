@@ -196,12 +196,37 @@ function GoalDetail({
         <h4 style={{ marginTop: 0 }}>Approach</h4>
         {view.selected_graphs.length > 0 ? (
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-            {view.selected_graphs.map((g) => (
-              <li key={g.graph_id}>
-                <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{g.graph_id}</span>
-                {g.name ? ` — ${g.name}` : ""}
-              </li>
-            ))}
+            {view.selected_graphs.map((g) => {
+              // A Graph snapshot may have several Runs. Open the newest
+              // matching run so this is a real Graph -> Run inspection path,
+              // never a link that pretends a snapshot id is a legacy DAG id.
+              const run = view.runs.find((candidate) => candidate.graph_id === g.graph_id);
+              return (
+                <li key={g.graph_id}>
+                  {run ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenRun(run.run_id)}
+                      title="Open this graph's canonical run evidence"
+                      style={{
+                        border: 0,
+                        padding: 0,
+                        background: "transparent",
+                        color: "var(--accent)",
+                        cursor: "pointer",
+                        fontFamily: "var(--mono)",
+                        fontSize: 12,
+                      }}
+                    >
+                      {g.graph_id}
+                    </button>
+                  ) : (
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{g.graph_id}</span>
+                  )}
+                  {g.name ? ` — ${g.name}` : ""}
+                </li>
+              );
+            })}
           </ul>
         ) : (
           <p style={{ fontSize: 13, color: "var(--pencil)", margin: 0 }}>

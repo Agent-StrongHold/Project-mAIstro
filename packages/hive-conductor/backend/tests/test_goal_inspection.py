@@ -276,6 +276,57 @@ async def test_sequential_runs_form_one_goal_history(
     assert [row["run_id"] for row in view["runs"]] == list(reversed(run_ids))
 
 
+async def test_goal_run_detail_exposes_canonical_node_runs_and_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Goal's Run link reaches the physical execution tree through the
+    same scoped Run seam: no Goal-local copy can stand in for a NodeRun or
+    Attempt, and their canonical identifiers remain usable evidence."""
+    from services.dag_run_inspection import visible_run_detail
+
+    from maistro.runs import RunStatus
+
+    goal_id = _next_id("goal")
+    scene, run_ids = await _goal_scene(monkeypatch, goal_id=goal_id, statuses=[RunStatus.RUNNING])
+    canonical_run_id = _canonical_of(scene, run_ids[0])
+    node_run = await scene.store.create_node_run(canonical_run_id, node_id="n")
+    attempt = await scene.store.create_attempt(node_run.node_run_id, runtime_id="test-runtime")
+
+    detail = await visible_run_detail(_USER_ID, run_ids[0])
+    assert detail is not None
+    assert detail["canonical_run_id"] == canonical_run_id
+    assert detail["node_runs"] == [
+        {
+            "node_run_id": node_run.node_run_id,
+            "node_id": "n",
+            "ordinal": node_run.ordinal,
+            "status": node_run.status.value,
+            "started_at": None,
+            "finished_at": None,
+            "result": None,
+            "error": None,
+            "attempts": [
+                {
+                    "attempt_id": attempt.attempt_id,
+                    "ordinal": attempt.ordinal,
+                    "status": attempt.status.value,
+                    "runtime_id": "test-runtime",
+                    "executor_id": "",
+                    "started_at": None,
+                    "finished_at": None,
+                    "result": None,
+                    "error": None,
+                    "cancellation_cause": None,
+                }
+            ],
+        }
+    ]
+    # The Goal projection still identifies this exact run with the run seam's
+    # id, so selecting it from the Goal reaches the same physical evidence.
+    row = (await _views_for(goal_id))[0]["runs"][0]
+    assert row["run_id"] == run_ids[0]
+
+
 async def test_run_identity_and_status_are_the_run_seams_truth(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
