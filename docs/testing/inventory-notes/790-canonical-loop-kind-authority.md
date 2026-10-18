@@ -25,8 +25,9 @@ which landed on develop (this branch's develop sync carries it); the ADR stays
    slug (`goal(s)`, `rubric(s)`, `run(s)`, `eval(s)/evaluation(s)`,
    case-insensitive) outside the canonical ontology module
    (`packages/maistro-core/src/maistro/ontology/`). Passes on the current
-   tree: nothing registers those kinds yet (#791 lands the canonical Rubric),
-   and nothing outside `maistro-core` imports the ontology at all. The walk
+   tree: the only loop-kind registrations are the canonical module's own
+   (#791's `rubric.py` registers `rubric` and `rubric_run_binding`), and
+   nothing outside `maistro-core` imports the ontology at all. The walk
    covers the governed product roots, not `extensions/*/src`; the
    reserved-slug property holds tree-wide today regardless.
 2. `test_fence_detects_a_synthetic_competing_registration` — negative

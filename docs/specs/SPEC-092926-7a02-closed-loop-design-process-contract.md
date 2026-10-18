@@ -16,6 +16,8 @@ implements:
 related:
   - maistro-engine#ADR-060
   - maistro-engine#ADR-061
+  - maistro-engine#SPEC-092926-7a01
+  - maistro-engine#SPEC-093026-7a90
 supersedes: []
 blocks: []
 blocked-by: []
@@ -47,12 +49,17 @@ decision — the reserved vocabulary, the boundaries each wave must build
 inside, and the CI evidence that already proves the boundary holds — so the
 M7 waves (#791–#796) inherit one contract instead of re-negotiating it.
 
+This is not a third contract: `SPEC-092926-7a01` is the ADR-anchored
+kind-fencing decision this spec enforces, and `SPEC-093026-7a90` records the
+wave-level control flow and acceptance-criterion ids (#791–#796) that consume
+this boundary.
+
 ## Contract objects
 
 | Object | Kind | Owner | Boundary |
 |---|---|---|---|
 | Goal | canonical ontology kind (#458) | `maistro.goals` | Rubric binds to a Goal revision; M7 never re-owns Goal |
-| Rubric | Goal-acceptance facet of `maistro.goals` (lands #791) | `maistro.goals` | distinct from persona RubricEval (ADR-060) and CreativeBrief (#774) |
+| Rubric | Goal scored-acceptance ontology kind, registered in `maistro.ontology` (#791's `rubric.py`) | `maistro.goals` | distinct from persona RubricEval (ADR-060) and CreativeBrief (#774) |
 | Pack | Graph/skill pack of one Run (#793) | graph/skills | not a package, route, or product identity |
 | Fence | decision on a waiting NodeRun (#794) | runs lifecycle (ADR-097) | extends #48/#737 pause machinery; no new pause universe |
 | eval-on-Run | evidence on Run/NodeRun/Attempt (#792) | runs records | no side store, client cache, or product verdict table |

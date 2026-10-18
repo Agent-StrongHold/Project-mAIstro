@@ -47,9 +47,9 @@ _FLAT_APP_ROOTS: tuple[Path, ...] = (
     _PACKAGES / "hive-conductor" / "eval",
 )
 
-#: The only module allowed to register the canonical loop kinds. #791 lands
-#: the canonical Rubric (and any sibling kinds) here; today the module ships
-#: only the ``Person`` docstring example.
+#: The only module allowed to register the canonical loop kinds. #791's
+#: canonical Rubric already registers here (``rubric.py``); Goal/Run/eval
+#: kinds land here as their waves ship, and nowhere else may claim them.
 _CANONICAL_ONTOLOGY_MODULE = _PACKAGES / "maistro-core" / "src" / "maistro" / "ontology"
 
 #: Loop nouns whose ontology registration is reserved to the canonical module
@@ -194,9 +194,9 @@ def test_no_competing_loop_kind_registration() -> None:
     """Production code cannot register Goal/Rubric/Run/eval ontology kinds.
 
     Only the canonical ontology module may claim the loop-kind namespace
-    (#790 Gate A). Today the fence passes vacuously -- nothing registers
-    these kinds yet (#791 lands the canonical Rubric) -- and it stays that
-    way only while no product grows its own loop identity.
+    (#790 Gate A). The namespace is not empty: #791's canonical Rubric
+    registers ``rubric`` there (``rubric.py``), and this fence holds every
+    governed production root outside that module out of it.
     """
     offenders = _competing_registrations(_production_python_files())
     assert not offenders, (
