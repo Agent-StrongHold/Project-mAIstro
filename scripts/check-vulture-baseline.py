@@ -380,7 +380,10 @@ def _enforce_trusted(
 def main(argv: list[str]) -> int:
     update = "--update" in argv
     scan_args = [arg for arg in argv if arg != "--update"]
-    scan_args = scan_args or ["packages", "tests", "--exclude", "*/.venv/*"]
+    # Dependency directories only: .venv and gitignored node_modules hold
+    # third-party code (e.g. flatted ships a Python sample file) that is not
+    # this repository's dead-code surface.
+    scan_args = scan_args or ["packages", "tests", "--exclude", "*/.venv/*,*/node_modules/*"]
 
     candidate = _load_baseline()
     candidate_rules = list(candidate["rules"])

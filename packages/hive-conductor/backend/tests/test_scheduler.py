@@ -10,6 +10,7 @@ fire into a Run.
 from __future__ import annotations
 
 import asyncio
+import logging
 import pathlib
 import sys
 from datetime import UTC, datetime, timedelta
@@ -1389,8 +1390,9 @@ def test_manual_canonical_fire_refuses_each_non_run_outcome(
                     return SimpleNamespace(
                         already_fired=[datetime(2026, 8, 21, 12, tzinfo=UTC)],
                         run_ids=["not-created"],
+                        reconciled_run_id=None,
                     )
-                return SimpleNamespace(already_fired=[], run_ids=[])
+                return SimpleNamespace(already_fired=[], run_ids=[], reconciled_run_id=None)
 
         monkeypatch.setattr(runner, "_canonical_scope", scope)
         monkeypatch.setattr(runner, "_definition_for", definition)
@@ -1408,6 +1410,7 @@ def test_manual_canonical_fire_refuses_each_non_run_outcome(
                 schedule,
                 container=container,
                 admitter=admitter,
+                fire_id="fire-token",
             )
         assert failures == (
             ["template_not_found"]
@@ -1477,7 +1480,27 @@ def test_a_manual_fire_spends_the_bound_on_the_canonical_cursor(
 # --- #265: the HTTP surface --------------------------------------------------
 
 
-def test_a_schedule_can_be_created_with_a_zone_and_a_bound(admin_client: Any) -> None:
+@pytest.fixture
+def admin_ws() -> str:
+    """A canonical Workspace the admin client owns; creates are scoped to one (#1201)."""
+    from services.workspace_authority import create_workspace
+
+    workspace = asyncio.run(
+        create_workspace(
+            creator_user_id="admin",
+            name="Schedules",
+            persona_template_id="default",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+    )
+    return str(workspace.id)
+
+
+def test_a_schedule_can_be_created_with_a_zone_and_a_bound(
+    admin_client: Any, admin_ws: str
+) -> None:
     """AC: both are expressible through the product surface. Neither was."""
     created = admin_client.post(
         "/v1/schedules",
@@ -1485,6 +1508,7 @@ def test_a_schedule_can_be_created_with_a_zone_and_a_bound(admin_client: Any) ->
             "name": "nightly",
             "cron_expression": "0 9 * * *",
             "mission_template_id": "tpl",
+            "workspace_id": admin_ws,
             "timezone": "America/Chicago",
             "max_runs": 3,
         },
@@ -1500,12 +1524,19 @@ def test_a_schedule_can_be_created_with_a_zone_and_a_bound(admin_client: Any) ->
         admin_client.delete(f"/v1/schedules/{sid}")
 
 
-def test_a_create_that_omits_them_behaves_as_it_always_did(admin_client: Any) -> None:
+def test_a_create_that_omits_them_behaves_as_it_always_did(
+    admin_client: Any, admin_ws: str
+) -> None:
     """The columns are additive: an existing client sends neither and gets an
     unbounded schedule evaluated in UTC, exactly as before."""
     created = admin_client.post(
         "/v1/schedules",
-        json={"name": "legacy", "cron_expression": "0 9 * * *", "mission_template_id": "tpl"},
+        json={
+            "name": "legacy",
+            "cron_expression": "0 9 * * *",
+            "mission_template_id": "tpl",
+            "workspace_id": admin_ws,
+        },
     )
     assert created.status_code == 201, created.text
     body = created.json()
@@ -1527,7 +1558,7 @@ def test_a_create_that_omits_them_behaves_as_it_always_did(admin_client: Any) ->
     ],
 )
 def test_an_unusable_zone_or_bound_is_refused_at_the_boundary(
-    admin_client: Any, field: str, value: Any
+    admin_client: Any, admin_ws: str, field: str, value: Any
 ) -> None:
     """422 here, not a 500 and not a silent accept.
 
@@ -1536,16 +1567,26 @@ def test_an_unusable_zone_or_bound_is_refused_at_the_boundary(
     `_as_definition` on *every* tick, where `_tick` catches it and logs a
     warning — a schedule that never fires and reports `enabled: true` forever.
     """
-    body = {"name": "bad", "cron_expression": "0 9 * * *", "mission_template_id": "tpl"}
+    body = {
+        "name": "bad",
+        "cron_expression": "0 9 * * *",
+        "mission_template_id": "tpl",
+        "workspace_id": admin_ws,
+    }
     body[field] = value
     response = admin_client.post("/v1/schedules", json=body)
     assert response.status_code == 422, response.text
 
 
-def test_the_zone_and_bound_can_be_updated(admin_client: Any) -> None:
+def test_the_zone_and_bound_can_be_updated(admin_client: Any, admin_ws: str) -> None:
     created = admin_client.post(
         "/v1/schedules",
-        json={"name": "movable", "cron_expression": "0 9 * * *", "mission_template_id": "tpl"},
+        json={
+            "name": "movable",
+            "cron_expression": "0 9 * * *",
+            "mission_template_id": "tpl",
+            "workspace_id": admin_ws,
+        },
     )
     sid = created.json()["id"]
     try:
@@ -1565,10 +1606,15 @@ def test_the_zone_and_bound_can_be_updated(admin_client: Any) -> None:
         admin_client.delete(f"/v1/schedules/{sid}")
 
 
-def test_an_update_to_an_unusable_zone_is_refused(admin_client: Any) -> None:
+def test_an_update_to_an_unusable_zone_is_refused(admin_client: Any, admin_ws: str) -> None:
     created = admin_client.post(
         "/v1/schedules",
-        json={"name": "keeper", "cron_expression": "0 9 * * *", "mission_template_id": "tpl"},
+        json={
+            "name": "keeper",
+            "cron_expression": "0 9 * * *",
+            "mission_template_id": "tpl",
+            "workspace_id": admin_ws,
+        },
     )
     sid = created.json()["id"]
     try:
@@ -1581,12 +1627,19 @@ def test_an_update_to_an_unusable_zone_is_refused(admin_client: Any) -> None:
         admin_client.delete(f"/v1/schedules/{sid}")
 
 
-def test_a_manual_run_that_cannot_fire_is_a_conflict_not_a_stamp(admin_client: Any) -> None:
+def test_a_manual_run_that_cannot_fire_is_a_conflict_not_a_stamp(
+    admin_client: Any, admin_ws: str
+) -> None:
     """AC: the endpoint no longer leaves the schedule claiming a fire with no
     Run behind it. `tpl` is not a registered DAG, so nothing can start."""
     created = admin_client.post(
         "/v1/schedules",
-        json={"name": "manual", "cron_expression": "0 9 * * *", "mission_template_id": "tpl"},
+        json={
+            "name": "manual",
+            "cron_expression": "0 9 * * *",
+            "mission_template_id": "tpl",
+            "workspace_id": admin_ws,
+        },
     )
     sid = created.json()["id"]
     try:
@@ -1600,11 +1653,13 @@ def test_a_manual_run_that_cannot_fire_is_a_conflict_not_a_stamp(admin_client: A
         admin_client.delete(f"/v1/schedules/{sid}")
 
 
-def test_a_manual_run_of_an_unknown_schedule_is_still_a_404(admin_client: Any) -> None:
+def test_a_manual_run_of_an_unknown_schedule_is_still_a_404(
+    admin_client: Any, admin_ws: str
+) -> None:
     assert admin_client.post("/v1/schedules/does-not-exist/run").status_code == 404
 
 
-def test_an_explicit_null_leaves_the_field_alone(admin_client: Any) -> None:
+def test_an_explicit_null_leaves_the_field_alone(admin_client: Any, admin_ws: str) -> None:
     """`{"timezone": null}` is a real request, distinct from omitting the key:
     pydantic runs the validator for an explicit null and not for an absent
     field. Both must mean "leave alone" — this endpoint's `exclude_none=True`
@@ -1616,6 +1671,7 @@ def test_an_explicit_null_leaves_the_field_alone(admin_client: Any) -> None:
             "name": "nullable",
             "cron_expression": "0 9 * * *",
             "mission_template_id": "tpl",
+            "workspace_id": admin_ws,
             "timezone": "Europe/Berlin",
             "max_runs": 5,
         },
@@ -1664,3 +1720,81 @@ def test_a_fire_recorded_after_the_row_was_read_survives_the_definition_refresh(
     recorded = asyncio.run(store.get("s-refresh"))
     assert recorded is not None and recorded.runs_so_far == 1
     assert recorded.next_due_at == noon + timedelta(hours=1)
+
+
+@pytest.mark.parametrize("winner", ["run-the-cursor-lost", None])
+def test_the_tick_reports_a_live_run_the_cursor_never_named(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, winner: str | None
+) -> None:
+    """#1059: the tick reports the winner `last_run_id` does not name.
+
+    A ticker that died before `record_fire` left its Run live and the pointer
+    empty, so the admitter resolves that Run itself and hands it back as
+    `active_run_id`. The tick's log is the only place an operator can see that
+    overlap was judged against a Run the cursor never named -- and, under
+    CANCEL_OTHER, which Run the admitter asked to cancel.
+
+    Both arms, because the ordinary tick reports nothing: an evaluation that
+    found no such Run must stay silent rather than logging an absent winner.
+    """
+    from services.scheduler import _ScheduleRunner
+
+    async def scenario() -> None:
+        runner = _ScheduleRunner()
+        schedule = _canonical_row()
+
+        async def _get(_sid: Any) -> None:
+            return None
+
+        container = SimpleNamespace(schedule_store=SimpleNamespace(get=_get))
+
+        async def scope(_schedule: Any, _container: Any) -> object:
+            return object()
+
+        async def definition(*_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(exhausted=False, max_runs=3)
+
+        async def prime(_definition: Any, _container: Any) -> None:
+            return None
+
+        async def active(_definition: Any, _container: Any) -> bool:
+            return True
+
+        async def audit(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        class _AdmitterReportingTheWinner:
+            async def admit_due(self, *_args: Any, **_kwargs: Any) -> Any:
+                return SimpleNamespace(
+                    skipped=[],
+                    already_fired=[],
+                    active_run_id=winner,
+                    cancel_active_run=True,
+                    failures=[],
+                    run_ids=[],
+                )
+
+        monkeypatch.setattr(runner, "_canonical_scope", scope)
+        monkeypatch.setattr(runner, "_definition_for", definition)
+        monkeypatch.setattr(runner, "_prime_template", prime)
+        monkeypatch.setattr(runner, "_canonical_active_run", active)
+        monkeypatch.setattr(runner, "_audit_canonical_admission", audit)
+
+        admitter: Any = _AdmitterReportingTheWinner()
+        with caplog.at_level(logging.INFO, logger="services.scheduler"):
+            await runner._evaluate_canonical(
+                "s-1059",
+                schedule,
+                now=datetime(2026, 8, 21, 12, tzinfo=UTC),
+                container=container,
+                admitter=admitter,
+            )
+
+        if winner is None:
+            assert "the cursor did not name" not in caplog.text
+        else:
+            assert winner in caplog.text
+            assert "the cursor did not name" in caplog.text
+            assert "cancel requested: True" in caplog.text
+
+    asyncio.run(scenario())

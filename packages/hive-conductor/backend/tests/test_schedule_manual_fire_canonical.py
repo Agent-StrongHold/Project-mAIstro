@@ -3,11 +3,11 @@
 The unit suites prove the admitter and the runner in isolation. What only an
 end-to-end drive can prove is the acceptance this issue actually names: the
 HTTP route, against a *real configured Container* (``create_container``, not a
-SimpleNamespace), produces a Run whose Workspace and Project are the
-configured canonical ones — not the synthetic ``hive:schedule:{id}`` identities
-the compatibility path used to fabricate — with the schedule's provenance and
-actor on it, and the product row's ``last_run_id`` resolving into the
-Container's own Run store.
+SimpleNamespace), produces a Run whose Workspace and Project are the ones the
+schedule was bound to at create (#1201) — not the synthetic
+``hive:schedule:{id}`` identities the compatibility path used to fabricate —
+with the schedule's provenance and actor on it, and the product row's
+``last_run_id`` resolving into the Container's own Run store.
 """
 
 from __future__ import annotations
@@ -47,7 +47,28 @@ def _descriptor() -> dict[str, Any]:
     }
 
 
-def _row() -> Any:
+async def _bind_scope(container: Any) -> tuple[str, str]:
+    """A canonical Workspace owned by ``user-1`` that the admin requester is a
+    member of, and a non-root Project inside it the schedule is bound to."""
+    from services import workspace_authority
+
+    workspace = await workspace_authority.create_workspace(
+        creator_user_id="user-1",
+        name="E2E manual fire",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    await workspace_authority.set_member(workspace.id, user_id="admin", role="editor")
+    root = await container.project_scope_store.root_for_workspace(workspace.id)
+    project = await container.project_scope_store.create(
+        workspace_id=workspace.id, parent_project_id=root.project_id, name="Scheduled"
+    )
+    return workspace.id, project.project_id
+
+
+def _row(scope: tuple[str, str]) -> Any:
     from models.schemas import Schedule
 
     now = datetime.now(UTC)
@@ -55,6 +76,8 @@ def _row() -> Any:
         id=_SID,
         # The owner the product row carries; the Run must name it as actor.
         user_id="user-1",
+        workspace_id=scope[0],
+        project_id=scope[1],
         name="e2e manual fire",
         description="",
         cron_expression="0 * * * *",
@@ -96,24 +119,27 @@ def _configured_container(monkeypatch: pytest.MonkeyPatch) -> Any:
     service = engine_mod.get_engine()
     previous = service._agent_port
     service._agent_port = SimpleNamespace(container=container)
-    yield container
-    service._agent_port = previous
+    try:
+        container.bound_scope = asyncio.run(_bind_scope(container))
+        yield container
+    finally:
+        service._agent_port = previous
 
 
 def test_manual_fire_over_http_creates_one_canonical_run(
     admin_client: Any, _configured_container: Any
 ) -> None:
-    """AC: canonical Workspace/Project/Run identities, provenance, actor, and
+    """AC: the bound Workspace/Project, Run identity, provenance, actor, and
     exactly one Run for the accepted request."""
-    from config import get_settings
     from services.dag_agents import get_registry
 
     from maistro.runs.model import RunStatus
 
     container = _configured_container
+    workspace, project = container.bound_scope
     registry = get_registry()
     registry.register(_descriptor())
-    _install(_row())
+    _install(_row(container.bound_scope))
     try:
         response = admin_client.post(f"/v1/schedules/{_SID}/run")
         assert response.status_code == 200, response.text
@@ -122,15 +148,18 @@ def test_manual_fire_over_http_creates_one_canonical_run(
         assert run_id, "the row must name the Run it produced"
 
         async def assert_canonical() -> None:
-            workspace = get_settings().hive_default_workspace_id
-            root = await container.project_scope_store.root_for_workspace(workspace)
-
             run = await container.run_store.get_run(run_id)
             assert run is not None, "last_run_id resolves inside the configured Container"
             assert run.workspace_id == workspace
-            assert run.project_id == root.project_id
+            assert run.project_id == project, "the bound Project, not the Root"
             assert run.project_id != f"hive:schedule:{_SID}"
-            assert run.status is RunStatus.QUEUED, "admission is submission (#251)"
+            # Admission is submission (#251), and the manual route keeps its
+            # immediate UX by consuming the admitted Run promptly through the
+            # canonical consumer tick (#1120) — never by bypassing admission.
+            # The alias_keys graph is single-node, so by the time the response
+            # returns the Run has already executed to completion.
+            assert run.status is RunStatus.COMPLETED
+            assert run.provenance["schedule_trigger"] == "manual"
             assert run.actor_principal_id == "user-1"
             assert run.provenance["admission_source"] == "schedule"
             assert run.provenance["schedule_id"] == _SID
@@ -172,7 +201,7 @@ def test_manual_fire_with_an_unresolvable_template_is_a_409_that_changes_nothing
 ) -> None:
     """AC: the product-visible refusal survives the migration, and neither the
     canonical cursor nor the row moves."""
-    _install(_row())
+    _install(_row(_configured_container.bound_scope))
     try:
         response = admin_client.post(f"/v1/schedules/{_SID}/run")
         assert response.status_code == 409, response.text
@@ -203,7 +232,7 @@ def test_manual_fire_on_a_half_wired_container_is_a_503_not_a_fallback(
     """AC: a configured Container missing a collaborator fails closed — the
     compatibility path must not become reachable through its absence."""
     _configured_container.schedule_admitter = None  # the canonical collaborator is missing
-    _install(_row())
+    _install(_row(_configured_container.bound_scope))
     try:
         response = admin_client.post(f"/v1/schedules/{_SID}/run")
         assert response.status_code == 503, response.text
@@ -212,5 +241,66 @@ def test_manual_fire_on_a_half_wired_container_is_a_503_not_a_fallback(
         after = admin_client.get(f"/v1/schedules/{_SID}").json()
         assert after["last_run"] is None
         assert after["last_run_id"] is None
+    finally:
+        _remove()
+
+
+def _assert_no_run_factory(container: Any) -> Any:
+    """A sync-safe assertion: the Container's run store holds no Run."""
+
+    async def assert_no_run() -> None:
+        assert len(container.run_store._runs) == 0  # type: ignore[attr-defined]
+
+    return assert_no_run
+
+
+def test_a_blank_fire_id_in_the_body_is_a_422_never_a_firing(
+    admin_client: Any, _configured_container: Any
+) -> None:
+    """AC: the manual identity is non-empty. A blank token would mint
+    ``manual:`` + "" — one occurrence identity shared by every blank request,
+    the opposite of a stable per-logical-request identity — so the body is
+    refused before anything fires."""
+    _install(_row(_configured_container.bound_scope))
+    try:
+        response = admin_client.post(f"/v1/schedules/{_SID}/run", json={"fire_id": "   "})
+        assert response.status_code == 422, response.text
+        assert "fire_id" in response.text
+        asyncio.run(_assert_no_run_factory(_configured_container)())
+    finally:
+        _remove()
+
+
+def test_an_overlong_fire_id_in_the_body_is_a_422(
+    admin_client: Any, _configured_container: Any
+) -> None:
+    """AC: the manual identity is bounded — the token becomes durable Run
+    provenance and half of a unique occurrence claim, so a stray paste cannot
+    smuggle unbounded data into the spine."""
+    _install(_row(_configured_container.bound_scope))
+    try:
+        response = admin_client.post(f"/v1/schedules/{_SID}/run", json={"fire_id": "x" * 201})
+        assert response.status_code == 422, response.text
+        assert "fire_id" in response.text
+        asyncio.run(_assert_no_run_factory(_configured_container)())
+    finally:
+        _remove()
+
+
+def test_an_overlong_idempotency_key_is_a_422(
+    admin_client: Any, _configured_container: Any
+) -> None:
+    """AC: the header is held to the body's `fire_id` contract — the standard
+    retry identity goes through the same strip-and-bound check before it can
+    become an occurrence token."""
+    _install(_row(_configured_container.bound_scope))
+    try:
+        response = admin_client.post(
+            f"/v1/schedules/{_SID}/run",
+            headers={"Idempotency-Key": "k" * 201},
+        )
+        assert response.status_code == 422, response.text
+        assert "fire_id" in response.text
+        asyncio.run(_assert_no_run_factory(_configured_container)())
     finally:
         _remove()

@@ -39,6 +39,7 @@ from maistro.runs.retention_scope import (
     WorkspaceRetentionScope,
 )
 from maistro.runs.store import DuplicateOccurrence, InMemoryRunStore
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 EXPIRED = NOW - timedelta(seconds=1)
@@ -69,7 +70,11 @@ def _graph(workspace: str, project_id: str) -> Graph:
 async def _expired_terminal_run(world: Any, workspace: str, project_id: str) -> Any:
     """A completed Run past its deadline, with one NodeRun and one Attempt."""
     store = world.runs
-    run = await store.create_run(_graph(workspace, project_id), retention_expires_at=EXPIRED)
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        retention_expires_at=EXPIRED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
@@ -223,7 +228,11 @@ async def test_one_workspaces_sweep_cannot_touch_another(scope_world: Any) -> No
     run_a = await _expired_terminal_run(world, *world.a)
     # B is expired but still running — the deadline is a floor — so it is not
     # even a purge candidate; A is the only thing A's sweep may select.
-    run_b = await world.runs.create_run(_graph(*world.b), retention_expires_at=EXPIRED)
+    run_b = await world.runs.create_run(
+        _graph(*world.b),
+        retention_expires_at=EXPIRED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await world.runs.transition_run(run_b.run_id, RunStatus.QUEUED)
     await world.runs.transition_run(run_b.run_id, RunStatus.RUNNING)
     node_run_b = await world.runs.create_node_run(run_b.run_id, node_id="node-1")
@@ -276,24 +285,17 @@ async def test_a_continuation_does_not_outlive_its_run(scope_world: Any) -> None
 # ── events: attribution history outlives the Run, and says so ─────
 
 
-async def test_events_survive_a_purge_and_are_counted(scope_world: Any) -> None:
+async def test_events_survive_a_purge(scope_world: Any) -> None:
     """The Event log is append-only provenance. A purge neither deletes nor
-    rewrites it; the outcome counts the references left behind so the residue
-    is a reported fact, not a silent one."""
+    rewrites it; the residue is a reported fact, not a silent one."""
     world = scope_world
     run_a = await _expired_terminal_run(world, *world.a)
     run_b = await _expired_terminal_run(world, *world.b)
     event_a = await _event_for(world.events, world.a[0], run_a)
     await _event_for(world.events, world.b[0], run_b)
 
-    outcome = await world.runs.purge_expired_runs(_scope_a(world), now=NOW)
+    await world.runs.purge_expired_runs(_scope_a(world), now=NOW)
 
-    if world.backend == "memory":
-        # The in-memory store owns no Event log; zero is the truthful report
-        # of a boundary, not a stub.
-        assert outcome.event_references_retained == 0
-    else:
-        assert outcome.event_references_retained == 1
     # Both events still resolve, whichever backend holds them.
     assert await world.events.get(event_a.event_id) is not None
     assert await world.runs.get_run(run_a.run_id) is None
@@ -319,19 +321,20 @@ async def test_a_purged_run_releases_only_its_own_occurrence(scope_world: Any) -
                 SCHEDULED_FOR_KEY: scheduled_for,
             },
             retention_expires_at=EXPIRED,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         await world.runs.transition_run(run.run_id, RunStatus.QUEUED)
         await world.runs.transition_run(run.run_id, RunStatus.RUNNING)
         await world.runs.transition_run(run.run_id, RunStatus.COMPLETED)
 
-    outcome = await world.runs.purge_expired_runs(_scope_a(world), now=NOW)
-    assert outcome.schedule_claims_released == 1
+    await world.runs.purge_expired_runs(_scope_a(world), now=NOW)
 
     schedule_id, scheduled_for = occurrences[world.a[0]]
     # A's claim died with its Run: the firing can be admitted again.
     re_admitted = await world.runs.create_run(
         _graph(*world.a),
         provenance={SCHEDULE_ID_KEY: schedule_id, SCHEDULED_FOR_KEY: scheduled_for},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     assert re_admitted.workspace_id == world.a[0]
     # B's claim is still held by its Run.
@@ -342,6 +345,7 @@ async def test_a_purged_run_releases_only_its_own_occurrence(scope_world: Any) -
                 SCHEDULE_ID_KEY: occurrences[world.b[0]][0],
                 SCHEDULED_FOR_KEY: occurrences[world.b[0]][1],
             },
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
 

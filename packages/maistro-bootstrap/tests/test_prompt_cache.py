@@ -38,7 +38,7 @@ def _capture(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         captured.update(json)
         return _FakeResp()
 
-    monkeypatch.setattr(rc.httpx, "post", fake_post)
+    monkeypatch.setattr(rc, "_post", fake_post)
     return captured
 
 

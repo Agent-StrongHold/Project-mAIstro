@@ -1,0 +1,63 @@
+/* Workspace bridge — the old Conductor variable names, bound to the Workspace tokens.
+ *
+ * `workspace-tokens.css` is a byte-for-byte copy of the bundled Workspace design
+ * system (`maistro_design/systems/bundled/workspace/tokens.css`, ADR-091626-ba4f);
+ * a backend test keeps the two identical. Nothing in the app should depend on
+ * the names below in new code: they exist so the ~1,300 existing `var(--paper)`,
+ * `var(--pencil)`, `var(--rule)`… references keep resolving while pages move to
+ * the token names one at a time. Delete a row here once its last reader is gone.
+ *
+ * The three `--font-*` rebindings are the one deliberate deviation from the
+ * bundle: the tokens name the families ("Bricolage Grotesque", "JetBrains Mono"),
+ * and the app ships them from its own origin through @fontsource-variable, whose
+ * @font-face rules register the "… Variable" family names (FONTS.md). Binding
+ * the token to the shipped face is a product concern, not a persona one; the
+ * manifest still lists `--font-*` as fixed for persona templates.
+ */
+:root {
+  --font-display: "Bricolage Grotesque Variable", "Bricolage Grotesque", system-ui, sans-serif;
+  --font-body: "Bricolage Grotesque Variable", "Bricolage Grotesque", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, Menlo, monospace;
+
+  /* Surfaces and text */
+  --paper: var(--bg);
+  --paper-2: var(--surface);
+  --bg-elevated: var(--surface);
+  --card: var(--surface);
+  --ink: var(--fg);
+  --text: var(--fg);
+  --pencil: var(--muted);
+  --rule: var(--hair);
+  --wax: var(--border);
+  --track: var(--hair);
+  --scroll-thumb: var(--border);
+  --comb-bg: transparent;
+
+  /* One accent; blue means you (the tokens define --accent, --accent-hover,
+     --accent-soft). The gradient and the "honey"/"purple" hues collapse to it. */
+  --accent-light: var(--accent-soft);
+  --accent-bg: var(--accent-soft);
+  --accent-gradient: var(--accent);
+  --accent-2: var(--accent);
+  --honey: var(--accent);
+  --honey-light: var(--accent-soft);
+  --honey-dark: var(--accent-hover);
+  --purple: var(--accent);
+
+  /* Status */
+  --ok: var(--success);
+
+  /* Type */
+  --sans: var(--font-body);
+  --hand: var(--font-body);
+  --mono: var(--font-mono);
+
+  /* Elevation and motion. The Workspace is still by default: the layered
+     shadow scale becomes the one raised elevation, and the accent glow is gone. */
+  --shadow-xs: var(--elev-ring);
+  --shadow-sm: var(--elev-ring);
+  --shadow-md: var(--elev-raised);
+  --shadow-lg: var(--elev-raised);
+  --shadow-accent: none;
+  --ease: var(--ease-standard);
+}

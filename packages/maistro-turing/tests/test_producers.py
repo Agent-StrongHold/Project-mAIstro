@@ -55,6 +55,10 @@ class FakeProviderBridge:
             raise self._raises
         return self._reply
 
+    async def acomplete(self, prompt: str, *, max_tokens: int | None = None, pool: str = "") -> str:
+        # Producers await the async seam (#397); record through the same seam.
+        return self.complete(prompt, max_tokens=max_tokens, pool=pool)
+
 
 class FakeSecurityBridge:
     def __init__(self, verdict: str = "allowed") -> None:

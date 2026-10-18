@@ -106,6 +106,27 @@ async def test_jira_rest(*, user_id: str | None = None) -> dict[str, Any]:
         return {"ok": False, "mode": "jira_rest", "detail": "Jira request failed", "site": site}
 
 
+def _is_local_mcp_url(url: str) -> bool:
+    """Recognize loopback authorities, never string prefixes or URL userinfo."""
+    from urllib.parse import urlsplit
+
+    if "\\" in url or any(ord(char) <= 32 or ord(char) == 127 for char in url):
+        return False
+    try:
+        parsed = urlsplit(url)
+        # Reading port also rejects malformed or out-of-range authorities.
+        port = parsed.port
+        return (
+            parsed.scheme == "http"
+            and parsed.hostname in {"127.0.0.1", "localhost"}
+            and parsed.username is None
+            and parsed.password is None
+            and (port is None or port > 0)
+        )
+    except ValueError:
+        return False
+
+
 async def test_mcp_server(
     server_id: str,
     *,
@@ -133,7 +154,7 @@ async def test_mcp_server(
             }
         return {**jira, "server_id": server_id}
 
-    if url.startswith("http://127.0.0.1") or url.startswith("http://localhost"):
+    if _is_local_mcp_url(url):
         try:
             async with shared_client(timeout=2.0) as client:
                 r = await client.get(url)
