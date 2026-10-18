@@ -36,6 +36,10 @@ interface RunSummary {
 
 interface RunDetail extends RunSummary {
   events: DagEvent[];
+  // The Workspace this run executes in, from the same seam response — the
+  // Goal round trip names it (?ws=) so the Goals page opens in the scope the
+  // goal's history lives in (#65).
+  workspace_id?: string | null;
   // The #458 Goal context a goal-driven Run records, relayed verbatim by the
   // /v1/dag-runs seam; absent when the Run records none (#65). An inline
   // member on purpose: the typed-client ratchet banks this page's hand-typed
@@ -257,13 +261,19 @@ export default function DagRuns() {
             >
               <span style={{ fontFamily: "monospace", fontSize: 13 }}>{detail.id}</span>
               {/* Round trip (#65): this run arrived from the Goal view's
-                  history; the recorded Goal context links straight back. The
-                  strings are the seam's own — no id translation. */}
+                  history; the recorded Goal context links straight back, and
+                  the run's own Workspace rides along as ?ws= so the Goal page
+                  opens where that goal's history lives. The strings are the
+                  seam's own — no id translation. */}
               {detail.goal_context && (
                 <button
-                  onClick={() =>
-                    navigate(`/goals?goal=${encodeURIComponent(detail.goal_context!.goal_id)}`)
-                  }
+                  onClick={() => {
+                    const params = new URLSearchParams({
+                      goal: detail.goal_context!.goal_id,
+                    });
+                    if (detail.workspace_id) params.set("ws", detail.workspace_id);
+                    navigate(`/goals?${params.toString()}`);
+                  }}
                   style={{
                     cursor: "pointer",
                     border: "1px solid #e5e7eb",

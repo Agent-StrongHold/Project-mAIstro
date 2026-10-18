@@ -1,4 +1,5 @@
-// Goal inspection contract types (#65) — the shapes GET /v1/goals serves.
+// Goal inspection contract types (#65) — the shapes
+// GET /v1/workspaces/{workspaceId}/goals serves.
 //
 // These are the Workspace-centric inspection view's response contract, not
 // page-local UI state, so they live in src/lib/ beside the other cross-surface

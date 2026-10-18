@@ -405,10 +405,13 @@ def create_app() -> FastAPI:
     app.include_router(dags.router, prefix="/v1/dags")
     app.include_router(dashboard_layout.router)
     app.include_router(dag_runs.router, prefix="/v1/dag-runs")
-    # M3 #65: the Goal-centric inspection layer. Read-only — runs listed,
-    # identified, and controlled only through the /v1/dag-runs seam above, so
-    # the Goal view can never become a second run or Goal authority.
-    app.include_router(goals.router, prefix="/v1/goals")
+    # M3 #65: the Goal-centric inspection layer, mounted under the already-
+    # declared /v1/workspaces prefix (the Home #1048 / Attention #1049 mount)
+    # rather than a new /v1/goals prefix the route-permission registry would
+    # have to re-review. Read-only — runs listed, identified, and controlled
+    # only through the /v1/dag-runs seam above, so the Goal view can never
+    # become a second run or Goal authority.
+    app.include_router(goals.router, prefix="/v1/workspaces")
     # Phase 5 Signal #4: thumbs feedback piggybacks on /v1/dag-runs path
     # space so the SSE stream + feedback live together for the client.
     app.include_router(feedback.router, prefix="/v1/dag-runs")

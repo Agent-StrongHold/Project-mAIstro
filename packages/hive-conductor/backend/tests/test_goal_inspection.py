@@ -666,14 +666,120 @@ async def test_projection_persists_nothing(
 # ─── HTTP door ───────────────────────────────────────────────────────────────
 
 
-def test_goals_routes_are_scoped_and_read_only(authed_client: Any) -> None:
-    """GET /v1/goals answers the principal's universe; nothing else exists."""
-    listed = authed_client.get("/v1/goals")
+async def _member_route_scene(
+    monkeypatch: pytest.MonkeyPatch, *, member_id: str = "user", role: str = "editor"
+) -> Any:
+    """A bridged scene whose Workspace the authed_client principal can see.
+
+    The scene is owned by `_USER_ID`; `member_id` (the login the route
+    tests authenticate as) is added as a member so the #1174 universe the
+    routes read is non-empty for them.
+    """
+    from services.workspace_authority import set_member
+
+    scene = await _make_scene(monkeypatch)
+    await set_member(scene.view.id, user_id=member_id, role=role)  # type: ignore[arg-type]
+    return scene
+
+
+async def test_goals_routes_are_scoped_and_read_only(
+    monkeypatch: pytest.MonkeyPatch, authed_client: Any
+) -> None:
+    """GET /v1/workspaces/{id}/goals answers a member's Workspace; nothing
+    else exists."""
+    from maistro.runs import RunStatus
+
+    scene = await _member_route_scene(monkeypatch)
+    goal_id = _next_id("goal")
+    await scene.add_goal_run(goal_id=goal_id, status=RunStatus.RUNNING)
+
+    listed = authed_client.get(f"/v1/workspaces/{scene.view.id}/goals")
     assert listed.status_code == 200
     assert isinstance(listed.json(), list)
-    missing = authed_client.get("/v1/goals/never-a-goal")
+    assert [row["goal_id"] for row in listed.json()] == [goal_id]
+    missing = authed_client.get(f"/v1/workspaces/{scene.view.id}/goals/never-a-goal")
     assert missing.status_code == 404
     assert missing.json()["detail"] == "goal not found"
     # Read-only surface: no mutating verb is offered on the router.
-    refused = authed_client.post("/v1/goals", json={})
+    refused = authed_client.post(f"/v1/workspaces/{scene.view.id}/goals", json={})
     assert refused.status_code >= 400
+
+
+async def test_goal_route_prefix_lives_under_the_declared_workspaces_mount(
+    authed_client: Any,
+) -> None:
+    """The inspection door is /v1/workspaces/{id}/goals — the mount the
+    route-permission registry already declares (#1048/#1049 shape).
+
+    A reintroduced top-level /v1/goals prefix would be a brand-new
+    authenticated surface the registry has reviewed no exemption for; the
+    CI route-permission gate fails exactly that shape, so this pins it at
+    the HTTP level too.
+    """
+    legacy = authed_client.get("/v1/goals")
+    assert legacy.status_code == 404
+    unmounted = authed_client.get("/v1/goals/some-goal")
+    assert unmounted.status_code == 404
+
+
+async def test_goal_routes_refuse_non_members_without_an_existence_oracle(
+    authed_client: Any,
+) -> None:
+    """Not a member and not a Workspace are the same 404 (#1174 shape)."""
+    foreign = await _owned_workspace()  # owned by _USER_ID, not the login
+    for path in (
+        f"/v1/workspaces/{foreign.id}/goals",
+        f"/v1/workspaces/{foreign.id}/goals/some-goal",
+        "/v1/workspaces/never-a-workspace/goals",
+    ):
+        refused = authed_client.get(path)
+        assert refused.status_code == 404
+        assert refused.json()["detail"] == "workspace not found"
+
+
+async def test_goal_routes_stay_in_the_requested_workspace(
+    monkeypatch: pytest.MonkeyPatch, authed_client: Any
+) -> None:
+    """A Goal recorded in one Workspace does not answer under another, even
+    for a member of both — no silent cross-Workspace history merge."""
+    from services.workspace_authority import create_workspace
+
+    from maistro.runs import RunStatus
+
+    scene = await _member_route_scene(monkeypatch)
+    other = await create_workspace(
+        creator_user_id="user",
+        name=f"Goal Inspection other {next(_seq)}",
+        persona_template_id="pm_fleet",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    goal_id = _next_id("goal")
+    await scene.add_goal_run(goal_id=goal_id, status=RunStatus.RUNNING)
+
+    in_scope = authed_client.get(f"/v1/workspaces/{scene.view.id}/goals")
+    assert in_scope.status_code == 200
+    assert [row["goal_id"] for row in in_scope.json()] == [goal_id]
+    under_other = authed_client.get(f"/v1/workspaces/{other.id}/goals")
+    assert under_other.status_code == 200
+    assert under_other.json() == []
+    misplaced = authed_client.get(f"/v1/workspaces/{other.id}/goals/{goal_id}")
+    assert misplaced.status_code == 404
+    assert misplaced.json()["detail"] == "goal not found"
+
+
+async def test_viewer_members_can_read_goal_inspection(
+    monkeypatch: pytest.MonkeyPatch, authed_client: Any
+) -> None:
+    """Inspection is a member read, like Home: a viewer may look, and the
+    route offers nothing to write."""
+    from maistro.runs import RunStatus
+
+    scene = await _member_route_scene(monkeypatch, role="viewer")
+    goal_id = _next_id("goal")
+    await scene.add_goal_run(goal_id=goal_id, status=RunStatus.RUNNING)
+
+    listed = authed_client.get(f"/v1/workspaces/{scene.view.id}/goals")
+    assert listed.status_code == 200
+    assert [row["goal_id"] for row in listed.json()] == [goal_id]

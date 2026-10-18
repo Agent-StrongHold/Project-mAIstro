@@ -256,13 +256,24 @@ async def _collect_goal_views(user_id: str) -> list[dict[str, Any]]:
     return views
 
 
-async def list_goal_views(user_id: str, *, limit: int = 25) -> list[dict[str, Any]]:
-    """Goal inspection views, restricted to the caller's Workspace universe."""
+async def list_goal_views(
+    user_id: str, *, limit: int = 25, workspace_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Goal inspection views, restricted to the caller's Workspace universe.
+
+    `workspace_id` narrows the page to one Workspace the caller is a member
+    of (the #65 inspection route's shape): the universe scoping underneath is
+    unchanged — a Workspace the caller cannot see answers empty, never 403.
+    """
     views = await _collect_goal_views(user_id)
+    if workspace_id is not None:
+        views = [view for view in views if view.get("workspace_id") == workspace_id]
     return views[: max(0, limit)]
 
 
-async def goal_view(user_id: str, goal_id: str) -> dict[str, Any] | None:
+async def goal_view(
+    user_id: str, goal_id: str, *, workspace_id: str | None = None
+) -> dict[str, Any] | None:
     """One Goal's inspection view, or None when the caller may not see one.
 
     None answers "does not exist" and "exists beyond your boundary"
@@ -270,9 +281,17 @@ async def goal_view(user_id: str, goal_id: str) -> dict[str, Any] | None:
     Project (ontology `project_goal`), so within one caller's universe an id
     names at most one view; evidence in a second scope is surfaced as
     `also_in` rather than silently merged into the wrong Project's history.
+    With `workspace_id`, the primary history must be that Workspace's: the
+    same goal_id recorded only elsewhere answers None (a 404-shaped refusal,
+    not a silent cross-Workspace merge).
     """
     views = await _collect_goal_views(user_id)
     matches = [view for view in views if view["goal_id"] == goal_id]
+    if workspace_id is not None:
+        scoped = [view for view in matches if view.get("workspace_id") == workspace_id]
+        matches = scoped + [view for view in matches if view not in scoped]
+        if not scoped:
+            return None
     if not matches:
         return None
     view = dict(matches[0])

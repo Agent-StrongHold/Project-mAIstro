@@ -3,13 +3,18 @@
 // One Goal is one history: every run executed toward it appears here, in
 // order, exactly as the run seam reports it. This page reads two canonical
 // doors and nothing else:
-//   GET /v1/goals            — the Goal view (evidence grouped per Goal)
-//   /dag-runs?run=<id>       — the run detail/live surface (list, detail,
-//                              cancel control live there, not here)
+//   GET /v1/workspaces/{id}/goals — the Goal view for the caller's workspace
+//                                 (evidence grouped per Goal)
+//   /dag-runs?run=<id>          — the run detail/live surface (list, detail,
+//                                 cancel control live there, not here)
 // It decides nothing: a finished run below is evidence, and the Goal's own
 // state stays "not recorded" until the Goal's owner records a verdict. That
 // separation is the product contract, so the banner states it in plain words
 // rather than hiding it.
+//
+// The page is scoped to one Workspace — the active tab, or the ?ws= a run's
+// Goal back-link names — because the inspection route lives under the
+// declared /v1/workspaces prefix with Home and Attention (#1048/#1049).
 //
 // Read-only by design: nothing here transitions a run or a goal. The page
 // polls with setInterval (never setTimeout — see the shipped-surface truth
@@ -18,6 +23,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { apiGet } from "../lib/api";
+import { useWorkspaces } from "../context/WorkspaceContext";
 import type { GoalView, RunEvidence } from "../lib/goalInspection";
 import { Card, EmptyState, LoadingSpinner, PageHeader } from "../components/shared";
 
@@ -235,11 +241,25 @@ export default function Goals() {
   const [loading, setLoading] = useState(true);
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
+  const { activeWorkspaceId } = useWorkspaces();
   const selectedId = searchParams.get("goal");
+  // A run's Goal back-link names the Workspace its goal lives in (?ws=);
+  // plain navigation inspects the active Workspace tab.
+  const wsId = searchParams.get("ws") ?? activeWorkspaceId;
 
   const load = useCallback(async () => {
+    if (!wsId) {
+      // No Workspace to inspect yet (first run, or every tab archived):
+      // an honest empty page, not a fetch that cannot name its scope.
+      setGoals([]);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     try {
-      const data = await apiGet<GoalView[]>("/v1/goals?limit=100");
+      const data = await apiGet<GoalView[]>(
+        `/v1/workspaces/${encodeURIComponent(wsId)}/goals?limit=100`,
+      );
       setGoals(data);
       setError(null);
     } catch (e) {
@@ -247,7 +267,7 @@ export default function Goals() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [wsId]);
 
   useEffect(() => {
     // The first fetch is deferred to a timer tick rather than called in the
@@ -288,7 +308,7 @@ export default function Goals() {
     <div style={{ padding: 16 }}>
       <PageHeader
         title="Goals"
-        subtitle="What your workspaces are trying to achieve, the agent accountable for each, and the runs done toward them."
+        subtitle="What this workspace is trying to achieve, the agent accountable for each, and the runs done toward them."
       />
       {error && (
         <div
