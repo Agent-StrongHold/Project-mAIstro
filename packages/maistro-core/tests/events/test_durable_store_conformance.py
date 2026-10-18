@@ -258,6 +258,18 @@ class TestEventLog:
         assert read is not None
         assert read.payload == payload
 
+    async def test_append_rejects_non_strict_json_payloads(self, event_log):
+        """NaN would persist but raise in `request_digest_v1` (allow_nan=False)
+        before the receipt claim — no receipt could ever settle, so the cursor
+        would wedge on that event forever. Append is the gate, for non-finite
+        floats and for values `json` cannot encode at all."""
+        with pytest.raises(ValueError, match="strictly JSON-encodable"):
+            await event_log.append("e", payload={"score": float("nan")})
+        with pytest.raises(ValueError, match="strictly JSON-encodable"):
+            await event_log.append("e", payload={"bad": [float("inf")]})
+        with pytest.raises(ValueError, match="strictly JSON-encodable"):
+            await event_log.append("e", payload={"s": {1, 2}})
+
     async def test_get_returns_none_for_an_unknown_id(self, event_log):
         assert await event_log.get(999_999) is None
 

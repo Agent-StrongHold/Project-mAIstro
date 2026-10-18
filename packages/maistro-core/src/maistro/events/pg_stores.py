@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.events.consumer_cursor import DEFAULT_LEASE_SECONDS as CURSOR_DEFAULT_LEASE_SECONDS
 from maistro.events.consumer_cursor import CursorLease
-from maistro.events.durable_log import LoggedEvent
+from maistro.events.durable_log import LoggedEvent, require_json_encodable_payload
 from maistro.events.invocations import (
     DEFAULT_LEASE_SECONDS,
     MAX_ATTEMPTS,
@@ -224,6 +224,7 @@ class PgEventLog:
         source: str = "",
     ) -> LoggedEvent:
         created_at = time.time()
+        require_json_encodable_payload(payload or {})
         row = await self._pool.fetchrow(
             """INSERT INTO event_log
                (event_type, entity_type, entity_id, payload, source, created_at)
