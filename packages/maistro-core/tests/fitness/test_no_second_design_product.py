@@ -307,6 +307,7 @@ def test_no_atelier_product_copy_in_hive_surfaces() -> None:
 
 
 @pytest.mark.contract("boundary")
+@pytest.mark.ac("SPEC-092926-7a02/AC-2")
 @pytest.mark.parametrize("name", _COMPETING_LIFECYCLE_NAMES)
 def test_no_competing_execution_lifecycle_name(name: str) -> None:
     """Production code may not declare a second execution lifecycle (#990).

@@ -137,11 +137,7 @@ def _module_constant_strings(tree: ast.AST) -> dict[str, str]:
             continue
         assignment_counts[target.id] = assignment_counts.get(target.id, 0) + 1
         values[target.id] = value.value
-    return {
-        name: value
-        for name, value in values.items()
-        if assignment_counts[name] == 1
-    }
+    return {name: value for name, value in values.items() if assignment_counts[name] == 1}
 
 
 def _registered_kind_slugs(path: Path) -> list[tuple[int, str]]:
@@ -193,6 +189,7 @@ def _competing_registrations(paths: Iterable[Path]) -> list[str]:
 
 
 @pytest.mark.contract("boundary")
+@pytest.mark.ac("SPEC-092926-7a02/AC-1")
 def test_no_competing_loop_kind_registration() -> None:
     """Production code cannot register Goal/Rubric/Run/eval ontology kinds.
 
@@ -207,6 +204,7 @@ def test_no_competing_loop_kind_registration() -> None:
     )
 
 
+@pytest.mark.ac("SPEC-092926-7a02/AC-1")
 def test_fence_detects_a_synthetic_competing_registration(tmp_path: Path) -> None:
     """The fence trips on a product-side ``Goal`` kind and nothing else.
 

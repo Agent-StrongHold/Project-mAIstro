@@ -24,6 +24,8 @@ contracts:
 tests:
   - packages/maistro-core/tests/fitness/test_canonical_loop_kind_authority.py::test_no_competing_loop_kind_registration
   - packages/maistro-core/tests/fitness/test_canonical_loop_kind_authority.py::test_fence_detects_a_synthetic_competing_registration
+ac-modules:
+  AC-1: maistro.ontology.registry
 layer: Governance
 owners:
   - '@BlakeMatthews-dev'
@@ -79,17 +81,26 @@ contracts, not ontology kinds.
 
 ## Acceptance criteria
 
-- **AC-1 (namespace):** production Python outside the canonical ontology
+- **AC-1** (namespace): production Python outside the canonical ontology
   module registers no reserved loop-kind slug. Evidence: the fence test.
-- **AC-2 (one lifecycle):** no competing execution-lifecycle identity exists
+- **AC-2** (one lifecycle): no competing execution-lifecycle identity exists
   in production code. Evidence: the #990 lifecycle-name guard.
-- **AC-3 (distinct kinds):** Goal-level Rubric, persona RubricEval
+  <!-- ac-state: unproven AC-2 - covered and passing in this change
+  (test_no_second_design_product.py::test_no_competing_execution_lifecycle_name);
+  the lifecycle vocabulary is a tree-wide property with no single owning module
+  to anchor, so the `reachable` rung waits for #791/#793 to bind it to the
+  runs records -->
+- **AC-3** (distinct kinds): Goal-level Rubric, persona RubricEval
   (`maistro.personas.rubric`, ADR-060), and CreativeBrief (#774) remain
   distinct kinds with distinct owners. Evidence: wave issues #791/#774 carry
   the behavioral proof; this spec only pins the distinction.
-- **AC-4 (no second authority):** Evolve/RSI (#796) and the M4 promotion
+  <!-- ac-state: unproven AC-3 - the behavioral proof is wave work (#791 Rubric
+  ontology kind, #774 CreativeBrief); this spec pins the distinction only -->
+- **AC-4** (no second authority): Evolve/RSI (#796) and the M4 promotion
   loop (#21) consume eval-on-Run evidence; neither evaluates inside the Run.
   Evidence: lands with #796's mapping.
+  <!-- ac-state: unproven AC-4 - the consumer mapping is #796's deliverable;
+  no in-Run evaluator exists to forbid yet -->
 
 Wave gates B and C (eval-on-Run visibility, restart-safe fences, shared Run
 identity across packs, public proof lineage) are the *wave issues'* acceptance
