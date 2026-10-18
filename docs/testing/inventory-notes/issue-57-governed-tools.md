@@ -89,7 +89,8 @@ Cleared every quality gate the branch was failing, each at its cause:
   provider dispatch, while `internal`/`reversible` tiers resolve through
   Binding scope. +3 core test cases (delta above updated +11 -> +14).
 
-Residual scope still open on #57 (not closed by this branch):
+Residual scope still open on #57 (not closed by this branch; superseded by the
+production-wiring, model-egress-seam, and re-verification rounds below):
 
 - `GovernedToolExecutor` is library-only: no shipped production path constructs
   it yet, so shipped tool traffic does not yet produce canonical Invocation or
@@ -222,3 +223,53 @@ battery, executed fresh this round (not inherited from prior claims):
 - Criterion 12 remains the sole open item: closing #847 is an owner/integrator
   action outside this lane's authority; #847's own residual scope
   (`BuildersLearningStrategy` shell/GitHub bypass) is not landed here.
+
+## Repair round (2026-10-18, head 019df24c9)
+
+No production or test code changed: this round re-validated the assigned head
+from scratch and pinned the criterion-12 blocker to exact evidence so the
+integrator can sequence the close. Fresh results (this round's own runs, not
+inherited):
+
+- Gates exit 0: vulture (`packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`, ledger 1322 -> 1318 findings), ratchet-provenance,
+  shipped-surface-truth, direct-effects (51 sites, 4 TOOL_EFFECT all
+  dispositioned provider backends owner #57), model-egress, reachability +
+  dispositions, convergence-matrix, promotion-surface, suite-inventory (17/17),
+  backlog, radon (137 -> 137); `ruff check` and `ruff format --check` clean;
+  `mypy --strict packages/maistro-core/src` Success (792 files).
+- Suites: maistro-core 15380 passed / 1073 skipped / 3 xfailed; hive-conductor
+  backend 3666 passed / 20 skipped; maistro-bootstrap 236 passed / 7 skipped;
+  root direct-effect/model-egress gate tests 74 passed.
+- Criteria 1-11 re-proven against production code at this head (wired
+  constructor `services/governed_tools.py` -> `GovernedToolExecutor.execute`;
+  bridge passes `admitted_tool_executor` at `adapters/maistro_core.py:255`;
+  chat web tools call `governed_web_search`/`governed_browse_url`
+  (`chat_completion.py:1280,1296`); legacy DAG tool nodes run inside their
+  Invocation with the no-NodeContext branch refused;
+  `base.py:_build_strategy_kwargs` enforces `frozenset(identity.tools)`;
+  bootstrap `run_command` is argv-only through `run_argv`).
+
+Criterion 12 blocker, pinned at this head (#847 open; closure is a prohibited
+GitHub mutation for this lane, and its residual scope lives in files outside
+this lane's frozen surfaces):
+
+- `agents/strategies/builders_learning.py:165-235` — the Frank/Mason strategy
+  still invokes `tool_executor("shell", {"command": ...})` and
+  `tool_executor("github", ...)` directly, with raw shell text (pipes, `2>&1`)
+  and no allowlist/contract admission: exactly the #847 strategy bypass.
+- `agents/spec/agent_spec.py:117-130` — `AgentSpec.tools_allowed` and
+  `write_scopes` are declared and auto-populated by `with_defaults()` but no
+  production reader enforces them (the only other `write_scopes` is an
+  unrelated field on the trust-boundary model): the misleading
+  security-looking fields #847 must consume canonically or remove.
+- The strategy-level allowlist refusal (`react.py` / artificer
+  `strategy.py`) returns an error string before `Sentinel.pre_call` and emits
+  no scoped authorization-denied audit event: #847's named observability gap.
+- #847's adversarial-test checklist is therefore incomplete on this branch
+  (no BuildersLearning bypass test, no `tools_allowed`/`write_scopes` test),
+  so #847 cannot even be closed from tests landed here.
+
+Integrator sequencing to unblock: implement #847's residual scope in its own
+lane/PR (files above; relations #840, #1202), close #847 from its adversarial
+tests, then close #57. Criteria 1-11 of #57 are proven at head 019df24c9.
