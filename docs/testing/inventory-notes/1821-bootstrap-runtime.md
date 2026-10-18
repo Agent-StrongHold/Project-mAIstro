@@ -1,17 +1,17 @@
 ---
 inventory-delta:
-  tests/: +20
+  tests/: +21
 ---
 # 1821-bootstrap-runtime
 
-Twenty cases in `tests/test_bootstrap_runtime.py`, one for each behavior the
+Twenty-one cases in `tests/test_bootstrap_runtime.py`, one for each behavior the
 #1821 bootstrap contract promises, driven through the real
 `scripts/bootstrap-runtime.sh` with stub `python3`/`uv`/`curl` executables on a
 fully controlled `PATH`/`HOME`.
 
 What each cluster pins:
 
-- `TestEnsureUv` (8): uv on `PATH` is reused without downloading; uv installed
+- `TestEnsureUv` (9): uv on `PATH` is reused without downloading; uv installed
   but outside this shell's `PATH` is adopted from the known user-owned
   locations instead of duplicated; a host with no uv at all bootstraps through
   the official standalone installer into `~/.local/bin` (asserted user-owned by
@@ -22,7 +22,10 @@ What each cluster pins:
   installer's own idempotent default, skippable via
   `MAISTRO_UV_NO_MODIFY_PATH=1`, and a NEW shell finds uv through it alone;
   version pin and explicit mirror URL select the installer actually
-  downloaded.
+  downloaded; and a TERM delivered while the child installer is still running
+  stops the whole run non-zero with an actionable message — the interrupted
+  run never adopts the installer's eventual success (bash defers traps behind
+  a foreground child, which is why the installer runs under `wait`).
 - `TestEnsurePython` (5) and `TestHelperVersusPackageFloors` (2): a 3.11
   interpreter satisfies the helper floor without uv being consulted; a 3.10
   host falls through to uv provisioning the package floor; a machine with

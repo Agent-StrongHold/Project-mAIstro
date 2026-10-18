@@ -28,7 +28,9 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -43,7 +45,20 @@ INSTALL_SH = ROOT / "install.sh"
 #: "no Python" and "no uv" states are real rather than assumed. bash itself
 #: is included because a harness may spawn a child whose PATH is the shim
 #: alone (subprocess resolves the interpreter through the child's env).
-CORE_TOOLS = ("bash", "mktemp", "rm", "rmdir", "sh", "chmod", "grep", "mkdir", "cp", "head", "sed")
+CORE_TOOLS = (
+    "bash",
+    "mktemp",
+    "rm",
+    "rmdir",
+    "sh",
+    "chmod",
+    "grep",
+    "mkdir",
+    "cp",
+    "head",
+    "sed",
+    "sleep",
+)
 
 RC_MARKER = "maistro-test-uv-path-block"
 
@@ -193,14 +208,19 @@ def _write_stub_curl(path: Path, *, payload: Path, fail_rc: int | None, log: Pat
     path.chmod(0o755)
 
 
-def _write_installer_payload(path: Path) -> None:
+def _write_installer_payload(path: Path, *, pre_delay: int = 0) -> None:
     """Models the documented contract of the official uv standalone installer:
     the binary lands in $UV_INSTALL_DIR (default ~/.local/bin, user-owned) and,
     unless INSTALLER_NO_MODIFY_PATH=1, an idempotent clearly-marked PATH block
-    is appended to shell start-up files. POSIX sh; never elevates."""
+    is appended to shell start-up files. POSIX sh; never elevates.
+
+    ``pre_delay`` keeps the installer running (sleep) before it lays anything
+    down, so a test can deliver a signal mid-run — the interrupted run must
+    never adopt the success the installer would eventually have reported."""
     path.write_text(
         "#!/bin/sh\n"
-        'install_dir="${UV_INSTALL_DIR:-$HOME/.local/bin}"\n'
+        + (f"sleep {pre_delay}\n" if pre_delay > 0 else "")
+        + 'install_dir="${UV_INSTALL_DIR:-$HOME/.local/bin}"\n'
         'mkdir -p "$install_dir" || exit 1\n'
         'cp "${STUB_UV_BIN:?}" "$install_dir/uv" || exit 1\n'
         'chmod +x "$install_dir/uv" || exit 1\n'
@@ -430,6 +450,41 @@ class TestEnsureUv:
         assert result.returncode == 0, result.stderr
         assert not (fresh.home / ".bashrc").exists()
         assert "no shell start-up file was touched" in result.stderr
+
+    def test_interrupted_installer_stops_the_run_and_never_reports_ready(
+        self, harness: Harness, tmp_path: Path, real_python: str
+    ) -> None:
+        """A TERM while the child installer runs must stop the bootstrap with a
+        non-zero status and an actionable error — never adopt the installer's
+        eventual success. Bash defers a trap until a FOREGROUND child exits,
+        so an installer run in the foreground would swallow the signal and
+        print `OK: uv installed` + `READY` (exit 0) after the very
+        interruption acceptance criterion 6 forbids reporting as ready."""
+        delayed = tmp_path / "uv-installer-delayed.sh"
+        _write_installer_payload(delayed, pre_delay=30)
+        harness.uv_asset(install_version="3.12.7", install_path=real_python)
+        harness.stub_curl(delayed)
+        asset_env = harness.asset_env(harness.tmp_path / "uv-asset")
+        proc = subprocess.Popen(
+            ["bash", "-c", harness.script(asset_env + "ensure_uv || exit 1\necho READY\n")],
+            cwd=harness.tmp_path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        time.sleep(2.0)  # the installer is in its sleep; the run is mid-flight
+        proc.send_signal(signal.SIGTERM)
+        stdout, stderr = proc.communicate(timeout=30)
+        # The signal is not swallowed: conventional non-zero exit, no success
+        # announcement of any kind.
+        assert proc.returncode != 0, (proc.returncode, stdout, stderr)
+        assert "OK: uv installed" not in stdout
+        assert "READY" not in stdout
+        assert "Interrupted while the uv installer was running" in stderr
+        # The installer was killed mid-flight: it laid nothing down, and the
+        # scratch it ran from is gone — no half-state left behind.
+        assert not (harness.home / ".local" / "bin" / "uv").exists()
+        assert not list(harness.scratch.glob("maistro-uv.*")), list(harness.scratch.iterdir())
 
     def test_version_pin_and_explicit_url_choose_the_installer(
         self, harness: Harness, installer_payload: Path, tmp_path: Path, real_python: str

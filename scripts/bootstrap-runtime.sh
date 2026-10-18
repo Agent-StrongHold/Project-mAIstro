@@ -140,14 +140,29 @@ install_uv_standalone() {
     # files so NEW shells find uv. It never elevates. MAISTRO_UV_NO_MODIFY_PATH=1
     # forwards INSTALLER_NO_MODIFY_PATH=1 for hosts where nothing may touch rc
     # files; this installer never edits rc files itself either way.
-    trap 'rm -rf "$scratch"' INT TERM
-    if ! INSTALLER_NO_MODIFY_PATH="${MAISTRO_UV_NO_MODIFY_PATH:-0}" sh "$installer"; then
-        rm -rf "$scratch"
-        trap - INT TERM
+    #
+    # The installer runs in the background with this process parked in `wait`:
+    # bash defers a trap until a FOREGROUND child exits, so a TERM (or INT) that
+    # arrived mid-run would be swallowed and the child's result silently
+    # accepted — an interrupted install reported as ready. From `wait`, the
+    # traps fire immediately, signal the child, remove the scratch, and stop
+    # with a non-zero, conventional status and an actionable message. Nothing
+    # the half-finished installer laid down is ever adopted as success.
+    local child installer_rc=0
+    INSTALLER_NO_MODIFY_PATH="${MAISTRO_UV_NO_MODIFY_PATH:-0}" sh "$installer" &
+    child=$!
+    trap 'kill -TERM "$child" 2>/dev/null; rm -rf "$scratch"; trap - INT TERM
+        printf "[error] Interrupted while the uv installer was running. The temporary installer state was removed and this run did not complete — nothing is reported installed. Fix the interruption and re-run; retrying is safe.\n" >&2
+        exit 143' TERM
+    trap 'kill -INT "$child" 2>/dev/null; rm -rf "$scratch"; trap - INT TERM
+        printf "[error] Interrupted while the uv installer was running. The temporary installer state was removed and this run did not complete — nothing is reported installed. Fix the interruption and re-run; retrying is safe.\n" >&2
+        exit 130' INT
+    wait "$child" || installer_rc=$?
+    trap - INT TERM
+    rm -rf "$scratch"
+    if (( installer_rc != 0 )); then
         fail "The uv installer failed (its output is above — unwritable destination? interrupted download?). Nothing else was modified; fix the problem and re-run."
     fi
-    rm -rf "$scratch"
-    trap - INT TERM
 
     local dir
     while IFS= read -r dir; do
