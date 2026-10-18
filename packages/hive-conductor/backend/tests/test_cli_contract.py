@@ -113,6 +113,17 @@ def test_unsupported_command_fails_explicitly_and_is_audited(authed_client: Any)
     assert all(len(s["history"]) == 0 for s in authed_client.get("/v1/cli/sessions").json())
 
 
+def test_unknown_session_refusal_is_audited(authed_client: Any) -> None:
+    r = _exec(authed_client, "hctl status", session_id="gone-after-reset")
+    assert r.status_code == 404
+    assert r.json()["detail"]["error"] == "unknown_session"
+    rows = [e for e in _cli_audit_rows() if e["detail"].get("outcome") == "unknown_session"]
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "warning"
+    assert rows[0]["actor"]
+    assert rows[0]["detail"]["session_id"] == "gone-after-reset"
+
+
 def test_exec_requires_an_authenticated_principal() -> None:
     from fastapi.testclient import TestClient
     from main import app

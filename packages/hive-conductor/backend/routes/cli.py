@@ -156,7 +156,25 @@ async def exec_cli_command(body: CliExecBody, request: Request) -> dict[str, Any
             },
         )
 
-    session_id = _resolve_session(body.session_id)
+    try:
+        session_id = _resolve_session(body.session_id)
+    except HTTPException:
+        # #292: a session that vanished (e.g. after a store reset) is still a
+        # refusal under the all-executions-and-refusals contract; record it
+        # with the acting principal before answering 404 so the frontend's
+        # recovery retry cannot leave the original refusal unaudited.
+        log_audit(
+            action="cli_exec",
+            actor=actor,
+            target=command,
+            detail={
+                "supported": True,
+                "session_id": body.session_id,
+                "outcome": "unknown_session",
+            },
+            severity="warning",
+        )
+        raise
     try:
         lines = await asyncio.wait_for(entry.handler(request), timeout=CLI_EXEC_TIMEOUT_S)
     except TimeoutError:
