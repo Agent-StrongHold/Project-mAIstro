@@ -1,3 +1,7 @@
+---
+inventory-delta:
+  packages/hive-conductor/backend/tests: 0
+---
 # p0-1-principal-migration-wave2a
 
 Workspace cutover Wave 2 Lane A — burn P0.1 `state_user_access` debt on
