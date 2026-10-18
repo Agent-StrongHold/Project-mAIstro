@@ -272,7 +272,7 @@ missing; it was overtaken on *how* to provide them.
 | Hive `/v1/schedules` rows on the durable store | Shipped — CRUD writes the canonical store behind the unchanged HTTP contract; the legacy row is a response projection and a one-time migration source |
 | Hive runner evaluating through the engine | Shipped (`services/scheduler.py`); the live tick reads canonical `ScheduleStore.due()` |
 | Fires produce canonical Runs | Shipped — via `services/dag_agents.py` |
-| Postgres store implementation | **Not yet** — the protocol is the seam |
+| Postgres store implementation | Shipped (`scheduling/pg_store.py`) — wired by the execution spine when the deployment's PostgreSQL is migrated (`runs/wiring.py`), and held to the same tests as in-memory/SQLite: backend-parity admissions, the serialized `record_fire` concurrency test, and the real-alembic-schema tick legs in `test_scheduler_canonical_due.py` |
 | Hive `/v1/schedules` timezone column | **Not yet** — UTC until added |
 | `maistro_schedule_fires_total` + `schedule.fire` span | **Not yet** — declared by ADR-037's registry contract; the Run correlation exists in the audit trail today |
 
