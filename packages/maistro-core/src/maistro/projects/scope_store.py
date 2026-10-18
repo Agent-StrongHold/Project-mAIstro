@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from maistro.projects.scope import (
     Project,
@@ -16,6 +16,9 @@ from maistro.projects.scope import (
     ProjectScopeDenied,
     ProjectScopedResource,
 )
+
+if TYPE_CHECKING:
+    from maistro.workspaces.store import WorkspaceStore
 
 
 @runtime_checkable
@@ -45,7 +48,7 @@ class ProjectScopeStore(Protocol):
 
         ...
 
-    async def get(self, project_id: str) -> Project | None:
+    async def get(self, project_id: str, *, principal_id: str | None = None) -> Project | None:
         """Return a Project by ID, or ``None`` when it does not exist."""
 
         ...
@@ -65,7 +68,13 @@ class ProjectScopeStore(Protocol):
 
         ...
 
-    async def update_defaults(self, project_id: str, *, defaults: dict[str, Any]) -> Project:
+    async def update_defaults(
+        self,
+        project_id: str,
+        *,
+        defaults: dict[str, Any],
+        principal_id: str | None = None,
+    ) -> Project:
         """Replace the defaults owned by a Project."""
 
         ...
@@ -247,6 +256,10 @@ class InMemoryProjectScopeStore:
         # PostgreSQL enforces the same rule with a foreign key, which needs no
         # equivalent because the database can see both tables.
         self._owns_runs: Callable[[str], Awaitable[bool]] | None = None
+        self._workspace_store: WorkspaceStore | None = None
+
+    def bind_workspace_store(self, workspace_store: WorkspaceStore) -> None:
+        self._workspace_store = workspace_store
 
     def set_run_owner(self, owns_runs: Callable[[str], Awaitable[bool]]) -> None:
         """Register the predicate `delete()` consults for Run ownership."""
@@ -303,11 +316,25 @@ class InMemoryProjectScopeStore:
         self._projects[project.project_id] = project
         return project.model_copy(deep=True)
 
-    async def get(self, project_id: str) -> Project | None:
+    async def _require_project_view(self, project: Project, principal_id: str) -> None:
+        from maistro.workspaces.store_boundary import is_blank_principal, require_project_view
+
+        workspace_store = self._workspace_store
+        if workspace_store is None:
+            raise ProjectScopeDenied("Project not found")
+        if is_blank_principal(principal_id):
+            raise ProjectScopeDenied("Project not found")
+        await require_project_view(project, workspace_store, principal_id)
+
+    async def get(self, project_id: str, *, principal_id: str | None = None) -> Project | None:
         """Return a detached Project snapshot by ID when present."""
 
         project = self._projects.get(project_id)
-        return project.model_copy(deep=True) if project is not None else None
+        if project is None:
+            return None
+        if principal_id is not None:
+            await self._require_project_view(project, principal_id)
+        return project.model_copy(deep=True)
 
     async def lineage(self, project_id: str) -> list[Project]:
         """Return validated ancestry ordered from Root Project to target."""
@@ -375,10 +402,13 @@ class InMemoryProjectScopeStore:
         project_id: str,
         *,
         defaults: dict[str, Any],
+        principal_id: str | None = None,
     ) -> Project:
         """Replace a Project's defaults and advance its update timestamp."""
 
         project = self._require(project_id)
+        if principal_id is not None:
+            await self._require_project_view(project, principal_id)
         updated = project.model_copy(
             deep=True,
             update={"defaults": dict(defaults), "updated_at": datetime.now(UTC)},

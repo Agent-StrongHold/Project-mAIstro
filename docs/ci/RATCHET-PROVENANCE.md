@@ -32,6 +32,10 @@ candidate edit cannot authorize new debt or a newly allowed surface.
 | `check_mutation_baseline.py` | `mutation-baseline.json`, `mutation-history.json` | tolerance/history | direct; quality floor and runtime-history evidence both come from base; generated candidates start from that trusted baseline |
 | `check-model-egress.py` | `model-egress.json` | security allowlist | direct; a new direct caller requires prior authorization |
 | `check-public-routes.py` | `public-routes.json` | security allowlist | direct; a new unauthenticated path requires prior authorization |
+| `check-workspace-retirement.py` | `workspace-retirement.json` | tolerance | direct; a new importer of a retiring surface, or untracking an entry, requires prior authorization (Workspace cutover S0.1) |
+| `check-principal-identity.py` | `principal-identity-baseline.json` | security tolerance | direct; a new parallel principal class or `state.user` file requires prior authorization (Workspace cutover P0.1) |
+| `check-route-permissions.py` | `route-permissions-baseline.json`, `route-permissions.json` | security tolerance | direct; a new undeclared `/v1` prefix or a new `exempt_reason` requires prior authorization (Workspace cutover P0.2) |
+| `check-frontend-typed-client.py` | `frontend-typed-client-baseline.json` | tolerance | direct; a new raw `fetch(` outside `src/lib/` or a new local `interface`/`type` in `pages/`/`components/` requires prior authorization (Workspace cutover P0.3) |
 
 `mutation-history.json` is trusted evidence, not an authorization channel. It
 changes runtime-regression/new-survivor reporting; it never grants permission to

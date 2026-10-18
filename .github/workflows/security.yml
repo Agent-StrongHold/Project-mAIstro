@@ -33,7 +33,7 @@ on:
     # Every accepted topic-branch prefix (#381), single-sourced in
     # .github/branch-protection.json (topic_branch_policy) and validated by
     # tests/test_branch_policy.py. See quality.yml's push block for the rule.
-    branches: [main, integration, develop, feat/*, bug/*, fix/*, idea/*, doc/*, chore/*]
+    branches: [main, integration, develop, feat/*, bug/*, fix/*, idea/*, doc/*, docs/*, chore/*]
   schedule:
     - cron: "30 7 * * *"
 
@@ -62,7 +62,7 @@ jobs:
         run: |
           uv run bandit -r packages/maistro-core/src packages/hive-conductor/backend \
                           packages/maistro-server/src \
-                          -ll --confidence-level=medium -f json -o bandit.json || true
+                          -ll --confidence-level=medium -f json -o bandit.json || true # bandit's verdict is re-derived from its JSON below
           uv run python -c "
           import json, sys
           data = json.load(open('bandit.json'))
@@ -128,10 +128,30 @@ jobs:
         run: uv sync --locked --all-extras
       - name: install supply-chain tools
         run: uv pip install pip-audit
-      - name: pip-audit (strict; gate the known CVE list)
+      - name: pip-audit (strict; retry transient registry outages; gate the known CVE list)
         run: |
           uv pip freeze --exclude-editable > /tmp/deps.txt
-          uv run pip-audit --strict --format=json -r /tmp/deps.txt > pip-audit.json || true
+          # pip-audit exits non-zero both on findings (a usable report the gate
+          # must see) and on crashes (e.g. a PyPI read timeout leaving the
+          # redirected file empty). Retry only the second: a report that parses
+          # is final regardless of exit status, so the gate's allowlist verdict
+          # is always the one that decides. All three attempts failing is an
+          # infrastructure outage — fail loudly and retry the job.
+          for attempt in 1 2 3; do
+            status=0
+            uv run pip-audit --strict --format=json -r /tmp/deps.txt > pip-audit.json || status=$?
+            if [ -s pip-audit.json ] && \
+               uv run python -c "import json,sys; json.load(open(sys.argv[1]))" pip-audit.json 2>/dev/null; then
+              echo "pip-audit attempt ${attempt}: report complete (audit exit ${status})"
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::pip-audit produced no usable report after 3 attempts (last exit ${status}) — registry/network outage; retry the job"
+              exit 1
+            fi
+            echo "::warning::pip-audit attempt ${attempt} produced no usable report (exit ${status}); retrying in 15s"
+            sleep 15
+          done
           uv run python scripts/pip_audit_gate.py pip-audit.json
 
   containers:
