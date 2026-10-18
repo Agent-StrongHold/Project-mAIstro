@@ -126,6 +126,47 @@ def test_four_hour_preflight_cannot_pass_cli(
     assert exc.value.code == 1
 
 
+@pytest.mark.parametrize(
+    ("gate", "record"),
+    [
+        ("exact_rc_artifact", {"ok": "false"}),
+        ("exact_rc_artifact", {"ok": "true"}),
+        ("exact_rc_artifact", {"ok": 1}),
+        ("exact_rc_artifact", {"ok": [True]}),
+        ("graceful_drain", {}),
+        ("graceful_drain", {"ok": True}),
+        ("graceful_drain", {"required": None, "ok": True}),
+        ("graceful_drain", {"required": "false", "ok": True}),
+        ("graceful_drain", {"required": 0, "ok": True}),
+        ("graceful_drain", {"required": 1, "ok": True}),
+        ("graceful_drain", {"required": True, "ok": "false"}),
+        ("graceful_drain", {"required": True, "ok": 1}),
+    ],
+)
+def test_malformed_gate_records_cannot_pass_cli(
+    soak: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    gate: str,
+    record: dict[str, object],
+) -> None:
+    """JSON truthiness is not an observed pass or an explicit drain exemption."""
+    evidence = _passing_evidence()
+    evidence["thresholds"]["checks"][gate] = record
+    # Exercise the JSON evidence shape, evaluator, and actual CLI exit path.
+    evidence = json.loads(json.dumps(evidence))
+
+    async def completed_run(args: object) -> dict[str, object]:
+        return evidence
+
+    monkeypatch.setattr(soak, "main_async", completed_run)
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--out-dir", str(tmp_path)])
+    assert soak.failed_promotion_checks(evidence) == [gate]
+    with pytest.raises(SystemExit) as exc:
+        soak.main()
+    assert exc.value.code == 1
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("receipts", "expected"),

@@ -730,7 +730,7 @@ def task_admission_check(stats: LoadStats, kill_record: dict[str, Any]) -> dict[
 
 def _check_ok(check: Any) -> bool:
     """Read a boolean check, accepting detail dictionaries without truthiness bugs."""
-    return check.get("ok", False) if isinstance(check, dict) else check is True
+    return check.get("ok") is True if isinstance(check, dict) else check is True
 
 
 def _integer_or_invalid(value: Any) -> int:
@@ -775,16 +775,13 @@ def failed_promotion_checks(evidence: dict[str, Any]) -> list[str]:
     )
     failed = [name for name in required if not _check_ok(checks.get(name))]
     drain = checks.get("graceful_drain")
-    if not isinstance(drain, dict):
-        # Hardening from the round-4 verify: a doc that omits the key entirely
-        # used to bypass this gate because only `required`-flagged dicts were
-        # inspected. The driver always writes the key (required = SIGTERM was
-        # selected), so a missing record means the evidence predates the
-        # drain probe or was hand-edited — either way it cannot sign a
-        # promotion. A SIGKILL-mode run still passes by recording
-        # {"required": false} explicitly.
+    if not isinstance(drain, dict) or type(drain.get("required")) is not bool:
+        # Only an explicit JSON boolean can declare whether drain was required.
+        # Missing/malformed records cannot silently claim the SIGKILL exemption.
+        # SIGKILL-mode evidence records {"required": false} explicitly; a
+        # required SIGTERM drain must carry an observed boolean pass as well.
         failed.append("graceful_drain")
-    elif drain.get("required") and not _check_ok(drain):
+    elif drain["required"] and not _check_ok(drain):
         failed.append("graceful_drain")
     return failed
 
