@@ -41,8 +41,10 @@
 #
 # Arguments:
 #   <image-ref>                  image to prove (required). `maistro-engine:test`
-#                                in CI; `${IMAGE_NAMESPACE}/maistro-engine@${DIGEST}`
-#                                in release.
+#                                in CI; `${IMAGE_NAMESPACE}/maistro-engine-rc@${DIGEST}`
+#                                in release (pulled by the workflow first — the
+#                                candidate exists only in the `-rc` repo until
+#                                promotion, and the build loads nothing locally).
 #   [canvas-less-control-image]  must NOT import maistro-canvas; defaults to the
 #                                digest-pinned engine builder base, which is
 #                                already on the machine wherever this script runs.

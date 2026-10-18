@@ -477,10 +477,19 @@ jobs:
       # canvas_store_wired, and an authenticated Canvas create/read through
       # /v2/canvas. Proof runs BEFORE signing: a digest that cannot serve its
       # advertised Canvas surface is not signed, attested, or announced.
+      # The build above is push-only into the `-rc` quarantine repo, so nothing
+      # exists under the production name yet and nothing was loaded into this
+      # runner's Docker daemon — pull the candidate digest by its `-rc`
+      # reference first (the script opens with `docker image inspect`) and run
+      # the proof against that same reference. Promotion is a byte-for-byte
+      # `imagetools create` re-tag, so the digest proven here is the digest
+      # the release tags resolve to.
       - name: Prove the pushed maistro-engine digest ships its Canvas surface (#1825)
         env:
           ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
-        run: scripts/smoke-engine-canvas.sh "${IMAGE_NAMESPACE}/maistro-engine@${ENGINE_DIGEST}"
+        run: |
+          docker pull "${IMAGE_NAMESPACE}/maistro-engine-rc@${ENGINE_DIGEST}"
+          scripts/smoke-engine-canvas.sh "${IMAGE_NAMESPACE}/maistro-engine-rc@${ENGINE_DIGEST}"
 
       - name: Build + push hive-conductor (release candidate)
         id: conductor
