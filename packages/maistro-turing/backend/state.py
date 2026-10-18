@@ -1,11 +1,17 @@
-"""Process-wide live state for the Turing backend.
+"""Live state for the Turing backend.
 
-Holds the single in-memory self-model snapshot, the producer-artifact feed, and
-the wired runtime objects (actor / chat / bridges). Routes read and mutate this
-singleton.
+Holds the per-principal in-memory self-model scopes, the producer-artifact
+feed, and the wired runtime objects (actor / chat / bridges). Routes read and
+mutate this composed object.
+
+Cognitive state is never process-global shared state (#27/#859): self-model
+reads and writes are keyed by the authenticated canonical principal, and a
+missing scope is an error — there is no fallback to one shared snapshot. Chat
+sessions are (principal, session)-keyed and bounded in cardinality and
+lifetime by :class:`ChatSessionRegistry`.
 
 GAP: this is an in-memory, single-process store. A production deployment would
-back the self-model snapshot and producer feed with the persistence layer
+back the self-model scopes and producer feed with the persistence layer
 (maistro.persistence / a Turing episodic store via TuringMemoryBridge) so that
 state survives restarts and is shared across workers. The shapes here mirror the
 real `maistro_turing.self_model` types so that swap is mechanical.
@@ -14,6 +20,8 @@ real `maistro_turing.self_model` types so that swap is mechanical.
 from __future__ import annotations
 
 import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -67,6 +75,114 @@ def _default_facet_scores() -> dict[str, float]:
     return {facet: 3.0 for _trait, facet in ALL_FACETS}
 
 
+def _default_mood() -> Mood:
+    return Mood(
+        self_id=SELF_ID,
+        valence=0.2,
+        arousal=0.5,
+        focus=0.6,
+        last_tick_at=_now(),
+    )
+
+
+def _require_scope_id(scope_id: str) -> str:
+    """Reject absent/blank scopes instead of falling back to shared state."""
+    scope = (scope_id or "").strip()
+    if not scope:
+        raise ValueError(
+            "Turing self-model state requires an explicit principal scope; "
+            "there is no process-global fallback"
+        )
+    return scope
+
+
+@dataclass
+class _SelfModelScope:
+    """One principal's private self-model view (#859)."""
+
+    mood: Mood
+    facet_scores: dict[str, float]
+
+
+class ChatSessionRegistry:
+    """Bounded ``(principal_id, session_id) -> TuringChatSession`` map.
+
+    Chat history is cognitive state, so it is keyed by the authenticated
+    canonical principal: a client-supplied session id alone never selects a
+    session, and one caller cannot attach to another principal's session by
+    guessing its id (#859). The map cannot grow without bound: entries idle
+    past ``idle_ttl_seconds`` are dropped, and when ``max_sessions`` live
+    entries would be exceeded the least-recently-used session is evicted.
+
+    Sessions are disposable process-local objects; a restart truthfully loses
+    them (they are conversation convenience, not durable state).
+    """
+
+    def __init__(
+        self,
+        *,
+        factory: Callable[[], TuringChatSession],
+        max_sessions: int = 1024,
+        idle_ttl_seconds: float = 1800.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if max_sessions < 1:
+            raise ValueError("max_sessions must be >= 1")
+        if idle_ttl_seconds <= 0:
+            raise ValueError("idle_ttl_seconds must be positive")
+        self._factory = factory
+        self._max_sessions = max_sessions
+        self._idle_ttl_seconds = idle_ttl_seconds
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._sessions: dict[tuple[str, str], TuringChatSession] = {}
+        self._last_used: dict[tuple[str, str], float] = {}
+
+    def get_or_create(self, principal_id: str, session_id: str) -> TuringChatSession:
+        """Return the principal's session for ``session_id``, or a new one.
+
+        ``principal_id`` must be the authenticated canonical principal — never
+        a client-controlled value alone.
+        """
+        if not principal_id:
+            raise ValueError("chat sessions require the authenticated principal id")
+        if not session_id:
+            raise ValueError("chat sessions require a session id")
+        now = self._clock()
+        key = (principal_id, session_id)
+        with self._lock:
+            self._purge_expired(now)
+            session = self._sessions.get(key)
+            if session is not None:
+                self._last_used[key] = now
+                return session
+            while len(self._sessions) >= self._max_sessions:
+                self._evict_one()
+            session = self._factory()
+            self._sessions[key] = session
+            self._last_used[key] = now
+            return session
+
+    def _purge_expired(self, now: float) -> None:
+        """Drop sessions idle past the TTL. Caller holds the lock."""
+        expired = [
+            key
+            for key, used_at in self._last_used.items()
+            if now - used_at > self._idle_ttl_seconds
+        ]
+        for key in expired:
+            self._sessions.pop(key, None)
+            self._last_used.pop(key, None)
+
+    def _evict_one(self) -> None:
+        """Drop the least-recently-used session. Caller holds the lock."""
+        if not self._last_used:
+            return
+        oldest = min(self._last_used, key=self._last_used.__getitem__)
+        self._sessions.pop(oldest, None)
+        self._last_used.pop(oldest, None)
+
+
 class TuringState:
     """Single source of live truth for the backend.
 
@@ -86,15 +202,10 @@ class TuringState:
             raise RuntimeError("canonical Turing security is required for backend startup")
         self.inbound_security = inbound_security
 
-        self._mood = Mood(
-            self_id=SELF_ID,
-            valence=0.2,
-            arousal=0.5,
-            focus=0.6,
-            last_tick_at=_now(),
-        )
-        self._facet_scores = _default_facet_scores()
+        # Per-principal self-model scopes; created lazily per scope id.
+        self._scopes: dict[str, _SelfModelScope] = {}
         self._artifacts: list[ProducerArtifact] = []
+        self.chat_sessions = ChatSessionRegistry(factory=self.new_chat_session)
 
         # Memory and provider implementations remain optional, but the
         # canonical Warden is mandatory for every protected runtime path.
@@ -143,18 +254,40 @@ class TuringState:
 
     # ----------------------------------------------------------- self-model --
 
-    def mood_snapshot(self) -> Mood:
+    def _self_model_scope(self, scope_id: str) -> _SelfModelScope:
+        """Resolve (or lazily create) one principal's scope. Lock required."""
+        scope = _require_scope_id(scope_id)
         with self._lock:
-            return self._mood
+            scoped = self._scopes.get(scope)
+            if scoped is None:
+                scoped = _SelfModelScope(
+                    mood=_default_mood(),
+                    facet_scores=_default_facet_scores(),
+                )
+                self._scopes[scope] = scoped
+            return scoped
 
-    def facet_scores(self) -> dict[str, float]:
+    def mood_snapshot(self, scope_id: str) -> Mood:
+        """The principal's own mood snapshot — never another principal's."""
         with self._lock:
-            return dict(self._facet_scores)
+            return self._self_model_scope(scope_id).mood
 
-    def set_mood(self, **fields: float) -> Mood:
+    def facet_scores(self, scope_id: str) -> dict[str, float]:
         with self._lock:
-            current = self._mood
-            self._mood = Mood(
+            return dict(self._self_model_scope(scope_id).facet_scores)
+
+    def set_mood(self, scope_id: str, **fields: float) -> Mood:
+        """Mutate one principal's mood within the documented ranges.
+
+        The authoritative write seam: constructing :class:`Mood` validates
+        valence/arousal/focus in ``__post_init__``, so an out-of-range value
+        raises here and nothing is persisted — for every caller, not only the
+        HTTP layer's pydantic schema (#859).
+        """
+        with self._lock:
+            scoped = self._self_model_scope(scope_id)
+            current = scoped.mood
+            updated = Mood(
                 self_id=SELF_ID,
                 valence=fields.get("valence", current.valence),
                 arousal=fields.get("arousal", current.arousal),
@@ -162,15 +295,18 @@ class TuringState:
                 last_tick_at=current.last_tick_at,
                 updated_at=_now(),
             )
-            return self._mood
+            scoped.mood = updated
+            return updated
 
-    def set_facet(self, facet_id: str, score: float) -> None:
+    def set_facet(self, scope_id: str, facet_id: str, score: float) -> None:
+        """Mutate one principal's facet score, bounds-checked at this seam."""
         with self._lock:
-            if facet_id not in self._facet_scores:
+            scoped = self._self_model_scope(scope_id)
+            if facet_id not in scoped.facet_scores:
                 raise KeyError(facet_id)
             if not 1.0 <= score <= 5.0:
                 raise ValueError(f"facet score out of range: {score}")
-            self._facet_scores[facet_id] = score
+            scoped.facet_scores[facet_id] = score
 
     # ------------------------------------------------------------- feed ------
 
