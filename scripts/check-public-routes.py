@@ -91,9 +91,20 @@ def _unshallow_ci_checkout(prov: ModuleType, event_base: str) -> None:
         )
     fetched = _run_git(["fetch", "--no-tags", "--unshallow", "origin", current_ref])
     if fetched.returncode != 0:
-        raise prov.RatchetProvenanceError(
-            f"could not unshallow GitHub event ref {current_ref!r}: {fetched.stderr.strip()}"
-        )
+        # Merge-group checkouts name an ephemeral
+        # refs/heads/gh-readonly-queue/develop/pr-N-<sha> ref that GitHub does
+        # not publish for fetch (observed 2026-09-15: every merge-group lint
+        # run died here and bounced its whole queue group). Unshallow without
+        # a ref filter instead: the unrestricted fetch materializes the queue
+        # merge commit's ancestry from the same branches the queue composed
+        # it from, which is all this gate needs.
+        fallback = _run_git(["fetch", "--no-tags", "--unshallow", "origin"])
+        if fallback.returncode != 0:
+            raise prov.RatchetProvenanceError(
+                f"could not unshallow GitHub event ref {current_ref!r}: "
+                f"{fetched.stderr.strip()}; unrestricted fallback also failed: "
+                f"{fallback.stderr.strip()}"
+            )
 
 
 def _materialize_event_base(prov: ModuleType, event_base: str) -> None:
@@ -263,17 +274,17 @@ def main() -> int:
     prov = _provenance()
     try:
         _materialize_ci_history(prov)
-        trusted_ref = prov.resolve_baseline(REGISTRY, root=ROOT)
-        trusted = _registry(trusted_ref.loads(default={"routes": {}}))
+        base_ref = prov.resolve_baseline(REGISTRY, root=ROOT)
+        base_registry = _registry(base_ref.loads(default={"routes": {}}))
         prov.require_measurement(declared, ratchet=RATCHET, what="public routes")
-        authorized = prov.load_authorizations(RATCHET, base=trusted_ref.base_sha)
+        authorized = prov.load_authorizations(RATCHET, base=base_ref.base_sha)
     except (RuntimeError, prov.RatchetProvenanceError) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
 
     current_identities = set(declared.items())
-    trusted_identities = _registry_identities(trusted)
-    added_identities = sorted(current_identities - trusted_identities)
+    base_identities = _registry_identities(base_registry)
+    added_identities = sorted(current_identities - base_identities)
     affected_paths = sorted({path for path, _kind in added_identities})
     unauthorized = [path for path in affected_paths if path not in authorized]
     unbanked_authorized = [
@@ -283,10 +294,10 @@ def main() -> int:
     print(
         prov.Provenance(
             ratchet=RATCHET,
-            baseline=trusted_ref,
+            baseline=base_ref,
             tool="python ast",
             metric_definition_version=METRIC_DEFINITION_VERSION,
-            old_value=f"{len(trusted_identities)} public route identities",
+            old_value=f"{len(base_identities)} public route identities",
             new_value=f"{len(current_identities)} public route identities",
             candidate_sha=prov.head_sha(ROOT),
             authorizations=tuple(
@@ -297,8 +308,8 @@ def main() -> int:
 
     failures = list(candidate_failures)
     for path in unauthorized:
-        trusted_entry = trusted.get(path)
-        old_kind = trusted_entry.get("kind") if isinstance(trusted_entry, dict) else None
+        base_entry = base_registry.get(path)
+        old_kind = base_entry.get("kind") if isinstance(base_entry, dict) else None
         if old_kind is None:
             failures.append(
                 f"  {path}: NEW unauthenticated path is absent from the trusted base and has no "

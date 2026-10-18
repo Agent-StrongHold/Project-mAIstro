@@ -258,6 +258,26 @@ def test_register_benchmark_registers_custom_runner() -> None:
     assert harness._benchmarks["custom"] is custom_runner
 
 
+@pytest.mark.ac("SPEC-282/AC-8")
+def test_register_benchmark_refuses_reserved_curriculum_namespace() -> None:
+    """SPEC-282 AC-8: self-generated curriculum challenges are practice signal,
+    not external evaluation — they must never be registrable as harness
+    benchmarks whose scores would read as promotion evidence (M4-D #24)."""
+    harness = EvalHarness()
+
+    async def practice_runner(genome: PipelineGenome, llm_call: object) -> EvalResult:
+        return _fake_runner_result("self_generated/challenge-1")
+
+    with pytest.raises(ValueError, match="self_generated/"):
+        harness.register_benchmark("self_generated/challenge-1", practice_runner)
+    # On either fidelity tier, and nothing got registered.
+    with pytest.raises(ValueError, match="practice signal"):
+        EvalHarness(benchmark_fidelity="real").register_benchmark(
+            "self_generated/challenge-1", practice_runner, fidelity="real"
+        )
+    assert "self_generated/challenge-1" not in harness._benchmarks
+
+
 @pytest.mark.asyncio
 async def test_evaluate_genome_skips_unregistered_benchmark_name() -> None:
     harness = EvalHarness()

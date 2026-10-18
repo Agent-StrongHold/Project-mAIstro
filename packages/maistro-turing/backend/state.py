@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from maistro.observability.correlation import current_execution_context
 from maistro_turing.bridge import (
     TuringClassifierBridge,
     TuringMemoryBridge,
@@ -26,6 +27,8 @@ from maistro_turing.bridge import (
 )
 from maistro_turing.runtime import TuringActor, TuringChatSession, TuringConfig
 from maistro_turing.self_model import ALL_FACETS, Mood
+
+from .security import TuringInboundSecurity, TuringSecurityContext
 
 SELF_ID = "turing"
 
@@ -71,9 +74,17 @@ class TuringState:
     a TestClient drives requests on a thread pool so the lock matters.
     """
 
-    def __init__(self, config: TuringConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: TuringConfig | None = None,
+        *,
+        inbound_security: TuringInboundSecurity | None = None,
+    ) -> None:
         self._lock = threading.RLock()
         self.config = config or TuringConfig()
+        if inbound_security is None:
+            raise RuntimeError("canonical Turing security is required for backend startup")
+        self.inbound_security = inbound_security
 
         self._mood = Mood(
             self_id=SELF_ID,
@@ -85,15 +96,13 @@ class TuringState:
         self._facet_scores = _default_facet_scores()
         self._artifacts: list[ProducerArtifact] = []
 
-        # GAP: bridges are constructed without backing maistro-core
-        # implementations (no episodic/learning store, no warden, no LLM
-        # client). The runtime degrades gracefully (memory writes are dropped,
-        # scans pass-through) — see TuringMemoryBridge/TuringSecurityBridge.
-        # No maistro.container Turing wiring exists on the current product path.
-        # A future durable composition must replace these through the same
-        # Turing bridge contracts rather than implying that wiring already exists.
+        # Memory and provider implementations remain optional, but the
+        # canonical Warden is mandatory for every protected runtime path.
         self.memory = TuringMemoryBridge()
-        self.security = TuringSecurityBridge()
+        self.security = TuringSecurityBridge(
+            warden=self.inbound_security.warden,
+            audit_hook=self._audit_runtime_verdict,
+        )
         self.provider = TuringProviderBridge()
         self.classifier = TuringClassifierBridge()
 
@@ -102,6 +111,34 @@ class TuringState:
             security=self.security,
             provider=self.provider,
             self_id=SELF_ID,
+        )
+
+    async def _audit_runtime_verdict(self, verdict: object, content: str, boundary: str) -> None:
+        execution = current_execution_context()
+        if not execution.run_id:
+            raise RuntimeError("canonical Run context is required for runtime security audit")
+
+        # Model/tool output is produced inside a canonical Run. Resolve every
+        # audit identity from that Run rather than attributing it to Turing.
+        from .execution import get_execution_plane
+
+        run = await get_execution_plane().run_store.get_run(execution.run_id)
+        if run is None or not run.actor_principal_id:
+            raise RuntimeError("canonical Run actor is unavailable for security audit")
+
+        await self.inbound_security.audit_verdict(
+            verdict,  # type: ignore[arg-type]
+            content,
+            boundary=boundary,
+            context=TuringSecurityContext(
+                principal=str(run.actor_principal_id),
+                route="runtime",
+                action=f"turing.{boundary}",
+                workspace_id=run.workspace_id,
+                project_id=run.project_id,
+                run_id=run.run_id,
+                invocation_id=execution.invocation_id,
+            ),
         )
 
     # ----------------------------------------------------------- self-model --
@@ -186,14 +223,17 @@ _state: TuringState | None = None
 
 
 def get_state() -> TuringState:
-    global _state
     if _state is None:
-        _state = TuringState()
+        raise RuntimeError("canonical Turing security has not been composed")
     return _state
 
 
-def reset_state(config: TuringConfig | None = None) -> TuringState:
+def reset_state(
+    config: TuringConfig | None = None,
+    *,
+    inbound_security: TuringInboundSecurity,
+) -> TuringState:
     """Replace the singleton — used by tests for isolation."""
     global _state
-    _state = TuringState(config=config)
+    _state = TuringState(config=config, inbound_security=inbound_security)
     return _state

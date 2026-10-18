@@ -1,10 +1,11 @@
 """`maistro.identity`'s missing-extra guard must fire, and must be actionable.
 
 `maistro.identity` needs secp256k1 (it derives BTC/ETH paths via
-`Bip32Slip10Secp256k1`), which means `bip-utils`, which means `coincurve` — a C
-extension whose wheels stop at cp313, while the API image's base ships a later
-Python. So the dependency is declared by the `identity` extra rather than as a
-base dependency, and both identity modules guard their imports to say so.
+`Bip32Slip10Secp256k1`), which means `bip-utils`, which means `coincurve`, a C
+extension. The Conductor image pins CPython 3.13 because that is the supported
+wheel set, while the dependency remains behind the `identity` extra for engine
+consumers that do not need it. Both identity modules guard their imports to say
+so.
 
 Those guards carried `# pragma: no cover - install-shape guard`: the branch that
 turns a bare `ModuleNotFoundError` into an actionable message was never
@@ -26,10 +27,7 @@ import sys
 import pytest
 
 _GUARDED_ROOTS = ("bip_utils", "nacl")
-_GUARDED_MODULES = (
-    "maistro.identity",
-    "maistro.identity.lifecycle",
-)
+_GUARDED_MODULES = ("maistro.identity.lifecycle",)
 
 
 class _BlockRoot:
@@ -61,7 +59,11 @@ def bare_install(monkeypatch):
 
     def _attempt(module: str, root: str):
         for name in list(sys.modules):
-            if name.split(".")[0] in _GUARDED_ROOTS or name in _GUARDED_MODULES:
+            if (
+                name.split(".")[0] in _GUARDED_ROOTS
+                or name in _GUARDED_MODULES
+                or name.startswith("maistro.identity")
+            ):
                 monkeypatch.delitem(sys.modules, name, raising=False)
         monkeypatch.setattr(sys, "meta_path", [_BlockRoot(root), *sys.meta_path])
         return importlib.import_module(module)
@@ -86,7 +88,23 @@ def test_import_without_extra_names_the_extra(bare_install, module, root):
     assert root in message, f"{module}'s guard did not report which module was missing"
 
 
-@pytest.mark.parametrize("module", _GUARDED_MODULES)
+def test_principal_imports_without_identity_extra(bare_install):
+    """HTTP Principal (P0.1) must not require the crypto extra."""
+    module = bare_install("maistro.identity.principal", "bip_utils")
+    assert module.Principal.from_legacy_dict({"id": "u1"}).user_id == "u1"
+
+
+def test_conductor_seed_requires_identity_extra(bare_install):
+    identity_module = bare_install("maistro.identity", "bip_utils")
+    with pytest.raises(ImportError) as exc:
+        _ = identity_module.ConductorSeed
+
+    message = str(exc.value)
+    assert "maistro-core[identity]" in message
+    assert "bip_utils" in message
+
+
+@pytest.mark.parametrize("module", ("maistro.identity", *_GUARDED_MODULES))
 def test_import_succeeds_when_extra_is_installed(module):
     """Control: the guard is not tripping in this environment.
 

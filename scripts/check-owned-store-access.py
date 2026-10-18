@@ -50,7 +50,7 @@ ROOT = Path(__file__).resolve().parent.parent
 BACKEND = ROOT / "packages" / "hive-conductor" / "backend"
 
 #: Store attributes on `stores` whose rows belong to an individual user.
-OWNED_STORES: frozenset[str] = frozenset({"chat_sessions"})
+OWNED_STORES: frozenset[str] = frozenset({"chat_sessions", "memory_entries"})
 
 #: Paths, relative to the backend root, that may name an owned store directly.
 #: Each is here because it is either the declaration or the scoping seam —

@@ -398,13 +398,22 @@ class TestSchedules:
 
 
 class TestQuotas:
+    # #380/#389 envelope: the autouse `_mock_env` above configures an
+    # unresolvable LITELLM_API_BASE, so the deterministic answer is `error`
+    # (configured but unreachable) — distinct from `unavailable` (unconfigured)
+    # and from `ok`/`no_data`. A panel must never render either as an empty
+    # success page.
     def test_providers(self, admin_client):
         r = admin_client.get("/v1/quotas/providers")
         assert r.status_code == 200
+        assert r.json()["state"] == "error"
+        assert r.json()["reason"]
 
     def test_models(self, admin_client):
         r = admin_client.get("/v1/quotas/models")
         assert r.status_code == 200
+        assert r.json()["state"] == "error"
+        assert r.json()["reason"]
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

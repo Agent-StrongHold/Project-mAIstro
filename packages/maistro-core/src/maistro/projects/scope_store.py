@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from maistro.projects.scope import (
     Project,
@@ -15,6 +16,9 @@ from maistro.projects.scope import (
     ProjectScopeDenied,
     ProjectScopedResource,
 )
+
+if TYPE_CHECKING:
+    from maistro.workspaces.store import WorkspaceStore
 
 
 @runtime_checkable
@@ -44,7 +48,7 @@ class ProjectScopeStore(Protocol):
 
         ...
 
-    async def get(self, project_id: str) -> Project | None:
+    async def get(self, project_id: str, *, principal_id: str | None = None) -> Project | None:
         """Return a Project by ID, or ``None`` when it does not exist."""
 
         ...
@@ -64,7 +68,13 @@ class ProjectScopeStore(Protocol):
 
         ...
 
-    async def update_defaults(self, project_id: str, *, defaults: dict[str, Any]) -> Project:
+    async def update_defaults(
+        self,
+        project_id: str,
+        *,
+        defaults: dict[str, Any],
+        principal_id: str | None = None,
+    ) -> Project:
         """Replace the defaults owned by a Project."""
 
         ...
@@ -93,6 +103,23 @@ class ProjectScopeStore(Protocol):
         existing row -- carrying its original `membership_id` and
         `created_at` forward -- rather than adding a second, independent
         grant no later call can ever fully retract (#1148).
+        """
+
+        ...
+
+    async def merge_membership(self, membership: ProjectMembership) -> ProjectMembership:
+        """Merge a delegated re-grant into the canonical row atomically.
+
+        The read that decides what to preserve and the write that stores it
+        are one critical section: when a row already exists for
+        `(project_id, principal_id)`, its `membership_id`, `created_at`,
+        `denies`, `role`, `grants` and `delegable_grants` are preserved and
+        the caller's `grants`/`delegable_grants` are unioned in; when none
+        exists, `membership` becomes the row. An owner's revocation that
+        commits first therefore leaves no row to preserve, so the merge
+        cannot resurrect a revoked principal carrying stale grants -- the
+        failure mode of reading `memberships_for` and then writing through
+        `set_membership` as two separate calls (#1148).
         """
 
         ...
@@ -148,6 +175,68 @@ class ProjectScopeStore(Protocol):
         ...
 
 
+@runtime_checkable
+class TransactionalProjectScopeStore(Protocol):
+    """A scope store whose Workspace-lifecycle writes can join one transaction.
+
+    A Workspace and its Root Project are two stores' rows, and the Workspace
+    stores used to write them in two transactions: commit the Workspace, then
+    `create_root`; commit the delete, then `purge_workspace`. In-process
+    compensation covered an exception between the halves and nothing covered
+    a crash there, which left a Workspace with no Root Project (a thing
+    `root_for_workspace` treats as impossible) or a Project tree with no
+    Workspace to reach it by (#1121).
+
+    The durable scope stores share a database with their Workspace store --
+    the same asyncpg pool, or the same aiosqlite connection -- so the fix is
+    one transaction, and this Protocol is the shape of it. `transaction()`
+    opens the scope store's own write transaction and yields the connection
+    handle it runs on; the Workspace store writes its rows on that handle and
+    calls the `_in` methods with it, and the whole lot commits or rolls back
+    together. The `transaction()` is the *scope store's* rather than the
+    Workspace store's because on SQLite the two write on one connection, and
+    a second lock over that connection is how "cannot start a transaction
+    within a transaction" happens; the scope store's critical section is the
+    only one there can be.
+
+    `ProjectScopeStore.create_root` and `purge_workspace` keep their
+    contracts: the durable stores implement each as its `_in` twin inside its
+    own `transaction()`. The in-memory reference does not implement this
+    Protocol -- it has no transaction to join -- and a Workspace store paired
+    with a non-transactional scope store falls back to compensating, which is
+    not crash-consistent by construction and says so where it does it.
+    """
+
+    def transaction(self) -> AbstractAsyncContextManager[Any]:
+        """Open this store's write transaction, yielding the connection it runs on."""
+
+        ...
+
+    async def create_root_in(self, conn: Any, workspace_id: str) -> Project:
+        """`create_root`, issued on the caller's open transaction."""
+
+        ...
+
+    async def purge_workspace_in(self, conn: Any, workspace_id: str) -> None:
+        """`purge_workspace`, issued on the caller's open transaction."""
+
+        ...
+
+
+@runtime_checkable
+class DurableProjectScopeStore(ProjectScopeStore, TransactionalProjectScopeStore, Protocol):
+    """A Project store that is both the full canonical interface and joinable.
+
+    `PgWorkspaceStore`/`SqliteWorkspaceStore` need both roles at once: the
+    canonical `ProjectScopeStore` surface `WorkspaceStore.project_store`
+    exposes to callers, and the `TransactionalProjectScopeStore` surface they
+    use internally to write the Workspace, its membership, and its Root
+    Project on one connection (#1121). Naming that intersection once here,
+    rather than at each call site, is what lets the field keep a single
+    static type that is honestly a subtype of `ProjectScopeStore`.
+    """
+
+
 class InMemoryProjectScopeStore:
     """Reference Project tree with downward-only scoped-resource visibility."""
 
@@ -167,6 +256,10 @@ class InMemoryProjectScopeStore:
         # PostgreSQL enforces the same rule with a foreign key, which needs no
         # equivalent because the database can see both tables.
         self._owns_runs: Callable[[str], Awaitable[bool]] | None = None
+        self._workspace_store: WorkspaceStore | None = None
+
+    def bind_workspace_store(self, workspace_store: WorkspaceStore) -> None:
+        self._workspace_store = workspace_store
 
     def set_run_owner(self, owns_runs: Callable[[str], Awaitable[bool]]) -> None:
         """Register the predicate `delete()` consults for Run ownership."""
@@ -223,11 +316,25 @@ class InMemoryProjectScopeStore:
         self._projects[project.project_id] = project
         return project.model_copy(deep=True)
 
-    async def get(self, project_id: str) -> Project | None:
+    async def _require_project_view(self, project: Project, principal_id: str) -> None:
+        from maistro.workspaces.store_boundary import is_blank_principal, require_project_view
+
+        workspace_store = self._workspace_store
+        if workspace_store is None:
+            raise ProjectScopeDenied("Project not found")
+        if is_blank_principal(principal_id):
+            raise ProjectScopeDenied("Project not found")
+        await require_project_view(project, workspace_store, principal_id)
+
+    async def get(self, project_id: str, *, principal_id: str | None = None) -> Project | None:
         """Return a detached Project snapshot by ID when present."""
 
         project = self._projects.get(project_id)
-        return project.model_copy(deep=True) if project is not None else None
+        if project is None:
+            return None
+        if principal_id is not None:
+            await self._require_project_view(project, principal_id)
+        return project.model_copy(deep=True)
 
     async def lineage(self, project_id: str) -> list[Project]:
         """Return validated ancestry ordered from Root Project to target."""
@@ -295,10 +402,13 @@ class InMemoryProjectScopeStore:
         project_id: str,
         *,
         defaults: dict[str, Any],
+        principal_id: str | None = None,
     ) -> Project:
         """Replace a Project's defaults and advance its update timestamp."""
 
         project = self._require(project_id)
+        if principal_id is not None:
+            await self._require_project_view(project, principal_id)
         updated = project.model_copy(
             deep=True,
             update={"defaults": dict(defaults), "updated_at": datetime.now(UTC)},
@@ -352,6 +462,36 @@ class InMemoryProjectScopeStore:
                 "updated_at": datetime.now(UTC),
             }
         )
+        self._memberships[key] = updated
+        return updated.model_copy(deep=True)
+
+    async def merge_membership(self, membership: ProjectMembership) -> ProjectMembership:
+        """Merge-or-create the canonical membership in one atomic step.
+
+        The in-memory store runs on one event loop and this method has no
+        await between reading the existing row and writing the merged one, so
+        no other coroutine can interleave a `remove_membership` between the
+        two the way it could against the API's read-then-write (#1148).
+        """
+        project = self._require(membership.project_id)
+        if project.workspace_id != membership.workspace_id:
+            raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
+        key = (membership.project_id, membership.principal_id)
+        existing = self._memberships.get(key)
+        if existing is None:
+            updated = membership.model_copy(update={"updated_at": datetime.now(UTC)})
+        else:
+            updated = membership.model_copy(
+                update={
+                    "membership_id": existing.membership_id,
+                    "created_at": existing.created_at,
+                    "role": existing.role,
+                    "grants": existing.grants | membership.grants,
+                    "denies": existing.denies,
+                    "delegable_grants": (existing.delegable_grants | membership.delegable_grants),
+                    "updated_at": datetime.now(UTC),
+                }
+            )
         self._memberships[key] = updated
         return updated.model_copy(deep=True)
 
@@ -457,4 +597,9 @@ class InMemoryProjectScopeStore:
         return project
 
 
-__all__ = ["InMemoryProjectScopeStore", "ProjectScopeStore"]
+__all__ = [
+    "DurableProjectScopeStore",
+    "InMemoryProjectScopeStore",
+    "ProjectScopeStore",
+    "TransactionalProjectScopeStore",
+]
