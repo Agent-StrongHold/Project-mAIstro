@@ -11,7 +11,7 @@ import asyncio
 import json
 import math
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -129,6 +129,40 @@ def _queue(projects: Any, project: Any, runs: Any, coordinator: Any) -> TaskQueu
     )
 
 
+@pytest.fixture
+async def make_queue(
+    single_pool: Any, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[Callable[[Any, Any, Any, Any], TaskQueue]]:
+    """Own real receipt persistence as well as each queue until its loop closes."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from maistro.config.database import to_async_url
+
+    # TaskQueue also persists TaskRecords through SQLAlchemy. Its production
+    # cached engine would otherwise outlive these function-scoped event loops;
+    # closing single_pool alone does not own those separate connections/writes.
+    engine = create_async_engine(to_async_url(postgres_dsn()), pool_pre_ping=True)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr("maistro.tasks.queue.get_async_session_factory", lambda: factory)
+    queues: list[TaskQueue] = []
+
+    def make(projects: Any, project: Any, runs: Any, coordinator: Any) -> TaskQueue:
+        queue = _queue(projects, project, runs, coordinator)
+        queues.append(queue)
+        return queue
+
+    try:
+        yield make
+    finally:
+        try:
+            abandoned = await asyncio.gather(
+                *(queue.drain_persistence(timeout=10) for queue in queues)
+            )
+            assert not any(abandoned), "live receipt writes must settle before loop teardown"
+        finally:
+            await engine.dispose()
+
+
 async def _count(pool: Any, workspace: str) -> int:
     async with pool.acquire() as connection:
         return int(
@@ -150,7 +184,7 @@ async def _read_record(pool: Any, scope_key: str) -> identity.AdmissionRecordV2:
 
 
 async def test_composed_queue_replays_original_receipt_project_and_evidence(
-    single_pool: Any,
+    single_pool: Any, make_queue: Callable[[Any, Any, Any, Any], TaskQueue]
 ) -> None:
     projects, original, runs = await _scope(single_pool)
     coordinator = _wire_admission_coordinator(single_pool, runs)
@@ -158,7 +192,7 @@ async def test_composed_queue_replays_original_receipt_project_and_evidence(
         description="Freeze original evidence", program_context={"value": math.nan}
     )
     with bind_execution_context(request_id="first-request"):
-        first = await _queue(projects, original, runs, coordinator).submit(
+        first = await make_queue(projects, original, runs, coordinator).submit(
             request,
             user_id="origin",
             workspace_id=original.workspace_id,
@@ -172,7 +206,7 @@ async def test_composed_queue_replays_original_receipt_project_and_evidence(
         name="Newly resolved project",
     )
     with bind_execution_context(request_id="retry-request"):
-        replay = await _queue(projects, moved, runs, coordinator).submit(
+        replay = await make_queue(projects, moved, runs, coordinator).submit(
             request,
             user_id="origin",
             workspace_id=original.workspace_id,
@@ -202,9 +236,11 @@ async def test_composed_queue_replays_original_receipt_project_and_evidence(
         )
 
 
-async def test_concurrent_submitters_share_one_run_on_poolsize_one(single_pool: Any) -> None:
+async def test_concurrent_submitters_share_one_run_on_poolsize_one(
+    single_pool: Any, make_queue: Callable[[Any, Any, Any, Any], TaskQueue]
+) -> None:
     projects, project, runs = await _scope(single_pool)
-    queue = _queue(projects, project, runs, _coordinator(single_pool, runs))
+    queue = make_queue(projects, project, runs, _coordinator(single_pool, runs))
     async with asyncio.timeout(10), asyncio.TaskGroup() as group:
         submissions = [
             group.create_task(
@@ -290,7 +326,7 @@ class _RacingPool:
 
 
 async def test_two_queues_race_absent_row_insert_and_reconcile_one_generation(
-    single_pool: Any,
+    single_pool: Any, make_queue: Callable[[Any, Any, Any, Any], TaskQueue]
 ) -> None:
     import asyncpg
 
@@ -304,8 +340,8 @@ async def test_two_queues_race_absent_row_insert_and_reconcile_one_generation(
         other_runs = ClaimingPgRunStore(other_pool, project_store=other_projects)
         race = _AbsentRowRace()
         queues = [
-            _queue(projects, project, runs, _coordinator(_RacingPool(single_pool, race), runs)),
-            _queue(
+            make_queue(projects, project, runs, _coordinator(_RacingPool(single_pool, race), runs)),
+            make_queue(
                 other_projects,
                 project,
                 other_runs,
