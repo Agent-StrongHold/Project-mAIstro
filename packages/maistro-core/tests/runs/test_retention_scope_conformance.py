@@ -145,7 +145,6 @@ async def scope_world(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
             a=scoped["a"],
             b=scoped["b"],
         )
-        return
         return  # async-generator teardown must not fall into the sqlite leg
 
     projects = InMemoryProjectScopeStore()
@@ -171,7 +170,6 @@ async def scope_world(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
             a=scoped["a"],
             b=scoped["b"],
         )
-        return
         return  # async-generator teardown must not fall into the sqlite leg
 
     conn = await aiosqlite.connect(":memory:")

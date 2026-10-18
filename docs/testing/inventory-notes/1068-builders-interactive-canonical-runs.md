@@ -5,11 +5,7 @@ Issue: #1068
 Parent: #49
 
 inventory-delta:
-  packages/maistro-core/src/maistro/builders/interactive.py: +1
-  packages/maistro-core/tests/builders/test_interactive_execution.py: +3
-  packages/maistro-core/tests/cli/test_builders.py: +1 architecture guard
-  packages/maistro-core/src/maistro/cli/_builders_tui.py: wired shipped producer
-  packages/maistro-core/src/maistro/cli/_builders_sessions.py: persisted canonical IDs
+  packages/maistro-core/tests: +4
 ---
 
 ## Claim and collision boundary
