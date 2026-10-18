@@ -1,8 +1,3 @@
----
-inventory-delta:
-  docs/testing/inventory-notes: +1
----
-
 # issue-787-m7-exit-condition-verification
 
 Verification evidence pack for milestone #787 (`[MILESTONE M7] Closed-loop
