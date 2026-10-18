@@ -17,6 +17,7 @@ from maistro.runs.concurrency import (
 )
 from maistro.runs.evidence_json import json_of, model_of_json
 from maistro.runs.lifecycle import (
+    InvalidLifecycleTransition,
     check_completion_is_earned,
     lease_is_expired,
     reclaim_attempt,
@@ -59,11 +60,13 @@ from maistro.runs.store import (
     StaleExecutionFence,
     admit_in_state,
     is_purgeable,
+    matches_chat_admission_snapshot,
     outcome_embeds_attempt,
     repaired_accepted_outcome,
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
+    validate_effect_claim_parent,
     validate_eval_score_spine,
 )
 from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
@@ -456,6 +459,8 @@ class SqliteRunStore:
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> Run:
         async with self._write_lock:
             await self._validate_graph_scope(graph)
@@ -485,6 +490,8 @@ class SqliteRunStore:
                 actor_principal_id=require_admitted_actor(actor_principal_id),
                 provenance=dict(provenance or {}),
                 retention_expires_at=retention_expires_at,
+                goal_id=goal_id,
+                goal_revision=goal_revision,
             )
             # Before the insert, not after it: one commit, so there is no window
             # in which a process death leaves a CREATED Run whose provenance
@@ -595,7 +602,7 @@ class SqliteRunStore:
             return None
         return model_of_json(Run, row[0])
 
-    async def _require_locked_parent_scope(
+    async def _effect_claim_parent(
         self,
         graph: Graph,
         *,
@@ -603,23 +610,22 @@ class SqliteRunStore:
         parent_node_run_id: str | None,
         allow_cross_project: bool,
     ) -> None:
-        """Validate the optional parent chain inside the claim transaction."""
-        if parent_node_run_id is not None and parent_run_id is None:
-            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+        """Load and validate optional parent evidence for an effect-keyed Run."""
         parent = await self._require_run(parent_run_id) if parent_run_id else None
-        if parent is None:
-            return
-        validate_child_scope(
+        parent_node_run = (
+            await self._require_node_run(parent_node_run_id)
+            if parent is not None and parent_node_run_id is not None
+            else None
+        )
+        validate_effect_claim_parent(
             parent,
+            parent_node_run,
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
             workspace_id=graph.workspace_id,
             project_id=graph.project_id,
             allow_cross_project=allow_cross_project,
         )
-        if parent_node_run_id is None:
-            return
-        parent_node_run = await self._require_node_run(parent_node_run_id)
-        if parent_node_run.run_id != parent_run_id:
-            raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
 
     async def claim_run_by_effect(
         self,
@@ -651,7 +657,7 @@ class SqliteRunStore:
                 if row is not None:
                     await self._conn.commit()
                     return RunEffectClaim(model_of_json(Run, row[0]), False)
-                await self._require_locked_parent_scope(
+                await self._effect_claim_parent(
                     graph,
                     parent_run_id=parent_run_id,
                     parent_node_run_id=parent_node_run_id,
@@ -1119,6 +1125,33 @@ class SqliteRunStore:
                 backlog_remaining=len(doomed) > limit,
             )
 
+    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
+        async with self._write_lock:
+            current, snapshot = await self._require_run_snapshot(expected.run_id)
+            if not matches_chat_admission_snapshot(current, expected):
+                return False
+            updated = transition_run(current, RunStatus.CANCELLED, error=error)
+            # One SQL statement owns the decision: other stores share this
+            # connection, so a Python lock or BEGIN across awaits cannot
+            # establish exclusive transaction ownership. No new rollback
+            # may erase an unrelated sibling's pending write.
+            cursor = await self._conn.execute(
+                """UPDATE canonical_runs SET status = ?, payload = ?
+                   WHERE run_id = ? AND payload = ?
+                     AND NOT EXISTS (
+                         SELECT 1 FROM canonical_node_runs WHERE run_id = ?
+                     )""",
+                (
+                    updated.status.value,
+                    json_of(updated),
+                    expected.run_id,
+                    snapshot,
+                    expected.run_id,
+                ),
+            )
+            await self._conn.commit()
+            return cursor.rowcount == 1
+
     async def transition_run(
         self,
         run_id: str,
@@ -1132,7 +1165,7 @@ class SqliteRunStore:
         if principal_id is not None:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
         async with self._write_lock:
-            run = await self._require_run(run_id)
+            run, snapshot = await self._require_run_snapshot(run_id)
             check_completion_is_earned(target, await self._node_runs_of(run_id))
             updated = transition_run(run, target, at=at, result=result, error=error)
             settled: list[NodeRun] = []
@@ -1141,14 +1174,19 @@ class SqliteRunStore:
                     settle_open_node_run(node_run, target, at=at)
                     for node_run in await self._open_node_runs(run_id)
                 ]
-            # One commit for the Run and every NodeRun it settles
-            # (ADR-082426-a47f). `_update_payload` commits per call, so the
-            # cascade writes through `_stage_payload` and commits once at the
-            # end: a half-settled Run reads as deliberate, which is worse than
-            # an unsettled one.
-            self._stage_payload(
-                "canonical_runs", "run_id", run_id, updated.status.value, json_of(updated)
+            # Keep the existing cascade's single final commit; this guard
+            # changes the parent write, not the cascade's isolation contract.
+            # Sibling stores share this connection and can commit between
+            # our reads and write. Only the exact persisted snapshot grants
+            # this transition permission; a concurrent cancellation wins.
+            cursor = await self._conn.execute(
+                """UPDATE canonical_runs SET status = ?, payload = ?
+                   WHERE run_id = ? AND payload = ?""",
+                (updated.status.value, json_of(updated), run_id, snapshot),
             )
+            if cursor.rowcount != 1:
+                await self._conn.commit()
+                raise InvalidLifecycleTransition("Run changed before lifecycle transition")
             for node_run in settled:
                 self._stage_payload(
                     "canonical_node_runs",
@@ -1172,7 +1210,7 @@ class SqliteRunStore:
 
     async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
         async with self._write_lock:
-            run = await self._require_run(run_id)
+            run, snapshot = await self._require_run_snapshot(run_id)
             if run.status in TERMINAL_RUN_STATUSES:
                 raise RunIntegrityError("cannot create NodeRun under a terminal Run")
             graph = run.graph.materialize()
@@ -1186,10 +1224,15 @@ class SqliteRunStore:
             )
             ordinal = int(row[0]) + 1 if row is not None else 1
             node_run = NodeRun(run_id=run_id, node_id=node_id, ordinal=ordinal)
-            await self._conn.execute(
+            # Validate the same nonterminal parent at the physical insert,
+            # even if a sibling commit releases an intervening transaction.
+            cursor = await self._conn.execute(
                 """INSERT INTO canonical_node_runs
                    (node_run_id, run_id, node_id, ordinal, status, payload)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                   SELECT ?, ?, ?, ?, ?, ?
+                   WHERE EXISTS (
+                       SELECT 1 FROM canonical_runs WHERE run_id = ? AND payload = ?
+                   )""",
                 (
                     node_run.node_run_id,
                     node_run.run_id,
@@ -1197,9 +1240,13 @@ class SqliteRunStore:
                     node_run.ordinal,
                     node_run.status.value,
                     json_of(node_run),
+                    run_id,
+                    snapshot,
                 ),
             )
             await self._conn.commit()
+            if cursor.rowcount != 1:
+                raise RunIntegrityError("Run changed before NodeRun creation")
             return node_run
 
     async def get_node_run(
@@ -1542,6 +1589,17 @@ class SqliteRunStore:
             )
         if project.workspace_id != graph.workspace_id:
             raise RunIntegrityError("Graph Project does not belong to the Graph Workspace")
+
+    async def _require_run_snapshot(self, run_id: str) -> tuple[Run, str]:
+        """Read a Run and its exact stored bytes for a conditional SQL write.
+
+        Re-serializing the model would add defaults to historical payloads or
+        change their formatting, falsely rejecting an unchanged row.
+        """
+        row = await self._fetchone("SELECT payload FROM canonical_runs WHERE run_id = ?", (run_id,))
+        if row is None:
+            raise RunNotFound(run_id)
+        return model_of_json(Run, row[0]), str(row[0])
 
     async def _require_run(self, run_id: str) -> Run:
         run = await self.get_run(run_id)

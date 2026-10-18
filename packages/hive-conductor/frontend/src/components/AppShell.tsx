@@ -24,6 +24,12 @@ import {
   Zap,
   Repeat,
   ListTodo,
+  CalendarClock,
+  Inbox,
+  Gauge,
+  ScrollText,
+  Terminal,
+  Container,
 } from "lucide-react";
 
 const fullNav = [
@@ -36,6 +42,13 @@ const fullNav = [
   { to: "/design-studio", icon: Palette, label: "Design Studio" },
   { to: "/dags", icon: Workflow, label: "DAG Builder" },
   { to: "/dag-runs", icon: PlayCircle, label: "DAG Runs" },
+  // #1417: Schedules is a retained shipped surface (retirement ledger:
+  // PROJECT onto the canonical ScheduleStore, #92) that no link anywhere
+  // reached; it is entry-point discoverability, not a promotion decision —
+  // its replacement still owns the cutover, see docs/route-inventory.md.
+  // `scope` mirrors AuthMiddleware's mutation gate so the entry only shows
+  // for sessions that can actually act on the page (#1417 review).
+  { to: "/schedules", icon: CalendarClock, label: "Schedules", scope: "schedules.write" },
   // Missions was reachable only from `pocNav`, so retiring POC mode left a
   // live route with no entry point anywhere in the app — the page still
   // renders, `App.tsx` still registers it, and a repo-wide search finds no
@@ -46,15 +59,40 @@ const fullNav = [
   { to: "/agents", icon: Bot, label: "Agents" },
   { to: "/topology", icon: Network, label: "Topology" },
   { to: "/optimizer", icon: Zap, label: "Optimizer" },
+  // #1417: Messages, Quotas, Containers, CLI and Audit were all registered,
+  // implemented routes with no navigation entry (audit GLO-01). Each is a
+  // retained surface per the cutover plan (PROJECT rows, and CLI/Containers
+  // under contracts #292/#382), so they get discoverable entries here; the
+  // legacy pages scheduled for replacement (Skills, Work Items, Memory,
+  // Evolution) deliberately stay off this list — docs/route-inventory.md
+  // records their URL-only dispositions and owning issues.
+  { to: "/messages", icon: Inbox, label: "Messages" },
+  { to: "/quotas", icon: Gauge, label: "Quotas" },
   { to: "/knowledge", icon: Brain, label: "Inner Temple" },
   // M0 containment for #311: Deck Builder is intentionally absent until
   // model-authored HTML/SVG has a canonical sanitizer/structured renderer.
   { to: "/rsi", icon: Repeat, label: "RSI" },
   { to: "/mcp", icon: Plug, label: "Integrations" },
+  // #1417: CLI and Containers keep their v1.0 contract lanes (#292, #382),
+  // so they stay shipped and must stay reachable while those run.
+  // `scope` as above: every Containers mutation requires containers.control
+  // (backend/middleware/auth.py), so hide the entry without it.
+  { to: "/containers", icon: Container, label: "Containers", scope: "containers.control" },
+  { to: "/cli", icon: Terminal, label: "CLI" },
   { to: "/credentials", icon: KeyRound, label: "Credentials" },
+  { to: "/audit", icon: ScrollText, label: "Audit" },
   { to: "/settings", icon: Settings, label: "Settings" },
 ];
 
+
+// #1417 review: entries with a `scope` are only actionable for sessions
+// holding that permission (admins pass every gate, as in the backend), so
+// filter them instead of showing screens whose mutations all 403.
+function visibleNav(user: ReturnType<typeof useUser>) {
+  if (!user) return fullNav.filter((item) => !item.scope);
+  if (user.role === "admin") return fullNav;
+  return fullNav.filter((item) => !item.scope || user.permissions.includes(item.scope));
+}
 
 async function logout() {
   try {
@@ -104,7 +142,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
           </div>
         )}
         <div className="drawer-nav">
-          {fullNav.map((item) => (
+          {visibleNav(user).map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -125,7 +163,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
       </nav>
 
       <nav className="icon-sidebar">
-        {fullNav.map((item) => (
+        {visibleNav(user).map((item) => (
           <NavLink
             key={item.to}
             to={item.to}

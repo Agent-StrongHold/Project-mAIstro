@@ -14,6 +14,12 @@ Building and installing wheels takes minutes, so these tests exercise the
 declaration and the probe directly rather than through `check()`. What they
 cannot cover -- that the probe's output reaches the report -- is covered by the
 script's own end-to-end run in CI.
+
+The sibling-pinning tests at the bottom are the exception (#1572 repair): they
+drive `check()` itself through a fake `uv` shim and a real (tiny) wheel, so the
+constraint file the installer is handed is asserted, not assumed. A shim keeps
+them millisecond-cheap and offline; the shipped CI job still runs the script
+end-to-end against the real wheels it builds.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -268,3 +275,148 @@ class TestTheOptionalFileIsDeclared:
             if r.startswith("systems/catalog/") and not r.endswith("catalog.json")
         ]
         assert payload, "the index is declared but no catalogue payload is"
+
+
+SHIM = r"""#!/usr/bin/env python3
+import json, shlex, sys, zipfile
+from pathlib import Path
+
+args = sys.argv[1:]
+receipt = Path("__RECEIPT__")
+state = json.loads(receipt.read_text()) if receipt.exists() else {"argv": []}
+state["argv"].append(args)
+if args[:1] == ["venv"]:
+    Path(args[1]).mkdir(parents=True, exist_ok=True)
+elif args[:2] == ["pip", "install"]:
+    def flag(name):
+        return args[args.index(name) + 1]
+
+    venv = Path(flag("--python"))
+    spec = args[-1]
+    state["constraints_content"] = Path(flag("--constraints")).read_text()
+    site = venv / "site-packages"
+    site.mkdir(parents=True, exist_ok=True)
+    wheel = Path(spec if spec.endswith(".whl") else spec.split(" @ ", 1)[1])
+    zipfile.ZipFile(wheel).extractall(site)
+    wrapper = venv / "bin" / "python"
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    wrapper.write_text(
+        "#!/bin/sh\nexec env PYTHONPATH=%s %s %s\n"
+        % (shlex.quote(str(site)), sys.executable, '"$@"')
+    )
+    wrapper.chmod(0o755)
+receipt.write_text(json.dumps(state))
+"""
+
+
+@pytest.fixture
+def fake_uv(tmp_path: Path) -> Path:
+    """A `uv` stand-in that records its argv and performs the install offline.
+
+    `venv` creates the directory; `pip install` unpacks the requested wheel into
+    the venv and writes a `bin/python` wrapper that points the interpreter at
+    it. Good enough for `check()`, which only asks the installed tree to import.
+    """
+    shim = tmp_path / "bin" / "uv"
+    shim.parent.mkdir(parents=True)
+    shim.write_text(SHIM.replace("__RECEIPT__", str(tmp_path / "uv-receipt.json")))
+    shim.chmod(0o755)
+    return shim
+
+
+def _build_wheel(dist_dir: Path, dist: str, root: str) -> Path:
+    """A minimal real wheel: one importable module plus its dist-info."""
+    name = f"{dist.replace('-', '_')}-0.9.0-py3-none-any.whl"
+    wheel = dist_dir / name
+    with zipfile.ZipFile(wheel, "w") as zf:
+        zf.writestr(f"{root}/__init__.py", f"MARKER = {dist!r}\n")
+        zf.writestr(
+            f"{dist.replace('-', '_')}-0.9.0.dist-info/METADATA",
+            f"Metadata-Version: 2.1\nName: {dist}\nVersion: 0.9.0\nRequires-Python: >=3.9\n",
+        )
+        zf.writestr(
+            f"{dist.replace('-', '_')}-0.9.0.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nGenerator: test (#1572)\nRoot-Is-Purelib: true\n",
+        )
+    return wheel
+
+
+class TestTheSiblingConstraintPin:
+    """Sibling maistro-* wheels must resolve from dist/, never from PyPI.
+
+    PyPI now carries same-version (0.9.0) snapshots of the unpublished maistro-*
+    names, so a bare `--find-links` lets uv break the version tie either way and
+    a run can import a stale published snapshot instead of the wheel under test
+    (#1572 repair). The fix hands uv a direct-reference constraint pinning every
+    sibling wheel to its exact local artifact; these tests hold both halves of
+    that: the PEP 503 name mapping and the file the installer actually receives.
+    """
+
+    @pytest.mark.parametrize(
+        ("filename", "expected"),
+        [
+            pytest.param(
+                "maistro_core-0.9.0-py3-none-any.whl",
+                "maistro-core",
+                id="underscored-dist-becomes-dashed",
+            ),
+            pytest.param(
+                "My_Pkg-1.0-py3-none-any.whl",
+                "my-pkg",
+                id="pep503-collapses-underscores-and-cases",
+            ),
+            pytest.param(
+                "Maistro.SDK-1.0rc0-py3-none-any.whl",
+                "maistro-sdk",
+                id="pep503-collapses-dots-and-cases",
+            ),
+        ],
+    )
+    def test_wheel_dist_name_normalizes_like_pep503(self, check, filename, expected):
+        assert check._wheel_dist_name(Path(filename)) == expected
+
+    def test_check_pins_every_sibling_wheel_to_its_local_artifact(self, check, tmp_path, fake_uv):
+        dist_dir = tmp_path / "dist"
+        dist_dir.mkdir()
+        wheel = _build_wheel(dist_dir, "dummy", "dummy")
+
+        ok, detail = check.check(
+            check.Package(dist="dummy", root="dummy"),
+            "bare",
+            dist_dir,
+            str(fake_uv),
+            "3.12",
+        )
+
+        assert ok is True, detail
+        assert detail == "1 check(s) passed"
+        receipt = json.loads((tmp_path / "uv-receipt.json").read_text())
+        install = [argv for argv in receipt["argv"] if argv[:2] == ["pip", "install"]]
+        assert len(install) == 1, receipt
+        assert "--constraints" in install[0], install[0]
+        # The pin names the PEP 503-normalized distribution and the exact local
+        # artifact -- not a bare name uv could satisfy from the index.
+        assert receipt["constraints_content"].splitlines() == [
+            f"dummy @ {wheel.resolve().as_uri()}"
+        ]
+        # Bare mode installs the local wheel path itself, so the import probe
+        # ran against this dist/ artifact, not a name uv resolved elsewhere.
+        assert install[0][-1] == str(wheel.resolve())
+
+    def test_check_fails_closed_when_the_wheel_was_never_built(self, check, tmp_path, fake_uv):
+        dist_dir = tmp_path / "dist"
+        dist_dir.mkdir()
+
+        ok, detail = check.check(
+            check.Package(dist="absent", root="absent"),
+            "bare",
+            dist_dir,
+            str(fake_uv),
+            "3.12",
+        )
+
+        assert ok is False
+        assert "no wheel found" in detail
+        assert "did the build step run?" in detail
+        # Nothing was installed for a package that has no wheel.
+        assert not (tmp_path / "uv-receipt.json").exists()
