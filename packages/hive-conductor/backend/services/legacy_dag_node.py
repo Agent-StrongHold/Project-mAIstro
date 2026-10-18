@@ -474,6 +474,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
         sentinel: Any = None,
         host_mode: str | None = None,
+        principal_roles: tuple[str, ...] = (),
     ) -> None:
         self._raw_node = dict(raw_node)
         self._task_desc = task_desc
@@ -483,6 +484,13 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         self._llm_builder = llm_builder
         self._sentinel = sentinel
         self._host_mode = host_mode
+        # Host-resolved roles for the acting principal, resolved by the runner
+        # from host records (the user store) keyed by the authenticated
+        # user id -- never from request/manifest fields. Without them the
+        # Sentinel permission gate (role intersection, fail-closed) denies
+        # every node no matter what the deployment configures, so the gate
+        # this adapter consults would be unsatisfiable rather than strict.
+        self._principal_roles = tuple(principal_roles)
 
     async def _execute(self, inputs: _LegacyInputs, ctx: NodeContext) -> _LegacyOutput:
         node_id = ctx.node_id
@@ -496,6 +504,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
             principal = Principal(
                 id=ctx.user_id or "anonymous",
                 kind="human",
+                roles=self._principal_roles,
                 scopes=tuple(
                     value for value in (ctx.workspace_id, ctx.project_id, ctx.user_id) if value
                 ),

@@ -242,14 +242,25 @@ class Sentinel:
         reversibility: str = "irreversible",
         default: Tier | None = None,
     ) -> str:
-        """Resolve isolation only after Sentinel's gate is actually cleared."""
+        """Resolve isolation after Sentinel's authorization gate.
+
+        "blocked" is reserved for a host DENIAL: a permission miss (fail-closed
+        table/source) or an explicit ``Tier.BLOCKED`` tier. An authorized
+        action gets the isolation floor of the tier the host policy resolves
+        -- tiers whose human decision is not (yet) cleared run at the
+        "sandbox" floor, never inline; only an explicit ``Tier.OPEN`` or
+        ``Tier.ROLE_AUTO`` host record selects the inline ("async") mode. A
+        deployment's permission grant for the action is itself the host
+        policy record that makes graph-node execution reachable: without one,
+        the fail-closed table denies and every node blocks (#1165 posture).
+        """
         decision = await self.authorize(
             action,
             principal,
             reversibility=reversibility,
             args=args,
         )
-        if not decision.authorized or decision.needs != "none":
+        if not decision.authorized:
             return "blocked"
         return self.resolve_execution_mode(
             action,

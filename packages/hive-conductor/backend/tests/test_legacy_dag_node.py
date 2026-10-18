@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from maistro.graph.nodes.base import NodeContext
+from maistro.security.sentinel.authz_types import Tier
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
@@ -463,3 +464,136 @@ async def test_a_failed_isolated_node_fails_the_adapter_node(
 
     with pytest.raises(RuntimeError, match="subprocess refused"):
         await node._execute(node.input_schema(), _ctx())
+
+
+# --- the Sentinel-gated production shape -----------------------------------------
+
+
+def _production_sentinel(
+    permissions: dict[str, list[str]],
+    *,
+    tier_policy: dict[tuple[str, str], Any] | None = None,
+) -> Any:
+    """A Sentinel wired exactly like the Container composition root.
+
+    Same fail-closed table builder, same live CapabilityPermissionSource over
+    the default capability registry, same delegation authority -- so these
+    tests exercise the authorization shape production DAG nodes actually face,
+    not a permissive test double.
+    """
+    from maistro.capabilities.bootstrap import default_capability_registry
+    from maistro.security.permission_policy import build_permission_table
+    from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
+    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
+    from maistro.security.sentinel.policy import Sentinel
+    from maistro.security.warden.detector import Warden
+
+    table = build_permission_table(preset="none", permissions=permissions)
+    return Sentinel(
+        warden=Warden(),
+        permission_table=table,
+        permission_source=CapabilityPermissionSource(
+            base=table,
+            capabilities=default_capability_registry(),
+        ),
+        tier_policy=tier_policy or {},
+        delegation_authority=InMemoryDelegationAuthority(),
+    )
+
+
+async def test_shipped_default_permissions_block_every_gated_node() -> None:
+    """The shipped empty permission table is deny-by-default (#1165): even a
+    role-bearing principal cannot run a node until the deployment states the
+    grant."""
+    node = _adapter_node(
+        {"id": "n1", "config": {}},
+        sentinel=_production_sentinel({}),
+        principal_roles=("admin",),
+    )
+
+    with pytest.raises(PermissionError, match="host policy did not authorize"):
+        await node._execute(node.input_schema(), _ctx())
+
+
+async def test_a_stated_permission_grant_runs_the_node_at_the_sandbox_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deployment's permission grant IS the host policy record that makes
+    execution reachable; the sandbox floor applies because no explicit tier
+    record selects inline."""
+    import services.legacy_dag_node as adapter
+
+    captured: dict[str, Any] = {}
+
+    def fake_subprocess(raw_node: dict, task: str, context: str, env: dict, mode: str) -> dict:
+        captured["node"] = raw_node["id"]
+        return {"role": "worker", "response": "isolated output", "success": True}
+
+    monkeypatch.setattr(adapter, "_run_node_subprocess", fake_subprocess)
+
+    node = _adapter_node(
+        {"id": "n1", "config": {}},
+        sentinel=_production_sentinel({"graph.node.execute": ["admin"]}),
+        principal_roles=("admin",),
+    )
+    output = await node._execute(node.input_schema(), _ctx())
+
+    assert captured["node"] == "n1"
+    assert output.response == "isolated output"
+
+
+async def test_a_configured_grant_cannot_authorize_a_roleless_principal() -> None:
+    """The permission gate is a role intersection: the host-resolved roles
+    must actually reach the principal, or a configured grant stays dead and
+    every node blocks -- the unsatisfiable-gate defect this wiring repairs."""
+    node = _adapter_node(
+        {"id": "n1", "config": {}},
+        sentinel=_production_sentinel({"graph.node.execute": ["admin"]}),
+        principal_roles=(),
+    )
+
+    with pytest.raises(PermissionError, match="host policy did not authorize"):
+        await node._execute(node.input_schema(), _ctx())
+
+
+async def test_an_untrusted_node_needs_more_than_an_execute_grant() -> None:
+    """Untrusted nodes stay behind the explicit tier-record floor: a plain
+    graph.node.execute grant (and even an untrusted permission grant without a
+    tier record) does not lift them."""
+    node = _adapter_node(
+        {"id": "n1", "config": {"untrusted": True}},
+        sentinel=_production_sentinel(
+            {"graph.node.untrusted": ["admin"], "graph.node.execute": ["admin"]}
+        ),
+        principal_roles=("admin",),
+    )
+
+    with pytest.raises(PermissionError, match="host policy did not authorize"):
+        await node._execute(node.input_schema(), _ctx())
+
+
+async def test_an_explicit_host_tier_record_promotes_a_trusted_node_inline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only an explicit OPEN/ROLE_AUTO host tier record selects inline (async)
+    execution -- request metadata never can."""
+    import services.legacy_dag_node as adapter
+
+    async def fake_llm_node(
+        raw_node: dict, node_id: str, inbound: dict, scratch: dict, task: str, **_: Any
+    ) -> None:
+        scratch[node_id] = {"success": True, "response": "inline output", "role": "worker"}
+
+    monkeypatch.setattr(adapter, "_run_llm_node", fake_llm_node)
+
+    node = _adapter_node(
+        {"id": "n1", "config": {}},
+        sentinel=_production_sentinel(
+            {"graph.node.execute": ["admin"]},
+            tier_policy={("graph.node.execute", "admin"): Tier.ROLE_AUTO},
+        ),
+        principal_roles=("admin",),
+    )
+    output = await node._execute(node.input_schema(), _ctx())
+
+    assert output.response == "inline output"

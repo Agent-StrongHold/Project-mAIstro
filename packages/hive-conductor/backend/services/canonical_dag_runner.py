@@ -34,6 +34,32 @@ _SCOUT_NODE_ID = "__hive_legacy_scout__"
 _SCOUT_EDGE_ID = "__hive_legacy_scout_to_entry__"
 
 
+def _host_principal_roles(user_id: str) -> tuple[str, ...]:
+    """The acting user's host-assigned role, read from the user store.
+
+    The node adapter's Sentinel permission gate is a role intersection over
+    the deployment's fail-closed permission table (#1165), so the principal a
+    node presents must carry the roles the host actually assigned -- resolved
+    here, server-side, from the user record keyed by the authenticated user
+    id. Never a request field: a caller-declared role would be exactly the
+    request-declared authority #845 forbids. Unknown user (or a store that
+    cannot be read) resolves to no roles, and the fail-closed gate denies --
+    a standalone boot without a user store stays deny-by-default.
+    """
+    if not user_id:
+        return ()
+    try:
+        import stores
+
+        user = stores.users.get(user_id)
+    except Exception:  # pragma: no cover - store unavailable in isolation
+        return ()
+    if user is None:
+        return ()
+    role = getattr(user, "role", "")
+    return (str(role),) if role else ()
+
+
 def _raw_nodes(dag_data: Mapping[str, Any]) -> list[dict[str, Any]]:
     nodes = dag_data.get("nodes", [])
     if not isinstance(nodes, list) or not nodes:
@@ -368,6 +394,7 @@ def _resolver(
     llm_builder: Callable[[OnResponseHook | None], Any] | None,
     sentinel: Any = None,
     host_mode: str | None = None,
+    principal_roles: tuple[str, ...] = (),
 ):
     def resolve(node_id: str, _graph: Graph) -> LegacyConductorNode:
         try:
@@ -383,6 +410,7 @@ def _resolver(
             llm_builder=llm_builder,
             sentinel=sentinel,
             host_mode=host_mode,
+            principal_roles=principal_roles,
         )
 
     return resolve
@@ -420,6 +448,7 @@ def _recovery_resolver(run: Run):
         llm_builder=None,
         sentinel=getattr(_container(), "sentinel", None),
         host_mode="async",
+        principal_roles=_host_principal_roles(run.actor_principal_id or ""),
     )
 
 
@@ -563,6 +592,7 @@ async def execute_dag(
             llm_builder=llm_builder,
             sentinel=getattr(_container(), "sentinel", None),
             host_mode="async",
+            principal_roles=_host_principal_roles(user_id),
         ),
         actor_principal_id=user_id or None,
         run_id=admitted_run_id,
