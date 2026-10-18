@@ -108,13 +108,37 @@ def _bash(script: str) -> subprocess.CompletedProcess[str]:
 
 
 def _wait_ready(container: str) -> None:
-    for _ in range(60):
+    # pg_isready also answers during initdb's temporary-server window (it
+    # checks the socket, not the final server), so a probe keyed on it alone
+    # can pass mid-init and the first real query then dies in the restart gap
+    # (observed twice under a congested host: CREATE TABLE exit 2 right after
+    # pg_isready returned 0). Require an actual query from the final server
+    # before declaring readiness — the same probe the drill's script uses.
+    for _ in range(180):
         probe = subprocess.run(
             ["docker", "exec", container, "pg_isready", "-U", PG_USER],
             capture_output=True,
         )
         if probe.returncode == 0:
-            return
+            check = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    container,
+                    "psql",
+                    "-X",
+                    "-Atq",
+                    "-U",
+                    PG_USER,
+                    "-d",
+                    PG_DB,
+                    "-c",
+                    "SELECT 1",
+                ],
+                capture_output=True,
+            )
+            if check.returncode == 0:
+                return
         time.sleep(1)
     pytest.fail(f"characterization PostgreSQL {container} did not become ready")
 

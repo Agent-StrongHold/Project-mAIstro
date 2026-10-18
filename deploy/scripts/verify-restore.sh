@@ -95,13 +95,36 @@ docker run -d --name "${SCRATCH_NAME}" \
   -e POSTGRES_DB="${PG_DB}" \
   "${PG_IMAGE}" >/dev/null
 
-for _ in $(seq 1 60); do
-  if docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1; then
+# Readiness budget: 180 probes (~3 min). The drill's first CI appearance
+# (quality.yml coverage-gate, 2026-10-18) failed exactly here on a shared
+# runner: `docker run` had succeeded and the image was already cached, but a
+# runner congested by the same job's 12-minute root suite left initdb slower
+# than the old 60-probe budget, so the drill reported VERIFIER FAIL for
+# infrastructure rather than for the backup under verification. A probe that
+# finds the container gone reports the engine's last log lines immediately
+# instead of spinning out the remaining budget on a container that can no
+# longer become ready.
+#
+# The probe is pg_isready AND a real query. pg_isready alone also answers
+# during initdb's temporary-server window (it checks the socket, not the
+# final server), so a loop keyed on it alone can break mid-init, and the
+# restore that follows then fails as RESTORE instead of waiting out the
+# restart. Only the final server answers the query.
+scratch_ready() {
+  docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1 \
+    && docker exec "${SCRATCH_NAME}" psql -X -Atq -U "${PG_USER}" -d "${PG_DB}" -c 'SELECT 1' >/dev/null 2>&1
+}
+for _ in $(seq 1 180); do
+  if scratch_ready; then
     break
+  fi
+  if [[ "$(docker inspect -f '{{.State.Running}}' "${SCRATCH_NAME}" 2>/dev/null)" != "true" ]]; then
+    docker logs "${SCRATCH_NAME}" 2>&1 | tail -40 >&2 || true
+    fail_verifier "scratch postgres container exited before becoming ready (last log lines above)"
   fi
   sleep 1
 done
-docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1 \
+scratch_ready \
   || fail_verifier "scratch postgres did not become ready"
 
 # ── 3. Restore the custom-format archive ─────────────────────────────────────
