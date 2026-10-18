@@ -220,8 +220,12 @@ class RCAExtractor:
             rca_category=category,
             rca_prevention=prevention,
             # An RCA is a diagnosis of why a loop failed, not an observed
-            # correction: it claims its cause inferentially, and the epistemic
-            # type says so (M4-B #119).
+            # correction: it claims its cause inferentially (M4-B #119), and
+            # the epistemic type says so. An LLM wrote this diagnosis — it is
+            # a distilled claim, so it lands inferential: plausible wording,
+            # no validation evidence of its own. Distillation may shape the
+            # text; only a source Run or evaluation can ever qualify it for
+            # promotion.
             epistemic_type=EpistemicType.INFERENTIAL,
         )
 

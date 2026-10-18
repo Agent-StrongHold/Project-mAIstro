@@ -24,6 +24,7 @@ from maistro.runs.lifecycle import (
     check_completion_is_earned,
     lease_is_expired,
     reclaim_attempt,
+    refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
     settle_open_node_run,
@@ -54,6 +55,7 @@ from maistro.runs.retention_scope import (
 )
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
+    CHAT_SOURCE,
     EPHEMERAL_ADMISSION_SOURCES,
     occurrence_key,
 )
@@ -63,6 +65,21 @@ from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
 #: reason the retention sweep is: a recovery pass must not become a long
 #: transaction that blocks the workers it is trying to unblock.
 DEFAULT_RECLAIM_BATCH = 100
+
+
+def matches_chat_admission_snapshot(current: Run, expected: Run) -> bool:
+    """Recheck an admission snapshot while the store holds its write authority.
+
+    NodeRun absence must be checked under the same authority by the caller.
+    This is a compare-and-cancel guard, not evidence that an owner died: the
+    request or existing recovery policy still decides which snapshot to offer.
+    """
+    return (
+        current.provenance.get(ADMISSION_SOURCE) == CHAT_SOURCE
+        and current.status in (RunStatus.CREATED, RunStatus.QUEUED, RunStatus.RUNNING)
+        and current.status is expected.status
+        and current.updated_at == expected.updated_at
+    )
 
 
 class RunNotFound(KeyError):
@@ -279,6 +296,31 @@ def validate_child_scope(
         )
 
 
+def validate_effect_claim_parent(
+    parent: Run | None,
+    parent_node_run: NodeRun | None,
+    *,
+    parent_run_id: str | None,
+    parent_node_run_id: str | None,
+    workspace_id: str,
+    project_id: str,
+    allow_cross_project: bool,
+) -> None:
+    """Validate optional parent evidence before admitting an effect-keyed child Run."""
+    if parent_node_run_id is not None and parent_run_id is None:
+        raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+    if parent is None:
+        return
+    validate_child_scope(
+        parent,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        allow_cross_project=allow_cross_project,
+    )
+    if parent_node_run is not None and parent_node_run.run_id != parent_run_id:
+        raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
+
+
 @runtime_checkable
 class ContinuationPurge(Protocol):
     """The slice of a Graph continuation store that a purge needs (#1175).
@@ -466,7 +508,20 @@ class RunStore(Protocol):
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
-    ) -> Run: ...
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
+    ) -> Run:
+        """Admit one Run over ``graph``.
+
+        ``goal_id``/``goal_revision`` bind the Run to the canonical Goal and
+        the exact desired-state revision it was admitted against (#1572). The
+        binding is provenance: written once here, carried in the Run's payload
+        from then on, and accepted from no other call — every later mutation
+        of the Run leaves it untouched, so a historical Run always reads with
+        the revision it used. Set both or neither; the model refuses half a
+        binding.
+        """
+        ...
 
     async def purge_expired_runs(
         self,
@@ -493,6 +548,19 @@ class RunStore(Protocol):
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
 
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None: ...
+
+    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
+        """The Run whose provenance names one task receipt, or None.
+
+        The task admitter stamps the receipt id into ``provenance`` at admit;
+        this is the lookup that makes a minted Run discoverable from the
+        receipt its admission announced (#1176). None means no Run names the
+        receipt. A Run whose payload has been archived cold is outside this
+        search — hours past any retry window — and there is at most one: task
+        ids are minted unique, and a second Run naming the same receipt is
+        exactly the duplicate admission this lookup exists to prevent.
+        """
+        ...
 
     async def find_run_by_effect(self, effect_key: str) -> Run | None: ...
 
@@ -556,6 +624,11 @@ class RunStore(Protocol):
     ) -> Run: ...
 
     async def claim_delegation_transport_attempt(self, run_id: str) -> bool: ...
+
+    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
+        """Cancel only an unchanged chat admission with no NodeRuns, atomically."""
+        ...
+
     async def transition_run(
         self,
         run_id: str,
@@ -835,6 +908,8 @@ class InMemoryRunStore:
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> Run:
         await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
@@ -861,6 +936,8 @@ class InMemoryRunStore:
             actor_principal_id=require_admitted_actor(actor_principal_id),
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
+            goal_id=goal_id,
+            goal_revision=goal_revision,
         )
         run = admit_in_state(run, initial_status)
         self._claim_occurrence(run)
@@ -1194,37 +1271,21 @@ class InMemoryRunStore:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
         return run.model_copy(deep=True)
 
+    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
+        # Insertion-order scan; a match is unique by construction (see the
+        # protocol docstring). The provenance key is spelled by the task
+        # admitter's TASK_ID_KEY; a literal here avoids the runs->tasks import
+        # edge the constant would drag in.
+        for run in self._runs.values():
+            if run.provenance.get("task_id") == task_id:
+                return run.model_copy(deep=True)
+        return None
+
     async def find_run_by_effect(self, effect_key: str) -> Run | None:
         for run in self._runs.values():
             if run.provenance.get("effect_key") == effect_key:
                 return run.model_copy(deep=True)
         return None
-
-    def _require_parent_scope(
-        self,
-        graph: Graph,
-        *,
-        parent_run_id: str | None,
-        parent_node_run_id: str | None,
-        allow_cross_project: bool,
-    ) -> Run | None:
-        """Validate the optional parent chain for an effect claim; return the parent."""
-        if parent_node_run_id is not None and parent_run_id is None:
-            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
-        parent = self._require_run(parent_run_id) if parent_run_id is not None else None
-        if parent is None:
-            return None
-        validate_child_scope(
-            parent,
-            workspace_id=graph.workspace_id,
-            project_id=graph.project_id,
-            allow_cross_project=allow_cross_project,
-        )
-        if parent_node_run_id is not None:
-            parent_node_run = self._require_node_run(parent_node_run_id)
-            if parent_node_run.run_id != parent_run_id:
-                raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
-        return parent
 
     async def claim_run_by_effect(
         self,
@@ -1253,10 +1314,19 @@ class InMemoryRunStore:
         for existing in self._runs.values():
             if existing.provenance.get("effect_key") == effect_key:
                 return RunEffectClaim(existing.model_copy(deep=True), False)
-        self._require_parent_scope(
-            graph,
+        parent = self._require_run(parent_run_id) if parent_run_id is not None else None
+        parent_node_run = (
+            self._require_node_run(parent_node_run_id)
+            if parent is not None and parent_node_run_id is not None
+            else None
+        )
+        validate_effect_claim_parent(
+            parent,
+            parent_node_run,
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
             allow_cross_project=allow_cross_project,
         )
         run = admit_in_state(
@@ -1325,6 +1395,17 @@ class InMemoryRunStore:
         provenance = dict(run.provenance)
         provenance["transport_attempted"] = True
         self._runs[run_id] = run.model_copy(update={"provenance": provenance})
+        return True
+
+    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
+        # No await: parent comparison, child absence and cancellation are one
+        # event-loop operation, serialized with create_node_run.
+        current = self._require_run(expected.run_id)
+        if not matches_chat_admission_snapshot(current, expected):
+            return False
+        if self._node_runs_of(expected.run_id):
+            return False
+        self._runs[expected.run_id] = transition_run(current, RunStatus.CANCELLED, error=error)
         return True
 
     async def transition_run(
@@ -1632,6 +1713,15 @@ class InMemoryRunStore:
             error=error,
             metrics=metrics,
         )
+        if target is AttemptStatus.COMPLETED:
+            # The executor's Run fence is check-then-act across two awaits
+            # (#1335); this guard runs with nothing between it and the durable
+            # write, so a cancellation cannot land a COMPLETED Attempt under a
+            # terminal Run here.
+            node_run = self._require_node_run(attempt.node_run_id)
+            refuse_completion_under_terminal_run(
+                self._require_run(node_run.run_id).status, attempt_id
+            )
         self._attempts[attempt_id] = updated
         return updated.model_copy(deep=True)
 

@@ -73,6 +73,15 @@ _PROTECTED_OPS: dict[str, dict[str, str]] = {
         # match the answer route: seeing a question you have no scope to answer
         # serves nobody and leaks what the Run is doing (#244).
         "/v1/hitl": "dags.write",
+        # The RUM ring aggregates every principal's navigation telemetry
+        # (route templates, session ids, timings) into one instance-wide
+        # read-back — a cross-principal aggregate, so it takes the same
+        # operator-only posture as the persona-wide feedback check above.
+        # Ingest (POST) is deliberately NOT here: every session's reporter
+        # beacons its own bounded, schema-projected timings on the session
+        # it already holds, and gating the beacon would starve the ring of
+        # exactly the ordinary traffic it exists to measure (#1420).
+        "/v1/rum": "rum.read",
     },
     "DELETE": {
         "/v1/settings": "config.delete",

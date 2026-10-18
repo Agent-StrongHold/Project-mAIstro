@@ -14,6 +14,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.promoter import LearningPromoter
 from maistro.persistence.sqlite_learnings import SqliteLearningStore
 from maistro.protocols.memory import IneffectiveLearningSource
@@ -51,12 +52,14 @@ async def test_lifecycle_state_survives_a_round_trip(tmp_path: Path) -> None:
     # claim under test is persistence, not object identity.
     db = tmp_path / "learnings.db"
     async with aiosqlite.connect(db) as conn:
-        store = SqliteLearningStore(conn)
+        store = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
         await store.store(_validated_learning())
 
     async with aiosqlite.connect(db) as conn:
-        rows = await SqliteLearningStore(conn).produced_by("run-77")
+        rows = await SqliteLearningStore(
+            conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED
+        ).produced_by("run-77")
 
     assert len(rows) == 1
     revived = rows[0]
@@ -91,7 +94,7 @@ async def test_repeated_failures_are_captured_as_anti_patterns_on_the_durable_tw
     db = tmp_path / "learnings.db"
 
     async with aiosqlite.connect(db) as conn:
-        store = SqliteLearningStore(conn)
+        store = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
         chronic = Learning(
             trigger_keys=["force-push"],
@@ -128,7 +131,9 @@ async def test_repeated_failures_are_captured_as_anti_patterns_on_the_durable_tw
     # The reclassification is durable: a cold read sees the anti-pattern,
     # not the empirical learning that was first stored.
     async with aiosqlite.connect(db) as conn:
-        revived = await SqliteLearningStore(conn).produced_by("run-1", org_id="org-1")
+        revived = await SqliteLearningStore(
+            conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED
+        ).produced_by("run-1", org_id="org-1")
     assert len(revived) == 1
     assert revived[0].id == chronic_id
     assert revived[0].epistemic_type is EpistemicType.ANTI_PATTERN
@@ -176,7 +181,7 @@ async def test_pre_m4b_rows_upgrade_to_the_defaults_they_always_meant(
         )
         await conn.commit()
 
-        store = SqliteLearningStore(conn)
+        store = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
         rows = await store.list_all(org_id="org-1")
 
@@ -210,7 +215,7 @@ async def test_a_malformed_instant_column_costs_that_instant_nothing_more(
     whole twin) into an outage of the whole store."""
     db = tmp_path / "learnings.db"
     async with aiosqlite.connect(db) as conn:
-        store = SqliteLearningStore(conn)
+        store = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
         await conn.execute(
             """INSERT INTO learnings (learning, run_id, org_id, created_at,
@@ -221,7 +226,9 @@ async def test_a_malformed_instant_column_costs_that_instant_nothing_more(
         await conn.commit()
 
     async with aiosqlite.connect(db) as conn:
-        [revived] = await SqliteLearningStore(conn).produced_by("run-bad", org_id="org-1")
+        [revived] = await SqliteLearningStore(
+            conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED
+        ).produced_by("run-bad", org_id="org-1")
 
     assert revived.validated_at is None
     assert revived.last_confirmed_at is None

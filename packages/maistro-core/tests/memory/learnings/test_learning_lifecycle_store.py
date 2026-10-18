@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.protocols.memory import (
     IneffectiveLearningSource,
@@ -37,7 +38,7 @@ def _lr(**overrides: object) -> Learning:
 
 class TestProtocolConformance:
     def test_in_memory_store_runs_the_lifecycle(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         assert isinstance(store, LearningStore)
         assert isinstance(store, LearningLifecycleStore)
         assert isinstance(store, IneffectiveLearningSource)
@@ -52,13 +53,13 @@ class TestProtocolConformance:
 
 class TestPointRead:
     async def test_get_found_and_missing(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lid = await store.store(_lr())
         assert (await store.get(lid)) is not None
         assert await store.get(999) is None
 
     async def test_get_org_narrows_when_given(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lid = await store.store(_lr(org_id="org-1"))
         assert await store.get(lid, org_id="org-2") is None
         assert await store.get(lid, org_id="org-1") is not None
@@ -66,11 +67,11 @@ class TestPointRead:
 
 class TestReinforceContradict:
     async def test_reinforce_missing_id_is_none(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         assert await store.reinforce(42) is None
 
     async def test_reinforce_and_contradict_move_the_row(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lid = await store.store(_lr())
         before = await store.get(lid)
         assert before is not None
@@ -83,7 +84,7 @@ class TestReinforceContradict:
         assert after.confidence == pytest.approx(before.confidence)
 
     async def test_contradict_respects_org_scope(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lid = await store.store(_lr(org_id="org-1"))
         assert await store.contradict(lid, org_id="org-2") is None
         row = await store.get(lid)
@@ -93,7 +94,7 @@ class TestReinforceContradict:
 
 class TestSupersede:
     async def test_supersede_unknown_id_raises(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         with pytest.raises(KeyError):
             await store.supersede(42, _lr())
 
@@ -101,7 +102,7 @@ class TestSupersede:
         # The replacement overlaps the old row's keys; dedup must not fold it
         # back into the row being replaced (dedup probes active rows only, and
         # the old row is retired first).
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         old_id = await store.store(_lr(keys=["deploy", "prod"]))
         new_id = await store.supersede(
             old_id,
@@ -119,7 +120,7 @@ class TestSupersede:
 
     async def test_superseded_rows_stay_readable(self) -> None:
         # Institutional knowledge is retained, never deleted.
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         old_id = await store.store(_lr(learning="old belief"))
         await store.supersede(old_id, _lr(learning="new belief"))
         old = await store.get(old_id)
@@ -129,17 +130,17 @@ class TestSupersede:
 
 class TestApplyDecay:
     async def test_decay_sweep_moves_aged_rows_and_counts_them(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_lr(created_at=NOW - timedelta(days=30)))
         assert await store.apply_decay(now=NOW) == 1
 
     async def test_fresh_rows_do_not_count_as_decayed(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_lr(created_at=NOW))
         assert await store.apply_decay(now=NOW) == 0
 
     async def test_terminal_rows_do_not_decay(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         old_id = await store.store(_lr(created_at=NOW - timedelta(days=30)))
         new_id = await store.supersede(old_id, _lr(created_at=NOW - timedelta(days=30)))
         superseded = await store.get(old_id)
@@ -161,7 +162,7 @@ class TestConsolidate:
     # store internals.
 
     async def test_merges_same_axes_overlapping_rows(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         a_id = await store.store(_lr(keys=["deploy"], learning="a", success_after_use=2))
         b_id = await store.store(
             _lr(keys=["rollback"], learning="b", failure_after_use=3, hit_count=4)
@@ -187,20 +188,20 @@ class TestConsolidate:
         assert absorbed.superseded_by == a_id
 
     async def test_does_not_merge_below_overlap_threshold(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_lr(keys=["a", "b"]))
         await store.store(_lr(keys=["b", "c"]))  # 1/3 overlap < 0.5
         assert len(await store.consolidate()) == 2
 
     async def test_does_not_merge_across_orgs_or_tools(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_lr(keys=["deploy", "prod"], org_id="org-1"))
         await store.store(_lr(keys=["deploy", "prod"], org_id="org-2"))
         await store.store(_lr(keys=["deploy", "prod"], tool_name="other"))
         assert len(await store.consolidate()) == 3
 
     async def test_org_narrows_the_sweep_and_blank_sweeps_all(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         one_id = await store.store(_lr(keys=["deploy"], org_id="org-1"))
         two_id = await store.store(_lr(keys=["prod"], org_id="org-1"))
         await store.store(_lr(keys=["deploy"], org_id="org-2"))
@@ -220,7 +221,7 @@ class TestConsolidate:
         assert len(await store.consolidate()) == 2
 
     async def test_consolidated_rows_are_not_remerged(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         a_id = await store.store(_lr(keys=["deploy"]))
         b_id = await store.store(_lr(keys=["prod"]))
         drifted_a = await store.get(a_id)

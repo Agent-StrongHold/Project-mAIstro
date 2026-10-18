@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.lifecycle import (
     DEFAULT_CONFIDENCE,
     REINFORCE_DELTA,
@@ -94,7 +95,7 @@ class _Clock:
 
 
 def _lifecycle() -> tuple[InMemoryLearningLifecycle, InMemoryLearningStore, _Clock]:
-    store = InMemoryLearningStore()
+    store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     clock = _Clock()
     return InMemoryLearningLifecycle(store, clock=clock), store, clock
 
@@ -310,7 +311,7 @@ class TestDecayAndSupersession:
         assert refreshed == pytest.approx(stale + 0.05 - 0.08)
 
     async def test_decay_respects_the_floor_and_can_retire(self) -> None:
-        store = InMemoryLearningStore()
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         clock = _Clock()
         lifecycle = InMemoryLearningLifecycle(
             store, decay_per_hour=0.004, decay_floor=0.05, retire_below=0.12, clock=clock
