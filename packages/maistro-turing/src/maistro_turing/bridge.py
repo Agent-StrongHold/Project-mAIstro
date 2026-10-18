@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from maistro.security._types import WardenVerdict
+from maistro_turing.tiers import clamp_weight
+from maistro_turing.types import MemoryTier as TierBoundsTier
 
 if TYPE_CHECKING:
     # maistro-core does not ship a py.typed marker yet, so these imports are
@@ -155,19 +157,40 @@ class TuringMemoryBridge:
         intent: str = "",
         context: dict[str, Any] | None = None,
     ) -> str:
+        """The single validated write seam for Turing episodic memories.
+
+        Every Turing memory write (actor self-writes, chat capture, producers)
+        passes through here, so the documented tier-weight safeguard is
+        enforced exactly once, before persistence (#859): the tier name must
+        resolve to a canonical ``MemoryTier``, the weight must be a finite
+        real number, and it is clamped into the tier's declared bounds by
+        ``clamp_weight``. Out-of-range proposals are clamped; malformed ones
+        (wrong type, non-finite, unknown tier) fail the write.
+        """
         if self._episodic is None:
             logger.warning("no episodic store configured; memory write dropped")
             return ""
         from maistro.types.memory import (
             EpisodicMemory,
-            MemoryTier,
         )
+        from maistro.types.memory import (
+            MemoryTier as CoreMemoryTier,
+        )
+
+        if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+            raise TypeError(f"weight must be a real number, got {type(weight).__name__}")
+        # Turing's tier enum carries the declared weight bounds (tiers.py);
+        # the core enum is what the episodic store persists. Same values,
+        # deliberately distinct types — each name is converted once, and an
+        # unknown tier fails the write here.
+        canonical_tier = TierBoundsTier(tier)
+        clamped = clamp_weight(canonical_tier, weight)
 
         mem = EpisodicMemory(
             content=content,
-            tier=MemoryTier(tier),
+            tier=CoreMemoryTier(canonical_tier.value),
             source=source,
-            weight=weight,
+            weight=clamped,
             context=context or {},
         )
         return str(await self._episodic.store(mem))

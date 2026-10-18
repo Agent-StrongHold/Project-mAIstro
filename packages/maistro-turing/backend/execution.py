@@ -138,7 +138,14 @@ class TuringExecutionPlane:
         """How many Turing chat Runs this process still tracks."""
         return len(self._retained_runs)
 
-    async def _scope_for(self, user_id: str) -> tuple[str, str]:
+    async def scope_for(self, user_id: str) -> tuple[str, str]:
+        """Resolve the canonical Workspace/Project scope for a principal.
+
+        Public (#859) because every scoped cognitive-state route needs the
+        same resolution the chat admission uses: identity comes from the
+        authenticated principal, the Workspace is created once per principal,
+        and no route may invent a scope of its own.
+        """
         async with self._scope_lock:
             workspace_id = self._workspace_by_user.get(user_id)
             if workspace_id is None:
@@ -151,6 +158,11 @@ class TuringExecutionPlane:
                 self._workspace_by_user[user_id] = workspace_id
             root = await self.project_store.root_for_workspace(workspace_id)
             return workspace_id, root.project_id
+
+    # Retained private alias: the canonical scope resolution was reachable
+    # only privately before #859 made state routes scope-aware.
+    async def _scope_for(self, user_id: str) -> tuple[str, str]:
+        return await self.scope_for(user_id)
 
     async def _track_admission(self, run_id: str, *, workspace_id: str) -> None:
         self._retained_runs[run_id] = None
@@ -297,7 +309,7 @@ class TuringExecutionPlane:
 
         admitted_run_id: str | None = None
         try:
-            workspace_id, project_id = await self._scope_for(user_id)
+            workspace_id, project_id = await self.scope_for(user_id)
             graph = Graph(
                 workspace_id=workspace_id,
                 project_id=project_id,

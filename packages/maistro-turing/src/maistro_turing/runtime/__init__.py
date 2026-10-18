@@ -22,6 +22,14 @@ from maistro_turing.bridge import (
 
 logger = logging.getLogger("maistro_turing.runtime")
 
+#: Bounded per-session history (#859). A session's state writes must be
+#: bounded: the turn window fed to the model is already sliced, and the
+#: stored history is trimmed to the same declared bound so a long-lived
+#: session cannot grow process memory without limit. Oldest turns fall off
+#: first; the durable trace of a conversation is the episodic chat capture,
+#: not this in-memory list.
+MAX_HISTORY_TURNS = 40
+
 
 # ---------------------------------------------------------------- config -----
 
@@ -229,6 +237,8 @@ class TuringChatSession:
             raise TuringContentBlocked("model result refused by Warden")
 
         self._history.append({"role": "assistant", "content": reply})
+        if len(self._history) > MAX_HISTORY_TURNS:
+            del self._history[:-MAX_HISTORY_TURNS]
 
         try:
             await self._memory.store_episode(

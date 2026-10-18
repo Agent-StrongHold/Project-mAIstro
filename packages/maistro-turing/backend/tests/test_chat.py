@@ -518,6 +518,9 @@ def test_chat_sanitizes_a_completed_run_with_missing_reply(authed_client, monkey
     )
 
     class ProjectionFailurePlane:
+        async def scope_for(self, _user_id: str) -> tuple[str, str]:
+            return ("ws-projection", "proj-projection")
+
         async def run_chat(self, **_kwargs: Any) -> Any:
             return record
 
@@ -684,10 +687,17 @@ def test_chat_route_handles_a_request_without_middleware_verdict(monkeypatch):
     class StubPlane:
         project_store: Any = SimpleNamespace()
 
+        async def scope_for(self, _user_id: str) -> tuple[str, str]:
+            return ("ws-direct", "proj-direct")
+
         async def run_chat(self, **_kwargs: Any) -> Any:
             return record
 
     class StubState:
+        sessions: Any = SimpleNamespace(
+            resolve=lambda **_kwargs: object(),
+        )
+
         def new_chat_session(self) -> Any:
             return object()
 

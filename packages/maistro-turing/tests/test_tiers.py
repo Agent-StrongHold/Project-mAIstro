@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from maistro_turing.tiers import INHERITANCE_PRIORITY, WEIGHT_BOUNDS, clamp_weight
 from maistro_turing.types import MemoryTier
 
@@ -25,6 +27,20 @@ def test_ac_2_3_clamp_weight_respects_bounds() -> None:
     assert clamp_weight(MemoryTier.ACCOMPLISHMENT, 0.0) == lo
     assert clamp_weight(MemoryTier.ACCOMPLISHMENT, 0.7) == 0.7
     assert clamp_weight(MemoryTier.ACCOMPLISHMENT, 5.0) == hi
+
+
+def test_clamp_weight_refuses_non_finite_proposals() -> None:
+    """A NaN would make max/min return an arbitrary endpoint; refuse instead
+    of laundering a malformed weight into a plausible-looking one (#859)."""
+    import math
+
+    with pytest.raises(ValueError, match="finite"):
+        clamp_weight(MemoryTier.OBSERVATION, float("nan"))
+    with pytest.raises(ValueError, match="finite"):
+        clamp_weight(MemoryTier.WISDOM, float("inf"))
+    with pytest.raises(ValueError, match="finite"):
+        clamp_weight(MemoryTier.WISDOM, float("-inf"))
+    assert math.isfinite(clamp_weight(MemoryTier.OBSERVATION, 0.3))
 
 
 def test_ac_2_4_inheritance_priority_accomplishment_eq_5() -> None:

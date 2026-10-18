@@ -503,6 +503,30 @@ class TestTuringChatSession:
         assert "User: Hi" in provider.prompts[0]
         assert memory.calls[0]["tier"] == "observation"
 
+    async def test_session_history_is_bounded(self) -> None:
+        """Session state writes are bounded (#859): a long-lived session
+        cannot grow its stored history without limit. Oldest turns fall off
+        first; the durable trace is the episodic capture, not this list."""
+        from maistro_turing.runtime import MAX_HISTORY_TURNS
+
+        session = TuringChatSession(
+            memory=FakeMemoryBridge(),  # type: ignore[arg-type]
+            provider=FakeChatProvider(reply="ok"),  # type: ignore[arg-type]
+            classifier=FakeClassifierBridge(),  # type: ignore[arg-type]
+            security=FakeSecurityBridge(),  # type: ignore[arg-type]
+            self_id="self-1",
+        )
+        for turn in range(MAX_HISTORY_TURNS + 8):
+            await session.handle_message(f"turn {turn}")
+
+        assert len(session._history) == MAX_HISTORY_TURNS
+        # The oldest turns fell off; the newest pair is intact.
+        assert session._history[-1] == {"role": "assistant", "content": "ok"}
+        assert session._history[-2] == {"role": "user", "content": f"turn {MAX_HISTORY_TURNS + 7}"}
+        first_kept_turn = ((MAX_HISTORY_TURNS + 8) * 2 - MAX_HISTORY_TURNS) // 2
+        assert session._history[0] == {"role": "user", "content": f"turn {first_kept_turn}"}
+        assert {"role": "user", "content": "turn 0"} not in session._history
+
     async def test_handle_message_includes_previous_context_on_second_turn(self) -> None:
         provider = FakeChatProvider(reply="ok")
         session = TuringChatSession(
