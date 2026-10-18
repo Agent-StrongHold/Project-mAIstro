@@ -56,3 +56,29 @@ and the permission test's stub now speaks the one-session protocol so the real
 backup.sh completes end-to-end in the stub environment, with its artifact-inventory
 assertion updated to the #1881 contract (dump/provenance/schema/rowcounts + sha256
 car + deployed ref) while keeping every permission assertion (dir 0700, files 0600).
+
+## Independent verification at d58eeea055ba (2026-10-18)
+
+Executed from a clean checkout of the exact head, develop base `ab8b3737`:
+
+- `uv run pytest tests/test_backup_restore_oracle.py tests/test_backup_permissions.py`
+  — 21 passed (includes the two CI-failing permission tests and the two dead-session /
+  garbage-snapshot-id behavioral regressions).
+- `uv run pytest tests/test_restore_oracle_characterization.py` — 4 passed on
+  `pgvector/pgvector:pg17` throwaway containers; scratch containers removed on exit.
+- CI's exact root lane, `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest tests/
+  --ignore=tests/tools/registry -q` — 5001 passed, 135 skipped, 0 failed. The coverage
+  gate's extra named legs (`tests/test_model_check_consumer_claim.py`,
+  `packages/maistro-core/tests/extensions/test_lifecycle_proof.py`) — 38 passed.
+- Gates: `ruff check .`, `ruff format --check .`, `scripts/check-suite-inventory.py`
+  (tests/: 5229 = baseline 4117 + all note deltas, this note's +19 included),
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (1322 identities = 1322 findings), `check-ratchet-provenance.py`,
+  `check-shipped-surface-truth.py` — all rc=0. `quality/` untouched vs base.
+- Failure classes exercised live against the real drill: corrupt dump → RESTORE FAIL;
+  missing hash file and re-signed tampered evidence → ARTIFACT FAIL; the drill's
+  SEMANTIC path via `test_semantic_loss_is_rejected`. No scratch containers leaked.
+- Pre-#1881 fixture provenance checked: `verify-restore.sh` fixture is byte-identical
+  to the base blob; `backup.sh` fixture is the issue-cited `6454aac` blob, and the
+  fail-before assertions (`--snapshot=` absent, `.sql` present) hold for the base blob
+  too, so the fail-before property is not fixture-dependent.
