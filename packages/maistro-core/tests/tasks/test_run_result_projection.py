@@ -25,10 +25,7 @@ async def test_task_success_projects_product_result_without_rewriting_attempt_ev
         name="Task",
         nodes=[Node(node_id="task-node", node_type="agent")],
     )
-    run = await store.create_run(
-        graph,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     output = ConductorOutput(
         success=True,
         final_answer="done",

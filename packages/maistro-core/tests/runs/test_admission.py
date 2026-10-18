@@ -24,6 +24,7 @@ from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 #: Any registered kind works; the tests are about admission, not this kind.
 KIND = "transform.format_markdown"
+ACTOR = "admission-test-user"
 
 
 @pytest.fixture
@@ -105,7 +106,7 @@ async def test_admission_yields_a_run_scoped_to_the_project(scoped) -> None:
         node_type=KIND,
         name="summarise the inbox",
         source="task-queue",
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        actor_principal_id=ACTOR,
     )
     assert run.run_id
     assert (run.workspace_id, run.project_id) == ("w1", project_id)
@@ -124,7 +125,7 @@ async def test_the_run_records_what_admitted_it(scoped) -> None:
         name="n",
         source="chat-turn",
         provenance={"session_id": "s-7"},
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        actor_principal_id=ACTOR,
     )
     assert run.provenance[ADMISSION_SOURCE] == "chat-turn"
     assert run.provenance["session_id"] == "s-7", "caller provenance survives alongside it"
@@ -153,7 +154,7 @@ async def test_two_admissions_are_two_runs(scoped) -> None:
         node_type=KIND,
         name="n",
         source="s",
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        actor_principal_id=ACTOR,
     )
     second = await admit_direct_work(
         store,
@@ -162,7 +163,7 @@ async def test_two_admissions_are_two_runs(scoped) -> None:
         node_type=KIND,
         name="n",
         source="s",
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        actor_principal_id=ACTOR,
     )
     assert first.run_id != second.run_id
 
@@ -197,7 +198,7 @@ async def test_caller_provenance_cannot_override_the_admission_source(scoped) ->
         name="n",
         source="task_queue",
         provenance={ADMISSION_SOURCE: "totally_trusted_webhook", "other": "kept"},
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        actor_principal_id=ACTOR,
     )
 
     assert run.provenance[ADMISSION_SOURCE] == "task_queue"

@@ -1,12 +1,7 @@
 """Canonical logical and physical execution lifecycle."""
 
-from maistro.runs.access import (
-    RUN_READ_ACTION,
-    AuthorizedRunStore,
-    RunAccessContext,
-    RunAuthorization,
-    RunReader,
-)
+from maistro.runs.concurrency import RunConcurrencyExceeded, RunConcurrencyLimits
+from maistro.runs.eval import EvalSummary, eval_summary, open_re_eval_attempt
 from maistro.runs.execution import AttemptExecutionService, AttemptReconciler
 from maistro.runs.lifecycle import (
     ATTEMPT_TRANSITIONS,
@@ -23,10 +18,13 @@ from maistro.runs.model import (
     Attempt,
     AttemptResult,
     AttemptStatus,
+    EvalJudge,
+    EvalMethod,
     ExecutionLease,
     GraphSnapshot,
     NodeRun,
     Run,
+    RunEvalScore,
     RunStatus,
 )
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
@@ -37,6 +35,7 @@ from maistro.runs.store import (
     AttemptNotFound,
     InMemoryRunStore,
     NodeRunNotFound,
+    RunEffectClaim,
     RunIntegrityError,
     RunNotFound,
     RunStore,
@@ -46,7 +45,6 @@ from maistro.runs.store import (
 
 __all__ = [
     "ATTEMPT_TRANSITIONS",
-    "RUN_READ_ACTION",
     "RUN_TRANSITIONS",
     "TERMINAL_ATTEMPT_STATUSES",
     "TERMINAL_RUN_STATUSES",
@@ -59,7 +57,9 @@ __all__ = [
     "AttemptReconciler",
     "AttemptResult",
     "AttemptStatus",
-    "AuthorizedRunStore",
+    "EvalJudge",
+    "EvalMethod",
+    "EvalSummary",
     "ExecutionLease",
     "GraphSnapshot",
     "InMemoryRunStore",
@@ -67,16 +67,19 @@ __all__ = [
     "NodeRun",
     "NodeRunNotFound",
     "Run",
-    "RunAccessContext",
-    "RunAuthorization",
+    "RunConcurrencyExceeded",
+    "RunConcurrencyLimits",
+    "RunEffectClaim",
+    "RunEvalScore",
     "RunExecutionService",
     "RunIntegrityError",
     "RunNotFound",
-    "RunReader",
     "RunStatus",
     "RunStore",
     "SqliteRunStore",
     "StaleExecutionFence",
+    "eval_summary",
+    "open_re_eval_attempt",
     "transition_attempt",
     "transition_node_run",
     "transition_run",

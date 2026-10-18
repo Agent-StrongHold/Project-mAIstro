@@ -66,8 +66,7 @@ async def _accepted_emptied_attempt(spine: Any, *, node_result: Any = RECOVERED)
     """
     store, workspace, project_id = spine
     run = await store.create_run(
-        _graph(workspace, project_id),
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
     )
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
@@ -108,8 +107,7 @@ class TestTheSurveyReadsTheStoreProductionWrites:
         the survey is only ever right by accident."""
         store, workspace, project_id = spine
         run = await store.create_run(
-            _graph(workspace, project_id),
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
         )
         node_run = await store.create_node_run(run.run_id, node_id="node-1")
         await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
@@ -143,8 +141,7 @@ class TestClassification:
         outcome names it, so there is no second copy anywhere."""
         store, workspace, project_id = spine
         run = await store.create_run(
-            _graph(workspace, project_id),
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
         )
         node_run = await store.create_node_run(run.run_id, node_id="node-1")
         await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
@@ -211,8 +208,7 @@ class TestTheRepair:
     async def test_a_running_attempt_is_refused(self, spine: Any) -> None:
         store, workspace, project_id = spine
         run = await store.create_run(
-            _graph(workspace, project_id),
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
         )
         node_run = await store.create_node_run(run.run_id, node_id="node-1")
         await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
@@ -263,8 +259,7 @@ class TestTheRepair:
         that never accepted this Attempt is left exactly as it was."""
         store, workspace, project_id = spine
         run = await store.create_run(
-            _graph(workspace, project_id),
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
         )
         node_run = await store.create_node_run(run.run_id, node_id="node-1")
         await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
@@ -323,8 +318,7 @@ class TestACappedSweepSaysSo:
         store, workspace, project_id = spine
         for _ in range(2):
             await store.create_run(
-                _graph(workspace, project_id),
-                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+                _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
             )
 
         found = await survey(store, limit=2)
@@ -336,8 +330,7 @@ class TestACappedSweepSaysSo:
     async def test_a_sweep_that_saw_everything_reports_complete(self, spine: Any) -> None:
         store, workspace, project_id = spine
         await store.create_run(
-            _graph(workspace, project_id),
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
         )
 
         found = await survey(store, limit=50)
@@ -389,8 +382,7 @@ class TestTheSweepStaysInsideItsWorkspace:
     @staticmethod
     async def _emptied_run_in(store: Any, workspace: str, project_id: str) -> Any:
         run = await store.create_run(
-            _graph(workspace, project_id),
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
         )
         node_run = await store.create_node_run(run.run_id, node_id="node-1")
         await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)

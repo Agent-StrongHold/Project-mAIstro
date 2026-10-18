@@ -36,6 +36,8 @@ from maistro.runs.model import RunStatus
 from maistro.runs.store import RunIntegrityError
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
+from .._canonical_helpers import hitl_authorization
+
 
 class _StepIn(BaseModel):
     pass
@@ -94,9 +96,7 @@ def _resolve(node: BaseNode[Any, Any]) -> Any:
 async def _admit(run_store: InMemoryRunStore, graph: Graph) -> str:
     """Admit the Run, the way a producer does, then hand traversal its id."""
     run = await run_store.create_run(
-        graph,
-        initial_status=RunStatus.QUEUED,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
     )
     return run.run_id
 
@@ -113,6 +113,7 @@ async def test_a_run_executed_through_this_store_is_assembled_from_the_spine() -
         node_resolver=_resolve(_Step()),
         run_id=await _admit(run_store, graph),
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.COMPLETED
@@ -143,6 +144,7 @@ async def test_the_spine_is_the_only_copy_of_the_execution_history() -> None:
         node_resolver=_resolve(_Step()),
         run_id=await _admit(run_store, graph),
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     canonical = await run_store.get_run(record.run_id)
@@ -164,6 +166,7 @@ async def test_a_run_the_spine_never_saw_is_refused_rather_than_minted() -> None
             _graph(workspace_id, project_id, _Step.kind),
             store=store,
             node_resolver=_resolve(_Step()),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
     assert await run_store.list_by_status(RunStatus.RUNNING, limit=10) == []
 
@@ -181,11 +184,14 @@ async def _pause_answer_resume(
         node_resolver=_resolve(_Ask()),
         run_id=await _admit(run_store, graph),
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     assert paused.status is RunStatus.PAUSED
     assert [item.run_id for item in await store.list_by_status(RunStatus.PAUSED)] == [paused.run_id]
 
-    answered = await store.submit_hitl_answer(paused.run_id, "step", {"answer": "yes"})
+    answered = await store.submit_hitl_answer(
+        paused.run_id, "step", {"answer": "yes"}, authorization=hitl_authorization()
+    )
     assert answered.status is RunStatus.QUEUED
     assert answered.hitl_answers["step"]["answer"] == "yes"
 
@@ -225,7 +231,9 @@ async def test_an_unknown_run_is_absent_rather_than_an_empty_record() -> None:
 
     assert await store.get("no-such-run") is None
     with pytest.raises(KeyError):
-        await store.submit_hitl_answer("no-such-run", "step", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "no-such-run", "step", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def _reconcile_spine() -> tuple[
@@ -256,9 +264,7 @@ async def _continued_run(
 ) -> str:
     """Admit a Run, drive it to `run_status`, and persist a continuation."""
     run = await run_store.create_run(
-        graph,
-        initial_status=RunStatus.QUEUED,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
     )
     if run_status is not None and run_status is not RunStatus.QUEUED:
         await run_store.transition_run(run.run_id, RunStatus.RUNNING)

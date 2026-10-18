@@ -31,10 +31,7 @@ async def test_sqlite_round_trips_accepted_attempt_result() -> None:
     async with aiosqlite.connect(":memory:") as conn:
         store = SqliteRunStore(conn, project_store=projects)
         await store.ensure_schema()
-        run = await store.create_run(
-            graph,
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-        )
+        run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
         node_run = await store.create_node_run(run.run_id, node_id="node-1")
         service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())
 

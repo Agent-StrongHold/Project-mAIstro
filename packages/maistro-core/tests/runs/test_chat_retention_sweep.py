@@ -43,8 +43,7 @@ async def test_an_admitted_chat_run_carries_a_retention_deadline(wired) -> None:
     admitter = _admitter(runs, projects)
 
     run = await admitter.admit(
-        [{"role": "user", "content": "hello"}],
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        [{"role": "user", "content": "hello"}], actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
     )
 
     assert run.retention_expires_at is not None
@@ -58,8 +57,7 @@ async def test_opting_out_leaves_the_deadline_unset(wired) -> None:
     admitter = _admitter(runs, projects, retention=UNBOUNDED_RETENTION)
 
     run = await admitter.admit(
-        [{"role": "user", "content": "hello"}],
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        [{"role": "user", "content": "hello"}], actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
     )
 
     assert run.retention_expires_at is None
@@ -116,14 +114,13 @@ async def test_a_sweep_failure_never_refuses_the_turn(wired) -> None:
         runs, projects, retention=RetentionPolicy(ttl_seconds=1, sweep_interval_seconds=0)
     )
 
-    async def _explode(**_kwargs: object) -> int:
+    async def _explode(_scope: object, **_kwargs: object) -> int:
         raise RuntimeError("the database went away")
 
     runs.purge_expired_runs = _explode  # type: ignore[method-assign]
 
     run = await admitter.admit(
-        [{"role": "user", "content": "hello"}],
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        [{"role": "user", "content": "hello"}], actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
     )
 
     assert run.run_id

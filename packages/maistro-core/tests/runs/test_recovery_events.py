@@ -53,9 +53,7 @@ async def _running_node() -> tuple[InMemoryRunStore, str, str]:
         nodes=[Node(node_id="step", node_type="agent")],
     )
     run = await store.create_run(
-        graph,
-        initial_status=RunStatus.QUEUED,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
     )
     run = await store.transition_run(run.run_id, RunStatus.RUNNING)
     node_run = await store.create_node_run(run.run_id, node_id="step")

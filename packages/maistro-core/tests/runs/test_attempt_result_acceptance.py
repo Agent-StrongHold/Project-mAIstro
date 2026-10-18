@@ -37,10 +37,7 @@ async def _node_run() -> tuple[InMemoryRunStore, str]:
         name="One node",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await store.create_run(
-        graph,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     return store, node_run.node_run_id
 
@@ -133,8 +130,7 @@ async def test_store_rejects_fabricated_accepted_attempt_evidence() -> None:
     run = await store.get_run(accepted.run_id)
     assert run is not None
     fresh_run = await store.create_run(
-        run.graph.materialize(),
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        run.graph.materialize(), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
     )
     second = await store.create_node_run(fresh_run.run_id, node_id="node-1")
     fabricated = AcceptedNodeOutcome(

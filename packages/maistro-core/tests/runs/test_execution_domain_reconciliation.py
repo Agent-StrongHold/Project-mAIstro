@@ -27,10 +27,7 @@ async def test_domain_can_defer_logical_reconciliation_after_terminal_attempt() 
         name="One node",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await store.create_run(
-        graph,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())
 

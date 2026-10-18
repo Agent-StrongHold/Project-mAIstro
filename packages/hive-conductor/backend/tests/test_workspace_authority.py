@@ -204,20 +204,21 @@ async def test_ownerless_legacy_row_is_quarantined_without_blocking_valid_worksp
 
 
 @pytest.mark.asyncio
-async def test_durable_source_retirement_does_not_delete_materialized_agents(
+async def test_durable_import_leaves_the_mirror_and_materialized_agents_untouched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     canonical = InMemoryWorkspaceStore()
     monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: canonical)
     monkeypatch.setattr(workspace_authority, "_is_durable_store", lambda store: True)
-    stores.workspaces["legacy-ws"] = _legacy_workspace()
+    legacy = _legacy_workspace()
+    stores.workspaces["legacy-ws"] = legacy
     agent = _agent("legacy-ws")
     stores.agents[agent.id] = agent
 
     view = await workspace_authority.visible_view("alice", "legacy-ws")
 
     assert view is not None
-    assert "legacy-ws" not in stores.workspaces
+    assert stores.workspaces.get("legacy-ws") == legacy
     assert stores.agents.get(agent.id) is not None
 
 
@@ -239,3 +240,71 @@ async def test_preexisting_canonical_workspace_wins_over_stale_legacy_membership
 
     assert await workspace_authority.is_member("canonical-owner", "legacy-ws")
     assert not await workspace_authority.is_member("legacy-owner", "legacy-ws")
+
+
+@pytest.mark.asyncio
+async def test_member_writes_fail_closed_when_the_view_cannot_compose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A membership write whose presentation no longer composes is an error.
+
+    The canonical membership itself is durable, but returning a half-truth
+    view would let a caller believe a write landed on a Workspace that no
+    longer exists, so the authority raises instead. Both write paths — add
+    and remove — hold the HITL serialization lock across that decision.
+    """
+    workspace = await workspace_authority.create_workspace(
+        creator_user_id="alice",
+        name="View compose guard",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    # A second member first, so the guarded remove below is not refused
+    # earlier by the canonical at-least-one-owner rule.
+    await workspace_authority.set_member(workspace.id, user_id="bob", role="editor")
+
+    async def _no_view(_workspace_id: str) -> Workspace | None:
+        return None
+
+    monkeypatch.setattr(workspace_authority, "get_view", _no_view)
+
+    with pytest.raises(KeyError):
+        await workspace_authority.set_member(workspace.id, user_id="carol", role="editor")
+    with pytest.raises(KeyError):
+        await workspace_authority.remove_member(workspace.id, user_id="bob")
+
+
+@pytest.mark.asyncio
+async def test_delete_workspace_retires_a_hive_projection_row_when_one_exists() -> None:
+    """Deletion cleans the Hive projection row too, and tolerates its absence.
+
+    A canonical Workspace created without a legacy Hive row takes the same
+    deletion path as one that still carries a projection row; only the latter
+    must pop from `stores.workspaces`.
+    """
+    projected = await workspace_authority.create_workspace(
+        creator_user_id="alice",
+        name="Projected",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    stores.workspaces[projected.id] = _legacy_workspace(workspace_id=projected.id)
+    unprojected = await workspace_authority.create_workspace(
+        creator_user_id="alice",
+        name="Unprojected",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+
+    await workspace_authority.delete_workspace(projected.id)
+    await workspace_authority.delete_workspace(unprojected.id)
+
+    assert projected.id not in stores.workspaces
+    assert await workspace_authority.get_view(projected.id) is None
+    assert await workspace_authority.get_view(unprojected.id) is None

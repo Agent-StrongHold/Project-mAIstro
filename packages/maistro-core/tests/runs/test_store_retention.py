@@ -41,8 +41,7 @@ def _graph(project_id: str) -> Graph:
 
 async def _terminal_run(store: InMemoryRunStore, project_id: str) -> str:
     run = await store.create_run(
-        _graph(project_id),
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        _graph(project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
     )
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
@@ -55,10 +54,7 @@ async def test_terminal_runs_are_evicted_oldest_first(scoped) -> None:
     store = InMemoryRunStore(project_store=projects, max_runs=4, prune_target=2)
 
     ids = [await _terminal_run(store, project_id) for _ in range(4)]
-    await store.create_run(
-        _graph(project_id),
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
+    await store.create_run(_graph(project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
 
     # Five runs, pruned down to the target of two: the three oldest terminal
     # ones go, the newest terminal one and the live one stay. Pruning to a
@@ -76,16 +72,12 @@ async def test_live_runs_are_never_evicted(scoped) -> None:
     live = [
         (
             await store.create_run(
-                _graph(project_id),
-                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+                _graph(project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
             )
         ).run_id
         for _ in range(3)
     ]
-    await store.create_run(
-        _graph(project_id),
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
+    await store.create_run(_graph(project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
 
     for run_id in live:
         assert await store.get_run(run_id) is not None
@@ -99,8 +91,7 @@ async def test_a_store_of_only_live_runs_keeps_growing(scoped) -> None:
 
     for _ in range(5):
         await store.create_run(
-            _graph(project_id),
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            _graph(project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
         )
 
     assert len(store._runs) == 5
@@ -113,8 +104,7 @@ async def test_node_runs_and_attempts_go_with_the_run(scoped) -> None:
     store = InMemoryRunStore(project_store=projects, max_runs=2, prune_target=1)
 
     run = await store.create_run(
-        _graph(project_id),
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        _graph(project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
     )
     node_run = await store.create_node_run(
         run.run_id, node_id=run.graph.materialize().nodes[0].node_id
@@ -126,8 +116,7 @@ async def test_node_runs_and_attempts_go_with_the_run(scoped) -> None:
 
     for _ in range(3):
         await store.create_run(
-            _graph(project_id),
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            _graph(project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
         )
 
     assert await store.get_run(run.run_id) is None

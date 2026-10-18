@@ -64,6 +64,10 @@ uv run pytest                         # run the test suite
 docker compose up -d                  # full local stack (Postgres + LiteLLM + Langfuse)
 ```
 
+### Requirements
+
+- **Docker Engine 25+** (API 1.44+). The engine images embed the docker CLI v29, which only negotiates Docker API 1.44+ — the floor rose with the go1.26.8 toolchain rebuild that fixed CVE-2025-68121 (plus 21 HIGH-severity Go stdlib CVEs) in the previously embedded go1.22.11 CLI. `install.sh` enforces this before starting the stack and exits with an upgrade pointer; Engine ≤ 24 (API ≤ 1.43) daemons are unsupported. Upgrade via [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) or your distro's current `docker.io` package, then re-run `./install.sh`.
+
 The engine image applies migrations automatically before it starts the API.
 Migration runners serialize through a PostgreSQL advisory lock, so multiple
 replicas cannot race the schema. A migration failure keeps readiness down and
@@ -161,9 +165,10 @@ tested modules with no call path, so "the code is there" is not the bar.
 | Deck builder | **Partial** | AI generation is real; the slide library is hardcoded demo content. |
 | Topology | **Partial** | Agent/MCP/skill graph. Does not use the `/v1/topology` compare API. |
 | **Schedules — execution** | **Partial** | Due schedules execute for real: the background runner delegates evaluate → occurrence claim → Run admit → cursor advance to the Container-wired `ScheduleRunAdmitter`, and the durable `ScheduleStore` cursor advances only after a Run exists (#231). "Run now" fires a real Run and returns 409 when it cannot — it no longer stamps a timestamp. `max_runs` is enforced and auto-disables the schedule. Remaining convergence: execution still flows through `run_registered_dag`, whose `DurableRunStore` is disjoint from the canonical `RunStore` (#251); the `/v1/schedules` CRUD row store is in-memory, so rows vanish on restart — the canonical definitions the runner reads are durable only when a database spine is wired. |
-| **Design Studio** | **TODO** | The six-node pipeline is a `setTimeout` animation with template-string output. No image is produced. |
+| **Design Studio** | **Partial** | Resource discovery, artifact-mode selection, and prompt entry are real (backed by `/v1/design/*` project generation, and asserted by the `design-studio-truthfulness` browser E2E). Visual generation is disabled — no image is produced — server-side publish/export are unavailable, and artifact state is browser-local, not server-persisted (#286; see [KNOWN-GAPS.md](KNOWN-GAPS.md)). The product does not simulate the unavailable operations. |
 | **Forge (agents, skills)** | **TODO** | Fabricates a record with a generated name. No LLM is called. |
-| **Scan (agents, skills, MCP)** | **TODO** | Returns `{"findings": [], "status": "clean"}` unconditionally. Nothing is scanned. |
+| **Scan (agents, skills)** | **Complete** | Real content scans: a proposed or saved agent config is walked field-by-field for injection patterns, findings name the field they were found in, and a scan failure fails closed (#418); skills run the parser's `security_scan` (#346). Pinned by `TestTheScanActuallyScans` and `test_skills_routes.py`. |
+| **Scan (MCP)** | **TODO** | Returns `{"findings": [], "status": "clean"}` unconditionally. Nothing is scanned; `POST /v1/mcp/discover` is likewise a stub. Both are `unresolved` facades in `quality/shipped-surface-truth.json`. |
 | **Memory reinforce / decay / contradict** | **TODO** | Increments/decrements an integer. Not the `maistro.memory` decay or weight-floor logic. |
 | **CLI page** | **TODO** | A simulated terminal supporting four hardcoded `hctl` strings. |
 | **Containers build / suggest Dockerfile** | **TODO** | Canned status string; one hardcoded Dockerfile. |
@@ -176,7 +181,7 @@ tested modules with no call path, so "the code is there" is not the bar.
 |---|---|---|
 | `maistro-server` — tasks, OpenAI-compatible chat, webhooks, WS, `/metrics` | **Complete** | Webhooks fail closed without a secret. |
 | Conductor `/v1/*` — the surfaces marked Complete above | **Complete** | |
-| `/v1/design/*` | **Complete** | No UI consumes it. |
+| `/v1/design/*` | **Partial** | Project generation is available; server-side rendering returns 501 until a canonical worker, durable artifact store, and output-serving route exist (`quality/shipped-surface-truth.json`, #286). |
 | `/v1/harness/*` (inbound foreign-harness API) | **Complete** | Lets another orchestrator drive this instance. |
 | `/v1/models` | **Partial** | Four hardcoded pseudo-models. |
 | `/v2/canvas` | **TODO** | Every route 503s — nothing injects the canvas store. |
@@ -189,7 +194,7 @@ tested modules with no call path, so "the code is there" is not the bar.
 | `curl \| bash` installer (`get.sh`, `install.sh`, `get.ps1`) | **Complete** | Includes WSL2 setup on Windows. |
 | `maistro install` / `launch server` / `builders` / `approvals` | **Complete** | |
 | `maistro-install`, `maistro-registry` | **Complete** | |
-| `maistro-rsi`, `maistro-rsi-autorun` | **Complete** | The real RSI product is the CLI, not the UI page. |
+| `maistro-rsi`, `maistro-rsi-autorun`, `maistro-rsi-campaign` | **Complete** | The real RSI product is the CLI, not the UI page. `maistro-rsi-campaign` runs a bounded frontier-vs-baseline objective-pool experiment through the gateway (#114). |
 | `maistro upgrade` | **Partial** | `git pull` + `uv sync`. Does nothing useful for a tarball install. |
 | `maistro launch tui` | **TODO** | Prints "coming soon". |
 | `maistro-core`, `-server`, `-evolve`, `-registry`, `-bootstrap`, `-design` | **Complete** | |
@@ -248,7 +253,7 @@ misleading a reader.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full author guide. The essentials:
 
-- Branch model is `feat/* → develop → integration → main` — topic branches use the accepted prefixes (`feat/`, `bug/`, `fix/`, `idea/`, `doc/`, `chore/`, the set [`branch-protection.json`](.github/branch-protection.json) defines and CI validates); base feature work off `develop`, never open PRs against `main` directly ([`ADR-095`](docs/adr/ADR-095-four-tier-branch-model.md)).
+- Branch model is `feat/* → develop → integration → main` — topic branches use the accepted prefixes (`feat/`, `bug/`, `fix/`, `idea/`, `doc/`, `docs/`, `chore/`, the set [`branch-protection.json`](.github/branch-protection.json) defines and CI validates); base feature work off `develop`, never open PRs against `main` directly ([`ADR-095`](docs/adr/ADR-095-four-tier-branch-model.md)).
 - ADRs live in `docs/adr/ADR-NNN-<slug>.md` with required front-matter ([`ADR-031`](docs/adr/ADR-031-front-matter-and-registry.md)); validate with `python -m maistro_registry.cli lint .`.
 - Tests carry `@pytest.mark.contract` and `@pytest.mark.scope(...)` ([`ADR-032`](docs/adr/ADR-032-contracts-as-acceptance-criteria.md)).
 - External-library adoption follows [`ADR-039`](docs/adr/ADR-039-external-library-adoption-policy.md): import / service-boundary / pattern-reference / reject.

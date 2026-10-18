@@ -41,9 +41,7 @@ async def _service() -> tuple[RunExecutionService, InMemoryRunStore, Graph]:
 async def test_graph_to_run_to_node_run_to_attempt_to_runtime() -> None:
     service, store, graph = await _service()
     run = await service.create_run(
-        graph,
-        provenance={"entry": "test"},
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        graph, provenance={"entry": "test"}, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
     )
 
     async def executor(work_item: Any, context: Any) -> dict[str, Any]:
@@ -78,10 +76,7 @@ async def test_graph_to_run_to_node_run_to_attempt_to_runtime() -> None:
 @pytest.mark.asyncio
 async def test_retry_reuses_node_run_and_creates_new_attempt() -> None:
     service, store, graph = await _service()
-    run = await service.create_run(
-        graph,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
+    run = await service.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
 
     async def fail(_work: Any, _context: Any) -> None:
         raise RuntimeError("transient")
@@ -158,10 +153,7 @@ async def test_cancel_run_surfaces_a_run_that_vanished_after_its_fence() -> None
         name="One node",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await store.create_run(
-        graph,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())
 
     with pytest.raises(ValueError, match="disappeared during cancellation"):
@@ -198,10 +190,7 @@ async def test_cancel_run_yields_to_a_run_that_completed_first() -> None:
         name="One node",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await store.create_run(
-        graph,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())
@@ -221,10 +210,7 @@ async def test_cancel_run_probes_attempts_when_no_local_owner_exists() -> None:
     from datetime import timedelta
 
     service, store, graph = await _service()
-    run = await service.create_run(
-        graph,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
+    run = await service.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     attempt = await store.create_attempt(
         node_run.node_run_id,
@@ -279,10 +265,7 @@ async def test_cancel_run_surfaces_a_run_that_rejected_the_fence_and_vanished() 
         name="One node",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await store.create_run(
-        graph,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())

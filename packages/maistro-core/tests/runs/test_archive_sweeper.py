@@ -53,10 +53,7 @@ async def _cold_run(spine: Any) -> Any:
         name="graph",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await store.create_run(
-        graph,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     moved = run.model_copy(
         update={
             "status": RunStatus.COMPLETED,
@@ -198,7 +195,10 @@ async def test_admitting_a_chat_turn_drives_the_sweep(spine: Any) -> None:
         archive=ArchivePolicy(archive_after=ONE_DAY),
     )
 
-    await admitter.admit([{"role": "user", "content": "what broke?"}], actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,)
+    await admitter.admit(
+        [{"role": "user", "content": "what broke?"}],
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     (key,) = await _keys(archive, root.project_id)
     assert json.loads(await archive.get(key))["run_id"] == cold.run_id
@@ -220,7 +220,10 @@ async def test_a_chat_turns_own_run_is_never_the_one_archived(spine: Any) -> Non
         archive=ArchivePolicy(archive_after=timedelta(microseconds=1)),
     )
 
-    run = await admitter.admit([{"role": "user", "content": "what broke?"}], actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,)
+    run = await admitter.admit(
+        [{"role": "user", "content": "what broke?"}],
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     assert run.retention_expires_at is not None, "a chat Run is supposed to carry a deadline"
     assert await _keys(archive, root.project_id) == []
@@ -232,7 +235,10 @@ async def test_chat_admission_leaves_the_tier_off_by_default(spine: Any) -> None
     await _cold_run(spine)
     admitter = ChatRunAdmitter(store, workspace_id="w1", project_id=root.project_id)
 
-    await admitter.admit([{"role": "user", "content": "what broke?"}], actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,)
+    await admitter.admit(
+        [{"role": "user", "content": "what broke?"}],
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     assert await _keys(archive, root.project_id) == []
 

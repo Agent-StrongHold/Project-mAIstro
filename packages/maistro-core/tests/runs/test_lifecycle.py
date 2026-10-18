@@ -71,9 +71,9 @@ def test_run_transition_sets_start_and_finish_timestamps() -> None:
         workspace_id="workspace-1",
         project_id="project-1",
         graph=GraphSnapshot.from_graph(_graph()),
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         created_at=created_at,
         updated_at=created_at,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     queued = transition_run(run, RunStatus.QUEUED, at=created_at + timedelta(seconds=1))

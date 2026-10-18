@@ -36,9 +36,7 @@ async def _canonical_run() -> tuple[InMemoryRunStore, str]:
     )
     run_store = InMemoryRunStore(project_store=projects)
     run = await run_store.create_run(
-        graph,
-        initial_status=RunStatus.QUEUED,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
     )
     return run_store, run.run_id
 

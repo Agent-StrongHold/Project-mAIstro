@@ -104,9 +104,7 @@ def _graph(
 
 async def _run(graph: Graph, node: BaseNode[Any, Any], run_store: InMemoryRunStore) -> Any:
     admitted = await run_store.create_run(
-        graph,
-        initial_status=RunStatus.QUEUED,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
     )
     return await run_durable_graph(
         graph,
@@ -114,6 +112,7 @@ async def _run(graph: Graph, node: BaseNode[Any, Any], run_store: InMemoryRunSto
         node_resolver=lambda node_id, _graph: node,
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
 
@@ -242,9 +241,7 @@ async def test_the_other_walk_reaches_the_same_verdict(
     node = _FlakyStep(failures=failures)
     graph = _graph(workspace_id, project_id, _FlakyStep.kind, policies={"max_attempts": 3})
     admitted = await run_store.create_run(
-        graph,
-        initial_status=RunStatus.QUEUED,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
     )
 
     record = await traversal.run_durable_graph(
@@ -253,6 +250,7 @@ async def test_the_other_walk_reaches_the_same_verdict(
         node_resolver=lambda node_id, _graph: node,
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is expected_status

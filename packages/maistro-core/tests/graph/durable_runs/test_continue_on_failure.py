@@ -61,9 +61,7 @@ async def test_exhausted_failure_completes_logically_without_rewriting_attempt()
         ],
     )
     admitted = await run_store.create_run(
-        graph,
-        initial_status=RunStatus.QUEUED,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
     )
 
     record = await run_durable_graph(
@@ -72,6 +70,7 @@ async def test_exhausted_failure_completes_logically_without_rewriting_attempt()
         node_resolver=lambda node_id, _graph: node,
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.COMPLETED
