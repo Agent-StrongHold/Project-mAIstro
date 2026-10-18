@@ -451,6 +451,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # feedback route. The route itself still checks workspace membership.
         if path.endswith("/feedback"):
             return None
+        # Workspace Home (#1048): /v1/workspaces/{id}/home/... is the member's
+        # presentation surface — saving the layout, pinning a region, composing
+        # adaptive space, dismissing an adaptive candidate. Same posture as
+        # PUT /v1/dashboard/layout (below): a per-member preference write, not
+        # a workspace-identity mutation. The routes check Workspace membership
+        # and refuse viewers themselves, and the Workspace Agent's chat tools
+        # reach the very same services with no HTTP elevation at all — so
+        # gating only the route would break Agent/API parity while protecting
+        # nothing. (Segment-matched, not substring: PUT
+        # /v1/workspaces/{id}/home/* only; /tool-bindings and /members keep
+        # their workspaces.write scope.)
+        _parts = path.split("/")
+        if (
+            request.method in {"PUT", "POST"}
+            and len(_parts) >= 5
+            and _parts[1] == "v1"
+            and _parts[2] == "workspaces"
+            and _parts[4] == "home"
+        ):
+            return None
         # DAG-Run inspection — GET /v1/dag-runs (list), GET /v1/dag-runs/{id}
         # (detail), GET /v1/dag-runs/{id}/events (SSE) — and the eval-judge
         # read side over the same runs (GET /v1/eval-judge verdict list,

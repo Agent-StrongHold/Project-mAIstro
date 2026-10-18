@@ -166,6 +166,7 @@ def test_enumeration_ratchet_can_reach_zero_debt(
         load_authorizations=lambda *_args, **_kwargs: {},
         Provenance=_Proof,
         head_sha=lambda *_args, **_kwargs: "candidate",
+        bundled_implementation_fingerprint=lambda *_args, **_kwargs: "bundled-sha256:fake",
     )
     monkeypatch.setattr(
         enumerations_adapter,
@@ -217,6 +218,7 @@ def test_public_route_matching_kind_change_requires_prior_authorization(
         load_authorizations=lambda *_args, **_kwargs: {},
         Provenance=_Proof,
         head_sha=lambda *_args, **_kwargs: "candidate",
+        bundled_implementation_fingerprint=lambda *_args, **_kwargs: "bundled-sha256:fake",
     )
     monkeypatch.setattr(public_routes, "MIDDLEWARE", middleware)
     monkeypatch.setattr(public_routes, "REGISTRY", registry)
