@@ -3,19 +3,19 @@ id: SPEC-070226-82ea
 title: "Builders pipeline as DAG with gated verify-and-revise loops"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-07-02
 substrate:
   - maistro-engine#ADR-062
-  - maistro-engine#ADR-066
-  - maistro-engine#ADR-099
-  - maistro-engine#SPEC-184
   - maistro-engine#SPEC-201
 implements:
   - maistro-engine#ADR-099
 related:
   - maistro-engine#ADR-068
   - maistro-engine#ADR-070
+  - maistro-engine#ADR-066
+  - maistro-engine#ADR-099
+  - maistro-engine#SPEC-184
 supersedes: []
 blocks: []
 blocked-by: []
@@ -27,6 +27,11 @@ tests:
 layer: Agents
 owners:
   - '@BlakeMatthews-dev'
+history:
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-070226-82ea: Builders pipeline as DAG with gated verify-and-revise loops
@@ -34,10 +39,12 @@ owners:
 ## Context
 
 Builders (spec → tests → code → review → retry) currently run as a flat ReAct loop. ADR-099
-specifies a DAG-based orchestration where nodes are design stages (spec, test, code, review,
+proposes a DAG-based orchestration where nodes are design stages (spec, test, code, review,
 revise) and edges are control flow (spec complete → write tests; test pass → implement; review
 pass → merge; review fail → revise). Gating rules decide when to loop back (insufficient coverage
-→ revise tests; merge-conflict → retry).
+→ revise tests; merge-conflict → retry). ADR-099 remains Proposed and is retained as design
+context only; it is not shipped authority for this SPEC — the operative authority is this SPEC
+under its Accepted substrate (ADR-062, SPEC-201).
 
 ## Goals
 
@@ -86,7 +93,7 @@ def builders_dag_to_graph(dag: BuildersDAG) -> GraphSpec: ...   # ADR-062 conver
 
 `default_builders_dag()` builds the SPEC's stage set with a deviation: the loop-back
 edges `("review", "revise")` / `("revise", "test")` from the original sketch would make
-the dependency graph cyclic, and ADR-099 requires "the dependency graph itself stays
+the dependency graph cyclic, and the ADR-099 proposal requires "the dependency graph itself stays
 acyclic; revision is an executor-level re-offer, not a graph cycle". So `revise` is a
 *skippable ancestor* of `test` (`design → revise → test → implement → review`, skipped
 on the first pass via `skip_if`, executed on every revision pass), and both gates loop
@@ -110,7 +117,8 @@ class Gate:
 ```
 
 Deviation from the original `apply_gate` sketch: exhaustion does not silently force
-forward. Per ADR-099's `gate_exhausted` policy, `"fail"` (default) fails the run
+forward. Per the `gate_exhausted` policy carried over from the ADR-099 proposal, `"fail"`
+(default) fails the run
 explicitly with a typed `gate_exhausted` failure; `"continue"` force-forwards (used by
 the built-in review gate so a downstream cleanup/escalation stage stays reachable).
 Gate enforcement lives in the SPEC-201 executor (`max_revisions`), not a standalone

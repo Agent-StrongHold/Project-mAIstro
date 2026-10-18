@@ -275,7 +275,10 @@ async def fold_authoritative_frontier(
     prior_state = record.graph_state
     record, completed, paused, failures = _accept_frontier(record, items)
     record = traversal._merge_frontier_blackboards(record, items)
-    for item in completed:
+    # A failed synth node whose dispatched child failed still spent a level
+    # (#1193): its retry must start from the deeper depth.
+    dispatched_failures = tuple(item for item in failures if item.result.metadata.get("dispatched"))
+    for item in (*completed, *dispatched_failures):
         record = traversal._maybe_increment_synth_depth(record, item.spec, item.result)
 
     if failures:

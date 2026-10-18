@@ -132,7 +132,7 @@ def _random_genome(models: list[str] | None = None) -> PipelineGenome:
         weights[fname] = round(val / total, 4)
 
     ts = _fresh_timestamp()
-    return PipelineGenome(
+    genome = PipelineGenome(
         id=_new_id(),
         name=f"spawn-{uuid.uuid4().hex[:6]}",
         topology=topo,
@@ -146,6 +146,11 @@ def _random_genome(models: list[str] | None = None) -> PipelineGenome:
         created_at=ts,
         updated_at=ts,
     )
+    # M4-A6: even a random seed is a candidate record — operator ``seed`` with
+    # no parents, so its provenance is auditable like any bred candidate.
+    from .archive import OperatorKind, stamp_provenance
+
+    return stamp_provenance(genome, parents=[], operator=OperatorKind.SEED)
 
 
 def emergency_spawn(

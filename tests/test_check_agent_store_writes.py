@@ -64,6 +64,8 @@ def test_flags_an_item_assignment_outside_the_service(gate: Any, tmp_path: Path)
         "stores.agents.update({})",
         "stores.agents.clear()",
         "stores.agents.setdefault(key, value)",
+        "stores.agents.put_if_absent(key, value)",
+        "stores.agents.discard(key)",
         "del stores.agents[key]",
     ],
 )
