@@ -28,6 +28,8 @@ from pathlib import Path
 
 import pytest
 
+from cryptography.fernet import Fernet
+
 REPO_ROOT = Path(__file__).resolve().parents[4]
 VERIFY_SCRIPT = REPO_ROOT / "deploy" / "scripts" / "verify-restore.sh"
 BACKUP_SCRIPT = REPO_ROOT / "deploy" / "scripts" / "backup.sh"
@@ -118,6 +120,18 @@ def _build_vault(data_dir: Path) -> str:
     return public_key
 
 
+def _build_credential_store(data_dir: Path, escrow: Path) -> None:
+    """Create a real Fernet master key (escrowed) + encrypted credential store."""
+    key = Fernet.generate_key()
+    (escrow / "credential_master.key").write_bytes(key)
+    os.chmod(escrow / "credential_master.key", 0o600)
+    (data_dir / "user_credentials.enc").write_bytes(
+        Fernet(key).encrypt(
+            b'{"github::default::default": {"secret": "drill-provider-token"}}'
+        )
+    )
+
+
 def _write_manifest(root: Path, files: list[str]) -> None:
     lines = [
         subprocess.run(
@@ -145,9 +159,8 @@ def backup_and_escrow(tmp_path: Path) -> tuple[Path, Path]:
     escrow = tmp_path / "escrow"
     escrow.mkdir()
     shutil.copy2(data / "admin.key", escrow / "admin.key")
-    (escrow / "credential_master.key").write_bytes(b"fernet-master-key-stand-in\n")
     os.chmod(escrow / "admin.key", 0o600)
-    os.chmod(escrow / "credential_master.key", 0o600)
+    _build_credential_store(data, escrow)
     _write_manifest(escrow, ["admin.key", "credential_master.key"])
     _write_manifest(
         tmp_path / "backup",
@@ -203,6 +216,11 @@ def test_drill_proves_conductor_restore_end_to_end(
     assert "canonical_attempts: 1 row(s)" in proc.stdout
     # The decrypt proof: the escrowed identity actually opened the vault.
     assert "decrypt proof: escrowed admin.key decrypted secrets.age" in proc.stdout
+    # And the escrowed Fernet root actually decrypted the credential store.
+    assert (
+        "decrypt proof: escrowed credential_master.key decrypted user_credentials.enc"
+        in proc.stdout
+    )
 
 
 @requires_age
@@ -253,6 +271,40 @@ def test_unrelated_identity_fails_decrypt_proof(
     proc = _run_drill(backup, escrow, manifest=False)
     assert proc.returncode != 0
     assert "DECRYPT PROOF FAILED" in proc.stderr
+
+
+@requires_age
+def test_rotation_swapped_fernet_key_fails_decrypt_proof(
+    backup_and_escrow: tuple[Path, Path],
+) -> None:
+    """The escrowed Fernet root must open THIS ciphertext.
+
+    If credential rotation left the volume copy and the escrow copy on
+    opposite sides of the atomic swap, manifests and existence checks still
+    pass — only decrypting user_credentials.enc catches it (issue #88
+    review: P2 credential decrypt proof).
+    """
+    backup, escrow = backup_and_escrow
+    os.chmod(escrow / "credential_master.key", 0o644)
+    (escrow / "credential_master.key").write_bytes(Fernet.generate_key())
+    os.chmod(escrow / "credential_master.key", 0o600)
+    _write_manifest(escrow, ["admin.key", "credential_master.key"])
+    proc = _run_drill(backup, escrow, manifest=False)
+    assert proc.returncode != 0
+    assert "escrowed credential_master.key cannot decrypt" in proc.stderr
+
+
+@requires_age
+def test_corrupt_credential_store_fails_decrypt_proof(
+    backup_and_escrow: tuple[Path, Path],
+) -> None:
+    """An already-corrupt live store cannot pass as a verified backup."""
+    backup, escrow = backup_and_escrow
+    store = backup / "conductor-data" / "user_credentials.enc"
+    store.write_bytes(b"\x00" + store.read_bytes()[1:])
+    proc = _run_drill(backup, escrow, manifest=False)
+    assert proc.returncode != 0
+    assert "escrowed credential_master.key cannot decrypt" in proc.stderr
 
 
 @requires_age

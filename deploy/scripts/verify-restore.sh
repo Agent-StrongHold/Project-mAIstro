@@ -22,8 +22,12 @@
 # preserved. secrets.age and user_credentials.enc are optional stores (the
 # vault is provisioned lazily; user_credentials.enc appears with the first
 # persisted credential), so each is verified — together with its escrow root —
-# only when it was actually captured; when secrets.age is captured, the
-# decrypt proof demands the escrowed admin.key actually open it.
+# only when it was actually captured; when either is captured, the decrypt
+# proof demands its escrowed root (admin.key for secrets.age,
+# credential_master.key for user_credentials.enc) actually decrypt AND parse
+# the backed-up payload — key/ciphertext existence checks alone pass even when
+# a rotation left the volume copy and the escrow copy on opposite sides of the
+# atomic swap, or the store was already corrupt.
 #
 # Distinct failure classes (all exit 1; the class is in the message):
 #   artifact  — missing or corrupt backup artifacts (dump, evidence, hashes,
@@ -33,7 +37,8 @@
 #               evidence (real data loss or corruption)
 #   verifier  — the verification machinery failed (scratch database not ready,
 #               evidence could not be collected, no user tables restored,
-#               age(1) missing for the decrypt proof)
+#               age(1) or the python3 cryptography module missing for the
+#               decrypt proofs)
 #
 # Explicit limits: this oracle proves structure and cardinality survive the
 # restore (tables, columns, exact row counts). Cell-level content equality is
@@ -242,6 +247,49 @@ PY
       || fail_artifact "credential escrow missing at ${escrow} — user_credentials.enc was captured, so without credential_master.key its per-user provider tokens are unrecoverable"
     [[ -s "${escrow}/credential_master.key" ]] \
       || fail_artifact "credential escrow has no credential_master.key — user_credentials.enc (per-user provider tokens) is unrecoverable without it; re-escrow from the off-host copy"
+    # THE decrypt proof for the credential store, mirroring the age-vault proof
+    # above: existence and manifest checks pass even when the volume copy and
+    # the escrow copy landed on opposite sides of an atomic key rotation (or
+    # the store was already corrupt), so only decrypting AND parsing the
+    # payload proves the escrowed key opens THIS ciphertext.
+    python3 -c 'import cryptography.fernet' 2>/dev/null \
+      || fail_verifier "python3 cryptography module not available on the drill host — it is needed to prove the escrowed credential_master.key decrypts the backed-up credential store"
+    python3 - "${escrow}/credential_master.key" "${data}/user_credentials.enc" <<'PY' || fail_artifact "DECRYPT PROOF FAILED: the escrowed credential_master.key cannot decrypt the backed-up user_credentials.enc — every per-user provider token would be unreadable after restore (volume copy and escrow likely captured opposite sides of a rotation, or the store was already corrupt)"
+import json
+import sys
+
+from cryptography.fernet import Fernet, InvalidToken
+
+key_path, store_path = sys.argv[1], sys.argv[2]
+try:
+    with open(key_path, "rb") as fh:
+        key = fh.read()
+    with open(store_path, "rb") as fh:
+        payload = Fernet(key).decrypt(fh.read())
+except InvalidToken:
+    print(
+        "[verify-restore]   escrowed credential_master.key does not open "
+        "user_credentials.enc (InvalidToken: key and ciphertext are from "
+        "opposite sides of a rotation, or the store is corrupt)",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+except Exception as exc:  # malformed key/ciphertext — not a key mismatch
+    print(f"[verify-restore]   credential-store decrypt failed: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+try:
+    records = json.loads(payload)
+except ValueError:
+    print("[verify-restore]   decrypted credential store does not parse as JSON", file=sys.stderr)
+    raise SystemExit(1)
+if not isinstance(records, dict):
+    print("[verify-restore]   decrypted credential store is not a JSON object", file=sys.stderr)
+    raise SystemExit(1)
+print(
+    f"[verify-restore] decrypt proof: escrowed credential_master.key decrypted "
+    f"user_credentials.enc ({len(records)} credential record(s) parse as JSON)"
+)
+PY
   else
     echo "[verify-restore] user_credentials.enc not captured — no per-user credentials persisted at backup time; skipping credential_master.key escrow check"
   fi
