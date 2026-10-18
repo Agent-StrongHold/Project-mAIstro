@@ -781,3 +781,79 @@ not integration approval or issue closure.
 
 Progress: checked 1, done 0, skipped 0 issues, errors 0 executed commands;
 6 tests skipped. No additional item started.
+
+## Repair checkpoint cb4fbfbd — exact starting head 148d5de8c390
+
+**BLOCKED; validation handoff only, not a completed repair or promotion approval.**
+Only issue #860 was processed, in its assigned `auto-860` worktree. Starting tree
+was clean. Supplied develop snapshot `1a2e1265687c` resolves; the existing merge
+and vulture provenance use `2f56be40ad24`. No fetch, merge, GitHub mutation,
+runtime/configuration edit, test removal, or ledger/grant change was performed.
+The job directory supplied no `check-*.log` files. The previous verifier result
+was read, then its relevant findings independently checked rather than trusted.
+
+### Executed validation
+
+Logs are `worker-*.log` in job directory
+`/home/dev/maistro/jobs/cb4fbfbd53ac4d3290632ab32330707d/`.
+
+| Command | Actual outcome |
+| --- | --- |
+| `uv sync --locked --extra dev` | PASS |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1322 reviewed identities / 1322 findings; zero unclassified. No ledger amendment justified. |
+| `uv run ruff check .` | PASS |
+| `uv run ruff format --check .` | PASS: 3306 files |
+| `uv run pytest tests/test_soak_promotion_gates.py tests/test_prod_stack_boot_contract.py tests/test_gitleaksignore_contract.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py packages/maistro-core/tests/backlog/test_markdown_migration.py packages/maistro-core/tests/persistence/test_pg_learnings.py -x -q` | 163 passed, 6 skipped; skips are not PostgreSQL evidence. |
+| `uv run pytest packages/maistro-server/tests -x -q` | 566 passed, 8 skipped, 22 deprecation warnings |
+| `uv run python scripts/check-suite-inventory.py --suite tests` | FAIL: expected 5353, collected 5354; no duplicated evidence |
+| `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests --suite packages/maistro-server/tests` | PASS: 16427 core and 574 server nodes |
+| `uv run python scripts/check-deployment-claims.py` | PASS; structural claims only, not a deployed topology proof |
+| `uv run python scripts/check-execution-lifecycles.py` | PASS |
+| `uv run python scripts/check-backlog-consistency.py` | PASS; not proof of load-finding filing completeness |
+| `uv run python -` importing the current soak driver and evaluating `evidence/m3a-round30-shakedown.json` | Negative check PASS: exactly `sustain_duration` and `exact_rc_artifact` fail; 420.08 seconds, current artifact check explicitly false. |
+
+The root inventory failure remains **UNRESOLVED**, not waived. Relative to the
+actual merged develop, the three changed root files add exactly 93 nodes:
+84 soak, 8 gitleaks and 1 boot-policy test. Their inventory deltas also sum to
+93 (including the cancelling wheel-verifier +1/-1 notes). Workflow-derived
+parametrization exists, but this bounded investigation did not attribute the
+remaining +1 uniquely. Do not hide it with an unexplained delta. No tests were
+added in this checkpoint, so no new inventory delta is claimed.
+
+### All ten issue acceptance criteria
+
+| Criterion | Evidence / disposition |
+| --- | --- |
+| Representative RC load profile | **UNVERIFIED**: `m3a-load-profile.md:167-183` explicitly leaves concurrent users/Workspaces, Graph fan-out, successful tool/model/Canvas and reconciliation coverage absent. |
+| Two supported application replicas | **UNVERIFIED for the RC**: historical host-preflight evidence and executed two-instance ASGI tests are not the promoted deployment. |
+| Sustained saturation, reclaim, retries, queues and leaks | **UNVERIFIED**: historical evidence is 420.08 seconds, below the 14400-second minimum; no new sustained run executed. |
+| Admission, Goal reconciliation and physical-work fencing | **UNVERIFIED**: admission regressions pass, but profile lines 215-218 say the occurrence probe cancels its Run without executing it. It does not establish physical Attempt fencing. |
+| Security/degraded behavior cannot be bypassed by replica selection | **FAILED**: executed `test_replica_selection_has_an_independent_production_allowance` observes `[200, 200, 429]` independently on both replicas for both identity classes. `api/rate_limit.py:32-37` explicitly documents N-times allowance. Other passing auth/backpressure tests do not repair this. |
+| Required metrics and pass/fail thresholds | **UNVERIFIED**: sampler tests pass, but profile lines 179-183 disclaim application-loop latency and required worker/pool/reclaim observations. |
+| Kill/restart during active physical work with fenced recovery | **UNVERIFIED**: no RC replica killed/restarted here. Historical drain/rejoin booleans cannot prove physical-work safety. |
+| Long-running exact RC artifact/configuration | **NOT MET**: executed evaluator rejects duration and artifact. No selected immutable RC digest/configuration was supplied; the existing host-process runner cannot satisfy this at any duration. |
+| Findings filed/reclassified to earliest broken invariant | **UNVERIFIED**: local findings recorded here; backlog consistency does not establish complete filing/reclassification. No GitHub mutation permitted. |
+| Machine/human evidence tied to exact promoted hashes | **UNVERIFIED**: preserved JSON identifies historical head `c4f45b309` at line 70 and explicitly non-RC topology at line 222; no current promoted-artifact evidence. |
+
+### Architecture reconciliation and next action
+
+Production reachability is direct: `maistro_server/main.py:648` installs the
+tested limiter, and lines 735/755 mount the task router. Its process-local state
+is not a coordinated principal budget. Accepted ADR-085's per-principal contract
+is not an exemption from the issue's replica-selection criterion. ADR-081 is
+**Proposed**, not accepted authority to waive production validation. Accepted
+ADR-081226-a66b preserves Goal → Graph → Run → NodeRun → Attempt; accepted
+ADR-081626-f383 explicitly does not define expiry takeover. Do not invent a
+second scheduler, authorization path or implicit reclaim authority to fill the
+missing observations. ADR-082526-547c requires explained additive inventory
+notes, not an unexplained count adjustment.
+
+Resolve the inventory +1, designate the immutable RC image/configuration and
+representative workload, and repair coordinated enforcement through the existing
+security boundary before running an instrumented production soak. Physical-work
+correlation and the long unchanged-artifact window remain required. Another
+short preflight or another vulture-ledger edit cannot resolve these blockers.
+Only this existing handoff changed; it preserves all prior work.
+
+Progress: checked 1 issue, done 0, skipped 0, errors 1 (root inventory);
+next: resolve the identified prerequisites, not another shakedown-only round.
