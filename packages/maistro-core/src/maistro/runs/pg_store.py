@@ -958,7 +958,13 @@ class PgRunStore:
 
     # ── NodeRun ───────────────────────────────────────────────────
 
-    async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
+    async def create_node_run(
+        self,
+        run_id: str,
+        *,
+        node_id: str,
+        provenance: dict[str, Any] | None = None,
+    ) -> NodeRun:
         async with self._pool.acquire() as conn, conn.transaction():
             # The parent Run is locked before its ordinals are read, so two
             # concurrent creators under one Run cannot both allocate the same
@@ -977,7 +983,12 @@ class PgRunStore:
                     run_id,
                 )
             ) + 1
-            node_run = NodeRun(run_id=run_id, node_id=node_id, ordinal=ordinal)
+            node_run = NodeRun(
+                run_id=run_id,
+                node_id=node_id,
+                ordinal=ordinal,
+                provenance=dict(provenance or {}),
+            )
             await conn.execute(
                 """INSERT INTO canonical_node_runs
                    (node_run_id, run_id, node_id, ordinal, status, payload)
@@ -1045,6 +1056,23 @@ class PgRunStore:
                 error=error,
                 accepted_outcome=accepted_outcome,
             )
+            await self._write(conn, "canonical_node_runs", "node_run_id", node_run_id, updated)
+        return updated
+
+    async def record_node_run_provenance(
+        self, node_run_id: str, *, patch: dict[str, Any]
+    ) -> NodeRun:
+        """Merge ``patch`` into a NodeRun's provenance (top-level keys)."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            node_run = NodeRun.model_validate(await self._peek_node_run(conn, node_run_id))
+            # Same lock order as `transition_node_run` right below: parent Run
+            # first, then the NodeRun row, so a wave provenance write cannot
+            # deadlock against a sibling transition or a Run cascade.
+            await self._refuse_under_terminal_run(conn, node_run)
+            node_run = NodeRun.model_validate(
+                await self._locked(conn, "canonical_node_runs", "node_run_id", node_run_id)
+            )
+            updated = node_run.model_copy(update={"provenance": {**node_run.provenance, **patch}})
             await self._write(conn, "canonical_node_runs", "node_run_id", node_run_id, updated)
         return updated
 

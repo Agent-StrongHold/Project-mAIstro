@@ -427,6 +427,11 @@ class NodeRun(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     accepted_outcome: AcceptedNodeOutcome | None = None
+    #: Durable key/value provenance recorded beside the lifecycle evidence —
+    #: explore-wave thesis identity (M7-A8) lives here, not in prompt text and
+    #: not in any client-side candidate list. Written at NodeRun creation and
+    #: only ever extended by contract-checked writers afterwards.
+    provenance: dict[str, Any] = Field(default_factory=dict)
     result: Any | None = None
     error: str | None = None
 

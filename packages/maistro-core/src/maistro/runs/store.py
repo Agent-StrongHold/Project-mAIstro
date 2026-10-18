@@ -536,11 +536,29 @@ class RunStore(Protocol):
         error: str | None = None,
     ) -> Run: ...
 
-    async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun: ...
+    async def create_node_run(
+        self,
+        run_id: str,
+        *,
+        node_id: str,
+        provenance: dict[str, Any] | None = None,
+    ) -> NodeRun: ...
 
     async def get_node_run(self, node_run_id: str) -> NodeRun | None: ...
 
     async def list_node_runs(self, run_id: str) -> list[NodeRun]: ...
+
+    async def record_node_run_provenance(
+        self, node_run_id: str, *, patch: dict[str, Any]
+    ) -> NodeRun:
+        """Durably merge ``patch`` into a NodeRun's provenance (top-level keys).
+
+        Explore-wave thesis provenance (M7-A8) is written here once at NodeRun
+        creation and extended afterwards only by contract-checked writers. The
+        merge is a shallow top-level update: callers composing nested records
+        (``explore_wave``) pass the full nested value they want stored.
+        """
+        ...
 
     async def transition_node_run(
         self,
@@ -1342,7 +1360,13 @@ class InMemoryRunStore:
         self._forget_run(run_id)
         return True
 
-    async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
+    async def create_node_run(
+        self,
+        run_id: str,
+        *,
+        node_id: str,
+        provenance: dict[str, Any] | None = None,
+    ) -> NodeRun:
         run = self._require_run(run_id)
         if run.status in TERMINAL_RUN_STATUSES:
             raise RunIntegrityError("cannot create NodeRun under a terminal Run")
@@ -1350,9 +1374,24 @@ class InMemoryRunStore:
         if not any(node.node_id == node_id for node in graph.nodes):
             raise RunIntegrityError(f"node_id {node_id!r} is not present in the Run Graph snapshot")
         ordinal = 1 + sum(node_run.run_id == run_id for node_run in self._node_runs.values())
-        node_run = NodeRun(run_id=run_id, node_id=node_id, ordinal=ordinal)
+        node_run = NodeRun(
+            run_id=run_id,
+            node_id=node_id,
+            ordinal=ordinal,
+            provenance=dict(provenance or {}),
+        )
         self._node_runs[node_run.node_run_id] = node_run
         return node_run.model_copy(deep=True)
+
+    async def record_node_run_provenance(
+        self, node_run_id: str, *, patch: dict[str, Any]
+    ) -> NodeRun:
+        node_run = self._require_node_run(node_run_id)
+        self._refuse_under_terminal_run(node_run)
+        merged = {**node_run.provenance, **patch}
+        updated = node_run.model_copy(update={"provenance": merged})
+        self._node_runs[node_run_id] = updated
+        return updated.model_copy(deep=True)
 
     async def get_node_run(self, node_run_id: str) -> NodeRun | None:
         node_run = self._node_runs.get(node_run_id)
