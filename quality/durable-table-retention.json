@@ -999,6 +999,18 @@
       "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
     },
     {
+      "table": "principal_identity_mappings",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "alembic/versions/064_legacy_principal_ownership.py",
+      "data_class": "security_evidence",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#1095",
+      "notes": "One row per retired installer-era principal ('default' -> 'conductor'), written by the supported legacy-ownership migration. The mapping is the durable evidence that pre-migration rows were authored under the legacy principal; 064's downgrade drops the table but deliberately does not reverse ownership. Bounded by the number of supported identity migrations."
+    },
+    {
       "table": "prompts",
       "backends": [
         "postgres",

@@ -20,9 +20,9 @@ def _literal_assignment(path: Path, name: str) -> str | tuple[str, ...] | None:
             return node.value.value
         if isinstance(node.value, ast.Tuple):
             # A merge revision points at every branch head it joins
-            # (`down_revision = ("035", "035_outcome_scope_thumb_index")`,
-            # #1095). Reading those as "no down_revision" made every merged
-            # branch look like a surviving head.
+            # (`down_revision = ("a", "b")`). Reading those as "no
+            # down_revision" made every merged branch look like a surviving
+            # head.
             parts: list[str] = []
             for element in node.value.elts:
                 if not (isinstance(element, ast.Constant) and isinstance(element.value, str)):

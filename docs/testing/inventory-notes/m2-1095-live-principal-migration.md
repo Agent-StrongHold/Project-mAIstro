@@ -8,7 +8,9 @@ inventory-delta:
 
 Two halves of the same issue, both previously verified only against strings.
 
-**Live-PostgreSQL migration leg.** The 036 migration was verified only
+**Live-PostgreSQL migration leg.** The legacy-principal ownership migration
+(renumbered to `064` during the develop sync; drafted as `036` before
+develop's integrated history claimed those ids) was verified only
 against its own SQL text: the contract suite in
 `tests/test_legacy_principal_migration.py` proves the plan's shape, but
 losslessness and restart-reconcilability are claims about executed
@@ -16,7 +18,7 @@ transactions, and no server had run them. `tests/migrations/
 test_legacy_principal_ownership_live.py` (3 tests, gated on
 `MAISTRO_TEST_DATABASE_URL` and wired into the `postgres` job in `ci.yml`)
 seeds a mixed old/new deployment — one `default` row and one `conductor` row
-in every surface 036 touches, plus a workspace where `default` joined first
+in every surface 064 touches, plus a workspace where `default` joined first
 as member and `conductor` later as owner — and asserts the merge is lossless
 (owner role wins, earliest `added_at` survives, grants union, strike history
 sums) — 3 tests; that a migration SIGKILLed while blocked mid-transaction
@@ -39,5 +41,7 @@ collided (8 tests in `test_auth.py` covering same secret two principals,
 order-independence, user/admin role mismatch on one secret, the
 bare-secret-vs-full-entry alias collision, the HTTP wire behavior, and the
 harmless duplicate boundary), and the startup gate rejects the configuration
-(3 tests in `test_startup.py`). The root mirrors under `tests/api/` carry the
-identical 16 beside the 3 live-migration tests.
+(3 tests in `test_startup.py`). The root mirrors under `tests/api/` that
+carried the same tests were later removed by develop's consolidation, which
+the `auto-1095-develop-sync` resolution accepted; the package-level suites
+are the surviving copies.

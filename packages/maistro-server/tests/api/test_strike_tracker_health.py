@@ -20,8 +20,17 @@ _ADMIN_HEADERS = {"Authorization": "Bearer ops-admin-secret"}
 
 
 def _secured_settings() -> Settings:
-    """Auth-enabled deployment with one admin key (#365/#1567/#72)."""
-    return Settings(api_keys=["ops:admin:ops-admin-secret"])
+    """Auth-enabled deployment with one admin key (#365/#1567/#72).
+
+    Authority is explicit configuration (#1095): the admin credential lives
+    in ADMIN_API_KEYS, not in a ``:admin:`` secret segment. The user list
+    stays non-empty because the detailed-readiness gate serves diagnostics
+    only for auth-enabled deployments.
+    """
+    return Settings(
+        api_keys=["ops:admin:ops-admin-secret"],
+        admin_api_keys=["ops:ops-admin-secret"],
+    )
 
 
 def _probe_readiness_with(container: object) -> object:

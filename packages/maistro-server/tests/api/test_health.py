@@ -399,6 +399,9 @@ class TestReadinessEndpoint:
         app.dependency_overrides[get_settings] = lambda: Settings(
             require_auth=True,
             api_keys=["ops:admin:unit-test-secret"],
+            # #1095: authority is the ADMIN_API_KEYS list, not the secret
+            # segment; the user entry keeps the deployment auth-enabled.
+            admin_api_keys=["ops:unit-test-secret"],
         )
         try:
             with (

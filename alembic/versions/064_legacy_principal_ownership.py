@@ -1,7 +1,7 @@
 """Migrate the installer-era ``default`` principal without dropping ownership.
 
-Revision ID: 036
-Revises: 035 and 035_outcome_scope_thumb_index
+Revision ID: 064
+Revises: 063
 
 The installer changes the credential's configured principal from ``default`` to
 ``conductor``.  That is an identity migration, so changing only ``API_KEYS``
@@ -13,14 +13,24 @@ The container entrypoint already serializes Alembic with an advisory lock.  The
 mapping table and idempotent statements below are the database-level guard as
 well: a crashed transaction rolls back, and a second replica converges to the
 same mapping and rows.
+
+Numbered 064, appending after develop's integrated ``063`` canonical-goals
+head. The branch originally drafted this as ``036`` beside
+``035_outcome_scope_thumb_index``, but develop's integrated history already
+assigned the 036 identities (``036_consumer_cursors``,
+``036_audit_log_org_scope``); claiming a sibling id would fork the chain into
+two heads, and threading under develop's shipped migrations would rewrite
+ancestry databases are already stamped with. Per the integration rule recorded
+on ``063_canonical_goals``: merged identities keep their meaning, and a new
+revision appends after the integrated head under an unused id.
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "036"
-down_revision = ("035", "035_outcome_scope_thumb_index")
+revision = "064"
+down_revision = "063"
 branch_labels = None
 depends_on = None
 
@@ -29,9 +39,14 @@ depends_on = None
 # migration. A future user-selected identity migration must introduce its own
 # explicit mapping rather than silently reusing this one.
 def upgrade() -> None:
+    # IF NOT EXISTS, not bare CREATE: the chain's re-adoption contract
+    # (stamp-back + re-upgrade, pinned by test_migration_chain.py) re-runs a
+    # tip revision over the schema it already built, and the mapping table is
+    # the one object this revision creates. The merge statements below are
+    # already no-ops on a converged schema; the DDL must be too.
     op.execute(
         """
-        CREATE TABLE principal_identity_mappings (
+        CREATE TABLE IF NOT EXISTS principal_identity_mappings (
             legacy_principal TEXT PRIMARY KEY,
             canonical_principal TEXT NOT NULL UNIQUE,
             migrated_at TIMESTAMPTZ NOT NULL DEFAULT now()

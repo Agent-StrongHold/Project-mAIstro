@@ -1,4 +1,4 @@
-"""The 036 legacy-principal migration against a live PostgreSQL (#1095).
+"""The 064 legacy-principal migration against a live PostgreSQL (#1095).
 
 `tests/test_legacy_principal_migration.py` reads the migration's SQL and checks
 the shape of the plan. That is not evidence the plan *executes*: an
@@ -53,11 +53,12 @@ pytestmark = pytest.mark.skipif(
     reason="MAISTRO_TEST_DATABASE_URL is unset; these need a real PostgreSQL server",
 )
 
-#: The revision recorded while the chain sits exactly where 036 will find it.
-PRE_036_VERSIONS = frozenset({"035", "035_outcome_scope_thumb_index"})
+#: The revision recorded while the chain sits exactly where 064 will find it:
+#: develop's integrated head, after which 064 appends.
+PRE_064_VERSIONS = frozenset({"063"})
 
 #: Installer-era and post-installer principals side by side in every surface
-#: 036 touches, so each merge branch has a row to converge.
+#: 064 touches, so each merge branch has a row to converge.
 SEED = """
 insert into canonical_workspaces (workspace_id, name, created_at, updated_at, payload)
 values ('ws1', 'Workspace One', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}'),
@@ -175,23 +176,21 @@ def _column_values(table: str, column: str) -> list[object]:
 
 
 @pytest.fixture
-def mixed_pre_036_database():
-    """The database as an upgraded deployment sat when 036 shipped: both 035
-    heads applied, and rows written under both the installer-era `default`
-    principal and the `conductor` that replaced it.
+def mixed_pre_064_database():
+    """The database as an upgraded deployment sat when 064 ships: develop's
+    integrated chain applied, and rows written under both the installer-era
+    `default` principal and the `conductor` that replaced it.
 
     `downgrade base` from any state this suite leaves is unambiguous, so one
     reset serves every test regardless of where the previous one died.
     """
     result = _alembic("downgrade", "base")
     assert result.returncode == 0, result.stderr
-    # One step per branch head: a single `upgrade heads` would also apply 036,
-    # and one `upgrade 035_outcome_scope_thumb_index` from the 035 branch walks
-    # the sibling's whole ancestry. Reaching exactly the pre-merge state is the
-    # point, so each head is named.
-    assert _alembic("upgrade", "035").returncode == 0
-    assert _alembic("upgrade", "035_outcome_scope_thumb_index").returncode == 0
-    assert _versions() == PRE_036_VERSIONS
+    # One linear chain: walking to the revision 064 revises is a single
+    # upgrade. The chain itself is what `test_migration_chain.py` proves;
+    # here it only has to land exactly on 063.
+    assert _alembic("upgrade", "063").returncode == 0
+    assert _versions() == PRE_064_VERSIONS
     _execute(SEED)
     yield
     assert _alembic("downgrade", "base").returncode == 0
@@ -299,11 +298,11 @@ def _assert_losslessly_migrated() -> None:
         ("evt-default", "conductor"),
     ]
 
-    assert _versions() == {"036"}
+    assert _versions() == {"064"}
 
 
 class TestMixedDataMigratesLosslessly:
-    def test_upgrade_head_merges_every_old_and_new_row(self, mixed_pre_036_database) -> None:
+    def test_upgrade_head_merges_every_old_and_new_row(self, mixed_pre_064_database) -> None:
         result = _alembic("upgrade", "head")
         assert result.returncode == 0, result.stderr
         _assert_losslessly_migrated()
@@ -311,7 +310,7 @@ class TestMixedDataMigratesLosslessly:
 
 class TestForcedProcessDeathIsRestartReconcilable:
     def test_sigkill_mid_migration_rolls_back_completely_then_converges(
-        self, mixed_pre_036_database
+        self, mixed_pre_064_database
     ) -> None:
         import psycopg
 
@@ -343,9 +342,9 @@ class TestForcedProcessDeathIsRestartReconcilable:
             assert _wait_until_lock_queue_clears(), (
                 "the killed backend is still queued on the table lock"
             )
-            # Rolled back totally: both 035 heads still recorded, the mapping
+            # Rolled back totally: the chain still sits at 063, the mapping
             # table absent, and the legacy rows exactly where they started.
-            assert _versions() == PRE_036_VERSIONS
+            assert _versions() == PRE_064_VERSIONS
             assert not _table_exists("principal_identity_mappings")
             assert _column_values("canonical_workspace_memberships", "user_id") == [
                 "conductor",
@@ -370,7 +369,7 @@ class TestForcedProcessDeathIsRestartReconcilable:
 
 class TestTwoReplicasConverge:
     def test_both_entrypoints_succeed_and_end_with_one_mapping(
-        self, mixed_pre_036_database
+        self, mixed_pre_064_database
     ) -> None:
         """Two containers racing the same upgrade, through the real entrypoint
         serialization: the advisory lock orders them, and the loser must see a

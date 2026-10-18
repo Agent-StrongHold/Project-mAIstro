@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = ROOT / "alembic" / "versions" / "036_legacy_principal_ownership.py"
+MIGRATION = ROOT / "alembic" / "versions" / "064_legacy_principal_ownership.py"
 
 
 @pytest.fixture
@@ -29,8 +29,8 @@ def test_upgrade_emits_one_restart_safe_identity_mapping_and_ownership_plan(migr
     module.upgrade()
     sql = "\n".join(statements)
 
-    assert module.revision == "036"
-    assert module.down_revision == ("035", "035_outcome_scope_thumb_index")
+    assert module.revision == "064"
+    assert module.down_revision == "063"
     assert "principal_identity_mappings" in sql
     assert "ON CONFLICT (legacy_principal) DO UPDATE" in sql
     assert "ON CONFLICT (workspace_id, user_id) DO UPDATE" in sql
