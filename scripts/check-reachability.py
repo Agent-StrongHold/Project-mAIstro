@@ -58,6 +58,12 @@ _EXCLUDED_PACKAGE_PYTHON = frozenset(
         "packages/hive-conductor/run_hill_climb.py",
         "packages/maistro-evolve/examples/builders_swebench_live.py",
         "packages/maistro-canvas/frontend/server/mcp/generate_golden.py",
+        # The ext-SDK's out-of-tree example extension (#949): a copy-paste
+        # reference for external authors, executed only by consumers outside
+        # this monorepo — validation stats its files, it is never imported
+        # here (that is the acceptance criterion it demonstrates).
+        "packages/maistro-ext-sdk/examples/minimal-extension/acme_weather/__init__.py",
+        "packages/maistro-ext-sdk/examples/minimal-extension/acme_weather/plugin.py",
         # Department DAG corpus (packages/hive-conductor/dags/).
         "packages/hive-conductor/dags/__init__.py",
         "packages/hive-conductor/dags/author_examples.py",
@@ -203,6 +209,10 @@ STATIC_ROOTS = (
     "maistro_registry.cli",
     "maistro_rsi.cli",
     "maistro_bootstrap",
+    # The extension SDK's console validator (#949): `maistro-ext-sdk validate`
+    # is the package's own entry point, the maistro_registry.cli precedent for
+    # a standalone library shipping its CLI as the in-graph root.
+    "maistro_ext_sdk.cli",
 )
 
 # Package modules reached only through runtime strings or external launchers.

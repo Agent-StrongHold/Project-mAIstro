@@ -22,6 +22,12 @@ from maistro.a2a.broker import (
     Transport,
 )
 from maistro.a2a.delegate import A2ADelegator, A2ATask, DelegationMode, TaskStatus
+from maistro.a2a.delegation_context import (
+    DelegationContext,
+    DelegationContextError,
+    DelegationScopeExceeded,
+    attenuate_scopes,
+)
 from maistro.a2a.external import (
     EXTERNAL_PRIORITY_TIER,
     EXTERNAL_TRUST_TIER,
@@ -88,9 +94,12 @@ __all__ = [
     "CardResolver",
     "DefaultDenyProjectionPolicy",
     "DelegationBudget",
+    "DelegationContext",
+    "DelegationContextError",
     "DelegationMode",
     "DelegationRefused",
     "DelegationResult",
+    "DelegationScopeExceeded",
     "DescriptorAlreadyRegistered",
     "DescriptorError",
     "DescriptorInvalid",
@@ -119,6 +128,7 @@ __all__ = [
     "UnsupportedCapability",
     "WorkerConfig",
     "WorkerPool",
+    "attenuate_scopes",
     "decide_cancellation",
     "decide_retry",
     "decide_settlement",
