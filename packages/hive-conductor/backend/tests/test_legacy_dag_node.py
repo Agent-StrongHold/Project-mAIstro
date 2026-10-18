@@ -415,6 +415,55 @@ async def test_an_unapproved_untrusted_adapter_node_refuses_to_execute() -> None
         await node._execute(node.input_schema(), _ctx())
 
 
+async def test_a_wired_host_sentinel_runs_a_benign_node_inline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for #845: the container-composed Sentinel must keep the
+    shipped runner able to execute a benign node, not deny every node."""
+    import services.legacy_dag_node as adapter
+
+    from maistro.container import _configure_host_tier_policy
+    from maistro.security.permission_policy import build_permission_table
+    from maistro.security.sentinel.policy import Sentinel
+    from maistro.security.warden.detector import Warden
+
+    sentinel = Sentinel(
+        warden=Warden(),
+        permission_table=build_permission_table(preset="none", permissions={}),
+        tier_policy=_configure_host_tier_policy(),
+    )
+
+    async def fake_llm_node(raw_node, node_id, inbound, scratch, task_desc, **kwargs):
+        scratch[node_id] = {"role": "worker", "response": "ran inline", "success": True}
+
+    monkeypatch.setattr(adapter, "_run_llm_node", fake_llm_node)
+
+    node = _adapter_node({"id": "n1", "config": {}}, sentinel=sentinel)
+    ctx = NodeContext(run_id="run-1", dag_id="dag-1", node_id="n1", user_id="u-1")
+
+    out = await node._execute(node.input_schema(), ctx)
+
+    assert out.response == "ran inline"
+
+
+async def test_a_wired_host_sentinel_still_blocks_an_untrusted_node() -> None:
+    from maistro.container import _configure_host_tier_policy
+    from maistro.security.permission_policy import build_permission_table
+    from maistro.security.sentinel.policy import Sentinel
+    from maistro.security.warden.detector import Warden
+
+    sentinel = Sentinel(
+        warden=Warden(),
+        permission_table=build_permission_table(preset="none", permissions={}),
+        tier_policy=_configure_host_tier_policy(),
+    )
+    node = _adapter_node({"id": "n1", "config": {"untrusted": True}}, sentinel=sentinel)
+    ctx = NodeContext(run_id="run-1", dag_id="dag-1", node_id="n1", user_id="u-1")
+
+    with pytest.raises(PermissionError, match="host policy did not authorize"):
+        await node._execute(node.input_schema(), ctx)
+
+
 async def test_a_sandbox_tier_adapter_node_runs_the_isolated_subprocess(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

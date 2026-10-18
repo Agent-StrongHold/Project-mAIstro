@@ -160,6 +160,79 @@ async def test_execution_mode_requires_a_cleared_host_tier() -> None:
     )
 
 
+def _shipped_composition_sentinel() -> Sentinel:
+    """Sentinel composed exactly as ``create_container`` wires it."""
+    from maistro.capabilities.bootstrap import default_capability_registry
+    from maistro.container import _configure_host_tier_policy
+    from maistro.security.permission_policy import build_permission_table
+    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
+
+    table = build_permission_table(preset="none", permissions={})
+    return Sentinel(
+        warden=Warden(),
+        permission_table=table,
+        permission_source=CapabilityPermissionSource(
+            base=table,
+            capabilities=default_capability_registry(),
+        ),
+        tier_policy=_configure_host_tier_policy(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_shipped_composition_keeps_benign_graph_nodes_runnable() -> None:
+    """Regression: the wired composition must not deny every node (#845).
+
+    Graph node actions are synthetic, so the fail-closed tool table never
+    names them; the shipped host tier record authorizes an authenticated
+    human principal's benign node inline.
+    """
+    sentinel = _shipped_composition_sentinel()
+    principal = Principal(id="u-1", kind="human", roles=("user",), scopes=("ws-1", "proj-1", "u-1"))
+    assert (
+        await sentinel.resolve_authorized_execution_mode(
+            "graph.node.execute",
+            principal,
+            args={"node_id": "n1", "artifact": "task"},
+            reversibility="irreversible",
+            default=Tier.SELF_ELEVATION,
+        )
+        == "async"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_anonymous_caller_cannot_run_graph_nodes() -> None:
+    sentinel = _shipped_composition_sentinel()
+    principal = Principal(id="anonymous", kind="human")
+    assert (
+        await sentinel.resolve_authorized_execution_mode(
+            "graph.node.execute",
+            principal,
+            args={"node_id": "n1", "artifact": "task"},
+            reversibility="irreversible",
+            default=Tier.SELF_ELEVATION,
+        )
+        == "blocked"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_untrusted_node_stays_blocked_under_the_shipped_composition() -> None:
+    sentinel = _shipped_composition_sentinel()
+    principal = Principal(id="u-1", kind="human", roles=("user",), scopes=("ws-1",))
+    assert (
+        await sentinel.resolve_authorized_execution_mode(
+            "graph.node.untrusted",
+            principal,
+            args={"node_id": "n1", "artifact": "task"},
+            reversibility="irreversible",
+            default=Tier.BLOCKED,
+        )
+        == "blocked"
+    )
+
+
 @pytest.mark.asyncio
 async def test_host_grant_allows_only_its_action_subset() -> None:
     authority = InMemoryDelegationAuthority([_grant(actions=frozenset({"read_file"}))])

@@ -242,14 +242,20 @@ class Sentinel:
         reversibility: str = "irreversible",
         default: Tier | None = None,
     ) -> str:
-        """Resolve isolation only after Sentinel's gate is actually cleared."""
-        decision = await self.authorize(
-            action,
-            principal,
-            reversibility=reversibility,
-            args=args,
-        )
-        if not decision.authorized or decision.needs != "none":
+        """Resolve isolation only after the host tier ladder clears the action.
+
+        Graph node actions are synthetic (not tools), so the fail-closed tool
+        capability table never names them and must not gate them here -- the
+        host tier policy (optionally an elevation grant) is the whole
+        decision (#845). Uncleared elevation/approval needs deny.
+        """
+        tier = self.resolve_tier(action, principal, reversibility=reversibility, default=default)
+        needs = self._resolve_needs(tier, principal)
+        if tier == Tier.SELF_ELEVATION:
+            cleared = await self._check_elevation_grant(action, principal, needs, args)
+            if cleared is not None:
+                needs = "none"
+        if tier == Tier.BLOCKED or needs != "none":
             return "blocked"
         return self.resolve_execution_mode(
             action,

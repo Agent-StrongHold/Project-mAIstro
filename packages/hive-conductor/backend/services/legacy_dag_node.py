@@ -496,6 +496,9 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
             principal = Principal(
                 id=ctx.user_id or "anonymous",
                 kind="human",
+                # ADR-068's base role for an authenticated human; an anonymous
+                # caller holds no role, so no host policy record can match.
+                roles=("user",) if ctx.user_id else (),
                 scopes=tuple(
                     value for value in (ctx.workspace_id, ctx.project_id, ctx.user_id) if value
                 ),
@@ -505,8 +508,9 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
                 principal,
                 args={"node_id": node_id, "artifact": self._task_desc},
                 reversibility="irreversible",
-                # Graph effects default to the sandbox; only an explicit
-                # host policy entry can select the inline mode.
+                # Only a host tier record (or a cleared elevation grant) can
+                # authorize a node; an anonymous caller and an untrusted node
+                # without an explicit record are denied.
                 default=Tier.BLOCKED if untrusted else Tier.SELF_ELEVATION,
             )
         tier = _classify_node_execution(self._raw_node, node_id, host_mode=host_mode)

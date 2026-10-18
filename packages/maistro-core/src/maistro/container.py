@@ -1401,7 +1401,9 @@ async def create_container(
     # Recovery is an administrative capability; its capability check goes
     # through the same fail-closed table below, so a deployment that arms
     # nothing denies recovery actions too until it configures permissions.
-    tier_policy = _configure_strike_recovery_policy()
+    # Graph node execution is a synthetic (non-tool) action, so its host
+    # authorization lives in tier records, not in the tool table (#845).
+    tier_policy = _configure_host_tier_policy()
     logger.info("Sentinel permission table: %s", describe_permission_table(permission_table))
     # SPEC-247 / ADR-068 §D. Without this, Sentinel._check_elevation_grant is a
     # permanent no-op, so a grant a human/owner already cleared could never be
@@ -1746,6 +1748,23 @@ def _configure_strike_recovery_policy() -> dict[tuple[str, str], Any]:
         for operation in ("unlock", "enable", "remove_strikes")
     )
     return {(action, "admin"): Tier.ADMIN for action in actions}
+
+
+def _configure_host_tier_policy() -> dict[tuple[str, str], Any]:
+    """Host-owned tier records for synthetic (non-tool) platform actions.
+
+    Graph node execution is not a tool call, so the fail-closed tool table
+    never names it; these records are the host policy that decides its
+    isolation (#845, ADR-068 §B). Only the canonical base role is armed:
+    authenticated human principals may run benign nodes inline, untrusted
+    nodes stay blocked absent an explicit record, and the adapter's
+    capability floor still forces the sandbox for dangerous nodes.
+    """
+    from maistro.security.sentinel.authz_types import Tier
+
+    policy = _configure_strike_recovery_policy()
+    policy[("graph.node.execute", "user")] = Tier.ROLE_AUTO
+    return policy
 
 
 def _wire_strike_recovery(*, tracker: Any, sentinel: Any, audit_log: Any) -> Any:
