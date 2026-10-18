@@ -137,10 +137,10 @@ def parse_memory(value: object) -> int | None:
         "ei": 1024**6,
         "eib": 1024**6,
     }
-    multiplier = multipliers.get(unit)
-    if multiplier is None:
-        return None
-    result = amount * multiplier
+    # Every unit the grammar above can match has a row in the table, and a
+    # bare number degenerated to "b", so the lookup cannot miss — pinned by
+    # test_parse_memory_honours_every_unit_the_grammar_accepts.
+    result = amount * multipliers[unit]
     return int(result) if math.isfinite(result) and result > 0 else None
 
 
