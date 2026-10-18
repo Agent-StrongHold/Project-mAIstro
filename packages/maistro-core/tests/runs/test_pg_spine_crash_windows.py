@@ -55,6 +55,12 @@ from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes import BaseNode, NodeContext, ReplaySemantics
 from maistro.projects.pg_scope_store import PgProjectScopeStore
+from maistro.runs.chat_execution import (
+    CHAT_EXECUTOR_ID,
+    ChatAttemptExecutor,
+    ChatDispatchUnrecorded,
+    attempt_result,
+)
 from maistro.runs.concurrency import RunConcurrencyLimits
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
@@ -749,6 +755,118 @@ async def test_committed_success_with_lost_acknowledgement_replays_without_execu
     assert await spine.recovery.run_store.list_attempts(node.node_run_id) == committed
     assert await spine.recovery.continuations.get(run_id) == continuation
     execute.assert_awaited_once()
+
+
+@pytest.mark.parametrize("committed", [False, True], ids=["rejected-write", "lost-ack"])
+async def test_chat_completion_write_failure_recovers_from_committed_truth(
+    spine: _Spine,
+    recovery_container: Container,
+    monkeypatch: pytest.MonkeyPatch,
+    committed: bool,
+) -> None:
+    """The chat error carries the answer; independent PG truth controls recovery.
+
+    Inject either side of the actual PgRunStore completion commit, not a mock
+    stored result. This covers a recording failure after the provider returns,
+    not worker death during dispatch or a real network-level COMMIT ambiguity.
+    """
+    graph = spine.graph("agent", name="chat completion write failure")
+    run_id = await _admit(spine, graph)
+    response = {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "the original answer"},
+                "finish_reason": "stop",
+            }
+        ],
+        "agent": "general",
+    }
+    dispatch = AsyncMock(return_value=response)
+    transition = spine.walker.run_store.transition_attempt
+    completion_writes = 0
+    failure = OSError(
+        "injected chat completion acknowledgement loss"
+        if committed
+        else "injected chat completion rejection"
+    )
+
+    async def fail_completion(attempt_id: str, target: AttemptStatus, **kwargs: Any) -> Any:
+        nonlocal completion_writes
+        if target is not AttemptStatus.COMPLETED:
+            return await transition(attempt_id, target, **kwargs)
+        completion_writes += 1
+        if committed:
+            written = await transition(attempt_id, target, **kwargs)
+            assert await spine.recovery.run_store.get_attempt(attempt_id) == written
+        raise failure
+
+    monkeypatch.setattr(spine.walker.run_store, "transition_attempt", fail_completion)
+    with pytest.raises(ChatDispatchUnrecorded) as unrecorded:
+        await ChatAttemptExecutor(spine.walker.run_store).execute(
+            run_id, [{"role": "user", "content": "hi"}], dispatch
+        )
+    assert unrecorded.value.run_id == run_id
+    assert unrecorded.value.response == response
+    assert unrecorded.value.__cause__ is failure
+    assert completion_writes == 1  # No hidden terminal-write retry.
+    dispatch.assert_awaited_once_with()
+
+    # Neither the exception nor the writer's objects decide whether COMMIT won.
+    reader = spine.recovery.run_store
+    run = await reader.get_run(run_id)
+    assert run is not None and run.status is RunStatus.RUNNING and run.result is None
+    [node] = await reader.list_node_runs(run_id)
+    assert node.status is RunStatus.RUNNING and node.accepted_outcome is None
+    [attempt] = await reader.list_attempts(node.node_run_id)
+    assert attempt.executor_id == CHAT_EXECUTOR_ID
+    assert attempt.status is (AttemptStatus.COMPLETED if committed else AttemptStatus.RUNNING)
+    assert attempt.result == (attempt_result(response) if committed else None)
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+    assert lease.attempt_id == attempt.attempt_id and lease.holder == CHAT_EXECUTOR_ID
+
+    if not committed:
+        # Failed recording does not authorize stealing a still-live lease.
+        assert (
+            await recovery_container.recover_abandoned_attempts(
+                now=lease.expires_at - timedelta(microseconds=1), limit=1
+            )
+            == 0
+        )
+        assert await reader.get_run(run_id) == run
+        assert await reader.list_node_runs(run_id) == [node]
+        assert await reader.list_attempts(node.node_run_id) == [attempt]
+
+    assert await recovery_container.recover_abandoned_attempts(now=lease.expires_at, limit=1) == 1
+    settled = await reader.get_run(run_id)
+    [settled_node] = await reader.list_node_runs(run_id)
+    [physical] = await reader.list_attempts(node.node_run_id)
+    expected = RunStatus.COMPLETED if committed else RunStatus.WAITING
+    assert settled is not None and settled.status is expected
+    assert settled_node.status is expected
+    assert (
+        settled.result == settled_node.result == (attempt_result(response) if committed else None)
+    )
+    if committed:
+        assert physical == attempt  # Includes identity, result, ordinal and fence.
+        assert settled_node.accepted_outcome is not None
+        assert settled_node.accepted_outcome.attempt_result == AttemptResult.from_attempt(attempt)
+    else:
+        assert physical.status is AttemptStatus.CANCELLED and physical.result is None
+        assert physical.execution_lease == lease
+        assert (physical.attempt_id, physical.node_run_id, physical.ordinal) == (
+            attempt.attempt_id,
+            attempt.node_run_id,
+            attempt.ordinal,
+        )
+        assert settled_node.accepted_outcome is None  # Never invent success from a lost write.
+    assert await recovery_container.recover_abandoned_attempts(now=lease.expires_at, limit=1) == 0
+    assert await reader.get_run(run_id) == settled
+    assert await reader.list_node_runs(run_id) == [settled_node]
+    assert await reader.list_attempts(node.node_run_id) == [physical]
+    assert await spine.recovery.continuations.get(run_id) is None
+    assert completion_writes == 1
+    dispatch.assert_awaited_once_with()
 
 
 # ── the frontier whose checkpoint never landed ─────────────────────
