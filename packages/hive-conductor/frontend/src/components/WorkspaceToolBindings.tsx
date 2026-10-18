@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { apiGet, apiPut } from "../lib/api";
 import { useUser } from "../App";
-import { useWorkspaces, type WorkspaceRole } from "../context/WorkspaceContext";
+import { useToast } from "./shared";
+import { useWorkspaces, type Workspace, type WorkspaceRole } from "../context/WorkspaceContext";
 
 type PersonaAgentOption = {
   agent_id: string;
@@ -30,6 +31,41 @@ function parseCommaList(value: string): string[] {
     .filter(Boolean);
 }
 
+/** The drafts as the workspace has them saved: the persona's defaults,
+ * narrowed or extended by any binding already stored. */
+function draftsFromWorkspace(
+  options: PersonaAgentOption[],
+  workspace: Workspace | null | undefined,
+): Record<string, AgentBindingDraft> {
+  const next: Record<string, AgentBindingDraft> = {};
+  for (const agent of options) {
+    const binding = workspace?.tool_bindings.find((b) => b.agent_id === agent.agent_id);
+    const tools = binding ? binding.tools : agent.default_tools;
+    next[agent.agent_id] = {
+      checkedDefaults: new Set(agent.default_tools.filter((t) => tools.includes(t))),
+      extraTools: tools.filter((t) => !agent.default_tools.includes(t)).join(", "),
+      promptFragment: binding?.prompt_fragment ?? "",
+    };
+  }
+  return next;
+}
+
+/** What `PUT /tool-bindings` would be sent for these drafts. Also the
+ * dirty check (#1430): the panel is dirty when this differs from what was
+ * last saved, so whitespace in the comma list does not count as an edit. */
+function bindingsFor(agents: PersonaAgentOption[], drafts: Record<string, AgentBindingDraft>) {
+  return agents.map((agent) => {
+    const draft = drafts[agent.agent_id];
+    const checked = draft ? Array.from(draft.checkedDefaults) : agent.default_tools;
+    const extra = draft ? parseCommaList(draft.extraTools) : [];
+    return {
+      agent_id: agent.agent_id,
+      tools: Array.from(new Set([...checked, ...extra])),
+      prompt_fragment: draft?.promptFragment ?? "",
+    };
+  });
+}
+
 /** Per-workspace tool-binding settings screen -- consumes services/
  * tool_binding.py's resolve_agent_tools()/resolve_agent_prompt_fragment()
  * (Phase E), which had no UI to write from until now. Owner-only, same
@@ -39,10 +75,16 @@ function parseCommaList(value: string): string[] {
  * tool the persona never declared) what one agent may call here. */
 export function WorkspaceToolBindings() {
   const user = useUser();
+  const toast = useToast();
   const { activeWorkspace, refresh } = useWorkspaces();
   const [open, setOpen] = useState(false);
   const [agents, setAgents] = useState<PersonaAgentOption[]>([]);
   const [drafts, setDrafts] = useState<Record<string, AgentBindingDraft>>({});
+  // The bindings as last saved, serialised; `dirty` is "the drafts no longer
+  // say this". Set when the panel loads the workspace's bindings and again
+  // after every successful save.
+  const [saved, setSaved] = useState<string | null>(null);
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -59,22 +101,14 @@ export function WorkspaceToolBindings() {
         );
         if (cancelled) return;
         setAgents(options);
+        const persisted = draftsFromWorkspace(options, activeWorkspace);
+        setSaved(JSON.stringify(bindingsFor(options, persisted)));
+        // Edits made before the panel was closed and reopened are kept; a
+        // dirty panel stays dirty until it is saved or discarded.
         setDrafts((prevDrafts) => {
           const next: Record<string, AgentBindingDraft> = {};
           for (const agent of options) {
-            if (prevDrafts[agent.agent_id]) {
-              next[agent.agent_id] = prevDrafts[agent.agent_id];
-              continue;
-            }
-            const binding = activeWorkspace?.tool_bindings.find(
-              (b) => b.agent_id === agent.agent_id,
-            );
-            const tools = binding ? binding.tools : agent.default_tools;
-            next[agent.agent_id] = {
-              checkedDefaults: new Set(agent.default_tools.filter((t) => tools.includes(t))),
-              extraTools: tools.filter((t) => !agent.default_tools.includes(t)).join(", "),
-              promptFragment: binding?.prompt_fragment ?? "",
-            };
+            next[agent.agent_id] = prevDrafts[agent.agent_id] ?? persisted[agent.agent_id];
           }
           return next;
         });
@@ -94,6 +128,25 @@ export function WorkspaceToolBindings() {
   if (!activeWorkspace) return null;
   const role = myRole(activeWorkspace.members, user?.id);
   if (role !== "owner") return null;
+
+  const dirty = saved !== null && JSON.stringify(bindingsFor(agents, drafts)) !== saved;
+
+  // Closing a dirty panel asks first (#1430); nothing is discarded by a
+  // click that was only meant to tuck the panel away.
+  function handleToggle() {
+    if (open && dirty) {
+      setConfirmingDiscard(true);
+      return;
+    }
+    setConfirmingDiscard(false);
+    setOpen((v) => !v);
+  }
+
+  function handleDiscard() {
+    setDrafts(draftsFromWorkspace(agents, activeWorkspace));
+    setConfirmingDiscard(false);
+    setOpen(false);
+  }
 
   function toggleDefault(agentId: string, tool: string) {
     setDrafts((prev) => {
@@ -130,19 +183,13 @@ export function WorkspaceToolBindings() {
     setBusy(true);
     setError(null);
     try {
-      const bindings = agents.map((agent) => {
-        const draft = drafts[agent.agent_id];
-        const checked = draft ? Array.from(draft.checkedDefaults) : agent.default_tools;
-        const extra = draft ? parseCommaList(draft.extraTools) : [];
-        return {
-          agent_id: agent.agent_id,
-          tools: Array.from(new Set([...checked, ...extra])),
-          prompt_fragment: draft?.promptFragment ?? "",
-        };
-      });
+      const bindings = bindingsFor(agents, drafts);
       await apiPut(`/v1/workspaces/${workspaceId}/tool-bindings`, { bindings });
       await refresh();
+      setSaved(JSON.stringify(bindings));
+      setConfirmingDiscard(false);
       setOpen(false);
+      toast(`Tool bindings saved for "${activeWorkspace?.name ?? "workspace"}"`, "ok");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save tool bindings");
     } finally {
@@ -154,17 +201,35 @@ export function WorkspaceToolBindings() {
     <div className="workspace-tool-bindings">
       <button
         type="button"
-        className="workspace-tab workspace-tool-bindings-toggle"
-        onClick={() => setOpen((v) => !v)}
+        className={`workspace-tab workspace-tool-bindings-toggle${dirty ? " dirty" : ""}`}
+        onClick={handleToggle}
         aria-expanded={open}
+        aria-label={dirty ? "Tools (unsaved changes)" : "Tools"}
       >
         Tools
+        {dirty && <span aria-hidden="true"> &bull;</span>}
       </button>
       {open && (
         <div className="workspace-tool-bindings-panel">
           <div className="workspace-tool-bindings-title">
             {activeWorkspace.name} tool bindings
+            {dirty && (
+              <span role="status" className="workspace-tool-bindings-dirty">
+                Unsaved changes
+              </span>
+            )}
           </div>
+          {confirmingDiscard && (
+            <div className="workspace-tool-bindings-discard" role="alertdialog" aria-label="Discard unsaved changes?">
+              <span>Discard unsaved changes?</span>
+              <button type="button" onClick={handleDiscard}>
+                Discard
+              </button>
+              <button type="button" onClick={() => setConfirmingDiscard(false)}>
+                Keep editing
+              </button>
+            </div>
+          )}
           {agents.length === 0 && (
             <div className="workspace-tool-bindings-empty">
               This persona declares no agents to configure.
@@ -209,9 +274,13 @@ export function WorkspaceToolBindings() {
               </div>
             );
           })}
-          {error && <div className="workspace-tool-bindings-error">{error}</div>}
-          <button type="button" disabled={busy} onClick={() => void handleSave()}>
-            Save
+          {error && (
+            <div role="alert" className="workspace-tool-bindings-error">
+              {error}
+            </div>
+          )}
+          <button type="button" disabled={busy || !dirty} onClick={() => void handleSave()}>
+            {dirty ? "Save" : "Saved"}
           </button>
         </div>
       )}
