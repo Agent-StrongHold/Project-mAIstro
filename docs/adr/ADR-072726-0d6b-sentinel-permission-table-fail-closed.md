@@ -184,6 +184,23 @@ Implemented on branch `m2-1165-a1`, following this ADR's own sequencing rule:
    never used to rescue an unavailable source, because a stale snapshot must
    not outvote a revoke.
 
+6. **The Agent tool seam fails closed without Sentinel or auth (2026-09-26,
+   #1165 closure).** `Agent._authorize_and_invoke` used to invoke the tool
+   raw when the Agent had no Sentinel or the turn had no `auth`, so any
+   Agent built without the container's Sentinel (the constructor default is
+   `sentinel=None`) authorized everything. It now returns the same
+   `Error: Permission denied for tool …` result a table denial does, and
+   logs why. The standalone ReAct and Artificer strategy paths
+   (`security_pipeline` off) apply the same rule instead of skipping
+   `pre_call`. Only the Warden/PII result-sanitization fallback remains for
+   a missing Sentinel, and it is defensive, never an authorization.
+   `Container.route_request` still routes an identity-free turn as the
+   role-less anonymous principal, so such a turn is decided by the table
+   rather than refused for want of identity. Tests that need tool execution
+   pass a Sentinel with an explicit grant; the suite in
+   `tests/agents/test_agent_seam_fail_closed.py` fails if the raw-invoke
+   fallback is restored.
+
 **Consciously deferred (not done here — do not assume otherwise):**
 
 - Precondition 2 (complete tool inventory) and precondition 3 (documented role

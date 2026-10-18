@@ -34,6 +34,26 @@ Requires Python 3.11+.
 distributed wheel (`[tool.hatch.build.targets.wheel]` ships `src/maistro_turing` only). The
 Astro `frontend/` was removed under the v1 cut list (D1/#289) — it had no tests and no CI job.
 
+### Backend activation and service identity (#858)
+
+The backend ships **no built-in service key**. It refuses to start unless an
+explicitly governed service identity is configured, and `/health/ready`
+reports unavailability when one is absent:
+
+```bash
+export TURING_SERVICE_KEY=$(python -m backend.provision)
+# local dev: generate a unique key and store it in a 0600 dotenv file
+python -m backend.provision --env-file .env.turing
+```
+
+The `turing-internal` identity is registered in the canonical `maistro.auth`
+scope model — exactly the Turing-internal scopes (`turing:chat`,
+`turing:vault_read`, `turing:vault_write`), pinned at startup to the route
+allowlist, so configuration drift fails startup instead of widening the
+identity. Rotation/revocation is an env or secret-file
+(`TURING_SERVICE_KEY_FILE`) change plus a restart — never a source or image
+change.
+
 ## Tests
 
 ```bash
