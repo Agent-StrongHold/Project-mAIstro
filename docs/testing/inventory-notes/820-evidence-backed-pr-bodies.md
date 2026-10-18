@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +17
+  packages/maistro-rsi/tests: +25
 ---
 # 820-evidence-backed-pr-bodies
 
@@ -10,16 +10,22 @@ Issue #820 (from #304's finding): RSI PR bodies asserted a full fitness-scorecar
 pass (tests, coverage, ruff, mypy, bandit) without reading any recorded gate
 result, and a missing Bandit installation produced *no* gate at all — an
 unavailable required analyzer indistinguishable from a gate nobody declared.
-+17 node IDs across five files of `packages/maistro-rsi/tests`:
++25 node IDs across five files of `packages/maistro-rsi/tests`:
 
-- `test_lint_gate_fail_closed.py` (new, +5): the fail-closed gate contract.
+- `test_lint_gate_fail_closed.py` (new, +12): the fail-closed gate contract.
   A tool that cannot launch (`FileNotFoundError`), is not importable
-  (`No module named ...`), or wedges past its budget yields an explicit
-  FAILING `not_run` `GateResult` naming the cause — and, because every
-  scorecard gate is a veto, that result blocks promotion (proven through
-  `compose_scorecard`: `accepted is False`, composite 0.0). A gate whose tool
-  did run records provenance (argv, exit code, output digest, `--version`
-  when the tool answers). No changed source files → no lint gate declared.
+  (`No module named ...`), wedges past its budget (`TimeoutExpired`), or fails
+  at the OS launch layer (`OSError`) yields an explicit FAILING `not_run`
+  `GateResult` naming the cause — and, because every scorecard gate is a
+  veto, that result blocks promotion (proven through `compose_scorecard`:
+  `accepted is False`, composite 0.0). The ran-tool half is deterministic
+  too: the judgement helpers are pinned on synthetic `CompletedProcess`
+  values (ruff finding counts incl. unparseable output, mypy error lines,
+  bandit HIGH-only severity incl. unparseable reports), `_tool_version` is
+  pinned to probe the invocation head (`python -m <tool> --version`, never
+  the full check argv) and to record nothing when the probe fails, and a
+  gate whose tool ran records provenance (argv, exit code, output digest,
+  version). No changed source files → no lint gate declared.
 - `test_harvest.py` (+5): PR bodies render ONLY recorded gate results with
   their recorded states — measured pass, FAILED, or NOT RUN — aggregated
   truthfully across a file group (one failed promotion fails the line, a gate
@@ -34,13 +40,15 @@ unavailable required analyzer indistinguishable from a gate nobody declared.
 - `test_trace_notes.py` (+1): `TraceNote.gate_results` round-trips and stays
   optional — a pre-field note parses with `gate_results None`, which readers
   must treat as "not recorded", never "all passed".
-- `test_checkpoint_report.py` (+2): a fitness promotion's per-gate records
-  land in the durable trace note, and the export manifest carries the
-  recorded gate evidence for harvest PR bodies to render. (One existing
-  judge-unavailable test also stubs the now-required lint gates, since a
-  missing tool in the test environment would otherwise veto before the judge
-  stage under test — the fail-closed behavior itself is what the new file
-  pins.)
+- `test_checkpoint_report.py` (+3): a fitness promotion's per-gate records
+  land in the durable trace note, the export manifest carries the recorded
+  gate evidence for harvest PR bodies to render, and BOTH manifest evidence
+  states are pinned — a noted promotion projects `gates` + `gate_results`
+  (not_run flag included) while an un-noted commit projects neither key, so
+  the harvest body renders it as unverified. (One existing judge-unavailable
+  test also stubs the now-required lint gates, since a missing tool in the
+  test environment would otherwise veto before the judge stage under test —
+  the fail-closed behavior itself is what the new file pins.)
 
 ## Why
 
