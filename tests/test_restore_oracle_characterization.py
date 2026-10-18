@@ -292,7 +292,7 @@ def _run_drill(backup_root: Path, date: str) -> subprocess.CompletedProcess[str]
         # exercises the PostgreSQL oracle, so it opts out exactly the way
         # Conductor-less stacks do — the same SKIP_CONDUCTOR_BACKUP=1 contract
         # as backup.sh and verify-restore.sh.
-        "SKIP_CONDUCTOR_BACKUP": "1",
+        SKIP_CONDUCTOR_BACKUP="1",
     )
     return subprocess.run(
         ["bash", str(VERIFY_SH), date],
