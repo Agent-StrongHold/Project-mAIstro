@@ -89,15 +89,19 @@ async def _readable_canonical_runs(run_ids: list[str], user_id: str) -> dict[str
 
 
 def _goal_context_identity(run: Any) -> dict[str, Any] | None:
-    """The #458 Goal context a readable canonical Run records, verbatim (#65).
+    """The canonical Goal binding a readable Run records (#65).
 
-    The Goal-centric view (services.goal_inspection) reads this same context
-    through this module's `canonical_runs_for`; relaying the recorded
-    identity here lets the run surface link back to that view with no second
-    read and no id translation. Identity only: status and control stay the
-    seam's own, and a run whose provenance names no Goal relays nothing at
-    all — absence, not an invented default.
+    New Runs bind the Goal at admission in immutable ``Run.goal_id`` and
+    ``Run.goal_revision`` fields (#1572).  Historical runs may carry only the
+    older provenance context, which remains a read-only compatibility input.
+    The binding wins whenever both exist: a caller must never be linked by a
+    mutable or conflicting provenance value to a different Goal history.
     """
+    goal_id = getattr(run, "goal_id", None)
+    goal_revision = getattr(run, "goal_revision", None)
+    if goal_id is not None and goal_revision is not None:
+        return {"goal_id": goal_id, "goal_revision": str(goal_revision)}
+
     from maistro.runs.goal_context import goal_context_of
 
     context = goal_context_of(getattr(run, "provenance", None))

@@ -2,10 +2,11 @@
 
 The product hierarchy (ADR-081226-9944, INTEROP-ONTOLOGY-v1 #458) puts the
 Goal above execution: `Workspace -> Project -> Goal -> accountable Agent ->
-Runs as evidence`. The canonical Goal *store* is #804's and does not exist
-yet; the canonical fact a goal-driven Run records today is its Goal context in
-`Run.provenance` (`maistro.runs.goal_context`, the same leaf-module pattern
-`runs.sources` uses for schedule occurrences).
+Runs as evidence`. The canonical Goal store is `maistro.goals` (#1572). Goal-driven Runs bind
+that Goal and its exact revision immutably at admission in `Run.goal_id` and
+`Run.goal_revision`; historical Runs may carry an older provenance context.
+This projection reads both through their scoped public seams, with immutable
+Run bindings taking precedence over the legacy provenance representation.
 
 This module is Conductor's inspection projection over that evidence, and it
 deliberately has the same shape as `services.attention` (#1049): computed on
@@ -18,9 +19,9 @@ view shows are exactly what that seam serves, with no translation.
 
 What this projection refuses to do is decide Goal state. A completed or failed
 Run is evidence; the view exposes an `execution_disposition` derived
-deterministically from canonical Run statuses and keeps `goal_state` honestly
-`not_recorded` until a canonical Goal authority (#804) records a verdict. A
-terminal Run can therefore never silently render its Goal terminal.
+deterministically from canonical Run statuses and reads `goal_state` only from
+the scoped canonical Goal authority. A terminal Run can therefore never
+silently render its Goal terminal.
 
 Authorization is not re-decided here either. Runs enter only through
 `list_visible_runs` (the caller's canonical Workspace universe, #1174), so a
@@ -87,6 +88,56 @@ def _blocker(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     return None
 
 
+def _context_for(run: Run | None) -> GoalContext | None:
+    """The Goal identity bound to ``run``, with legacy provenance fallback.
+
+    ``Run.goal_id``/``goal_revision`` are the canonical admission binding.
+    Provenance is considered only for pre-binding records; letting it override
+    a binding would create a second, mutable Goal association for a Run.
+    """
+    if run is None:
+        return None
+    if run.goal_id is not None and run.goal_revision is not None:
+        return GoalContext(goal_id=run.goal_id, goal_revision=str(run.goal_revision))
+    return goal_context_of(run.provenance)
+
+
+async def _canonical_goal_facts(
+    user_id: str, goal_ids: set[str]
+) -> dict[str, tuple[Any, dict[int, Any]]]:
+    """Visible canonical Goals and their revisions, keyed by Goal id.
+
+    The product never opens the raw Goal store: ``goal_reader`` makes the same
+    Workspace-scoped, non-disclosing decision as all other Goal consumers.
+    A missing bridge, deleted historical Goal, or inaccessible Goal leaves the
+    Run evidence readable without inventing current Goal state.
+    """
+    if not goal_ids:
+        return {}
+    try:
+        from services.engine import get_engine
+
+        reader = get_engine().goal_reader
+        if reader is None:
+            return {}
+    except Exception:
+        return {}
+
+    facts: dict[str, tuple[Any, dict[int, Any]]] = {}
+    for goal_id in goal_ids:
+        try:
+            goal = await reader.get_goal(goal_id, principal_id=user_id)
+            revisions = await reader.list_goal_revisions(goal_id, principal_id=user_id)
+        except LookupError:
+            continue
+        except Exception:
+            # Goal inspection remains a read-only Run-evidence projection when
+            # the independently owned Goal seam is temporarily unavailable.
+            continue
+        facts[goal_id] = (goal, {revision.revision: revision for revision in revisions})
+    return facts
+
+
 def _run_evidence_row(
     summary: dict[str, Any],
     context: GoalContext,
@@ -135,13 +186,14 @@ def _run_evidence_row(
 def _goal_view_for(
     goal_id: str,
     members: list[tuple[GoalContext, dict[str, Any], Run | None]],
+    canonical_goal: Any | None = None,
+    canonical_revisions: dict[int, Any] | None = None,
 ) -> dict[str, Any]:
     """One Goal's inspection view from its evidence rows.
 
-    Goal-state fields are recorded-or-absent facts from the evidence's Goal
-    context — never defaults, never derived from outcomes. `goal_state` stays
-    None until a canonical Goal authority records a verdict; the runs below
-    are evidence and cannot flip it.
+    Goal-state fields come from the scoped canonical Goal reader when it can
+    see the Goal — never defaults and never derived from outcomes. The Runs
+    below are execution evidence and cannot flip that recorded state.
     """
     ordered = sorted(
         members,
@@ -158,7 +210,22 @@ def _goal_view_for(
                 return value
         return None
 
-    revisions = sorted({context.goal_revision for context in contexts})
+    revisions = sorted(
+        {context.goal_revision for context in contexts},
+        key=lambda revision: (
+            not revision.isdecimal(),
+            int(revision) if revision.isdecimal() else revision,
+        ),
+    )
+    canonical_revisions = canonical_revisions or {}
+    # `ordered` is newest evidence first; a lexical sort would incorrectly
+    # select revision "9" over revision "10" for its desired-state details.
+    seen_revision = contexts[0].goal_revision if contexts else None
+    exact_revision = (
+        canonical_revisions.get(int(seen_revision))
+        if seen_revision is not None and seen_revision.isdecimal()
+        else None
+    )
     graphs: dict[str, dict[str, Any]] = {}
     unmatched_pipelines: list[str] = []
     for row in rows:
@@ -177,15 +244,41 @@ def _goal_view_for(
         "goal_id": goal_id,
         "workspace_id": summary_row.get("workspace_id"),
         "project_id": summary_row.get("project_id"),
-        "goal_state": None,
-        "goal_state_source": "not_recorded",
-        "goal_revision_seen": revisions[-1] if revisions else None,
+        "goal_state": canonical_goal.status if canonical_goal is not None else None,
+        "goal_state_source": "canonical_goal" if canonical_goal is not None else "not_recorded",
+        "goal_revision_seen": seen_revision,
         "goal_revisions": revisions,
-        "accountable_agent_id": _recorded(lambda c: c.accountable_agent_id),
-        "desired_state": _recorded(lambda c: c.desired_state),
-        "success_condition": _recorded(lambda c: c.success_condition),
-        "stop_condition": _recorded(lambda c: c.stop_condition),
-        "parent_goal_id": _recorded(lambda c: c.parent_goal_id),
+        "accountable_agent_id": (
+            canonical_goal.agent_id
+            if canonical_goal is not None
+            else _recorded(lambda c: c.accountable_agent_id)
+        ),
+        "desired_state": (
+            exact_revision.desired_state
+            if exact_revision is not None
+            else _recorded(lambda c: c.desired_state)
+        ),
+        "success_condition": (
+            exact_revision.success_conditions[0]
+            if exact_revision is not None and exact_revision.success_conditions
+            else _recorded(lambda c: c.success_condition)
+        ),
+        "stop_condition": (
+            exact_revision.stop_conditions[0]
+            if exact_revision is not None and exact_revision.stop_conditions
+            else _recorded(lambda c: c.stop_condition)
+        ),
+        "success_conditions": (
+            list(exact_revision.success_conditions) if exact_revision is not None else []
+        ),
+        "stop_conditions": list(exact_revision.stop_conditions)
+        if exact_revision is not None
+        else [],
+        "parent_goal_id": (
+            canonical_goal.parent_goal_id
+            if canonical_goal is not None
+            else _recorded(lambda c: c.parent_goal_id)
+        ),
         "execution_disposition": _disposition(statuses),
         "blocker": _blocker(rows),
         "selected_graphs": list(graphs.values()),
@@ -198,9 +291,9 @@ def _goal_view_for(
 def _link_subgoals(views: list[dict[str, Any]]) -> None:
     """Fill `subgoals` from the sibling goals' recorded parentage.
 
-    Subgoal lineage is Goal -> Goal (ontology `goal_subgoal`); until #804's
-    Goal store holds it, the evidence records it as `parent_goal_id`, and the
-    link is drawn only between goals in the same Workspace and Project — a
+    Subgoal lineage is Goal -> Goal (ontology `goal_subgoal`). Canonical Goal
+    parentage is preferred when available; the link is drawn only between
+    goals in the same Workspace and Project — a
     parent id from another scope is delegation beyond this view's boundary
     and stays invisible, like any other out-of-scope object (#1174).
     """
@@ -224,16 +317,16 @@ async def _collect_goal_views(user_id: str) -> list[dict[str, Any]]:
     summaries = await list_visible_runs(user_id, limit=_EVIDENCE_WINDOW)
     if not summaries:
         return []
-    # One batched canonical read for the page — the same door the status
-    # overlay uses — so Goal context comes from canonical provenance and never
-    # from a product-private copy of it (#65; #1174's one-door rule).
+    # One batched canonical Run read for the page — the same door the status
+    # overlay uses — so Run bindings never come from a product-private copy
+    # (#65; #1174's one-door rule).
     canonical = await canonical_runs_for(
         user_id, [str(summary.get("canonical_run_id") or "") for summary in summaries]
     )
     grouped: dict[tuple[str, str, str], list[tuple[GoalContext, dict[str, Any], Run | None]]] = {}
     for summary in summaries:
         run = canonical.get(str(summary.get("canonical_run_id") or ""))
-        context = goal_context_of(run.provenance if run is not None else None)
+        context = _context_for(run)
         if context is None:
             # Not goal-driven evidence: the run stays exactly where it was —
             # on the #1036 run surfaces — and no pseudo-Goal is minted for it.
@@ -244,7 +337,11 @@ async def _collect_goal_views(user_id: str) -> list[dict[str, Any]]:
             context.goal_id,
         )
         grouped.setdefault(key, []).append((context, summary, run))
-    views = [_goal_view_for(goal_id, members) for (_, _, goal_id), members in grouped.items()]
+    canonical_facts = await _canonical_goal_facts(user_id, {goal_id for (_, _, goal_id) in grouped})
+    views = [
+        _goal_view_for(goal_id, members, *canonical_facts.get(goal_id, (None, {})))
+        for (_, _, goal_id), members in grouped.items()
+    ]
 
     def _activity(view: dict[str, Any]) -> tuple[float, str]:
         runs = view["runs"]
@@ -306,10 +403,8 @@ async def goal_view(
 def goal_state_is_recorded(view: dict[str, Any]) -> bool:
     """Whether a view carries a canonical Goal verdict.
 
-    Exposed for consumers (and tests) that must prove the evidence/verdict
-    separation: today it is always False, because no canonical Goal authority
-    has landed. When #804 lands, this is the seam the verdict arrives through
-    — not a re-derivation from runs.
+    The verdict comes only from the scoped canonical Goal reader. Run outcomes
+    remain execution evidence and cannot affect this answer.
     """
     return view.get("goal_state") is not None
 

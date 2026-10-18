@@ -7,10 +7,10 @@
 //                                 (evidence grouped per Goal)
 //   /dag-runs?run=<id>          — the run detail/live surface (list, detail,
 //                                 cancel control live there, not here)
-// It decides nothing: a finished run below is evidence, and the Goal's own
-// state stays "not recorded" until the Goal's owner records a verdict. That
-// separation is the product contract, so the banner states it in plain words
-// rather than hiding it.
+// It decides nothing: a finished run below is evidence, and only the
+// canonical Goal owner records the Goal's state. That separation is the
+// product contract, so the banner states it in plain words rather than hiding
+// it.
 //
 // The page is scoped to one Workspace — the active tab, or the ?ws= a run's
 // Goal back-link names — because the inspection route lives under the
@@ -107,10 +107,11 @@ function GoalDetail({
           </span>
         </div>
         {/* The verdict banner: a finished run never promotes itself to a
-            finished Goal. This line is the contract, in plain words. */}
+            finished Goal. Goal state is shown only when its canonical owner
+            recorded it. */}
         <p style={{ fontSize: 13, color: "var(--pencil)", marginBottom: 4 }}>
-          Goal outcome: not decided yet. The runs below are the work done toward
-          this goal — they don't decide whether the goal itself is met.
+          Goal outcome: {view.goal_state ?? "not recorded"}. The runs below are
+          execution evidence — they don't decide whether the goal itself is met.
         </p>
         <dl
           style={{
@@ -124,9 +125,17 @@ function GoalDetail({
           <dt style={{ color: "var(--pencil)" }}>Wants</dt>
           <dd style={{ margin: 0 }}>{view.desired_state ?? "not recorded"}</dd>
           <dt style={{ color: "var(--pencil)" }}>Done when</dt>
-          <dd style={{ margin: 0 }}>{view.success_condition ?? "not recorded"}</dd>
+          <dd style={{ margin: 0 }}>
+            {view.success_conditions.length > 0
+              ? view.success_conditions.join("; ")
+              : (view.success_condition ?? "not recorded")}
+          </dd>
           <dt style={{ color: "var(--pencil)" }}>Stops when</dt>
-          <dd style={{ margin: 0 }}>{view.stop_condition ?? "not recorded"}</dd>
+          <dd style={{ margin: 0 }}>
+            {view.stop_conditions.length > 0
+              ? view.stop_conditions.join("; ")
+              : (view.stop_condition ?? "not recorded")}
+          </dd>
           <dt style={{ color: "var(--pencil)" }}>Accountable</dt>
           <dd style={{ margin: 0, fontFamily: "var(--mono)", fontSize: 12 }}>
             {view.accountable_agent_id ?? "unassigned"}

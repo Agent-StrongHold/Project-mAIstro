@@ -2,15 +2,15 @@
 
 `services.goal_inspection` must hold no Goal state of its own: every Goal
 view is computed on read from the canonical Run evidence the #1036
-inspection seam serves, grouped by the Goal context stamped in canonical
-`Run.provenance` (`maistro.runs.goal_context`, #458). The contract pinned
-here, one test per boundary:
+inspection seam serves, grouped by the immutable Goal binding stamped at
+canonical Run admission (`Run.goal_id` / `Run.goal_revision`, #1572). The
+contract pinned here, one test per boundary:
 
 - one Goal with many Runs is ONE history, never duplicated pseudo-tasks;
 - run identity and status in a Goal view are exactly what
   `visible_run_detail` serves — no translation, no second terminal status;
-- a terminal Run is evidence: `goal_state` stays `not_recorded` whatever the
-  runs did, and the disposition names execution, not a Goal verdict;
+- a terminal Run is evidence: Goal state comes only from the scoped canonical
+  Goal reader, and the disposition names execution, not a Goal verdict;
 - canonical pause/failure/terminal states stay distinguishable;
 - provenance naming a Goal without its exact revision projects nothing
   (ontology: a projection may not invent `goal_revision`);
@@ -42,7 +42,7 @@ sys.path.insert(0, str(_BACKEND))
 pytestmark = [pytest.mark.contract("boundary")]
 
 _USER_ID = "goal-inspection-user"
-_REVISION = "r1"
+_REVISION = 1
 
 _seq = iter(range(10_000))
 
@@ -70,16 +70,20 @@ def _canonical_workspaces() -> Any:
     return canonical_store_for_tests()
 
 
-async def _bridge(monkeypatch: pytest.MonkeyPatch, store: Any) -> Any:
-    """Point the engine's canonical bridge at `store` through the scoped reader."""
+async def _bridge(monkeypatch: pytest.MonkeyPatch, store: Any, goal_store: Any) -> Any:
+    """Point the engine at canonical Run and Goal readers, as production does."""
     import services.engine as engine_mod
 
+    from maistro.goals.authorization import ScopedGoalStore
     from maistro.runs.scoped_reads import ScopedRunReader
 
     workspaces = _canonical_workspaces()
     reader = ScopedRunReader(store, workspaces, workspaces.project_store)
+    goal_reader = ScopedGoalStore(goal_store, workspaces)
     monkeypatch.setattr(
-        engine_mod, "_singleton", SimpleNamespace(run_store=store, run_reader=reader)
+        engine_mod,
+        "_singleton",
+        SimpleNamespace(run_store=store, run_reader=reader, goal_reader=goal_reader),
     )
     return workspaces
 
@@ -92,16 +96,17 @@ class _Scene:
     first scene's canonical Runs (the seam then fail-closes the whole batch,
     as it must)."""
 
-    def __init__(self, view: Any, workspaces: Any, store: Any) -> None:
+    def __init__(self, view: Any, workspaces: Any, store: Any, goal_store: Any) -> None:
         self.view = view
         self.workspaces = workspaces
         self.store = store
+        self.goal_store = goal_store
 
     async def add_goal_run(
         self,
         *,
         goal_id: str,
-        revision: str = _REVISION,
+        revision: int = _REVISION,
         status: Any = None,
         provenance_extra: dict[str, Any] | None = None,
         parent_run_id: str | None = None,
@@ -116,16 +121,9 @@ class _Scene:
         instead (the foreign-visibility case). With `provenance` the default
         Goal context is replaced entirely (the revisionless/plain cases).
         """
+        from maistro.goals import GoalRevisionDraft
         from maistro.graph import Graph, Node
         from maistro.runs import RunStatus
-        from maistro.runs.goal_context import (
-            ACCOUNTABLE_AGENT_ID_KEY,
-            DESIRED_STATE_KEY,
-            GOAL_ID_KEY,
-            GOAL_REVISION_KEY,
-            STOP_CONDITION_KEY,
-            SUCCESS_CONDITION_KEY,
-        )
 
         workspace = workspace_id or self.view.id
         root = await self.workspaces.project_store.root_for_workspace(workspace)
@@ -135,17 +133,36 @@ class _Scene:
             name=f"Goal work {goal_id}",
             nodes=[Node(node_id="n", node_type="agent")],
         )
-        if provenance is None:
-            provenance = {
-                GOAL_ID_KEY: goal_id,
-                GOAL_REVISION_KEY: revision,
-                ACCOUNTABLE_AGENT_ID_KEY: "workspace-agent-1",
-                DESIRED_STATE_KEY: "report shipped",
-                SUCCESS_CONDITION_KEY: "report accepted by requester",
-                STOP_CONDITION_KEY: "requester withdraws the request",
-            }
-            if provenance_extra:
-                provenance.update(provenance_extra)
+        bind_goal = provenance is None
+        if bind_goal:
+            goal = await self.goal_store.get_goal(goal_id)
+            if goal is None:
+                parent_goal_id = (provenance_extra or {}).get("parent_goal_id")
+                goal = await self.goal_store.create_goal(
+                    workspace_id=workspace,
+                    project_id=root.project_id,
+                    agent_id="workspace-agent-1",
+                    parent_goal_id=parent_goal_id,
+                    goal_id=goal_id,
+                    draft=GoalRevisionDraft(
+                        desired_state="report shipped",
+                        success_conditions=("report accepted by requester",),
+                        stop_conditions=("requester withdraws the request",),
+                        author=_USER_ID,
+                    ),
+                )
+            while goal.current_revision < revision:
+                goal = await self.goal_store.append_revision(
+                    goal_id,
+                    GoalRevisionDraft(
+                        desired_state=f"report shipped revision {goal.current_revision + 1}",
+                        success_conditions=("report accepted by requester",),
+                        stop_conditions=("requester withdraws the request",),
+                        author=_USER_ID,
+                    ),
+                    expected_revision=goal.current_revision,
+                )
+            provenance = dict(provenance_extra or {})
         run = await self.store.create_run(
             graph,
             provenance=provenance,
@@ -155,6 +172,7 @@ class _Scene:
             # `require_admitted_actor`); the same default every canonical
             # store test admits under.
             actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            **({"goal_id": goal_id, "goal_revision": revision} if bind_goal else {}),
         )
         # Walk the canonical lifecycle to the requested state without
         # revisiting one (RUNNING -> RUNNING is an illegal transition, by
@@ -186,13 +204,15 @@ class _Scene:
 
 
 async def _make_scene(monkeypatch: pytest.MonkeyPatch) -> _Scene:
+    from maistro.goals import InMemoryGoalStore
     from maistro.runs import InMemoryRunStore
 
     view = await _owned_workspace()
     workspaces = _canonical_workspaces()
     store = InMemoryRunStore(project_store=workspaces.project_store)
-    await _bridge(monkeypatch, store)
-    return _Scene(view, workspaces, store)
+    goal_store = InMemoryGoalStore()
+    await _bridge(monkeypatch, store, goal_store)
+    return _Scene(view, workspaces, store, goal_store)
 
 
 async def _goal_scene(
@@ -200,7 +220,7 @@ async def _goal_scene(
     *,
     goal_id: str,
     statuses: list[Any],
-    revision: str = _REVISION,
+    revision: int = _REVISION,
     extra: dict[str, Any] | None = None,
     parent_run_id: str | None = None,
     parent_node_run_id: str | None = None,
@@ -250,8 +270,8 @@ async def test_sequential_runs_form_one_goal_history(
     view = views[0]
     assert view["run_count"] == 2
     assert {row["run_id"] for row in view["runs"]} == set(run_ids)
-    assert view["goal_revisions"] == [_REVISION]
-    assert view["goal_revision_seen"] == _REVISION
+    assert view["goal_revisions"] == [str(_REVISION)]
+    assert view["goal_revision_seen"] == str(_REVISION)
     # Newest evidence first, so the history reads in execution order.
     assert [row["run_id"] for row in view["runs"]] == list(reversed(run_ids))
 
@@ -293,7 +313,7 @@ async def test_the_seam_relays_the_recorded_goal_context(
     from maistro.runs.goal_context import GOAL_ID_KEY, GOAL_REVISION_KEY
 
     goal_id = _next_id("goal")
-    revision = "r9-roundtrip"
+    revision = 2
     scene, run_ids = await _goal_scene(
         monkeypatch, goal_id=goal_id, statuses=[RunStatus.COMPLETED], revision=revision
     )
@@ -305,7 +325,7 @@ async def test_the_seam_relays_the_recorded_goal_context(
 
     detail = await visible_run_detail(_USER_ID, run_ids[0])
     assert detail is not None
-    assert detail["goal_context"] == {"goal_id": goal_id, "goal_revision": revision}
+    assert detail["goal_context"] == {"goal_id": goal_id, "goal_revision": str(revision)}
 
     plain = await visible_run_detail(_USER_ID, plain_projection_id)
     assert plain is not None
@@ -318,7 +338,7 @@ async def test_the_seam_relays_the_recorded_goal_context(
     row = next(row for row in view["runs"] if row["run_id"] == run_ids[0])
     assert row["goal_revision"] == detail["goal_context"]["goal_revision"]
     assert view["goal_id"] == detail["goal_context"][GOAL_ID_KEY]
-    assert detail["goal_context"][GOAL_REVISION_KEY] == revision
+    assert detail["goal_context"][GOAL_REVISION_KEY] == str(revision)
 
 
 # ─── evidence is not a verdict ───────────────────────────────────────────────
@@ -334,11 +354,52 @@ async def test_completed_runs_do_not_render_the_goal_completed(
     await _goal_scene(monkeypatch, goal_id=goal_id, statuses=[RunStatus.COMPLETED])
 
     view = (await _views_for(goal_id))[0]
-    assert view["goal_state"] is None
-    assert view["goal_state_source"] == "not_recorded"
+    assert view["goal_state"] == "active"
+    assert view["goal_state_source"] == "canonical_goal"
     assert view["execution_disposition"] == "evidence_settled", (
         "the disposition names execution evidence, never a Goal verdict"
     )
+
+
+async def test_canonical_goal_state_and_bound_revision_are_not_derived_from_a_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Goal reader supplies state and the Run's immutable revision selects
+    its desired state, even after the Goal moves on or reaches another terminal
+    state. This is the production admission representation, not legacy
+    provenance fabricated by the projection test."""
+    from maistro.goals import GoalRevisionDraft, GoalStatus
+    from maistro.runs import RunStatus
+
+    goal_id = _next_id("goal")
+    scene, _run_ids = await _goal_scene(
+        monkeypatch, goal_id=goal_id, statuses=[RunStatus.COMPLETED]
+    )
+    moved = await scene.goal_store.append_revision(
+        goal_id,
+        GoalRevisionDraft(
+            desired_state="new direction",
+            success_conditions=("new proof",),
+            stop_conditions=("new stop",),
+            author=_USER_ID,
+        ),
+        expected_revision=1,
+    )
+    await scene.goal_store.transition_goal(
+        goal_id,
+        GoalStatus.CANCELLED,
+        expected_revision=moved.current_revision,
+        actor=_USER_ID,
+    )
+
+    view = (await _views_for(goal_id))[0]
+    assert view["goal_state"] == GoalStatus.CANCELLED
+    assert view["goal_state_source"] == "canonical_goal"
+    assert view["goal_revision_seen"] == "1"
+    assert view["desired_state"] == "report shipped"
+    assert view["success_conditions"] == ["report accepted by requester"]
+    assert view["stop_conditions"] == ["requester withdraws the request"]
+    assert view["execution_disposition"] == "evidence_settled"
 
 
 async def test_failed_run_surfaces_a_blocker_without_a_goal_verdict(
@@ -356,8 +417,8 @@ async def test_failed_run_surfaces_a_blocker_without_a_goal_verdict(
     blocker = view["blocker"]
     assert blocker is not None and blocker["status"] == "failed"
     assert blocker["run_id"] in {row["run_id"] for row in view["runs"]}
-    # The failure is execution evidence; the Goal itself has recorded nothing.
-    assert view["goal_state"] is None
+    # The failure is execution evidence; it cannot turn the active Goal failed.
+    assert view["goal_state"] == "active"
 
 
 async def test_waiting_human_pause_is_distinguishable(
@@ -392,7 +453,6 @@ async def test_hitl_pause_provenance_stays_visible(
     from services.dag_run_inspection import visible_run_detail
 
     from maistro.runs import RunStatus
-    from maistro.runs.goal_context import GOAL_ID_KEY
 
     goal_id = _next_id("goal")
     scene = await _make_scene(monkeypatch)
@@ -414,7 +474,8 @@ async def test_hitl_pause_provenance_stays_visible(
         "waiting_on": "human_review",
         "requested_by": "reviewer-7",
     }
-    assert row["provenance"][GOAL_ID_KEY] == goal_id
+    # Goal identity is the immutable Run binding, not a mutable provenance key.
+    assert row["goal_revision"] == str(_REVISION)
     # And the row is the seam's own answer for that run, so tracing the pause
     # to its execution (detail, attempts, events) is the same door everyone
     # else uses — no Goal-side copy of the run.
@@ -422,7 +483,10 @@ async def test_hitl_pause_provenance_stays_visible(
     assert through_the_seam is not None
     assert row["run_id"] == through_the_seam["id"]
     assert row["status"] == through_the_seam["status"]
-    assert through_the_seam["goal_context"]["goal_id"] == goal_id
+    assert through_the_seam["goal_context"] == {
+        "goal_id": goal_id,
+        "goal_revision": str(_REVISION),
+    }
 
 
 # ─── fail-closed Goal context ────────────────────────────────────────────────

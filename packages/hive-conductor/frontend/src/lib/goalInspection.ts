@@ -30,7 +30,7 @@ export type GoalView = {
   goal_id: string;
   workspace_id: string | null;
   project_id: string | null;
-  goal_state: null;
+  goal_state: string | null;
   goal_state_source: string;
   goal_revision_seen: string | null;
   goal_revisions: string[];
@@ -38,6 +38,8 @@ export type GoalView = {
   desired_state: string | null;
   success_condition: string | null;
   stop_condition: string | null;
+  success_conditions: string[];
+  stop_conditions: string[];
   parent_goal_id: string | null;
   execution_disposition: string;
   blocker: { run_id: string; status: string; error: string | null } | null;
