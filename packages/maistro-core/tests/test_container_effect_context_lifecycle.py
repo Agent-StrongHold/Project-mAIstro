@@ -19,6 +19,10 @@ from maistro.capabilities.effect_context import (
 )
 from maistro.container import create_container
 from maistro.persistence import get_pool, pool_count, release_pool
+from maistro.quota.default_tracker import (
+    get_default_quota_tracker,
+    set_default_quota_tracker,
+)
 from maistro.types.config import AgentConfig, ModelBindingConfig
 from maistro.types.errors import ConfigError
 
@@ -69,8 +73,10 @@ def _failing_config(database_url: str = "memory://") -> AgentConfig:
 @pytest.fixture(autouse=True)
 def _isolated_default_context() -> Iterator[None]:
     default_effect_context.cache_clear()
+    set_default_quota_tracker(None)
     yield
     default_effect_context.cache_clear()
+    set_default_quota_tracker(None)
 
 
 @pytest.mark.parametrize("close_inner_first", [True, False], ids=["nested", "out-of-order"])
@@ -164,6 +170,37 @@ async def test_failed_startup_keeps_the_cached_fallback_default() -> None:
         await create_container(_failing_config())
 
     assert default_effect_context() is fallback
+
+
+async def test_failed_startup_keeps_the_previous_quota_tracker_default(
+    tmp_path: Path,
+) -> None:
+    """The process-default quota ledger publication is late, like the context's.
+
+    A SQLite-backed startup that fails at the model-binding bootstrap (the
+    real ConfigError) closes its connections in the cleanup handler -- so a
+    tracker published before that failure would be a closed-connection
+    tracker left as the process default, displacing a live outer container's
+    ledger and silently dropping the conductor's fallback evidence. Both
+    prior states are asserted: a registered outer tracker survives, and with
+    none registered the default stays unset.
+    """
+    outer = await create_container(AgentConfig(router_api_key="test-key", database_url="memory://"))
+    try:
+        outer_tracker = get_default_quota_tracker()
+        assert outer_tracker is outer.quota_tracker
+
+        with pytest.raises(ConfigError):
+            await create_container(_failing_config(f"sqlite:///{tmp_path / 'failed.db'}"))
+
+        assert get_default_quota_tracker() is outer_tracker
+    finally:
+        await outer.aclose()
+
+    set_default_quota_tracker(None)
+    with pytest.raises(ConfigError):
+        await create_container(_failing_config(f"sqlite:///{tmp_path / 'failed2.db'}"))
+    assert get_default_quota_tracker() is None
 
 
 async def test_retry_after_a_failed_startup_publishes_the_new_context() -> None:

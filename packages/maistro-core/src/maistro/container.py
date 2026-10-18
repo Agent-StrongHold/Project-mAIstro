@@ -2345,16 +2345,6 @@ async def create_container(
             session_store = InMemorySessionStore()
         pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
 
-        # The Container is the process's one composition root, so its ledger is
-        # the process default (#718): the conductor's raw-gateway fallback — the
-        # single call class that crosses no canonical Invocation authority —
-        # marks its ungoverned evidence there instead of leaving a
-        # ledger-carrying process presenting complete quota percentages while
-        # omitting that call. Authoritative recording stays on the canonical
-        # effect path above; this default only receives the fallback's
-        # non-Invocation evidence.
-        set_default_quota_tracker(quota_tracker)
-
         usage_log, usage_log_persistence = await _wire_usage_log(db_pool)
 
         # Prompt persistence is selected by the same backend decision as the
@@ -2740,6 +2730,21 @@ async def create_container(
             a2a_delegator=a2a_delegator,
             guest_peers=guest_peers,
         )
+        # Both process-default publications (#718) happen here, after every
+        # construction step that can reject: the Container is the process's
+        # one composition root, so its ledger and effect context are the
+        # process defaults — the conductor's raw-gateway fallback, the single
+        # call class that crosses no canonical Invocation authority, marks its
+        # ungoverned evidence on the ledger instead of leaving a
+        # ledger-carrying process presenting complete quota percentages while
+        # omitting that call. Authoritative recording stays on the canonical
+        # effect path; these defaults only receive the fallback's
+        # non-Invocation evidence. Publishing late keeps the previous
+        # process defaults intact through a failed startup (Codex, #1856):
+        # a candidate that never escapes this function must not leave its
+        # SQLite-backed tracker — a connection the handler below closes —
+        # installed as the process default.
+        set_default_quota_tracker(quota_tracker)
         configure_default_effect_context(capability_effects)
     except BaseException:
         # A startup that failed before the Container escaped owns the
@@ -2747,9 +2752,10 @@ async def create_container(
         # Container, so waiting for it would leak four SQLite worker threads
         # or a registered pool against a database the operator is about to
         # reconfigure (#1856). Ownership is unchanged from `aclose`, and
-        # nothing has been published yet -- late publication is what keeps
-        # the previous process-default effect context intact through the
-        # failure, so there is no publication to roll back here.
+        # nothing has been published yet -- late publication (tracker and
+        # effect context together, immediately above) is what keeps the
+        # previous process defaults intact through the failure, so there is
+        # no publication to roll back here.
         await _release_failed_startup_resources(
             holds_pg_pool=holds_pg_pool,
             pg_pool=pg_pool,
