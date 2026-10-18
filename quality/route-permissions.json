@@ -109,6 +109,12 @@
       "disposition": "permanent",
       "reason": "Verdict reads and the trigger POST are scoped in-route through the same dag_run_inspection door as /v1/dag-runs; elevation adds no boundary (#1174)."
     },
+    "/v1/goals": {
+      "exempt_reason": "authenticated-only",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Read-only Workspace Goal inspection over the same canonical evidence /v1/dag-runs serves; services/goal_inspection scopes list/detail to the caller's workspace universe and out-of-scope ids 404 (#65, #1174). The routes mutate nothing, so there is no protected op to elevate."
+    },
     "/v1/harness": {
       "permission": "harness.execute",
       "owner": "@BlakeMatthews-dev",

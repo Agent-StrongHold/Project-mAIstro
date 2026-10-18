@@ -72,10 +72,15 @@ class GoalContext:
     goal_id: str
     goal_revision: str
     parent_goal_id: str | None = None
-    accountable_agent_id: str | None = None
+    # The recorded-or-absent admission facts below are read by inspection
+    # surfaces that live outside the vulture scan path (Conductor's backend
+    # is not a packages/*/src tree), so vulture cannot see their reads. The
+    # declarations carry inline vulture markers instead of ledger debt — the
+    # same disposition maistro.goals.model documents for its condition fields.
+    accountable_agent_id: str | None = None  # noqa: V107
     desired_state: str | None = None
-    success_condition: str | None = None
-    stop_condition: str | None = None
+    success_condition: str | None = None  # noqa: V107
+    stop_condition: str | None = None  # noqa: V107
 
 
 def _clean(value: object) -> str | None:

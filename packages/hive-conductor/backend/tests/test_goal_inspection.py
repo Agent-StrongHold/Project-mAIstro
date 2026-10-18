@@ -485,6 +485,42 @@ async def test_child_run_and_delegation_provenance_is_visible(
     assert view["stop_condition"] == "requester withdraws the request"
 
 
+async def test_retry_of_a_failed_attempt_stays_in_one_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retry/replan is a new Run whose lineage names the attempt it
+    supersedes. The view keeps both attempts in the Goal's ONE history, the
+    retry's admission provenance rides through verbatim (the admission path's
+    own spelling of why the run exists — arbitrary to this view), and the
+    failed attempt stays failed — no Goal-side notion of attempts may erase
+    or reclassify either row."""
+    from maistro.runs import RunStatus
+
+    goal_id = _next_id("goal")
+    scene = await _make_scene(monkeypatch)
+    failed_projection_id = await scene.add_goal_run(goal_id=goal_id, status=RunStatus.FAILED)
+    failed_canonical = _canonical_of(scene, failed_projection_id)
+    retry_projection_id = await scene.add_goal_run(
+        goal_id=goal_id,
+        status=RunStatus.RUNNING,
+        parent_run_id=failed_canonical,
+        provenance_extra={"retry_of": failed_canonical},
+    )
+
+    view = (await _views_for(goal_id))[0]
+    assert view["run_count"] == 2, "a retry is the same Goal's history, not a second one"
+    rows = {row["run_id"]: row for row in view["runs"]}
+    retry = rows[retry_projection_id]
+    assert retry["parent_run_id"] == failed_canonical
+    assert retry["provenance"]["retry_of"] == failed_canonical
+    assert retry["status"] == "running"
+    # The superseded attempt's evidence is untouched: still failed, still the
+    # blocker — a retry explains the failure, it does not retcon it.
+    assert rows[failed_projection_id]["status"] == "failed"
+    assert view["blocker"] is not None
+    assert view["blocker"]["run_id"] == failed_projection_id
+
+
 def _canonical_of(scene: _Scene, projection_run_id: str) -> str:
     """The canonical run id a projection row carries (test-side lookup)."""
     from services.dag_run_store import get_dag_run_store

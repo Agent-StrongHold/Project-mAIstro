@@ -18,47 +18,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { apiGet } from "../lib/api";
+import type { GoalView, RunEvidence } from "../lib/goalInspection";
 import { Card, EmptyState, LoadingSpinner, PageHeader } from "../components/shared";
-
-type RunEvidence = {
-  run_id: string;
-  canonical_run_id: string;
-  status: string;
-  goal_revision: string;
-  dag_id: string;
-  started_at: number | null;
-  finished_at: number | null;
-  error: string | null;
-  parent_run_id: string | null;
-  parent_node_run_id: string | null;
-  actor_principal_id: string | null;
-  persona_id: string | null;
-  graph_id: string | null;
-  graph_name: string | null;
-  provenance: Record<string, unknown>;
-};
-
-type GoalView = {
-  goal_id: string;
-  workspace_id: string | null;
-  project_id: string | null;
-  goal_state: null;
-  goal_state_source: string;
-  goal_revision_seen: string | null;
-  goal_revisions: string[];
-  accountable_agent_id: string | null;
-  desired_state: string | null;
-  success_condition: string | null;
-  stop_condition: string | null;
-  parent_goal_id: string | null;
-  execution_disposition: string;
-  blocker: { run_id: string; status: string; error: string | null } | null;
-  selected_graphs: { graph_id: string; name: string | null }[];
-  unmatched_pipelines: string[];
-  subgoals: string[];
-  run_count: number;
-  runs: RunEvidence[];
-};
 
 const DISPOSITION_LABELS: Record<string, { label: string; color: string }> = {
   waiting_human: { label: "Waiting for you", color: "#e8a03a" },
