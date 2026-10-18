@@ -34,39 +34,12 @@ interface RunSummary {
   node_states: Record<string, string>;
 }
 
-type AttemptEvidence = {
-  attempt_id: string;
-  ordinal: number;
-  status: string;
-  runtime_id: string;
-  executor_id: string;
-  error: string | null;
-  cancellation_cause: string | null;
-};
-
-type NodeRunEvidence = {
-  node_run_id: string;
-  node_id: string;
-  ordinal: number;
-  status: string;
-  error: string | null;
-  attempts: AttemptEvidence[];
-};
-
-type ArtifactEvidence = {
-  artifact_id: string;
-  request_id: string;
-  status: string;
-  attempt_count: number;
-  node_run_ids: string[];
-};
-
 interface RunDetail extends RunSummary {
   events: DagEvent[];
   // Physical execution records are optional: projection-only historical rows
   // have legacy events but no readable canonical NodeRun/Attempt tree.
-  node_runs?: NodeRunEvidence[];
-  artifacts?: ArtifactEvidence[];
+  node_runs?: import("../lib/goalInspection").NodeRunEvidence[];
+  artifacts?: import("../lib/goalInspection").ArtifactEvidence[];
   // The Workspace this run executes in, from the same seam response — the
   // Goal round trip names it (?ws=) so the Goals page opens in the scope the
   // goal's history lives in (#65).
