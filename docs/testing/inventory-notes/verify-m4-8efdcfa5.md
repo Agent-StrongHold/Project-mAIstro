@@ -42,8 +42,12 @@ module-level FAIL/PARTIAL gaps the previous sweep named:
   Executed: `uv run python -m maistro_registry.cli eval . --min-mrr 0.9` —
   **exit 0** over the live repo corpus, all shipped golden queries `[ok ]`
   except the no-answer probe `'quantum consciousness module for the
-  orchestrator'` which correctly returns `[MISS]` mrr=0.000 (no fabricated
-  governing citation).
+  orchestrator'`, which returns `[MISS]` mrr=0.000. Caveat: the empty
+  `relevant` mapping makes mrr/recall 0 for any ranking, and
+  `test_real_corpus_meets_the_recorded_quality_floor` requires every case
+  (this one included) to retrieve documents — so `[MISS]` does not by
+  itself demonstrate absence of a fabricated citation. Verifying no-answer
+  behavior needs an explicit abstention/empty-ranking gate (open follow-up).
 - **Repertoire reachability (was FAIL-unreachable):**
   `packages/maistro-core/src/maistro/agents/base.py:674-715` `_build_context`
   now passes `learning_store` into the canonical context builder (recall into
@@ -95,18 +99,22 @@ module-level FAIL/PARTIAL gaps the previous sweep named:
 
 | # | Criterion | Disposition | Evidence |
 |---|-----------|-------------|----------|
-| 1 | Candidate/evaluation/promotion loop explicit and auditable | PASS at substrate level | Unchanged from prior sweep and re-proven: `population.py` human-approval gate + `promote_audited`, `audit.py` append-only `GenomeAuditTrail`, Conductor evolution service 33 tests pass. Gate A milestone-level contract (#116/#854/#861) not in this dispatch snapshot → UNVERIFIED this round. |
+| 1 | Candidate/evaluation/promotion loop explicit and auditable | PARTIAL (Gate A unverified) | Substrate unchanged from prior sweep and re-proven: `population.py` human-approval gate + `promote_audited`, `audit.py` append-only `GenomeAuditTrail`, Conductor evolution service 33 tests pass. Gate A milestone-level contract (#116/#854/#861) not in this dispatch snapshot → UNVERIFIED this round; retained PARTIAL as at fa3391e5e, no new completion evidence. |
 | 2 | Validated collective learning influences later Runs, effect measured | PASS | Recall→run→measure→promote loop wired in `agents/base.py:380,674-715,571-586`; effect measured via `outcome_confidence` (evidence.py:105); Gauntlet/lifecycle gate promotion; 323 learnings/repertoire tests pass. |
 | 3 | Population search preserves diversity and held-out evaluation | PASS with recorded residual | Diversity substrate (998 evolve tests); enforced train/holdout splits in bfcl_real.py/ifeval_real.py with supervisor-only holdout and holdout-only bonuses; terminalbench proxy-tier combined-report residual owned by open #853/#384. |
-| 4 | Self-generated curriculum independently validated | PASS | curriculum.py independent-solver admission gates + SPEC-282; covered in the 998 evolve tests (test_curriculum.py). |
-| 5 | Harness components improve without becoming another runtime | PASS | `check-promotion-surface.py` exit 0 at this head; SPEC-281 harness-lift measurement substrate present. Provider epics #822/#783 remain open under #25. |
-| 6 | ADR/spec corpus retrieval corpus-aware and measurable | PASS | `maistro_registry/retrieval/` + shipped golden set; `eval --min-mrr 0.9` exit 0 over live corpus incl. no-answer case; 84 registry tests. |
-| 7 | External benchmark / working-memory / verification-aware execution / persistent eval-workspace lanes dispositioned | PASS as dispositioned | All four epics (#104–#107) open with explicit `Parent initiative: #450` (snapshot). Substrate uneven by design: external benchmarks shipped (bfcl/ifeval/terminalbench + repo_history), eval-workspace shipped and CLI-reachable (`maistro eval-workspace`, `cli/_eval_workspace.py` — the #107 conformance proof), working memory (#301) and verification-aware executor (#106) still code-absent. |
+| 4 | Self-generated curriculum independently validated | PASS with recorded residual | curriculum.py independent-solver admission gates + SPEC-282; covered in the 998 evolve tests (test_curriculum.py). Recorded residual (per review): independence enforced is *seam-level* — host-owned fail-closed gates over inputs the proposer does not control (SPEC-282 defines the independent solver as "a separate seam from the proposer"). Actor identity is not recorded or compared: a caller may pass the same model/actor as both proposer and solver, and the gates cannot detect it (curriculum.py:145 concerns model-grading of the verifier, not identity rejection). Actor independence is therefore an unverified caller obligation; a same-actor caller still faces all four gates unchanged, but this record does not claim identity enforcement. |
+| 5 | Harness components improve without becoming another runtime | PARTIAL (lift unmeasured) | Corrected after review: the PASS here was unsupported. SPEC-281 is `Proposed`; only its §4 consumer half is implemented (`repo_history.py` + `test_repo_task_filters.py` load/validate the post-cutoff corpus). Repo-wide search finds no `gap_closure`, model×harness matrix, transfer-staleness, or inversion-gate implementation or tests, and `check-promotion-surface.py` (exit 0) audits promotion-path containment, not lift — it cannot evidence this criterion. Matrix/transfer/inversion-gate remain open in SPEC-281 and epics #822/#783 under #25. |
+| 6 | ADR/spec corpus retrieval corpus-aware and measurable | PASS | `maistro_registry/retrieval/` + shipped golden set; `eval --min-mrr 0.9` exit 0 over live corpus (the no-answer probe `[MISS]` is an observed output, not an abstention pass — see caveat above); 84 registry tests. |
+| 7 | External benchmark / working-memory / verification-aware execution / persistent eval-workspace lanes dispositioned | PASS as dispositioned | All four epics (#104–#107) open with explicit `Parent initiative: #450` (snapshot). Substrate uneven by design: external benchmarks shipped (bfcl/ifeval/terminalbench + repo_history), eval-workspace shipped and CLI-reachable (`maistro eval-workspace`, `cli/_eval_workspace.py` — the #107 conformance proof), working memory (#301) shipped (packages/maistro-core/src/maistro/memory/working/ with tests; hot recall in context_assembly.py; both durable observation-log and hot managers wired in container.py:2415-2454) — disposition recorded as conformance/remaining-gap rather than absence; verification-aware executor (#106) still code-absent. |
 | 8 | Direct EVENTUALLY children of #450 completed/obsolete/reclassified | PARTIAL (snapshot) | 11 of 21 CLOSED (#294, #295, #381, #383, #385, #386, #387, #388, #391, #394, #395); 10 OPEN (#287, #288, #292, #380, #382, #389, #390, #393, #396, #398). None obsolete; reclassifications recorded on #450 match live bodies. |
 | 9 | No `milestone:M4` issue lacks one unambiguous canonical parent | UNVERIFIED this round | #614 (the one defect the prior sweep found, parented to closed M5-B epic #305) is not in this dispatch snapshot; no API access to re-query. Prior evidence stands; needs an owner decision, not a code patch. |
 
-Tally: 6 PASS, 1 PASS-with-residual, 1 PARTIAL (issue-state), 1 UNVERIFIED
-(issue-state) — versus 0/5/4 at fa3391e5e.
+Tally: 3 PASS, 2 PASS-with-residual (terminalbench proxy-tier; curriculum actor-identity), 3 PARTIAL (2 code-state: Gate A,
+harness-lift; 1 issue-state: exit 8), 1 UNVERIFIED (issue-state) — versus
+0/5/4 at fa3391e5e. Criterion 5 downgraded from PASS per review (SPEC-281
+acceptance surface absent; cited gate out of scope); criterion 4 re-scoped to
+PASS-with-residual per review (seam-level independence enforced; actor-identity
+independence recorded as an unverified caller obligation).
 
 ## Verdict rationale (NEEDS-REPAIR)
 
