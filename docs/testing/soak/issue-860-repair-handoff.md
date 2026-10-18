@@ -269,3 +269,60 @@ mutation performed. This local commit is a validation handoff, not approval.
 
 Progress: checked 1 assigned issue, done 0 (acceptance incomplete), skipped 0
 issues, errors 0 validation commands; 5 explicitly skipped PostgreSQL cases.
+
+## Repair checkpoint — job 7b64579e (starting HEAD a3d9766e0143)
+
+Scope frozen to #860 in `auto-860`; entry worktree clean. Supplied base
+`35a72ff54d4f09429cf0b9349ecff7f3e9396f5d` resolves. No driver
+`check-*.log` files were present in this job directory. The following checks
+were executed afresh; earlier verification claims were not used as proof.
+Logs are `worker-*.log` in
+`/home/dev/maistro/jobs/7b64579ee0d74a34a5827a88bb24a883/`.
+
+| Executed command | Result |
+|---|---|
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1,322 reviewed identities / findings; zero unclassified or forbidden identities. Default ratchet base reported `2f56be40ad24`. No ledger amendment justified. |
+| `uv run python scripts/check-suite-inventory.py` | PASS: 17 suites, 31,489 unique identities; root `tests/` matches 5,354. Prior 5,353/5,354 discrepancy is not reproducible at this HEAD. |
+| `uv run ruff check .` | PASS. |
+| `uv run ruff format --check .` | PASS: 3,306 files. |
+| `uv run pytest packages/maistro-server/tests/api/test_rate_limit.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py tests/test_soak_promotion_gates.py -x -q` | PASS: 111 tests, no skips, 3.70 seconds. |
+| `uv run python scripts/check-deployment-claims.py` | PASS; component existence, not deployed-load proof. |
+| `uv run python scripts/check-execution-lifecycles.py` | PASS: 19/19 classified; default ratchet base `2f56be40ad24`. |
+| `uv run python` importing the current driver and evaluating round-30 JSON | PASS assertions: historical 420.08-second evidence fails exactly `sustain_duration` and `exact_rc_artifact`; current `preflight_artifact_check()` returns false. This reevaluates recorded flags, not raw physical execution traces. |
+| `DOCKER_HOST=unix:///var/run/docker.sock timeout 90 docker info --format '{{.ServerVersion}}'` | PASS: 29.1.3. No services started/stopped; Docker unavailability is not the blocker. |
+
+### Acceptance disposition (not a promotion approval)
+
+| #860 criterion | Executed evidence / remaining requirement |
+|---|---|
+| Representative RC profile | Inspected `m3a-load-profile.md:167-183`; concurrent users/Workspaces, fan-out, successful tools/models/Canvas and background workload applicability remain UNVERIFIED. |
+| At least two deployed replicas | Two production middleware instances exercised in tests; two deployed exact-RC replicas remain UNVERIFIED. |
+| Sustained saturation/reclaim/retry/leak observations | Evaluated historical 420.08-second run; it fails the 14,400-second minimum. Production long-window observations UNVERIFIED. |
+| No duplicated physical work / Goal reconciliation | Admission and backpressure regressions pass; physical Attempt execution and sustained Goal reconciliation remain UNVERIFIED. |
+| Rate/security/degraded behavior cannot be bypassed by replica selection | `test_replica_selection_has_an_independent_production_allowance` passes for both authenticated and pre-auth identities: each replica returns `[200, 200, 429]` for the same identity. Aggregate non-bypass criterion is not met; local enforcement is not a substitute. Other exact-RC security/degraded-load evidence UNVERIFIED. |
+| Complete telemetry with thresholds | Real child-process sampler regression passes; full production PostgreSQL/application-loop/worker/queue/error/timeout telemetry remains UNVERIFIED. |
+| Active-work kill/restart drain/fencing/recovery | No production restart performed; physical-work loss/duplication prevention UNVERIFIED. |
+| Long-running unchanged exact RC | Current driver rejects its own artifact topology; no qualifying run performed. UNVERIFIED. |
+| Findings filed/reclassified before promotion | Local blocker classification retained here; external filing/reclassification UNVERIFIED. GitHub mutations prohibited. |
+| Hash-bound machine/human evidence | Historical preflight JSON reevaluated and rejected; exact promoted image/package/commit/config evidence UNVERIFIED. |
+
+Accepted ADR-081226-a66b and ADR-081626-f383 retain canonical Run/NodeRun/Attempt
+ownership and fenced physical transitions. The latter explicitly does not grant
+lease-expiry takeover authority. No competing scheduler, reclaim mechanism,
+authorization path or store is introduced to satisfy the issue wording.
+ADR-085 requires principal-keyed limits but does not establish cluster-shared
+budgets; the documented N-times local allowance is still insufficient for #860's
+non-bypass criterion. ADR-081 is Proposed, not an accepted waiver of RC evidence.
+
+**BLOCKED:** the requested CI failure is not reproducible, while actual release
+acceptance remains incomplete. No speculative source/ledger changes, new tests,
+or inventory amendments were made. Only this existing handoff is updated.
+Next requires a designated immutable RC/configuration, representative
+production-path runner with physical Attempt correlation and full telemetry,
+resolution of the replica-selection allowance mismatch, and a qualifying soak
+on the unchanged artifact. Repeating preflight or these deterministic checks
+cannot supply that evidence. Do not requeue this as an unbanked-vulture repair
+without a new failing scan.
+
+Progress: checked 1, done 0 (acceptance incomplete), skipped 0, errors 0;
+next: release-owner RC/topology and workload decisions, then production soak.
