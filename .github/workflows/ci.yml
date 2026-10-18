@@ -224,6 +224,12 @@ jobs:
       # profile to the `${VAR:?message}` shape the rest already use.
       - name: No deployment profile hands out a credential
         run: python3 scripts/check-compose-secrets.py
+      # Ordinary Docker/Podman Compose ignores Swarm-only deploy.resources.
+      # Require finite memory, swap, PID, and CPU ceilings in every shipped
+      # profile, supported overlay, and add-on so rendered deployment config cannot
+      # silently remove the containment boundary (#862).
+      - name: Compose profiles enforce resource containment
+        run: uv run python scripts/check-compose-resources.py
       # `security_violations` and `usage_events` were appended to forever
       # because no table had to say how long its rows live (#325). Every table
       # an Alembic revision, runtime `CREATE TABLE` or `__tablename__` creates
