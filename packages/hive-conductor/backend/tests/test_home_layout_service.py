@@ -13,6 +13,8 @@ The contract under test is the one the issue makes non-negotiable:
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -380,3 +382,119 @@ def test_dismissal_refuses_an_empty_identity() -> None:
 
     with pytest.raises(ValueError):
         home_projections.record_dismissal("ws-x", "goal", "", actor="user")
+
+
+# --- Region and layout shape rejections ---------------------------------------
+
+
+def test_a_region_id_that_is_not_a_presentation_instance_id_is_refused() -> None:
+    with pytest.raises(Exception, match="presentation-instance id"):
+        HomeRegion(id="bad id!", kind="goals")
+
+
+def test_an_oversized_resource_id_is_refused() -> None:
+    with pytest.raises(Exception, match="resource_id"):
+        HomeRegion(id="r-long", kind="goals", resource_id="x" * 257)
+
+
+def test_a_layout_over_the_region_ceiling_is_refused() -> None:
+    with pytest.raises(Exception, match="at most"):
+        HomeLayout(regions=[HomeRegion(id=f"r{i}", kind="goals") for i in range(49)])
+
+
+def test_a_note_region_references_no_resource_and_a_typed_region_names_one() -> None:
+    """The resource-pair contract: a freeform note carries no canonical
+    reference, and a live region that names a type must name the resource it
+    references. Both refusals are the service's own `LayoutError`, so every
+    caller (route, tool) answers 422/`composed: False`, never a 500."""
+    from services.home_layouts import LayoutError
+
+    with pytest.raises(LayoutError, match="note region references no canonical resource"):
+        home_layouts.save_layout(
+            "ws-shape",
+            HomeLayout(
+                regions=[
+                    HomeRegion(id="r-note", kind="note", resource_type="goal", resource_id="g1")
+                ]
+            ),
+        )
+    with pytest.raises(LayoutError, match="without a resource_id"):
+        home_layouts.save_layout(
+            "ws-shape",
+            HomeLayout(regions=[HomeRegion(id="r-typed", kind="goals", resource_type="goal")]),
+        )
+
+
+def test_the_read_back_confirms_the_durable_row_not_a_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A backend that answers a different revision than the one just written is
+    a persistence failure: the write is only as landed as what the durable row
+    says when it is read back — not what the dict in front of it holds."""
+    from services.home_layouts import LayoutPersistenceError
+
+    home_layouts.save_layout("ws-readback", HomeLayout(regions=[_region("r1")]))
+
+    class _LyingBackend:
+        def get_raw(self, store_name: str, key: str) -> str:
+            return json.dumps(
+                {
+                    "schema_version": home_layouts.SCHEMA_VERSION,
+                    "revision": 99,
+                    "updated_at": datetime.now(UTC).isoformat(),
+                    "layout": {"regions": []},
+                }
+            )
+
+    monkeypatch.setattr(home_layouts, "_backend", lambda store: _LyingBackend())
+    with pytest.raises(LayoutPersistenceError, match="read back at revision 99"):
+        home_layouts.save_layout("ws-readback", HomeLayout(regions=[_region("r2")]))
+
+
+def test_an_unreadable_durable_row_degrades_to_not_saved() -> None:
+    """A row a future build wrote (or a past build corrupted) reads as revision
+    0 — 'not saved yet' — rather than bricking Home with a parse error."""
+    from services.home_layouts import _from_document
+
+    assert _from_document(None, "ws-doc").revision == 0
+    garbage = _from_document("{not json", "ws-doc")
+    assert garbage.revision == 0
+    assert garbage.layout.regions == []
+
+
+def test_pin_and_compose_refuse_a_stale_revision() -> None:
+    """Both single-shot writes carry the same revision contract a full save
+    does: a caller who saw revision N cannot silently write over N+1."""
+    ws = "ws-stale"
+    home_layouts.save_layout(ws, _pinned_record(workspace=ws))
+    assert home_layouts.load(ws).revision == 1
+
+    with pytest.raises(LayoutConflictError) as pin_conflict:
+        home_layouts.set_region_pinned(ws, "r-goals", pinned=False, expected_revision=0)
+    assert pin_conflict.value.stored.revision == 1
+
+    with pytest.raises(LayoutConflictError) as compose_conflict:
+        home_layouts.compose_adaptive(ws, [_region("agent-1", "runs")], expected_revision=0)
+    assert compose_conflict.value.stored.revision == 1
+
+
+def test_a_store_registered_after_persistence_is_wired_and_initialized_immediately() -> None:
+    """`register_json_store` after `configure_persistence`: the store is wired
+    and initialized on the spot, so a service added mid-deployment does not
+    silently miss the configured backend and lose its durability."""
+    from services.model_store import JsonStore
+
+    class _Backend:
+        def list_all_raw(self, store_name: str) -> list[tuple[str, str]]:
+            return [("seed-key", json.dumps({"seeded": True}))]
+
+    backend = _Backend()
+    stores.configure_persistence(backend)
+    try:
+        late = stores.register_json_store(JsonStore("home_layouts_test_late_wired"))
+        assert late._persisted is backend
+        # initialize() ran against the backend: the seeded row is loaded.
+        assert late["seed-key"] == {"seeded": True}
+    finally:
+        stores._all_json_stores.remove(late)
+        stores.configure_persistence(None)

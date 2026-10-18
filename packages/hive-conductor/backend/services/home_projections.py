@@ -205,7 +205,13 @@ def _chat_sessions(user_id: str) -> list[dict]:
 
 
 def _design() -> tuple[list[dict], str | None]:
-    """The design surface's one honest answer, or why it cannot answer."""
+    """The design surface's one honest answer, or why it cannot answer.
+
+    `DesignServiceStatus.to_dict()` publishes `ready` plus the recorded
+    `cause` — those are the keys the canonical status actually carries, so
+    those are the keys this read consumes: a ready service is projectable,
+    and an unready one names its cause instead of fabricating a miniature.
+    """
     from services import design_service
 
     try:
@@ -213,10 +219,11 @@ def _design() -> tuple[list[dict], str | None]:
     except Exception as exc:
         return [], f"design service status unavailable: {type(exc).__name__}"
     info = status.to_dict() if hasattr(status, "to_dict") else dict(status)
-    if not info.get("configured", False):
-        return [], "design service is not configured in this deployment"
-    if not info.get("available", False):
-        return [], "design service is not available"
+    if not info.get("ready", False):
+        cause = info.get("cause")
+        return [], f"design service is not available: {cause}" if cause else (
+            "design service is not available"
+        )
     return [_item("design_surface", "design-studio", "Design Studio", "/design-studio", None)], None
 
 
@@ -307,7 +314,10 @@ def _backlog_candidate(item: Any) -> dict[str, Any]:
             "explain": f"blocked in this Workspace's backlog (priority {item.priority})",
             "href": f"/backlog?item={item.id}",
         }
-    if item.priority == "critical":
+    # `BacklogItem.priority` is an int, 1 = highest (models/backlog.py), so the
+    # critical case is the integer comparison — a string literal here could
+    # never match and the candidate would be unreachable.
+    if item.priority == 1:
         return {
             "key": f"backlog_item:{item.id}",
             "item_type": "backlog_item",
