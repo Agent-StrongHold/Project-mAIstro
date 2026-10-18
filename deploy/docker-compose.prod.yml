@@ -89,6 +89,12 @@ services:
     build:
       context: ..
       dockerfile: packages/hive-conductor/Dockerfile
+    # Resource floors (#75): a runaway Conductor must not starve the engine
+    # services it shares the host with. Same app-server class as maistro-server.
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 512
+    cpus: 2.0
     environment:
       - PYTHONUNBUFFERED=1
       # The engine's database, not a second one: the embedded runtime's
@@ -111,12 +117,14 @@ services:
       - LITELLM_API_KEY=${LITELLM_API_KEY:?Set LITELLM_API_KEY in .env — the gateway key}
       - LITELLM_PROXY_KEY=${LITELLM_API_KEY:?Set LITELLM_API_KEY in .env — the gateway key}
       - CHAT_DEFAULT_MODEL=${CHAT_DEFAULT_MODEL:-gemini/gemini-2.5-flash}
-      # Engine router for DAG execution (REQUIRE_AUTH=true expects the access token).
-      # Settings.maistro_base_url / maistro_router_api_key (config.py) read these
-      # MAISTRO_* names directly; CONDUCTOR_ROUTER_URL/ROUTER_API_KEY are not bound
-      # to any field, so task dispatch silently fell back to localhost with no auth.
+      # Engine router for DAG execution (REQUIRE_AUTH=true expects the router
+      # key). Settings.maistro_base_url / maistro_router_api_key (config.py)
+      # read these MAISTRO_* names directly; CONDUCTOR_ROUTER_URL/ROUTER_API_KEY
+      # are not bound to any field, so task dispatch silently fell back to
+      # localhost with no auth. install.sh writes MAISTRO_ROUTER_API_KEY and
+      # migrates the retired MAISTRO_ACCESS_TOKEN alias into it (#402).
       - MAISTRO_BASE_URL=http://maistro-server-1:8000
-      - MAISTRO_ROUTER_API_KEY=${MAISTRO_ACCESS_TOKEN:-}
+      - MAISTRO_ROUTER_API_KEY=${MAISTRO_ROUTER_API_KEY:-}
       - WORKSPACE_SCOPE_KEY=${WORKSPACE_SCOPE_KEY:-}
       # Must match the task server's TASK_DELEGATION_KEY; never reuse the API key.
       - MAISTRO_DELEGATION_KEY=${TASK_DELEGATION_KEY:?Run ./install.sh to generate TASK_DELEGATION_KEY}
