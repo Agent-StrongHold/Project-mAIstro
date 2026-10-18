@@ -127,3 +127,62 @@ every locally-replicable gate passes, and the GitHub-side status set is green at
 exact head the queue evaluated. The correct disposition is re-evaluation by the merge
 queue against the now-complete green evidence — an operator/GitHub-side action this
 lane cannot perform. No inventory notes were added (no tests added or removed).
+
+### Repair round (job dce62f62b6404928a9e91c0969fc6e6d, lane L909, issue #909) — "commit status not successful"
+
+Same block shape as the round above, inherited via the #909 merge-queue evaluation
+(PR #1963, head `c0773ef42419`, base `94781cf6b708`; merge-base confirmed, branch diff
+is the single docs surface `docs/research/909-human-agent-interaction-generative-ui-
+mixed-initiative.md`). The dispatch snapshot captured 2026-10-05T07:28Z caught the
+`gates-ran` commit status **pending** ("Required execution evidence is still arriving",
+created 06:49:37Z, publisher run 37271688269) and no newer status.
+
+### The red status was again a stale pending snapshot; CI is green at this exact head
+
+- All 31 check runs on `c0773ef42419`: `success`, with exactly one legitimate
+  `skipped` (`Container scan + SBOM + cosign`). Last producer to finish:
+  `Coverage gate (publish-set floor + diff coverage)` (a `quality.yml` job — a listed
+  `gates-ran.yml` trigger) at 06:59:56Z, i.e. while the 06:49:37Z publisher run was
+  still evaluating mid-flight.
+- Local re-run of the publisher's evaluator with CI's exact arguments
+  (`scripts/check-gates-ran.py --check-runs <captured> --require-complete
+  --base-branch develop --event-name pull_request --changed-files <captured>`) over
+  the snapshot's own check-run/changed-file evidence: exit 0 — "ok: all 28 required
+  check(s) ran on this head".
+- Read-only re-check of the live status set on `c0773ef42419`:
+  `gates-ran` → **success** published 2026-10-05T07:30:57Z (run 37275291357), "All
+  required checks executed on this exact head", superseding the stale pending. The
+  later publisher re-fire simply took ~30 minutes after the snapshot's capture window.
+- PR #1963: head unchanged at `c0773ef42419`, `mergeable: true`; remaining
+  `mergeable_state: blocked` is the approvals/merge-queue-entry state, not a check
+  failure. No develop sync conflict (merge-base = declared base).
+
+### Content acceptance for the #909 surface (verified fresh, not inherited)
+
+All six Codex review findings against the earlier head `9f7733ef` are incorporated in
+the current head and were re-checked against shipped behavior: recovery is explicitly
+not a `CancellationCause` comparison (measurement contract); direction E's baseline is
+the shipped split (run-scoped SSE via `routes/dag_runs.py` + `DagRuns.tsx`
+`EventSource`, 10 s list poll); HITL expiry settles terminally via `settle_hitl_record`
+(no `timed_out` verdict); the fixed-page editor's localStorage-only artifact is
+surfaced as an enforcement gap; direction A declares the generate-then-sanitize
+product flow absent (design render 501s) and demands a stood-up baseline; UI-only
+outcome instrumentation is required of leaves up front. Epic-contract items (projection
+rule, six named metrics with canonical sources, GRADUATE/INCUBATE/REJECT/WATCH
+disposition per leaf) are all present.
+
+### Local gate battery at this head (all exit 0)
+
+`uv run ruff check .`; `uv run ruff format --check .` (2917 files);
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` → 1338 reviewed identities = 1338 findings, 0 unclassified,
+0 never_allowlist (no ledger amendment needed); `check-backlog-consistency.py`
+(167 items OK); `check-doc-links.py` (0 broken relative links).
+
+### Repair conclusion
+
+Identical disposition to the round above: the block was a stale pending snapshot of a
+live publisher, every locally-replicable gate passes, and the required `gates-ran`
+evidence is green at the exact PR head. The remaining step is queue
+re-enqueue/review — an operator/GitHub-side action this lane cannot perform. No
+inventory notes were added (no tests added or removed; docs-only round).

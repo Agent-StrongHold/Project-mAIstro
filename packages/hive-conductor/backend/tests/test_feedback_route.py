@@ -31,6 +31,8 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
+
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -45,7 +47,7 @@ def fresh_outcome_store():
     from maistro.memory.outcomes import InMemoryOutcomeStore
 
     previous = svc.get_outcome_store()
-    store = InMemoryOutcomeStore()
+    store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     svc.set_outcome_store(store)
     yield store
     svc.set_outcome_store(previous)
@@ -151,7 +153,7 @@ def test_set_outcome_store_swaps_the_module_singleton() -> None:
     from maistro.memory.outcomes import InMemoryOutcomeStore
 
     original = svc.get_outcome_store()
-    new_store = InMemoryOutcomeStore()
+    new_store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     svc.set_outcome_store(new_store)
     try:
         assert svc.get_outcome_store() is new_store
@@ -322,7 +324,7 @@ async def test_collect_thumbs_scopes_a_sqlite_store_by_org_and_project() -> None
     from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
 
     conn = await aiosqlite.connect(":memory:")
-    store = SqliteOutcomeStore(conn)
+    store = SqliteOutcomeStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await store.ensure_schema()
     previous = svc.get_outcome_store()
     svc.set_outcome_store(store)
@@ -535,3 +537,63 @@ async def test_cross_project_thumb_does_not_leak(
     )
     assert "alpha-only signal" not in ctx_other
     assert ctx_other == ""  # no signals for Beta project at all
+
+
+def test_feedback_route_records_thumb_for_a_completed_canonical_graph_run(
+    admin_client: Any,
+    canonical_graph_spine: Any,
+    fresh_outcome_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Positive PM flow: real canonical admission/Graph, with only model I/O faked."""
+    import services.graph_runner as graph_runner
+    import stores
+
+    from maistro.runs.model import RunStatus
+
+    async def model_completion(_messages, **_kwargs):
+        return "hermetic completed work"
+
+    # This fixture tests canonical lifecycle plus feedback, not gateway policy.
+    monkeypatch.setattr(canonical_graph_spine, "capability_effects", None)
+    monkeypatch.setattr(graph_runner, "_build_llm_call", lambda *_args: model_completion)
+    workspace_id = _workspace_for_run(admin_client, "Canonical feedback")
+    created = admin_client.post(
+        "/v1/dags", json={"name": "Canonical feedback", "description": "fixture"}
+    )
+    assert created.status_code == 201
+    dag = created.json()
+    try:
+        updated = admin_client.put(
+            f"/v1/dags/{dag['id']}",
+            json={
+                "nodes": [dict(node, config={"execution_tier": "safe"}) for node in dag["nodes"]],
+                "edges": dag["edges"],
+            },
+        )
+        assert updated.status_code == 200
+        executed = admin_client.post(
+            f"/v1/dags/{dag['id']}/run", json={"workspace_id": workspace_id}
+        )
+        assert executed.status_code == 200
+        body = executed.json()
+        assert body["status"] == "completed", body
+        run_id = body["run_id"]
+        canonical = asyncio.run(canonical_graph_spine.run_store.get_run(run_id))
+        record = asyncio.run(canonical_graph_spine.graph_run_store.get(run_id))
+        assert canonical is not None and canonical.status is RunStatus.COMPLETED
+        assert record.node_runs and record.attempts
+        assert canonical.workspace_id == workspace_id
+        assert canonical.actor_principal_id == "admin"
+        response = _login_post(
+            admin_client, run_id, {"thumb": "up", "comment": "Nailed it!", "dag_id": dag["id"]}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["recorded"] is True
+        outcome = fresh_outcome_store._outcomes[-1]
+        assert outcome.dag_run_id == canonical.run_id
+        assert outcome.project_id == canonical.project_id
+        assert outcome.user_id == canonical.actor_principal_id
+        assert outcome.thumb == "up"
+    finally:
+        stores.dags.pop(dag["id"], None)

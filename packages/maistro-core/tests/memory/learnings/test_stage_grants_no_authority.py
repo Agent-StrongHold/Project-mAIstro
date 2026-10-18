@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.security._types import AuthContext
 from maistro.security.sentinel.policy import check_permission
@@ -58,7 +59,9 @@ def test_promoted_knowledge_does_not_move_the_fail_closed_permission_decision() 
     """A repertoire learning naming a tool grants nothing for that tool."""
 
     async def scenario() -> None:
-        store = InMemoryLearningStore()
+        # Under test: stage never moves the permission decision — not the
+        # ADR-057 fail-closed matrix — so declare the exposure mode.
+        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lid = await store.store(
             Learning(
                 tool_name="bash",

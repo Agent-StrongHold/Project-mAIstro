@@ -13,6 +13,7 @@ from typing import Any
 
 from maistro.graph import Graph, Node
 from maistro.memory.episodic.store import InMemoryEpisodicStore
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.working_graph.hydration import RunProvenanceHydrationSource
 from maistro.memory.working_graph.manager import WorkspaceWorkingMemoryManager
 from maistro.memory.working_graph.types import (
@@ -41,7 +42,7 @@ class World:
     """One deployment: real episodic + project + run stores, wired manager."""
 
     def __init__(self) -> None:
-        self.episodic = InMemoryEpisodicStore()
+        self.episodic = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         self.projects = InMemoryProjectScopeStore()
         self.workspaces = InMemoryWorkspaceStore(project_store=self.projects)
         self.runs = InMemoryRunStore(project_store=self.projects)
@@ -188,7 +189,7 @@ async def test_degraded_projection_is_named_in_the_block() -> None:
             raise RuntimeError("run store down")
 
     projects = InMemoryProjectScopeStore()
-    episodic = InMemoryEpisodicStore()
+    episodic = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     workspaces = InMemoryWorkspaceStore(project_store=projects)
     await workspaces.create(creator_user_id="owner-a", name=WORKSPACE_A, workspace_id=WORKSPACE_A)
     manager = WorkspaceWorkingMemoryManager(
