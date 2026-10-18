@@ -375,6 +375,7 @@ def canonical_graph_spine(monkeypatch: pytest.MonkeyPatch):
     from maistro.providers.registry import InMemoryProviderRegistry
     from maistro.providers.router import CostAwareRouter
     from maistro.runs.store import InMemoryRunStore
+    from maistro.security.warden.detector import Warden
 
     projects = workspace_authority.canonical_store_for_tests().project_store
     project = asyncio.run(projects.create_root("test-workspace"))
@@ -393,6 +394,12 @@ def canonical_graph_spine(monkeypatch: pytest.MonkeyPatch):
         capability_effects=new_in_memory_effect_context(),
         provider_registry=providers,
         llm_router=CostAwareRouter(providers),
+        # The Container contract `dag_agents._resolve_nodes_with` reads (#1137):
+        # `warden: Warden` is always built, `audit_log` is None for a container
+        # built by hand. `SimpleNamespace` must carry both or the resolver read
+        # is an AttributeError, not a modeled absence.
+        warden=Warden(),
+        audit_log=None,
     )
     monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=container))
     return container

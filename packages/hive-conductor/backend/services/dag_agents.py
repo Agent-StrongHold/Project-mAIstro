@@ -114,6 +114,16 @@ def _resolve_nodes_with(*, container: Any = None) -> Callable[[str, Any], Any]:
         # of constructing one that reports success for a sub-graph nothing
         # ran. Distinct from `run_store` on purpose — see get_run_store().
         graph_run_store=container.graph_run_store,
+        # Inbound-content policy and its audit trail (#1137): the delegate
+        # node this resolver composes scans peer payloads with the same
+        # Warden the rest of the Container is wired with and records
+        # refusal/allow verdicts beside the canonical audit trail, so a
+        # delegation on Hive's durable-executor path leaves the same audit
+        # evidence one does on `Container.node_resolver()`. Without these the
+        # scan still fails closed on a fresh default Warden, but `_record_scan`
+        # sees `audit_log=None` and every verdict goes unrecorded.
+        warden=container.warden,
+        audit_log=container.audit_log,
     )
 
 

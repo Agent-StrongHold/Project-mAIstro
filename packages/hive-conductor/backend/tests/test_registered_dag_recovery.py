@@ -44,6 +44,7 @@ from maistro.providers.router import CostAwareRouter
 from maistro.runs.concurrency import RunConcurrencyLimits
 from maistro.runs.model import RunStatus
 from maistro.runs.store import InMemoryRunStore
+from maistro.security.warden.detector import Warden
 
 pytestmark = pytest.mark.contract("behavioral")
 
@@ -194,6 +195,11 @@ async def container(monkeypatch: pytest.MonkeyPatch) -> Any:
         provider_registry=providers,
         llm_router=CostAwareRouter(providers),
         project_id=root.project_id,
+        # The Container contract `dag_agents._resolve_nodes_with` reads (#1137):
+        # `warden: Warden` is always built, `audit_log` is None for a container
+        # built by hand.
+        warden=Warden(),
+        audit_log=None,
     )
     port = SimpleNamespace(container=built)
     monkeypatch.setattr(engine_module, "get_engine", lambda: SimpleNamespace(_agent_port=port))
