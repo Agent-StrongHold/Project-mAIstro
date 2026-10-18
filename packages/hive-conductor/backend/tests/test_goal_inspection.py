@@ -1052,6 +1052,58 @@ async def test_goal_routes_stay_in_the_requested_workspace(
     assert misplaced.json()["detail"] == "goal not found"
 
 
+@pytest.mark.parametrize("canonical_owner", ["user", "someone-else"])
+async def test_cross_workspace_run_link_cannot_relocate_a_goal(
+    monkeypatch: pytest.MonkeyPatch, authed_client: Any, canonical_owner: str
+) -> None:
+    """Even membership in both Workspaces cannot make a corrupt link own facts.
+
+    The ordinary Run seam refuses the cross-link's canonical overlay. Goal
+    inspection must not independently join it back in and attach the Goal,
+    Graph and provenance to the projection's unrelated Workspace.
+    """
+    from services.workspace_authority import create_workspace
+
+    scene = await _member_route_scene(monkeypatch)
+    other = await create_workspace(
+        creator_user_id=canonical_owner,
+        name=f"Canonical Goal owner {next(_seq)}",
+        persona_template_id="pm_fleet",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    goal_id = _next_id("goal")
+    correct_projection = await scene.add_goal_run(goal_id=goal_id, workspace_id=other.id)
+    canonical_id = _canonical_of(scene, correct_projection)
+    corrupt_projection = await scene.seed_projection(canonical_id, scene.view.id)
+
+    # The shared Run overlay already refuses to attribute canonical Goal facts
+    # to this row, even for a principal who may read both Workspaces.
+    run_response = authed_client.get(f"/v1/dag-runs/{corrupt_projection}")
+    assert run_response.status_code == 200
+    assert "goal_context" not in run_response.json()
+
+    wrong_scope = f"/v1/workspaces/{scene.view.id}/goals"
+    listed = authed_client.get(wrong_scope)
+    assert listed.status_code == 200
+    assert listed.json() == []
+    misplaced = authed_client.get(f"{wrong_scope}/{goal_id}")
+    assert misplaced.status_code == 404
+    assert misplaced.json() == {"detail": "goal not found"}
+
+    # Reject only the corrupt association, not the legitimate evidence, and
+    # retain non-disclosure when the canonical Workspace is foreign.
+    correct = authed_client.get(f"/v1/workspaces/{other.id}/goals/{goal_id}")
+    if canonical_owner == "user":
+        assert correct.status_code == 200
+        assert correct.json()["goal_state_source"] == "canonical_goal"
+        assert [row["run_id"] for row in correct.json()["runs"]] == [correct_projection]
+        assert correct.json()["also_in"] == []
+    else:
+        assert correct.status_code == 404
+
+
 async def test_viewer_members_can_read_goal_inspection(
     monkeypatch: pytest.MonkeyPatch, authed_client: Any
 ) -> None:

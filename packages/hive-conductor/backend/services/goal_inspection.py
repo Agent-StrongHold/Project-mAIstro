@@ -399,6 +399,11 @@ async def _collect_goal_views(user_id: str) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str, str], list[tuple[GoalContext, dict[str, Any], Run | None]]] = {}
     for summary in summaries:
         run = canonical.get(str(summary.get("canonical_run_id") or ""))
+        if run is not None and run.workspace_id != str(summary.get("workspace_id") or ""):
+            # Match the shared Run seam's overlay rule: membership in both
+            # Workspaces does not make a cross-linked projection this Run's
+            # evidence. Do not relocate its Goal, Graph or provenance.
+            continue
         context = _context_for(run)
         if context is None:
             # Not goal-driven evidence: the run stays exactly where it was —
