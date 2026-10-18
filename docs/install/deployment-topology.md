@@ -27,16 +27,27 @@ Persistent layer (outside instances):
 └── File store (shared volume; S3 or NFS in real deployments)
 ```
 
-- **Instances are stateless — except the task queue.** Agents, sessions, memory,
-  audit and every canonical Run live in PostgreSQL/Redis; the only local files are
-  config (in git) and the shared file store. **The `/v1/tasks` queue does not:**
-  `TaskQueue` is an in-process singleton, so a task is visible only on the replica
-  that accepted it. Behind round-robin, a client that creates a task and polls
-  `GET /v1/tasks/{id}` gets 404 from every other replica — measured on this stack:
-  200 from the replica that took the `POST`, 404 from the other. The task's Run
-  *is* durable and shared; its queue entry is not. Until the queue is shared,
-  route task traffic to one replica (or pin clients with `ip_hash`), and expect
-  tasks in flight on a replica that dies to be lost with it.
+- **Task receipts are readable from any replica; dispatch is per-replica.**
+  Agents, sessions, memory, audit and every canonical Run live in PostgreSQL/Redis;
+  the only local files are config (in git) and the shared file store. The
+  `TaskQueue` is still an in-process singleton — a replica dispatches only what it
+  admitted or recovered at startup — but a task **receipt** is no longer trapped
+  on the replica that accepted the `POST`: `GET /v1/tasks/{id}` and
+  `GET /v1/tasks/{id}/result` fall through from process memory to the durable
+  tier every replica shares (the TaskRecord row and the canonical Run, committed
+  before admission answers), and `DELETE /v1/tasks/{id}` cancels through the same
+  canonical Run authority from any replica (#1690). Reads are scoped to the
+  originating principal — a foreign caller gets 404s through the durable lookup,
+  exactly as in-process. What a replica takes with it when it dies is its
+  dispatch loop, not the work: the Run survives, the receipt stays queryable
+  through surviving replicas, and a booting replica's recovery re-enqueues the
+  pending task, where the canonical consumer claim lets exactly one worker own
+  the physical Attempt (verified on the two-process PostgreSQL composition in
+  `packages/maistro-server/tests/test_task_cross_replica_visibility.py`). Sticky
+  routing (`ip_hash`) is therefore not required for create-then-poll to work;
+  polling any replica converges on the canonical Run's terminal truth — a stale
+  durable row cannot resurrect a success the Run never recorded, and a
+  non-terminal Run caps the projection at not-done.
 - **Rate limits are per-process, not cluster-wide (#842).** The request limiter
   (`maistro_server.api.rate_limit`) keeps its sliding window in process memory,
   keyed to the authenticated principal (ADR-085). Each of the N replicas

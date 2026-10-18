@@ -257,6 +257,86 @@ def _receipt_result_for_run(run: Any, terminal: TaskStatus) -> TaskResult | None
     return None
 
 
+def _receipt_owner_of_run(run: Any) -> str:
+    """The originating principal a task Run's admission answers for.
+
+    The same evidence admission committed (#1057): the provenance key when it
+    is present, else the user_id inside the immutable task payload. Empty
+    means the Run carries no principal claim — and under the fail-closed read
+    rule an empty owner matches only a caller who scopes by empty, never one
+    who names a principal.
+    """
+    owner = run.provenance.get("user_id")
+    if isinstance(owner, str) and owner:
+        return owner
+    payload = run.provenance.get(TASK_PAYLOAD_KEY)
+    if isinstance(payload, dict):
+        owner = payload.get("user_id")
+        if isinstance(owner, str):
+            return owner
+    return ""
+
+
+def _project_run_onto_receipt(receipt: TaskResponse, run: Any) -> TaskResponse:
+    """One shared-read receipt, reconciled against its canonical Run (#1690).
+
+    A replica reading a receipt it never held in memory is reading a
+    projection, so the Run — the execution truth — decides what it says:
+
+    - A terminal Run wins outright, whatever the durable row claims. A row
+      that says `completed` over a Run the execution identity failed must not
+      resurrect a success nobody earned; the timestamps and result come from
+      the Run, verbatim, exactly as recovery's reconciliation writes them.
+    - A non-terminal Run caps the receipt at non-terminal. A row that claims a
+      terminal outcome over a Run still executing is stale in the dangerous
+      direction, so it is demoted — to `queued` while the Run is still queued,
+      to `planning` once execution is known to have begun — and its result is
+      dropped. A record's finer phase (`coding`, `reviewing`) survives when it
+      does not contradict the Run; the owning replica's live receipt remains
+      the phase carrier while work is in flight.
+    - The receipt's `run_id` is pinned to the Run's. A shared read never
+      mints, renames or second-guesses an execution identity.
+    """
+    terminal = _TERMINAL_TASK_STATUS_BY_RUN.get(run.status)
+    if terminal is not None:
+        return receipt.model_copy(
+            update={
+                "run_id": run.run_id,
+                "status": terminal,
+                "phase": terminal.value,
+                "started_at": run.started_at or receipt.started_at,
+                "completed_at": run.finished_at or receipt.completed_at,
+                "result": _receipt_result_for_run(run, terminal),
+            }
+        )
+    projected = receipt.model_copy(update={"run_id": run.run_id})
+    if projected.status in _TERMINAL:
+        # Stale terminal claim over live work: demote to what the Run knows.
+        demoted = TaskStatus.QUEUED if run.status is RunStatus.QUEUED else TaskStatus.PLANNING
+        projected = projected.model_copy(
+            update={
+                "status": demoted,
+                "phase": demoted.value,
+                "result": None,
+                "completed_at": None,
+                "started_at": run.started_at or receipt.started_at,
+            }
+        )
+    elif projected.status is TaskStatus.QUEUED and run.status is RunStatus.RUNNING:
+        # Execution has demonstrably begun; "queued" would understate it. The
+        # owning replica's own phase detail, when it has written one, still
+        # outranks this coarse promotion — this branch only fires for reads
+        # whose durable row predates the dispatch.
+        projected = projected.model_copy(
+            update={
+                "status": TaskStatus.PLANNING,
+                "phase": TaskStatus.PLANNING.value,
+                "started_at": run.started_at or receipt.started_at,
+            }
+        )
+    return projected
+
+
 def _task_from_record(record: TaskRecord) -> TaskResponse:
     """Rebuild a receipt without creating a new Run or delegation.
 
@@ -1257,6 +1337,91 @@ class TaskQueue:
             return None
         return task
 
+    async def get_shared(self, task_id: str, *, user_id: str | None = None) -> TaskResponse | None:
+        """Read a receipt from this process or, failing that, the shared tier.
+
+        #1690: the in-memory store is per-process, so behind a round-robin
+        load balancer a `GET /tasks/{id}` answered only from it 404s on every
+        replica but the one that accepted the `POST`. This read falls through
+        to what replicas share anyway — the durable TaskRecord row (ADR-018)
+        and the canonical Run, which is committed before admission answers —
+        and projects the Run's truth over both (see
+        :func:`_project_run_onto_receipt`). The live receipt stays the fast
+        path and the phase carrier; a read never promotes a foreign replica's
+        projection into local memory, so a stale projection can never be
+        cached into authority.
+
+        ``user_id`` scopes exactly as :meth:`get` does — fail closed, and the
+        durable lookup grants a foreign principal nothing it could not see in
+        its own process.
+        """
+        live = self.get(task_id, user_id=user_id)
+        if live is not None:
+            return live
+        return await self._shared_receipt(task_id, user_id=user_id)
+
+    async def _shared_receipt(
+        self, task_id: str, *, user_id: str | None = None
+    ) -> TaskResponse | None:
+        """The durable half of a shared read: TaskRecord row, then the Run.
+
+        Both sources are optional by contract — the row because its writes are
+        fire-and-forget (ADR-018), the Run lookup because an admitter without
+        the finder contributes nothing rather than failing the read. Either
+        alone serves; both together are reconciled with the Run winning.
+        """
+        receipt = await self._persisted_receipt(task_id)
+        if receipt is not None and user_id is not None and receipt.user_id != user_id:
+            receipt = None
+        run = await self._find_task_run(task_id)
+        if run is not None and user_id is not None and _receipt_owner_of_run(run) != user_id:
+            # Fail closed on the Run side too: visibility is the admission's
+            # originating principal (#1057), and the durable lookup must not
+            # hand a foreign caller a receipt its own process would refuse it.
+            run = None
+        if receipt is None and run is None:
+            return None
+        if receipt is None:
+            assert run is not None
+            receipt, reason = _task_from_run(run)
+            if reason is not None:
+                await logger.awarning(
+                    "task_shared_receipt_payload_invalid",
+                    task_id=task_id,
+                    run_id=run.run_id,
+                    reason=reason,
+                )
+                return None
+            # `_task_from_run` answers (None, reason) or (receipt, None); the
+            # reason branch returned, so the receipt half is present.
+            assert receipt is not None
+        if run is not None:
+            receipt = _project_run_onto_receipt(receipt, run)
+        return receipt
+
+    async def _find_task_run(self, task_id: str) -> Any | None:
+        """The canonical Run admitted for this receipt id, best-effort.
+
+        An admitter that cannot answer — absent, a custom implementation
+        predating the finder, or a store outage — contributes nothing to the
+        shared read instead of failing it: the read then answers from the
+        durable row or 404s, exactly as it did before this path existed.
+        """
+        if self._admitter is None:
+            return None
+        finder = getattr(self._admitter, "find_task_run", None)
+        if finder is None:
+            return None
+        try:
+            return await finder(task_id)
+        except Exception:
+            await logger.awarning(
+                "task_shared_run_lookup_failed",
+                task_id=task_id,
+                exc_info=True,
+            )
+            return None
+
     async def update_status(
         self,
         task_id: str,
@@ -1486,6 +1651,35 @@ class TaskQueue:
             return True
         return await self.update_status(task_id, TaskStatus.CANCELLED)
 
+    async def cancel_shared(self, task_id: str, *, user_id: str | None = None) -> bool | None:
+        """Cancel a task from any replica: the local receipt, else its Run.
+
+        The local path is :meth:`cancel` unchanged. The shared path is for a
+        replica that holds no receipt: it cancels the canonical Run through
+        the admitter — the same authority the owning replica's own cancel
+        goes through — and the owning replica's next refused transition
+        reconciles its projection from that Run (#849), as does its recovery
+        scan. Returns True when the task was cancelled, False when its state
+        refuses cancellation, None when neither this process nor the shared
+        durable tier knows the task (the route's 404).
+        """
+        if self.get(task_id, user_id=user_id) is not None:
+            return await self.cancel(task_id)
+        receipt = await self._shared_receipt(task_id, user_id=user_id)
+        if receipt is None:
+            return None
+        if receipt.status in _TERMINAL:
+            # The durable tier says the work is already settled — the same
+            # answer a repeat of an old cancellation gets from the live path,
+            # so the route's 400 contract holds from either replica.
+            return False
+        if not receipt.run_id or self._admitter is None:
+            # A durable receipt with no execution identity behind it has no
+            # canonical authority to cancel through; the queue does not
+            # fabricate one.
+            return False
+        return await self._admitter.cancel_run(receipt.run_id)
+
     def remove(self, task_id: str) -> bool:
         """Drop a terminal task from the in-memory store (POC cleanup)."""
         task = self._tasks.get(task_id)
@@ -1508,6 +1702,29 @@ class TaskQueue:
         for tid in to_remove:
             self.remove(tid)
         return len(to_remove)
+
+    def abandon_local_receipt(self, task_id: str) -> bool:
+        """Drop this process's live receipt for a task another dispatcher owns.
+
+        #1690, the claim-lost edge: a worker whose Attempt claim lost the
+        canonical race (`ConsumerClaimLost`) will never advance the task
+        again — the winner owns the execution and this process holds nothing
+        but a now-unauthoritative copy of the receipt. Keeping it would leave
+        a stale non-terminal answer parked in memory while the winner drives
+        the Run to its outcome; dropping it routes this process's reads
+        through the shared durable projection instead, so a poll answered
+        here converges with the winner's truth instead of contradicting it.
+
+        Only a present, non-terminal, locally unclaimed receipt is dropped:
+        terminal receipts are already converged, and a receipt claimed by an
+        in-flight local execution is nobody's to abandon here.
+        """
+        task = self._tasks.get(task_id)
+        if task is None or task.status in _TERMINAL or task_id in self._claimed:
+            return False
+        del self._tasks[task_id]
+        self._events.pop(task_id, None)
+        return True
 
     async def next_task(self) -> str:
         """Block until a task is available, return its ID."""

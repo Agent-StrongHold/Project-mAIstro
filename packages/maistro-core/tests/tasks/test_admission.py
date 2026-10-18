@@ -448,8 +448,11 @@ async def test_a_duplicate_delivery_loses_the_claim_without_touching_the_winner(
     assert len(node_runs) == 1
     attempts = await runs.list_attempts(node_runs[0].node_run_id)
     assert len(attempts) == 1
-    receipt = queue.get(submitted.task_id)
-    assert receipt is not None and receipt.status is not TaskStatus.COMPLETED
+    # #1690: the loser drops its unauthoritative receipt instead of parking a
+    # stale non-terminal answer in memory — no receipt at all is the honest
+    # "this process owns nothing here", and reads fall through to the durable
+    # projection of the winner's Run.
+    assert queue.get(submitted.task_id) is None
 
 
 async def test_malformed_recovery_payload_fails_the_canonical_run(scoped) -> None:

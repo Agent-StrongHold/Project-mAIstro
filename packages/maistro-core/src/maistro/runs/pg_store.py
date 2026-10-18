@@ -72,7 +72,7 @@ from maistro.runs.retention_scope import (
     RetentionScope,
     WorkspaceRetentionScope,
 )
-from maistro.runs.sources import SCHEDULED_FOR_KEY, occurrence_key
+from maistro.runs.sources import SCHEDULED_FOR_KEY, TASK_QUEUE_SOURCE, occurrence_key
 from maistro.runs.store import (
     DEFAULT_ARCHIVE_AFTER,
     DEFAULT_PURGE_BATCH,
@@ -933,6 +933,26 @@ class PgRunStore:
                    WHERE payload->'provenance'->>'delegation_key' = $1""",
                 delegation_key,
             )
+        return Run.model_validate(payload) if payload is not None else None
+
+    async def find_run_by_task_id(
+        self,
+        task_id: str,
+        *,
+        admission_source: str | None = TASK_QUEUE_SOURCE,
+    ) -> Run | None:
+        # Through `_payload`, like `find_run_by_effect`: an archived Run must
+        # resolve for a receipt read exactly as `get_run` resolves it, not 404
+        # once the retention sweep touches it.
+        payload = await self._payload(
+            """SELECT run_id, payload, archive_key FROM canonical_runs
+               WHERE payload -> 'provenance' ->> 'task_id' = $1
+                 AND ($2::text IS NULL
+                      OR payload -> 'provenance' ->> 'admission_source' = $2)
+               LIMIT 1""",
+            task_id,
+            admission_source,
+        )
         return Run.model_validate(payload) if payload is not None else None
 
     async def attach_delegation_receipt(

@@ -55,6 +55,7 @@ from maistro.runs.retention_scope import (
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
     EPHEMERAL_ADMISSION_SOURCES,
+    TASK_QUEUE_SOURCE,
     occurrence_key,
 )
 from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
@@ -550,6 +551,26 @@ class RunStore(Protocol):
         ...
 
     async def find_delegation_run(self, delegation_key: str) -> Run | None: ...
+
+    async def find_run_by_task_id(
+        self,
+        task_id: str,
+        *,
+        admission_source: str | None = TASK_QUEUE_SOURCE,
+    ) -> Run | None:
+        """The Run admitted for one task receipt id (#1690), or None.
+
+        The read half of cross-replica task visibility: the Run is committed
+        before a `POST /tasks` 202 is answerable, so any process sharing this
+        store can resolve a receipt id it never admitted, even when the
+        accepting replica's best-effort TaskRecord write (ADR-018) never
+        landed. Scoped to `admission_source` by default because the
+        ``task_id`` provenance key is the task queue's own; callers reaching
+        for another source must say so explicitly. None means no Run claims
+        this receipt id — the same "not found" a `get_run` miss means, not an
+        error.
+        """
+        ...
 
     async def attach_delegation_receipt(
         self, run_id: str, task_id: str, *, target_agent: str | None = None
@@ -1300,6 +1321,26 @@ class InMemoryRunStore:
         for run in self._runs.values():
             if run.provenance.get("delegation_key") == delegation_key:
                 return run.model_copy(deep=True)
+        return None
+
+    async def find_run_by_task_id(
+        self,
+        task_id: str,
+        *,
+        admission_source: str | None = TASK_QUEUE_SOURCE,
+    ) -> Run | None:
+        # The in-memory store is small by construction (bounded, pruned), so
+        # the reference implementation scans; the durable stores answer from
+        # their provenance expressions instead.
+        for run in self._runs.values():
+            if run.provenance.get("task_id") != task_id:
+                continue
+            if (
+                admission_source is not None
+                and run.provenance.get(ADMISSION_SOURCE) != admission_source
+            ):
+                continue
+            return run.model_copy(deep=True)
         return None
 
     async def attach_delegation_receipt(

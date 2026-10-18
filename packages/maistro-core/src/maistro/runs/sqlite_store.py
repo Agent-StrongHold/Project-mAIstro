@@ -43,7 +43,7 @@ from maistro.runs.retention_scope import (
     RetentionScope,
     WorkspaceRetentionScope,
 )
-from maistro.runs.sources import SCHEDULED_FOR_KEY, occurrence_key
+from maistro.runs.sources import SCHEDULED_FOR_KEY, TASK_QUEUE_SOURCE, occurrence_key
 from maistro.runs.store import (
     DEFAULT_PURGE_BATCH,
     DEFAULT_RECLAIM_BATCH,
@@ -755,6 +755,24 @@ class SqliteRunStore:
             """SELECT payload FROM canonical_runs
                WHERE json_extract(payload, '$.provenance.delegation_key') = ?""",
             (delegation_key,),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
+    async def find_run_by_task_id(
+        self,
+        task_id: str,
+        *,
+        admission_source: str | None = TASK_QUEUE_SOURCE,
+    ) -> Run | None:
+        # The SQLite expression twin of the PostgreSQL provenance query, the
+        # same way `find_run_by_effect` is spelled twice.
+        row = await self._fetchone(
+            """SELECT payload FROM canonical_runs
+               WHERE json_extract(payload, '$.provenance.task_id') = ?
+                 AND (? IS NULL
+                      OR json_extract(payload, '$.provenance.admission_source') = ?)
+               LIMIT 1""",
+            (task_id, admission_source, admission_source),
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
