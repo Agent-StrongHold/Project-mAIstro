@@ -34,10 +34,12 @@ docker build -f packages/hive-conductor/Dockerfile packages/hive-conductor -t hi
 docker run --rm -p 8101:8101 -v hive-conductor-data:/data hive-conductor:local
 ```
 
-`/data` is the Conductor's durable state directory (`CONDUCTOR_DATA_DIR`,
-pre-created in the image and owned by the nonroot runtime uid 65532). Without
-a volume mounted there the process **refuses to start** (`DATA_DIR_EPHEMERAL`)
-— see [Persistent state](#persistent-state) below.
+`/data/conductor` is the Conductor's durable state directory under Docker
+(`CONDUCTOR_DATA_DIR`), one level inside the volume mounted at `/data`, and
+pre-created in the image owned by the nonroot runtime uid 65532. Without a
+volume mounted at `/data` (or at any parent of `CONDUCTOR_DATA_DIR`) the
+process **refuses to start** (`DATA_DIR_EPHEMERAL`) — see
+[Persistent state](#persistent-state) below.
 
 Or from **`packages/hive-conductor/`** (compose uses the local `Dockerfile`):
 
@@ -50,12 +52,16 @@ Then open `http://localhost:8101`.
 ## Persistent state
 
 Everything the Conductor must survive a restart lives in one directory,
-`CONDUCTOR_DATA_DIR` (default `~/.conductor` on a host; `/data` in Docker).
-The standalone [`docker-compose.yml`](docker-compose.yml) mounts the named
-volume `conductor-data` there, so `docker compose down/up` and image
+`CONDUCTOR_DATA_DIR` (default `~/.conductor` on a host; `/data/conductor` in
+Docker — a directory *inside* the `conductor-data` volume, which Compose
+mounts at `/data`; the data directory must not be the volume's mount root
+because restore swaps the directory itself by rename, and a mount point
+cannot be renamed). The standalone [`docker-compose.yml`](docker-compose.yml)
+mounts that volume, so `docker compose down/up` and image
 replacement preserve every account, session, setting, and vault entry; the
 startup guard refuses to serve from an unwritable or (inside a container)
-unmounted data directory instead of silently discarding state (#331).
+container-filesystem data directory instead of silently discarding state
+(#331).
 
 ### What lives there (the full inventory)
 
@@ -79,13 +85,16 @@ process holds `state.db` open and will write stale state back over you.
 
 ```bash
 # One archive, whole directory, staged + renamed so it is never partial.
-docker compose run --rm --entrypoint maistro -v "$PWD/backups:/backup" \\
-  hive-conductor security backup --data-dir /data --out /backup/conductor-data.tar.gz
+docker compose run --rm --entrypoint maistro -v "$PWD/backups:/backup" \
+  hive-conductor security backup --data-dir /data/conductor --out /backup/conductor-data.tar.gz
 
-# Restore (replaces the directory; dry-run without --yes):
+# Restore (replaces the directory; dry-run without --yes). The volume is
+# additionally mounted at /srv so the data directory /srv/conductor is not
+# the mount root — restore swaps it by rename, which a mount point cannot do:
 docker compose stop hive-conductor
-docker compose run --rm --entrypoint maistro -v "$PWD/backups:/backup:ro" \\
-  hive-conductor security restore --data-dir /data \\
+docker compose run --rm --entrypoint maistro \
+  -v conductor-data:/srv -v "$PWD/backups:/backup:ro" \
+  hive-conductor security restore --data-dir /srv/conductor \
   --from /backup/conductor-data.tar.gz --yes
 docker compose start hive-conductor
 ```
@@ -102,8 +111,10 @@ and restore into it:
 
 ```bash
 # On the target, after `docker compose up -d && docker compose stop`:
-docker compose run --rm --entrypoint maistro -v "$PWD/backups:/backup:ro" \\
-  hive-conductor security restore --data-dir /data --from /backup/conductor-data.tar.gz --yes
+docker compose run --rm --entrypoint maistro \
+  -v conductor-data:/srv -v "$PWD/backups:/backup:ro" \
+  hive-conductor security restore --data-dir /srv/conductor \
+  --from /backup/conductor-data.tar.gz --yes
 ```
 
 To switch from a named volume to a host directory, replace the `volumes:`

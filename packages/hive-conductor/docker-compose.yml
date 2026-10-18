@@ -4,22 +4,30 @@ services:
       context: ../..
       dockerfile: packages/hive-conductor/Dockerfile
     ports:
-      - "8101:8101"
+      # Host side is CONDUCTOR_PORT (default 8101) so the durability check
+      # (#331) and parallel local deployments can pick another host port
+      # without touching the container's listener.
+      - "${CONDUCTOR_PORT:-8101}:8101"
     environment:
       - PYTHONUNBUFFERED=1
       # Durable foundation state — SQLite state.db (accounts, sessions,
       # settings, registration policy), the age vault (secrets.age) and its
       # identity key (admin.key), and the encrypted user-credential store
-      # (credential_master.key, user_credentials.enc) — lives on a named
-      # volume so `docker compose down/up` and image replacement keep every
-      # account and vault entry (#331). The image pre-creates /data owned by
-      # the nonroot runtime uid 65532, so an empty named volume inherits that
-      # least-privilege ownership on first use; no root-owned volume, no
-      # chmod choreography. Without this mount the startup guard refuses to
-      # serve (DATA_DIR_EPHEMERAL) rather than silently discarding state on
-      # the next recreate. Inventory, backup/restore, migration, and
-      # deletion instructions: README.md, section "Persistent state".
-      - CONDUCTOR_DATA_DIR=/data
+      # (credential_master.key, user_credentials.enc) — lives on the named
+      # volume `conductor-data` so `docker compose down/up` and image
+      # replacement keep every account and vault entry (#331). CONDUCTOR_DATA_DIR
+      # is a directory INSIDE the volume, not the volume's mount root
+      # (/data) on purpose: `maistro security restore` swaps the data
+      # directory itself by rename for atomicity, and a mount point cannot
+      # be renamed (rename(2) fails with EBUSY). The image pre-creates both
+      # levels owned by the nonroot runtime uid 65532, so an empty named
+      # volume inherits that least-privilege ownership on first use; no
+      # root-owned volume, no chmod choreography. Without this mount the
+      # startup guard refuses to serve (DATA_DIR_EPHEMERAL) rather than
+      # silently discarding state on the next recreate. Inventory,
+      # backup/restore, migration, and deletion instructions: README.md,
+      # section "Persistent state".
+      - CONDUCTOR_DATA_DIR=/data/conductor
       # maistro-core integration — set these to enable real agents:
       # - MAISTRO_ROUTER_API_KEY=your-key
       # - MAISTRO_LLM_BASE_URL=http://litellm:4000/v1

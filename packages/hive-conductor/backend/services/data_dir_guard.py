@@ -18,13 +18,22 @@ Two refusals, both fail-closed before any subsystem touches the directory:
   (ADR-072: state unavailability must stop the API, not rebind it).
 
 - **DATA_DIR_EPHEMERAL** — the process is running inside a container and the
-  configured data directory is *not* a mounted filesystem. Container
-  filesystem state is discarded on recreate, so any account, session,
-  setting, or vault entry written there is already lost. This is exactly the
-  shape issue #331 closed: a deployment that looked configured but was
-  silently ephemeral. The check runs only inside a container because a bare
-  ``uvicorn`` on a host keeps state fine in a plain directory like
-  ``~/.conductor``.
+  configured data directory sits on the container's *own root filesystem*
+  (same device as ``/``). Container filesystem state is discarded on
+  recreate, so any account, session, setting, or vault entry written there is
+  already lost. This is exactly the shape issue #331 closed: a deployment
+  that looked configured but was silently ephemeral. The check runs only
+  inside a container because a bare ``uvicorn`` on a host keeps state fine in
+  a plain directory like ``~/.conductor``.
+
+  The test is a device comparison (``os.stat().st_dev`` against ``/``), not
+  ``os.path.ismount(data_dir)``: the standalone Compose layout deliberately
+  puts the data directory *inside* a mounted volume (``conductor-data:/data``
+  with ``CONDUCTOR_DATA_DIR=/data/conductor``) so backup/restore can swap the
+  directory itself by rename — a mount point cannot be renamed (rename(2)
+  returns ``EBUSY``), so a data directory that *is* the mount root makes an
+  atomic restore impossible. A nested path on the volume is a different
+  device from ``/`` and correctly passes; only container-layer paths fail.
 
 ``CONDUCTOR_ALLOW_EPHEMERAL_DATA_DIR=1`` is the single documented escape
 hatch for harnesses that *deliberately* want throwaway state (e2e runners
@@ -47,6 +56,11 @@ _ESCAPE_HATCH_ENV = "CONDUCTOR_ALLOW_EPHEMERAL_DATA_DIR"
 #: Markers a container runtime drops into the container's own filesystem.
 #: Docker creates ``/.dockerenv``; Podman creates ``/run/.containerenv``.
 _CONTAINER_MARKERS = ("/.dockerenv", "/run/.containerenv")
+
+#: The filesystem whose lifetime is the container's lifetime. Anything on
+#: this device is discarded on recreate; anything else is on a mount that
+#: outlives the container (named volume, bind mount, tmpfs).
+_CONTAINER_ROOT = Path("/")
 
 
 class DataDirRefused(RuntimeError):
@@ -92,15 +106,30 @@ def _probe_writable(data_dir: Path) -> None:
             probe.unlink()
 
 
-def _probe_mounted(data_dir: Path) -> None:
-    """Refuse an in-container data directory that is not a mount point.
+def _st_dev(path: Path) -> int:
+    """Device id of the filesystem holding *path* (separate fn for tests)."""
+    return os.stat(path).st_dev
 
-    Only called inside a container. A non-mounted path inside the container
+
+def _probe_mounted(data_dir: Path) -> None:
+    """Refuse an in-container data directory on the container's root fs.
+
+    Only called inside a container. A path on the container's root filesystem
     lives in the container's writable layer, which is discarded on recreate —
     so "configured" would be a lie the first time ``docker compose down/up``
-    ran. A named volume or bind mount at the path makes it a real mount point.
+    ran. A data directory on any mounted filesystem (named volume, bind
+    mount, tmpfs — at the path itself or at any parent) has a different
+    device id and survives.
     """
-    if os.path.ismount(data_dir):
+    try:
+        on_root_fs = _st_dev(data_dir) == _st_dev(_CONTAINER_ROOT)
+    except OSError as exc:
+        raise DataDirRefused(
+            f"DATA_DIR_UNWRITABLE: cannot stat data directory {data_dir} "
+            f"({exc}). Refusing to start rather than guess where state "
+            "would land."
+        ) from exc
+    if not on_root_fs:
         return
     if _ephemerality_acknowledged():
         logger.warning(
@@ -113,12 +142,13 @@ def _probe_mounted(data_dir: Path) -> None:
         )
         return
     raise DataDirRefused(
-        f"DATA_DIR_EPHEMERAL: {data_dir} is not a mounted filesystem, so "
-        "everything written there (accounts, sessions, settings, vault, "
-        "credentials) is discarded when this container is recreated. Mount a "
-        "volume or host directory at CONDUCTOR_DATA_DIR — see the standalone "
-        "docker-compose.yml and the README 'Persistent state' section — or, "
-        f"only for throwaway test harnesses, set {_ESCAPE_HATCH_ENV}=1."
+        f"DATA_DIR_EPHEMERAL: {data_dir} sits on this container's own root "
+        "filesystem, so everything written there (accounts, sessions, "
+        "settings, vault, credentials) is discarded when this container is "
+        "recreated. Mount a volume at CONDUCTOR_DATA_DIR or at any of its "
+        "parent directories — see the standalone docker-compose.yml and "
+        "the README 'Persistent state' section — or, only for throwaway "
+        f"test harnesses, set {_ESCAPE_HATCH_ENV}=1."
     )
 
 

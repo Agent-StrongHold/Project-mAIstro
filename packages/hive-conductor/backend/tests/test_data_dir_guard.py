@@ -78,8 +78,12 @@ def test_in_container_unmounted_dir_is_refused_as_ephemeral(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _in_container(monkeypatch)
-    plain_dir = tmp_path / "conductor"  # not a mount point
+    plain_dir = tmp_path / "conductor"  # on the container root fs
     plain_dir.mkdir()
+    # Deterministic: force the dir's device to equal the container root's,
+    # whatever filesystem the test's tmp_path actually lands on.
+    root_dev = os.stat("/").st_dev
+    monkeypatch.setattr("services.data_dir_guard._st_dev", lambda p: root_dev)
     with pytest.raises(DataDirRefused, match="DATA_DIR_EPHEMERAL"):
         verify_durable_data_dir(plain_dir)
 
@@ -88,8 +92,41 @@ def test_in_container_mounted_dir_passes(tmp_path: Path, monkeypatch: pytest.Mon
     _in_container(monkeypatch)
     mounted = tmp_path / "data"
     mounted.mkdir()
-    monkeypatch.setattr("services.data_dir_guard.os.path.ismount", lambda p: True, raising=False)
+    # The data dir itself is the mount root: a different device from /.
+    monkeypatch.setattr("services.data_dir_guard._st_dev", lambda p: 1 if p == Path("/") else 2)
     assert verify_durable_data_dir(mounted) == mounted
+
+
+def test_in_container_dir_nested_inside_mounted_volume_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The standalone Compose layout: volume at /data, data dir /data/conductor.
+
+    A data directory that is NOT itself the mount root must still pass — the
+    deployment depends on it, and restore depends on the path being
+    renameable (a mount point is not; rename(2) returns EBUSY).
+    """
+    _in_container(monkeypatch)
+    volume = tmp_path / "data"  # the mount root
+    nested = volume / "conductor"  # CONDUCTOR_DATA_DIR
+    volume.mkdir()
+    monkeypatch.setattr("services.data_dir_guard._st_dev", lambda p: 1 if p == Path("/") else 2)
+    assert verify_durable_data_dir(nested) == nested
+    assert nested.is_dir()
+
+
+def test_in_container_unstattable_dir_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _in_container(monkeypatch)
+    missing = tmp_path / "vanished"
+
+    def boom(path: object) -> int:
+        raise OSError(2, "No such file or directory")
+
+    monkeypatch.setattr("services.data_dir_guard._st_dev", boom)
+    with pytest.raises(DataDirRefused, match="DATA_DIR_UNWRITABLE"):
+        verify_durable_data_dir(missing)
 
 
 def test_escape_hatch_allows_ephemeral_but_still_probes_writability(
@@ -133,6 +170,10 @@ def test_foundation_start_refuses_before_touching_subsystems(
     _in_container(monkeypatch)
     bad_dir = tmp_path / "conductor"
     bad_dir.mkdir()
+    # Deterministic: put the dir on the container root fs' device regardless
+    # of where the test runner's tmp_path actually lives.
+    root_dev = os.stat("/").st_dev
+    monkeypatch.setattr("services.data_dir_guard._st_dev", lambda p: root_dev)
 
     started: list[str] = []
 

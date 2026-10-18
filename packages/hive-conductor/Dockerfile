@@ -106,7 +106,12 @@ FROM python:3.13.15-slim-bookworm
 WORKDIR /app
 ENV PATH="/app/venv/bin:$PATH" \
     PYTHONPATH=/app/backend:/app \
-    CONDUCTOR_DATA_DIR=/data \
+    # Durable state lives at /data/conductor — inside the volume Compose and
+    # the `docker run -v <vol>:/data` quickstart mount at /data, not at the
+    # mount root: `maistro security restore` swaps the data directory itself
+    # by rename, and a mount point cannot be renamed (EBUSY). See README.md,
+    # "Persistent state".
+    CONDUCTOR_DATA_DIR=/data/conductor \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 COPY --from=pybuild /app/venv /app/venv
@@ -122,7 +127,12 @@ COPY packages/hive-conductor/dags/ /app/dags/
 COPY agents/ /app/backend/agents/
 COPY --from=frontend /build/dist /app/frontend/dist
 # Persistent conductor state dir, pre-owned by the nonroot uid (see pybuild).
-COPY --from=pybuild --chown=65532:65532 /app/state_seed /data
+# CONDUCTOR_DATA_DIR points at /data/conductor, one level INSIDE the volume
+# Compose mounts at /data: the data directory itself must not be the mount
+# root, because `maistro security restore` swaps it by rename and a mount
+# point cannot be renamed (EBUSY) — see README.md, "Persistent state".
+COPY --from=pybuild /app/state_seed /data/conductor
+RUN chown -R 65532:65532 /data
 EXPOSE 8101
 WORKDIR /app/backend
 # Keep the app nonroot even though the pinned runtime is a slim Python image.

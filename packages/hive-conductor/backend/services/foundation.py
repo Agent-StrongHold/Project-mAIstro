@@ -58,11 +58,13 @@ class Foundation:
     async def start(self, settings: Settings) -> None:
         # Before the vault, state, privilege, or reactor touch a single file:
         # refuse a data directory that cannot hold this deployment's durable
-        # state (unwritable, or — inside a container — not a mounted volume,
-        # i.e. silently ephemeral across recreate). #331. A refusal here
-        # propagates out of the lifespan, which stops the process: the
-        # alternative to refusing is a Conductor that provisions accounts and
-        # accepts vault entries into storage it is about to throw away.
+        # state (unwritable, or — inside a container — sitting on the
+        # container's own root filesystem, i.e. silently ephemeral across
+        # recreate). #331. A refusal here propagates out of the lifespan,
+        # which stops the process (uvicorn refuses to serve after a failed
+        # startup): the alternative to refusing is a Conductor that
+        # provisions accounts and accepts vault entries into storage it is
+        # about to throw away.
         from services.data_dir_guard import DataDirRefused, verify_durable_data_dir
 
         try:

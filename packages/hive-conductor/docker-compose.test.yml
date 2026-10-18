@@ -16,6 +16,15 @@ services:
       - PYTHONUNBUFFERED=1
       - HARDWARE_PRESET=beast
       - CONDUCTOR_DATA_DIR=/tmp/conductor
+      # The startup durability guard (#331) refuses an in-container,
+      # unmounted data directory in real deployments, because container
+      # filesystem state is lost on recreate. This harness DELIBERATELY wants
+      # throwaway state: every run must exercise the one-shot setup wizard
+      # from scratch, and a leftover volume from a previous run would keep it
+      # locked (setup refuses to overwrite the first admin). This is the
+      # documented escape hatch doing its documented job — never set it in a
+      # deployment whose accounts or vault entries must survive a recreate.
+      - CONDUCTOR_ALLOW_EPHEMERAL_DATA_DIR=1
       # This harness serves the app over plain HTTP at http://hive:8101, so it
       # is a local-development context in the sense #369 defines one, and says
       # so with the same two settings a developer running locally sets.

@@ -216,9 +216,13 @@ services:
       - LANGFUSE_BASE_URL=http://langfuse:3000
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
-      # Foundation state (SQLite/vault/state) on a persistent volume. /data is
-      # pre-owned by the nonroot uid 65532 in the image so the volume is writable.
-      - CONDUCTOR_DATA_DIR=/data
+      # Foundation state (SQLite/vault/state) on a persistent volume. The data
+      # directory sits INSIDE the volume (which is mounted at /data), not at
+      # the mount root: `maistro security restore` swaps the data directory
+      # itself by rename, and a mount point cannot be renamed (EBUSY). Both
+      # levels are pre-owned by the nonroot uid 65532 in the image, so an
+      # empty named volume inherits that ownership (#331).
+      - CONDUCTOR_DATA_DIR=/data/conductor
       # Human login mode + OIDC metadata; secrets remain in the /data vault.
       - HUMAN_AUTH_MODE=${HUMAN_AUTH_MODE:-hybrid}
       - OAUTH_PROVIDERS=${OAUTH_PROVIDERS:-{}}

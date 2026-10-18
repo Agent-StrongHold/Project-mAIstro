@@ -52,9 +52,10 @@ a substitute for revoking leaked upstream tokens.
    ```bash
    maistro security backup --data-dir "$CONDUCTOR_DATA_DIR" \
      --out ~/conductor-backup-$(date -u +%Y%m%dT%H%M%SZ).tar.gz
-   # or, from a Compose deployment:
+   # or, from a Compose deployment (the data dir is /data/conductor, one
+   # level inside the volume Compose mounts at /data):
    docker compose run --rm --entrypoint maistro -v "$HOME:/backup" hive-conductor \
-     security backup --data-dir /data --out "/backup/conductor-backup-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+     security backup --data-dir /data/conductor --out "/backup/conductor-backup-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
    ```
 
    A bare tarball also works if you prefer (`tar czf ~/conductor-backup-$(date -u +%Y%m%dT%H%M%SZ).tgz -C "$CONDUCTOR_DATA_DIR" .`),
@@ -64,7 +65,7 @@ a substitute for revoking leaked upstream tokens.
    Treat that archive as compromised material: it contains the *old* key. Delete
    it once rotation is confirmed.
 3. Know your data directory. It is `CONDUCTOR_DATA_DIR` from `backend/.env`
-   (default `~/.conductor`; `/data` under Compose). It contains:
+   (default `~/.conductor`; `/data/conductor` under Compose). It contains:
 
    | File | What |
    |------|------|
