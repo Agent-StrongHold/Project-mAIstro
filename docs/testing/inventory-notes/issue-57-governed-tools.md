@@ -167,6 +167,33 @@ clean; mypy (7-package CI set) clean; vulture (exit 0, no new debt), radon
 (137 blocks, no regressions), promotion surface, direct-effects, reachability
 x4, and suite-inventory gates all pass.
 
+## Model-egress seam round (2026-10-18)
+
+The production-wiring head passed the gates the round listed but failed one
+it did not run: `scripts/check-model-egress.py` (the quality.yml
+`check-model-egress` step) exited 1 — `services.governed_tools` had become a
+NEW direct model-egress module because `_hive_tool_backend` re-listed the raw
+hive implementations with direct `tool_executor.clarify(...)` calls, matching
+the curated census triple `MODEL_EFFECT:hive.clarify`. A new model-egress
+caller is frozen against the trusted base and needs a separately landed
+authorization (two-merge rule) — not carryable by this branch, and grant edits
+are out of scope.
+
+Repair: the governed seam's provider backend delegates to the one shipped
+dispatcher, `services.tool_executor.dispatch_tool` (the arrangement the
+trusted base's boot path already used beneath `admitted_tool_executor`), so
+admission (contracts, allowlist, tier, Binding, Invocation) stays above the
+dispatcher while the census population returns to the trusted 20. The three
+`governed_tools.py` backend call-site rows left the direct-effect ledger
+(sites no longer exist; `--update` pruned exactly those three, 54 -> 51);
+the chat/legacy/BrowserClient dispositions are unchanged. Boot-agent tool
+tests keep passing unchanged because they patch `services.tool_executor`
+module attributes, which `dispatch_tool` resolves at call time. New census
+pins in `tests/test_check_model_egress.py` (+2, see
+`auto-57-model-egress-seam.md`): the clarify wrapper triple counts any new
+caller, and the shipped `governed_tools.py` performs no census model egress
+(fails against `6abcbb367`, passes after).
+
 Residual on #57: issue #847 remains open (its strategy/schema/argument
 adversarial coverage largely landed here and in prior rounds, but closure is
 an issue action this lane cannot take); `BuildersLearningStrategy` shell and

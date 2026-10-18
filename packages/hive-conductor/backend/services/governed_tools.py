@@ -193,32 +193,23 @@ async def _hive_tool_binding(
 async def _hive_tool_backend(
     name: str, arguments: dict[str, Any], *, model_call: Any = None
 ) -> Any:
-    """Execute one raw hive tool implementation as the provider backend.
+    """Execute the shipped raw hive tool dispatcher as the provider backend.
 
-    Late-bound through the module attributes so a test (or a future host
+    Late-bound through the module attribute so a test (or a future host
     override) that patches ``services.tool_executor`` replaces the backend
-    without touching the admission path above it.
+    without touching the admission path above it. Delegating to the one
+    shipped dispatcher -- rather than re-listing its raw implementations
+    here -- keeps the module-egress census honest: ``clarify`` is a
+    model-backed wrapper, so calling it from this module would make
+    ``services.governed_tools`` a new direct model-egress caller of the kind
+    ``check-model-egress.py`` freezes against the trusted base. Beneath this
+    seam the model-backed sub-effect still flows only through the caller's
+    admitted ``model_call`` (the #55 model seam), never through egress of
+    this module's own.
     """
     from services import tool_executor
 
-    if name == "web_search":
-        return await tool_executor.web_search(
-            str(arguments["query"]),
-            int(arguments.get("max_results", 5) or 5),
-            model_call=model_call,
-        )
-    if name == "browse_url":
-        return await tool_executor.browse_url(
-            str(arguments["url"]),
-            str(arguments.get("task", "Extract key facts and quotes")),
-        )
-    if name == "clarify":
-        return await tool_executor.clarify(
-            [str(question) for question in arguments.get("questions", [])],
-            dict(arguments.get("context", {}) or {}),
-            model_call=model_call,
-        )
-    raise LookupError(f"no hive tool backend for {name!r}")
+    return await tool_executor.dispatch_tool(name, arguments, model_call=model_call)
 
 
 def _governed_executor(

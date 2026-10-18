@@ -177,39 +177,6 @@
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
-    "packages/hive-conductor/backend/services/governed_tools.py::_hive_tool_backend::MODEL_EFFECT:hive.clarify#1": {
-      "path": "packages/hive-conductor/backend/services/governed_tools.py",
-      "qualname": "_hive_tool_backend",
-      "line": 218,
-      "category": "MODEL_EFFECT",
-      "entry_point": "hive.clarify",
-      "callee": "tool_executor.clarify",
-      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
-      "owner": "#57",
-      "rationale": "Provider backend of the governed hive tool seam (#57): the clarify tool Invocation wraps the model sub-effect, which itself crosses the admitted ModelChatEgress Invocation through the caller-supplied model_call (same nesting the legacy DAG tool path uses). Executed only after the host-owned tool admission."
-    },
-    "packages/hive-conductor/backend/services/governed_tools.py::_hive_tool_backend::TOOL_EFFECT:hive.browse_url#1": {
-      "path": "packages/hive-conductor/backend/services/governed_tools.py",
-      "qualname": "_hive_tool_backend",
-      "line": 213,
-      "category": "TOOL_EFFECT",
-      "entry_point": "hive.browse_url",
-      "callee": "tool_executor.browse_url",
-      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
-      "owner": "#57",
-      "rationale": "Provider backend of the governed hive tool seam (#57): executed only beneath the canonical Binding -> Invocation recorded by services.governed_tools.GovernedToolExecutor, after its host-owned allowlist/schema/reversibility admission. The direct chat_completion call sites this backend replaces were removed."
-    },
-    "packages/hive-conductor/backend/services/governed_tools.py::_hive_tool_backend::TOOL_EFFECT:hive.web_search#1": {
-      "path": "packages/hive-conductor/backend/services/governed_tools.py",
-      "qualname": "_hive_tool_backend",
-      "line": 207,
-      "category": "TOOL_EFFECT",
-      "entry_point": "hive.web_search",
-      "callee": "tool_executor.web_search",
-      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
-      "owner": "#57",
-      "rationale": "Provider backend of the governed hive tool seam (#57): executed only beneath the canonical Binding -> Invocation recorded by services.governed_tools.GovernedToolExecutor, after its host-owned allowlist/schema/reversibility admission. The direct chat_completion call sites this backend replaces were removed."
-    },
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_build_llm_call._httpx_llm::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_build_llm_call._httpx_llm",

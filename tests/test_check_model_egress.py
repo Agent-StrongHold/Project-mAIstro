@@ -256,6 +256,40 @@ async def ask(client: httpx.AsyncClient) -> None:
     assert site.category == "MODEL_EFFECT"
 
 
+def test_a_new_module_calling_the_model_backed_clarify_wrapper_counts(gate) -> None:
+    """The curated wrapper triple stays load-bearing: ``tool_executor.clarify``
+    is a model-backed product wrapper, so any module that calls it becomes a
+    direct model-egress caller of the kind this ratchet freezes against the
+    trusted base (#57). A future governed wiring must delegate its provider
+    backend to the shipped dispatcher instead of re-listing the raw
+    implementations, or the census -- not a reviewer -- flags the new caller."""
+    source = """
+from services import tool_executor
+
+
+async def backend(name, arguments, *, model_call=None):
+    return await tool_executor.clarify(
+        arguments["questions"], arguments.get("context", {}), model_call=model_call
+    )
+"""
+    (site,) = gate.find_egress_sites(source, path="synthetic.py")
+    assert site.category == "MODEL_EFFECT"
+    assert site.entry_point == "hive.clarify"
+    assert site.callee == "tool_executor.clarify"
+
+
+def test_the_shipped_governed_tool_seam_performs_no_census_model_egress(gate) -> None:
+    """``services.governed_tools`` admits tool effects (contracts, allowlist,
+    tier, Invocation); its provider backend delegates to the shipped
+    ``dispatch_tool`` rather than calling the raw implementations itself, so
+    the module must stay out of this census. Calling ``tool_executor.clarify``
+    here directly would make it a NEW direct model caller needing a separately
+    landed authorization (the failure this delegation repaired)."""
+    source = (ROOT / "packages/hive-conductor/backend/services/governed_tools.py").read_text()
+    assert gate.find_egress_sites(source, path="governed_tools.py") == ()
+    assert not gate.performs_egress(source)
+
+
 def test_image_model_http_is_not_this_ledger_s_population(gate) -> None:
     """The census curates image-model rows separately; the trusted base here
     never recorded them. Dropping them from the population is scoping, not
