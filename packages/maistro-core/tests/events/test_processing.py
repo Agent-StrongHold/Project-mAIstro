@@ -589,7 +589,13 @@ class TestTheBatchReportsWhatTheLogSkipped:
         self, stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore]
     ) -> None:
         log, triggers, invocations = stores
-        await triggers.add(TriggerDefinition(name="agents", event_pattern="agent.*"))
+        await triggers.add(
+            TriggerDefinition(
+                name="agents",
+                event_pattern="agent.*",
+                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+            )
+        )
         await log.append("agent.created")
         await log.append("agent.created")
 
@@ -602,7 +608,13 @@ class TestTheBatchReportsWhatTheLogSkipped:
         self, stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore]
     ) -> None:
         inner, triggers, invocations = stores
-        await triggers.add(TriggerDefinition(name="agents", event_pattern="agent.*"))
+        await triggers.add(
+            TriggerDefinition(
+                name="agents",
+                event_pattern="agent.*",
+                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+            )
+        )
         for _ in range(6):
             await inner.append("agent.created")
         log = HidingLog(inner, hidden={2, 4, 5})
@@ -620,7 +632,13 @@ class TestTheBatchReportsWhatTheLogSkipped:
         self, stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore]
     ) -> None:
         inner, triggers, invocations = stores
-        await triggers.add(TriggerDefinition(name="agents", event_pattern="agent.*"))
+        await triggers.add(
+            TriggerDefinition(
+                name="agents",
+                event_pattern="agent.*",
+                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+            )
+        )
         await inner.append("agent.created")
         await inner.append("agent.created")
         log = HidingLog(inner, hidden={1})
@@ -636,7 +654,11 @@ class TestTheBatchReportsWhatTheLogSkipped:
         """An unsettled event holds the cursor; a hole above it is next tick's
         business, since nothing above the cursor is persisted anyway."""
         inner, triggers, invocations = stores
-        t = TriggerDefinition(name="agents", event_pattern="agent.*")
+        t = TriggerDefinition(
+            name="agents",
+            event_pattern="agent.*",
+            delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+        )
         await triggers.add(t)
         for _ in range(4):
             await inner.append("agent.created")
@@ -653,7 +675,13 @@ class TestTheBatchReportsWhatTheLogSkipped:
         self, stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore]
     ) -> None:
         inner, triggers, invocations = stores
-        await triggers.add(TriggerDefinition(name="agents", event_pattern="agent.*"))
+        await triggers.add(
+            TriggerDefinition(
+                name="agents",
+                event_pattern="agent.*",
+                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+            )
+        )
         for _ in range(3):
             await inner.append("agent.created")
         log = HidingLog(inner, hidden={2})

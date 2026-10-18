@@ -89,7 +89,11 @@ from maistro.events.processing import (
     process_events,
     process_events_batch,
 )
-from maistro.events.trigger_store import InMemoryTriggerStore, TriggerDefinition
+from maistro.events.trigger_store import (
+    HandlerDeliveryContract,
+    InMemoryTriggerStore,
+    TriggerDefinition,
+)
 from maistro.graph import Graph, Node
 from maistro.orchestrator.waves.ensemble import (
     EVENT_RECOVERY_QUARANTINED,
@@ -825,7 +829,11 @@ def _fresh_event_stack() -> _EventStack:
         log=InMemoryEventLog(),
         triggers=InMemoryTriggerStore(),
         invocations=InMemoryInvocationStore(),
-        trigger=TriggerDefinition(name="tasks", event_pattern="task.*"),
+        trigger=TriggerDefinition(
+            name="tasks",
+            event_pattern="task.*",
+            delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+        ),
     )
     return stack
 

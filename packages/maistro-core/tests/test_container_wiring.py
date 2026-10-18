@@ -187,7 +187,7 @@ async def test_durable_event_cursor_survives_a_restart(tmp_path: Path) -> None:
     resume from the position the first container's tick durably committed.
     """
     from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
-    from maistro.events.trigger_store import TriggerDefinition
+    from maistro.events.trigger_store import HandlerDeliveryContract, TriggerDefinition
 
     db_url = f"sqlite:///{tmp_path / 'events.db'}"
     delivered_first: list[int] = []
@@ -196,7 +196,11 @@ async def test_durable_event_cursor_survives_a_restart(tmp_path: Path) -> None:
     try:
         container1.handler_caller = _record_ids_caller(delivered_first)  # type: ignore[assignment]
         await container1.trigger_store.add(
-            TriggerDefinition(trigger_id="t1", event_pattern="agent.*")
+            TriggerDefinition(
+                trigger_id="t1",
+                event_pattern="agent.*",
+                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+            )
         )
         await container1.durable_event_log.append("agent.created")
         await container1.durable_event_log.append("agent.created")
@@ -230,7 +234,11 @@ async def test_durable_event_cursor_survives_a_restart(tmp_path: Path) -> None:
 
         container2.handler_caller = _record_ids_caller(delivered_second)  # type: ignore[assignment]
         await container2.trigger_store.add(
-            TriggerDefinition(trigger_id="t1", event_pattern="agent.*")
+            TriggerDefinition(
+                trigger_id="t1",
+                event_pattern="agent.*",
+                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+            )
         )
         await container2.durable_event_log.append("agent.created")  # id 3
         cursor2 = await container2.process_durable_events()
@@ -313,12 +321,18 @@ async def test_the_durable_cursor_waits_below_an_id_the_log_has_not_committed() 
     would exclude 2 from every later ``id > cursor`` read, restart included.
     The durable position must stop at 1 until 2 appears, while the work on 3
     itself is not delayed."""
-    from maistro.events.trigger_store import TriggerDefinition
+    from maistro.events.trigger_store import HandlerDeliveryContract, TriggerDefinition
 
     container = await _container()
     delivered: list[int] = []
     container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
-    await container.trigger_store.add(TriggerDefinition(trigger_id="t1", event_pattern="agent.*"))
+    await container.trigger_store.add(
+        TriggerDefinition(
+            trigger_id="t1",
+            event_pattern="agent.*",
+            delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+        )
+    )
     log = _HidingLog(container.durable_event_log, hidden={2})
     container.durable_event_log = log  # type: ignore[assignment]
     for _ in range(3):
@@ -344,12 +358,18 @@ async def test_a_hole_that_outlives_the_grace_is_an_aborted_append() -> None:
     """An id that never commits (the append rolled back) must not pin the
     resume point forever: once the hole has been seen for longer than
     `durable_event_hole_grace_s`, the position moves past it."""
-    from maistro.events.trigger_store import TriggerDefinition
+    from maistro.events.trigger_store import HandlerDeliveryContract, TriggerDefinition
 
     container = await _container()
     delivered: list[int] = []
     container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
-    await container.trigger_store.add(TriggerDefinition(trigger_id="t1", event_pattern="agent.*"))
+    await container.trigger_store.add(
+        TriggerDefinition(
+            trigger_id="t1",
+            event_pattern="agent.*",
+            delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+        )
+    )
     log = _HidingLog(container.durable_event_log, hidden={2})
     container.durable_event_log = log  # type: ignore[assignment]
     for _ in range(3):

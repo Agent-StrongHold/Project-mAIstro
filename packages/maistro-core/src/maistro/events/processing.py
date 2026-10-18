@@ -282,6 +282,7 @@ async def process_events(
     it at its own commit boundary. The Invocation row alone supplies only
     dispatch deduplication. Unsafe triggers hold the cursor for reconciliation.
 
+    Safe to run in more than one process: `_dispatch` claims each
     (trigger, event) before invoking anything, so exactly one worker is the
     active dispatcher at a time.
 
