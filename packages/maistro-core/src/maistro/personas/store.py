@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from .model import Persona
 
@@ -40,6 +40,8 @@ class PersonaStore(Protocol):
     async def delete(self, persona_id: str) -> None: ...
 
     async def delete_for_workspace(self, workspace_id: str) -> None: ...
+
+    async def delete_for_workspace_in(self, conn: Any, workspace_id: str) -> None: ...
 
 
 class InMemoryPersonaStore:
@@ -99,6 +101,10 @@ class InMemoryPersonaStore:
         persona_id = self._persona_id_by_workspace.pop(workspace_id, None)
         if persona_id is not None:
             self._by_id.pop(persona_id, None)
+
+    async def delete_for_workspace_in(self, conn: Any, workspace_id: str) -> None:
+        """The reference store has no transaction to join; ``conn`` is ignored."""
+        await self.delete_for_workspace(workspace_id)
 
 
 __all__ = [

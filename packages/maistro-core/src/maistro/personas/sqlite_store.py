@@ -8,6 +8,8 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from maistro.runs.evidence_json import json_of, model_of
+
 from .model import Persona
 from .store import (
     PersonaAlreadyExists,
@@ -81,7 +83,7 @@ class SqlitePersonaStore:
                     persona.name,
                     _iso(persona.created_at),
                     _iso(persona.updated_at),
-                    persona.model_dump_json(),
+                    json_of(persona),
                 ),
             )
         return persona.model_copy(deep=True)
@@ -90,13 +92,13 @@ class SqlitePersonaStore:
         row = await self._fetchone(
             "SELECT payload FROM canonical_personas WHERE persona_id = ?", (persona_id,)
         )
-        return Persona.model_validate_json(row[0]) if row is not None else None
+        return model_of(Persona, row[0]) if row is not None else None
 
     async def get_for_workspace(self, workspace_id: str) -> Persona | None:
         row = await self._fetchone(
             "SELECT payload FROM canonical_personas WHERE workspace_id = ?", (workspace_id,)
         )
-        return Persona.model_validate_json(row[0]) if row is not None else None
+        return model_of(Persona, row[0]) if row is not None else None
 
     async def update(self, persona: Persona) -> Persona:
         async with self._serialized_write():
@@ -120,7 +122,7 @@ class SqlitePersonaStore:
                     updated.workspace_id,
                     updated.name,
                     _iso(updated.updated_at),
-                    updated.model_dump_json(),
+                    json_of(updated),
                     updated.id,
                 ),
             )
@@ -139,6 +141,18 @@ class SqlitePersonaStore:
             await self._conn.execute(
                 "DELETE FROM canonical_personas WHERE workspace_id = ?", (workspace_id,)
             )
+
+    async def delete_for_workspace_in(self, conn: aiosqlite.Connection, workspace_id: str) -> None:
+        """Delete on a connection whose transaction is already open.
+
+        The Workspace delete calls this inside its own ``BEGIN IMMEDIATE``, on
+        the same shared connection the Persona store was wired with. Starting
+        a second transaction there is the "cannot start a transaction within
+        a transaction" failure (#1121 recorded the shape for the Project
+        store), so this is a plain statement: the caller's transaction owns
+        the commit, and a rollback takes the Persona row back with it.
+        """
+        await conn.execute("DELETE FROM canonical_personas WHERE workspace_id = ?", (workspace_id,))
 
     async def _exists(self, sql: str, params: tuple[str, ...]) -> bool:
         return await self._fetchone(sql, params) is not None

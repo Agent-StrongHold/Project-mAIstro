@@ -32,7 +32,13 @@ class PersonaSurface(StrEnum):
 class Persona(BaseModel):
     """The single live taste/style/purpose context for a Workspace."""
 
-    model_config = ConfigDict(extra="forbid")
+    # `ser_json_inf_nan="constants"`, like the Run spine's models: the durable
+    # stores serialise the payload through `runs/evidence_json.py`, whose tag
+    # encoder can only preserve a non-finite float it can still see. The
+    # default turns NaN/Infinity into `null` one step earlier, and a reopened
+    # Persona would silently lose the value its in-memory twin kept (#132
+    # review, same finding the spine fixed).
+    model_config = ConfigDict(extra="forbid", ser_json_inf_nan="constants")
 
     id: str
     workspace_id: str

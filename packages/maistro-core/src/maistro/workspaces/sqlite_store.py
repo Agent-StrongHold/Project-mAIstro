@@ -229,7 +229,7 @@ class SqliteWorkspaceStore:
         async with self._write_transaction() as conn:
             await self._project_store.purge_workspace_in(conn, workspace_id)
             if self.persona_store is not None:
-                await self.persona_store.delete_for_workspace(workspace_id)
+                await self.persona_store.delete_for_workspace_in(conn, workspace_id)
             await self._delete_workspace_row(conn, workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:

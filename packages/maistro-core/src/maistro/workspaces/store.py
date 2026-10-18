@@ -191,8 +191,16 @@ class InMemoryWorkspaceStore:
         # store was the in-memory reference, and left orphaned on every durable
         # deployment, where no implementation defined it (Codex, #516).
         # The live Persona is a separate ownership boundary, so it leaves
-        # through its canonical store inside the same compensation: a failure
-        # in either half restores the Workspace and its memberships.
+        # through its canonical store inside the same compensation. The
+        # snapshot goes first because the compensation contract is all-or-
+        # nothing: a Project failure mid-delete must put the Persona back, not
+        # leave a surviving Workspace without its product context. The durable
+        # stores need no snapshot — their delete joins the one transaction.
+        persona = (
+            await self.persona_store.get_for_workspace(workspace_id)
+            if self.persona_store is not None
+            else None
+        )
         try:
             if self.persona_store is not None:
                 await self.persona_store.delete_for_workspace(workspace_id)
@@ -200,6 +208,8 @@ class InMemoryWorkspaceStore:
         except Exception:
             self._workspaces[workspace_id] = workspace
             self._memberships.update(memberships)
+            if persona is not None and self.persona_store is not None:
+                await self.persona_store.create(persona)
             raise
 
     async def _delete_workspace_row(
