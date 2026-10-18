@@ -36,6 +36,11 @@ RUN python -m venv /app/venv
 COPY pyproject.toml uv.lock README.md ./
 COPY packages/maistro-core   packages/maistro-core
 COPY packages/maistro-server packages/maistro-server
+# #1825: the engine mounts /v2/canvas and advertises the Canvas ability, but
+# only the server was installed — `_wire_canvas_ability()` hit ImportError at
+# startup and every Canvas route answered 503 forever, invisibly to a healthy
+# API container. The Canvas package ships in the supported image.
+COPY packages/maistro-canvas packages/maistro-canvas
 # Non-editable install so the venv is fully self-contained (nothing from the
 # source trees is needed on sys.path at runtime).
 # psycopg is listed for alembic, not for the application. Alembic reaches
@@ -51,6 +56,7 @@ COPY packages/maistro-server packages/maistro-server
 RUN pip install --no-cache-dir \
       "./packages/maistro-core[identity,llm,sandbox,observability]" \
       "./packages/maistro-server" \
+      "./packages/maistro-canvas" \
       "alembic>=1.14" \
       "psycopg[binary]>=3.2" \
       "openai>=1.40,<2" \
@@ -91,6 +97,11 @@ COPY --from=builder /app/venv /app/venv
 # On-disk assets the app reads at runtime (agent YAML, prompts, migrations).
 COPY packages/maistro-core   packages/maistro-core
 COPY packages/maistro-server packages/maistro-server
+# maistro-canvas is deliberately NOT copied here: the wheel carries no on-disk
+# assets (pure Python), so the runtime must resolve `maistro_canvas` from the
+# venv alone — which is exactly what the #1825 smoke asserts, on image contents
+# only, with no network and no mounts. Copying the source tree would blur that
+# proof boundary without serving any runtime read.
 COPY alembic/ alembic/
 COPY alembic.ini .
 COPY config/ config/
