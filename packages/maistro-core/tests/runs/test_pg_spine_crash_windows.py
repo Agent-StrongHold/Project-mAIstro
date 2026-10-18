@@ -279,6 +279,51 @@ async def _reconcile_terminal_attempts(
     return changed
 
 
+# ── terminal-spine / stale-continuation window, both halves durable ─
+
+
+@pytest.mark.parametrize("terminal_status", [RunStatus.COMPLETED, RunStatus.FAILED])
+async def test_a_terminal_spine_repairs_its_stale_running_continuation(
+    spine: _Spine,
+    terminal_status: RunStatus,
+) -> None:
+    """A restart cannot resume traversal after its canonical Run has settled.
+
+    The walker persisted checkpoint 1, then another canonical lifecycle writer
+    terminalized the Run before it could update the continuation projection.
+    Recovery runs through an independent PostgreSQL pool and copies only the
+    terminal lifecycle status onto that projection.
+    """
+    graph = spine.graph(_Step.kind, name="terminal-spine projection repair")
+    run_id = await _admit(spine, graph)
+    run = await spine.walker.run_store.transition_run(run_id, RunStatus.RUNNING)
+    await spine.walker.continuations.create(
+        GraphContinuation(
+            run_id=run_id,
+            graph_state=GraphExecutionState(run_id=run_id, active_node_ids=("a",)),
+            status=RunStatus.RUNNING,
+            project_id=spine.project_id,
+            created_at=run.created_at,
+        )
+    )
+    await spine.walker.run_store.transition_run(
+        run_id,
+        terminal_status,
+        error="canonical terminal writer settled the Run",
+    )
+
+    canonical = await spine.recovery.run_store.get_run(run_id)
+    continuation = await spine.recovery.continuations.get(run_id)
+    assert canonical is not None and canonical.status is terminal_status
+    assert continuation is not None and continuation.status is RunStatus.RUNNING
+
+    recovery = spine.recovery.durable()
+    assert await recovery.reconcile_persistence() == 1
+    repaired = await spine.recovery.continuations.get(run_id)
+    assert repaired is not None and repaired.status is terminal_status
+    assert await recovery.reconcile_persistence() == 0
+
+
 # ── the continuation-before-mirror window, both halves durable ──────
 
 

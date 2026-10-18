@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +6
+  packages/maistro-core/tests: +7
 ---
 # 1151 running-run reconciliation
 
@@ -9,16 +9,15 @@ Six tests in `tests/graph/durable_runs/test_canonical_durable_store.py` cover:
 - terminal NodeRuns settling a canonical `RUNNING` Run without a new Attempt;
 - a `RUNNING` continuation with `resume_at=None` becoming due;
 - terminal `FAILED` continuation state settling a stranded canonical Run;
-- stale continuation status being repaired from a terminal canonical Run;
+- stale `RUNNING` continuation status being repaired from a terminal canonical `COMPLETED` or `FAILED` Run;
 - a missing continuation remaining absent rather than violating the checkpoint authority ADR;
 - the checkpoint-1 `QUEUED` continuation / canonical `RUNNING` window.
 
-Disclosure: five of the six are `xfail(strict)` characterization-of-gap nodes —
+Disclosure: four of the seven are `xfail(strict)` characterization-of-gap nodes —
 develop deliberately settles those windows through other reviewed paths (the
-quiet-period observation guard, the resume-claim protocol, the ordinary walker
-re-queue) or, for `test_terminal_run_mirror_repairs_a_stale_continuation_index`,
-has no repairer yet (scoped follow-up). Only
-`test_running_sweep_does_not_fabricate_missing_continuation` asserts delivered
+quiet-period observation guard, the resume-claim protocol, and the ordinary
+walker re-queue). The terminal canonical Run repair and
+`test_running_sweep_does_not_fabricate_missing_continuation` assert delivered
 behavior. Each strict xfail flips the suite if develop later adopts the
 behavior, forcing the marker's removal.
 

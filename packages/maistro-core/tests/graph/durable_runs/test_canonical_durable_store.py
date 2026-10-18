@@ -597,16 +597,10 @@ async def test_running_run_advances_a_queued_checkpoint_one_continuation() -> No
     assert repaired.resume_at is not None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "genuine gap: develop has no repairer that rewrites a stale RUNNING continuation "
-        "under an already-terminal canonical Run (the lane's continuation-mirror repair "
-        "was superseded by the reviewed dispatcher); filed as a scoped follow-up finding "
-        "via the L1151 sync report"
-    ),
-)
-async def test_terminal_run_mirror_repairs_a_stale_continuation_index() -> None:
+@pytest.mark.parametrize("terminal_status", [RunStatus.COMPLETED, RunStatus.FAILED])
+async def test_terminal_run_mirror_repairs_a_stale_continuation_index(
+    terminal_status: RunStatus,
+) -> None:
     store, run_store, continuations, workspace_id, project_id = await _reconcile_spine()
     graph = _graph(workspace_id, project_id, _Step.kind)
     run_id = await _continued_run(
@@ -614,12 +608,13 @@ async def test_terminal_run_mirror_repairs_a_stale_continuation_index() -> None:
         continuations,
         graph,
         continuation_status=RunStatus.RUNNING,
-        run_status=RunStatus.COMPLETED,
+        run_status=terminal_status,
     )
 
     assert await store.reconcile_persistence() == 1
     repaired = await continuations.get(run_id)
-    assert repaired is not None and repaired.status is RunStatus.COMPLETED
+    assert repaired is not None and repaired.status is terminal_status
+    assert await store.reconcile_persistence() == 0
 
 
 async def test_running_sweep_does_not_fabricate_missing_continuation() -> None:

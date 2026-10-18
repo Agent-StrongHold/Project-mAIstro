@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +9
+  packages/maistro-core/tests: +11
 ---
 
 # 1151 R7: real-PG spine crash windows over both durable authorities
@@ -12,9 +12,12 @@ artifact from the issue: crash-window proofs on actual `PgRunStore` and
 InMemoryRunStore pairing (`test_cross_store_crash_reconciliation.py[postgres]`)
 that cannot prove both authorities durable.
 
-Nine tests, all skipped unless `MAISTRO_TEST_PG_DSN` names a migrated
+Eleven tests, all skipped unless `MAISTRO_TEST_PG_DSN` names a migrated
 database:
 
+- a stale RUNNING continuation under a canonically terminal COMPLETED or FAILED
+  Run is repaired from the authoritative spine by a fresh pool, then remains a
+  no-op on the next tick;
 - a FAILED continuation whose canonical mirror was lost settles on the first
   eligible tick (past the terminal-settle quiet period), with the open
   NodeRun cancelled by the spine's own cascade;
