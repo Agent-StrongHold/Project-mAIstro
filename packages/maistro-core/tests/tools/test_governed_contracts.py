@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.effect_context import new_effect_context
+from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
 from maistro.capabilities.invocation import InvocationStatus
 from maistro.tools.contracts import (
     GovernedToolExecutor,
@@ -74,7 +74,9 @@ def _registry(*, observed: Any = None) -> ToolContractRegistry:
 
 @pytest.mark.asyncio
 async def test_governed_tool_persists_expected_evidence_on_canonical_invocation() -> None:
-    effects = new_effect_context()
+    # The composition contract requires an explicit policy evaluator: a bare
+    # context is an unavailable authority, not an implicit ALLOW (#846).
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
     await effects.bindings.put(_binding())
     registry = _registry(observed={"ticket_count": 1})
     calls: list[tuple[str, dict[str, Any]]] = []
@@ -125,7 +127,9 @@ async def test_governed_tool_persists_expected_evidence_on_canonical_invocation(
 
 @pytest.mark.asyncio
 async def test_prediction_mismatch_is_durable_evidence_and_not_success() -> None:
-    effects = new_effect_context()
+    # The composition contract requires an explicit policy evaluator: a bare
+    # context is an unavailable authority, not an implicit ALLOW (#846).
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
     await effects.bindings.put(_binding())
     registry = _registry(observed={"ticket_count": 2})
 
@@ -172,7 +176,9 @@ async def test_prediction_mismatch_is_durable_evidence_and_not_success() -> None
 
 @pytest.mark.asyncio
 async def test_agent_allowlist_and_unknown_schema_fail_before_backend() -> None:
-    effects = new_effect_context()
+    # The composition contract requires an explicit policy evaluator: a bare
+    # context is an unavailable authority, not an implicit ALLOW (#846).
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
     await effects.bindings.put(_binding())
     registry = _registry()
     called = False

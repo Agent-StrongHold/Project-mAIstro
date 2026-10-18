@@ -483,7 +483,7 @@ async def test_init_reactor_success(
 
     fnd = Foundation()
     fnd.state_available = True
-    await fnd._init_reactor(_StubSettings(tmp_path), tmp_path)
+    await fnd._init_reactor()
     assert fnd.reactor_available is True
     assert started[0] == 1
 
@@ -505,7 +505,7 @@ async def test_init_reactor_exception_swallowed(
     monkeypatch.setitem(sys.modules, "maistro.reactor", broken)
 
     fnd = Foundation()
-    await fnd._init_reactor(_StubSettings(tmp_path), tmp_path)
+    await fnd._init_reactor()
     assert fnd.reactor_available is False
 
 
