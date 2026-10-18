@@ -109,10 +109,14 @@ async def test_parallel_attempts_can_share_one_logical_run_context() -> None:
 async def test_cancel_propagates_to_active_execution() -> None:
     runtime = PythonExecutionRuntime()
     started = asyncio.Event()
+    stopped = asyncio.Event()
 
     async def executor(_work_item: Any, _context: Any) -> None:
         started.set()
-        await asyncio.Event().wait()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
 
     task = asyncio.create_task(
         runtime.execute(None, None, execution_id="attempt-cancel", executor=executor)
@@ -120,11 +124,39 @@ async def test_cancel_propagates_to_active_execution() -> None:
     await started.wait()
 
     assert await runtime.cancel("attempt-cancel") is True
+    assert stopped.is_set()
     with pytest.raises(asyncio.CancelledError):
         await task
 
     assert runtime.metrics().executions_cancelled == 1
     assert await runtime.cancel("attempt-cancel") is False
+
+
+@pytest.mark.asyncio
+async def test_deadline_cancels_a_provider_that_swallows_cancellation() -> None:
+    runtime = PythonExecutionRuntime()
+    stopped = asyncio.Event()
+
+    async def executor(_work_item: Any, _context: Any) -> str:
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            stopped.set()
+            return "late provider response"
+        raise AssertionError("unreachable")
+
+    with pytest.raises(RuntimeDeadlineExceeded):
+        await runtime.execute(
+            None,
+            None,
+            execution_id="attempt-deadline-swallow",
+            executor=executor,
+            timeout_s=0.001,
+        )
+
+    assert stopped.is_set()
+    assert runtime.metrics().executions_timed_out == 1
+    assert runtime.metrics().executions_completed == 0
 
 
 @pytest.mark.asyncio
@@ -270,3 +302,149 @@ async def test_event_loop_lag_sample_is_exposed_in_metrics() -> None:
 
     assert lag_ms >= 0
     assert runtime.metrics().event_loop_lag_ms_last == lag_ms
+
+
+@pytest.mark.asyncio
+async def test_work_that_finishes_before_the_deadline_is_a_success() -> None:
+    runtime = PythonExecutionRuntime()
+
+    async def executor(_work_item: Any, _context: Any) -> str:
+        return "done-quickly"
+
+    result = await runtime.execute(
+        None,
+        None,
+        execution_id="attempt-in-time",
+        executor=executor,
+        timeout_s=30,
+    )
+
+    # The deadline never expired, so the completed-work guard at the end of
+    # the timeout branch must let the success through untouched.
+    assert result == "done-quickly"
+    metrics = runtime.metrics()
+    assert metrics.executions_started == 1
+    assert metrics.executions_completed == 1
+    assert metrics.executions_timed_out == 0
+
+
+@pytest.mark.asyncio
+async def test_external_cancel_cancels_child_then_reraises() -> None:
+    runtime = PythonExecutionRuntime()
+    started = asyncio.Event()
+    settlement: list[str] = []
+
+    async def executor(_work_item: Any, _context: Any) -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            settlement.append("child-settled")
+            raise
+
+    task = asyncio.create_task(
+        runtime.execute(None, None, execution_id="attempt-shield", executor=executor)
+    )
+    await started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The shield hands the outer cancellation to the explicit fence: the
+    # child settles BEFORE the CancelledError reaches the caller, and the
+    # cancelled classification is what the Attempt records.
+    assert settlement == ["child-settled"]
+    metrics = runtime.metrics()
+    assert metrics.executions_cancelled == 1
+    assert metrics.executions_completed == 0
+
+
+@pytest.mark.asyncio
+async def test_external_cancel_fences_a_child_that_swallows_cancellation() -> None:
+    runtime = PythonExecutionRuntime()
+    started = asyncio.Event()
+    swallowed = asyncio.Event()
+
+    async def executor(_work_item: Any, _context: Any) -> str:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            swallowed.set()
+            return "stale provider success"
+        raise AssertionError("unreachable")
+
+    task = asyncio.create_task(
+        runtime.execute(None, None, execution_id="attempt-swallow", executor=executor)
+    )
+    await started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # A bare await would hand the outer cancel to the child through CPython's
+    # fut_waiter pre-cancel; a child that swallows it and returns would then
+    # complete the await with a stale success and the outer cancellation
+    # would be lost entirely. Under the shield the child is still mid-flight
+    # when the CancelledError lands in _run_work, so the explicit fence --
+    # not await mechanics -- delivers the cancellation, the drain waits out
+    # the child's settlement, and the CancelledError still re-raises.
+    assert swallowed.is_set()
+    metrics = runtime.metrics()
+    assert metrics.executions_cancelled == 1
+    assert metrics.executions_completed == 0
+
+
+@pytest.mark.asyncio
+async def test_cancel_from_the_active_task_returns_without_awaiting_itself() -> None:
+    runtime = PythonExecutionRuntime()
+    task = asyncio.current_task()
+    assert task is not None  # pytest-asyncio runs the test itself as a task
+
+    # The self-cancel guard: the task registered as the active execution
+    # asks the Runtime to cancel its own execution_id. Awaiting its own
+    # settlement would deadlock the event loop, so cancel() requests the
+    # cancellation and returns True without the drain. The registration
+    # mirrors what execute() performs; the executor child cannot reach
+    # this position -- it runs in its own task.
+    runtime._active["attempt-self"] = task
+    assert await runtime.cancel("attempt-self") is True
+
+    # The cancellation was still requested: it lands on this task at its
+    # next await point, which is where the Attempt's handler would run.
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_deadline_fences_a_mid_flight_child_under_the_shield() -> None:
+    runtime = PythonExecutionRuntime()
+    cancelled = asyncio.Event()
+
+    async def executor(_work_item: Any, _context: Any) -> None:
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    with pytest.raises(RuntimeDeadlineExceeded):
+        await runtime.execute(
+            None,
+            None,
+            execution_id="attempt-deadline-fence",
+            executor=executor,
+            timeout_s=0.01,
+        )
+
+    # The timeout path is unchanged by the shield: the deadline cancels
+    # the request, the fence delivers the cancellation to the child, its
+    # settlement is drained, and the expiry stays a deadline -- not a
+    # failure, never a swallowed success.
+    assert cancelled.is_set()
+    metrics = runtime.metrics()
+    assert metrics.executions_timed_out == 1
+    assert metrics.executions_failed == 0
+    assert metrics.executions_cancelled == 0

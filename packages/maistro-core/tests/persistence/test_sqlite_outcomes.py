@@ -46,12 +46,15 @@ async def test_record_returns_positive_id(store: SqliteOutcomeStore) -> None:
 
 @pytest.mark.asyncio
 async def test_record_and_list_outcomes_roundtrip(store: SqliteOutcomeStore) -> None:
-    await store.record(make_outcome(request_id="r1"))
+    await store.record(
+        make_outcome(request_id="r1", tool_calls=[{"name": "bash", "arguments": {"x": 1}}])
+    )
     outcomes = await store.list_outcomes()
     assert len(outcomes) == 1
     assert outcomes[0].request_id == "r1"
     assert outcomes[0].success is True
     assert outcomes[0].agent_id is None
+    assert outcomes[0].tool_calls == [{"name": "bash", "arguments": {"x": 1}}]
 
 
 @pytest.mark.asyncio
@@ -196,7 +199,7 @@ async def test_get_experience_context_formats_recent_failures(
         make_outcome(task_type="chat", success=False, error_type="timeout", model_used="gpt-4")
     )
     ctx = await store.get_experience_context("chat")
-    assert ctx == "Recent failures:\n- timeout: model=gpt-4"
+    assert ctx == "## Recent Failure Patterns\n- timeout (model: gpt-4)"
 
 
 @pytest.mark.asyncio
@@ -205,6 +208,45 @@ async def test_get_experience_context_respects_limit(store: SqliteOutcomeStore) 
         await store.record(make_outcome(task_type="chat", success=False, error_type=f"err{i}"))
     ctx = await store.get_experience_context("chat", limit=2)
     assert ctx.count("\n") == 2
+
+
+@pytest.mark.asyncio
+async def test_get_experience_context_filters_tool_calls_and_feedback(
+    store: SqliteOutcomeStore,
+) -> None:
+    await store.record(
+        make_outcome(
+            task_type="chat",
+            success=False,
+            error_type="bash-failure",
+            tool_calls=[{"name": "bash"}],
+            node_id="node-1",
+        )
+    )
+    await store.record(
+        make_outcome(
+            task_type="chat",
+            success=True,
+            thumb="down",
+            thumb_comment="wrong output",
+            tool_calls=[{"name": "bash"}],
+            node_id="node-1",
+        )
+    )
+    await store.record(
+        make_outcome(
+            task_type="chat",
+            success=False,
+            error_type="python-failure",
+            tool_calls=[{"name": "python"}],
+        )
+    )
+
+    ctx = await store.get_experience_context("chat", tool_name="bash")
+
+    assert "bash-failure" in ctx
+    assert "wrong output" in ctx
+    assert "python-failure" not in ctx
 
 
 # ---------------------------------------------------------------------------

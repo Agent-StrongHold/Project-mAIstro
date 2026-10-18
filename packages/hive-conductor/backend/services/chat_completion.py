@@ -147,45 +147,53 @@ def _get_jira_pat(user_id: str) -> str | None:
         return None
 
 
-def _get_airtable_creds(user_id: str) -> tuple[str | None, str | None]:  # noqa: C901  layered credential fallbacks
-    """Pull Airtable token + base_id from env (CI/CD) or credential store."""
+def _get_airtable_creds(user_id: str) -> tuple[str | None, str | None]:
+    """Pull Airtable credentials for exactly ``user_id``.
+
+    ``AIRTABLE_*`` environment credentials are retained only for an explicitly
+    enabled, single-user deployment with at most one stored principal. They are
+    never a fallback on an authenticated multi-user request.
+    """
     import os
 
-    env_token = os.environ.get("AIRTABLE_TOKEN") or os.environ.get("AIRTABLE_API_KEY")
-    env_base = os.environ.get("AIRTABLE_BASE_ID")
-    if env_token:
-        return env_token, env_base or ""
     try:
         import stores
 
         from services import user_credentials as cred_svc
+
+        if _single_user_airtable_env_enabled(user_id):
+            env_token = os.environ.get("AIRTABLE_TOKEN") or os.environ.get("AIRTABLE_API_KEY")
+            if env_token:
+                return env_token, os.environ.get("AIRTABLE_BASE_ID", "")
 
         store = cred_svc.get_credential_store()
         if store is None:
             return None, None
         context = ToolCallContext(user_id)
         resolver = ToolCredentialResolver(store)
-        token = resolver.first_secret(context, AIRTABLE_PROVIDER_IDS, include_dev_fallback=True)
+        token = resolver.first_secret(context, AIRTABLE_PROVIDER_IDS)
         if not token:
             return None, None
-        # base_id is in user_provider_config — try multiple user_id patterns
-        base_id = ""
-        for uid in context.candidate_user_ids(include_dev_fallback=True):
-            config_raw = stores.user_provider_config.get(f"{uid}:airtable")
-            if isinstance(config_raw, dict) and config_raw.get("base_id"):
-                base_id = config_raw["base_id"]
-                break
-        # If still not found, scan all keys for any airtable config
-        if not base_id:
-            for key in stores.user_provider_config:
-                if key.endswith(":airtable"):
-                    val = stores.user_provider_config.get(key)
-                    if isinstance(val, dict) and val.get("base_id"):
-                        base_id = val["base_id"]
-                        break
+        config_raw = stores.user_provider_config.get(f"{user_id}:airtable")
+        base_id = config_raw.get("base_id") if isinstance(config_raw, dict) else ""
         return token, base_id.split("/")[0] if base_id else ""
     except Exception:
         return None, None
+
+
+def _single_user_airtable_env_enabled(user_id: str) -> bool:
+    """Gate legacy process-wide Airtable env vars to an explicit one-user mode."""
+    import os
+
+    if os.environ.get("AIRTABLE_SINGLE_USER_MODE", "").lower() not in {"1", "true", "yes"}:
+        return False
+    try:
+        import stores
+
+        principals = tuple(stores.users.keys())
+        return len(principals) <= 1 and (not principals or user_id in principals)
+    except Exception:
+        return False
 
 
 def _build_system_prompt(user_id: str) -> str:  # noqa: C901  many optional prompt sections

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -44,17 +46,23 @@ CREATE INDEX IF NOT EXISTS idx_canonical_projects_parent
 CREATE INDEX IF NOT EXISTS idx_canonical_projects_workspace
     ON canonical_projects(workspace_id);
 
+-- One row per (project_id, principal_id): a re-grant, role change, or
+-- explicit deny replaces the existing row (keeping its membership_id and
+-- created_at) rather than accumulating a second, independent grant nothing
+-- can fully retract (#1148). Mirrors canonical_workspace_memberships, which
+-- has keyed on (workspace_id, user_id) since migration 019.
 CREATE TABLE IF NOT EXISTS canonical_project_memberships (
-    membership_id TEXT PRIMARY KEY,
-    workspace_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
     principal_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    membership_id TEXT NOT NULL,
     payload TEXT NOT NULL,
+    PRIMARY KEY (project_id, principal_id),
     FOREIGN KEY (project_id) REFERENCES canonical_projects(project_id) ON DELETE RESTRICT
 );
 
-CREATE INDEX IF NOT EXISTS idx_canonical_project_memberships_project_principal
-    ON canonical_project_memberships(project_id, principal_id);
+CREATE INDEX IF NOT EXISTS idx_canonical_project_memberships_principal
+    ON canonical_project_memberships(principal_id);
 
 CREATE TABLE IF NOT EXISTS canonical_project_resources (
     resource_id TEXT PRIMARY KEY,
@@ -78,16 +86,87 @@ class SqliteProjectScopeStore:
 
         self._conn = conn
         self._owns_runs: Callable[[str], Awaitable[bool]] | None = None
+        # One connection, so this orders same-process writers; `BEGIN
+        # IMMEDIATE` is what protects a second process sharing this file.
+        # Every writer takes it through `_serialized_write` (#1147, #1148,
+        # #1221 review) -- SQLite starts a transaction implicitly on a
+        # connection's first DML statement even without an explicit `BEGIN`,
+        # so an unlocked writer left mid-statement would make a locked one's
+        # `BEGIN IMMEDIATE` raise "cannot start a transaction within a
+        # transaction" the moment their awaits interleaved.
+        self._write_lock = asyncio.Lock()
 
     def set_run_owner(self, owns_runs: Callable[[str], Awaitable[bool]]) -> None:
         """Register the predicate `delete()` consults for Run ownership."""
 
         self._owns_runs = owns_runs
 
+    @asynccontextmanager
+    async def _serialized_write(self) -> AsyncIterator[None]:
+        """Take this connection's one write-critical section.
+
+        Every method that mutates this connection must go through here,
+        not only the ones whose own correctness needs the read-then-write
+        to be atomic -- a plain, unlocked `execute()` elsewhere can leave an
+        implicit transaction open across an `await`, and this `BEGIN
+        IMMEDIATE` would then fail outright rather than merely race.
+        """
+        async with self._write_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except BaseException:
+                await self._conn.rollback()
+                raise
+            else:
+                await self._conn.commit()
+
     async def ensure_schema(self) -> None:
         """Create canonical Project tables and integrity indexes."""
 
+        await self._migrate_legacy_membership_primary_key()
         await self._conn.executescript(_SCHEMA)
+        await self._conn.commit()
+
+    async def _migrate_legacy_membership_primary_key(self) -> None:
+        """Upgrade a pre-#1148 `canonical_project_memberships` table in place.
+
+        Before #1148 the table's primary key was `membership_id`, so a
+        re-grant minted a second, independent row. `executescript(_SCHEMA)`'s
+        `CREATE TABLE IF NOT EXISTS` leaves an already-existing table alone,
+        so a homelab database created by an older release would keep the old
+        key indefinitely and the new `ON CONFLICT(project_id, principal_id)`
+        in `set_membership` would fail with "no unique or exclusion
+        constraint matching" on its very first write.
+        """
+        cursor = await self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'canonical_project_memberships'"
+        )
+        row = await cursor.fetchone()
+        if row is None or "PRIMARY KEY (project_id, principal_id)" in row[0]:
+            return  # fresh database, or already migrated
+        await self._conn.execute(
+            "ALTER TABLE canonical_project_memberships "
+            "RENAME TO canonical_project_memberships_legacy_pk"
+        )
+        await self._conn.executescript(_SCHEMA)
+        await self._conn.execute(
+            """INSERT INTO canonical_project_memberships
+                   (project_id, principal_id, workspace_id, membership_id, payload)
+               SELECT project_id, principal_id, workspace_id, membership_id, payload
+                 FROM canonical_project_memberships_legacy_pk AS kept
+                WHERE rowid = (
+                    SELECT candidate.rowid
+                      FROM canonical_project_memberships_legacy_pk AS candidate
+                     WHERE candidate.project_id = kept.project_id
+                       AND candidate.principal_id = kept.principal_id
+                     ORDER BY json_extract(candidate.payload, '$.created_at') DESC,
+                              candidate.membership_id DESC
+                     LIMIT 1
+                )"""
+        )
+        await self._conn.execute("DROP TABLE canonical_project_memberships_legacy_pk")
         await self._conn.commit()
 
     async def purge_workspace(self, workspace_id: str) -> None:
@@ -105,34 +184,33 @@ class SqliteProjectScopeStore:
         fail it, and a loop whose termination depends on an invariant enforced
         somewhere else should say so out loud when the invariant breaks.
         """
-        await self._conn.execute(
-            "DELETE FROM canonical_project_resources WHERE workspace_id = ?",
-            (workspace_id,),
-        )
-        await self._conn.execute(
-            "DELETE FROM canonical_project_memberships WHERE workspace_id = ?",
-            (workspace_id,),
-        )
-        for _ in range(_MAX_PURGE_PASSES):
-            cursor = await self._conn.execute(
-                """DELETE FROM canonical_projects
-                    WHERE workspace_id = ?
-                      AND project_id NOT IN (
-                          SELECT parent_project_id
-                            FROM canonical_projects
-                           WHERE workspace_id = ?
-                             AND parent_project_id IS NOT NULL)""",
-                (workspace_id, workspace_id),
+        async with self._serialized_write():
+            await self._conn.execute(
+                "DELETE FROM canonical_project_resources WHERE workspace_id = ?",
+                (workspace_id,),
             )
-            if cursor.rowcount == 0:
-                await self._conn.commit()
-                return
-        await self._conn.rollback()
-        msg = (
-            f"Project tree for workspace {workspace_id} did not drain in "
-            f"{_MAX_PURGE_PASSES} passes; it is deeper than that or cyclic"
-        )
-        raise ProjectIntegrityError(msg)
+            await self._conn.execute(
+                "DELETE FROM canonical_project_memberships WHERE workspace_id = ?",
+                (workspace_id,),
+            )
+            for _ in range(_MAX_PURGE_PASSES):
+                cursor = await self._conn.execute(
+                    """DELETE FROM canonical_projects
+                        WHERE workspace_id = ?
+                          AND project_id NOT IN (
+                              SELECT parent_project_id
+                                FROM canonical_projects
+                               WHERE workspace_id = ?
+                                 AND parent_project_id IS NOT NULL)""",
+                    (workspace_id, workspace_id),
+                )
+                if cursor.rowcount == 0:
+                    return
+            msg = (
+                f"Project tree for workspace {workspace_id} did not drain in "
+                f"{_MAX_PURGE_PASSES} passes; it is deeper than that or cyclic"
+            )
+            raise ProjectIntegrityError(msg)
 
     async def create_root(self, workspace_id: str) -> Project:
         """Create or return the Workspace's durable Root Project."""
@@ -149,13 +227,13 @@ class SqliteProjectScopeStore:
             parent_project_id=None,
             is_root=True,
         )
-        await self._conn.execute(
-            """INSERT OR IGNORE INTO canonical_projects
-               (project_id, workspace_id, parent_project_id, is_root, payload)
-               VALUES (?, ?, NULL, 1, ?)""",
-            (root.project_id, root.workspace_id, root.model_dump_json()),
-        )
-        await self._conn.commit()
+        async with self._serialized_write():
+            await self._conn.execute(
+                """INSERT OR IGNORE INTO canonical_projects
+                   (project_id, workspace_id, parent_project_id, is_root, payload)
+                   VALUES (?, ?, NULL, 1, ?)""",
+                (root.project_id, root.workspace_id, root.model_dump_json()),
+            )
         return await self.root_for_workspace(workspace_id)
 
     async def root_for_workspace(self, workspace_id: str) -> Project:
@@ -237,27 +315,41 @@ class SqliteProjectScopeStore:
         return children
 
     async def move_project(self, project_id: str, *, parent_project_id: str) -> Project:
-        """Move a non-root Project without crossing Workspaces or forming a cycle."""
+        """Move a non-root Project without crossing Workspaces or forming a cycle.
 
-        project = await self._require(project_id)
-        if project.is_root:
-            raise ProjectIntegrityError("Root Project cannot be moved")
-        parent = await self._require(parent_project_id)
-        if parent.workspace_id != project.workspace_id:
-            raise ProjectIntegrityError("Project cannot move across Workspaces")
-        if parent.project_id == project.project_id:
-            raise ProjectIntegrityError("Project cannot be its own parent")
-        ancestor_ids = {item.project_id for item in await self.lineage(parent_project_id)}
-        if project.project_id in ancestor_ids:
-            raise ProjectIntegrityError("Project move would create a cycle")
+        Serializes the ancestry check and the reparent write as one SQLite
+        write-critical section (#1147). Two concurrent moves such as A under B
+        and B under A could otherwise both read the pre-move tree, both pass
+        the cycle check, and both commit -- leaving a cycle `lineage()` can
+        never resolve again. `asyncio.Lock` orders same-process callers;
+        `BEGIN IMMEDIATE` takes SQLite's write lock before the read, which is
+        what a second process sharing this file actually needs.
+        """
+        async with self._serialized_write():
+            project = await self._require(project_id)
+            if project.is_root:
+                raise ProjectIntegrityError("Root Project cannot be moved")
+            parent = await self._require(parent_project_id)
+            if parent.workspace_id != project.workspace_id:
+                raise ProjectIntegrityError("Project cannot move across Workspaces")
+            if parent.project_id == project.project_id:
+                raise ProjectIntegrityError("Project cannot be its own parent")
+            ancestor_ids = {item.project_id for item in await self.lineage(parent_project_id)}
+            if project.project_id in ancestor_ids:
+                raise ProjectIntegrityError("Project move would create a cycle")
 
-        updated = project.model_copy(
-            update={
-                "parent_project_id": parent_project_id,
-                "updated_at": datetime.now(UTC),
-            }
-        )
-        await self._update_project(updated)
+            updated = project.model_copy(
+                update={
+                    "parent_project_id": parent_project_id,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            await self._conn.execute(
+                """UPDATE canonical_projects
+                   SET parent_project_id = ?, payload = ?
+                   WHERE project_id = ?""",
+                (updated.parent_project_id, updated.model_dump_json(), updated.project_id),
+            )
         return updated
 
     async def update_defaults(
@@ -303,11 +395,11 @@ class SqliteProjectScopeStore:
         # PostgreSQL expresses the same rule as a foreign key.
         if self._owns_runs is not None and await self._owns_runs(project_id):
             raise ProjectNotEmpty("Project has canonical Runs")
-        await self._conn.execute(
-            "DELETE FROM canonical_projects WHERE project_id = ?",
-            (project_id,),
-        )
-        await self._conn.commit()
+        async with self._serialized_write():
+            await self._conn.execute(
+                "DELETE FROM canonical_projects WHERE project_id = ?",
+                (project_id,),
+            )
 
     async def resolve_creation_defaults(
         self,
@@ -325,33 +417,46 @@ class SqliteProjectScopeStore:
         return resolved
 
     async def set_membership(self, membership: ProjectMembership) -> ProjectMembership:
-        """Upsert a membership after validating its Workspace ownership."""
+        """Create or update the one canonical membership per (project, principal).
 
-        project = await self._require(membership.project_id)
-        if project.workspace_id != membership.workspace_id:
-            raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
-        existing = await self._membership_or_none(membership.membership_id)
-        if existing is not None and existing.workspace_id != membership.workspace_id:
-            raise ProjectIntegrityError("membership identity cannot cross Workspaces")
-        updated = membership.model_copy(update={"updated_at": datetime.now(UTC)})
-        await self._conn.execute(
-            """INSERT INTO canonical_project_memberships
-               (membership_id, workspace_id, project_id, principal_id, payload)
-               VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT(membership_id) DO UPDATE SET
-                 workspace_id = excluded.workspace_id,
-                 project_id = excluded.project_id,
-                 principal_id = excluded.principal_id,
-                 payload = excluded.payload""",
-            (
-                updated.membership_id,
-                updated.workspace_id,
-                updated.project_id,
-                updated.principal_id,
-                updated.model_dump_json(),
-            ),
-        )
-        await self._conn.commit()
+        Keyed on `(project_id, principal_id)`, carrying the prior row's
+        `membership_id` and `created_at` forward on an update rather than
+        minting a second, independent grant (#1148). Locked the same way
+        `move_project` is: the read that decides what to preserve must be
+        atomic with the write.
+        """
+        async with self._serialized_write():
+            project = await self._require(membership.project_id)
+            if project.workspace_id != membership.workspace_id:
+                raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
+            existing = await self._membership_or_none(
+                membership.project_id, membership.principal_id
+            )
+            updated = membership.model_copy(
+                update={
+                    "membership_id": (
+                        existing.membership_id if existing else membership.membership_id
+                    ),
+                    "created_at": existing.created_at if existing else membership.created_at,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            await self._conn.execute(
+                """INSERT INTO canonical_project_memberships
+                   (project_id, principal_id, workspace_id, membership_id, payload)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(project_id, principal_id) DO UPDATE SET
+                     workspace_id = excluded.workspace_id,
+                     membership_id = excluded.membership_id,
+                     payload = excluded.payload""",
+                (
+                    updated.project_id,
+                    updated.principal_id,
+                    updated.workspace_id,
+                    updated.membership_id,
+                    updated.model_dump_json(),
+                ),
+            )
         return updated
 
     async def memberships_for(
@@ -374,6 +479,16 @@ class SqliteProjectScopeStore:
         memberships.sort(key=lambda item: (item.created_at, item.membership_id))
         return memberships
 
+    async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
+        """Revoke a principal's membership at one Project, if any exists."""
+
+        async with self._serialized_write():
+            await self._conn.execute(
+                """DELETE FROM canonical_project_memberships
+                   WHERE project_id = ? AND principal_id = ?""",
+                (project_id, principal_id),
+            )
+
     async def put_resource(self, resource: ProjectScopedResource) -> ProjectScopedResource:
         """Upsert a Project resource without allowing cross-Workspace reuse."""
 
@@ -383,24 +498,24 @@ class SqliteProjectScopeStore:
         existing = await self._resource_or_none(resource.resource_id)
         if existing is not None and existing.workspace_id != resource.workspace_id:
             raise ProjectIntegrityError("resource identity cannot cross Workspaces")
-        await self._conn.execute(
-            """INSERT INTO canonical_project_resources
-               (resource_id, workspace_id, project_id, resource_type, payload)
-               VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT(resource_id) DO UPDATE SET
-                 workspace_id = excluded.workspace_id,
-                 project_id = excluded.project_id,
-                 resource_type = excluded.resource_type,
-                 payload = excluded.payload""",
-            (
-                resource.resource_id,
-                resource.workspace_id,
-                resource.project_id,
-                resource.resource_type,
-                resource.model_dump_json(),
-            ),
-        )
-        await self._conn.commit()
+        async with self._serialized_write():
+            await self._conn.execute(
+                """INSERT INTO canonical_project_resources
+                   (resource_id, workspace_id, project_id, resource_type, payload)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(resource_id) DO UPDATE SET
+                     workspace_id = excluded.workspace_id,
+                     project_id = excluded.project_id,
+                     resource_type = excluded.resource_type,
+                     payload = excluded.payload""",
+                (
+                    resource.resource_id,
+                    resource.workspace_id,
+                    resource.project_id,
+                    resource.resource_type,
+                    resource.model_dump_json(),
+                ),
+            )
         return resource
 
     async def visible_resources(
@@ -444,28 +559,28 @@ class SqliteProjectScopeStore:
             )
 
     async def _insert_project(self, project: Project) -> None:
-        await self._conn.execute(
-            """INSERT INTO canonical_projects
-               (project_id, workspace_id, parent_project_id, is_root, payload)
-               VALUES (?, ?, ?, ?, ?)""",
-            (
-                project.project_id,
-                project.workspace_id,
-                project.parent_project_id,
-                int(project.is_root),
-                project.model_dump_json(),
-            ),
-        )
-        await self._conn.commit()
+        async with self._serialized_write():
+            await self._conn.execute(
+                """INSERT INTO canonical_projects
+                   (project_id, workspace_id, parent_project_id, is_root, payload)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    project.project_id,
+                    project.workspace_id,
+                    project.parent_project_id,
+                    int(project.is_root),
+                    project.model_dump_json(),
+                ),
+            )
 
     async def _update_project(self, project: Project) -> None:
-        await self._conn.execute(
-            """UPDATE canonical_projects
-               SET parent_project_id = ?, payload = ?
-               WHERE project_id = ?""",
-            (project.parent_project_id, project.model_dump_json(), project.project_id),
-        )
-        await self._conn.commit()
+        async with self._serialized_write():
+            await self._conn.execute(
+                """UPDATE canonical_projects
+                   SET parent_project_id = ?, payload = ?
+                   WHERE project_id = ?""",
+                (project.parent_project_id, project.model_dump_json(), project.project_id),
+            )
 
     async def _root_or_none(self, workspace_id: str) -> Project | None:
         row = await self._fetchone(
@@ -474,10 +589,13 @@ class SqliteProjectScopeStore:
         )
         return Project.model_validate_json(row[0]) if row is not None else None
 
-    async def _membership_or_none(self, membership_id: str) -> ProjectMembership | None:
+    async def _membership_or_none(
+        self, project_id: str, principal_id: str
+    ) -> ProjectMembership | None:
         row = await self._fetchone(
-            "SELECT payload FROM canonical_project_memberships WHERE membership_id = ?",
-            (membership_id,),
+            """SELECT payload FROM canonical_project_memberships
+               WHERE project_id = ? AND principal_id = ?""",
+            (project_id, principal_id),
         )
         return ProjectMembership.model_validate_json(row[0]) if row is not None else None
 

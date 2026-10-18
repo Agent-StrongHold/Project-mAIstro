@@ -70,7 +70,7 @@ def test_stale_trusted_adapter_mapping_is_a_failure(inventory) -> None:
 
 def test_lifecycle_consumer_has_a_real_trusted_adapter(inventory, tmp_path: Path) -> None:
     key = ("tools/lint_lifecycle.py", "quality/lifecycle-baseline.json")
-    adapter = inventory.TRUSTED_ADAPTERS[key]
+    adapter = inventory.DELEGATED_ADAPTERS[key]
 
     assert adapter == "check-lifecycle-provenance"
     assert inventory._adapter_problem(ROOT, adapter) is None
@@ -116,8 +116,14 @@ def test_github_event_metadata_supplies_every_integration_base(
     monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
     assert provenance._github_event_base() == "a" * 40
 
-    event.write_text(json.dumps({"before": "b" * 40}), encoding="utf-8")
+    event.write_text(
+        json.dumps({"before": "b" * 40, "ref": "refs/heads/fix/example"}),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    assert provenance._github_event_base() == "origin/develop"
+
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/develop")
     assert provenance._github_event_base() == "b" * 40
 
 

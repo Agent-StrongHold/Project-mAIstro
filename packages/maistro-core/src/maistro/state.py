@@ -32,6 +32,25 @@ class MigrationFailedError(Exception):
     """Raised when a schema migration fails; DB is left unchanged."""
 
 
+class _Tx:
+    """A queued transaction plus its completion signal.
+
+    The writer thread sets `done` once it has finished with the item —
+    committed, failed, or skipped because the connection vanished — and
+    records the failure, if any, in `error`. Fire-and-forget submitters
+    ignore both; acknowledged submitters (#1238) wait on `done` and re-raise
+    `error`, so a caller cannot treat a write the database refused as if it
+    had landed.
+    """
+
+    __slots__ = ("done", "error", "fn")
+
+    def __init__(self, fn: Callable[[sqlite3.Connection], None]) -> None:
+        self.fn = fn
+        self.done = threading.Event()
+        self.error: BaseException | None = None
+
+
 class State:
     """SQLite singleton writer with bounded submit queue."""
 
@@ -49,9 +68,7 @@ class State:
         # drain marker; once close wins it, no later submit can be accepted.
         self._lifecycle_lock = threading.Lock()
         self._writer_open = False
-        self._tx_queue: queue.Queue[Callable[[sqlite3.Connection], None]] = queue.Queue(
-            maxsize=max_queue_depth
-        )
+        self._tx_queue: queue.Queue[_Tx] = queue.Queue(maxsize=max_queue_depth)
         self._writer_thread: threading.Thread | None = None
         self._shutdown = threading.Event()
 
@@ -78,8 +95,8 @@ class State:
         conn.execute("PRAGMA query_only=1")
         return conn
 
-    def submit(self, fn: Callable[[sqlite3.Connection], None]) -> None:
-        """Queue a write for the writer thread.
+    def _enqueue(self, tx: _Tx) -> None:
+        """Accept a transaction for the writer thread, or refuse.
 
         Raises rather than accepting work there is no thread to perform. Note
         `fn` runs while the writer lock is held, so it must not call back into
@@ -95,28 +112,64 @@ class State:
                     "State has been closed and can no longer accept writes"
                 )
             try:
-                self._tx_queue.put_nowait(fn)
+                self._tx_queue.put_nowait(tx)
             except queue.Full:
                 raise RuntimeError(
                     f"backpressure: submit queue full (depth={self._max_queue_depth})"
                 ) from None
 
+    def submit(self, fn: Callable[[sqlite3.Connection], None]) -> None:
+        """Queue a write for the writer thread without waiting for it.
+
+        Fire-and-forget: a failure inside `fn` or in the commit is logged and
+        rolled back by the writer thread, never re-raised here. Callers that
+        must know the write reached disk (#1238) use `submit_sync` — or the
+        PersistedStore put/delete/put_raw built on it. Same refusal semantics
+        as `submit_sync` for a closed writer or a full queue.
+        """
+        self._enqueue(_Tx(fn))
+
+    def submit_sync(
+        self, fn: Callable[[sqlite3.Connection], None], *, timeout: float = 30.0
+    ) -> None:
+        """Queue a write and block until the writer thread has committed it.
+
+        #1238: a failure inside `fn` or in the commit itself is re-raised
+        here, so the caller learns the mutation did not reach disk instead of
+        acknowledging it and watching it silently disappear (or a deleted
+        record resurrect) after restart. Raises the writer's exception
+        directly; TimeoutError if `fn` did not finish within `timeout` (the
+        write may still land afterwards); RuntimeError for the same
+        closed-writer and backpressure conditions as `submit`.
+        """
+        tx = _Tx(fn)
+        self._enqueue(tx)
+        if not tx.done.wait(timeout=timeout):
+            raise TimeoutError(
+                f"timed out after {timeout:.1f}s waiting for the state writer to commit"
+            )
+        if tx.error is not None:
+            raise tx.error
+
     def flush(self, timeout: float = 30.0) -> None:
-        done = threading.Event()
-        self._tx_queue.put(lambda conn: done.set())
-        done.wait(timeout=timeout)
+        """Barrier: wait until every write submitted before this call has been
+        processed — committed or failed. flush does not surface writer errors
+        (#1238); acknowledged writes should use `submit_sync`.
+        """
+        tx = _Tx(lambda _conn: None)
+        self._tx_queue.put(tx)
+        tx.done.wait(timeout=timeout)
 
     def checkpoint(self) -> None:
         if self._writer is None:
             return
-        done = threading.Event()
 
         def do_checkpoint(conn: sqlite3.Connection) -> None:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            done.set()
 
-        self._tx_queue.put(do_checkpoint)
-        done.wait(timeout=10.0)
+        tx = _Tx(do_checkpoint)
+        self._tx_queue.put(tx)
+        tx.done.wait(timeout=10.0)
 
     def backup(self, backup_dir: str | Path, admin_public_key: str) -> None:
         if self._writer is None:
@@ -204,13 +257,13 @@ class State:
             self._writer_open = False
 
         if self._writer_thread is not None:
-            drained = threading.Event()
+            drain = _Tx(lambda _conn: None)
             try:
-                self._tx_queue.put(lambda conn: drained.set(), timeout=timeout)
+                self._tx_queue.put(drain, timeout=timeout)
             except queue.Full:
                 logger.error("State.close: queue full, cannot drain; writes may be lost")
             else:
-                if not drained.wait(timeout=timeout):
+                if not drain.done.wait(timeout=timeout):
                     logger.error(
                         "State.close: drain timed out after %.1fs; %d transaction(s) may be lost",
                         timeout,
@@ -252,7 +305,7 @@ class State:
         assert self._writer is not None
         while not self._shutdown.is_set():
             try:
-                fn = self._tx_queue.get(timeout=0.1)
+                tx = self._tx_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
             # `check_same_thread=False` means this thread and any caller of
@@ -264,14 +317,19 @@ class State:
             # anywhere in the file.
             with self._writer_lock:
                 if self._writer is None:  # closed underneath us
+                    tx.error = RuntimeError("State writer closed before this transaction could run")
+                    tx.done.set()
                     return
                 try:
-                    fn(self._writer)
+                    tx.fn(self._writer)
                     self._writer.commit()
-                except Exception:
+                except Exception as exc:
                     logger.exception("State transaction failed")
                     with contextlib.suppress(Exception):
                         self._writer.rollback()
+                    tx.error = exc
+                finally:
+                    tx.done.set()
 
 
 _KV_MIGRATION = (
@@ -298,6 +356,12 @@ class PersistedStore:
         self._state.run_migration("kv_store_001", _KV_MIGRATION)
 
     def put(self, store_name: str, key: str, model: BaseModel) -> None:
+        """Upsert `model`, blocking until the writer commits it (#1238).
+
+        A failed statement or commit raises to the caller — a Hive mutation is
+        acknowledged only once it is durable, never silently dropped while the
+        in-memory copy moves on.
+        """
         data = model.model_dump_json()
         now = datetime.now(UTC).isoformat()
 
@@ -310,7 +374,7 @@ class PersistedStore:
                 (store_name, key, data, now),
             )
 
-        self._state.submit(_upsert)
+        self._state.submit_sync(_upsert)
 
     def get(self, store_name: str, key: str, model_class: type[T]) -> T | None:
         reader = self._state.open_reader()
@@ -326,13 +390,19 @@ class PersistedStore:
         return model_class.model_validate_json(row[0])
 
     def delete(self, store_name: str, key: str) -> None:
+        """Remove `key`, blocking until the writer commits it (#1238).
+
+        A failed delete raises to the caller instead of leaving the row on
+        disk to resurrect the record after restart.
+        """
+
         def _delete(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "DELETE FROM kv_store WHERE store_name = ? AND key = ?",
                 (store_name, key),
             )
 
-        self._state.submit(_delete)
+        self._state.submit_sync(_delete)
 
     def contains(self, store_name: str, key: str) -> bool:
         reader = self._state.open_reader()
@@ -357,6 +427,7 @@ class PersistedStore:
         return [model_class.model_validate_json(row[0]) for row in rows]
 
     def put_raw(self, store_name: str, key: str, json_str: str) -> None:
+        """Upsert a raw JSON string, blocking until the writer commits it (#1238)."""
         now = datetime.now(UTC).isoformat()
 
         def _upsert(conn: sqlite3.Connection) -> None:
@@ -368,7 +439,7 @@ class PersistedStore:
                 (store_name, key, json_str, now),
             )
 
-        self._state.submit(_upsert)
+        self._state.submit_sync(_upsert)
 
     def put_raw_if_absent(
         self,
