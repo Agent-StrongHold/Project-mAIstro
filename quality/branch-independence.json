@@ -121,6 +121,14 @@
       "reason": "Reviewed per-table retention specification; changing a table's retention claim is the substantive change."
     },
     {
+      "id": "backlog-authority",
+      "kind": "specification",
+      "paths": [
+        "quality/backlog-authority.json"
+      ],
+      "reason": "The operator-owned backlog authority marker (#102): the current authority (markdown or database) with its ledger revision, read by the Conductor service and the consistency gate and written only by the shipped `maistro backlog` CLI at the recorded cutover. Changing the authority it states is the substantive change, reviewed as such; a prior-tree oracle would predate the cutover this tree ships."
+    },
+    {
       "id": "image-pin-registry",
       "kind": "specification",
       "paths": [

@@ -149,6 +149,43 @@ async function setOnline(online: boolean): Promise<void> {
   }, online);
 }
 
+/** Flip a pause condition atomically with the loop's next /rsi/status
+ * settle — IN the page, not via a Node round trip. Resolves AT the boundary:
+ * the settling tick is already counted, and the loop's finally arms its next
+ * cadence timer (3.75s, pinned jitter) at this same instant — so snapshot
+ * `counts.status` only AFTER this resolves, and the "no poll while paused"
+ * window below always contains that timer's fire with the condition already
+ * in force. The previous shapes both raced that timer:
+ *  - a Node-side evaluate dispatched the event after a round trip that
+ *    runner load can delay past the timer's fire (the red
+ *    hive-conductor-e2e-ui run at 24fe1c11: expected baseline 1, got 2);
+ *  - snapshotting the baseline before the flip (the first attempt at this
+ *    fix) counted the boundary tick itself against a stale baseline.
+ * Hooks keyed to other /v1/rsi/ endpoints (the dashboard tick fires four
+ * requests in parallel) stay armed until the status settle they are
+ * synchronized to. */
+async function pauseAtNextStatusSettle(kind: "offline" | "hidden"): Promise<void> {
+  await page.evaluate((kind) => {
+    const w = window as unknown as { __rsiSettleHooks: Array<(url: string) => void> };
+    return new Promise<void>((resolve) => {
+      w.__rsiSettleHooks.push(function onSettle(url) {
+        if (!url.includes("/rsi/status")) return; // keep waiting for the status settle
+        w.__rsiSettleHooks = w.__rsiSettleHooks.filter((h) => h !== onSettle);
+        if (kind === "offline") {
+          Object.defineProperty(window.navigator, "onLine", { configurable: true, get: () => false });
+          window.dispatchEvent(new Event("offline"));
+        } else {
+          const doc = document as unknown as Record<string, unknown>;
+          Object.defineProperty(doc, "hidden", { configurable: true, get: () => true });
+          Object.defineProperty(doc, "visibilityState", { configurable: true, get: () => "hidden" });
+          document.dispatchEvent(new Event("visibilitychange"));
+        }
+        resolve();
+      });
+    });
+  }, kind);
+}
+
 test.beforeAll(async ({ browser }) => {
   context = await browser.newContext({ baseURL: test.info().project.use.baseURL });
   // Every page in this context reports uncaught exceptions — the whole point
@@ -195,19 +232,34 @@ async function stubPageEnv(scope: BrowserContext): Promise<void> {
     const w = window as unknown as {
       __rsiStarts: Array<{ url: string; t: number }>;
       __rsiFails: Array<{ url: string; name: string }>;
+      __rsiSettleHooks: Array<(url: string) => void>;
     };
     w.__rsiStarts = [];
     w.__rsiFails = [];
+    w.__rsiSettleHooks = [];
     const wrapped = window.fetch.bind(window);
+    const settleRsi = (url: string, err: unknown): void => {
+      if (!url.includes("/v1/rsi/")) return;
+      if (err !== null) {
+        w.__rsiFails.push({ url, name: (err as { name?: string })?.name ?? "unknown" });
+      }
+      // Settle hooks run IN the page, in the microtask chain of the fetch's
+      // own settlement and strictly BEFORE the app's `await fetch`
+      // continuation (the loop's finally arms the next cadence timer only
+      // after that). The pause tests use them to flip offline/hidden at a
+      // poll boundary without a Node round trip in the critical path.
+      for (const hook of [...w.__rsiSettleHooks]) hook(url);
+    };
     window.fetch = (...args: Parameters<typeof fetch>) => {
       const url = String(args[0]);
       if (url.includes("/v1/rsi/")) w.__rsiStarts.push({ url, t: Date.now() });
       return wrapped(...args).then(
-        (res) => res,
+        (res) => {
+          settleRsi(url, null);
+          return res;
+        },
         (err: unknown) => {
-          if (url.includes("/v1/rsi/")) {
-            w.__rsiFails.push({ url, name: (err as { name?: string })?.name ?? "unknown" });
-          }
+          settleRsi(url, err);
           throw err;
         },
       );
@@ -540,10 +592,11 @@ test("a success resets the cadence to base and the failure ladder to fresh", asy
 
 test("the loop pauses while the tab is hidden and re-kicks on visibilitychange", async () => {
   await mount();
-  await expect.poll(() => counts.status).toBeGreaterThanOrEqual(1);
+  // Flip at a settle boundary, THEN snapshot: the boundary tick is already
+  // in the count, and the timer armed at that boundary must find the loop
+  // paused when it fires 3.75s later.
+  await pauseAtNextStatusSettle("hidden");
   const baseline = counts.status;
-
-  await setHidden(true);
   await page.waitForTimeout(5_000); // longer than the exact 3.75s cadence
   expect(counts.status, "no poll fires while the tab is hidden").toBe(baseline);
 
@@ -554,11 +607,10 @@ test("the loop pauses while the tab is hidden and re-kicks on visibilitychange",
 
 test("the loop pauses while the browser is offline and re-kicks on going back online", async () => {
   await mount();
-  await expect.poll(() => counts.status).toBeGreaterThanOrEqual(1);
+  // Same boundary discipline as the hidden test above.
+  await pauseAtNextStatusSettle("offline");
   const baseline = counts.status;
-
-  await setOnline(false);
-  await page.waitForTimeout(5_000);
+  await page.waitForTimeout(5_000); // longer than the exact 3.75s cadence
   expect(counts.status, "no poll fires while offline").toBe(baseline);
 
   await setOnline(true);
