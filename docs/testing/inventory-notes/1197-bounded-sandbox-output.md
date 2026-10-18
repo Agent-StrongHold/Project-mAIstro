@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +7
+  packages/maistro-core/tests: +19
 ---
 # #1197 — bounded sandbox output capture
 
@@ -27,6 +27,31 @@ bubblewrap under the conformance budgets (e.g. a uid whose live task count
 exceeds the `max_processes` rlimit, as on the WSL dev box), the suite skips
 with the probe's reason — the substrate's fail-closed evidence contract, not
 a silent pass.
+
+The eighth through tenth tests arrived with the two follow-up commits. The
+setsid probe (`test_escape_conformance.py`) proves a PID-namespace grandchild
+cannot outlive the timeout. The runner tests (`test_sandbox_runner.py`) pin
+the `ExtensionSandboxOutcome` propagation: an output-limit kill lands as a
+`RESOURCE_LIMIT_EXCEEDED` violation in the `SandboxViolationLog`, and
+repeated output-limit violations escalate through the same quarantine path
+as any other repeated violation.
+
+The setsid probe's argv shape was repaired in this round: the original
+`exec setsid --fork ...` made setsid's parent — bwrap's direct child — exit
+immediately, so the kernel tore the PID namespace down and the workload
+"completed" in ~30 ms instead of reaching the timeout (observed as a red
+test on the merge queue, `timed_out is True` failed with `exit_code=0`).
+The fixed shape keeps the direct child alive with a foreground `sleep` so
+the clock timeout is what fires; verified against the kernel on a host
+where bubblewrap runs (relaxed process budget): exit 124, `timed_out=True`,
+zero marker-bearing survivors after destroy.
+
+`test_capture.py` (nine tests) pins the bounded-capture arcs a passing
+workload cannot reach: exact-boundary retention (one-read overshoot and
+exact-fill-then-overflow), the pipe-less caller guard, transport-less and
+pid-less process handling, the bounded reap of an unkillable child, the
+bounded collection when a detached descendant holds a pipe open, and the
+refusal of negative capture bounds.
 
 Scope reconciliation: `maistro/sandbox/detect.py` still uses
 `capture_output=True`, but only around the host capability probe — a fixed,

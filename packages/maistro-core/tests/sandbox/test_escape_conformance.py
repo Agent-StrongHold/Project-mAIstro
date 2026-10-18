@@ -439,10 +439,16 @@ async def test_a_setsid_grandchild_cannot_outlive_the_timeout(tmp_path: Path) ->
     script = "/work/maistro-setsid-probe"  # literal argv, visible from the host
     await backend.write_file(instance, script, b"#!/bin/sh\nsleep 30\n")
     # `--fork` is the setsid(1) shape of fork+setsid: the grandchild holds the
-    # output pipes from its own new session while its parent exits the group.
+    # output pipes from its own new session. The outer shell must NOT exec
+    # setsid and must then stay alive: bwrap is the PID namespace's init, so
+    # the moment its direct child exits the kernel tears the namespace down
+    # and SIGKILLs the grandchild -- an `exec setsid ...` shape "completes"
+    # in tens of milliseconds and never reaches the timeout at all. The
+    # foreground `sleep` keeps the direct child (and its group, and the
+    # pipes) alive so the clock timeout is what terminates the sandbox.
     result = await backend.exec(
         instance,
-        ["sh", "-c", f"chmod +x {script} && exec setsid --fork {script}"],
+        ["sh", "-c", f"chmod +x {script} && setsid --fork {script}; sleep 30"],
         timeout_s=1,
     )
     await backend.destroy(instance)
