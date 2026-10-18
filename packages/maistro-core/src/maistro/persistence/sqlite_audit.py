@@ -16,9 +16,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("maistro.persistence.audit")
 
-if TYPE_CHECKING:
-    import aiosqlite
-
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
