@@ -145,7 +145,9 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
         # the canonical Run does not have. A nonterminal Run leaves the row
         # open at the store's in-flight default; the read overlay (or the
         # eventual terminal transition) is what gives it its real status.
-        if status in TERMINAL_RUN_STATUSES:
+        if status not in TERMINAL_RUN_STATUSES:
+            await store.record_nonterminal_status(run_id, status=status.value)
+        else:
             await store.finish_run(
                 run_id,
                 status=status.value,
