@@ -753,36 +753,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-design/src/maistro_design/consistency.py::_build_refinement",
-      "path": "packages/maistro-design/src/maistro_design/consistency.py",
-      "line": 1104,
-      "name": "_build_refinement",
-      "classname": null,
-      "rank": "C",
-      "complexity": 17,
-      "rationale": "New in #1663 (2026-10-02), in a package the radon scan does not yet cover. Not legacy: this is the consistency evaluator's branching core, authored days ago and admitted at its authored value when #1684 widened the scan. #1791 tracks taking it back under the C ceiling, at which point this row and its grant are removed together."
-    },
-    {
-      "key": "packages/maistro-design/src/maistro_design/consistency.py::_check_sibling_contradictions",
-      "path": "packages/maistro-design/src/maistro_design/consistency.py",
-      "line": 800,
-      "name": "_check_sibling_contradictions",
-      "classname": null,
-      "rank": "C",
-      "complexity": 16,
-      "rationale": "New in #1663 (2026-10-02), in a package the radon scan does not yet cover. Not legacy: this is the consistency evaluator's branching core, authored days ago and admitted at its authored value when #1684 widened the scan. #1791 tracks taking it back under the C ceiling, at which point this row and its grant are removed together."
-    },
-    {
-      "key": "packages/maistro-design/src/maistro_design/consistency.py::evaluate_project_snapshot",
-      "path": "packages/maistro-design/src/maistro_design/consistency.py",
-      "line": 1039,
-      "name": "evaluate_project_snapshot",
-      "classname": null,
-      "rank": "C",
-      "complexity": 15,
-      "rationale": "New in #1663 (2026-10-02), in a package the radon scan does not yet cover. Not legacy: this is the consistency evaluator's branching core, authored days ago and admitted at its authored value when #1684 widened the scan. #1791 tracks taking it back under the C ceiling, at which point this row and its grant are removed together."
-    },
-    {
       "key": "packages/maistro-design/src/maistro_design/scan.py::scan_blocking_patterns",
       "path": "packages/maistro-design/src/maistro_design/scan.py",
       "line": 162,
@@ -1091,16 +1061,6 @@
       "rank": "C",
       "complexity": 18,
       "rationale": "M5-B stall-intervention change (#111): the per-cycle learnings recall and the intervention-record merge moved into _recall_prior_learnings/_extend_interventions_unique (D(22) -> C(17)), then the autorun-15 policy-state round added the ObjectiveParked step-checkpoint and intervention-merge handling, re-measured at C(18) — still below the merge-base D(22); recorded at the exact measured complexity so the ledger matches the scan."
-    },
-    {
-      "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::_lint_gates",
-      "path": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py",
-      "line": 613,
-      "name": "_lint_gates",
-      "classname": null,
-      "rank": "C",
-      "complexity": 13,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::_uncollectable_tests",

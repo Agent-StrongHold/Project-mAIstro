@@ -75,3 +75,33 @@ b5c22a358a8b0a0fb064e89eb6b4eba6855b58c2:.gitleaksignore:generic-api-key:54
 # #2045: Python caller-context/delegation arguments, not a credential.
 # The fixture spelling is corrected; retain only this historical finding.
 7907644e80b7abf22e8371d5529d6d0a49d3d906:packages/maistro-core/tests/agents/test_tool_call_identity.py:generic-api-key:127
+
+# Historical M4-A8 merge commit (#1750): producer-attribution test arguments.
+# Both findings are Python names and an enum qualifier, not credential values.
+77c17b9b89d92a209e5f5081cf31112b93ac7e45:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:462
+77c17b9b89d92a209e5f5081cf31112b93ac7e45:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:476
+
+# ---- #860 historical soak fixtures on the unmerged auto-860 lane ----
+# Protected-branch scans use --all, which includes fetched unmerged branches.
+# These exact fingerprints are already documented in auto-860's ignore file.
+# The first is a deterministic fixture supplied only to the harness's own
+# throwaway stack; the current lane replaced its credential-shaped spelling.
+# The second is a task-deduplication correlation ID in immutable probe evidence,
+# not authentication material. Preserve the recorded observation unchanged.
+# Scope each exemption to its original commit, path, rule and line. New values
+# or commits remain scanned; no source path or rule is excluded wholesale.
+8185c1d076e3471e41fd948ac2bc43c6c2d110b8:scripts/soak/run_soak.py:generic-api-key:51
+88edcc7ea03baf4257a9edfb47e56a5493d6d329:docs/testing/soak/evidence/m3a-round7-prodstack-quick-probes.json:generic-api-key:13
+
+# ---- #1825: the engine-image Canvas smoke's placeholder router key ----
+# scripts/smoke-engine-canvas.sh boots the shipped engine image against a
+# throwaway PostgreSQL container it creates and destroys within one CI step.
+# ROUTER_API_KEY there is the ascending digit placeholder 0123456789abcdef
+# repeated — the same literal the inline ci.yml boot smoke carried for months
+# before the script was extracted. It authenticates nothing outside that
+# ephemeral container pair and is overwritten by every real deployment's env.
+# Recorded here rather than splitting the literal, which would obscure the
+# exact value the smoke proves is accepted (and the control assertion that a
+# request WITHOUT a key is refused). Fingerprint scoped to the introducing
+# commit, path, rule and line; later edits to the file are still scanned.
+13e8d307574e3c7e634caf181f49c3b37767e9ab:scripts/smoke-engine-canvas.sh:generic-api-key:153

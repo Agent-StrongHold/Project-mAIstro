@@ -150,6 +150,7 @@ async def test_create_returns_new_approval_when_insert_wins(
         approval.node_run_id,
         approval.binding_id,
         approval.effect_key,
+        approval.effect_scope,
         approval.model_dump_json(),
     )
 

@@ -605,7 +605,10 @@ class TestTheCloneUrlPassesTheGitTransportPolicy:
             main(self._argv_clone(export, "git://github.com/org/repo.git"))
 
         assert excinfo.value.code == 2
-        assert "unauthenticated transport" in capsys.readouterr().err
+        # The merged policy's refusal names the protocol and why: git:// is
+        # unauthenticated (the substring the verdict must carry either way).
+        err = capsys.readouterr().err
+        assert "unauthenticated" in err and "git://" in err
 
     def test_an_allowed_clone_url_resolves_then_fetches_a_digest_under_pins(
         self, export: Path, monkeypatch: pytest.MonkeyPatch

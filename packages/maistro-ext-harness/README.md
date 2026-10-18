@@ -62,6 +62,61 @@ execute.
 | `1` | at least one case failed — including a required backend being absent |
 | `2` | the harness could not run: bad arguments, no extension, rejected manifest |
 
+## Certification: say exactly what was proven (M9-H3, #975)
+
+`certify` turns a source tree plus its built artifact into one truthful
+document — package-structure validation, the public-import security checks
+(the namespace policy, embedded and test-synced to
+`extensions/namespace-policy.json`), the conformance suite, the artifact's
+SHA-256, an optional Ed25519 signature, and a decision:
+
+```bash
+uv build --wheel                                    # the artifact whose bytes get bound
+maistro-ext-harness certify \
+  --path . --artifact dist/*.whl \
+  --signing-key-file key.hex --report certification.json
+maistro-ext-harness verify-certification \
+  --report certification.json --artifact dist/*.whl --publisher-key <hex>
+```
+
+The honesty rules are structural, not prose:
+
+- `decision.claims` lists only checks and conformance cases that actually
+  executed and passed. A property whose test did not execute is
+  structurally unable to become a claim; skipped and waived properties are
+  named under `decision.not_proven` — and platform certification is
+  *always* there, under every profile, because a local run executes no
+  sandbox, no tenant policy, and no canonical
+  `Goal -> Graph -> Run -> NodeRun -> Attempt` evidence;
+- a failed check or conformance case declines certification and names
+  itself; a required check that could not run declines under every
+  profile;
+- under `--profile strict` any skip, waiver, or not-applicable check
+  declines; under `standard` an explicit recorded backend waiver is
+  allowed and listed as not proven;
+- the signature covers a canonical payload of (extension id, version,
+  package sha256, manifest sha256) — later mutation of the package bytes
+  breaks the digest, and `verify-certification` refuses (a mutated byte,
+  a swapped manifest, a re-recorded digest all fail their respective
+  checks);
+- the report records provenance: extension id/version/publisher and
+  declared capabilities, harness and contract versions, the observed SDK
+  distribution, and the executing environment;
+- signing requires the `signing` extra (`pip install
+  'maistro-ext-harness[signing]'`); without it a signing request fails
+  closed with the fix in the message — the default runtime stays
+  standard-library only.
+
+Certification is **evidence for an install lifecycle to weigh, never
+authorization by itself** — the report says so as data
+(`decision.platform_note`), and the install side still runs its own
+policy, compatibility, and signature verification.
+
+The whole flow is executed per family template — scaffold (SDK) → test →
+validate → package → sign → verify, plus the repository's built-in
+reference extension through the same installed tooling — by
+`scripts/check-extension-scaffold.py`.
+
 ## Reconciliations (recorded, not hidden)
 
 - **The normative manifest schema is the SDK package** (`maistro-ext-sdk`,
