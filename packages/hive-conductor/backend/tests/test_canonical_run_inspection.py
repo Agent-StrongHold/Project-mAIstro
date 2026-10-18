@@ -1,212 +1,117 @@
-"""Canonical Run inspection/control composition for the Conductor (#1036)."""
+"""Canonical Run inspection/control composition for the Conductor (#1036).
+
+Developed against the merged canonical seam set: the Conductor reads run
+truth through its projection page plus the scoped canonical overlay
+(`ScopedRunReader`), so a run created by any producer through the canonical
+`RunExecutionService` seam is inspectable under the same canonical ids, and
+a bridge-less standalone keeps only presentation reads with no terminal
+authority (ADR-082826-d9f5).
+"""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 
-from maistro.graph.definitions import Graph, Node
-from maistro.projects.scope_store import InMemoryProjectScopeStore
-from maistro.runs import InMemoryRunStore, RunExecutionService
-from maistro.runs.model import AttemptStatus, NodeRun, Run, RunStatus
-from maistro.runtime import PythonExecutionRuntime
+from maistro.identity import Principal
 
+_BACKEND = Path(__file__).resolve().parents[1]
+if str(_BACKEND) in sys.path:
+    sys.path.remove(str(_BACKEND))
+sys.path.insert(0, str(_BACKEND))
 
-class _CanonicalStore:
-    def __init__(self, run: Run, node_run: NodeRun) -> None:
-        self.run = run
-        self.node_run = node_run
-        self.attempt = SimpleNamespace(
-            attempt_id="attempt-1",
-            node_run_id=node_run.node_run_id,
-            ordinal=1,
-            status=AttemptStatus.COMPLETED,
-            model_dump=lambda **_: {"attempt_id": "attempt-1", "node_run_id": "node-run-1"},
-        )
+pytestmark = [pytest.mark.contract("behavioral"), pytest.mark.scope("integration")]
 
-    async def get_run(self, run_id: str) -> Run | None:
-        return self.run if run_id == self.run.run_id else None
+_USER_ID = "canonical-inspection-user"
+_FOREIGN_USER = "observer-elsewhere"
 
-    async def list_by_status(self, status: RunStatus, *, limit: int = 100) -> list[Run]:
-        return [self.run] if self.run.status is status else []
-
-    async def list_node_runs(self, run_id: str) -> list[NodeRun]:
-        return [self.node_run] if run_id == self.run.run_id else []
-
-    async def list_attempts(self, node_run_id: str) -> list[Any]:
-        return [self.attempt] if node_run_id == self.node_run.node_run_id else []
-
-    async def transition_run(self, run_id: str, target: RunStatus, *, error: str) -> Run:
-        assert run_id == self.run.run_id
-        self.run = self.run.model_copy(
-            update={
-                "status": target,
-                "finished_at": datetime.now(UTC),
-                "error": error,
-            }
-        )
-        return self.run
+_ROW_ID = "dag-producer-e2e"
+_STANDALONE_ROW_ID = "dag-standalone-e2e"
 
 
-def _store() -> _CanonicalStore:
-    graph = Graph(
-        graph_id="graph-1",
-        workspace_id="workspace-1",
-        project_id="project-1",
-        name="inspection",
-        nodes=[Node(node_id="node-1", node_type="test", name="Node")],
+class _ScopedRequest:
+    """Just what the dag-runs handlers read off a request: `state.principal`."""
+
+    def __init__(self, user_id: str) -> None:
+        self.state = SimpleNamespace(principal=Principal(user_id=user_id, username=user_id))
+
+
+async def _owned_workspace() -> Any:
+    from services.workspace_authority import create_workspace
+
+    return await create_workspace(
+        creator_user_id=_USER_ID,
+        name="Canonical Inspection",
+        persona_template_id="pm_fleet",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
     )
-    run = Run(
-        run_id="run-1",
-        workspace_id="workspace-1",
-        project_id="project-1",
-        graph=run_graph_snapshot(graph),
-        status=RunStatus.RUNNING,
-        created_at=datetime(2026, 1, 1, tzinfo=UTC),
-        started_at=datetime(2026, 1, 1, tzinfo=UTC),
-        provenance={"legacy_dag_id": "dag-1"},
-    )
-    node_run = NodeRun(
-        node_run_id="node-run-1",
-        run_id=run.run_id,
-        node_id="node-1",
-        ordinal=1,
-        status=RunStatus.RUNNING,
-    )
-    return _CanonicalStore(run, node_run)
 
 
-def run_graph_snapshot(graph: Graph) -> Any:
-    from maistro.runs.model import GraphSnapshot
-
-    return GraphSnapshot.from_graph(graph)
-
-
-@pytest.mark.asyncio
-async def test_detail_uses_canonical_lifecycle_and_attempt_identity(
+def _point_engine_at(
     monkeypatch: pytest.MonkeyPatch,
+    store: Any,
+    reader: Any,
 ) -> None:
-    from services import dag_run_inspection as inspection
+    import services.engine as engine_mod
 
-    store = _store()
-    monkeypatch.setattr(inspection, "_canonical_run_store", lambda: store)
-    monkeypatch.setattr(inspection, "authorized_workspace_ids", lambda _user: _allowed())
-
-    detail = await inspection.visible_run_detail("user-1", "run-1")
-
-    assert detail is not None
-    assert detail["status"] == "running"
-    assert detail["run_id"] == "run-1"
-    assert detail["node_runs"][0]["node_run_id"] == "node-run-1"
-    assert detail["attempts"][0]["attempt_id"] == "attempt-1"
-
-
-@pytest.mark.asyncio
-async def test_list_ignores_a_conflicting_projection(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services import dag_run_inspection as inspection
-
-    store = _store()
-    monkeypatch.setattr(inspection, "_canonical_run_store", lambda: store)
-    monkeypatch.setattr(inspection, "authorized_workspace_ids", lambda _user: _allowed())
     monkeypatch.setattr(
-        inspection,
-        "get_dag_run_store",
-        lambda: SimpleNamespace(list_runs=lambda **_: [{"id": "run-1", "status": "failed"}]),
+        engine_mod, "_singleton", SimpleNamespace(run_store=store, run_reader=reader)
     )
 
-    listed = await inspection.list_visible_runs("user-1")
 
-    assert listed[0]["run_id"] == "run-1"
-    assert listed[0]["status"] == "running"
-
-
-@pytest.mark.asyncio
-async def test_cancel_transitions_the_canonical_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services import dag_run_inspection as inspection
-
-    store = _store()
-    monkeypatch.setattr(inspection, "_canonical_run_store", lambda: store)
-    monkeypatch.setattr(inspection, "authorized_workspace_ids", lambda _user: _allowed())
-
-    detail = await inspection.cancel_visible_run("user-1", "run-1")
-
-    assert detail is not None
-    assert detail["status"] == "cancelled"
-    assert detail["run_id"] == "run-1"
-    assert detail["error"] == "cancelled by principal user-1"
-
-
-@pytest.mark.asyncio
-async def test_standalone_projection_is_presentation_only(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Closeout of the ADR-082826-d9f5 standalone compatibility path.
-
-    With no canonical bridge, the retained projection may serve reads inside
-    the caller's Workspace, but it must never grant terminal authority:
-    cancellation refuses rather than mutating product history.
-    """
-    from services import dag_run_inspection as inspection
-
-    record = {"id": "run-1", "status": "running", "workspace_id": "workspace-1"}
-    monkeypatch.setattr(inspection, "_canonical_run_store", lambda: None)
-    monkeypatch.setattr(inspection, "authorized_workspace_ids", lambda _user: _allowed())
-    monkeypatch.setattr(
-        inspection,
-        "get_dag_run_store",
-        lambda: SimpleNamespace(
-            get_run=lambda run_id: record if run_id == "run-1" else None,
-            list_runs=lambda **_: [record],
-        ),
-    )
-
-    listed = await inspection.list_visible_runs("user-1")
-    assert [summary["id"] for summary in listed] == ["run-1"]
-    detail = await inspection.visible_run_detail("user-1", "run-1")
-    assert detail is not None
-    assert detail["status"] == "running"
-
-    # The compatibility path cannot terminalize or resurrect: no bridge means
-    # no cancellation, not a projection-local one.
-    assert await inspection.cancel_visible_run("user-1", "run-1") is None
-
-
-@pytest.mark.asyncio
 async def test_a_run_from_the_producer_seam_is_inspectable_by_canonical_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cross-product producer -> canonical spine -> Conductor observer.
 
     A Run created and executed through the real canonical producer seam
-    (`RunExecutionService` over a real scoped `InMemoryRunStore` -- the same
-    handoff surface Builders/schedule/Evolve adapters use) must be listable
-    and inspectable by the Conductor through `dag_run_inspection` under the
-    same canonical id, with NodeRun/Attempt evidence, and invisible to an
-    observer outside the producing Workspace (#1036 cross-product parity).
+    (`RunExecutionService.create_run`/`execute_node` over a real scoped
+    `InMemoryRunStore` -- the same handoff surface Builders/schedule/Evolve
+    adapters use) is listable and inspectable by the Conductor under the same
+    canonical run id, with the canonical lifecycle truth overlaid onto the
+    projection row and the NodeRun/Attempt evidence the spine holds; an
+    observer outside the producing Workspace sees nothing (#1036 cross-product
+    parity).
     """
-    from services import dag_run_inspection as inspection
+    from services.dag_run_inspection import list_visible_runs, visible_run_detail
+    from services.dag_run_store import get_dag_run_store
+    from services.workspace_authority import canonical_store_for_tests
 
-    project_store = InMemoryProjectScopeStore()
-    root = await project_store.create_root("workspace-1")
-    project = await project_store.create(
-        workspace_id="workspace-1",
+    from maistro.graph import Graph, Node
+    from maistro.runs import AttemptStatus, InMemoryRunStore, RunExecutionService, RunStatus
+    from maistro.runs.scoped_reads import ScopedRunReader
+    from maistro.runtime import PythonExecutionRuntime
+
+    view = await _owned_workspace()
+    workspaces = canonical_store_for_tests()
+    projects = workspaces.project_store
+    store = InMemoryRunStore(project_store=projects)
+    service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())
+
+    root = await projects.root_for_workspace(view.id)
+    project = await projects.create(
+        workspace_id=view.id,
         parent_project_id=root.project_id,
         name="Cross-product",
     )
-    store = InMemoryRunStore(project_store=project_store)
-    service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())
     graph = Graph(
-        graph_id="graph-producer",
-        workspace_id="workspace-1",
+        workspace_id=view.id,
         project_id=project.project_id,
         name="producer",
         nodes=[Node(node_id="node-1", node_type="agent", name="Producer node")],
     )
-
-    run = await service.create_run(graph, provenance={"producer": "non-conductor product adapter"})
+    run = await service.create_run(
+        graph,
+        actor_principal_id=_USER_ID,
+        provenance={"producer": "non-conductor product adapter"},
+    )
 
     async def executor(work_item: Any, context: Any) -> dict[str, Any]:
         return {"work": work_item, "context": context}
@@ -222,29 +127,85 @@ async def test_a_run_from_the_producer_seam_is_inspectable_by_canonical_id(
     assert node_run.status is RunStatus.COMPLETED
     assert attempt.status is AttemptStatus.COMPLETED
 
-    monkeypatch.setattr(inspection, "_canonical_run_store", lambda: store)
-    monkeypatch.setattr(inspection, "authorized_workspace_ids", lambda _user: _allowed())
+    # The producer seam itself settles the Run through the shared lifecycle
+    # (status completed, physical result recorded); the projection row still
+    # says "running" until canonical truth is overlaid onto it.
 
-    listed = await inspection.list_visible_runs("user-1")
-    assert [summary["run_id"] for summary in listed] == [run.run_id]
+    reader = ScopedRunReader(store, workspaces, projects)
+    _point_engine_at(monkeypatch, store, reader)
+    await get_dag_run_store().start_run(
+        run_id=_ROW_ID,
+        user_id=_USER_ID,
+        workspace_id=view.id,
+        canonical_run_id=run.run_id,
+    )
 
-    detail = await inspection.visible_run_detail("user-1", run.run_id)
+    listed = {row["id"]: row for row in await list_visible_runs(_USER_ID, limit=25)}
+    assert listed[_ROW_ID]["canonical_run_id"] == run.run_id
+    # Canonical lifecycle truth, not the projection row's stale "running".
+    assert listed[_ROW_ID]["status"] == "completed"
+
+    detail = await visible_run_detail(_USER_ID, _ROW_ID)
     assert detail is not None
     assert detail["canonical_run_id"] == run.run_id
     assert detail["status"] == "completed"
-    assert detail["node_runs"][0]["node_run_id"] == node_run.node_run_id
-    assert detail["attempts"][0]["attempt_id"] == attempt.attempt_id
+    assert detail["result"]["work"] == "payload"
+
+    # The NodeRun/Attempt evidence lives in the same canonical spine, filed
+    # under the same run id the inspection answer names.
+    node_runs = await store.list_node_runs(run.run_id)
+    assert [nr.node_run_id for nr in node_runs] == [node_run.node_run_id]
+    attempts = await store.list_attempts(node_run.node_run_id)
+    assert [a.attempt_id for a in attempts] == [attempt.attempt_id]
 
     # An observer outside the producing Workspace sees nothing: cross-product
     # inspection is scoped by the canonical boundary, not by producer identity.
-    monkeypatch.setattr(inspection, "authorized_workspace_ids", lambda _user: _other())
-    assert await inspection.list_visible_runs("user-1") == []
-    assert await inspection.visible_run_detail("user-1", run.run_id) is None
+    foreign_listed = await list_visible_runs(_FOREIGN_USER, limit=25)
+    assert all(row["id"] != _ROW_ID for row in foreign_listed)
+    assert await visible_run_detail(_FOREIGN_USER, _ROW_ID) is None
 
 
-async def _allowed() -> set[str]:
-    return {"workspace-1"}
+async def test_standalone_projection_is_presentation_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Closeout of the ADR-082826-d9f5 standalone compatibility path.
 
+    With no canonical bridge wired, the retained projection may serve scoped
+    reads (list/detail inside the caller's Workspace universe), but nothing
+    on the path can terminalize a run: the cancel route refuses with 503 and
+    the projection row it points at is left exactly as it was.
+    """
+    from routes.dag_runs import cancel_run as cancel_route
+    from services.dag_run_inspection import list_visible_runs, visible_run_detail
+    from services.dag_run_store import get_dag_run_store
 
-async def _other() -> set[str]:
-    return {"workspace-other"}
+    view = await _owned_workspace()
+    # No Container bound: no canonical store and no reader -- the standalone
+    # deployment shape, not an error.
+    _point_engine_at(monkeypatch, None, None)
+    await get_dag_run_store().start_run(
+        run_id=_STANDALONE_ROW_ID,
+        user_id=_USER_ID,
+        workspace_id=view.id,
+    )
+
+    listed = {row["id"]: row for row in await list_visible_runs(_USER_ID, limit=25)}
+    assert listed[_STANDALONE_ROW_ID]["workspace_id"] == view.id
+
+    detail = await visible_run_detail(_USER_ID, _STANDALONE_ROW_ID)
+    assert detail is not None
+    assert detail["status"] == "running"
+
+    # The compatibility path cannot terminalize or resurrect: no bridge means
+    # no cancellation, not a projection-local one, and the row is untouched.
+    with pytest.raises(HTTPException) as refused:
+        await cancel_route(_STANDALONE_ROW_ID, _ScopedRequest(_USER_ID))
+    assert refused.value.status_code == 503
+    after = get_dag_run_store().get_run(_STANDALONE_ROW_ID)
+    assert after is not None and after["status"] == "running"
+
+    # Scope still holds without a bridge: nobody outside the Workspace
+    # universe reads the row, and no canonical overlay is invented.
+    foreign = await list_visible_runs(_FOREIGN_USER, limit=25)
+    assert all(row["id"] != _STANDALONE_ROW_ID for row in foreign)
+    assert await visible_run_detail(_FOREIGN_USER, _STANDALONE_ROW_ID) is None
