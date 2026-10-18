@@ -298,11 +298,13 @@ class EngineService:
         self,
         messages: list[dict[str, Any]],
         *,
+        auth: Any = None,
         session_id: str | None = None,
         intent_hint: str = "",
     ) -> dict[str, Any]:
         return await self._agent_port.route(
             messages,
+            auth=auth,
             session_id=session_id,
             intent_hint=intent_hint,
         )

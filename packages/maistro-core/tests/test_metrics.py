@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from maistro.observability import metrics as metrics_module
-from maistro.observability.metrics import MetricsRegistry
+from maistro.observability.metrics import DEFAULT_MAX_SERIES_PER_METRIC, MetricsRegistry
 
 
 def test_counter_increment():
@@ -207,6 +207,8 @@ def test_prometheus_name_policy_rejects_invalid_and_reserved_names() -> None:
         reg.counter("__internal_total")
     with pytest.raises(ValueError, match="reserved for registry uptime"):
         reg.gauge("uptime_seconds")
+    with pytest.raises(ValueError, match="reserved for registry overflow accounting"):
+        reg.counter("metrics_series_overflow_total")
 
     counter = reg.counter("valid_total")
     with pytest.raises(ValueError, match="label name"):
@@ -379,18 +381,27 @@ def test_series_cap_is_per_metric_not_per_registry() -> None:
     assert len(second.collect()) == 2
 
 
-def test_uncapped_registry_records_every_series_and_no_overflow_metric() -> None:
-    """max_series_per_metric=None restores the pre-#818 behaviour, and a clean
-    capped registry renders no overflow counter until it is needed."""
+def test_none_uses_the_default_series_cap() -> None:
+    """The default and explicit ``None`` configuration remain bounded.
+
+    ``None`` is the public default sentinel, not an opt-out: the registry
+    backstop must apply even when a caller does not choose a custom cap.
+    """
     reg = MetricsRegistry(max_series_per_metric=None)
     counter = reg.counter("everything_total", "")
 
-    for index in range(8):
+    for index in range(DEFAULT_MAX_SERIES_PER_METRIC + 1):
         counter.inc(i=str(index))
 
-    assert len(counter.collect()) == 8
-    assert "metrics_series_overflow_total" not in reg.collect_all()
-    assert "metrics_series_overflow_total" not in reg.render_prometheus()
+    assert len(counter.collect()) == DEFAULT_MAX_SERIES_PER_METRIC
+    overflow = reg.collect_all()["metrics_series_overflow_total"]
+    assert overflow == [
+        {
+            "name": "metrics_series_overflow_total",
+            "labels": {"metric": "everything_total"},
+            "value": 1.0,
+        }
+    ]
 
 
 def test_registry_rejects_a_series_cap_below_one() -> None:

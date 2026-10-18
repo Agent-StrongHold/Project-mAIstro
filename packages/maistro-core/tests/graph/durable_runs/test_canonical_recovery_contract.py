@@ -210,8 +210,17 @@ async def test_retry_adopts_node_run_created_before_checkpoint_failure() -> None
     run_store, workspace_id, project_id = await _spine()
     graph = _graph(workspace_id, project_id)
     admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
-    store = _FailNextUpdateStore()
-    store.fail_updates = 1
+
+    class FailFrontierCheckpoint(InMemoryDurableRunStore):
+        fail_frontier = True
+
+        async def update(self, record: DurableRunRecord) -> DurableRunRecord:
+            if self.fail_frontier and record.node_runs:
+                self.fail_frontier = False
+                raise RuntimeError("injected checkpoint failure")
+            return await super().update(record)
+
+    store = FailFrontierCheckpoint()
 
     with pytest.raises(RuntimeError, match="injected checkpoint failure"):
         await traversal.run_durable_graph(
