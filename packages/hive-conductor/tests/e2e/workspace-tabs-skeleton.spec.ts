@@ -153,12 +153,19 @@ createRoot(document.getElementById("root")!).render(
       return;
     }
     if (path === "/index.css") {
-      // The shipped stylesheet, so the skeleton states under test are the
-      // styled ones (pulse + reduced-motion guard), not bare divs.
-      response.writeHead(200, { "content-type": "text/css; charset=utf-8" });
-      response.end(
-        await import("node:fs/promises").then((m) => m.readFile(`${SRC_ROOT}/frontend/src/index.css`)),
+      // The shipped cascade in main.tsx's order (tokens → bridge →
+      // index.css): without the theme files `.skeleton`'s var(--rule)
+      // background never resolves and the harness paints transparent,
+      // unstyled shapes, not the styled skeletons under test.
+      const sheets = await Promise.all(
+        [
+          `${SRC_ROOT}/frontend/src/themes/workspace-tokens.css`,
+          `${SRC_ROOT}/frontend/src/themes/workspace-bridge.css`,
+          `${SRC_ROOT}/frontend/src/index.css`,
+        ].map((file) => import("node:fs/promises").then((m) => m.readFile(file, "utf8"))),
       );
+      response.writeHead(200, { "content-type": "text/css; charset=utf-8" });
+      response.end(sheets.join("\n"));
       return;
     }
     if (path === "/" || path === "/index.html") {

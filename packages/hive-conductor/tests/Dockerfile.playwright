@@ -46,6 +46,15 @@ COPY frontend/src/context/WorkspaceContext.tsx /tests/frontend/src/context/Works
 COPY frontend/src/lib/api.ts /tests/frontend/src/lib/api.ts
 COPY frontend/src/lib/appearance.ts /tests/frontend/src/lib/appearance.ts
 COPY frontend/src/lib/debug.ts /tests/frontend/src/lib/debug.ts
+# The #1421 skeleton specs serve the shipped cascade into the harness page
+# and assert the .skeleton sizing/pulse rules (including the
+# prefers-reduced-motion guard) against the real stylesheet, so the files
+# must ship in the image. index.css only binds token names: the values live
+# in the two theme files main.tsx imports ahead of it, and without them
+# var(--rule) never resolves and the shapes paint transparent.
+COPY frontend/src/themes/workspace-tokens.css /tests/frontend/src/themes/workspace-tokens.css
+COPY frontend/src/themes/workspace-bridge.css /tests/frontend/src/themes/workspace-bridge.css
+COPY frontend/src/index.css /tests/frontend/src/index.css
 # #1420's specs import the shipped RUM modules from Node/the bundled page:
 # rum-telemetry.spec.ts asserts the redaction rules directly against
 # lib/rumSchema.ts, and rum-client-off-switches.spec.ts bundles lib/rum.ts

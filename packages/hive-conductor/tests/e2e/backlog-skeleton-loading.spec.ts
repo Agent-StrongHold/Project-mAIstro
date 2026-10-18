@@ -200,12 +200,19 @@ createRoot(document.getElementById("root")!).render(
       return;
     }
     if (path === "/index.css") {
-      // The shipped stylesheet, so the skeleton states under test are the
-      // styled ones (pulse + reduced-motion guard), not bare divs.
-      response.writeHead(200, { "content-type": "text/css; charset=utf-8" });
-      response.end(
-        await import("node:fs/promises").then((m) => m.readFile(`${SRC_ROOT}/frontend/src/index.css`)),
+      // The shipped cascade in main.tsx's order (tokens → bridge →
+      // index.css): without the theme files `.skeleton`'s var(--rule)
+      // background never resolves and the harness paints transparent,
+      // unstyled shapes, not the styled skeletons under test.
+      const sheets = await Promise.all(
+        [
+          `${SRC_ROOT}/frontend/src/themes/workspace-tokens.css`,
+          `${SRC_ROOT}/frontend/src/themes/workspace-bridge.css`,
+          `${SRC_ROOT}/frontend/src/index.css`,
+        ].map((file) => import("node:fs/promises").then((m) => m.readFile(file, "utf8"))),
       );
+      response.writeHead(200, { "content-type": "text/css; charset=utf-8" });
+      response.end(sheets.join("\n"));
       return;
     }
     if (path === "/" || path === "/index.html") {
@@ -405,10 +412,18 @@ test("a stale detail answer cannot replace the newly opened item", async () => {
 });
 
 test("a failed detail read closes the modal into the board, not a permanent skeleton", async () => {
-  scriptDetail("a-1", { status: 500, payload: {} });
+  // The failure must be held open so the skeleton state is observable before
+  // the terminal outcome: an immediate 500 races React's paint and can close
+  // the modal before the skeleton is ever on screen (observed in the CI
+  // image, 2026-10). This test mounts its own board from a freshly scripted
+  // list read, so it runs the same serially and on its own.
+  scriptList({ status: 200, payload: TWO_ITEMS });
+  scriptDetail("a-1", { status: 500, payload: {}, hold: true });
+  await page.goto(harnessUrl, { waitUntil: "domcontentloaded" });
   await page.locator(".card", { hasText: "Ship the skeleton" }).getByText("Ship the skeleton").click();
   const modal = page.locator("dialog[open]");
   await expect(modal.getByTestId("backlog-detail-skeleton")).toBeVisible();
+  releaseDetail();
   // The existing recovery state: a toast names the failure and the modal
   // closes back onto the board.
   await expect(page.locator(".toast, [role='status']", { hasText: "Couldn't load that item" }).first()).toBeVisible();

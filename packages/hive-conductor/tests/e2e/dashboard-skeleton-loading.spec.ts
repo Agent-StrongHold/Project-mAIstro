@@ -180,13 +180,21 @@ createRoot(document.getElementById("root")!).render(<Dashboard />);
       return;
     }
     if (path === "/index.css") {
-      // The shipped stylesheet: `.skeleton`'s pulse (and its
-      // prefers-reduced-motion guard) live here, so the skeleton states
-      // under test are the styled ones, not bare inline geometry.
-      response.writeHead(200, { "content-type": "text/css; charset=utf-8" });
-      response.end(
-        await import("node:fs/promises").then((m) => m.readFile(`${SRC_ROOT}/frontend/src/index.css`)),
+      // The shipped cascade in main.tsx's order (tokens → bridge →
+      // index.css): `.skeleton`'s pulse and its prefers-reduced-motion guard
+      // live in index.css, but its `background: var(--rule)` only resolves
+      // once the theme files are in the cascade — without them the harness
+      // paints transparent, unstyled shapes, not the styled skeletons under
+      // test.
+      const sheets = await Promise.all(
+        [
+          `${SRC_ROOT}/frontend/src/themes/workspace-tokens.css`,
+          `${SRC_ROOT}/frontend/src/themes/workspace-bridge.css`,
+          `${SRC_ROOT}/frontend/src/index.css`,
+        ].map((file) => import("node:fs/promises").then((m) => m.readFile(file, "utf8"))),
       );
+      response.writeHead(200, { "content-type": "text/css; charset=utf-8" });
+      response.end(sheets.join("\n"));
       return;
     }
     if (path === "/" || path === "/index.html") {

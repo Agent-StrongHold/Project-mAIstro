@@ -38,3 +38,33 @@ All shapes are `aria-hidden` and unfocusable; `prefers-reduced-motion` keeps
 the shared `.skeleton` pulse disabled (the existing guarded media block).
 Screenshots land in `test-results/skeleton-evidence/{dashboard,workspace-tabs,backlog}/`
 (gitignored) from every run.
+
+## Validation round 2026-10-18 (develop sync + CI-image repairs)
+
+Re-validated the three harness specs inside the actual
+`tests/Dockerfile.playwright` image (the `hive-conductor-e2e-ui` execution
+mode) after syncing develop (b1f17b8d, then 35a72ff54). Three evidence-driven
+repairs, no test-count change (delta stays `+0`):
+
+1. The image never copied `frontend/src/index.css`, so every spec serving it
+   failed with `ENOENT` before a page could load. The Dockerfile now ships it.
+2. Serving `index.css` alone still painted transparent, unstyled shapes: the
+   file only binds token names, and `.skeleton`'s `background: var(--rule)`
+   resolves only once the theme files are in the cascade. The harness routes
+   now serve the shipped order — `themes/workspace-tokens.css` →
+   `themes/workspace-bridge.css` → `index.css` (main.tsx's import order) — and
+   the Dockerfile copies both theme files. The loading screenshots show the
+   real styled placeholders (verified visually at desktop and narrow widths).
+3. `backlog-skeleton-loading.spec.ts`'s failed-detail-read scenario scripted
+   an immediate 500, so the modal closed before the skeleton ever painted and
+   the `toBeVisible` assertion raced it (reproduced in-image). It now holds
+   the read open, asserts the skeleton, releases into the failure, and mounts
+   its own board from a freshly scripted list read, so it also passes when run
+   alone.
+
+Evidence: 26/26 harness spec tests pass in the final image; the two
+backend-dependent specs (`template-picker-skeleton`, `app-shell-loading`) pass
+5/5 against a live hive container; screenshot pairs land at desktop and
+narrow widths (loading vs resolved differ; loading frames show the styled
+skeletons, not blank regions). `scripts/check-suite-inventory.py` and
+`scripts/check-frontend-typed-client.py` both pass on the merged tree.
