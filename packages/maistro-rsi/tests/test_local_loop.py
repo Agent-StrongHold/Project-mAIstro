@@ -17,6 +17,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 import maistro_rsi.local_loop as local_loop
+from maistro_evolve.scorecard import GateResult
 from maistro_rsi.local_loop import LocalRsiConfig, LocalRsiLoop
 from maistro_rsi.protocols import MicroVmSandbox
 
@@ -601,6 +602,20 @@ def test_fitness_pipeline_fails_closed_on_unavailable_judge(tmp_path: Path, monk
 
     monkeypatch.setattr(candidate_fitness, "_run", lambda *a, **k: (True, "exit 0"))
     monkeypatch.setattr(candidate_fitness, "measure_coverage_detailed", lambda *a, **k: (80.0, {}))
+    # #820: the static-analysis gates are now REQUIRED — a tool missing from
+    # this test environment yields a failing not_run gate that rejects the
+    # candidate BEFORE the (expensive) judge stage ever runs, which would
+    # short-circuit the #307 leg under test here. Stub them to a
+    # measured-clean state so the pipeline reaches the judge.
+    monkeypatch.setattr(
+        candidate_fitness,
+        "_lint_gates",
+        lambda cwd, src: [
+            GateResult("ruff_clean", True, "0 lint violation(s)"),
+            GateResult("mypy_clean", True, "0 type error(s)"),
+            GateResult("no_bandit_high", True, "0 HIGH-severity finding(s)"),
+        ],
+    )
 
     scorecard = candidate_fitness.evaluate_candidate(
         str(repo),

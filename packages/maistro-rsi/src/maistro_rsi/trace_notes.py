@@ -83,6 +83,13 @@ class TraceNote:
     reward: RewardVector = field(default_factory=RewardVector)
     # Per-gate pass/fail, so the note carries the whole verdict, not just a score.
     gates: dict[str, bool] = field(default_factory=dict)
+    # Per-gate recorded results (#304/#820): for each gate, whether its tool
+    # actually EXECUTED and the recorded reason — so summaries rendered from the
+    # promotion (harvest PR bodies) name only gates that ran and distinguish a
+    # measured pass from an unavailable/not-run one. None on notes written
+    # before the field existed: readers must treat that as "not recorded",
+    # never as "all passed".
+    gate_results: list[dict[str, object]] | None = None
     # Protected-test-inventory evidence (#306): base/candidate servable counts,
     # the (capped) deleted/added node-ID lists, and the override flag when a
     # governance-authorized shrink passed. Present on fitness promotions;

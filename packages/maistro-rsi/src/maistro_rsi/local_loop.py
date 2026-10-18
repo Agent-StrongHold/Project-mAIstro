@@ -2406,6 +2406,19 @@ class LocalRsiLoop:
             "gates": {g.name: g.passed for g in scorecard.gates},
             "composite": scorecard.composite,
             "mutation_score": float(mut_raw) if isinstance(mut_raw, int | float) else None,
+            # #304/#820: per-gate recorded results — whether each gate's tool
+            # actually ran, with its reason — so the promotion's durable record
+            # (and every summary rendered from it) can name only gates that ran
+            # and tell a measured pass from a not-run one.
+            "gate_results": [
+                {
+                    "name": g.name,
+                    "passed": bool(g.passed),
+                    "not_run": bool(g.detail.get("not_run", False)),
+                    "reason": g.reason,
+                }
+                for g in scorecard.gates
+            ],
         }
         # Inventory evidence rides the promotion record (#306): the gate's
         # counts and (capped) deleted/added lists, including the override flag
@@ -2455,6 +2468,10 @@ class LocalRsiLoop:
 
         source = trace if trace is not None else top.trace
         gates = source.get("gates") or {"tests_pass": top.tests_passed}
+        raw_gate_results = source.get("gate_results")
+        gate_results = (
+            [dict(g) for g in raw_gate_results] if isinstance(raw_gate_results, list) else None
+        )
         trace_note = TraceNote(
             cycle=index,
             target=target,
@@ -2469,6 +2486,7 @@ class LocalRsiLoop:
                 regression_judge=top.regression_judge_score,
             ),
             gates={str(k): bool(v) for k, v in gates.items()},
+            gate_results=gate_results,
             note=summary,
             inventory=source.get("inventory"),
         )
@@ -2860,7 +2878,9 @@ class LocalRsiLoop:
             for sha in _git(self._baseline, "rev-list", "--reverse", rng).stdout.split()
             if sha not in self._excluded_from_export
         ]
-        manifest: list[dict[str, str]] = []
+        from maistro_rsi.trace_notes import read_trace_note
+
+        manifest: list[dict[str, object]] = []
         for i, sha in enumerate(revs, 1):
             names = [
                 ln.strip()
@@ -2874,6 +2894,21 @@ class LocalRsiLoop:
             patch = _git(self._baseline, "format-patch", "-1", "--stdout", sha).stdout
             (dest / patch_name).write_text(patch, encoding="utf-8")
             src = next((n for n in names if n.endswith(".py")), names[0] if names else "")
-            manifest.append({"patch_file": patch_name, "file": src, "subject": subject})
+            entry: dict[str, object] = {
+                "patch_file": patch_name,
+                "file": src,
+                "subject": subject,
+            }
+            # The promotion's recorded gate evidence (#304/#820): the harvest
+            # renders PR bodies from THIS record, never from a success template.
+            # A promotion without a note (pre-evidence bookkeeping commit) gets
+            # no gates key — rendered downstream as "no recorded evidence",
+            # never as a pass.
+            note = read_trace_note(self._baseline, sha)
+            if note is not None:
+                entry["gates"] = {k: bool(v) for k, v in note.gates.items()}
+                if note.gate_results is not None:
+                    entry["gate_results"] = [dict(g) for g in note.gate_results]
+            manifest.append(entry)
         (dest / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return len(manifest)

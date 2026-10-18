@@ -12,6 +12,7 @@ runnable offline. `compose_scorecard()` is pure and takes already-gathered
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 import shlex
@@ -595,67 +596,171 @@ def _run(cmd: str, cwd: Path, timeout: int = 900, argv: tuple[str, ...] = ()) ->
 _LINT_TIMEOUT = 120
 
 
-def _run_lint_tool(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str] | None:
-    """Run a static tool, bounded by a timeout. Returns None if the tool is
-    missing or wedges — so the gate is treated as unavailable (not a false
-    rejection, and never an indefinite hang of LocalRsiLoop.run())."""
+@dataclass(frozen=True)
+class _LintOutcome:
+    """What happened when a static-analysis tool was invoked for one gate.
+
+    ``proc`` is None iff the tool did NOT run; ``cause`` then names why
+    ("missing" — the interpreter/executable could not be launched,
+    "timeout" — it wedged past the budget, "module_missing" — the tool
+    module is not importable, "launch_error" — any other OS-level failure).
+    #304/#820: an unavailable required tool must be reportable as an explicit
+    ``not_run`` gate that fails closed — never an omitted, success-shaped, or
+    silently-absent result.
+    """
+
+    proc: subprocess.CompletedProcess[str] | None
+    cause: str = ""
+
+
+def _run_lint_tool(argv: list[str], cwd: Path) -> _LintOutcome:
+    """Run a static tool, bounded by a timeout, and classify the outcome.
+
+    A tool that cannot run comes back as a not-run outcome *with its cause*, so
+    the gate it feeds can veto with a truthful reason — the old ``None`` return
+    made a missing bandit indistinguishable from a gate nobody declared (#820,
+    from #304's finding).
+    """
     try:
         proc = subprocess.run(
             argv, cwd=str(cwd), capture_output=True, text=True, timeout=_LINT_TIMEOUT
         )
+    except FileNotFoundError:
+        return _LintOutcome(None, "missing")
+    except subprocess.TimeoutExpired:
+        return _LintOutcome(None, "timeout")
+    except OSError as exc:
+        return _LintOutcome(None, f"launch_error: {exc}")
+    if "No module named" in proc.stderr:
+        return _LintOutcome(None, "module_missing")
+    return _LintOutcome(proc)
+
+
+def _tool_version(argv: list[str], cwd: Path) -> str | None:
+    """Best-effort ``<tool> --version`` so recorded gate evidence can name the
+    exact tool build that produced a result (#304/#820). ``argv`` is the
+    gate's full invocation — ``[python, -m, <tool>, ...flags]`` — so the probe
+    reuses its head (``argv[:2]``: interpreter + ``-m``) plus the tool name,
+    NOT the full argv (appending ``--version`` to ``ruff check …`` would query
+    nothing). None when the tool does not answer in time — provenance is
+    recorded when available, never invented."""
+    probe = [*argv[:3], "--version"] if len(argv) > 3 else [*argv, "--version"]
+    try:
+        proc = subprocess.run(probe, cwd=str(cwd), capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    if "No module named" in proc.stderr:
+    if proc.returncode != 0:
         return None
-    return proc
+    lines = (proc.stdout or proc.stderr).strip().splitlines()
+    return lines[0].strip() if lines else None
+
+
+def _ruff_judgement(proc: subprocess.CompletedProcess[str]) -> tuple[bool, str]:
+    try:
+        n = len(json.loads(proc.stdout or "[]"))
+    except json.JSONDecodeError:
+        n = 0
+    return n == 0, f"{n} lint violation(s)"
+
+
+def _mypy_judgement(proc: subprocess.CompletedProcess[str]) -> tuple[bool, str]:
+    errs = sum(1 for ln in proc.stdout.splitlines() if ": error:" in ln)
+    return errs == 0, f"{errs} type error(s)"
+
+
+def _bandit_judgement(proc: subprocess.CompletedProcess[str]) -> tuple[bool, str]:
+    try:
+        results = json.loads(proc.stdout or "{}").get("results", [])
+    except json.JSONDecodeError:
+        results = []
+    high = [r for r in results if r.get("issue_severity") == "HIGH"]
+    return len(high) == 0, f"{len(high)} HIGH-severity finding(s)"
+
+
+def _lint_gate(
+    name: str,
+    tool: str,
+    argv: list[str],
+    cwd: Path,
+    judge: Callable[[subprocess.CompletedProcess[str]], tuple[bool, str]],
+) -> GateResult:
+    """One REQUIRED static-analysis gate (#304, #820).
+
+    Tool ran   -> the gate records the measured pass/fail with provenance:
+                  exact argv, tool version when it answers, exit code, and an
+                  output digest, so a reviewer can distinguish a measured pass
+                  from anything else.
+    Tool didn't -> the gate is an explicit FAILED `not_run` veto naming the
+                  cause. A required analyzer's absence may never read as an
+                  omitted check — and since every gate in the Scorecard is a
+                  veto, it blocks promotion and every summary rendered from
+                  the promotion record states it as not run.
+    """
+    outcome = _run_lint_tool(argv, cwd)
+    if outcome.proc is None:
+        return GateResult(
+            name,
+            False,
+            f"NOT RUN: {tool} unavailable ({outcome.cause}) — required gate fails closed",
+            detail={"tool": tool, "not_run": True, "cause": outcome.cause},
+        )
+    passed, reason = judge(outcome.proc)
+    detail: dict[str, object] = {
+        "tool": tool,
+        "argv": list(argv),
+        "exit_code": outcome.proc.returncode,
+        "output_digest": hashlib.sha256(outcome.proc.stdout.encode()).hexdigest()[:12],
+    }
+    version = _tool_version(argv, cwd)
+    if version:
+        detail["version"] = version
+    return GateResult(name, passed, reason, detail=detail)
 
 
 def _lint_gates(cwd: Path, src_files: list[str]) -> list[GateResult]:
-    """ruff / mypy / bandit-HIGH on the changed source files. A missing, errored,
-    or timed-out tool yields no gate (unenforced) rather than a false rejection."""
+    """ruff / mypy / bandit-HIGH on the changed source files — all three are
+    REQUIRED gates (#304, #820): they are the gates the harvest PR bodies name.
+    A tool that is missing, not importable, or wedged yields a FAILING ``not_run``
+    gate (blocking promotion, fail closed) — never an omitted check: a gate
+    named in a scorecard must carry an executed result or an explicit not-run
+    veto. (With no changed source files there is nothing for these gates to
+    measure, so none is declared — an absent gate is never claimed as passed;
+    rendered summaries state only what was recorded.)"""
     if not src_files:
         return []
-    gates: list[GateResult] = []
-
-    ruff = _run_lint_tool(
-        [sys.executable, "-m", "ruff", "check", "--output-format", "json", *src_files], cwd
-    )
-    if ruff is not None:
-        try:
-            n = len(json.loads(ruff.stdout or "[]"))
-        except json.JSONDecodeError:
-            n = 0
-        gates.append(GateResult("ruff_clean", n == 0, f"{n} lint violation(s)"))
-
-    mypy = _run_lint_tool(
-        [
-            sys.executable,
-            "-m",
+    return [
+        _lint_gate(
+            "ruff_clean",
+            "ruff",
+            [sys.executable, "-m", "ruff", "check", "--output-format", "json", *src_files],
+            cwd,
+            _ruff_judgement,
+        ),
+        _lint_gate(
+            "mypy_clean",
             "mypy",
-            "--ignore-missing-imports",
-            "--no-error-summary",
-            "--no-color-output",
-            "--config-file",
-            os.devnull,
-            *src_files,
-        ],
-        cwd,
-    )
-    if mypy is not None:
-        errs = sum(1 for ln in mypy.stdout.splitlines() if ": error:" in ln)
-        gates.append(GateResult("mypy_clean", errs == 0, f"{errs} type error(s)"))
-
-    bandit = _run_lint_tool([sys.executable, "-m", "bandit", "-f", "json", "-q", *src_files], cwd)
-    if bandit is not None:
-        try:
-            results = json.loads(bandit.stdout or "{}").get("results", [])
-        except json.JSONDecodeError:
-            results = []
-        high = [r for r in results if r.get("issue_severity") == "HIGH"]
-        gates.append(
-            GateResult("no_bandit_high", len(high) == 0, f"{len(high)} HIGH-severity finding(s)")
-        )
-    return gates
+            [
+                sys.executable,
+                "-m",
+                "mypy",
+                "--ignore-missing-imports",
+                "--no-error-summary",
+                "--no-color-output",
+                "--config-file",
+                os.devnull,
+                *src_files,
+            ],
+            cwd,
+            _mypy_judgement,
+        ),
+        _lint_gate(
+            "no_bandit_high",
+            "bandit",
+            [sys.executable, "-m", "bandit", "-f", "json", "-q", *src_files],
+            cwd,
+            _bandit_judgement,
+        ),
+    ]
 
 
 def _mean_quality(cwd: Path, src_files: list[str]) -> tuple[float | None, str]:
