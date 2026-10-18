@@ -122,12 +122,16 @@ product identity.
 
 ### HTTP API content negotiation
 
-[ADR-076](docs/adr/ADR-076-http-api-versioning.md) is not implemented across
-the business API. Canvas has a narrow `/v2` response-format mechanism, but
-the business routes remain mounted under `/v1` and do not provide the ADR's
-general content-negotiation scheme.
-
-Tracking: implement ADR-076's API-wide version negotiation in v1.1.
+Closed by #96 (M3-B6): [ADR-076](docs/adr/ADR-076-http-api-versioning.md) is
+now implemented across the business API. Both `maistro-server` and
+`hive-conductor` run the shared `maistro.api_versioning` middleware: a request
+selects a version via `Accept: application/vnd.maistro.vN`, an `api_version`
+query parameter, or an `api_version` JSON body field; every response advertises
+`Maistro-API-Version` / `Maistro-API-Default`; an unsupported selector is a
+`406`. Business routes remain on their stable `/v1` mounts — the ADR's stable
+resource mount with negotiated behavior — and the canvas
+`application/vnd.canvas+json;version=2` media-type check stays a canvas-local
+mechanism, distinct from the general scheme.
 
 ### Recurring schedules created through the API do not survive a restart
 
@@ -184,6 +188,34 @@ effect path (#55/#56), which nothing constructs yet (see #63's audit and the
 Tracking: wire reliability signals when #55 makes the Invocation the real
 effect path; do not invent a producer for them sooner.
 
+### Memory write-authority enforcement (ADR-057) — wired at store boundaries, no reachable E2E yet
+
+ADR-057's exposure-mode control is now enforced by every production memory
+store: each authoring or curation mutation entry (`store`, `record`,
+`check_auto_promotions`, and — since the M4-B lifecycle sync — `supersede`,
+`consolidate` and `advance_stage`, gated behind an explicit ADR-057 principal
+kept distinct from the ADR-103 attribution string) calls the write-authority
+gate first, so an undeclared mode refuses to mutate at all (fail-closed), an
+agent-actor write/promotion under `system_managed` raises `MemoryWriteDenied`
+before any state changes, and the decision reads only the declared mode, the
+actor and the per-block tag — never model or persona content. The container
+declares `agent_managed` from `AgentConfig.memory.exposure_mode` (the engine's
+existing posture, now explicit; set `system_managed` to strip agent write
+authority). Residual limitations until reachable E2E proves enforcement end to
+end: the read path is not gated per-call; bookkeeping mutations that move no
+claim into or out of the active set (hit counters, outcome tallies, confidence
+reinforce/contradict/decay, anti-pattern reclassification decided by the gated
+promoter) are treated as telemetry outside the authority matrix; `hybrid` mode
+fails closed for agent writes because no durable block type carries a
+per-block exposure tag yet; and the `memory.write.denied` event (ADR-037) has
+no store-boundary emitter yet. Durable-store enforcement is proven by a
+three-backend conformance suite (in-memory, SQLite, live PostgreSQL); no
+product-level E2E exercises a denied write yet.
+
+Tracking: close this entry when a product-reachable E2E proves a denied write
+and the read-path/event residuals above are decided (per-store follow-ups of
+SPEC-062126-6a31).
+
 ### Security controls specified but not reachable
 
 Three controls have modules, tests, and specs, but no production call path.
@@ -204,12 +236,15 @@ Tracking: each needs a wiring design, not just a call site — see #346.
 The following text is intended to be copied verbatim into the release notes.
 
 > v1.0.0 ships with an in-memory task queue, so a restart loses queued and
-> active tasks. Canvas jobs require an external runner; Canvas publish/export
+> active tasks. Memory write-authority enforcement (ADR-057) is active at every
+> memory store boundary — deployments run agent-managed by default and can set
+> `system_managed` to strip agent write authority — but read-path gating,
+> hybrid per-block tags and denial events are not wired, and no product-level
+> E2E proves a denied write yet. Canvas jobs require an external runner; Canvas publish/export
 > is governed at `/v2/canvas` (png/webp/jpg/html/pptx where configured; pdf/svg
 > are explicitly unsupported), while print-on-demand and external destinations
 > are not implemented. The mounted Canvas data routes are unconfigured in the
 > default shipped service and return `503`. Design Studio can discover
 > resources and select artifact modes, but visual generation and
 > editing/preview still need wired providers. Conductor can run in degraded
-> mode when optional services are unavailable, and API-wide HTTP content
-> negotiation from ADR-076 is deferred to v1.1.
+> mode when optional services are unavailable.

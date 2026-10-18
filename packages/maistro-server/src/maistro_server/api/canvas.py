@@ -43,10 +43,12 @@ state:
 - ``app.state.canvas_asset_registry`` — optional; an ``AssetRegistry``
   (``list_by_kind``). Backs GET /v2/canvas/assets; 501 when absent.
 
-Content negotiation (ADR-076, minimal mechanism): requests may send
-``Accept: application/vnd.canvas+json;version=2`` and receive the same body
+Content negotiation (canvas-local, distinct from ADR-076's general scheme):
+requests may send ``Accept: application/vnd.canvas+json;version=2`` and receive the same body
 with that content type; plain ``application/json`` is the default. Unknown
-requested versions get 406.
+requested versions get 406. The repository-wide ADR-076 version negotiation
+(``application/vnd.maistro.vN`` / ``api_version``) is a separate mechanism in
+``maistro.api_versioning``; the two never rewrite each other's media types.
 
 A "design" in the /v2 surface is a canvas ability ``CanvasRecord``;
 soft-delete maps to the record's ``archived_at`` marker (the ability's own
@@ -72,7 +74,8 @@ from maistro_server.api.principal import AuthenticatedPrincipal
 
 router = APIRouter(prefix="/v2/canvas", tags=["canvas"])
 
-# ── Content negotiation (ADR-076) ────────────────────────────────────
+# ── Content negotiation (canvas-local; see maistro.api_versioning for the
+# ── repository-wide ADR-076 mechanism) ──────────────────────────────────
 
 CANVAS_MEDIA_TYPE = "application/vnd.canvas+json"
 _SUPPORTED_VERSION = "2"

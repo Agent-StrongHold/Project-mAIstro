@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import random
 import uuid
+from collections.abc import Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
 
 from .archive import OperatorKind, stamp_provenance
+from .attribution import (
+    CandidateOrigin,
+    EvalContext,
+    ProducerKind,
+    producer_identity,
+    stamp_origin,
+)
 from .fixer_genome import (
     FixerGenome,
     FixerStrategy,
@@ -16,6 +24,7 @@ from .fixer_genome import (
 )
 from .types import (
     DAGEdgeGenome,
+    DAGTopology,
     NodeGenome,
     PipelineGenome,
 )
@@ -54,8 +63,94 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+# The mutation-operator registry (M4-A8): the closed set of typed mutation
+# operators the ledger can credit and favor. Order is the application order
+# used by ``mutate_all``.
+MUTATION_OPERATOR_NAMES: tuple[str, ...] = (
+    "mutate_topology",
+    "mutate_node",
+    "mutate_prompt",
+    "mutate_fixer_genome",
+)
+
+_MUTATION_SHORT_NAMES: dict[str, str] = {
+    "mutate_topology": "topo",
+    "mutate_node": "node",
+    "mutate_prompt": "prompt",
+    "mutate_fixer_genome": "fixer",
+}
+
+
+def _mutation_origin(
+    producer_name: str,
+    parent: PipelineGenome,
+    origin_context: EvalContext | None,
+    *,
+    note: str = "",
+) -> CandidateOrigin:
+    """Build the CandidateOrigin a mutation operator stamps onto its child:
+    the operator's registered identity+version, the parent link, the parent's
+    stored scores as the credit baseline, and the (optional) eval context."""
+    producer = producer_identity(producer_name, ProducerKind.MUTATION_OPERATOR)
+    return CandidateOrigin(
+        producer=producer,
+        parents=(parent.id,),
+        chain=(producer.key(),),
+        baseline_scores=dict(parent.eval_scores),
+        context=origin_context or EvalContext(),
+        note=note,
+    )
+
+
+def _apply_mutation_operator(
+    name: str,
+    genome: PipelineGenome,
+    rate: float,
+    models: list[str] | None,
+    *,
+    stamp: bool,
+    origin_context: EvalContext | None = None,
+) -> PipelineGenome:
+    """Uniform dispatch over the registry for composite chains."""
+    if name == "mutate_topology":
+        return mutate_topology(genome, rate, models, origin_context=origin_context, _stamp=stamp)
+    if name == "mutate_node":
+        return mutate_node(genome, rate, models, origin_context=origin_context, _stamp=stamp)
+    if name == "mutate_prompt":
+        return mutate_prompt(genome, rate, origin_context=origin_context, _stamp=stamp)
+    if name == "mutate_fixer_genome":
+        return mutate_fixer_genome(genome, rate, origin_context=origin_context, _stamp=stamp)
+    raise ValueError(f"unknown mutation operator {name!r}; known: {list(MUTATION_OPERATOR_NAMES)}")
+
+
+def _rewire_edges(topo: DAGTopology, rate: float) -> None:
+    """Randomly drop one existing edge and/or add one random edge."""
+    if random.random() < rate and topo.edges:
+        idx = random.randint(0, len(topo.edges) - 1)
+        topo.edges.pop(idx)
+
+    if random.random() < rate and topo.nodes:
+        a = random.choice(topo.nodes)
+        b_candidates = [n for n in topo.nodes if n.id != a.id]
+        if b_candidates:
+            b = random.choice(b_candidates)
+            topo.edges.append(
+                DAGEdgeGenome(
+                    id=_new_id(),
+                    from_node=a.id,
+                    to_node=b.id,
+                    condition=random.choice([None, "success", "failure", "timeout"]),
+                )
+            )
+
+
 def mutate_topology(
-    genome: PipelineGenome, rate: float, models: list[str] | None = None
+    genome: PipelineGenome,
+    rate: float,
+    models: list[str] | None = None,
+    *,
+    origin_context: EvalContext | None = None,
+    _stamp: bool = True,
 ) -> PipelineGenome:
     pool = models or MODEL_REGISTRY
     topo = deepcopy(genome.topology)
@@ -90,24 +185,7 @@ def mutate_topology(
             )
         )
 
-    if random.random() < rate and topo.edges:
-        idx = random.randint(0, len(topo.edges) - 1)
-        topo.edges.pop(idx)
-
-    if random.random() < rate and topo.nodes:
-        a = random.choice(topo.nodes)
-        b_candidates = [n for n in topo.nodes if n.id != a.id]
-        if b_candidates:
-            b = random.choice(b_candidates)
-            topo.edges.append(
-                DAGEdgeGenome(
-                    id=_new_id(),
-                    from_node=a.id,
-                    to_node=b.id,
-                    condition=random.choice([None, "success", "failure", "timeout"]),
-                )
-            )
-
+    _rewire_edges(topo, rate)
     child = PipelineGenome(
         id=_new_id(),
         name=genome.name + "-topo-mut",
@@ -122,13 +200,23 @@ def mutate_topology(
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
-    return stamp_provenance(
+    # M4-A6 candidate record, then M4-A8 producer attribution (both stamped so
+    # the promotion gate and the credit ledger each see a complete identity).
+    stamp_provenance(
         child, parents=[genome.id], operator=OperatorKind.TOPOLOGY_MUTATION, base=genome
     )
+    if not _stamp:
+        return child
+    return stamp_origin(child, _mutation_origin("mutate_topology", genome, origin_context))
 
 
 def mutate_node(
-    genome: PipelineGenome, rate: float, models: list[str] | None = None
+    genome: PipelineGenome,
+    rate: float,
+    models: list[str] | None = None,
+    *,
+    origin_context: EvalContext | None = None,
+    _stamp: bool = True,
 ) -> PipelineGenome:
     pool = models or MODEL_REGISTRY
     topo = deepcopy(genome.topology)
@@ -159,12 +247,19 @@ def mutate_node(
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
-    return stamp_provenance(
-        child, parents=[genome.id], operator=OperatorKind.NODE_MUTATION, base=genome
-    )
+    stamp_provenance(child, parents=[genome.id], operator=OperatorKind.NODE_MUTATION, base=genome)
+    if not _stamp:
+        return child
+    return stamp_origin(child, _mutation_origin("mutate_node", genome, origin_context))
 
 
-def mutate_prompt(genome: PipelineGenome, rate: float) -> PipelineGenome:
+def mutate_prompt(
+    genome: PipelineGenome,
+    rate: float,
+    *,
+    origin_context: EvalContext | None = None,
+    _stamp: bool = True,
+) -> PipelineGenome:
     topo = deepcopy(genome.topology)
     for node in topo.nodes:
         if random.random() < rate:
@@ -189,9 +284,10 @@ def mutate_prompt(genome: PipelineGenome, rate: float) -> PipelineGenome:
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
-    return stamp_provenance(
-        child, parents=[genome.id], operator=OperatorKind.PROMPT_MUTATION, base=genome
-    )
+    stamp_provenance(child, parents=[genome.id], operator=OperatorKind.PROMPT_MUTATION, base=genome)
+    if not _stamp:
+        return child
+    return stamp_origin(child, _mutation_origin("mutate_prompt", genome, origin_context))
 
 
 # The eval_weights mutation operator is gone (#853): the evaluation objective
@@ -199,10 +295,12 @@ def mutate_prompt(genome: PipelineGenome, rate: float) -> PipelineGenome:
 # ruler. A tombstone that only raises would be dead code with no callers, so
 # the operator is removed outright — tests/test_mutate.py pins its absence,
 # and reintroducing any weight-mutating operator must clear the per-identity
-# vulture ledger before it can land. M4-A6 reconciliation: the archive's
-# provenance-stamping contract covers the surviving producers (topology, node,
-# prompt, fixer, crossover, hyper/reflect challenges); the retired weights
-# operator was dropped from that surface along with the operator itself.
+# vulture ledger before it can land. (M4-A8 merge note: it is likewise absent
+# from MUTATION_OPERATOR_NAMES and PRODUCER_VERSIONS, so no attributable
+# identity remains for a removed operator. M4-A6 reconciliation: the archive's
+# provenance-stamping contract covers the surviving producers — topology, node,
+# prompt, fixer, crossover, hyper/reflect challenges — and the retired weights
+# operator was dropped from that surface along with the operator itself.)
 
 
 def _mutate_one_fixer(fixer: FixerGenome, rate: float) -> FixerGenome:
@@ -230,7 +328,13 @@ def _mutate_one_fixer(fixer: FixerGenome, rate: float) -> FixerGenome:
     return f
 
 
-def mutate_fixer_genome(genome: PipelineGenome, rate: float) -> PipelineGenome:
+def mutate_fixer_genome(
+    genome: PipelineGenome,
+    rate: float,
+    *,
+    origin_context: EvalContext | None = None,
+    _stamp: bool = True,
+) -> PipelineGenome:
     """Apply `_mutate_one_fixer` to every node that carries a FixerGenome. Nodes
     without one (genomes predating ADR-070126-6386 v2, or non-fixer roles) are
     left untouched — this operator only mutates the RSI-fixer strategy layer."""
@@ -252,13 +356,70 @@ def mutate_fixer_genome(genome: PipelineGenome, rate: float) -> PipelineGenome:
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
-    return stamp_provenance(
-        child, parents=[genome.id], operator=OperatorKind.FIXER_MUTATION, base=genome
+    stamp_provenance(child, parents=[genome.id], operator=OperatorKind.FIXER_MUTATION, base=genome)
+    if not _stamp:
+        return child
+    return stamp_origin(child, _mutation_origin("mutate_fixer_genome", genome, origin_context))
+
+
+def mutate_selected(
+    genome: PipelineGenome,
+    rate: float,
+    models: list[str] | None = None,
+    *,
+    operators: Sequence[str],
+    origin_context: EvalContext | None = None,
+    _stamp: bool = True,
+) -> PipelineGenome:
+    """Apply exactly the selected mutation operators, in the given order, and
+    stamp the child with a composite ``mutate_selected`` origin naming the
+    applied subset — this is the entry point ledger-driven operator favoring
+    uses (the cycle selects a productive, diversity-floored subset instead of
+    always applying every operator). The M4-A6 candidate record is stamped
+    alongside it (composite ``all_mutation`` operator + the applied subset as
+    ``detail``) so the promotion gate sees a complete identity too.
+    """
+    unknown = [name for name in operators if name not in MUTATION_OPERATOR_NAMES]
+    if unknown:
+        raise ValueError(
+            f"unknown mutation operator(s) {unknown}; known: {list(MUTATION_OPERATOR_NAMES)}"
+        )
+    if not operators:
+        raise ValueError("mutate_selected requires at least one operator")
+    current = genome
+    for name in operators:
+        current = _apply_mutation_operator(
+            name, current, rate, models, stamp=False, origin_context=origin_context
+        )
+    shorts = "-".join(_MUTATION_SHORT_NAMES[name] for name in operators)
+    current.name = f"{genome.name}-sel-{shorts}-mut"
+    if not _stamp:
+        return current
+    stamp_provenance(
+        current,
+        parents=[genome.id],
+        operator=OperatorKind.ALL_MUTATION,
+        base=genome,
+        detail="selected: " + ", ".join(operators),
+    )
+    return stamp_origin(
+        current,
+        _mutation_origin(
+            "mutate_selected",
+            genome,
+            origin_context,
+            note="components: " + ", ".join(operators),
+        ),
     )
 
 
 def mutate_all(
-    genome: PipelineGenome, rate: float, models: list[str] | None = None
+    genome: PipelineGenome,
+    rate: float,
+    models: list[str] | None = None,
+    *,
+    origin_context: EvalContext | None = None,
+    _stamp: bool = True,
 ) -> PipelineGenome:
     """
     Apply all mutation operators to the genome in sequence.
@@ -279,23 +440,41 @@ def mutate_all(
         models: Optional model pool constraint — the run's routable roster. When
             given, model mutation/new nodes only draw from it (an unroutable
             model is a guaranteed-0 evaluation whose gene spreads via breeding).
+        origin_context: Optional evaluation context to freeze into the child's
+            CandidateOrigin (M4-A8). When omitted the origin records an
+            "unknown" context, which keeps its credit in a separate, weaker
+            scope until evaluated under a known one.
 
     Returns:
-        A new PipelineGenome with all mutations applied.
+        A new PipelineGenome with all mutations applied, stamped with a
+        composite ``mutate_all`` CandidateOrigin (the intermediate per-operator
+        children are transient and carry no origin into the population).
     """
-    current = mutate_topology(genome, rate, models)
-    current = mutate_node(current, rate, models)
-    current = mutate_prompt(current, rate)
-    current = mutate_fixer_genome(current, rate)
+    # Each per-operator child is transient (_stamp=False): the composite
+    # mutate_all origin stamped below is the candidate's single provenance
+    # record (M4-A8).
+    current = mutate_topology(genome, rate, models, _stamp=False)
+    current = mutate_node(current, rate, models, _stamp=False)
+    current = mutate_prompt(current, rate, _stamp=False)
+    current = mutate_fixer_genome(current, rate, _stamp=False)
     # No mutate_eval_weights: the objective is population-owned (#853).
     current.name = genome.name + "-all-mut"
     # Lineage points at the STORED parent, never at the intermediate children
     # the operator chain built and discarded (M4-A6): each mutate_* step above
     # re-parents to its immediate input, so without this the returned child's
     # parent_a_id named a genome that exists nowhere — a lineage record that
-    # could not be traversed. The composite operator still says exactly what
-    # happened (all_mutation over the operator chain).
-    current.parent_a_id = genome.id
-    return stamp_provenance(
-        current, parents=[genome.id], operator=OperatorKind.ALL_MUTATION, base=genome
+    # could not be traversed. stamp_provenance re-derives the legacy
+    # parent_a_id from the authoritative parents record; the composite operator
+    # still says exactly what happened (all_mutation over the operator chain).
+    if not _stamp:
+        return current
+    stamp_provenance(current, parents=[genome.id], operator=OperatorKind.ALL_MUTATION, base=genome)
+    return stamp_origin(
+        current,
+        _mutation_origin(
+            "mutate_all",
+            genome,
+            origin_context,
+            note="components: " + ", ".join(MUTATION_OPERATOR_NAMES),
+        ),
     )

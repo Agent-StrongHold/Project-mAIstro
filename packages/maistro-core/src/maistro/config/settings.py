@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import logging
 from typing import Any, Self
+from urllib.parse import SplitResult, urlsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -37,6 +38,36 @@ def validate_permission_preset(value: str) -> str:
         msg = f"Unknown permission preset '{value}'. Valid values: {valid}."
         raise ValueError(msg)
     return value
+
+
+def _has_http_origin_authority(parsed: SplitResult) -> bool:
+    """Require a plain HTTP authority, without userinfo or URL components."""
+    port = parsed.port  # May raise for malformed/out-of-range ports.
+    return (
+        parsed.scheme == "http"
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.netloc.endswith(":")
+        and not any((parsed.path, parsed.query, parsed.fragment))
+        and (port is None or port > 0)
+    )
+
+
+def _is_http_loopback_origin(origin: str) -> bool:
+    """Classify the local HTTP warning exception without trusting URL prefixes."""
+    if any(char in origin for char in "\\?#") or any(
+        ord(char) <= 32 or ord(char) == 127 for char in origin
+    ):
+        return False
+    try:
+        parsed = urlsplit(origin)
+        return _has_http_origin_authority(parsed) and parsed.hostname in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }
+    except ValueError:
+        return False
 
 
 def validate_cors_origins(origins: list[str]) -> list[str]:
@@ -80,7 +111,7 @@ def validate_cors_origins(origins: list[str]) -> list[str]:
         if origin.startswith("javascript:") or origin.startswith("data:"):
             msg = f"CORS origins contains unsafe origin: {origin!r}"
             raise ValueError(msg)
-        if not origin.startswith("https://") and not origin.startswith("http://localhost"):
+        if not origin.startswith("https://") and not _is_http_loopback_origin(origin):
             logger.warning("CORS origin %r is not HTTPS — use HTTPS in production", origin)
         cleaned.append(origin)
     return cleaned
@@ -177,7 +208,9 @@ class MistralSettings(BaseSettings):
     # used for chat requests -- required by MistralAdminApiVerifier
     # (quota/verifiers/mistral.py). Optional: unset means that verifier is
     # unavailable/skipped rather than an error, since not every deployment
-    # needs standalone balance verification.
+    # needs standalone balance verification. Nothing wires that verifier yet:
+    # it also requires a confirmed response-schema contract
+    # (MistralRateLimitSchema, #1205) before it may be connected.
     admin_api_key: str = ""
 
 

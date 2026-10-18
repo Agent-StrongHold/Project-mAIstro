@@ -63,6 +63,19 @@ def test_chat_payload_merges_tools_only_when_present() -> None:
     assert without_tools["stream"] is False
 
 
+@pytest.mark.parametrize("temperature", [None, 0.0, 0.7])
+def test_sampling_omission_preserves_provider_default_without_dropping_zero(
+    temperature: float | None,
+) -> None:
+    payload = _chat_payload(
+        LlmGatewayProvider(None, model="m1"), ModelChatRequest(temperature=temperature)
+    )
+    if temperature is None:
+        assert "temperature" not in payload
+    else:
+        assert payload["temperature"] == temperature
+
+
 def test_checked_body_accepts_object_body() -> None:
     """Arc 128 False: an object body passes through unchanged."""
 

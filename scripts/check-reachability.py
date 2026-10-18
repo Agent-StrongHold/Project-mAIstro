@@ -9,6 +9,7 @@ Reachability is a floor, not proof that an advertised capability is active.
 from __future__ import annotations
 
 import ast
+import functools
 import json
 import sys
 from collections.abc import Callable
@@ -58,6 +59,12 @@ _EXCLUDED_PACKAGE_PYTHON = frozenset(
         "packages/hive-conductor/run_hill_climb.py",
         "packages/maistro-evolve/examples/builders_swebench_live.py",
         "packages/maistro-canvas/frontend/server/mcp/generate_golden.py",
+        # The ext-SDK's out-of-tree example extension (#949): a copy-paste
+        # reference for external authors, executed only by consumers outside
+        # this monorepo — validation stats its files, it is never imported
+        # here (that is the acceptance criterion it demonstrates).
+        "packages/maistro-ext-sdk/examples/minimal-extension/acme_weather/__init__.py",
+        "packages/maistro-ext-sdk/examples/minimal-extension/acme_weather/plugin.py",
         # Department DAG corpus (packages/hive-conductor/dags/).
         "packages/hive-conductor/dags/__init__.py",
         "packages/hive-conductor/dags/author_examples.py",
@@ -206,6 +213,17 @@ STATIC_ROOTS = (
     # deliberately outside `maistro_rsi.cli` — see campaign_cli's docstring.
     "maistro_rsi.campaign_cli",
     "maistro_bootstrap",
+    # The extension SDK's console validator (#949): `maistro-ext-sdk validate`
+    # is the package's own entry point, the maistro_registry.cli precedent for
+    # a standalone library shipping its CLI as the in-graph root.
+    "maistro_ext_sdk.cli",
+    # The extension host harness's console runner (#974): `maistro-ext-harness
+    # run` is the package's own entry point ([project.scripts] in
+    # packages/maistro-ext-harness/pyproject.toml), the same
+    # maistro_registry.cli / maistro_ext_sdk.cli precedent — this is the
+    # invocation a third-party CI performs, so the runner is the harness's
+    # in-graph root, not unreachable library debt.
+    "maistro_ext_harness.cli",
 )
 
 # Package modules reached only through runtime strings or external launchers.
@@ -214,6 +232,11 @@ DYNAMIC_ROOTS = (
     "maistro_rsi.__main__",
     "maistro_turing.runtime",
     "maistro_canvas.canvas.routes",
+    # The harness's `python -m maistro_ext_harness` form (#974): the same CLI
+    # behind the console script, launched by module — the maistro_rsi.__main__
+    # precedent for an external launcher naming the package. __main__ imports
+    # cli.main, so this root also carries the console-script surface.
+    "maistro_ext_harness.__main__",
 )
 
 
@@ -673,6 +696,40 @@ def _reachability(
     static_roots: tuple[str, ...] = STATIC_ROOTS,
     dynamic_roots: tuple[str, ...] = DYNAMIC_ROOTS,
 ) -> tuple[dict[str, Path], set[str]]:
+    mods, seen = _reachability_walk(root, flat_apps, static_roots, dynamic_roots)
+    # Copies, never the cached objects. Every caller today treats the pair as
+    # read-only, and copying ~1,300 entries costs microseconds next to the
+    # multi-second walk — but a cache hands the same mutable dict and set to
+    # every caller, and one future mutating consumer would silently corrupt
+    # every other consumer's answer. Copy at the boundary instead of trusting
+    # each caller to know the value is shared.
+    return dict(mods), set(seen)
+
+
+@functools.cache
+def _reachability_walk(
+    root: Path,
+    flat_apps: tuple[FlatApp, ...],
+    static_roots: tuple[str, ...],
+    dynamic_roots: tuple[str, ...],
+) -> tuple[dict[str, Path], set[str]]:
+    """The one full walk, cached per argument tuple.
+
+    The walk parses every production module, so its cost scales with the
+    repository while its result is a pure function of its four immutable
+    arguments — same inputs, same graph, every time. Nothing here reads the
+    baseline or any other per-call state; `main()` reads BASELINE *after*
+    walking, and the tests that vary it monkeypatch that module attribute, not
+    the tree. Within one process the repository is not mutated between two
+    same-argument calls (the tests that need a different tree pass a different
+    `root`, which is a different cache entry), so caching cannot serve a stale
+    graph — it only stops identical recomputation. That matters now because
+    every consumer of this module paid the walk again per call: `main()` plus
+    the public helpers, the credential-authority and provenance gates, and the
+    root-suite self-checks, which each run two walks and were timing out on CI
+    runners under `--source=scripts` tracing once the tree grew past the 30s
+    per-test bound (quality.yml run 37522612054).
+    """
     mods = _collect_modules(root, flat_apps)
     tooling = {key: path for key, path in mods.items() if key.startswith(_TOOL_PREFIX)}
     edges: dict[str, set[str]] = {}

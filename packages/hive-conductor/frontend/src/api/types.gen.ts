@@ -168,11 +168,69 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Entries */
+        /**
+         * List Entries
+         * @description Bounded pages from the bound authority, with authorization before I/O.
+         *
+         *     Core decision audit is admin-only (ADR-073). Only deployments without a
+         *     core binding use the scoped legacy store; never switch corpora mid-query.
+         */
         get: operations["list_entries_v1_audit_get"];
         put?: never;
         /** Create Entry */
         post: operations["create_entry_v1_audit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/audit/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Entries
+         * @description Stream the (scope- and cap-bounded) trail as NDJSON.
+         *
+         *     Server-side this walks bounded pages through the same query seam as the
+         *     list route — at most EXPORT_MAX_ENTRIES entries, a few hundred rows of
+         *     memory at a time — so an export never materialises the corpus. Same scope
+         *     contract as the list route: canonical decisions require admin; only the
+         *     unbound legacy fallback permits a non-admin's own entries.
+         */
+        get: operations["export_entries_v1_audit_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/audit/retention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retention Policy
+         * @description What this deployment's audit read surface keeps and bounds.
+         *
+         *     Deployment-level constants, not corpus data — the same shape as
+         *     /v1/dag-runs/retention (#697's rule: a bound nobody can see is a bound
+         *     nobody can hold anyone to). The corpus itself is append-only today; the
+         *     purge lane is #325. Declared before /{entry_id} so the parameterised
+         *     route cannot swallow these paths.
+         */
+        get: operations["retention_policy_v1_audit_retention_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -186,7 +244,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Entry */
+        /**
+         * Get Entry
+         * @description One entry, under the same scope contract as list and export.
+         *
+         *     When a canonical authority is bound, ADR-073's admin gate also protects
+         *     mirrored legacy detail IDs, before any lookup. Without that binding an
+         *     operator reads any legacy row, a non-admin only rows naming themselves.
+         *     An out-of-scope legacy row answers 404 to avoid confirming its existence.
+         */
         get: operations["get_entry_v1_audit__entry_id__get"];
         put?: never;
         post?: never;
@@ -2281,15 +2347,15 @@ export interface paths {
          *     answers "what is this Run doing", and answers nothing for a person who
          *     does not yet know which Run is blocked on them.
          *
-         *     `limit` bounds *pending items* returned, not a fixed prefix of the
-         *     PAUSED Runs in the store (#1109). Machine-only pauses and pauses outside
-         *     `project_id` carry no items, so filtering a single fixed-size page after
-         *     the fact could return an empty answer forever even while real human work
-         *     sits durably PAUSED further back in the ordering. Instead this pages the
-         *     store's PAUSED listing with an advancing keyset cursor and keeps reading
-         *     until it has enough items, the store runs out of PAUSED Runs, or it has
-         *     inspected `_MAX_PENDING_SCAN_RECORDS` records — the same bounded-scan
-         *     contract `expire_hitl_pauses` uses (#1056).
+         *     `limit` bounds *pending items* returned (#1109), and human eligibility is
+         *     decided by the store's pause-kind projection *before* that limit: the
+         *     query only ever reads PAUSED Runs whose durable frontier declares a human
+         *     pause, so machine-only pauses and pauses outside `project_id` cannot
+         *     occupy a page that real human work behind them needs — there is no
+         *     prefix, eligible or otherwise, that a repeated request rereads forever.
+         *     What remains is bounded by the same contract as `expire_hitl_pauses`
+         *     (#1056): each scope walk stops at `bounded_limit` items,
+         *     `MAX_PENDING_SCAN_RECORDS` projected rows, or the end of the projection.
          */
         get: operations["list_pending_human_work_v1_hitl_pending_get"];
         put?: never;
@@ -3288,7 +3354,14 @@ export interface paths {
         put?: never;
         /**
          * Decide Review
-         * @description Approve or deny a promotion. Trains Ralph + (on approve) opens a PR.
+         * @description Rule on a promotion in the review inbox (#110).
+         *
+         *     Deterministic per verb: approve/reject are verdicts (train RLPHD, settle
+         *     the item; approve also opens a PR); revise sends the candidate back for
+         *     another attempt (slot stays open, nothing trained or exported); resume
+         *     re-queues the reverted patch for harvest WITHOUT a verdict (review stays
+         *     open). The file-level mechanics live in ``maistro_rsi.promotion_review``
+         *     so the CLI, this API and any future surface cannot drift apart.
          */
         post: operations["decide_review_v1_rsi_runs__run_id__reviews__sha__post"];
         delete?: never;
@@ -3367,6 +3440,41 @@ export interface paths {
          *     RSI run execute on this host?" (#305).
          */
         get: operations["rsi_test_profiles_v1_rsi_test_profiles_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/rum/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Events */
+        get: operations["list_events_v1_rum_events_get"];
+        put?: never;
+        /** Ingest Events */
+        post: operations["ingest_events_v1_rum_events_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/rum/events/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Summary */
+        get: operations["summary_v1_rum_events_summary_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3510,7 +3618,7 @@ export interface paths {
          * @description The settings-change trail, read from the durable audit log (#389).
          *
          *     Read through the shared `audit_entries_view` — the same core-store-first
-         *     read `GET /v1/audit` serves, never a second log. Returned newest-first,
+         *     paginated read `GET /v1/audit` serves, never a second log. Returned newest-first,
          *     capped at `limit` (bounded 1..1000). Empty means no settings write has
          *     been recorded yet — an empty-valid answer, distinct from a failure (which
          *     raises) or an authorization refusal (handled by the `/v1/settings` auth
@@ -4752,6 +4860,37 @@ export interface components {
             /** Tools */
             tools?: string[];
         };
+        /**
+         * ApiRequestEventIn
+         * @description One shared-client request observation (`hive.rum.v1`).
+         */
+        ApiRequestEventIn: {
+            /** Duration Ms */
+            duration_ms: number;
+            /** Method */
+            method: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "ok" | "http_error" | "timeout" | "network_error";
+            /** Request Id */
+            request_id?: string | null;
+            /** Route */
+            route: string;
+            /**
+             * Status Class
+             * @enum {integer}
+             */
+            status_class: 0 | 2 | 3 | 4 | 5;
+            /** Ts */
+            ts: number;
+            /**
+             * Type
+             * @constant
+             */
+            type: "api_request";
+        };
         /** AppendMessageBody */
         AppendMessageBody: {
             /** Content */
@@ -4763,7 +4902,16 @@ export interface components {
              */
             role: "user" | "assistant" | "system" | "tool";
         };
-        /** AuditEntry */
+        /**
+         * AuditEntry
+         * @description One audit row exactly as ``/v1/audit`` serves it.
+         *
+         *     The legacy Hive write shape (``routes.audit.log_audit``) and the core
+         *     projection (``services.audit_bridge.core_entry_to_hive``) both produce
+         *     this shape, so the page contract can name it: the generated frontend
+         *     types then carry ``AuditPage.entries`` as real rows, not anonymous
+         *     objects (#358, typed-client ratchet #1048 AC-P3).
+         */
         AuditEntry: {
             /** Action */
             action: string;
@@ -4791,6 +4939,45 @@ export interface components {
             severity: "info" | "warning" | "critical";
             /** Target */
             target?: string | null;
+        };
+        /**
+         * AuditPage
+         * @description One bounded page plus the opaque handle for the next one.
+         */
+        AuditPage: {
+            /** Entries */
+            entries: components["schemas"]["AuditEntry"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /**
+         * AuditRetention
+         * @description The /v1/audit/retention body, typed so the OpenAPI document carries it.
+         *
+         *     The frontend reads this endpoint's shape from the generated contract
+         *     (`src/api/models.ts` aliases it); a hand-written copy in a page component
+         *     is exactly the drift the typed-client ratchet (#1048 AC-P3) exists for.
+         *     Field order is the response's field order.
+         */
+        AuditRetention: {
+            /** Corpus Purge */
+            corpus_purge: string;
+            /** Default Page Size */
+            default_page_size: number;
+            /** Durable */
+            durable?: boolean | null;
+            /** Export Max Entries */
+            export_max_entries: number;
+            /** Max Page Size */
+            max_page_size: number;
+            /** Ordering */
+            ordering: string;
+            /**
+             * Scope
+             * @default own
+             * @enum {string}
+             */
+            scope: "deployment" | "own";
         };
         /** BacklogBlock */
         BacklogBlock: {
@@ -5328,11 +5515,6 @@ export interface components {
         };
         /** CreateMissionBody */
         CreateMissionBody: {
-            /**
-             * Assigned Agents
-             * @default []
-             */
-            assigned_agents: string[];
             /**
              * Description
              * @default
@@ -5967,6 +6149,8 @@ export interface components {
              * @default 0
              */
             progress: number;
+            /** Run Id */
+            run_id?: string | null;
             /** Started At */
             started_at?: string | null;
             /**
@@ -6305,11 +6489,25 @@ export interface components {
              * Decision
              * @enum {string}
              */
-            decision: "approve" | "deny";
+            decision: "approve" | "reject" | "revise" | "resume" | "deny";
             /** Reason */
             reason?: string | null;
             /** Repo Path */
             repo_path?: string | null;
+        };
+        /**
+         * RumBatchIn
+         * @description The `hive.rum.v1` envelope the reporter sends.
+         */
+        RumBatchIn: {
+            /** Build Id */
+            build_id: string;
+            /** Events */
+            events: (components["schemas"]["WebVitalEventIn"] | components["schemas"]["ApiRequestEventIn"])[];
+            /** Schema */
+            schema: string;
+            /** Session Id */
+            session_id: string;
         };
         /** RunWorkflowBody */
         RunWorkflowBody: {
@@ -6897,6 +7095,28 @@ export interface components {
             /** Understood */
             understood: boolean;
         };
+        /**
+         * WebVitalEventIn
+         * @description One browser load-metric observation (`hive.rum.v1`).
+         */
+        WebVitalEventIn: {
+            /**
+             * Name
+             * @enum {string}
+             */
+            name: "LCP" | "load";
+            /** Route */
+            route: string;
+            /** Ts */
+            ts: number;
+            /**
+             * Type
+             * @constant
+             */
+            type: "web_vital";
+            /** Value Ms */
+            value_ms: number;
+        };
         /** WidgetConfig */
         WidgetConfig: {
             /** Config */
@@ -7348,6 +7568,8 @@ export interface operations {
                 action?: string | null;
                 severity?: string | null;
                 actor?: string | null;
+                limit?: number;
+                cursor?: string | null;
             };
             header?: never;
             path?: never;
@@ -7361,9 +7583,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    }[];
+                    "application/json": components["schemas"]["AuditPage"];
                 };
             };
             /** @description Validation Error */
@@ -7406,6 +7626,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_entries_v1_audit_export_get: {
+        parameters: {
+            query?: {
+                action?: string | null;
+                severity?: string | null;
+                actor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retention_policy_v1_audit_retention_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditRetention"];
                 };
             };
         };
@@ -13193,6 +13466,96 @@ export interface operations {
         };
     };
     rsi_test_profiles_v1_rsi_test_profiles_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    list_events_v1_rum_events_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ingest_events_v1_rum_events_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RumBatchIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    summary_v1_rum_events_summary_get: {
         parameters: {
             query?: never;
             header?: never;

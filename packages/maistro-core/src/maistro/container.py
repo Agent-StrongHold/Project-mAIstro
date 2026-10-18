@@ -28,25 +28,44 @@ from maistro.capabilities.binding import Binding
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
     binding_scope_policy,
-    new_in_memory_effect_context,
-    new_postgres_effect_context,
-    new_sqlite_effect_context,
+    configure_default_effect_context,
+    new_effect_context,
+    release_default_effect_context,
 )
+from maistro.capabilities.invocation import InvocationStore as CapabilityInvocationStore
 from maistro.classifier.engine import ClassifierEngine
 from maistro.credentials.router import CredentialRouter
 from maistro.events.consumer_cursor import (
     DEFAULT_HOLE_GRACE_SECONDS,
     LEGACY_BRIDGE_CONSUMER_ID,
 )
+from maistro.goals.authorization import ScopedGoalStore
+from maistro.goals.store import GoalStore
+from maistro.goals.wiring import wire_goal_store
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
 from maistro.graph.templates import GraphTemplateStore, NodeTemplateStore
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
 from maistro.memory.episodic.store import InMemoryEpisodicStore
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
+
+# Two working-memory managers share this package (#301): the durable
+# observation-log manager (projection, wired as `working_log` below) and the
+# indexed hot projection's manager (hydrated from the authoritative episodic
+# store, wired as `hot_working_memory` below). The alias keeps both importable
+# without renaming either side's public class.
+from maistro.memory.working.manager import (
+    WorkingMemoryManager as HotWorkingMemoryManager,
+)
+from maistro.memory.working.projection import WorkingMemoryManager
+from maistro.memory.working.wiring import (
+    wire_in_memory_working_memory,
+    wire_working_memory,
+)
 from maistro.memory.working_graph.manager import WorkspaceWorkingMemoryManager
 from maistro.memory.working_graph.wiring import (
     build_workspace_working_memory,
@@ -119,6 +138,7 @@ if TYPE_CHECKING:
         SecretResolver,
         StateStore,
     )
+    from maistro.capabilities.provider_adapters import ProviderAdapterCatalog
     from maistro.capabilities.registry import CapabilityRegistry
     from maistro.events.bus import EventBus
     from maistro.events.consumer_cursor import ConsumerCursorStore
@@ -126,6 +146,11 @@ if TYPE_CHECKING:
     from maistro.events.invocations import InvocationStore
     from maistro.events.processing import HandlerCaller
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
+    from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
+    from maistro.extensions.health import ExtensionHealthService, InMemoryExtensionHealthStore
+    from maistro.extensions.service import ExtensionInstallService
+    from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
+    from maistro.extensions.store import ExtensionStore
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
         AgentIdentity as LifecycleIdentity,
@@ -240,6 +265,35 @@ class Container:
     #: (AC-5); in-memory with a loud warning otherwise, because PostgreSQL
     #: campaign tables are not part of the schema yet.
     campaign_store: CampaignStore | None = None
+    #: The canonical Goal store (`maistro.goals`, #1572) on the deployment's
+    #: selected backend — the ontology owner of the shared Goal concept.
+    #: Raw (id-addressed) on purpose: authorization is not the store's job,
+    #: it lives in the `goal_reader` seam below, over the canonical Workspace
+    #: authorization path (#1150).
+    goal_store: GoalStore = None  # type: ignore[assignment]  # wired in create_container
+
+    @property
+    def goal_reader(self) -> ScopedGoalStore:
+        """The principal-carrying Goal seam over `goal_store` (#1572).
+
+        Derived rather than stored — it wraps two stores this Container
+        already wires, so a second stored object would be a second thing to
+        keep in step. Workspace membership decides who may read or mutate a
+        Goal, and a foreign Goal answers like a missing one. What
+        `run_reader` is to `run_store`, this is to `goal_store`.
+        """
+
+        return ScopedGoalStore(self.goal_store, self.workspace_store)
+
+    #: Durable log-as-context for repeated autonomous work (#301, M4-H): the
+    #: append-only per-Workspace observation log and the disposable working
+    #: graphs projected over it (ADR-082226-5104 §5-6). Rides the SQLite pool
+    #: like campaigns; in-memory with a loud warning otherwise, because a log
+    #: that dies with the process is not the durable context the epic asks for.
+    #: Distinct from `working_memory` below (#776): that seam projects chat
+    #: context from the episodic/Run stores; this one owns the durable
+    #: observation log itself. Same ADR, not the same substrate.
+    working_log: WorkingMemoryManager | None = None
     run_store: RunStore = None  # type: ignore[assignment]
     #: The product read seam over `run_store` (#1152): Workspace membership
     #: decides who may read a Run tree, and foreign ids answer like missing ones.
@@ -366,6 +420,12 @@ class Container:
     # application populated. Absence of a registered Binding stays a hard
     # refusal; wiring the context grants nothing on its own.
     capability_effects: CapabilityEffectContext = None  # type: ignore[assignment]  # wired in create_container
+    # Registered provider-adapter packages (M9-E1, #961): the catalog this
+    # container composed and published as the process default. Held so close()
+    # withdraws exactly this container's catalog (identity-checked), the way
+    # capability_effects is released; adapters add destinations to the one
+    # governed egress, never a second process-wide authority.
+    provider_adapter_catalog: Any = None
     # Shared quota usage log for any node/hook that needs one (e.g.
     # RsiQuotaPaceTriggerNode via build_node_resolver). Defaults to the
     # process-wide singleton (quota/usage_log.py) so this container and any
@@ -441,6 +501,28 @@ class Container:
     strike_tracker: StrikeTracker | None = None
     strike_recovery: Any = None
     durable_event_cursor: int = 0
+    # Governed extension install lifecycle (#953, M9-B2). Process-lifetime
+    # in-memory records until the B1 signing/identity substrate (#952) lands;
+    # this is a records-and-authority store, never an execution authority.
+    # Typed as the store protocol: a host may prewire
+    # ``extension_install_service`` over any conforming store, and
+    # ``ensure_extension_install_service`` synchronizes this field from that
+    # service so every reader observes the one canonical record.
+    extension_install_store: ExtensionStore | None = None
+    extension_install_service: ExtensionInstallService | None = None
+    # Extension operational views (#978, M9-I3): health evidence, operator
+    # decisions, and the projection facade over the SAME install store —
+    # never a second lifecycle authority, only a read/projection layer.
+    # Health evidence and operator decisions are durable-admission state:
+    # create_container wires the SQLite twin whenever it owns a SQLite
+    # connection, so a quarantine/disable survives restart instead of the
+    # held extension flipping back to ready.
+    extension_health_store: InMemoryExtensionHealthStore | SqliteExtensionHealthStore | None = None
+    extension_health_service: ExtensionHealthService | None = None
+    # Private organizational extension catalog (#979). In-memory catalog per
+    # organization until a durable backend is configured.
+    catalog_store: InMemoryCatalogStore | None = None
+    catalog_service: CatalogService | None = None
 
     def __post_init__(self) -> None:
         if self.conduit is None:
@@ -508,14 +590,22 @@ class Container:
         """
         if self.closed:
             return
-        if self.capability_effects is not None:
-            from maistro.capabilities.effect_context import unbind_container_effect_context
-
-            unbind_container_effect_context(self.capability_effects)
         # Marked closed before the await, so a release that raises does not
         # leave the container looking open and invite a second attempt at a pool
         # that is already going down.
         self.closed = True
+        release_default_effect_context(self.capability_effects)
+        if self.provider_adapter_catalog is not None:
+            from maistro.capabilities.provider_adapters import release_default_adapter_catalog
+
+            release_default_adapter_catalog(self.provider_adapter_catalog)
+        if self.working_log is not None:
+            # Release the working-memory graphs the container took (#301):
+            # they are process-local caches over the durable observation log,
+            # so shutdown drops the graphs and never the log they were
+            # hydrated from — the same lossless-by-construction rule eviction
+            # follows.
+            self.working_log.release_projections()
         await self._flush_usage_log_on_shutdown()
         if self.holds_pg_pool and self.pg_pool is not None:
             from maistro.persistence import forget_pool, release_pool
@@ -533,36 +623,40 @@ class Container:
                 self.pg_pool = None
                 self.holds_pg_pool = False
         if self.holds_db_pool:
-            # Four connections, one ownership decision (#327, #1199, #101): the
-            # session, schedule and history stores' connections were opened by
-            # the same `_wire_sqlite_backend` call, so the same flag governs
-            # all of them. A close that raises must not strand the others -- the pg
-            # block above exists because a shutdown that stops at the first
-            # failure leaves the rest unreleased -- and must not leave the
-            # container looking open, though `closed` is already True, so no
-            # retry re-enters here.
-            for connection in (
-                self.db_pool,
-                self.session_conn,
-                self.schedule_conn,
-                self.history_conn,
-            ):
-                if connection is None:
-                    continue
-                try:
-                    # Drains queued operations before releasing: writes the
-                    # stores already issued complete (aiosqlite, Connection.close).
-                    await connection.close()
-                except Exception:
-                    logger.exception("container: the SQLite connection did not close cleanly")
-            # Gone either way: aiosqlite's close() spends the connection even
-            # when it raises, so a field still naming it would advertise a
-            # connection the next user would find dead.
-            self.db_pool = None
-            self.session_conn = None
-            self.schedule_conn = None
-            self.history_conn = None
-            self.holds_db_pool = False
+            await self._close_owned_sqlite_connections()
+
+    async def _close_owned_sqlite_connections(self) -> None:
+        """Close the four SQLite connections this container opened.
+
+        Four connections, one ownership decision (#327, #1199, #101): the
+        session, schedule and history stores' connections were opened by
+        the same `_wire_sqlite_backend` call, so one flag governs all of
+        them. A close that raises must not strand the others, and must not
+        leave the container looking open (``closed`` is already True, so no
+        retry re-enters).
+        """
+        for connection in (
+            self.db_pool,
+            self.session_conn,
+            self.schedule_conn,
+            self.history_conn,
+        ):
+            if connection is None:
+                continue
+            try:
+                # Drains queued operations before releasing: writes the
+                # stores already issued complete (aiosqlite, Connection.close).
+                await connection.close()
+            except Exception:
+                logger.exception("container: the SQLite connection did not close cleanly")
+        # Gone either way: aiosqlite's close() spends the connection even
+        # when it raises, so a field still naming it would advertise a
+        # connection the next user would find dead.
+        self.db_pool = None
+        self.session_conn = None
+        self.schedule_conn = None
+        self.history_conn = None
+        self.holds_db_pool = False
 
     @staticmethod
     def _chat_actor_principal(auth: Any) -> str | None:
@@ -852,7 +946,7 @@ class Container:
             # compensating write would be aborted by the same cancellation it
             # exists to clean up after — the `_close_chat_run` shield's reason,
             # one step earlier in the turn.
-            await asyncio.shield(self._cancel_incomplete_admission(run))
+            await asyncio.shield(self._cancel_incomplete_admission(run, admission_failed=True))
             self._release_chat_dispatch(run)
             raise
         except RunConcurrencyExceeded:
@@ -861,7 +955,7 @@ class Container:
             raise
         except Exception as exc:
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)
-            await self._cancel_incomplete_admission(run)
+            await self._cancel_incomplete_admission(run, admission_failed=True)
             self._release_chat_dispatch(run)
             raise ChatTurnRefused("chat turn could not be admitted as a Run") from exc
 
@@ -884,22 +978,16 @@ class Container:
             logger.warning("chat slot reclamation failed", exc_info=True)
             return 0
 
-    async def _cancel_incomplete_admission(self, run: Run | None) -> None:
-        """Compensate a chat Run whose admission never reached RUNNING (#338).
+    async def _cancel_incomplete_admission(
+        self, run: Run | None, *, admission_failed: bool = False
+    ) -> None:
+        """Compensate a failed admission without cancelling newly started work.
 
-        Admission persists CREATED, then QUEUED, then RUNNING. An exception
-        between any two of those writes used to strand the Run at the state it
-        had reached: the caller got `None`, so `_close_chat_run` had nothing to
-        settle, and no sweeper owns a QUEUED chat Run — durable state claiming
-        work is waiting to run that nothing will ever run.
-
-        CREATED and QUEUED both have a legal edge to CANCELLED, and CANCELLED
-        is the honest word: the turn was never dispatched, so nothing failed
-        (ADR-082426-f170's distinction). A Run past QUEUED reached RUNNING and
-        returned from admission, making it `_close_chat_run`'s to settle — not
-        this method's. Idempotent by the terminal guard; a concurrent settle
-        loses the race harmlessly because the compensating write is logged,
-        never re-raised — compensation must not replace the turn's answer.
+        An admission write may commit RUNNING and lose its response. The
+        admission caller knows it did not hand this Run to dispatch, and may
+        offer that state too. Other callers preserve the pre-RUNNING rule.
+        The store atomically rechecks the observed state and NodeRun absence;
+        a concurrent dispatch or lifecycle change defeats cancellation.
         """
         if run is None:
             return
@@ -907,14 +995,12 @@ class Container:
             current = await self.run_store.get_run(run.run_id)
             if current is None or current.status in TERMINAL_RUN_STATUSES:
                 return
-            if current.status not in (RunStatus.CREATED, RunStatus.QUEUED):
+            if current.status not in (RunStatus.CREATED, RunStatus.QUEUED) and not (
+                admission_failed and current.status is RunStatus.RUNNING
+            ):
                 return
-            await self.run_store.transition_run(
-                run.run_id,
-                RunStatus.CANCELLED,
-                error=ADMISSION_INCOMPLETE,
-            )
-            await self._sweep_chat_runs()
+            if await self.run_store.cancel_unstarted_chat_run(current, error=ADMISSION_INCOMPLETE):
+                await self._sweep_chat_runs()
         except Exception:
             logger.warning(
                 "stranded chat Run %s could not be compensated", run.run_id, exc_info=True
@@ -1406,12 +1492,10 @@ class Container:
     async def _compensate_if_stranded(self, run: Run, *, cutoff: datetime) -> bool:
         """Cancel `run` if it is a stranded chat admission; say whether it did.
 
-        Eligibility is `CHAT_SOURCE`, older than `cutoff`, and no NodeRun. The
-        source is re-checked here even though the listing query already filters
-        on it: the predicate narrows what the tick reads, and a store that
-        ignored it must still not get a foreign Run cancelled. The NodeRun
-        absence is read twice, the second immediately before the write, which
-        is the only window a turn starting between the two reads can close.
+        Eligibility is `CHAT_SOURCE`, older than `cutoff`, and no NodeRun.
+        The store compares the listed status/time and checks child absence in
+        one write transaction. A dispatch or newer lifecycle write wins even
+        when it lands after the last read in this process.
         """
         from maistro.runs.sources import ADMISSION_SOURCE, CHAT_SOURCE
 
@@ -1420,13 +1504,8 @@ class Container:
         if run.updated_at > cutoff:
             return False
         try:
-            if await self.run_store.list_node_runs(run.run_id):
-                return False
-            if await self.run_store.list_node_runs(run.run_id):
-                return False
-            await self.run_store.transition_run(
-                run.run_id,
-                RunStatus.CANCELLED,
+            return await self.run_store.cancel_unstarted_chat_run(
+                run,
                 # Never reached RUNNING: the same word the in-request
                 # compensation uses for an admission that did not finish.
                 error=(
@@ -1451,7 +1530,6 @@ class Container:
                 "stranded chat Run %s could not be compensated", run.run_id, exc_info=True
             )
             return False
-        return True
 
     async def execute_admitted_runs(self, *, limit: int = 100) -> int:
         """Tick the canonical consumer for admitted Runs (#251). Returns how many ran.
@@ -1980,6 +2058,75 @@ class Container:
             id_token_verifier=default_id_token_verifier(),
         )
 
+    def ensure_extension_install_service(self) -> ExtensionInstallService:
+        """Return the governed extension install lifecycle service (#953).
+
+        Lazily built over the process-lifetime in-memory store. The activation
+        loader is deliberately unwired at this layer: a deployment without an
+        activation substrate can inspect and decide, but installation fails
+        closed with a clear error instead of improvising code execution. Hosts
+        that own activation replace ``extension_install_service`` with one
+        built over their own loader. A host that prewires the service over
+        its own loader *and* store need not mirror the store onto
+        ``extension_install_store``; this method synchronizes the field from
+        the supplied service so every reader observes the one canonical
+        store the returned service owns.
+        """
+        from maistro.extensions.service import ExtensionInstallService, UnwiredExtensionLoader
+        from maistro.extensions.store import InMemoryExtensionStore
+
+        if self.extension_install_service is None:
+            if self.extension_install_store is None:
+                self.extension_install_store = InMemoryExtensionStore()
+            self.extension_install_service = ExtensionInstallService(
+                self.extension_install_store,
+                loader=UnwiredExtensionLoader(),
+            )
+        else:
+            self.extension_install_store = self.extension_install_service.store
+        return self.extension_install_service
+
+    def ensure_extension_health_service(self) -> ExtensionHealthService:
+        """Return the extension operational-view facade (#978, M9-I3).
+
+        Built over the same install-store instance the install-lifecycle
+        service uses, so health projections read the one canonical record of
+        activation. ``create_container`` wires the SQLite twin for the health
+        store whenever durable storage is configured; the in-memory fallback
+        below is only reached by deliberately ephemeral containers and tests.
+        """
+        from maistro.extensions.health import ExtensionHealthService, InMemoryExtensionHealthStore
+
+        # Ensure the lifecycle side exists first so both services share the
+        # one store instance; building them independently could fork the
+        # canonical record into two drifting copies. Take the store from the
+        # returned service, not from the container field: a host that
+        # prewired the service over its own store may never have mirrored
+        # the store onto ``extension_install_store``, and reading the field
+        # directly could project health from an empty fork.
+        install = self.ensure_extension_install_service()
+        if self.extension_health_service is None:
+            self.extension_health_service = ExtensionHealthService(
+                install.store,
+                self.extension_health_store or InMemoryExtensionHealthStore(),
+            )
+        return self.extension_health_service
+
+    def ensure_catalog_service(self) -> CatalogService:
+        """Return the private organizational extension catalog service (#979).
+
+        Lazily built over the process-lifetime in-memory store. The store is
+        cached back onto the container so callers that bypass the service see
+        the same snapshot the API serves.
+        """
+        from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
+
+        if self.catalog_service is None:
+            store = self.catalog_store or InMemoryCatalogStore()
+            self.catalog_store = store
+            self.catalog_service = CatalogService(store)
+        return self.catalog_service
+
 
 def _wire_schedule_admission(
     run_store: RunStore,
@@ -2000,66 +2147,6 @@ def _wire_schedule_admission(
     if template_store is None:
         return None
     return ScheduleRunAdmitter(run_store, template_store, schedule_store)
-
-
-# Retained from develop: `_wire_capability_effects` below selects the whole
-# effect context per backend and is what composition calls, but this selector
-# is the invocation-store half on its own and has its own conformance test
-# (tests/capabilities/test_pg_invocation_store.py). Collapsing the two is a
-# follow-up, not a merge decision.
-async def _wire_capability_effects(
-    *,
-    effect_context: CapabilityEffectContext | None,
-    db_pool: Any,
-    pg_pool: Any,
-    capability_bindings: Iterable[Binding],
-    capability_credentials: CredentialRouter | None,
-    usage_log: Any = None,
-    quota_tracker: Any = None,
-) -> CapabilityEffectContext:
-    """Select the durable canonical effect stores for this container.
-
-    The usage ledger and quota tracker (#718) are passed into whichever
-    backend is selected rather than attached to a second context built beside
-    this one: two contexts would mean two Invocation authorities, and the one
-    the container handed out would be the one recording nothing.
-    """
-    if effect_context is not None:
-        return effect_context
-    # The Container is an explicit composition root, so it names its policy on
-    # every branch. `new_effect_context` now defaults to a DENY evaluator --
-    # an omitted policy is an unavailable dependency, not an authorization --
-    # and the in-memory builder is an alias for it.
-    # PostgreSQL first: durable events already prefer a supplied pool over
-    # SQLite when both are wired (#135); capability effects must follow or a
-    # caller with `pg_pool` + `sqlite://` gets PG event durability and SQLite
-    # effect stores that share one closed connection after teardown.
-    if pg_pool is not None:
-        context = await new_postgres_effect_context(
-            pg_pool,
-            credentials=capability_credentials,
-            policy_evaluator=binding_scope_policy,
-            usage_log=usage_log,
-            quota_tracker=quota_tracker,
-        )
-    elif db_pool is not None:
-        context = await new_sqlite_effect_context(
-            db_pool,
-            credentials=capability_credentials,
-            policy_evaluator=binding_scope_policy,
-            usage_log=usage_log,
-            quota_tracker=quota_tracker,
-        )
-    else:
-        context = new_in_memory_effect_context(
-            credentials=capability_credentials,
-            policy_evaluator=binding_scope_policy,
-            usage_log=usage_log,
-            quota_tracker=quota_tracker,
-        )
-    for binding in capability_bindings:
-        await context.bindings.put(binding)
-    return context
 
 
 def _identity_lifecycle_stores() -> tuple[
@@ -2094,6 +2181,15 @@ async def _wire_campaign_backend(db_pool: Any) -> CampaignStore:
     return wire_in_memory_campaign_store()
 
 
+async def _wire_working_memory_backend(db_pool: Any) -> WorkingMemoryManager:
+    """Working memory follows the SQLite pool for the same reason campaigns
+    do (#301): the observation log is only lossless if it outlives the
+    process, and the in-memory fallback says so loudly when there is no pool."""
+    if db_pool is not None:
+        return await wire_working_memory(db_pool)
+    return wire_in_memory_working_memory()
+
+
 async def create_container(
     config: AgentConfig,
     *,
@@ -2103,6 +2199,7 @@ async def create_container(
     effect_context: CapabilityEffectContext | None = None,
     capability_bindings: Iterable[Binding] = (),
     capability_credentials: CredentialRouter | None = None,
+    provider_adapter_catalog: ProviderAdapterCatalog | None = None,
 ) -> Container:
     """Wire all dependencies and create the container.
 
@@ -2144,6 +2241,13 @@ async def create_container(
     Workspace provisioning seam for retained external-effect nodes. They never
     accept secret values in Graph input; omitted provisioning leaves the
     canonical Binding authority empty and therefore fails closed.
+
+    `provider_adapter_catalog` is the out-of-tree provider seam (M9-E1, #961):
+    a host that registered third-party adapters through
+    `register_adapter_models` on its own catalog hands that catalog here, and
+    every `AgentConfig.provider_adapters` entry wired against those ids
+    resolves. Omitted, the container composes a fresh catalog (reference
+    adapter only) — the pre-SDK behavior.
     """
     if not config.router_api_key:
         msg = "ROUTER_API_KEY is required."
@@ -2162,6 +2266,11 @@ async def create_container(
 
     warden = Warden()
     learning_extractor = ToolCorrectionExtractor()
+    # The deployment's declared memory posture (ADR-057 / SPEC-062126-6a31).
+    # Every store this container builds receives it; the stores themselves stay
+    # fail-closed when constructed without one, so a store built outside this
+    # wiring cannot mutate memory silently.
+    exposure_mode: MemoryExposureMode = config.memory.exposure_mode
     # Two different handles, deliberately not one. `db_pool` is the SQLite
     # connection the durable-event stores are written against; `pg_pool` is an
     # asyncpg pool. Collapsing them into one `Any` was how the durable-event
@@ -2196,7 +2305,7 @@ async def create_container(
             learning_store,
             outcome_store,
             session_store,
-        ) = await _wire_sqlite_backend(config.database_url)
+        ) = await _wire_sqlite_backend(config.database_url, exposure_mode=exposure_mode)
         # All four connections were opened for this container (#1161);
         # `aclose` closes them. The pg branch below sets its flag for the same
         # reason.
@@ -2214,14 +2323,17 @@ async def create_container(
             outcome_store,
             session_store,
         ) = await _wire_postgres_backend(
-            config.database_url, embeddings, supplied_pool=supplied_pg_pool
+            config.database_url,
+            embeddings,
+            supplied_pool=supplied_pg_pool,
+            exposure_mode=exposure_mode,
         )
         holds_pg_pool = supplied_pg_pool is None
     else:
         _require_ephemeral_is_deliberate(config.database_url)
         quota_tracker = InMemoryQuotaTracker()
-        learning_store = InMemoryLearningStore()
-        outcome_store = InMemoryOutcomeStore()
+        learning_store = InMemoryLearningStore(exposure_mode=exposure_mode)
+        outcome_store = InMemoryOutcomeStore(exposure_mode=exposure_mode)
         session_store = InMemorySessionStore()
     pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
 
@@ -2243,7 +2355,10 @@ async def create_container(
     prompt_manager = await _wire_prompt_manager(pg_pool=pg_pool, db_pool=db_pool)
 
     episodic_store = await _wire_episodic_store(
-        database_url=config.database_url, pg_pool=pg_pool, db_pool=db_pool
+        database_url=config.database_url,
+        pg_pool=pg_pool,
+        db_pool=db_pool,
+        exposure_mode=exposure_mode,
     )
     archive_store = build_archive_store(config.archive_url)
     # Built here rather than below, because the admission seam routes on it: a
@@ -2287,6 +2402,17 @@ async def create_container(
     # deployment gets the in-memory fallback plus a startup warning naming
     # the cost, rather than a silent durability lie (#103, AC-5).
     campaign_store: CampaignStore | None = await _wire_campaign_backend(db_pool)
+    # The canonical Goal store rides the same backend decision, upgraded where
+    # the deployment offers it: a PostgreSQL pool always selects the durable
+    # PgGoalStore, creating the migration-063 tables when the database has not
+    # run `alembic upgrade head` yet — the event stores' "wiring creates the
+    # schema it needs" contract, never a second (in-process) backend (#1572).
+    # Without a PG pool, SQLite selects its twin and no database selects memory
+    # with a warning.
+    # The authorized `goal_reader` seam is derived on
+    # the Container from this store and the Workspace store.
+    goal_store = await wire_goal_store(db_pool, pg_pool=pg_pool)
+    working_log = await _wire_working_memory_backend(db_pool)
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     # Same backend the spine just chose (#1176): claims beside the Runs they
     # reconcile, or the tiers cannot answer a restart the same way.
@@ -2298,6 +2424,19 @@ async def create_container(
         workspace_id=config.workspace_id,
         intents=intent_registry,
     )
+    # Per-Workspace working-memory projection (ADR-082226-5104 §5): a lazy,
+    # evictable, disposable hot layer hydrated from the authoritative
+    # episodic store. The manager is bound to this instance's Workspace —
+    # one instance is one Workspace — so the policy's Layer 1/Layer 4 can
+    # never address another Workspace's graph, structurally. Backs Layer 1
+    # indexed recall (BM25 + stored embeddings) and the Layer 4 entity
+    # graph; every failure degrades loudly to the durable path.
+    hot_working_memory = HotWorkingMemoryManager(
+        workspace_id=config.workspace_id,
+        episodic_store=episodic_store,
+        # The same client #188 wires for durable memory similarity.
+        embedding_client=embeddings,
+    )
     context_assembly_policy = DefaultContextAssemblyPolicy(
         episodic_store=episodic_store,
         outcome_store=outcome_store,
@@ -2305,6 +2444,7 @@ async def create_container(
         # The same client #188 wires for durable memory similarity. Absent, the
         # hybrid score is its lexical term alone rather than a second formula.
         embedding_client=embeddings,
+        working_memory=hot_working_memory,
     )
     # The per-Workspace working-memory projection (#776), over the same
     # durable stores everything else in this container reads: episodic memory
@@ -2334,6 +2474,7 @@ async def create_container(
     from maistro.security.sentinel.policy import Sentinel
 
     audit_log = await _wire_audit_log(pg_pool=pg_pool, db_pool=db_pool)
+    extension_health_store = await _wire_extension_health_store(db_pool=db_pool)
     permission_table = build_permission_table(
         preset=config.security.permission_preset,
         permissions=config.security.permissions,
@@ -2468,13 +2609,16 @@ async def create_container(
     # may inject a fully composed context when its deployment owns the stores.
     capability_effects = await _wire_capability_effects(
         effect_context=effect_context,
-        db_pool=db_pool,
         pg_pool=pg_pool,
+        db_pool=db_pool,
+        database_url=config.database_url,
         capability_bindings=capability_bindings,
         capability_credentials=capability_credentials,
-        usage_log=get_default_usage_log(),
         quota_tracker=quota_tracker,
+        usage_log=usage_log,
+        provider_registry=provider_registry,
     )
+    configure_default_effect_context(capability_effects)
 
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
@@ -2484,6 +2628,31 @@ async def create_container(
     from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
 
     await bootstrap_model_bindings(config, capability_effects)
+    # Registered provider-adapter packages (M9-E1, #961) join the same door:
+    # each configured entry registers its models into the canonical registry
+    # (so the cost-aware router selects them without a core routing edit),
+    # provisions its operator-supplied credential into the scoped pool, and
+    # loads its own model.chat Binding. The catalog publishes as the process
+    # default so every governed model egress — agents, graph nodes, server —
+    # resolves adapter models without a second wiring path; an unconfigured
+    # deployment keeps the gateway-only behavior exactly as before.
+    from maistro.capabilities.provider_adapters import (
+        ProviderAdapterCatalog,
+        bootstrap_provider_adapters,
+        configure_default_adapter_catalog,
+    )
+
+    # A host-supplied catalog carries its already-registered out-of-tree
+    # adapters; a fresh one self-registers only the reference adapter.
+    adapter_catalog = (
+        provider_adapter_catalog
+        if provider_adapter_catalog is not None
+        else ProviderAdapterCatalog()
+    )
+    await bootstrap_provider_adapters(
+        config, capability_effects, provider_registry, adapter_catalog
+    )
+    configure_default_adapter_catalog(adapter_catalog)
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
@@ -2529,6 +2698,8 @@ async def create_container(
         workspace_store=workspace_store,
         backlog_history_store=backlog_history_store,
         campaign_store=campaign_store,
+        goal_store=goal_store,
+        working_log=working_log,
         run_store=run_store,
         run_reader=ScopedRunReader(run_store, workspace_store, project_scope_store),
         task_admitter=task_admitter,
@@ -2543,6 +2714,7 @@ async def create_container(
         working_memory=working_memory,
         agents=agents,
         audit_log=audit_log,
+        extension_health_store=extension_health_store,
         db_pool=db_pool,
         session_conn=session_conn,
         schedule_conn=schedule_conn,
@@ -2573,6 +2745,7 @@ async def create_container(
         harness_adapters=wired_harness_adapters,
         spawn_harness_node=spawn_harness_node,
         capability_effects=capability_effects,
+        provider_adapter_catalog=adapter_catalog,
         golden_record_store=golden_record_store,
         skill_registry=skill_registry,
         policy_attachment_store=policy_attachment_store,
@@ -2601,14 +2774,13 @@ async def create_container(
         backend = "SQLite"
     else:
         backend = "InMemory"
-    from maistro.capabilities.effect_context import bind_container_effect_context
-
-    bind_container_effect_context(capability_effects)
     logger.info("Container wired (%s stores)", backend)
     return container
 
 
-async def _wire_episodic_store(*, database_url: str, pg_pool: Any, db_pool: Any) -> EpisodicStore:
+async def _wire_episodic_store(
+    *, database_url: str, pg_pool: Any, db_pool: Any, exposure_mode: MemoryExposureMode
+) -> EpisodicStore:
     """Select the episodic store from the configured relational backend.
 
     Kept out of `create_container` for the reason `_wire_prompt_manager` states:
@@ -2630,16 +2802,16 @@ async def _wire_episodic_store(*, database_url: str, pg_pool: Any, db_pool: Any)
     if pg_pool is not None and database_url.startswith(POSTGRES_SCHEMES):
         from maistro.persistence.pg_episodic import PgEpisodicStore
 
-        store = PgEpisodicStore(pg_pool)
+        store = PgEpisodicStore(pg_pool, exposure_mode=exposure_mode)
         await store.ensure_schema()
         return store
     if db_pool is not None:
         from maistro.persistence.sqlite_episodic import SqliteEpisodicStore
 
-        sqlite_store = SqliteEpisodicStore(db_pool)
+        sqlite_store = SqliteEpisodicStore(db_pool, exposure_mode=exposure_mode)
         await sqlite_store.ensure_schema()
         return sqlite_store
-    return InMemoryEpisodicStore()
+    return InMemoryEpisodicStore(exposure_mode=exposure_mode)
 
 
 async def _wire_prompt_manager(*, pg_pool: Any, db_pool: Any) -> PromptManager:
@@ -2658,6 +2830,29 @@ async def _wire_prompt_manager(*, pg_pool: Any, db_pool: Any) -> PromptManager:
     from maistro.prompts.store import InMemoryPromptManager
 
     return InMemoryPromptManager()
+
+
+async def _wire_extension_health_store(*, db_pool: Any) -> Any:
+    """Select the extension health store from the configured backend (#978).
+
+    Health evidence and the operator decisions recorded against it
+    (quarantine, disable) are durable-admission state: leaving the
+    in-memory fallback here would let a held extension become ready again
+    on the first health request after a restart. The SQLite twin is wired
+    whenever the container owns a SQLite connection, matching the other
+    relational stores; the in-memory store remains only for the deliberate
+    ephemeral configuration and tests.
+    """
+    if db_pool is not None:
+        from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
+
+        store = SqliteExtensionHealthStore(db_pool)
+        await store.ensure_schema()
+        return store
+
+    from maistro.extensions.health import InMemoryExtensionHealthStore
+
+    return InMemoryExtensionHealthStore()
 
 
 async def _wire_audit_log(*, pg_pool: Any, db_pool: Any) -> Any:
@@ -2918,6 +3113,7 @@ async def _wire_postgres_backend(
     embeddings: EmbeddingClient | None = None,
     *,
     supplied_pool: Any = None,
+    exposure_mode: MemoryExposureMode = MemoryExposureMode.AGENT_MANAGED,
 ) -> tuple[
     Any,
     QuotaTracker,
@@ -2980,7 +3176,7 @@ async def _wire_postgres_backend(
             await close_pool(dsn)
         raise
 
-    pg_learning_store = PgLearningStore(pool)
+    pg_learning_store = PgLearningStore(pool, exposure_mode=exposure_mode)
     # The one store with an ensure_schema: an idempotent ALTER that adds the
     # scope column its queries name. Harmless once the migration has run.
     await pg_learning_store.ensure_schema()
@@ -2996,7 +3192,7 @@ async def _wire_postgres_backend(
         if embeddings is not None
         else pg_learning_store
     )
-    outcome_store: OutcomeStore = PgOutcomeStore(pool)
+    outcome_store: OutcomeStore = PgOutcomeStore(pool, exposure_mode=exposure_mode)
     session_store: SessionStore = PgSessionStore(pool)
 
     return pool, quota_tracker, learning_store, outcome_store, session_store
@@ -3077,6 +3273,8 @@ def _require_ephemeral_is_deliberate(database_url: str) -> None:
 
 async def _wire_sqlite_backend(
     database_url: str,
+    *,
+    exposure_mode: MemoryExposureMode = MemoryExposureMode.AGENT_MANAGED,
 ) -> tuple[
     Any,
     Any,
@@ -3153,8 +3351,8 @@ async def _wire_sqlite_backend(
     history_conn = await aiosqlite.connect(path)
 
     sqlite_quota_tracker = SqliteQuotaTracker(conn)
-    sqlite_learning_store = SqliteLearningStore(conn)
-    sqlite_outcome_store = SqliteOutcomeStore(conn)
+    sqlite_learning_store = SqliteLearningStore(conn, exposure_mode=exposure_mode)
+    sqlite_outcome_store = SqliteOutcomeStore(conn, exposure_mode=exposure_mode)
     sqlite_session_store = SqliteSessionStore(session_conn)
     await sqlite_quota_tracker.ensure_schema()
     await sqlite_learning_store.ensure_schema()
@@ -3176,6 +3374,181 @@ async def _wire_sqlite_backend(
         outcome_store,
         session_store,
     )
+
+
+async def _wire_capability_effects(
+    *,
+    pg_pool: Any,
+    db_pool: Any,
+    # Optional because only the SQLite quota door reads it: a caller that has
+    # no file-backed database has no durable place to hold a reservation, and
+    # an absent URL says exactly that rather than forcing every caller to
+    # invent one.
+    database_url: str = "",
+    effect_context: CapabilityEffectContext | None = None,
+    capability_bindings: Iterable[Binding] = (),
+    capability_credentials: CredentialRouter | None = None,
+    quota_tracker: QuotaTracker | None = None,
+    usage_log: InMemoryUsageLog | None = None,
+    provider_registry: Any = None,
+) -> CapabilityEffectContext:
+    """Compose the sole governed effect context from the selected backend.
+
+    Invocation rows stay on the canonical capability Invocation store. Quota
+    admission and usage recording are collaborators of that service, not a
+    second executor. Binding, approval, and canonical Event stores follow the
+    same backend so a durable deployment cannot silently keep an in-memory door.
+
+    The default quota estimator only bounds request count. ``provider_registry``
+    remains accepted for composition compatibility, but its prices and output
+    defaults cannot establish a provider-enforced, full-request usage ceiling.
+    Numeric-budget deployments need a trusted adapter-backed estimator in an
+    explicitly composed ``effect_context``; an unknown ceiling refuses spend.
+    """
+    from maistro.capabilities.invocation import Invocation
+    from maistro.events.wiring import wire_canonical_events
+    from maistro.quota.invocation_quota import QuotaEstimate
+
+    # A deployment that owns its stores hands in a composed context; building a
+    # second one here would give the Container an Invocation authority nobody
+    # else holds. Returned before any store is opened, so the injected context
+    # is not shadowed by schema work it never asked for.
+    if effect_context is not None:
+        for binding in capability_bindings:
+            await effect_context.bindings.put(binding)
+        return effect_context
+    if quota_tracker is None:
+        quota_tracker = InMemoryQuotaTracker()
+    if usage_log is None:
+        usage_log = get_default_usage_log()
+    canonical_events = await wire_canonical_events(pg_pool=pg_pool, db_pool=db_pool)
+    invocation_store = await _wire_capability_invocations(pg_pool=pg_pool, db_pool=db_pool)
+
+    async def estimate(invocation: Invocation, _binding: Any) -> QuotaEstimate:
+        # A registry price is not a physical usage bound. The gateway accepts
+        # arbitrary model aliases, full message fields, tools, response schemas
+        # and multimodal input; neither character counts nor an assumed chat
+        # framing constant bounds their billed tokens. Missing max_tokens also
+        # leaves output unbounded, never free. Until the selected adapter can
+        # prove/enforce bounds for the entire physical request, numeric units
+        # must remain unknown (quota.invocation_quota's contract, #1196).
+        # QuotaEstimate.maximum("requests") still returns one. Unconfigured
+        # quota doors still admit; applicable token/money policies fail closed.
+        return QuotaEstimate(principal_id=invocation.actor_id or "system")
+
+    bindings, approvals, quota = await _select_effect_backend(
+        pg_pool=pg_pool, db_pool=db_pool, database_url=database_url, estimate=estimate
+    )
+
+    context = new_effect_context(
+        invocation_store=invocation_store,
+        binding_store=bindings,
+        event_store=canonical_events.store,
+        approval_store=approvals,
+        quota=quota,
+        usage_log=usage_log,
+        quota_tracker=quota_tracker,
+        credentials=capability_credentials,
+        # The container is an explicit composition root. Bare contexts remain
+        # read-only until an application supplies policy authority.
+        policy_evaluator=binding_scope_policy,
+    )
+    # Operator-declared Bindings go into the store this context actually uses,
+    # not a second one registered beside it, so model egress and PM polling
+    # resolve through the same fail-closed door (#1079/#1522).
+    for binding in capability_bindings:
+        await context.bindings.put(binding)
+    return context
+
+
+async def _select_effect_backend(
+    *,
+    pg_pool: Any,
+    db_pool: Any,
+    database_url: str,
+    estimate: Any,
+) -> tuple[Any, Any, Any]:
+    """Pick the Binding, approval and quota stores for the configured backend.
+
+    Split from `_wire_capability_effects` so the composition root reads as one
+    sequence -- events, ledger, stores, context -- rather than three nested
+    backend decisions. The quota door is optional on purpose: an in-memory
+    deployment and a `:memory:` SQLite one have nowhere durable to hold a
+    reservation, and a quota that forgets its holds on restart would admit
+    work a real ceiling had already refused.
+    """
+
+    from maistro.capabilities.approval_store import (
+        ApprovalStore,
+        InMemoryApprovalStore,
+        PgApprovalStore,
+        SqliteApprovalStore,
+    )
+    from maistro.capabilities.binding_store import (
+        InMemoryBindingStore,
+        PgBindingStore,
+        RevocableBindingStore,
+        SqliteBindingStore,
+    )
+    from maistro.capabilities.invocation import InvocationQuota
+
+    # Named by contract, not by the first branch taken: each backend assigns
+    # its own implementation, and `ensure_schema` is called on the concrete
+    # object that has it rather than through the protocol, which does not.
+    bindings: RevocableBindingStore
+    approvals: ApprovalStore
+    quota: InvocationQuota | None = None
+    if pg_pool is not None:
+        from maistro.quota.pg_invocation_quota import PgInvocationQuota
+
+        pg_approvals = PgApprovalStore(pg_pool)
+        pg_quota = PgInvocationQuota(pg_pool, estimate=estimate)
+        await pg_quota.ensure_schema()
+        await pg_approvals.ensure_schema()
+        bindings, approvals, quota = PgBindingStore(pg_pool), pg_approvals, pg_quota
+    elif db_pool is not None:
+        sqlite_bindings = SqliteBindingStore(db_pool)
+        sqlite_approvals = SqliteApprovalStore(db_pool)
+        await sqlite_bindings.ensure_schema()
+        await sqlite_approvals.ensure_schema()
+        bindings, approvals = sqlite_bindings, sqlite_approvals
+        sqlite_path = database_url.removeprefix("sqlite:///").removeprefix("sqlite://")
+        if sqlite_path and sqlite_path != ":memory:":
+            from maistro.quota.sqlite_invocation_quota import SqliteInvocationQuota
+
+            sqlite_quota = SqliteInvocationQuota(sqlite_path, estimate=estimate)
+            await sqlite_quota.ensure_schema()
+            quota = sqlite_quota
+    else:
+        bindings, approvals = InMemoryBindingStore(), InMemoryApprovalStore()
+    return bindings, approvals, quota
+
+
+async def _wire_capability_invocations(
+    *,
+    pg_pool: Any,
+    db_pool: Any,
+) -> CapabilityInvocationStore:
+    """Select the canonical effect ledger from the container's durable backend."""
+    # Each branch binds its concrete store first: ``ensure_schema`` is a
+    # wiring concern the ``InvocationStore`` protocol deliberately does not
+    # carry, so it must be called on the concrete class before returning the
+    # store as the protocol type.
+    if pg_pool is not None:
+        from maistro.capabilities.pg_invocation_store import PgInvocationStore
+
+        pg_store = PgInvocationStore(pg_pool)
+        await pg_store.ensure_schema()
+        return pg_store
+    if db_pool is not None:
+        from maistro.capabilities.invocation_store import SqliteInvocationStore
+
+        sqlite_store = SqliteInvocationStore(db_pool)
+        await sqlite_store.ensure_schema()
+        return sqlite_store
+    from maistro.capabilities.invocation import InMemoryInvocationStore
+
+    return InMemoryInvocationStore()
 
 
 async def _wire_sqlite_durable_events(

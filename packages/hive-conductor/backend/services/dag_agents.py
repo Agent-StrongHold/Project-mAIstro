@@ -102,6 +102,7 @@ def _resolve_nodes_with() -> Callable[[str, Any], Any]:
     # the fields would report as wired-but-unread. Naming them here is what
     # makes the gate able to hold this wiring in place.
     return build_node_resolver(
+        harness_adapters=container.harness_adapters,
         a2a_delegator=container.a2a_delegator,
         guest_peers=container.guest_peers,
         run_store=container.run_store,
