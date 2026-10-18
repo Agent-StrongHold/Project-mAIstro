@@ -93,10 +93,16 @@ def list_cli_commands() -> dict[str, Any]:
 
 
 def _resolve_session(session_id: str | None) -> str:
+    if session_id is None:
+        # The implicit default must exist whenever it is selected: the store
+        # can be nonempty without a `default` record (e.g. POST /sessions
+        # minted a random id first), and _append_history would KeyError on it.
+        stores.cli_sessions.put_if_absent(
+            "default", {"id": "default", "cwd": "/", "history": []}
+        )
+        return "default"
     if not stores.cli_sessions:
         stores.cli_sessions["default"] = {"id": "default", "cwd": "/", "history": []}
-    if session_id is None:
-        return "default"
     if session_id not in stores.cli_sessions:
         raise HTTPException(
             status_code=404,
