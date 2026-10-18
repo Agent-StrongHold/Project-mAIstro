@@ -32,6 +32,8 @@ from typing import Any
 
 import pytest
 
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) in sys.path:
     sys.path.remove(str(_BACKEND))
@@ -149,6 +151,10 @@ class _Scene:
             provenance=provenance,
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
+            # Canonical admission requires a named actor (store_boundary
+            # `require_admitted_actor`); the same default every canonical
+            # store test admits under.
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         # Walk the canonical lifecycle to the requested state without
         # revisiting one (RUNNING -> RUNNING is an illegal transition, by

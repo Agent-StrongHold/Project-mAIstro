@@ -19,6 +19,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from services.goal_inspection import goal_view, list_goal_views
+from services.request_principal import require_actor_id
 
 router = APIRouter(tags=["goals"])
 
@@ -30,11 +31,7 @@ def _user_id(request: Request) -> str:
     its principal fails closed rather than guessing, because every response
     below is scoped to that principal's Workspace universe (#1174).
     """
-    user = getattr(request.state, "user", None) or {}
-    uid = str(user.get("id") or user.get("username") or "")
-    if not uid:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return uid
+    return require_actor_id(request)
 
 
 @router.get("")
