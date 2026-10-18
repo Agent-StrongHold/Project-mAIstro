@@ -463,6 +463,10 @@ class FakeChatProvider:
         self.prompts.append(prompt)
         return self._reply
 
+    async def acomplete(self, prompt: str, *, max_tokens: int | None = None, pool: str = "") -> str:
+        # handle_message awaits the async seam (#397); record through it.
+        return self.complete(prompt, max_tokens=max_tokens, pool=pool)
+
 
 class FakeClassifierBridge:
     def __init__(self) -> None:

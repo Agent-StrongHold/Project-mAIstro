@@ -17,6 +17,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from maistro.identity import Principal
 from maistro_turing.self_model import FACET_TO_TRAIT
 
 from ..execution import get_execution_plane
@@ -40,8 +41,8 @@ class FacetPatch(BaseModel):
 
 
 @router.get("/self-model")
-async def get_self_model(admin: dict = Depends(require_admin)) -> dict:
-    workspace_id, _project_id = await get_execution_plane().scope_for(str(admin["id"]))
+async def get_self_model(admin: Principal = Depends(require_admin)) -> dict:
+    workspace_id, _project_id = await get_execution_plane().scope_for(admin.user_id)
     st = get_state()
     mood = st.mood_snapshot(workspace_id)
     return {
@@ -52,11 +53,11 @@ async def get_self_model(admin: dict = Depends(require_admin)) -> dict:
 
 
 @router.patch("/mood")
-async def patch_mood(patch: MoodPatch, admin: dict = Depends(require_admin)) -> dict:
+async def patch_mood(patch: MoodPatch, admin: Principal = Depends(require_admin)) -> dict:
     fields = {k: v for k, v in patch.model_dump().items() if v is not None}
     if not fields:
         raise HTTPException(status_code=400, detail="no mood fields provided")
-    workspace_id, _project_id = await get_execution_plane().scope_for(str(admin["id"]))
+    workspace_id, _project_id = await get_execution_plane().scope_for(admin.user_id)
     mood = get_state().set_mood(workspace_id, **fields)
     return {
         "workspace_id": workspace_id,
@@ -67,10 +68,10 @@ async def patch_mood(patch: MoodPatch, admin: dict = Depends(require_admin)) -> 
 
 
 @router.patch("/facet")
-async def patch_facet(patch: FacetPatch, admin: dict = Depends(require_admin)) -> dict:
+async def patch_facet(patch: FacetPatch, admin: Principal = Depends(require_admin)) -> dict:
     if patch.facet_id not in FACET_TO_TRAIT:
         raise HTTPException(status_code=400, detail=f"unknown facet: {patch.facet_id}")
-    workspace_id, _project_id = await get_execution_plane().scope_for(str(admin["id"]))
+    workspace_id, _project_id = await get_execution_plane().scope_for(admin.user_id)
     try:
         get_state().set_facet(workspace_id, patch.facet_id, patch.score)
     except (KeyError, ValueError) as exc:

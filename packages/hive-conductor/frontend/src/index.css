@@ -670,6 +670,37 @@ input, select, textarea {
   padding-bottom: 8px;
   border-bottom: 1px solid var(--rule);
 }
+
+/* M3-B7 (#97): degraded-mode banner. Rendered by DegradedBanner at the top
+   of the app shell whenever /health reports degraded_services; styled as a
+   caution strip so it reads as "operational, with losses", not a crash. */
+.degraded-banner {
+  border: 1px solid var(--danger);
+  border-left-width: 4px;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+}
+.degraded-banner-title {
+  font-weight: 700;
+  color: var(--danger);
+  margin-bottom: 4px;
+}
+.degraded-banner ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.degraded-banner code {
+  font-family: var(--mono);
+  font-weight: 700;
+}
+.degraded-banner-reason {
+  opacity: 0.85;
+}
 .workspace-tabs-wrap {
   display: flex;
   align-items: center;

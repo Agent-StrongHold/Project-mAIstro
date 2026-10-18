@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 from maistro.graph.durable_runs import DurableRunRecord
+from maistro.identity import Principal
 from maistro.runs.model import RunStatus
 
 from ..execution import TuringAdmissionUnavailable, get_execution_plane
@@ -66,7 +67,7 @@ def _reply_from_record(record: DurableRunRecord) -> str:
 async def chat(
     body: ChatBody,
     request: Request,
-    user: dict = Depends(require_user),
+    user: Principal = Depends(require_user),
 ) -> dict:
     message = body.message.strip()
     if not message:
@@ -75,7 +76,7 @@ async def chat(
     session_id = body.session_id or str(uuid4())
     plane = get_execution_plane()
     st = get_state()
-    workspace_id, _project_id = await plane.scope_for(str(user["id"]))
+    workspace_id, _project_id = await plane.scope_for(user.user_id)
     try:
         session = st.sessions.resolve(
             workspace_id=workspace_id,
@@ -88,7 +89,7 @@ async def chat(
     try:
         record = await plane.run_chat(
             session=session,
-            user_id=str(user["id"]),
+            user_id=user.user_id,
             session_id=session_id,
             message=message,
         )
@@ -110,7 +111,7 @@ async def chat(
                 message,
                 boundary="user_input",
                 context=TuringSecurityContext(
-                    principal=str(user["id"]),
+                    principal=user.user_id,
                     route="/v1/chat",
                     action="chat",
                     workspace_id=record.run.workspace_id,

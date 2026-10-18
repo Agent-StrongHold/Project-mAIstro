@@ -74,11 +74,13 @@ def prompt_capturing_provider(monkeypatch):
 
     prompts: list[str] = []
 
-    def capture(prompt: str, *args: Any, **kwargs: Any) -> str:
+    async def capture(prompt: str, *args: Any, **kwargs: Any) -> str:
         prompts.append(prompt)
         return f"reply {len(prompts)}"
 
-    monkeypatch.setattr(get_state().provider, "complete", capture, raising=True)
+    # The session's provider seam is async (#397): handle_message awaits
+    # ``acomplete``, so the capture must sit on that method.
+    monkeypatch.setattr(get_state().provider, "acomplete", capture, raising=True)
     return prompts
 
 

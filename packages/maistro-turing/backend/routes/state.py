@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
+from maistro.identity import Principal
 from maistro_turing.producers import compute_drives
 from maistro_turing.self_model import CANONICAL_FACETS
 
@@ -25,8 +26,8 @@ router = APIRouter(tags=["state"])
 
 
 @router.get("/snapshot")
-async def snapshot(user: dict = Depends(require_user)) -> dict:
-    workspace_id, _project_id = await get_execution_plane().scope_for(str(user["id"]))
+async def snapshot(user: Principal = Depends(require_user)) -> dict:
+    workspace_id, _project_id = await get_execution_plane().scope_for(user.user_id)
     st = get_state()
     mood = st.mood_snapshot(workspace_id)
     facet_scores = st.facet_scores(workspace_id)
