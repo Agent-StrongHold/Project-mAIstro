@@ -37,9 +37,13 @@ from maistro.extensions import (
     QuarantineRecord,
     QuarantineState,
     UnauthorizedQuarantineActor,
-    ViolationKind,
     ViolationSeverity,
 )
+
+# Package-level "ViolationKind" is the sandbox-boundary enum from
+# maistro.extensions.isolation (develop's M9-G2 surface); the quarantine
+# evidence-stream enum rides under its own module namespace.
+from maistro.extensions.quarantine import ViolationKind
 
 ORG = "org-1"
 SCOPE = ExtensionScope(org_id=ORG, workspace_id="")

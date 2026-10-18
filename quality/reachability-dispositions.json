@@ -357,14 +357,13 @@
       "id": "tools-approval-and-reversibility",
       "subsystem": "Tool execution",
       "disposition": "CONNECT",
-      "rationale": "ADR-050/ADR-051 reversibility classification and approval gates. SECURITY.md already states that ReversibilityRegistry is never constructed and Sentinel.resolve_tier never consults it; #57 is the work that makes tool execution a governed Invocation carrying both.",
+      "rationale": "ADR-050/ADR-051 reversibility classification and approval gates. SECURITY.md already states that ReversibilityRegistry is never constructed and Sentinel.resolve_tier never consults it; #57 is the work that makes tool execution a governed Invocation carrying both. maistro.tools.reversibility's taxonomy types joined the governed path in M9-E3 (#964): the third-party tool/Skill contract derives every extension tool's ADR-050 classification through this module, and the `maistro extensions contract` CLI reads it, so the module left the baseline.",
       "root": "governed tool Invocation (#57)",
       "modules": [
         "maistro.tools.approval",
         "maistro.tools.approval.gate",
         "maistro.tools.approval.protocols",
         "maistro.tools.approval.types",
-        "maistro.tools.reversibility",
         "maistro.tools.reversibility_registry"
       ]
     },

@@ -40,6 +40,7 @@ A security regression suite. Each model exercises one of Maistro's security inva
 | I28 | `test_auth_client.py` | Service key client: auto-injected auth headers, merge/override behavior |
 | I29 | `test_sentinel_validator.py` | Schema validation + repair: fuzzy enum, type coercion, default fill, field rename |
 | I30 | `test_memory_scopes.py` | Memory scope isolation: global→team→user→agent→session hierarchy |
+| I31 | `test_invocation_effect_idempotency.py` | Invocation effect/idempotency: COMPLETED never re-dispatches, UNKNOWN/blocked retries refused, only proven-not-applied FAILED retryable, logical effect identity stable across Attempts (#882) |
 
 ## Quick start
 
