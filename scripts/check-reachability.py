@@ -209,6 +209,9 @@ STATIC_ROOTS = (
     "maistro.cli",
     "maistro_registry.cli",
     "maistro_rsi.cli",
+    # `maistro-rsi-campaign` console script (M5-B, #114): its own entry point,
+    # deliberately outside `maistro_rsi.cli` — see campaign_cli's docstring.
+    "maistro_rsi.campaign_cli",
     "maistro_bootstrap",
     # The extension SDK's console validator (#949): `maistro-ext-sdk validate`
     # is the package's own entry point, the maistro_registry.cli precedent for
