@@ -1,6 +1,81 @@
 # Issue #860 — current CI repair
 
-## Latest checkpoint — job `183093a77cb644059d715b2b14859b2e`
+## Latest checkpoint — job `1523cb74287c4fb8b570937eab9e0765`
+
+Writer scope: issue #860 only, assigned `auto-860` worktree, starting HEAD
+`99efcfbb79ef189377ef7e4964dbead328b25a90`, supplied base
+`64ea662cb0153f92052f8208c6d330b92764fa55`. Both refs resolved; initial tree
+clean. Frozen dispatch and prior result were read; no GitHub mutations or
+re-enumeration performed. No driver `check-*.log` files were present in the
+supplied job snapshot. Earlier verification claims were not treated as proof.
+
+### Executed validation
+
+All commands used 1200-second timeouts. Logs are under
+`/home/dev/maistro/jobs/1523cb74287c4fb8b570937eab9e0765/`.
+
+| Command | Fresh result / log |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1322 reviewed identities / 1322 findings; checker-selected base `2f56be40ad24`; `worker-vulture.log`. No unbanked identities to repair. |
+| `uv run ruff check .` | PASS; `worker-ruff.log`. |
+| `uv run ruff format --check .` | PASS: 3306 files; `worker-format.log`. |
+| `uv run pytest tests/test_soak_promotion_gates.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py -x -q` | PASS: 85 tests, 3.12 seconds, no skips; `worker-pytest.log`. |
+| `uv run python scripts/check-suite-inventory.py --suite tests` | PASS: expected/collected 5354, zero duplicate evidence; `worker-inventory.log`. The prior expected-5353 failure does **not** reproduce. This is the scoped root suite, not the full CI inventory run. |
+| Inline `uv run python` importing the current runner and evaluating `evidence/m3a-round30-shakedown.json` | Rejected for `sustain_duration` and `exact_rc_artifact`; 420.08 seconds, historical head `c4f45b309fd622f2e8a4b315dad35e721d81aad3`; `worker-evidence.json`. Evaluator invocation exited 0, not a soak pass. |
+
+No source, test, inventory, ledger, grant, runtime configuration or historical
+raw-evidence changes are justified by those results. No tests were added, so no
+inventory delta is needed. Only this existing handoff is updated.
+
+### Acceptance against reachable behavior
+
+Production installs `RateLimitMiddleware` at `maistro_server/main.py:648`.
+Its constructor (`api/rate_limit.py:93`) creates process-local limiter state.
+The executed replica-selection test (`tests/test_soak_promotion_gates.py:477-526`)
+uses the real middleware and canonical credential resolver: the same identity
+gets `[200, 200, 429]` independently on each instance, for both authenticated
+and pre-auth traffic. This proves local enforcement, not cluster-wide resistance.
+The backpressure test exercises the real task router/Run admission spine but
+intentionally never starts a physical worker; it cannot prove physical fencing.
+
+| Issue acceptance | Evidence / disposition |
+| --- | --- |
+| Representative RC load profile | **UNVERIFIED**: profile `m3a-load-profile.md:167-183` explicitly lacks concurrent users/Workspaces, Graph fan-out, successful tools/models, Canvas and Goal/background workloads. |
+| At least two deployed application replicas | **UNVERIFIED** for the RC. The executed limiter test uses two ASGI instances, not two deployed RC processes. |
+| Sustained saturation, queue growth, reclaim, retries and leaks | **UNVERIFIED**: evaluated historical preflight is 420.08 seconds, below the profile's 14400-second minimum. |
+| No duplicate physical work and Goal reconciliation | **UNVERIFIED**: profile lines 215-218 distinguish admission of a cancelled schedule probe from physical Attempt fencing and Goal reconciliation. |
+| Rate/security/degraded behavior cannot be bypassed by replica selection | Independent replica allowances reproduced above. Aggregate resistance **NOT PROVEN**; deployed security/degraded behavior **UNVERIFIED**. |
+| Required telemetry with thresholds | **UNVERIFIED** at production scope: driver-loop lag is not application-loop latency; pool saturation, workers and long-window observations remain gaps (profile lines 180-183). |
+| Kill/restart during active work proves drain/fencing/recovery | **UNVERIFIED**: evaluator/ASGI tests and historical process rejoin are not physical-work recovery proof. |
+| Long-running exact RC/configuration | **NOT MET** by evaluated evidence; `run_soak.py:744-755` explicitly rejects its host-process preflight topology. |
+| Findings filed/reclassified before promotion | This local handoff records blockers; external filing/reclassification **UNVERIFIED**, with GitHub mutations prohibited. |
+| Machine/human evidence tied to promoted hashes | **UNVERIFIED** for the RC. Historical JSON identifies a different commit and expressly non-RC topology. |
+
+### Architectural reconciliation and handoff
+
+Read repository instructions/documentation authority map and accepted ADR-085,
+ADR-081426-1f7c, ADR-081626-f383, ADR-082526-b36a and ADR-073126-c4e1.
+Preserve `Goal -> Graph -> Run -> NodeRun -> Attempt`: runtime mechanics do not
+own domain transitions; the canonical store owns fencing. The later renewal/
+reclaim ADR extends the earlier fencing boundary, not a recovery-proof waiver.
+ADR-085's principal-keyed requirement does not establish shared replica state;
+no policy waiver or competing authorization path is introduced. The release ADR
+requires validation of the candidate artifacts actually promoted, not equivalent
+host processes.
+
+**BLOCKED; handoff only, not integration approval.** The previous block is not a
+merge conflict. No new soak was launched: repeating a short preflight cannot
+satisfy exact-RC acceptance, and no immutable promotion artifact/configuration
+was designated by this dispatch. Docker unavailability is not asserted.
+
+Next: designate the immutable RC/configuration, reconcile replica-selection
+budget semantics, implement representative physical-work and application-telemetry
+probes on the canonical path, and run the >=4-hour production-topology soak.
+Then revalidate every criterion and publish hash-bound evidence. Do not repeat
+ledger repair when the exact gate passes. Progress: checked 1 issue, done 0,
+skipped 0, validation-command errors 0; unresolved acceptance blockers above.
+
+## Earlier checkpoint — job `183093a77cb644059d715b2b14859b2e`
 
 Frozen scope: issue #860 only, writer in `/home/dev/Git/wt/auto-860` on
 `auto-860`; starting HEAD `9aa9f323275dd779ef88e5012115f8663afc925a`,
