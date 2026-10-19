@@ -193,11 +193,11 @@ def test_container_readiness_probes_require_the_final_server() -> None:
         "(psql exit 2 in CI run 39130160694)"
     )
     characterization = _read(REPO / "tests" / "test_restore_oracle_characterization.py")
-    assert '"-h",\n            "127.0.0.1",' in characterization, (
+    assert '"-h",\n        "127.0.0.1",' in characterization, (
         "the characterization fixture's readiness probe must target TCP "
         "(-h 127.0.0.1): the temporary init server answers socket probes"
     )
-    assert '"-c",\n            "SELECT 1;"' in characterization, (
+    assert '"-c",\n        "SELECT 1"' in characterization, (
         "the characterization fixture's readiness probe must execute a query, "
         "not merely confirm the server is accepting connections"
     )

@@ -53,6 +53,16 @@ Verified the pin is load-bearing: with the `-h 127.0.0.1` pair removed from
 the probe, `test_every_probe_is_select_1_against_the_target_database` fails
 (`ValueError: '-h' is not in list`); restored, all four pass.
 
+The same reconciliation updated the source-level pin in
+`tests/test_backup_restore_oracle.py::test_container_readiness_probes_require_the_final_server`:
+it pinned the pre-merge helper's exact byte shapes (`"-h",\n            "127.0.0.1",`
+and `"-c",\n            "SELECT 1;"`), which cannot coexist with the stub gate's
+argv-equality pin (`call[index("-c") + 1] == "SELECT 1"` — no semicolon). The
+source pin now matches the merged probe's shape (TCP pair, semicolon-free
+`SELECT 1`, 8-space indent) and still fails if either property regresses;
+`-h` occurs exactly once in the characterization module, so the pin stays
+unambiguous. Test counts unchanged (tests/: ±0 for this suite).
+
 ## Evidence
 
 - `uv run pytest tests/test_restore_oracle_readiness_gate.py -q` — 4 passed.
