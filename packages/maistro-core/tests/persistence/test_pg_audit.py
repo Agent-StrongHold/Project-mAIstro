@@ -101,6 +101,20 @@ def test_supplied_signing_key_does_not_warn_on_a_durable_store(
 
 
 @pytest.mark.asyncio
+async def test_ensure_schema_adds_proof_columns_idempotently(conn: FakeConnection) -> None:
+    """Databases created before signed audit records lack the proof columns;
+    wiring runs this upgrade on every start, so it must be the idempotent
+    ADD COLUMN IF NOT EXISTS form covering all three proof columns."""
+    await PgAuditLog(FakePool(conn), signer=AuditSigner(bytes(32))).ensure_schema()
+
+    assert [call.query for call in conn.calls] == [
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_log_inserts_with_team_id_and_tool_name_defaults(
     log: PgAuditLog, conn: FakeConnection
 ) -> None:

@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import replace
+import json
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 
 import pytest
 
 from maistro.security._types import AuditEntry
 from maistro.security.sentinel.audit import InMemoryAuditLog
-from maistro.security.sentinel.signing import AuditSignatureError, AuditSigner
+from maistro.security.sentinel.signing import (
+    AuditSignatureError,
+    AuditSigner,
+    canonical_audit_bytes,
+)
 
 
 def _without_proof(entry: AuditEntry) -> AuditEntry:
@@ -177,3 +183,110 @@ class TestAuditSignerFromEnvironment:
 
         with pytest.raises(AuditSignatureError):
             AuditSigner.from_environment()
+
+
+class TestCanonicalAuditBytes:
+    """The canonical bytes are the proof's coverage contract: deterministic,
+    proof-field-free at every nesting depth, and normalized so records that
+    describe the same decision carry the same evidence."""
+
+    def test_non_dataclass_entry_is_rejected(self) -> None:
+        with pytest.raises(TypeError, match="dataclasses"):
+            canonical_audit_bytes({"boundary": "tool_call"})  # type: ignore[arg-type]
+
+    def test_empty_legacy_verdict_is_normalized_to_allowed(self) -> None:
+        """Rows persisted before the verdict vocabulary settled store ''. The
+        proof must read that as the `allowed` decision it meant, so a legacy
+        row and a modern row describing the same decision produce identical
+        canonical bytes — and verify identically under the same key."""
+        signer = AuditSigner(b"k" * 32)
+        legacy = AuditEntry(boundary="tool_call", user_id="u1", verdict="")
+        modern = AuditEntry(boundary="tool_call", user_id="u1", verdict="allowed")
+
+        assert canonical_audit_bytes(legacy) == canonical_audit_bytes(modern)
+        assert signer.sign(legacy).signature == signer.sign(modern).signature
+        assert signer.verify(signer.sign(legacy))
+
+    def test_rich_value_types_canonicalize_deterministically(self) -> None:
+        """The canonicalizer must be total over value shapes a decision can
+        carry: datetimes serialize, tuples become lists (JSON has no tuple),
+        nested dataclasses drop proof fields at every depth, and dict keys
+        sort so insertion order cannot change the bytes."""
+
+        @dataclass
+        class _Nested:
+            name: str
+            signature: str = "must-never-reach-the-bytes"
+
+        @dataclass
+        class _Rich:
+            moment: datetime
+            tags: tuple[str, ...]
+            nested: _Nested
+            meta: dict[str, str]
+
+        first = _Rich(
+            datetime(2026, 1, 1, tzinfo=UTC),
+            ("deny", "egress"),
+            _Nested("child"),
+            {"zebra": "2", "alpha": "1"},
+        )
+        second = _Rich(
+            datetime(2026, 1, 1, tzinfo=UTC),
+            ("deny", "egress"),
+            _Nested("child", "a-different-proof"),
+            {"alpha": "1", "zebra": "2"},
+        )
+
+        payload = json.loads(canonical_audit_bytes(first))
+        assert payload["moment"] == "2026-01-01T00:00:00+00:00"
+        assert payload["tags"] == ["deny", "egress"]
+        assert payload["nested"] == {"name": "child"}
+        assert list(payload["meta"]) == ["alpha", "zebra"]
+        assert canonical_audit_bytes(first) == canonical_audit_bytes(second)
+
+
+class TestAuditSignerMutableEntries:
+    def test_mutable_entry_is_signed_in_place_preserving_identity(self) -> None:
+        """The historical Sentinel entry type is mutable; signing it must keep
+        the caller's object identity (the documented contract) rather than
+        silently swapping in a copy, because callers compose the proof onto a
+        record they may still hold."""
+
+        @dataclass
+        class _MutableEntry:
+            boundary: str
+            user_id: str
+            verdict: str = "allowed"
+            signature: str = ""
+            signing_key_id: str = ""
+            proof_type: str = ""
+
+        signer = AuditSigner(b"k" * 32)
+        entry = _MutableEntry(boundary="tool_call", user_id="u1")
+
+        assert signer.sign(entry) is entry
+        assert entry.signature
+        assert entry.proof_type == "Ed25519Signature2020"
+        assert signer.verify(entry)
+
+
+class TestVerifyRejectsIncompleteProofs:
+    """verify() must refuse records whose proof is present-but-wrong, not
+    only records whose decision bytes were tampered with."""
+
+    @pytest.mark.asyncio
+    async def test_wrong_proof_type_is_rejected(self) -> None:
+        log = InMemoryAuditLog(signer=AuditSigner(b"k" * 32))
+        await log.log(AuditEntry(boundary="tool_call", user_id="u1"))
+        [stored] = await log.get_entries()
+
+        assert not log.verify(replace(stored, proof_type="JsonWebSignature2020"))
+
+    @pytest.mark.asyncio
+    async def test_missing_signature_is_rejected(self) -> None:
+        log = InMemoryAuditLog(signer=AuditSigner(b"k" * 32))
+        await log.log(AuditEntry(boundary="tool_call", user_id="u1"))
+        [stored] = await log.get_entries()
+
+        assert not log.verify(replace(stored, signature=""))

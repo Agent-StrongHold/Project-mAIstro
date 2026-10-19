@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +16
+  packages/maistro-core/tests: +26
 ---
 # M2 Sentinel audit signatures
 
@@ -28,3 +28,17 @@ failing verify() after a restart. The tradeoff is explicit: retimestamping or
 reordering persisted rows sits outside the proof's coverage (ordering
 metadata, not decision content), while tampering any persisted decision field
 still invalidates it.
+
+This change also executes the audit-log wiring contract service-free:
+`_wire_audit_log` prefers PostgreSQL when both relational backends are
+configured, runs the idempotent proof-column `ensure_schema` upgrade on the
+selected backend (PG statements asserted on a fake pool; SQLite columns
+asserted on a real in-memory database), and falls back to an in-memory log
+that still signs every retained decision. On the signing seam itself it pins
+canonical-byte behavior the durable stores rely on: non-dataclass entries are
+rejected, a legacy empty verdict reads as `allowed` (identical canonical
+bytes and signature), rich value shapes (datetime, tuple, nested dataclass,
+dict) canonicalize deterministically with proof fields excluded at every
+nesting depth, mutable entries are signed in place preserving identity, and
+verify() rejects a wrong `proof_type` or a missing signature — not only
+tampered decision bytes.
