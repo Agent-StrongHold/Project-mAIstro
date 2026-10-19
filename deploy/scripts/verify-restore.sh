@@ -373,8 +373,9 @@ main() {
     echo "[verify-restore] conductor data + escrow verified"
   fi
 
-  # TODO: after restore, point a staging maistro-server at the scratch DB and run
-  # smoke tests (GET /health/ready) per the spec's weekly staging drill.
+  # After restore, point a staging maistro-server at the scratch DB and run
+  # smoke tests (GET /health/ready) — the spec's weekly staging drill; it is
+  # operator-run, not automated here.
 
   echo "[verify-restore] PASS for backup ${BACKUP_DATE}: semantic evidence matches the backup snapshot"
 }

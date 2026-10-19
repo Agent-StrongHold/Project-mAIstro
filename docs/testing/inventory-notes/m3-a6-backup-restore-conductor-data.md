@@ -1,6 +1,7 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +9
+  packages/hive-conductor/backend/tests: +14
+  tests/: +1
 ---
 # m3-a6 — Prove backup/restore of authoritative converged state
 
@@ -19,9 +20,38 @@ a missing component, and a truncated `state.db`. One test pins both deploy
 scripts as valid bash (`bash -n`), since they live outside every pytest suite.
 
 No production code moved; the drill scripts themselves live in `deploy/scripts/`
-and are exercised as subprocesses, so the suite total gains exactly the nine new
+and are exercised as subprocesses, so the suite total gains exactly the fourteen
 new tests. The `age` tests skip cleanly (with the reason on record) where the age
 toolchain is absent — CI's ubuntu runners and the dev container both have it.
+
+Five of the fourteen came from review of the first cut, all sharpening the
+one-way conditionality of the optional ciphertext stores:
+
+- `test_rotation_swapped_fernet_key_fails_decrypt_proof` — manifests and
+  existence checks still pass if credential rotation left the volume copy and
+  the escrow copy of `credential_master.key` on opposite sides of the atomic
+  swap; only decrypting `user_credentials.enc` with the escrowed root catches
+  it (P2 credential decrypt proof).
+- `test_corrupt_credential_store_fails_decrypt_proof` — an already-corrupt
+  live store must not pass as a verified backup.
+- `test_captured_credential_store_without_its_root_fails` — conditionality is
+  one-way: a captured ciphertext always demands its root.
+- `test_optional_store_absent_still_verifies` — a Conductor that never
+  persisted a credential legitimately has no `user_credentials.enc`; the drill
+  must skip its escrow-root check, not page an operator over a non-problem.
+- `test_unprovisioned_conductor_backup_verifies_without_escrow` — a fresh
+  Conductor has neither `secrets.age` nor `user_credentials.enc`; with no
+  ciphertext captured, no escrow can exist yet and none is demanded.
+
+The `tests/` suite gains one node because shipping `hive-conductor` in the
+supported prod stack (`deploy/docker-compose.prod.yml`) extends the Sentinel
+arming gate: `cloud-prod:hive-conductor` joins `PROFILES`/`HIVE_PROFILES` in
+`tests/security/test_sentinel_permission_table_armed.py`, adding one
+`test_permission_table_is_armed[cloud-prod:hive-conductor]` case. That gate
+caught a real gap in the first cut — the prod service inherited the `none`
+preset, which fail-closed denies every tool — fixed by arming
+`MAISTRO_PERMISSION_PRESET=hive_conductor_tools` in the compose file itself,
+so the deployment states the authority its runtime actually executes.
 
 ## Develop-sync merge reconciliation (#88 + #1881)
 

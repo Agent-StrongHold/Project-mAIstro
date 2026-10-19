@@ -123,9 +123,14 @@ services:
       # are not bound to any field, so task dispatch silently fell back to
       # localhost with no auth. install.sh writes MAISTRO_ROUTER_API_KEY and
       # migrates the retired MAISTRO_ACCESS_TOKEN alias into it (#402).
-      - MAISTRO_BASE_URL=http://maistro-server-1:8000
+      - MAISTRO_BASE_URL=http://maistro-server-1:8000  # DevSkim: ignore DS137138 until 2027-12-31 -- internal compose network name; TLS terminates at the ingress
       - MAISTRO_ROUTER_API_KEY=${MAISTRO_ROUTER_API_KEY:-}
       - WORKSPACE_SCOPE_KEY=${WORKSPACE_SCOPE_KEY:-}
+      # Sentinel must be armed here like in every other shipped stack: the
+      # preset default is "none", which fail-closed denies every tool
+      # (ADR-072726-0d6b, #1165). Same grant set as the dev/pm-poc/
+      # hive-standalone Conductors, kept in parity by the sentinel test.
+      - MAISTRO_PERMISSION_PRESET=hive_conductor_tools
       # Must match the task server's TASK_DELEGATION_KEY; never reuse the API key.
       - MAISTRO_DELEGATION_KEY=${TASK_DELEGATION_KEY:?Run ./install.sh to generate TASK_DELEGATION_KEY}
       - MAISTRO_SERVICE_PRINCIPAL=${MAISTRO_SERVICE_PRINCIPAL:-conductor}
@@ -134,7 +139,7 @@ services:
       # out only over OTLP — a build with INSTALL_OBSERVABILITY=1 plus
       # OTEL_EXPORTER_OTLP_ENDPOINT/HEADERS (see
       # packages/hive-conductor/backend/adapters/telemetry_langfuse.py).
-      - LANGFUSE_BASE_URL=http://langfuse:3000
+      - LANGFUSE_BASE_URL=http://langfuse:3000  # DevSkim: ignore DS137138 until 2027-12-31 -- internal compose network name; TLS terminates at the ingress
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
       # Foundation state (SQLite/vault/state) on a persistent volume. /data is
@@ -157,7 +162,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8101/health/ready')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8101/health/ready')"]  # devskim: ignore DS162092 until 2027-12-31 -- in-container readiness probe against the container's own loopback
       interval: 15s
       timeout: 5s
       retries: 3

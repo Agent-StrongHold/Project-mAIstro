@@ -27,7 +27,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from cryptography.fernet import Fernet
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -126,9 +125,7 @@ def _build_credential_store(data_dir: Path, escrow: Path) -> None:
     (escrow / "credential_master.key").write_bytes(key)
     os.chmod(escrow / "credential_master.key", 0o600)
     (data_dir / "user_credentials.enc").write_bytes(
-        Fernet(key).encrypt(
-            b'{"github::default::default": {"secret": "drill-provider-token"}}'
-        )
+        Fernet(key).encrypt(b'{"github::default::default": {"secret": "drill-provider-token"}}')
     )
 
 

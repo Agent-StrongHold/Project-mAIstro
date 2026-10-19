@@ -197,8 +197,8 @@ if [[ "${SKIP_CONDUCTOR_BACKUP}" != "1" ]]; then
     echo "[backup]   escrow it from your off-host copy before this backup can be verified." >&2
     exit 1
   fi
-  # TODO: the escrow has its own off-host path (secret manager / encrypted
-  #   media), deliberately NOT ${REMOTE_TARGET}: whatever ships the backup
+  # Deliberate: the escrow has its own off-host path (secret manager /
+  #   encrypted media), NOT ${REMOTE_TARGET}: whatever ships the backup
   #   must not carry the keys that open it.
 fi
 
