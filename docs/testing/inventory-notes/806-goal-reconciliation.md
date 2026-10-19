@@ -135,3 +135,44 @@ develop-synced tree (3df0fba97):
   the tests in this note, and the gate's remaining "not authorized by the
   trusted base" step needs the reviewed grant landed on develop first
   (two-merge rule), which no candidate edit can self-approve.
+
+## 2026-10-19 repair round: develop sync to 5f714e1be (no test change; delta unchanged: +105)
+
+Merged origin/develop (5f714e1be, 6 commits) into auto-806. The only
+content conflict was `container.py`: develop had wrapped
+`create_container`'s body in `try/except BaseException` startup-resource
+cleanup (#1856), re-indenting the region this branch's wiring lands in.
+Resolution took develop's wrapped form verbatim and re-applied the #806
+additions inside it (the `wire_goal_reconciliation` composition call, the
+`goal_reconciliation_store` constructor argument, and the two Container
+ticks); the goal reconciliation ticks stay operator-scheduled and are
+published from the returned Container only, so they cannot run inside a
+failed-startup rollback path.
+
+Ledger integrity after the merge, checked per the quality/*.json
+multiset-merge rule (`git diff --numstat origin/develop -- quality/`):
+`vulture-baseline.json` +13/-1 against develop - the +13 are this
+package's banked identities (preserved through the merge, verified row by
+row against the scan), and the -1 is the `graph/harness.py::dispatched_at`
+row develop no longer scans (develop removed the name from
+`graph/harness.py` without pruning its row; the merge resolution carries
+the prune the candidate phase requires). `durable-table-retention.json`
+remains the branch-only +48; `ratchet-authorizations.json` is byte-identical
+to develop (no self-granting).
+
+Re-verified at the merged HEAD: goals package 154 passed / 22 skipped
+(Postgres-gated); `packages/maistro-core/tests` collects 16632 and
+check-suite-inventory matches the recorded inventory; ruff check/format,
+`mypy --strict packages/maistro-core/src` (798 files, under `uv sync
+--locked --all-extras`), check-radon-baseline (134 == base), bandit
+Medium+ = 0, gitleaks 5f714e1be..HEAD clean, check-ratchet-provenance,
+check-shipped-surface-truth, check-durable-table-inventory (116 tables),
+check-backlog-consistency, and diff-coverage on the goals producers (every
+changed file >= 90% lines / 80% branch arcs) all green. The vulture gate's
+candidate phase is clean and its trusted phase still names the same 13
+unauthorized identities: every one is live #806 acceptance surface
+(`cancel_goal`, `reconciliation_view`, the safety-sweep wake reason, the
+sweep-outcome fields, the two Container ticks) exercised by the tests
+above, none is genuinely dead, and no topic-branch edit can authorize them
+- the residual is the develop-side reviewed grant, unchanged from the
+previous round's record.

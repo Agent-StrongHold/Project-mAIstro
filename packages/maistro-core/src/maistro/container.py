@@ -2477,9 +2477,7 @@ async def create_container(
         # The backend the spine just chose (#1176 pattern): the Goal control
         # plane lives beside the Runs it reconciles, so a restart answers from
         # the same database the Runs do (M3 #806).
-        goal_reconciliation_store = await wire_goal_reconciliation(
-            pg_pool=pg_pool, db_pool=db_pool
-        )
+        goal_reconciliation_store = await wire_goal_reconciliation(pg_pool=pg_pool, db_pool=db_pool)
         chat_admitter = wire_chat_admission(
             run_store,
             project_scope_store,
