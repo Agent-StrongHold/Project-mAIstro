@@ -743,36 +743,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-design/src/maistro_design/consistency.py::_build_refinement",
-      "path": "packages/maistro-design/src/maistro_design/consistency.py",
-      "line": 1104,
-      "name": "_build_refinement",
-      "classname": null,
-      "rank": "C",
-      "complexity": 17,
-      "rationale": "New in #1663 (2026-10-02), in a package the radon scan does not yet cover. Not legacy: this is the consistency evaluator's branching core, authored days ago and admitted at its authored value when #1684 widened the scan. #1791 tracks taking it back under the C ceiling, at which point this row and its grant are removed together."
-    },
-    {
-      "key": "packages/maistro-design/src/maistro_design/consistency.py::_check_sibling_contradictions",
-      "path": "packages/maistro-design/src/maistro_design/consistency.py",
-      "line": 800,
-      "name": "_check_sibling_contradictions",
-      "classname": null,
-      "rank": "C",
-      "complexity": 16,
-      "rationale": "New in #1663 (2026-10-02), in a package the radon scan does not yet cover. Not legacy: this is the consistency evaluator's branching core, authored days ago and admitted at its authored value when #1684 widened the scan. #1791 tracks taking it back under the C ceiling, at which point this row and its grant are removed together."
-    },
-    {
-      "key": "packages/maistro-design/src/maistro_design/consistency.py::evaluate_project_snapshot",
-      "path": "packages/maistro-design/src/maistro_design/consistency.py",
-      "line": 1039,
-      "name": "evaluate_project_snapshot",
-      "classname": null,
-      "rank": "C",
-      "complexity": 15,
-      "rationale": "New in #1663 (2026-10-02), in a package the radon scan does not yet cover. Not legacy: this is the consistency evaluator's branching core, authored days ago and admitted at its authored value when #1684 widened the scan. #1791 tracks taking it back under the C ceiling, at which point this row and its grant are removed together."
-    },
-    {
       "key": "packages/maistro-design/src/maistro_design/scan.py::scan_blocking_patterns",
       "path": "packages/maistro-design/src/maistro_design/scan.py",
       "line": 162,
