@@ -73,3 +73,41 @@ Known non-blocking gaps (cross-package follow-ups, not #973 acceptance):
 (the scaffold's layout), and product-side `maistro extensions certify` parses
 the install-record manifest contract (M9-B2), not the contract-1.0 discovery
 manifest the authoring stage uses — both belong to #949/#975 surface work.
+
+## Verification record (independent verify round, head 6887b965e)
+
+Re-executed independently at the develop-merge head
+(`6887b965e051a`, the only delta vs `5614f0658f` being the merge of develop
+`e708451b3887`; the seven #973 surfaces are byte-identical across both heads
+— `git diff 5614f0658..6887b965` on them is empty). All five driver checks
+re-run green (`uv sync --locked --extra dev`; `ruff check .`;
+`ruff format --check .`; scaffold file offline 85 passed + 5 skipped;
+`check-suite-inventory.py --suite packages/maistro-core/tests` ok at 16593
+identities), plus, at this exact head:
+
+- E2E acceptance suite `MAISTRO_TEST_EXTENSION_SCAFFOLD_E2E=1`: 90 passed
+  (all five families build, install, and test in fresh venvs; `import
+  maistro` fails there).
+- SDK normative schema, all five PR-scaffolded manifests:
+  `manifest_from_json` + `jsonschema` against `public_json_schema()` PASS;
+  `FAMILIES` parity with SDK `EXTENSION_FAMILIES` verified equal.
+- Conformance + signing on PR-scaffolded trees in `/tmp/verify-973`:
+  `maistro-ext-harness run` 9/7/7/7/7 passed (0 failed); `certify` on the
+  tool tree → CERTIFIED (28 proven, Ed25519 over the exact `uv build` wheel
+  bytes); `verify-certification` OK against the publisher key; one mutated
+  byte in the wheel → exit 1.
+- Gates: vulture CI-exact (`check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`, base-aware vs
+  `e708451b`) ok; `mypy packages/maistro-core/src` clean (with the
+  `bootstrap` extra installed — without it the only errors are pre-existing
+  `maistro_bootstrap` import-not-found in files this PR never touches);
+  `check-extension-imports.py` ok; `check-backlog-consistency.py` ok;
+  `git diff --numstat <base> -- quality/` empty (no ledger drift); no
+  fixes/closes/resolves keywords in the PR body or any branch commit.
+
+The SDK dir-level gap re-confirmed at this head, with the sharper shape:
+`maistro-ext-sdk validate <dir>` accepts the SDK scaffold's own flat-layout
+trees but rejects every `src/`-layout tree `maistro extension new` emits
+(`validation.py` `_resolve_entrypoint_file` never descends into `src/`);
+document-level validation agrees. Classification unchanged: cross-package
+follow-up (#949/#975), not #973 acceptance.
