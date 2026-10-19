@@ -200,6 +200,37 @@ test.describe("CLI page contract (#292)", () => {
     await expect(unreachable).toHaveCount(2);
   });
 
+  test("a failed recovery from a vanished session renders the fresh failure", async ({
+    page,
+  }) => {
+    // Boot with a real session so the page holds a session_id the backend
+    // will then claim not to know (store reset behind the page's back).
+    await gotoCliSettled(page);
+
+    // Exec answers the unknown_session 404, and while the page runs its
+    // documented recovery — create a fresh session, re-execute — the
+    // backend becomes unreachable. The console must render THAT fresh
+    // failure: the stale 404 no longer describes what happened, and its
+    // generic 404 rendering ("unsupported command") would be a lie — the
+    // command is supported.
+    await page.route("**/v1/cli/exec", (r) =>
+      r.fulfill({
+        status: 404,
+        json: { detail: { error: "unknown_session", session_id: "lost" } },
+      }),
+    );
+    await page.route("**/v1/cli/sessions", (r) => r.abort());
+
+    await runCommand(page, "hctl agents");
+
+    // lib/api.ts wraps the aborted recovery request as ApiError status 0,
+    // so the rendered line is the transport failure, not the stale 404.
+    await expect(
+      consoleCard(page).getByText("error: could not reach hive-conductor"),
+    ).toBeVisible();
+    await expect(consoleCard(page).getByText("error: unsupported command")).toHaveCount(0);
+  });
+
   test("refresh restores the session's real history from the backend", async ({ page }) => {
     await gotoCliSettled(page);
 

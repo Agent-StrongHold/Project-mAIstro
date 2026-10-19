@@ -97,9 +97,7 @@ def _resolve_session(session_id: str | None) -> str:
         # The implicit default must exist whenever it is selected: the store
         # can be nonempty without a `default` record (e.g. POST /sessions
         # minted a random id first), and _append_history would KeyError on it.
-        stores.cli_sessions.put_if_absent(
-            "default", {"id": "default", "cwd": "/", "history": []}
-        )
+        stores.cli_sessions.put_if_absent("default", {"id": "default", "cwd": "/", "history": []})
         return "default"
     if not stores.cli_sessions:
         stores.cli_sessions["default"] = {"id": "default", "cwd": "/", "history": []}

@@ -86,10 +86,18 @@ backend as every other JsonStore (see
   (manifest shape, every command executing, unsupported/timeout/backend
   failure/unauthorized states, sanitization, session persistence, audit
   rows, frontend compatibility).
-- E2E: `packages/hive-conductor/frontend/e2e/cli-page.spec.ts` (drives the UI
-  from the live manifest; unsupported, unauthorized, timeout, and
-  backend-unavailable rendering; refresh-restores-state) and the CLI case in
-  `frontend/e2e/degraded-mode.spec.ts` (degraded-status rendering).
+- E2E: `packages/hive-conductor/tests/e2e/cli-page.spec.ts` — the suite the CI
+  e2e job actually runs (`docker-compose.test.yml`'s `e2e-tests` service,
+  `--config=tests/e2e/playwright.config.ts`). It drives the UI from the live
+  manifest; pins unsupported, unauthorized, timeout, backend-unavailable, and
+  transport-failure rendering (including a recovery whose replacement-session
+  request itself fails — the fresh failure is rendered, not the stale
+  unknown_session 404); and pins refresh-restores-state. A draft of this
+  coverage also sits in `frontend/e2e/cli-page.spec.ts`, but that directory
+  has no CI owner (no workflow or script executes it), so the `tests/e2e`
+  suite is the coverage of record. The degraded-status CLI case lives in
+  `frontend/e2e/degraded-mode.spec.ts`, which is likewise outside the CI-run
+  suite.
 - The surface is registered in `quality/shipped-surface-truth.json`
   (`POST /v1/cli/exec`, disposition `canonical`).
 

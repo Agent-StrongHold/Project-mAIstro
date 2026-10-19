@@ -84,8 +84,12 @@ export default function CLI() {
           });
           setLines((prev) => [...prev, `$ ${command}`, ...retried.lines]);
           return;
-        } catch {
-          /* fall through to the plain failure rendering */
+        } catch (retryErr) {
+          // Creating the replacement session or the retried exec itself failed
+          // (timeout, 5xx, 401, unreachable). Render that fresh failure — the
+          // original unknown_session 404 no longer describes what happened.
+          setLines((prev) => [...prev, `$ ${command}`, ...failureLines(retryErr)]);
+          return;
         }
       }
       setLines((prev) => [...prev, `$ ${command}`, ...failureLines(err)]);
