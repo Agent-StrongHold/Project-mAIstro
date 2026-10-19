@@ -20,7 +20,7 @@ machine-readable manifest by **`GET /v1/cli/commands`**. The shipped set:
 
 | Command         | Summary              | Registered backend capability                                          |
 | --------------- | -------------------- | ---------------------------------------------------------------------- |
-| `hctl status`   | show system status   | the `/health` probe's payload plus agent/MCP store projections          |
+| `hctl status`   | show system status   | the `/health` payload plus the same agent and MCP-server projections `GET /v1/agents` and `GET /v1/mcp/servers` serve |
 | `hctl agents`   | list agents          | the same `list_agents` projection `GET /v1/agents` serves               |
 | `hctl health`   | health check JSON    | the `/health` payload, pretty-printed                                   |
 | `hctl sessions` | list CLI sessions    | `GET /v1/cli/sessions` — the CLI session store, not chat sessions       |
@@ -43,8 +43,11 @@ the backend does not register or reaches any path outside `/v1/cli/*`.
    is explicit and audited (severity `warning`); the client renders it and
    never fabricates output.
 3. The registered handler runs under a wall-clock budget
-   (`CLI_EXEC_TIMEOUT_S`, 10s). Overruns answer **504**; handler exceptions
-   answer **503 `backend_unavailable`**. Both are audited.
+   (`CLI_EXEC_TIMEOUT_S`, 10s). Overruns answer **504**; handler crashes
+   answer **503 `backend_unavailable`**; a capability-authored
+   `HTTPException` passes through with its own status (the same answer the
+   equivalent API route serves). All three are audited, and each lands in
+   the session's durable trail.
 4. Output lines are sanitized (control characters stripped, per-line and
    line-count caps) before rendering or persistence.
 5. The execution — command, outcome, sanitized output — is appended to the

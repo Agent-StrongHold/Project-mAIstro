@@ -87,7 +87,7 @@ def list_cli_commands() -> dict[str, Any]:
     return {
         "commands": [
             CliCommandDescriptor(name=c.name, summary=c.summary).model_dump()
-            for c in cli_registry().values()
+            for c in cli_registry(list_cli_sessions).values()
         ]
     }
 
@@ -130,11 +130,13 @@ async def exec_cli_command(body: CliExecBody, request: Request) -> dict[str, Any
 
     Failure is explicit at the backend, never fabricated in the client:
     unregistered commands answer 404 `unsupported_command`, a handler over
-    budget answers 504, and a handler that raises answers 503 — each audited.
+    budget answers 504, a capability-authored HTTPException passes through
+    with its own status, and a handler that crashes answers 503 — each
+    audited.
     """
     actor = optional_actor_id(request, default="anonymous")
     command = normalize_cli_command(body.command)
-    entry = cli_registry().get(command)
+    entry = cli_registry(list_cli_sessions).get(command)
     if entry is None:
         # #292: an unsupported command is refused here, audited as a warning,
         # and never answered from the client's imagination.
@@ -188,7 +190,25 @@ async def exec_cli_command(body: CliExecBody, request: Request) -> dict[str, Any
             status_code=504,
             detail={"error": "cli_command_timeout", "command": command},
         ) from None
-    except HTTPException:
+    except HTTPException as exc:
+        # A capability-authored HTTPException is the backend's own deliberate
+        # answer — the same one the equivalent API route serves — so its
+        # status passes through instead of becoming 503. The refusal is still
+        # audited and still lands in the session's durable trail, like every
+        # other non-ok outcome (#292).
+        _append_history(session_id, command, "refused", [])
+        log_audit(
+            action="cli_exec",
+            actor=actor,
+            target=command,
+            detail={
+                "supported": True,
+                "session_id": session_id,
+                "outcome": "refused",
+                "status_code": exc.status_code,
+            },
+            severity="warning",
+        )
         raise
     except Exception:
         log_audit(

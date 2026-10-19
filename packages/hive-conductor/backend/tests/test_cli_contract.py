@@ -243,3 +243,129 @@ def test_exec_output_round_trips_json_safely(authed_client: Any) -> None:
     r = _exec(authed_client, "hctl health")
     assert r.status_code == 200
     json.dumps(r.json())  # must be JSON-clean end to end
+
+
+def test_status_renders_no_degraded_services_when_health_is_clean(
+    authed_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clean health payload renders the explicit "nothing degraded" line.
+
+    The test environment normally reports degraded optional services, so the
+    empty-degraded arc of `_status_lines` needs a clean payload to execute.
+    """
+    from routes import health as health_module
+
+    real_health = health_module.health
+
+    def clean(request: Any) -> dict[str, Any]:
+        payload = dict(real_health(request))
+        payload["degraded_services"] = []
+        return payload
+
+    monkeypatch.setattr(health_module, "health", clean)
+    body = _exec(authed_client, "hctl status")
+    assert body.status_code == 200
+    assert any("no degraded optional services" in line for line in body.json()["lines"])
+    assert not any(line.startswith("! degraded") for line in body.json()["lines"])
+
+
+def test_agents_renders_the_empty_roster_line(authed_client: Any) -> None:
+    """An empty agent roster renders the explicit empty line, not nothing.
+
+    Exercises the degenerate arc of `hctl agents` end to end: the roster is
+    emptied through the same store `GET /v1/agents` reads, then restored.
+    """
+    saved = dict(stores.agents.items())
+    _clear(stores.agents)
+    try:
+        body = _exec(authed_client, "hctl agents")
+        assert body.status_code == 200
+        assert body.json()["lines"] == ["  no agents registered"]
+    finally:
+        for key, value in saved.items():
+            stores.agents[key] = value
+
+
+def test_agents_renders_a_registered_agent_through_the_same_projection(
+    admin_client: Any,
+) -> None:
+    """`hctl agents` renders exactly what `GET /v1/agents` serves.
+
+    The suite's default environment has an empty roster, so the populated
+    rendering (the comprehension, not the empty line) is driven by creating
+    one agent through the ordinary API (an admin-scoped write, like any
+    agent creation) and cleaning it up afterwards.
+    """
+    created = admin_client.post("/v1/agents", json={"name": "roster-probe"})
+    assert created.status_code == 201, created.text
+    aid = created.json()["id"]
+    try:
+        body = _exec(admin_client, "hctl agents")
+        assert body.status_code == 200
+        rendered = "\n".join(body.json()["lines"])
+        assert "roster-probe" in rendered
+        assert created.json()["model"] in rendered
+        assert "0 tasks" in rendered
+    finally:
+        stores.agents.pop(aid, None)
+
+
+def test_handler_http_exception_keeps_its_status(
+    authed_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A capability-authored HTTPException passes through, not 503.
+
+    Only a handler crash is `backend_unavailable`; an HTTPException is the
+    backend's own deliberate answer (the same one the equivalent API route
+    would serve), so `POST /v1/cli/exec` must forward its status.
+    """
+    from fastapi import HTTPException
+    from services import cli_commands
+
+    async def refusing(request: Any) -> list[str]:
+        raise HTTPException(status_code=418, detail={"error": "teapot"})
+
+    monkeypatch.setattr(cli_commands, "_status_lines", refusing)
+    r = _exec(authed_client, "hctl status")
+    assert r.status_code == 418
+    assert r.json()["detail"] == {"error": "teapot"}
+    # The refusal is audited as such (the capability's own answer, not a
+    # crash), with the status it answered.
+    rows = [e for e in _cli_audit_rows() if e["detail"].get("outcome") == "refused"]
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "warning"
+    assert rows[0]["detail"]["status_code"] == 418
+    assert rows[0]["actor"]
+    # And the attempt lands in the session's durable trail, like a timeout.
+    sid = "default"
+    record = next(s for s in authed_client.get("/v1/cli/sessions").json() if s["id"] == sid)
+    assert record["history"][-1]["command"] == "hctl status"
+    assert record["history"][-1]["outcome"] == "refused"
+    assert record["history"][-1]["lines"] == []
+
+
+def test_sessions_renders_the_empty_store_line() -> None:
+    """An empty CLI-session provider renders the explicit empty line.
+
+    `POST /v1/cli/exec` materializes the default session before any handler
+    runs, so the wired route can never observe an empty store; the provider
+    injection exists precisely so this degenerate arc stays testable at the
+    handler boundary. A registry built without the provider would make this
+    test fail to construct — pinning the injection itself.
+    """
+    import asyncio
+
+    from services.cli_commands import cli_registry
+
+    registry = cli_registry(list_sessions=lambda: [])
+    lines = asyncio.run(registry["hctl sessions"].handler(None))  # type: ignore[arg-type]
+    assert lines == ["  no CLI sessions"]
+
+
+def test_sessions_renders_the_store_behind_get_sessions(authed_client: Any) -> None:
+    """`hctl sessions` lists exactly what `GET /v1/cli/sessions` serves."""
+    created = authed_client.post("/v1/cli/sessions").json()
+    body = _exec(authed_client, "hctl sessions")
+    assert body.status_code == 200
+    rendered = "\n".join(body.json()["lines"])
+    assert created["id"] in rendered

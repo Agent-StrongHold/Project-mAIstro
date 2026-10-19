@@ -15,6 +15,14 @@ The contract this module implements is documented in
 `docs/architecture/CONDUCTOR-CLI-PAGE-CONTRACT.md`; the machine-readable
 manifest is served by `GET /v1/cli/commands`, and the frontend/backend
 compatibility test lives in `backend/tests/test_cli_contract.py`.
+
+Dependency direction: this module is deliberately *not* a consumer of any
+retiring surface (`routes/cli.py`, the `stores.py` stores) — the
+workspace-retirement gate (`quality/workspace-retirement.json`) fails any new
+importer. The router that serves `/v1/cli/*` owns the CLI session store and
+injects its listing capability here (`cli_registry(list_sessions)`); every
+other capability is imported from modules outside the retirement ledger
+(`routes.health`, `routes.mcp`, `routes.agents`).
 """
 
 from __future__ import annotations
@@ -23,9 +31,8 @@ import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
 
-import stores
 from fastapi import Request
 
 #: A registered command handler receives the request (some capabilities, like
@@ -73,11 +80,15 @@ def sanitize_cli_output(lines: list[str]) -> list[str]:
 
 async def _status_lines(request: Request) -> list[str]:
     """`hctl status` — the same operating state the `/health` probe serves."""
+    from routes.agents import list_agents
     from routes.health import health as health_payload
     from routes.mcp import list_servers
 
     payload = health_payload(request)
-    agents = [a for a in stores.agents.values() if a.workspace_id is None]
+    # Through the same `list_agents` projection `GET /v1/agents` serves — the
+    # global roster, not a direct store read (retiring-surface boundary; the
+    # projection is exactly `agents with workspace_id is None`).
+    agents = await list_agents(request, workspace_id=None)
     # Health-check through the same bounded fan-out projection the MCP page
     # serves (`GET /v1/mcp/servers`); reading the store directly would report
     # stale connection states (#292 review).
@@ -125,39 +136,47 @@ async def _agents_lines(request: Request) -> list[str]:
     ]
 
 
-async def _sessions_lines(request: Request) -> list[str]:
-    """`hctl sessions` — the backend CLI sessions this page's state lives in.
-
-    Deliberately *not* chat sessions: the CLI page's own session records are
-    what `GET /v1/cli/sessions` serves, and the page's history persists in
-    them — that is the documented relationship (#292).
-    """
-    from routes.cli import list_cli_sessions
-
-    sessions = list_cli_sessions()
-    if not sessions:
-        return ["  no CLI sessions"]
-    return [
-        f"  {str(s.get('id', ''))[:8].ljust(8)} cwd {str(s.get('cwd', '/')).ljust(6)} "
-        f"{len(s.get('history', []))} commands"
-        for s in sessions
-    ]
+#: Reads the CLI session records the router serves at `GET /v1/cli/sessions`.
+#: The router injects this capability when it builds the registry
+#: (`cli_registry(list_sessions)`), so this module depends on no retiring
+#: surface: the workspace-retirement gate forbids new importers of
+#: `routes/cli.py` or the stores it owns.
+SessionsProvider = Callable[[], list[dict[str, Any]]]
 
 
-async def _help_lines(request: Request) -> list[str]:
-    """`help` — rendered from the registry, so it can never drift from it."""
-    return [
-        f"  {command.name.ljust(14)} \u2014 {command.summary}"
-        for command in cli_registry().values()
-    ]
-
-
-def cli_registry() -> dict[str, CliCommand]:
+def cli_registry(list_sessions: SessionsProvider) -> dict[str, CliCommand]:
     """The supported CLI-page command set, in display order.
 
-    Built per call (handlers resolved from module globals) so tests can patch
-    a single handler and drive the route through the real registry path.
+    Built per call: the status/agents/health handlers resolve from module
+    globals so tests can patch a single handler and drive the route through
+    the real registry path, and the sessions/help handlers close over
+    `list_sessions` -- the router's own `GET /v1/cli/sessions` capability --
+    because the session records belong to the router, not to this module.
     """
+
+    async def _sessions_lines(request: Request) -> list[str]:
+        """`hctl sessions` -- the backend CLI sessions this page's state lives in.
+
+        Deliberately *not* chat sessions: the CLI page's own session records
+        are what `GET /v1/cli/sessions` serves, and the page's history
+        persists in them -- that is the documented relationship (#292).
+        """
+        sessions = list_sessions()
+        if not sessions:
+            return ["  no CLI sessions"]
+        return [
+            f"  {str(s.get('id', ''))[:8].ljust(8)} cwd {str(s.get('cwd', '/')).ljust(6)} "
+            f"{len(s.get('history', []))} commands"
+            for s in sessions
+        ]
+
+    async def _help_lines(request: Request) -> list[str]:
+        """`help` -- rendered from the registry, so it can never drift from it."""
+        return [
+            f"  {command.name.ljust(14)} \u2014 {command.summary}"
+            for command in cli_registry(list_sessions).values()
+        ]
+
     return {
         "hctl status": CliCommand(
             name="hctl status", summary="show system status", handler=_status_lines
