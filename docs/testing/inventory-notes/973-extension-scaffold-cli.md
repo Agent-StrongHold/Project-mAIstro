@@ -111,3 +111,41 @@ trees but rejects every `src/`-layout tree `maistro extension new` emits
 (`validation.py` `_resolve_entrypoint_file` never descends into `src/`);
 document-level validation agrees. Classification unchanged: cross-package
 follow-up (#949/#975), not #973 acceptance.
+
+## CI-repair round (2026-10-19, head 70310895c)
+
+GitHub CI at `70310895c` red on four jobs: `test`, `Quality / Convergence
+matrix`, `Quality gate (Pillars 1–4, 7, 8)`, `Coverage gate (publish-set
+floor + diff coverage)`. All four share one root cause: the branch added
+`maistro/cli/_extension_authoring.py` to the Core CLI subsystem, moving its
+unreachable share from 5/24 (20.8%, `some`) to 5/25 (exactly 20.0%, `few` —
+the band boundary is inclusive), while `docs/architecture/
+CONVERGENCE-MATRIX.md` still said `some`. The coverage gate fails through
+the same cause: its combine step runs the root `tests/` tree as the
+`scripts` producer, and `tests/test_check_convergence_matrix.py` audits the
+real document. Repair: one word in the matrix row (`some` → `few`); no code,
+no tests, no ledger change.
+
+Reproduced and re-verified locally at this head:
+
+- `check-convergence-matrix.py`: FAIL (`Core CLI: Unreachable says 'some',
+  code says 'few' (5 of 25 modules, 20.0%)`) → after the row fix, OK
+  (52 subsystems classify all 1414 production modules).
+- Root suite as ci.yml's `test` job runs it (`pytest tests/
+  --ignore=tests/tools/registry`, `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1`):
+  5352 passed, 139 skipped.
+- Coverage gate pieces: `coverage-unit` core producer re-run
+  (`coverage run --branch --source=packages/maistro-core/src/maistro -m
+  pytest packages/maistro-core/tests --timeout=30 -q`) 15507 passed,
+  1083 skipped; `check-diff-coverage.py` against `origin/develop` ok
+  (90% lines / 80% branch arcs, per file).
+- Quality sub-gates re-run post-edit: vulture CI-exact
+  (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`,
+  base `origin/develop`) ok at 1321 identities; `check-reachability.py` ok.
+- `test` job tail checks: `check-suite-inventory.py` ok (17 suites);
+  `check-test-duplicates.py` ok; `check-extension-imports.py` ok;
+  `check-extension-scaffold.py` full pass (5 families scaffolded, built,
+  conformed, certified, signed, verified, negative control refused);
+  `mypy packages/maistro-core/src` clean.
+- `git diff --numstat origin/develop -- quality/` empty: no ledger rows
+  touched by this repair.
