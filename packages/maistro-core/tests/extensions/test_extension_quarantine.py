@@ -420,6 +420,84 @@ def test_publisher_wide_policy_quarantines_the_publisher_on_trigger() -> None:
 
 
 # --------------------------------------------------------------------------
+# Publisher identity is pinned to the package (identity binding)
+# --------------------------------------------------------------------------
+
+
+def test_quarantined_package_cannot_be_bypassed_by_a_different_publisher() -> None:
+    """A package pinned to publisher A stays quarantined even when admission
+    names the same extension id under publisher B (fail-closed)."""
+    service = _service()
+    service.record(
+        security_evidence(extension_id=EXT, version=VERSION, publisher=PUBLISHER, detail="x"),
+        actor=SYSTEM,
+    )
+    refused = _admit(service, publisher=OTHER_PUBLISHER)
+    assert not refused.allowed
+    assert refused.governing_state is GovernanceState.QUARANTINED
+    assert PUBLISHER in refused.reason and OTHER_PUBLISHER in refused.reason
+    with pytest.raises(QuarantineAuthorityError):
+        service.begin_invocation(
+            extension_id=EXT, version=VERSION, publisher=OTHER_PUBLISHER
+        )
+
+
+def test_mismatched_publisher_cannot_blend_strikes_or_clear_a_package() -> None:
+    """Evidence, and every package mutation, must name the pinned publisher;
+    strikes never blend across publishers and a hold is never lifted under
+    an impostor publisher."""
+    service = _service()
+    service.record(
+        security_evidence(extension_id=EXT, version=VERSION, publisher=PUBLISHER, detail="x"),
+        actor=SYSTEM,
+    )
+    with pytest.raises(QuarantineAuthorityError):
+        service.record(
+            security_evidence(
+                extension_id=EXT, version=VERSION, publisher=OTHER_PUBLISHER, detail="y"
+            ),
+            actor=SYSTEM,
+        )
+    assert service.strikes(extension_id=EXT, version=VERSION, kind=EvidenceKind.SECURITY_VIOLATION) == 1
+    for mutation in (
+        lambda: service.disable_version(
+            extension_id=EXT, version=VERSION, publisher=OTHER_PUBLISHER,
+            actor=ADMIN, reason="x",
+        ),
+        lambda: service.quarantine_package(
+            extension_id=EXT, publisher=OTHER_PUBLISHER, actor=ADMIN, reason="x"
+        ),
+        lambda: service.re_enable_version(
+            extension_id=EXT, version=VERSION, publisher=OTHER_PUBLISHER,
+            actor=ADMIN, reason="x",
+        ),
+        lambda: service.re_enable_package(
+            extension_id=EXT, publisher=OTHER_PUBLISHER, actor=ADMIN, reason="x"
+        ),
+    ):
+        with pytest.raises(QuarantineAuthorityError):
+            mutation()
+    assert not _admit(service).allowed
+
+
+def test_first_pinning_wins_and_matching_publishers_are_unaffected() -> None:
+    """The first publisher seen for an extension id is canonical; later
+    operations under the same publisher behave exactly as before."""
+    service = _service()
+    service.disable_version(
+        extension_id=EXT, version=VERSION, publisher=PUBLISHER,
+        actor=ADMIN, reason="bad build",
+    )
+    assert not _admit(service).allowed
+    service.re_enable_version(
+        extension_id=EXT, version=VERSION, publisher=PUBLISHER,
+        actor=ADMIN, reason="reviewed",
+    )
+    assert _admit(service).allowed
+    assert _admit(service, extension_id=OTHER_PUBLISHER_EXT, publisher=OTHER_PUBLISHER).allowed
+
+
+# --------------------------------------------------------------------------
 # Re-enable is canonical, audited, and never erases evidence
 # --------------------------------------------------------------------------
 

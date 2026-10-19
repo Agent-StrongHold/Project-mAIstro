@@ -349,6 +349,13 @@ class ExtensionGovernanceService:
         checked in the fixed order publisher → package → version, so a
         publisher quarantine can never be read as anything narrower.
         """
+        mismatch = self._publisher_mismatch(
+            extension_id=extension_id, publisher=publisher
+        )
+        if mismatch:
+            # Fail closed: a mismatched publisher is not a new identity but
+            # a false label on the pinned one, so it can never admit.
+            return GovernanceState.QUARANTINED, mismatch
         if self._publishers.get(publisher) is GovernanceState.QUARANTINED:
             return (
                 GovernanceState.QUARANTINED,
@@ -369,6 +376,34 @@ class ExtensionGovernanceService:
                     f"extension {extension_id!r} version {version!r} is {label}",
                 )
         return GovernanceState.ACTIVE, ""
+
+    def _publisher_mismatch(self, *, extension_id: str, publisher: str) -> str:
+        """Why this identity is refused, or "" when the publisher is pinned.
+
+        A package's publisher is pinned the first time its extension id is
+        seen. A caller naming a different publisher for the same id is not
+        a new identity — it is the pinned identity under a false label —
+        so it is refused rather than resolved against the impostor
+        publisher, which would otherwise let admission bypass a quarantine
+        hold and let evidence strikes or re-enables blend across
+        publishers.
+        """
+        package = self._packages.get(extension_id)
+        if package is not None and package.publisher != publisher:
+            return (
+                f"extension {extension_id!r} is pinned to publisher "
+                f"{package.publisher!r}; refusing identity attributed to "
+                f"publisher {publisher!r}"
+            )
+        return ""
+
+    def _require_pinned_publisher(self, *, extension_id: str, publisher: str) -> None:
+        """Refuse mutations that name a publisher other than the pinned one."""
+        mismatch = self._publisher_mismatch(
+            extension_id=extension_id, publisher=publisher
+        )
+        if mismatch:
+            raise QuarantineAuthorityError(mismatch)
 
     def admit(self, *, extension_id: str, version: str, publisher: str) -> AdmissionDecision:
         """May this identity begin new work? Checked before every invocation.
@@ -448,6 +483,9 @@ class ExtensionGovernanceService:
         ``publisher_wide``.
         """
         self._require_authorized(actor, "record security/health evidence")
+        self._require_pinned_publisher(
+            extension_id=evidence.extension_id, publisher=evidence.publisher
+        )
         package = self._packages.setdefault(
             evidence.extension_id, _PackageState(publisher=evidence.publisher)
         )
@@ -512,6 +550,7 @@ class ExtensionGovernanceService:
     ) -> GovernanceDecision:
         """Disable one version; sibling versions keep admitting."""
         self._require_authorized(actor, "disable an extension version")
+        self._require_pinned_publisher(extension_id=extension_id, publisher=publisher)
         package = self._packages.setdefault(extension_id, _PackageState(publisher=publisher))
         package.versions[version] = GovernanceState.DISABLED
         return self._append(
@@ -536,6 +575,7 @@ class ExtensionGovernanceService:
     ) -> GovernanceDecision:
         """Quarantine every version of one extension package."""
         self._require_authorized(actor, "quarantine an extension package")
+        self._require_pinned_publisher(extension_id=extension_id, publisher=publisher)
         package = self._packages.setdefault(extension_id, _PackageState(publisher=publisher))
         package.state = GovernanceState.QUARANTINED
         return self._append(
@@ -579,6 +619,7 @@ class ExtensionGovernanceService:
     ) -> GovernanceDecision:
         """Re-enable one version. Strikes and history are never erased."""
         self._require_authorized(actor, "re-enable an extension version")
+        self._require_pinned_publisher(extension_id=extension_id, publisher=publisher)
         package = self._packages.setdefault(extension_id, _PackageState(publisher=publisher))
         package.versions[version] = GovernanceState.ACTIVE
         return self._append(
@@ -608,6 +649,7 @@ class ExtensionGovernanceService:
         identity suspended even after this lift.
         """
         self._require_authorized(actor, "re-enable an extension package")
+        self._require_pinned_publisher(extension_id=extension_id, publisher=publisher)
         package = self._packages.setdefault(extension_id, _PackageState(publisher=publisher))
         package.state = GovernanceState.ACTIVE
         state_after, _ = self._governing(
