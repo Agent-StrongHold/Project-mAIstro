@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +13
+  tests/: +16
 ---
 # Issue #1069 strict M1 closeout parity
 
@@ -42,3 +42,23 @@ test_cross_product_parity.py`; node-ID delta vs merge base 420d503d4 is
   only after real execution (`CloseoutReport.passed`, `as_dict` payload); and a
   validator failure under strict mode is recorded as `FAILED` evidence with the
   exception named instead of crashing without a record.
+
+CI-repair round at 2abb645a2 (hosted `test` + `Coverage gate` failures):
+
+- `tests/test_check_compliance.py::test_release_workflow_resolves_and_preserves_evidence_before_build`
+  previously asserted `jobs["wheels"]["needs"] == "guard"` verbatim, so adding
+  the `m1-closeout` job to the release chain reds both the `test` job and the
+  coverage gate (whose `scripts` producer re-runs the same root suite). The test
+  now pins the strengthened contract instead: `wheels`/`pypi`/`images` each need
+  `guard` (evidence resolved before build — the property the test has always
+  checked) and `m1-closeout` (an abstained scenario cannot ship). No node count
+  change: the assertion body was rewritten, not duplicated.
+- `tests/test_run_m1_closeout.py` (+3): the named strict invocation is now
+  executed in process with the subprocess boundary stubbed — it must set both
+  strict spellings (`MAISTRO_PARITY_MODE=m1-closeout` and
+  `MAISTRO_PARITY_STRICT=1`), run the real parity suite path, propagate a
+  failing suite exit code without `check=True` swallowing it, and run under its
+  `__main__` guard (`runpy.run_path(..., run_name="__main__")`, the repo
+  convention for CI-shelled scripts). This also gives the new `scripts/` file
+  the measured coverage the diff-coverage gate requires of a changed file under
+  a measured root.
