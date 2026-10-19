@@ -534,6 +534,16 @@
     },
     {
       "source": "packages/hive-conductor/backend/routes/credentials.py",
+      "method": "POST",
+      "route": "/{provider_id}/test",
+      "handler": "test_credential",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "performs a real model-discovery probe against the operator-supplied OpenAI-compatible endpoint without persisting input, through the shared outbound guard",
+      "effect_owner": "maistro.http.sync_client under maistro.security.outbound explicit-endpoint policy (#67); the gateway's GET /models is the external effect"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/credentials.py",
       "method": "PUT",
       "route": "/{provider_id}",
       "handler": "save_credential",
