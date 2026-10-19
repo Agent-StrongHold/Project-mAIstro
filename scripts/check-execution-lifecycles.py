@@ -37,6 +37,11 @@ _PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "execution-lifecycles"
 METRIC_DEFINITION_VERSION = "3"
 
+#: Bounded analyzer implementation manifest (#319): the lifecycle discovery is
+#: this file's own AST scan, so its implementation identity is the actual
+#: bytes of exactly this file.
+ANALYZER_MANIFEST = ("scripts/check-execution-lifecycles.py",)
+
 CLASSIFICATIONS = frozenset({"CANONICAL", "DOMAIN", "PROJECTION", "RECEIPT", "CONVERGE"})
 _ENUM_BASES = frozenset({"Enum", "StrEnum", "IntEnum", "IntFlag", "Flag"})
 _TYPING_FORMS = frozenset({"Literal", "Optional", "Union", "Annotated"})
@@ -744,6 +749,14 @@ def audit(ledger: dict[str, object], found: dict[str, set[str]]) -> list[str]:
     return failures
 
 
+def _tool_version(prov: ModuleType) -> str:
+    """Implementation identity of the scanner that reached this verdict (#319)."""
+    version: str = prov.bundled_implementation_fingerprint(
+        Path(__file__).resolve().parents[1], ANALYZER_MANIFEST
+    )
+    return version
+
+
 def main() -> int:
     if not LEDGER.exists():
         print(f"FAIL: {LEDGER} is missing", file=sys.stderr)
@@ -755,6 +768,7 @@ def main() -> int:
 
     prov = _provenance()
     try:
+        tool_version = _tool_version(prov)
         trusted_ref = prov.resolve_baseline(LEDGER, root=ROOT)
         trusted_payload = trusted_ref.loads(default={"lifecycles": {}})
         trusted_entries = _entries(trusted_payload)
@@ -791,6 +805,7 @@ def main() -> int:
             ratchet=RATCHET,
             baseline=trusted_ref,
             tool="python ast",
+            tool_version=tool_version,
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=f"{len(trusted_entries)} classified lifecycles",
             new_value=f"{len(found)} discovered lifecycles",

@@ -1346,6 +1346,45 @@
       "notes": "Full payloads behind the log's result references (#301), content-addressed per Workspace and idempotently stored (put_result is INSERT OR IGNORE on the content address). Deleted by the same purge_workspace that removes the log entries referencing them; the lifetime question is the log's."
     },
     {
+      "table": "canonical_goals",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/sqlite_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#1572",
+      "notes": "Canonical Goals (`maistro.goals`): desired state and accountability, never execution state. Append-only by contract; no deletion path in scope — terminal Goals are final records, and a driven purge belongs with the reconciliation consumer (#805/#806) that first deletes one."
+    },
+    {
+      "table": "canonical_goal_revisions",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/sqlite_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#1572",
+      "notes": "The append-only desired-state revision chain. Revisions are never rewritten or deleted by any code path (#1572); they die with their Goal only if a Goal purge is ever driven (see canonical_goals)."
+    },
+    {
+      "table": "canonical_goal_transitions",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/sqlite_store.py",
+      "data_class": "audit",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#1572",
+      "notes": "Recorded, attributed lifecycle moves and Agent reassignments; the audit half of the Goal store (#1572). Bounded only by a Goal deletion that does not exist yet."
+    },
+    {
       "table": "user_model_facts",
       "backends": [
         "postgres"
@@ -1368,6 +1407,30 @@
       "deletion_path": null,
       "issue": "#1047",
       "notes": "Owner-bound statement key to lineage id. Kept forever on purpose: after a tombstone purges the lineage's content revisions, these rows are what still block re-promotion of every wording the lineage ever held, including one replayed from a stale Ladybug working graph. Identifiers only, never statement content."
+    },
+    {
+      "table": "extension_health_events",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/extensions/sqlite_health_store.py",
+      "data_class": "accounting",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#978",
+      "notes": "Host-recorded extension invocation observations and classified error records (M9-I3): one append-only row per event, version stored verbatim from the record so a superseded or removed version stays attributable. Kept forever on purpose: the M9-I epic requires historical telemetry to remain interpretable after upgrades and removals, and the SLO/error/latency ranking views read the same rows the operator dashboards do. The scope's active pointer decides what reports active, never the row."
+    },
+    {
+      "table": "extension_operator_states",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/extensions/sqlite_health_store.py",
+      "data_class": "configuration",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#978",
+      "notes": "Append-only operator decisions (enable/disable/quarantine/release) with actor and reason (M9-I3); the newest row per extension is the durable state that makes quarantines and disables survive restarts. Kept forever on purpose: 'who held this extension, when, and why' is audit evidence the health views and exports surface, and rewriting it would defeat the hold's provenance."
     }
   ]
 }

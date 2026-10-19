@@ -68,6 +68,7 @@ from maistro.extensions.tool_skill.execution import (
 from maistro.extensions.tool_skill.registration import (
     TOOL_CAPABILITY_PREFIX,
     ExtensionToolCatalog,
+    PermissionBeyondGrant,
     RegistrationError,
     ToolAccessPolicy,
     ToolNotAllowlisted,
@@ -105,6 +106,7 @@ __all__ = [
     "ExtensionToolOutcome",
     "ExtensionToolRunner",
     "ManifestContractError",
+    "PermissionBeyondGrant",
     "RegistrationError",
     "SkillContract",
     "SkillEntrypoint",

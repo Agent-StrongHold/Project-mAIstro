@@ -49,7 +49,7 @@ from maistro.runs.store import RunIntegrityError, RunStore
 
 from .protocol import DurableRunStore
 from .spine import mirror_lifecycle
-from .types import DurableRunRecord
+from .types import RECOVERY_CLAIM_UNTIL_KEY, DurableRunRecord
 
 NodeResolver = Callable[[str, Graph], BaseNode[Any, Any]]
 
@@ -282,6 +282,7 @@ async def resume_durable_graph(
     node_resolver: NodeResolver,
     run_store: RunStore | None = None,
     max_steps: int = 256,
+    now: datetime | None = None,
 ) -> DurableRunRecord:
     """Resume through canonical Attempt recovery, never a second physical walker."""
     from .attempt_executor import resume_durable_graph as resume
@@ -292,6 +293,7 @@ async def resume_durable_graph(
         node_resolver=node_resolver,
         run_store=run_store,
         max_steps=max_steps,
+        now=now,
     )
 
 
@@ -495,6 +497,7 @@ async def _checkpoint_paused_frontier(
 ) -> DurableRunRecord:
     """Persist paused siblings together with successors deferred until resume."""
     metadata = dict(record.graph_state.metadata)
+    metadata.pop(RECOVERY_CLAIM_UNTIL_KEY, None)
     pause_entries = {item.node_id: _pause_entry(item.result) for item in paused}
     existing_pauses = metadata.get("pauses", {})
     if isinstance(existing_pauses, Mapping):

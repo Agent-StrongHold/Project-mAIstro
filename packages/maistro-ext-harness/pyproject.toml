@@ -15,6 +15,14 @@ license-files = ["LICENSE"]
 # to keep that promise is to depend on nothing).
 dependencies = []
 
+[project.optional-dependencies]
+# Certification signing (M9-H3, #975): Ed25519 signatures over the canonical
+# certification payload. Opt-in so the default runtime — the one a clean
+# third-party CI installs — stays standard-library only; a signing request
+# without this extra fails closed with an actionable error, never a silent
+# downgrade to unsigned-but-claimed-signed.
+signing = ["cryptography>=42"]
+
 [project.scripts]
 maistro-ext-harness = "maistro_ext_harness.cli:main"
 
