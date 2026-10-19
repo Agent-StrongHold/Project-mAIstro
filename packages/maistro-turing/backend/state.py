@@ -92,6 +92,13 @@ class WorkspaceSelfModelState:
 
     A fresh scope starts from the documented defaults; nothing is inherited
     from another Workspace or from a process-wide baseline.
+
+    M1 product-local projection: Workspace
+
+    Not the canonical Workspace model — ``maistro.workspaces`` owns that.
+    This is Turing's optional cognitive state keyed by the canonical
+    ``workspace_id`` the execution plane resolves; it holds no shared
+    semantics of its own.
     """
 
     workspace_id: str

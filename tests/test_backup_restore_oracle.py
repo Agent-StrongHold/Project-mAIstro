@@ -41,6 +41,7 @@ RUNBOOK = REPO / "docs" / "install" / "deployment-topology.md"
 SPEC = REPO / "docs" / "specs" / "SPEC-070226-fbe3-deployment-topology.md"
 
 FAIL_CLASSES = ("ARTIFACT", "RESTORE", "SEMANTIC", "VERIFIER")
+RACY_READINESS = REPO / "tests" / "fixtures" / "restore-readiness" / "racy-socket-probe.sh"
 
 
 def _read(path: Path) -> str:
@@ -149,6 +150,43 @@ def test_distinct_failure_classes_in_verify_drill() -> None:
     old = _pre_change_script("verify-restore.sh")
     for cls in FAIL_CLASSES:
         assert f"fail_{cls.lower()}" not in old
+
+
+def _readiness_violations(script: str) -> list[str]:
+    """Why `script`'s scratch-Postgres readiness wait races the image's init."""
+    violations: list[str] = []
+    if "-h 127.0.0.1" not in script:
+        violations.append(
+            "readiness probe does not go over TCP loopback: the init entrypoint's "
+            "temporary server (socket-only, listen_addresses='') can satisfy it"
+        )
+    if "SELECT 1" not in script:
+        violations.append(
+            "readiness probe does not issue a real query against the target "
+            "database, so it can pass before POSTGRES_DB exists"
+        )
+    return violations
+
+
+def test_scratch_readiness_probes_final_server_and_target_db() -> None:
+    """The drill's readiness wait must see only the FINAL server, target DB.
+
+    The postgres image's init entrypoint runs a *temporary* server on the unix
+    socket before the target database exists, and shuts it down again before
+    the real server starts. A socket `pg_isready -U ...` reports ready inside
+    that window, and the restore then dies with `FATAL: database "maistro"
+    does not exist` or `FATAL: the database system is shutting down` — both
+    measured in the coverage-gate producer's root-suite run (#859 repair). The
+    temporary server starts with `listen_addresses=''`, so a TCP-loopback
+    probe cannot succeed before the final server is up, and a probe of the
+    target database with a real query cannot succeed before init created it.
+    """
+    violations = _readiness_violations(_read(VERIFY_SH))
+    assert violations == [], "verify-restore.sh readiness wait is racy: " + "; ".join(violations)
+    # Fail-before: the same properties must hold of the pinned racy probe, so
+    # this test cannot pass vacuously against the shape it replaces.
+    old_violations = _readiness_violations(_read(RACY_READINESS))
+    assert old_violations, "fail-before baseline drifted: the pinned probe is no longer racy"
 
 
 def test_security_defaults_preserved_no_restrict_key() -> None:

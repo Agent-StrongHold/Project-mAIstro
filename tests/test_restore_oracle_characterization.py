@@ -108,9 +108,31 @@ def _bash(script: str) -> subprocess.CompletedProcess[str]:
 
 
 def _wait_ready(container: str) -> None:
+    # Same contract as verify-restore.sh's scratch_ready(): the image's init
+    # entrypoint serves a *temporary* server on the unix socket before the
+    # target database exists (and shuts it down again before the final server
+    # starts), so a socket pg_isready can report ready inside that window and
+    # the very next CREATE TABLE fails. Probe over TCP loopback — unreachable
+    # for the temporary server (listen_addresses='') — against the target
+    # database, with a real query. Measured live in the readiness-phase sweep
+    # that motivated #859's coverage-gate repair.
     for _ in range(60):
         probe = subprocess.run(
-            ["docker", "exec", container, "pg_isready", "-U", PG_USER],
+            [
+                "docker",
+                "exec",
+                container,
+                "psql",
+                "-X",
+                "-h",
+                "127.0.0.1",
+                "-U",
+                PG_USER,
+                "-d",
+                PG_DB,
+                "-c",
+                "SELECT 1",
+            ],
             capture_output=True,
         )
         if probe.returncode == 0:
