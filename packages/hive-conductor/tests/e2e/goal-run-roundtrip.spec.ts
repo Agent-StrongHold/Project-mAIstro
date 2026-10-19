@@ -133,6 +133,8 @@ const beta = {
 function runDetail(id: string, withGoalContext: boolean) {
   return {
     id,
+    canonical_run_id: id,
+    status: "completed",
     user_id: "pmuser",
     started_at: 1000,
     finished_at: 1060,
@@ -305,13 +307,124 @@ test("a run outside any Goal relays no Goal link, and a stale deep link degrades
   // The child run's detail carries no goal_context: the run surface must not
   // invent a back-link for it.
   await page.goto(`/dag-runs?run=${CHILD_RUN_ID}`, { waitUntil: "domcontentloaded" });
-  await expect(page.getByRole("heading", { name: "Live DAG Runs", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Runs", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Goal: / })).toHaveCount(0);
   // A bookmark for a purposed goal lands on the selection prompt — the
   // page's honest empty selection, never an error banner.
   await page.goto(`/goals?goal=goal-never-was&ws=${WORKSPACE_ID}`, { waitUntil: "domcontentloaded" });
   await expect(page.getByText("Select a goal")).toBeVisible();
   await expect(page.getByText("Couldn't load goals.")).toHaveCount(0);
+});
+
+/** Isolate delivery from history: these tests deliberately send no legacy
+ * node frames. The canonical detail endpoint is the only source of changes. */
+async function controlledRunPage() {
+  const fresh = await context.newPage();
+  await fresh.clock.install();
+  await fresh.addInitScript(() => {
+    const sources: (EventTarget & { url: string; closed: boolean })[] = [];
+    class InspectionEventSource extends EventTarget {
+      closed = false;
+      constructor(public url: string) {
+        super();
+        sources.push(this);
+      }
+      close() { this.closed = true; }
+    }
+    Object.assign(window, { EventSource: InspectionEventSource, inspectionSources: sources });
+  });
+  await stubGoalDoors(fresh, [alpha]);
+  return fresh;
+}
+
+test("canonical status and Attempts refresh without legacy event delivery", async () => {
+  const fresh = await controlledRunPage();
+  try {
+    let state = "running";
+    let unavailable = false;
+    await fresh.route(`**/v1/dag-runs/${RUN_ID}`, async (route) => {
+      if (unavailable) return route.fulfill({ status: 503, json: { detail: "unavailable" } });
+      const detail = runDetail(RUN_ID, true);
+      detail.status = state;
+      detail.node_runs[0].status = state;
+      detail.node_runs[0].attempts[0].status = state;
+      await route.fulfill({ json: detail });
+    });
+    await fresh.goto(`/dag-runs?run=${RUN_ID}`);
+    const evidence = fresh.getByLabel("Canonical execution evidence");
+    await expect(evidence).toContainText("Attempt 0: running");
+    state = "completed";
+    await fresh.clock.fastForward(10_000);
+    await expect(evidence).toContainText("Attempt 0: completed");
+    await expect(fresh.getByLabel("Run status")).toHaveText("completed");
+    // A canonical-only run must not acquire the fixed demo topology.
+    await expect(fresh.getByLabel("Legacy activity sketch")).toHaveCount(0);
+    unavailable = true;
+    await fresh.clock.fastForward(10_000);
+    await expect(fresh.getByRole("alert")).toContainText("unavailable");
+    unavailable = false;
+    await fresh.clock.fastForward(10_000);
+    await expect(fresh.getByRole("alert")).toHaveCount(0);
+  } finally {
+    await fresh.close();
+  }
+});
+
+test("reconnect and resync re-read canonical detail without a poll tick", async () => {
+  const fresh = await controlledRunPage();
+  try {
+    let state = "running";
+    await fresh.route(`**/v1/dag-runs/${RUN_ID}`, async (route) => {
+      const detail = runDetail(RUN_ID, true);
+      detail.node_runs[0].attempts[0].status = state;
+      await route.fulfill({ json: detail });
+    });
+    await fresh.goto(`/dag-runs?run=${RUN_ID}`);
+    const evidence = fresh.getByLabel("Canonical execution evidence");
+    await expect(evidence).toContainText("Attempt 0: running");
+    for (const [event, outcome] of [["open", "yielded"], ["pm_resync", "completed"]]) {
+      state = outcome;
+      await fresh.evaluate((name) => {
+        const sources = (window as unknown as { inspectionSources: EventTarget[] }).inspectionSources;
+        sources.at(-1)!.dispatchEvent(new Event(name));
+      }, event);
+      await expect(evidence).toContainText(`Attempt 0: ${outcome}`);
+    }
+  } finally {
+    await fresh.close();
+  }
+});
+
+test("a late detail response cannot open a stream for a deselected Run", async () => {
+  const fresh = await controlledRunPage();
+  let release: () => void = () => {};
+  const delayed = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    await fresh.route(`**/v1/dag-runs/${CHILD_RUN_ID}`, async (route) => {
+      await delayed;
+      await route.fulfill({ json: runDetail(CHILD_RUN_ID, false) });
+    });
+    const pending = fresh.waitForRequest(`**/v1/dag-runs/${CHILD_RUN_ID}`);
+    await fresh.goto(`/dag-runs?run=${CHILD_RUN_ID}`);
+    await pending;
+    await fresh.getByRole("button", { name: /run-aaa1/ }).click();
+    await expect(fresh.getByLabel("Canonical execution evidence")).toContainText(`at-${RUN_ID}`);
+    const oldResponse = fresh.waitForResponse(`**/v1/dag-runs/${CHILD_RUN_ID}`);
+    release();
+    await (await oldResponse).finished();
+    // Flush the completed response through the page before inspecting streams.
+    await fresh.clock.fastForward(1);
+    const sources = await fresh.evaluate(() =>
+      (window as unknown as { inspectionSources: { url: string; closed: boolean }[] })
+        .inspectionSources.map(({ url, closed }) => ({ url, closed })),
+    );
+    expect(sources.filter((source) => !source.closed).map((source) => source.url))
+      .toEqual([`/v1/dag-runs/${RUN_ID}/events`]);
+    await expect(fresh.getByLabel("Canonical execution evidence")).not.toContainText(`at-${CHILD_RUN_ID}`);
+  } finally {
+    release();
+    await fresh.close();
+  }
 });
 
 test("no recorded work renders the honest empty page", async () => {

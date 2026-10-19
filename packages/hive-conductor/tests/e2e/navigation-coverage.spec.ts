@@ -51,7 +51,7 @@ const NAV_ENTRIES: Array<{ label: string; path: string; scope?: string; probe: (
   { label: "Goals", path: "/goals", probe: (p) => p.getByRole("heading", { name: "Goals", exact: true }) },
   { label: "Design Studio", path: "/design-studio", probe: (p) => p.getByRole("heading", { name: "Design Studio", exact: true }) },
   { label: "DAG Builder", path: "/dags", probe: (p) => p.getByRole("heading", { name: "DAG Builder", exact: true }) },
-  { label: "DAG Runs", path: "/dag-runs", probe: (p) => p.getByRole("heading", { name: "Live DAG Runs", exact: true }) },
+  { label: "DAG Runs", path: "/dag-runs", probe: (p) => p.getByRole("heading", { name: "Runs", exact: true }) },
   { label: "Schedules", path: "/schedules", scope: "schedules.write", probe: (p) => p.getByRole("heading", { name: "Schedules", exact: true }) },
   { label: "Missions", path: "/missions", probe: (p) => p.getByRole("heading", { name: "Missions", exact: true }) },
   { label: "Backlog", path: "/backlog", probe: (p) => p.getByRole("heading", { name: "Backlog", exact: true }) },

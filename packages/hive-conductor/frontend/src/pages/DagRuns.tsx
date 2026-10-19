@@ -35,6 +35,8 @@ interface RunSummary {
 }
 
 interface RunDetail extends RunSummary {
+  status?: string;
+  canonical_run_id?: string;
   events: DagEvent[];
   // Physical execution records are optional: projection-only historical rows
   // have legacy events but no readable canonical NodeRun/Attempt tree.
@@ -114,6 +116,7 @@ export default function DagRuns() {
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const navigate = useNavigate();
 
   // List recent runs.
@@ -135,61 +138,62 @@ export default function DagRuns() {
     return () => clearInterval(i);
   }, [loadRuns]);
 
-  // Initial detail load + live SSE subscription for selectedRunId.
+  // The legacy stream does not carry canonical lifecycle/Attempt changes.
+  // Re-read the shared inspection seam on a bounded cadence and reconnect;
+  // never derive canonical status from those legacy delivery frames.
   useEffect(() => {
-    if (!selectedRunId) {
-      setDetail(null);
-      return;
-    }
+    setDetail(null);
+    setDetailError(null);
+    if (!selectedRunId) return;
     let active = true;
+    let inFlight = false;
     let es: EventSource | null = null;
-    void (async () => {
+    const handler = (ev: MessageEvent) => {
+      if (!active) return;
+      try {
+        const parsed = JSON.parse(ev.data) as DagEvent;
+        setDetail((cur) => cur ? {
+          ...cur,
+          events: [...cur.events, parsed],
+          event_count: cur.event_count + 1,
+          node_states: deriveStates([...cur.events, parsed]),
+        } : cur);
+      } catch {
+        /* malformed event, skip */
+      }
+    };
+    const refresh = async () => {
+      // Serialize reads: a slow earlier response must not overwrite newer
+      // evidence, and repeated stream notifications must not flood the API.
+      if (!active || inFlight) return;
+      inFlight = true;
       try {
         const d = await apiGet<RunDetail>(`/v1/dag-runs/${selectedRunId}`);
-        if (active) setDetail(d);
-      } catch (e) {
-        if (active) setError((e as Error).message ?? "detail load failed");
-        return;
-      }
-      es = new EventSource(`/v1/dag-runs/${selectedRunId}/events`);
-      const handler = (ev: MessageEvent) => {
         if (!active) return;
-        try {
-          const parsed = JSON.parse(ev.data) as DagEvent;
-          setDetail((cur) =>
-            cur
-              ? {
-                  ...cur,
-                  events: [...cur.events, parsed],
-                  event_count: cur.event_count + 1,
-                  node_states: deriveStates([...cur.events, parsed]),
-                }
-              : cur,
-          );
-        } catch {
-          /* malformed event, skip */
+        setDetail(d);
+        setDetailError(null);
+        if (!es) {
+          es = new EventSource(`/v1/dag-runs/${selectedRunId}/events`);
+          es.addEventListener("pm_node_started", handler as EventListener);
+          es.addEventListener("pm_node_completed", handler as EventListener);
+          es.addEventListener("pm_node_failed", handler as EventListener);
+          es.addEventListener("pm_resync", refresh);
+          es.addEventListener("open", refresh);
         }
-      };
-      es.addEventListener("pm_node_started", handler as EventListener);
-      es.addEventListener("pm_node_completed", handler as EventListener);
-      es.addEventListener("pm_node_failed", handler as EventListener);
-      // The stream told us it dropped events (full queue or trimmed history):
-      // converge on durable truth by re-reading the run (#1183) instead of
-      // stitching a contiguous-looking timeline out of what survived.
-      const resync = () => {
-        if (!active) return;
-        void apiGet<RunDetail>(`/v1/dag-runs/${selectedRunId}`)
-          .then((d) => {
-            if (active) setDetail(d);
-          })
-          .catch(() => {
-            /* keep the current view; the stream keeps delivering */
-          });
-      };
-      es.addEventListener("pm_resync", resync as EventListener);
-    })();
+      } catch (e) {
+        if (active) {
+          // Retain the last snapshot, but do not present it as a fresh read.
+          setDetailError(`Run evidence may be stale. ${(e as Error).message}`);
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+    void refresh();
+    const interval = setInterval(() => void refresh(), 10_000);
     return () => {
       active = false;
+      clearInterval(interval);
       es?.close();
     };
   }, [selectedRunId]);
@@ -208,23 +212,23 @@ export default function DagRuns() {
 
   return (
     <div style={{ padding: 16 }}>
-      <h2 style={{ marginTop: 0 }}>Live DAG Runs</h2>
+      <h2 style={{ marginTop: 0 }}>Runs</h2>
       <p style={{ color: "#6b7280", marginTop: -6 }}>
         Inspect the canonical execution evidence for a run. The activity sketch below preserves legacy PM event
         playback; the execution evidence panel lists the actual NodeRuns, Attempts, and recorded artifacts for
         every canonical run the inspection seam can read.
       </p>
 
-      {error && (
-        <div style={{ background: "#fee2e2", border: "1px solid #fca5a5", padding: 10, margin: "8px 0", borderRadius: 6 }}>
-          {error}
+      {(detailError || error) && (
+        <div role="alert" style={{ background: "#fee2e2", border: "1px solid #fca5a5", padding: 10, margin: "8px 0", borderRadius: 6 }}>
+          {detailError || error}
         </div>
       )}
 
       <div style={{ display: "flex", gap: 16, marginTop: 12 }}>
         <aside style={{ width: 220, flexShrink: 0 }}>
           <h3 style={{ marginTop: 0, fontSize: 14 }}>Recent runs</h3>
-          {runs.length === 0 && <div style={{ color: "#9ca3af" }}>No runs yet. Trigger the demo pipeline to start.</div>}
+          {runs.length === 0 && <div style={{ color: "#9ca3af" }}>No recent runs in this view.</div>}
           <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
             {runs.map((r) => (
               <li key={r.id}>
@@ -263,6 +267,10 @@ export default function DagRuns() {
               }}
             >
               <span style={{ fontFamily: "monospace", fontSize: 13 }}>{detail.id}</span>
+              <span aria-label="Run status">{detail.status ?? "Status not recorded"}</span>
+              {detail.canonical_run_id && detail.canonical_run_id !== detail.id && (
+                <span>Canonical Run: {detail.canonical_run_id}</span>
+              )}
               {/* Round trip (#65): this run arrived from the Goal view's
                   history; the recorded Goal context links straight back, and
                   the run's own Workspace rides along as ?ws= so the Goal page
@@ -333,7 +341,8 @@ export default function DagRuns() {
               )}
             </section>
           )}
-          <svg
+          {detail && detail.events.length > 0 && <svg
+            aria-label="Legacy activity sketch"
             width={width}
             height={height}
             style={{ background: "#fafafa", border: "1px solid #e5e7eb", borderRadius: 8 }}
@@ -413,7 +422,7 @@ export default function DagRuns() {
                 </g>
               );
             })}
-          </svg>
+          </svg>}
 
           {selectedNode && detail && (
             <div
