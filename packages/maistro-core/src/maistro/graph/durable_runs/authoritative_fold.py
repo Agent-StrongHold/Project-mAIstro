@@ -25,6 +25,7 @@ from maistro.runs.model import (
 )
 
 from . import executor as traversal
+from .failure import sanitize_failure_message
 from .protocol import DurableRunStore
 from .types import DurableRunRecord
 
@@ -75,7 +76,9 @@ def _logical_outcome(
     else:
         logical_status = RunStatus.FAILED
         result = None
-        message = item.result.error_message or f"node {item.node_id} failed"
+        message = sanitize_failure_message(
+            item.result.error_message or f"node {item.node_id} failed"
+        )
         error = f"{item.result.error_code or 'NodeFailure'}: {message}"[:512]
     return AcceptedNodeOutcome(
         node_run_id=item.node_run.node_run_id,
