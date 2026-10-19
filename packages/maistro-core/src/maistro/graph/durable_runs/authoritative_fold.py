@@ -155,14 +155,14 @@ def _escalate_quality_shortfalls(
         declared = escalation_from_policy(item.spec.policies)
         quality = _visit_quality(item)
         if declared is None or quality is None:
-            escalations.pop(item.node_id, None)
+            changed |= escalations.pop(item.node_id, None) is not None
             advanced.append(item)
             continue
         if _escalate_one_visit(record, item, escalations, declared, quality):
             requeued.append(item.node_id)
             changed = True
         else:
-            escalations.pop(item.node_id, None)
+            changed |= escalations.pop(item.node_id, None) is not None
             advanced.append(item)
     if not changed:
         return record, completed, ()

@@ -18,6 +18,7 @@ from maistro.graph import Graph, Node
 from maistro.graph.durable_runs import InMemoryDurableRunStore, run_durable_graph
 from maistro.graph.nodes import BaseNode, NodeContext, NodeResult
 from maistro.graph.nodes.base import ReplaySemantics
+from maistro.graph.verification.escalation import ESCALATION_STATE_METADATA_KEY
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import RunStatus
@@ -183,6 +184,9 @@ async def test_quality_shortfall_escalates_to_next_rung() -> None:
         RunStatus.COMPLETED,
     ]
     assert record.node_runs[0].node_run_id != record.node_runs[1].node_run_id
+    # The accepted revisit clears the escalation rung from graph state so a
+    # later revisit of the node starts fresh at the cheap/default model.
+    assert ESCALATION_STATE_METADATA_KEY not in record.graph_state.metadata
 
 
 async def test_quality_pass_on_first_visit_runs_cheap_only() -> None:
@@ -213,6 +217,9 @@ async def test_exhausted_ladder_accepts_shortfall_without_looping() -> None:
     assert record.status is RunStatus.COMPLETED
     assert node.visit == 2
     assert node.models_seen == [None, "pro"]
+    # Exhausting the ladder accepts the shortfall as final and must clear the
+    # stale rung from persisted graph state, not just the local mapping.
+    assert ESCALATION_STATE_METADATA_KEY not in record.graph_state.metadata
 
 
 async def test_escalation_never_exceeds_visit_budget() -> None:

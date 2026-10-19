@@ -1321,7 +1321,7 @@ jobs:
           # (_validate_least_authority 14, VersionRange.satisfied_by 12) as
           # ledger rows: 137 + 2 = 139.
           #
-          # 139 -> 137 (this PR): those two SDK blocks did not stay debt. The
+          # 139 -> 137: those two SDK blocks did not stay debt. The
           # Boy Scout ratchet took them down instead of banking them --
           # _validate_least_authority split into its two one-directional halves
           # and VersionRange.satisfied_by became an operator dispatch, both now
@@ -1329,7 +1329,17 @@ jobs:
           # two ledger rows and their grants were withdrawn as never landed.
           # Re-measured at HEAD: 137 block identities, xenon and the ledger
           # one-for-one, module and average axes clean.
-          XENON_BASELINE: 137
+          #
+          # 137 -> 136 (#106): the M4-I verification-aware executor refactor
+          # took durable_runs/executor.py::_build_ctx (and nine further
+          # blocks) below the ledger threshold; quality/radon-baseline.json
+          # banked the improvements and the pin test
+          # (tests/test_complexity_gate_scope.py::
+          # test_xenon_block_ceiling_equals_the_radon_ledger_length) requires
+          # this ceiling to follow the ledger down in the same PR.
+          # Re-measured on the branch: 136 block identities, xenon and the
+          # ledger one-for-one.
+          XENON_BASELINE: 136
           # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in
           # silence; widening the scope surfaced one.
