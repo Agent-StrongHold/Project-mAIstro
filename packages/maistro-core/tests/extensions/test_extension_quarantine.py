@@ -454,6 +454,36 @@ def test_re_enable_preserves_strikes_and_history() -> None:
     assert not _admit(service).allowed
 
 
+def test_package_lift_under_quarantined_publisher_reports_effective_state() -> None:
+    """``re_enable_package`` records the effective governing state, not just
+    the package layer: lifting a package while its publisher stays
+    quarantined must audit ``state_after=QUARANTINED`` (the identity is not
+    actually active) and keep refusing admission."""
+    service = _service()
+    service.quarantine_publisher(publisher=PUBLISHER, actor=ADMIN, reason="publisher breach")
+    service.quarantine_package(
+        extension_id=EXT, publisher=PUBLISHER, actor=ADMIN, reason="bad package"
+    )
+    decision = service.re_enable_package(
+        extension_id=EXT, publisher=PUBLISHER, actor=ADMIN, reason="package reviewed"
+    )
+    assert decision.changed
+    assert decision.state_after is GovernanceState.QUARANTINED
+    assert decision.suspended
+    assert not _admit(service).allowed
+    # Only lifting the publisher returns the identity to a genuinely active
+    # state, and the package lift itself stays on the ledger.
+    lifted = service.re_enable_publisher(publisher=PUBLISHER, actor=ADMIN, reason="reviewed")
+    assert lifted.state_after is GovernanceState.ACTIVE
+    assert not lifted.suspended
+    assert _admit(service).allowed
+    history = service.ledger.history(extension_id=EXT)
+    assert any(
+        event.action == "package_re_enabled" and event.state_after is GovernanceState.QUARANTINED
+        for event in history
+    )
+
+
 def test_history_is_append_only_and_narrowable() -> None:
     service = _service()
     service.record(

@@ -601,10 +601,18 @@ class ExtensionGovernanceService:
         actor: GovernanceActor,
         reason: str,
     ) -> GovernanceDecision:
-        """Lift a package quarantine. Strikes and history are never erased."""
+        """Lift a package quarantine. Strikes and history are never erased.
+
+        ``state_after`` is the effective governing state, not the package
+        layer alone: a quarantined publisher or disabled versions keep the
+        identity suspended even after this lift.
+        """
         self._require_authorized(actor, "re-enable an extension package")
         package = self._packages.setdefault(extension_id, _PackageState(publisher=publisher))
         package.state = GovernanceState.ACTIVE
+        state_after, _ = self._governing(
+            extension_id=extension_id, version="*", publisher=publisher
+        )
         return self._append(
             action="package_re_enabled",
             target=GovernanceTarget.PACKAGE,
@@ -613,7 +621,7 @@ class ExtensionGovernanceService:
             publisher=publisher,
             actor=actor,
             reason=reason,
-            state_after=GovernanceState.ACTIVE,
+            state_after=state_after,
             changed=True,
         )
 

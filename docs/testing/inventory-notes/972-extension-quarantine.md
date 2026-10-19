@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +32
+  packages/maistro-core/tests: +33
 ---
 # 972-extension-quarantine
 
@@ -11,7 +11,7 @@ M9-G2 → M9-G4 bridge the sandbox violation log's escalation names, three
 distinct responses (version disable, package quarantine, publisher-wide
 action), immediate admission refusal after the authoritative state change,
 in-flight drain/terminate disposition, and an append-only ledger no
-extension actor can write or clear. Thirty-two node IDs in
+extension actor can write or clear. Thirty-three node IDs in
 `packages/maistro-core/tests/extensions/test_extension_quarantine.py`.
 
 Per-criterion mapping (issue #972 acceptance):
@@ -42,7 +42,12 @@ Per-criterion mapping (issue #972 acceptance):
   strike/violation evidence** — `test_re_enable_preserves_strikes_and_history`
   proves strikes survive re-enable and the next violation re-quarantines
   from lifetime strikes; `test_authorized_actors_can_mutate` pins the
-  admin-actor requirement.
+  admin-actor requirement;
+  `test_package_lift_under_quarantined_publisher_reports_effective_state`
+  pins the develop-sync repair: lifting a package quarantine under a still
+  quarantined publisher audits `state_after=QUARANTINED` (the effective
+  governing state, not the package layer alone), keeps admission refused,
+  and stays on the ledger.
 - **one bad version disabled without condemning unrelated signed versions,
   unless policy chooses publisher-wide action** —
   `test_version_disable_does_not_condemn_sibling_versions`,
