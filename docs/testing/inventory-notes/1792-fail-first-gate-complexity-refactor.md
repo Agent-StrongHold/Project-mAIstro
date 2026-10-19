@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +3
+  packages/maistro-rsi/tests: +4
 ---
 # 1792-fail-first-gate-complexity-refactor
 
@@ -47,10 +47,20 @@ into new helpers and that no existing test pinned:
    — an unresolvable baseline ref yields no evidence at all (the gate fails
    the behavior contract closed on missing) and touches nothing in the
    candidate tree.
+4. `test_net_new_test_signal_fires_when_coverage_rises` (in
+   `test_candidate_fitness.py`) — a candidate that adds green tests *and*
+   raises coverage earns the `new_test` signal row in the scorecard. This
+   pins the extracted `_scorecard_scores` append seam: no pre-existing
+   scorecard test set `net_new_tests > 0` with a rising coverage delta, so
+   the arc that appends a present signal (line 960 → 961) was never taken
+   anywhere in the suite and the refactor's moved conditional failed the
+   diff-coverage gate (75% of 4 changed branch arcs) at the develop-sync
+   merge. It also pins the end-to-end accept verdict with the signal
+   present.
 
 Behavior preservation itself is pinned by the pre-existing `test_fail_first.py`
-tests — 42 of the file's 45 collected tests at the final head; the other
-three are the ones listed above — red→green proof, flaky red, config taint,
+tests — 42 of the file's 46 collected tests at the final head; the other
+four are the ones listed above — red→green proof, flaky red, config taint,
 unrelated failure, candidate deletion, new-module test-first — plus the
 `test_candidate_fitness.py`/`test_candidate_fitness_scenarios.py` scorecard
 and promotion matrices, and `test_local_loop.py`.
