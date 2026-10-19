@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-turing/backend/tests: +9
+  packages/maistro-turing/backend/tests: +12
 ---
 
 # Issue #27/#859 — Scope Turing cognitive state to canonical principals; bounded writes
@@ -26,7 +26,7 @@ chat-session registry, on the production backend path
 - `routes/chat.py`: the module-global `_SESSIONS` dict is replaced by the
   composed `TuringState.chat_sessions` registry (per-principal keys, bounded).
 
-Tests (`+9` node IDs, new file `test_state_scoping.py`):
+Tests (`+12` node IDs, new file `test_state_scoping.py`):
 
 - cross-principal self-model isolation at the state seam (two scopes never
   share mutations) and refusal of blank scopes (no process-global fallback);
@@ -36,8 +36,15 @@ Tests (`+9` node IDs, new file `test_state_scoping.py`):
   is visible in the admin's own views and invisible in another principal's
   `/v1/state/snapshot`;
 - chat-session registry: same session id under two principals yields distinct
-  sessions; LRU capacity eviction; idle-TTL expiry (fake clock, no
-  wall-clock timing assertion); blank principal/session ids refused.
+  sessions; LRU capacity eviction; eviction never removes another principal's
+  session; LRU order survives timestamp ties (OrderedDict recency, fake
+  clock); idle-TTL expiry (fake clock, no wall-clock timing assertion); blank
+  principal/session ids refused; a rejected out-of-range write does not
+  install a scope entry for a previously unseen principal.
+
+(Review rounds P1/P2 added three of these node IDs after this note first
+recorded `+9`; the delta here is the branch's whole change vs its base,
+which is what the ledger sums.)
 
 `test_state.py::test_snapshot_reflects_admin_mood_change` asserted the defect
 itself (another user's snapshot reflecting one admin's PATCH); it is renamed to
