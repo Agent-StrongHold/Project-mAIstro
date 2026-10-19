@@ -3,11 +3,12 @@
 Incoming state: the worktree carried a **preserved, unfinished merge** of
 origin/develop (MERGE_HEAD `64ea662cb`) with exactly one unmerged path,
 `tests/test_restore_oracle_characterization.py`. Per the lane brief the sync
-was resolved in place, the develop tip was merged on top, and every #1790
+was resolved in place, the develop tip was merged on top (twice during the
+round: `851a63e7c`, then `fe4332d8e`, both clean), and every #1790
 acceptance criterion was re-checked against reachable behavior. No GitHub
 mutations; all work committed locally on `auto-1790`.
 
-## Merge resolution (commits `d07c1a8a5`, `a5ac62379`)
+## Merge resolution (commits `d07c1a8a5`, `a5ac62379`, `9b3277664`)
 
 Both sides had fixed the same readiness race differently:
 
