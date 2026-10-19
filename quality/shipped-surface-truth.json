@@ -804,6 +804,46 @@
       "effect_owner": "hitl store settles the cancelled pause"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/home.py",
+      "method": "PUT",
+      "route": "/{workspace_id}/home/layout",
+      "handler": "save_home_layout",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists the Workspace's durable Home layout with optimistic-concurrency revision; viewer members are refused",
+      "effect_owner": "stores.home_layouts"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/home.py",
+      "method": "POST",
+      "route": "/{workspace_id}/home/regions/{region_id}/pin",
+      "handler": "pin_home_region",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists one region's pinned flag; presentation only, the referenced resource is neither copied nor forked",
+      "effect_owner": "stores.home_layouts"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/home.py",
+      "method": "POST",
+      "route": "/{workspace_id}/home/adaptive/dismiss",
+      "handler": "dismiss_home_adaptive",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records a counted, backend-side adaptive dismissal as negative reinforcement; viewer members are refused",
+      "effect_owner": "stores.home_adaptive_dismissals"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/home.py",
+      "method": "POST",
+      "route": "/{workspace_id}/home/adaptive/compose",
+      "handler": "compose_home_adaptive",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists the Agent's composition of the unpinned space; the service refuses pinned writes to Agent and API alike",
+      "effect_owner": "stores.home_layouts"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/install.py",
       "method": "POST",
       "route": "/session",
@@ -1242,6 +1282,26 @@
       "production_enabled": true,
       "reason": "stops a running RSI run",
       "effect_owner": "maistro-rsi service"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/rum.py",
+      "method": "POST",
+      "route": "/events",
+      "handler": "ingest_events",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "perceived-load telemetry ingest (#1420): appends the reporter's own schema-projected timings to the bounded in-memory ring; off unless RUM_INGEST_ENABLED, capped per body and per event count, projected onto the hive.rum.v1 allowlist before storage",
+      "effect_owner": "services/rum_store.py RumStore.ingest (bounded in-memory ring)"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/rum.py",
+      "method": "POST",
+      "route": "/rum-contract",
+      "handler": "_contract",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "OpenAPI rendering aid for the ingest contract (#1048 drift gate): ingest_events reads its body manually so the 64 KiB cap applies before parsing, which hides the schema from FastAPI's component collection, so this scratch-app route renders the RumBatchIn component schemas through FastAPI itself",
+      "truth_contract": "never mounted on any served app and never routable at runtime; exists only inside ensure_openapi_contract's throwaway FastAPI app so the OpenAPI document renders the hive.rum.v1 schemas byte-identically to a declared body parameter; no store access, no durable effect"
     },
     {
       "source": "packages/hive-conductor/backend/routes/schedules.py",
@@ -1890,8 +1950,8 @@
       "handler": "create_a2a_task",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "durably admits one idempotent remote delegation as a canonical Run (claims by logical effect)",
-      "effect_owner": "runs store claim_run_by_effect (Run admit or replay of the claimed Run)"
+      "reason": "durably admits one idempotent remote A2A delegation as a canonical Run (ADR-058, SPEC-182)",
+      "effect_owner": "maistro.runs.store.RunStore.claim_run_by_effect (idempotent canonical Run admission)"
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/canvas.py",
@@ -1982,6 +2042,76 @@
       "production_enabled": true,
       "reason": "abandons every authorization request whose decision window elapsed, durably keeping late approvals from activating",
       "effect_owner": "extension install store expire_abandoned + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/health/{extension_id}/operator",
+      "handler": "decide_extension_operator_state",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "applies the durable operator admission decision (enable/disable/quarantine/release) with the authenticated actor and a required reason; append-only evidence whose newest row is the restart-surviving runtime state",
+      "effect_owner": "extension health store (operator decisions) + health projections"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/pin",
+      "handler": "pin_extension_version",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "pins the active version so activation of another version is refused until the pin is explicitly lifted (#954); both decisions land on the audit trail",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/unpin",
+      "handler": "unpin_extension_version",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "lifts the pin with an audited, reason-carrying decision before any version change can follow (#954)",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/disable",
+      "handler": "disable_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "suspends the extension: clears the active pointer so the resolution seam stops serving it immediately, while records and transitions stay queryable (#954)",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/resume",
+      "handler": "resume_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "returns a disabled extension to service by re-running its activation loader with the same digest-bound artifact; the grant is not re-decided (#954)",
+      "effect_owner": "extension install store + extension loader (activation) + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/rollback",
+      "handler": "rollback_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "restores a superseded version through the loader only when its frozen grant declares no broadened authority and it still evaluates compatible; otherwise 409 with the current version untouched (#954)",
+      "effect_owner": "extension install store + extension loader (activation) + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/remove",
+      "handler": "remove_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "uninstalls the record (terminal for authority) while preserving every historical record and transition as queryable evidence; owned-resource cleanup runs before the transition (#954)",
+      "effect_owner": "extension install store + owned-resource janitor + transition audit trail"
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/projects.py",
