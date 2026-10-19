@@ -161,7 +161,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Prompts and personas | `maistro.container`, `routes.agents` | `few` | KEEP | ADR-081226-e626 | persona seed/eval protocol tests | — |
 | Codebase analysis | `maistro.tools` call sites | `none` | KEEP | ADR-065 | tool-level tests | — |
 | Core CLI | `maistro.cli` console script | `some` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit Conductor API only | — |
-| Shared contracts and config | imported by every package | `few` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction + compatibility-owner fitness checks | #36 |
+| Shared contracts and config | imported by every package | `none` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction + compatibility-owner fitness checks | #36 |
 | Test scaffolding | test suites only | `all` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by checked test suites | — |
 | maistro-server HTTP app | `maistro_server.main` | `none` | MIGRATE — task queue is receipt; chat front door now uses Container/Conduit | ADR-076, ADR-096, ADR-082426-2192 | `/v1/tasks` and `/v1/chat/completions` both yield canonical Run identity | #43, #234 |
 | Agent Conductor HTTP surface | `main` (uvicorn) | `few` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
