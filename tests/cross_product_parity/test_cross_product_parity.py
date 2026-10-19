@@ -475,10 +475,14 @@ async def test_closeout_report_passes_only_after_real_execution() -> None:
     def execute() -> ScenarioExecution:
         return ScenarioExecution({"run_id": "run-real"})
 
+    def validate(observation: Mapping[str, object]) -> None:
+        assert observation["run_id"] == "run-real"
+
     scenario = ParityScenario(
         "only-required",
         (Dependency(key="landed producer", issue=49, pr=None, description="", probes=()),),
         execute,
+        validate_observation=validate,
     )
 
     report = await execute_closeout((scenario,))
@@ -495,6 +499,56 @@ async def test_closeout_report_passes_only_after_real_execution() -> None:
             "error": None,
         }
     ]
+
+
+def test_strict_passed_requires_real_observation_and_invariant(capsys) -> None:
+    """A strict PASSED must carry observation evidence and an invariant.
+
+    Codex review (PR #2210): previously the observation was required only when
+    a validator was configured, so a degenerate ``ScenarioExecution()`` — no
+    observation, no ``validate_observation`` — was recorded as
+    ``executed=true, PASSED`` in strict release mode, and a scenario could
+    satisfy the closeout while proving nothing. The Builders/scheduler/Evolve
+    scenarios abstain until their product seams land; this pin keeps whatever
+    replaces them honest.
+    """
+    dependency = Dependency(key="landed producer", issue=49, pr=None, description="", probes=())
+
+    def degenerate() -> ScenarioExecution:
+        return ScenarioExecution()
+
+    scenario = ParityScenario("strict-degenerate", (dependency,), degenerate)
+    with pytest.raises(ScenarioAbstained, match="no product observation"):
+        execute_scenario_sync(scenario, mode=ParityMode.M1_CLOSEOUT)
+    record = json.loads(capsys.readouterr().out.split(" ", 1)[1])
+    assert record["scenario"] == "strict-degenerate"
+    assert record["status"] == "FAILED"
+    assert record["executed"] is False
+    assert "no product observation" in record["error"]
+
+    def observed() -> ScenarioExecution:
+        return ScenarioExecution({"run_id": "run-real"})
+
+    # Observation alone is not enough in strict mode: an invariant over the
+    # real producer/observer records must be named, or the closeout cannot
+    # distinguish an executed scenario from one that merely returned.
+    invariantless = ParityScenario("strict-invariantless", (dependency,), observed)
+    with pytest.raises(ScenarioAbstained, match="no observation invariant"):
+        execute_scenario_sync(invariantless, mode=ParityMode.M1_CLOSEOUT)
+    record = json.loads(capsys.readouterr().out.split(" ", 1)[1])
+    assert record["scenario"] == "strict-invariantless"
+    assert record["status"] == "FAILED"
+    assert record["executed"] is False
+    assert "no observation invariant" in record["error"]
+
+    # Development mode keeps the two-mode contract: it reports named blockers
+    # without failing closed, and does not require the invariant spelling —
+    # only strict (release) mode demands an invariant for PASSED. The mode is
+    # pinned explicitly because the strict invocation exports the closeout
+    # environment into the whole suite, including this test.
+    evidence = execute_scenario_sync(invariantless, mode=ParityMode.DEVELOPMENT)
+    assert evidence.status == "PASSED"
+    assert evidence.executed is True
 
 
 def test_strict_mode_records_validation_failure_as_failed_evidence(capsys) -> None:

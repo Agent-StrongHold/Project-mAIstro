@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +16
+  tests/: +17
 ---
 # Issue #1069 strict M1 closeout parity
 
@@ -62,3 +62,14 @@ CI-repair round at 2abb645a2 (hosted `test` + `Coverage gate` failures):
   convention for CI-shelled scripts). This also gives the new `scripts/` file
   the measured coverage the diff-coverage gate requires of a changed file under
   a measured root.
+- `tests/cross_product_parity/test_cross_product_parity.py` (+1): a strict
+  PASSED now requires real observation evidence and a named invariant. Codex
+  review (PR #2210) found that the observation was required only when a
+  validator was configured, so a degenerate `ScenarioExecution()` (no
+  observation, no `validate_observation`) was recorded as `executed=true,
+  PASSED` even in strict release mode — proven by reproduction before the fix.
+  The harness now requires a non-null observation for PASSED in every mode and
+  an observation invariant in strict mode; development mode stays lenient per
+  the two-mode contract. The new test pins all three behaviors, and
+  `test_closeout_report_passes_only_after_real_execution` gained the invariant
+  it now needs to stay a valid green closeout.

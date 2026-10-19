@@ -490,7 +490,10 @@ async def execute_scenario(
 
     Uses the non-raising dependency assessment so the blocker evidence is
     emitted here with the scenario's own name; the strict raise stays this
-    function's job.
+    function's job. A PASSED record always carries a real product observation,
+    and in strict mode it additionally requires an observation invariant
+    (``validate_observation``), so a degenerate execution cannot satisfy the
+    closeout while proving nothing.
     """
     selected_mode = mode or parity_mode()
     assessment = _assess_dependencies(*scenario.dependencies)
@@ -509,9 +512,23 @@ async def execute_scenario(
             raise ScenarioAbstained(
                 f"{scenario.name} returned no real ScenarioExecution observation"
             )
+        # A PASSED record is the closeout's only green state, so it must carry
+        # real observation evidence. Codex review (PR #2210): previously the
+        # observation was required only when a validator was configured, so a
+        # degenerate ``ScenarioExecution()`` -- no observation, no validator --
+        # was recorded as ``executed=true, PASSED`` even in strict release
+        # mode. Now the observation is required in every mode, and a strict
+        # PASSED additionally requires an invariant (``validate_observation``)
+        # over the real producer/observer records; development mode keeps its
+        # two-mode contract and stays lenient about which invariant is named.
+        if result.observation is None:
+            raise ScenarioAbstained(f"{scenario.name} returned no product observation")
+        if selected_mode is ParityMode.M1_CLOSEOUT and scenario.validate_observation is None:
+            raise ScenarioAbstained(
+                f"{scenario.name} has no observation invariant: a strict PASSED "
+                "requires a validator over the real producer/observer records"
+            )
         if scenario.validate_observation is not None:
-            if result.observation is None:
-                raise ScenarioAbstained(f"{scenario.name} returned no product observation")
             scenario.validate_observation(result.observation)
     except BaseException as exc:
         status = _failure_status(exc, selected_mode)
