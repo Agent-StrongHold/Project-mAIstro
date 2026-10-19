@@ -328,6 +328,13 @@ def _run_drill(backup_root: Path, date: str) -> subprocess.CompletedProcess[str]
         PG_IMAGE=PG_IMAGE,
         POSTGRES_USER=PG_USER,
         POSTGRES_DB=PG_DB,
+        # Merge reconciliation (#88 + #1881): the lib-driver artifact below
+        # carries PostgreSQL state only, while the production drill hard-fails
+        # on a missing conductor-data capture (the D-18 gap). This harness
+        # exercises the PostgreSQL oracle, so it opts out exactly the way
+        # Conductor-less stacks do — the same SKIP_CONDUCTOR_BACKUP=1 contract
+        # as backup.sh and verify-restore.sh.
+        SKIP_CONDUCTOR_BACKUP="1",
     )
     return subprocess.run(
         ["bash", str(VERIFY_SH), date],
