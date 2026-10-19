@@ -176,3 +176,17 @@ sweep-outcome fields, the two Container ticks) exercised by the tests
 above, none is genuinely dead, and no topic-branch edit can authorize them
 - the residual is the develop-side reviewed grant, unchanged from the
 previous round's record.
+
+Mid-round follow-up: origin/develop fast-forwarded again (5f714e1be ->
+53db17850, #2167 + #2148) and was merged as 5503239b6; the only conflict
+was `.gitleaksignore` (both sides appended), resolved as a union. The
+squash-merge cf48bbd88 of the auto-837 lane re-introduced two
+generic-api-key fingerprints whose lane-commit entries (1ac446cf,
+f83de3b7) no longer match the merged copy; the merged-commit fingerprints
+were added per the file's own "recorded twice because it landed twice"
+convention (13e8d307/c6d2fbdba precedent). gitleaks is clean on both
+5f714e1be..HEAD and 53db17850..HEAD; the ten `--all` findings belong to
+other unmerged lanes' refs, none reachable from this HEAD. Suite
+inventory, ruff check/format, the goals tests (154 passed / 22 skipped),
+check-ratchet-provenance, check-shipped-surface-truth and
+check-durable-table-inventory re-verified green at 5503239b6+.

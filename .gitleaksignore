@@ -109,6 +109,14 @@ b5c22a358a8b0a0fb064e89eb6b4eba6855b58c2:.gitleaksignore:generic-api-key:54
 81f8985913f040b2b12aba0a1f71748ed1b1d20b:.gitleaksignore:generic-api-key:98
 1ac446cf4385285f32ef2408233ab81911fe36a9:packages/maistro-core/tests/graph/durable_runs/test_executor_gaps.py:generic-api-key:69
 f83de3b7a431523a47234102499d35218b9881fe:docs/testing/inventory-notes/837-persisted-failure-redaction.md:generic-api-key:38
+# Recorded twice because #837's content landed twice (see the #1825 note
+# above for the pattern): 1ac446cf/f83de3b7 are the auto-837 lane commits
+# (unreachable once develop squash-merged the lane) and cf48bbd88 is the
+# squash-merge actually reachable from develop, carrying the same two lines
+# at the same paths and line numbers. Range scans whose base predates the
+# squash-merge only ever see the latter.
+cf48bbd88f1de113d8888897d8efb012817d2886:packages/maistro-core/tests/graph/durable_runs/test_executor_gaps.py:generic-api-key:69
+cf48bbd88f1de113d8888897d8efb012817d2886:docs/testing/inventory-notes/837-persisted-failure-redaction.md:generic-api-key:38
 
 # ---- #1825: the engine-image Canvas smoke's placeholder router key ----
 # scripts/smoke-engine-canvas.sh boots the shipped engine image against a
