@@ -58,10 +58,32 @@ from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
 
 from . import register_node
-from .base import BaseNode, NodeContext, ReplaySemantics
+from .base import BaseNode, NodeContext, ReplaySemantics, replay_effect_key
 
 if TYPE_CHECKING:
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
+
+
+def _scoped_effect_key(ctx: NodeContext, inputs: LlmSummarizeIn, supervised_rung: str) -> str:
+    """The Run/node-scoped logical key for one governed completion.
+
+    Two ``llm.summarize`` nodes sharing a Binding and model must not file the
+    same keyed effect: the durable executor binds this key as the Invocation
+    ``effect_scope``, so a model-only key let the second node adopt the
+    first's completed summary. Run + graph node identity, an input digest
+    (so re-work with new source is new work), and the escalation rung keep
+    every distinct completion distinct while retries of one visit reconcile.
+    A blank rung (unsupervised visit) and ``inputs.model`` agree by
+    construction, so the scope bound at frontier preparation and the key
+    passed inside ``_execute`` can never diverge.
+    """
+
+    rung = supervised_rung.strip() or inputs.model
+    return replay_effect_key(
+        ctx,
+        "llm.summarize.complete",
+        {"rung": rung, "inputs": inputs.model_dump(mode="json")},
+    )
 
 
 class LlmSummarizeIn(BaseModel):
@@ -196,9 +218,7 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         with a concrete key, it does not merely label itself retryable.
         """
         supervised_rung = str(ctx.metadata.get(ESCALATED_MODEL_CONTEXT_KEY) or "").strip()
-        if not supervised_rung:
-            supervised_rung = inputs.model
-        return f"llm.summarize.complete:{supervised_rung}"
+        return _scoped_effect_key(ctx, inputs, supervised_rung)
 
     async def _execute(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> LlmSummarizeOut:
         # Gateway configuration is read before the Binding is resolved, as it
@@ -238,7 +258,7 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
             run_id=ctx.run_id,
             node_run_id=ctx.node_run_id,
             attempt_id=ctx.attempt_id,
-            effect_key=f"llm.summarize.complete:{model_alias}",
+            effect_key=_scoped_effect_key(ctx, inputs, supervised_rung),
             request=ModelChatRequest(
                 model=model_alias,
                 messages=[
