@@ -38,3 +38,28 @@ rather than a new mechanism:
    `routes/mcp.py` exposes management/probe routes only (fixed probe URLs,
    no arbitrary tool-name proxy). Adding a live invocation route is new
    scope beyond this issue; the boundary defect it names is closed.
+
+## Validation evidence (re-validation round at 35d388d37286)
+
+All three items above re-verified against reachable production behavior:
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → exit 0, 1322 reviewed
+  identities = 1322 findings, zero unbanked (confirms item 1; ledger not
+  edited).
+- `grep -n 'tools/call\|call_tool' packages/hive-conductor/backend/routes/mcp.py`
+  → no matches (confirms item 3).
+- ADR-083 remains `Proposed` (item 2 unchanged).
+- `uv run ruff check .` / `uv run ruff format --check .` → clean.
+- `uv run pytest packages/maistro-core/tests -q` → 15373 passed, 1073
+  skipped, 3 xfailed (includes the 8 new tests: overwrite attempt, governed
+  replacement, blank/unknown provider tier fail-close, traversal mutation,
+  malicious in-memory entry, malicious hot reload, privileged Pi trust claim,
+  Pi instructions scan).
+- `uv run pytest packages/hive-conductor/backend/tests -q -k "not e2e"` →
+  3654 passed, 20 skipped (includes the 3 new MCP boundary tests).
+- `uv run mypy packages/maistro-core/src packages/maistro-server/src
+  packages/maistro-turing/src packages/maistro-canvas/src
+  packages/maistro-bootstrap/src packages/maistro-registry/src
+  packages/maistro-ext-sdk/src` (CI's exact invocation) → Success.
+- `uv run python scripts/check-suite-inventory.py` → ok, 17 suites match.
