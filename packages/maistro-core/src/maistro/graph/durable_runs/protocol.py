@@ -12,6 +12,15 @@ from .hitl import HitlAuthorization
 from .types import DurableRunRecord
 
 
+class RecoveryInfrastructureError(RuntimeError):
+    """A persistence failure that makes continuing the recovery scan unsafe.
+
+    Candidate-local resolver and execution failures are handled by the durable
+    executor or by the recovery tick. Store adapters use this explicit type
+    when a database/session failure invalidates every candidate in the tick.
+    """
+
+
 @runtime_checkable
 class DurableRunStore(Protocol):
     """Persist canonical Run + GraphExecutionState checkpoints."""
@@ -144,15 +153,6 @@ class DurableRunStore(Protocol):
     ) -> DurableRunRecord:
         """Terminalize a human pause by explicit cancellation."""
         ...
-
-
-class RecoveryInfrastructureError(RuntimeError):
-    """A persistence failure that makes continuing the recovery scan unsafe.
-
-    Candidate-local resolver and execution failures are handled by the durable
-    executor or by the recovery tick. Store adapters use this explicit type
-    when a database/session failure invalidates every candidate in the tick.
-    """
 
 
 __all__ = ["DurableRunStore", "RecoveryInfrastructureError"]
