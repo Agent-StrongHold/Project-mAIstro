@@ -2328,3 +2328,61 @@ family + vulture authorization two-merge wall) and the inherited develop-side de
 floor — whose remedies (#1845 real-consumer integration, owner-landed develop grants /
 re-anchor) are outside this leaf by the issue's own staging language. Integration hold stands;
 stack left unmerged; no inventory delta (stays `+79`). (Refs #1851)
+
+## Deep-review round 1 verification at the develop-merged head `8c33f53d4241` (job `b08e0e54e32a4ef9a12bf1784b1e8045`)
+
+Independent verifier re-execution at the exact assigned head `8c33f53d4241eabbcf7d8566528cedf65abab713`
+(= `7d3b6ff44` plus the `fe4332d8eb12` develop sync; worktree clean). Read-only except this note.
+
+**Scope re-diff at the new base.** `git diff --name-only fe4332d8..HEAD` = exactly the three
+issue-designated files plus `quality/vulture-baseline.json` (+5 rows, lines 283-287). The grant
+removal in `7d3b6ff44` left `quality/ratchet-authorizations.json` byte-identical to base
+(absent from the diff). Merge base re-anchored: `git merge-base origin/develop HEAD` =
+`fe4332d8eb12`; the base `vulture-baseline.json` contains **0** `admission_identity` rows and the
+base `ratchet-authorizations.json` contains **0** `admission_identity` grants, so the two-merge
+wall statement survives the re-anchor unchanged.
+
+**Carried findings adversarially re-tested at `8c33f53d4241` — none refuted:**
+
+- `check-vulture-baseline.py` CI-exact (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`,
+  `RATCHET_BASE_REV=origin/develop`): **rc=1**, same 5 identities at `admission_identity.py:515-520`,
+  now bucket `pydantic-declarative-field`; "1321 reviewed identities -> 1326 findings" proves the
+  candidate ledger *banks* all five while the *trusted-base* ledger (1321) lacks them and no grant
+  authorizes them — banking is not authorizing, both halves confirmed.
+- `check-ratchet-provenance.py`: **rc=1**, solely the reachability leg
+  ("`maistro.runs.admission_identity`: NEW unreachable module absent from trusted base and not
+  previously authorized" + "missing from candidate baseline"); all other legs OK.
+- `check-reachability.py` (bare, CI-exact): **rc=1**, exactly 1 NEWLY UNREACHABLE.
+- `check-shipped-surface-truth.py`: rc=0.
+- The 3 reachability tests reproduced failing (3 failed):
+  `test_check_reachability.py::test_baseline_matches_the_tree`,
+  `test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set`.
+  pytest diff shows exactly one net-new unreachable module (insertion at index 125, last-item
+  shift artifact only).
+
+**Focused contract evidence re-proven at this head:** focused pytest **79 passed**; mypy clean;
+`__all__` 21 names set-exact (AST-parsed); `AdmissionAssessment` exactly the 6 lowercase pairs in
+required order, asserted verbatim by the contract test (test file lines 153-158); all 12 issue-named
+tests present; all dataclasses `frozen=True, slots=True`; live probes: duplicate-key / non-finite /
+non-object-root / non-string `CanonicalJsonObject` construction all raise `ValueError`, canonical
+normalization `{"b": 1, "a": "ü"}` -> `{"a":"ü","b":1}` with single `text` field and frozen
+instance, `owns()` exactly the scope∧generation∧owner conjunction (each single-leg divergence
+returns False, roles never compared to each other), `admitted is (binding is not None)`, repr omits
+the `owner_token` field while the printable `generation_id` remains, 0 production importers, no
+`runs/__init__` export, no closure keywords toward #1851 in branch commits or the PR #1936 body.
+
+**Deep-review conclusion (round 1).** The five carried findings hold at the new head; the grants-leg
+finding is resolved by removal (file byte-identical to base — nothing left to be inert). Exactly one
+in-leaf-repairable defect remains, unchanged from every prior round: the five retained
+`quality/vulture-baseline.json:283-287` rows are (a) prohibited by the issue's unconditional
+"no baseline additions ... are permitted", (b) unauthorized by the trusted base `fe4332d8eb12`
+under the two-merge rule, and (c) the branch's only out-of-scope file change; the issue's
+reconciliation checkbox stays owner-held and open. Every other red gate decomposes to the
+issue-documented unwired-leaf state (`check-reachability` family + the vulture authorization leg
+that exists only because the rows force a ledger-vs-base delta on top of it): by the issue's own
+staging model `exact-debt-ledger` cannot pass at this leaf, and is the documented merge blocker,
+not an in-leaf-fixable defect. Remedies remain #1845 real-consumer integration plus an owner-held
+reconciliation decision (remove the rows, or land a reviewed develop-side grant first — the issue
+text currently authorizes neither silently). Integration hold stands; stack left unmerged; no
+inventory delta (stays `+79`). (Refs #1851)
