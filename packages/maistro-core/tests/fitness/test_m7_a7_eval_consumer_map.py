@@ -75,6 +75,41 @@ _DESIGN_FORBIDDEN_DEF_RE = re.compile(
     r"critic|judg\w*|scorer|evaluator|evaluat\w*|promot\w*|fitness", re.IGNORECASE
 )
 
+#: Definitions the def-name scan banks by exact ``(relative_path, name)``
+#: identity, each reviewed against #796's forbidden list. The ``f72d4fc92``
+#: merge brought #779's project-quality consistency evaluator into
+#: ``maistro_design`` — #796 lists #779 as Related, and the evaluator is
+#: deterministic, read-only ("no store access, no mutation, no model calls")
+#: and explicitly "not a self-improvement authority", so it is neither a
+#: second scoring loop nor the private promotion path. ``_evaluate_upgrade``
+#: is a pack-upgrade *preflight*: it blocks on regressions and unauthorized
+#: backends and promotes nothing. Banking is path-pinned on purpose: the same
+#: name in any other module still trips, and any *new* scorer/evaluator/critic
+#: name anywhere in the package trips. A bank row whose file or definition
+#: disappears is stale and fails the scan (banking is not authorizing — the
+#: row must be re-reviewed in the PR that moved the code).
+_DESIGN_SURFACE_BANK: frozenset[tuple[str, str]] = frozenset(
+    {
+        (
+            "packages/maistro-design/src/maistro_design/consistency.py",
+            "EvaluationProvenance",
+        ),
+        (
+            "packages/maistro-design/src/maistro_design/consistency.py",
+            "ConsistencyEvaluation",
+        ),
+        (
+            "packages/maistro-design/src/maistro_design/consistency.py",
+            "_judge_allowed_claim",
+        ),
+        (
+            "packages/maistro-design/src/maistro_design/consistency.py",
+            "evaluate_project_snapshot",
+        ),
+        ("packages/maistro-design/src/maistro_design/packs/service.py", "_evaluate_upgrade"),
+    }
+)
+
 #: Identifier names for design-quality scores. A Goal's quality evidence lives in
 #: Run eval records and M4 candidate evaluation — nowhere else (#796).
 _SCORE_FIELD_RE = re.compile(
@@ -186,9 +221,17 @@ def _forbidden_imports(files: list[Path], roots: tuple[str, ...]) -> list[str]:
 
 
 def _forbidden_definitions(
-    files: list[Path], module_re: re.Pattern[str], def_re: re.Pattern[str]
+    files: list[Path],
+    module_re: re.Pattern[str],
+    def_re: re.Pattern[str],
+    bank: frozenset[tuple[str, str]] = frozenset(),
 ) -> list[str]:
-    """Forbidden module basenames and class/function definition names."""
+    """Forbidden module basenames and class/function definition names.
+
+    ``bank`` exempts exact ``(relative_path, def_name)`` identities reviewed
+    and allowed (``_DESIGN_SURFACE_BANK``). A banked name at any other path
+    still trips, as does any unbanked name matching ``def_re``.
+    """
     offenders: list[str] = []
     for path in files:
         if module_re.match(path.stem):
@@ -196,11 +239,14 @@ def _forbidden_definitions(
         tree = _parse(path)
         if tree is None:
             continue
+        rel = _relative(path)
         for node in ast.walk(tree):
-            if isinstance(
-                node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
-            ) and def_re.search(node.name):
-                offenders.append(f"{_relative(path)}:{node.lineno} def {node.name}")
+            if (
+                isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+                and def_re.search(node.name)
+                and (rel, node.name) not in bank
+            ):
+                offenders.append(f"{rel}:{node.lineno} def {node.name}")
     return offenders
 
 
@@ -313,19 +359,43 @@ def test_evolve_and_rsi_do_not_reach_the_design_rubric_domain() -> None:
 def test_maistro_design_declares_no_scoring_or_promotion_surface() -> None:
     """``maistro_design`` gains no scorer/critic/judge/promoter of its own.
 
-    The design package builds prompts and renders artifacts (ADR-061); it never
-    evaluates them. A scoring module, an evaluator/critic class, or a promotion
-    path inside ``maistro_design`` is exactly the ``maistro-design`` private
-    promotion path #796 forbids — promotion belongs to #21, not to the loop.
+    The design package builds prompts and renders artifacts (ADR-061); a scoring
+    module, an evaluator/critic class, or a promotion path inside it is exactly
+    the ``maistro-design`` private promotion path #796 forbids — promotion
+    belongs to #21, not to the loop. The one acknowledged exception is #779's
+    project-quality consistency evaluator (listed as Related in #796):
+    deterministic, read-only, "not a self-improvement authority" — banked by
+    exact ``(path, name)`` identity in ``_DESIGN_SURFACE_BANK``, never by name
+    alone. Anything else matching the def-name net — including a banked name in
+    a new module — trips here. Bank rows are kept live: a row whose code moved
+    or vanished is stale and fails until re-reviewed in the PR that moved it.
     """
     files = _iter_py(_DESIGN_SRC)
     assert files, "maistro_design inventory is empty — path drift broke this tripwire"
-    offenders = _forbidden_definitions(files, _DESIGN_FORBIDDEN_MODULE_RE, _DESIGN_FORBIDDEN_DEF_RE)
+    offenders = _forbidden_definitions(
+        files, _DESIGN_FORBIDDEN_MODULE_RE, _DESIGN_FORBIDDEN_DEF_RE, _DESIGN_SURFACE_BANK
+    )
     assert not offenders, (
         "maistro_design declares a scoring/promotion surface — a private design loop "
         f"(#796). Evaluation is the in-Run Rubric eval; promotion is #21's. "
         f"Offenders: {offenders}"
     )
+    for rel_path, name in sorted(_DESIGN_SURFACE_BANK):
+        path = _REPO_ROOT / rel_path
+        assert path.is_file(), (
+            f"banked file {rel_path} is gone — drop the stale bank row for {name!r}"
+        )
+        tree = _parse(path)
+        assert tree is not None, f"banked file {rel_path} no longer parses"
+        declared = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+        }
+        assert name in declared, (
+            f"banked def {name!r} no longer declared in {rel_path} — drop the stale "
+            "bank row (re-bank only after re-reviewing it against #796)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +525,20 @@ def test_tripwires_catch_the_forbidden_shapes(tmp_path: Path) -> None:
     assert any("module name 'promote'" in line for line in caught), caught
     assert any("DesignCritic" in line for line in caught), caught
     assert any("promote_candidate" in line for line in caught), caught
+
+    # The design-surface bank is path-pinned: a banked name in a different
+    # module is not banked and must trip.
+    impostor = design_pkg / "impostor.py"
+    impostor.write_text(
+        "def evaluate_project_snapshot() -> None:\n    pass\n",
+        encoding="utf-8",
+    )
+    caught = _forbidden_definitions(
+        [impostor], _DESIGN_FORBIDDEN_MODULE_RE, _DESIGN_FORBIDDEN_DEF_RE, _DESIGN_SURFACE_BANK
+    )
+    assert len(caught) == 1 and "evaluate_project_snapshot" in caught[0], (
+        f"bank leaked a name outside its pinned path: {caught}"
+    )
 
     score_store = design_pkg / "stores.py"
     score_store.write_text(
