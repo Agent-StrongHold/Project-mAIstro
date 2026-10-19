@@ -237,24 +237,42 @@ def validate_extension_dir(root: str | Path) -> ValidatedExtension:
 def _entrypoint_candidates(module: str) -> list[str]:
     """File shapes a dotted module path can legally take under the root."""
     parts = module.split(".")
-    return [
+    flat = [
         "/".join([*parts[:-1], f"{parts[-1]}.py"]),
         "/".join([*parts, "__init__.py"]),
     ]
+    # src/ layout first — the shape build backends (hatchling's
+    # ``packages = ["src/<pkg>"]``) and the harness's discovery convention
+    # ("src/ layout or flat") both use, including the first-party reference
+    # extension and every reference-gallery package. A validator that only
+    # knew flat layout would reject exactly the trees this monorepo
+    # advertises as copy-from templates.
+    return [*[f"src/{candidate}" for candidate in flat], *flat]
 
 
 def _resolve_entrypoint_file(root: Path, module: str) -> Path | None:
     """Locate the file ``import module`` would actually execute under ``root``.
 
-    Mirrors importlib's FileFinder order: at every dotted segment a package
-    directory (``name/__init__.py``) shadows a same-named module file
-    (``name.py``). If a parent segment resolves to a plain module, the
+    ``src/`` layout (``root/src`` holding the package tree) is resolved
+    first, then flat, mirroring the harness's discovery rule. Within one
+    layout, importlib's FileFinder order applies: at every dotted segment a
+    package directory (``name/__init__.py``) shadows a same-named module
+    file (``name.py``). If a parent segment resolves to a plain module, the
     dotted path is unimportable, so resolution fails rather than returning
     a file the host could never load. (A parent directory without an
     ``__init__.py`` is a namespace package — its children still import.)
     """
     parts = module.split(".")
-    current = root
+    for base in ((root / "src"), root):
+        resolved = _resolve_entrypoint_under(base, parts)
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def _resolve_entrypoint_under(base: Path, parts: list[str]) -> Path | None:
+    """One layout's resolution of an already-split module path under ``base``."""
+    current = base
     for part in parts[:-1]:
         if (current / part / "__init__.py").is_file():
             current = current / part
