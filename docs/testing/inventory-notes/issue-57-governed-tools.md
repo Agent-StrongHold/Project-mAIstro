@@ -273,3 +273,35 @@ this lane's frozen surfaces):
 Integrator sequencing to unblock: implement #847's residual scope in its own
 lane/PR (files above; relations #840, #1202), close #847 from its adversarial
 tests, then close #57. Criteria 1-11 of #57 are proven at head 019df24c9.
+
+## #847 residual-implementation round (2026-10-19, dispatch cba84afa)
+
+The repair dispatch resolved the prior BLOCKED verdict in place: #847's
+residual scope is now LANDED on this branch, so criterion 12's implementation
+prerequisite is satisfied and only the GitHub closure actions (close #847 from
+these adversarial tests, then #57) remain for the owner/integrator.
+
+- `builders_learning.py`: the Frank/Mason strategy-authored shell/GitHub
+  effects are retired (rewritten not to perform them — the #847-sanctioned
+  path, since the gathered context was never consumed by the ReAct loop).
+  Adversarial coverage: an instrumented executor is never invoked for
+  frank/mason; model-selected traffic still flows through the governed loop.
+- `agent_spec.py`: the unused `tools_allowed`/`write_scopes` declarations and
+  the `DEFAULT_TOOLS` map that fed them are removed; spec tests pin their
+  absence (#847: unused security-looking fields are removed rather than left
+  misleading).
+- Scoped denial evidence (#847's named observability gap): pre-Sentinel
+  refusals in `react.py` and artificer `strategy.py`, and the inner
+  `base.py:_authorize_and_invoke` boundary, now emit
+  `boundary=tool_allowlist` AuditEntry records through the existing audit
+  ownership (`security/sentinel/audit.py`) whenever an audit log is wired;
+  `Agent`/`create_agents` thread the canonical container audit log, and the
+  hive adapter passes it. Regression coverage in the react/artificer/base/
+  factory suites (see auto-57-c121.md for the per-suite deltas).
+- Vulture/radon CI repair: `AgentRole.INTENT_ROUTER` is whitelisted in
+  maistro-core's `_vulture_whitelist.py` (closed wire vocabulary; #847 removed
+  DEFAULT_TOOLS, its only in-src reference) and `RepoTask.repo_state` is named
+  in a reachable evolve module (the maistro-design pattern; its banked
+  siblings' reviewed declarative posture) after the builders_learning rewrite
+  un-masked both scanner findings; the radon row for the retired
+  `_run_pr_diagnostics` is pruned. Both gates rc=0, no new debt.

@@ -376,6 +376,56 @@ class ReactStrategy:
                 return tool_args, f"Error: repaired arguments are invalid: {exc}"
         return repaired, None
 
+    async def _admit_tool_call(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        raw_args: str,
+        error_result: str | None,
+        *,
+        tools: list[dict[str, Any]] | None,
+        sentinel: Any,
+        auth: Any,
+        allowed_tools: frozenset[str] | None,
+        security_pipeline: bool,
+    ) -> tuple[bool, str | None, dict[str, Any], str]:
+        """Admission gate before Sentinel/provider dispatch (#57/#847).
+
+        Returns ``(blocked, refusal, schema, denial_reason, tool_args)`` where
+        ``tool_args`` carries Sentinel's repaired arguments when admission
+        repaired them. The refusal and the host-owned denial reason travel
+        together so the caller can audit the decision at the same boundary
+        that made it.
+        """
+        # The model can return a name outside the Agent declaration or a name
+        # absent from the host schema even when the provider accepts it. Both
+        # cases are hard refusals before Sentinel/provider dispatch (#57).
+        raw_error = _raw_arguments_error(raw_args, tool_name)
+        blocked, refusal, schema, denial_reason = _validate_model_tool_call(
+            tools, tool_name, tool_args, allowed_tools, raw_error
+        )
+        blocked = blocked or error_result is not None
+        if error_result is not None and not denial_reason:
+            denial_reason = "malformed tool arguments"
+        if blocked or security_pipeline:
+            return blocked, refusal, schema, denial_reason, tool_args
+
+        if sentinel is None or auth is None:
+            logger.warning(
+                "Denied tool '%s': no Sentinel or caller auth to authorize it", tool_name
+            )
+            return (
+                True,
+                f"Error: Permission denied for tool '{tool_name}'",
+                schema,
+                "no sentinel or caller auth to authorize tool",
+                tool_args,
+            )
+        tool_args, refusal = await self._sentinel_admission(
+            tool_name, tool_args, schema, sentinel=sentinel, auth=auth
+        )
+        return blocked or refusal is not None, refusal, schema, denial_reason, tool_args
+
     async def _execute_one_tool_call(
         self,
         tc: dict[str, Any],
@@ -397,33 +447,21 @@ class ReactStrategy:
         execute, truncate, sanitize. Returns ``(tool_args, tool_result_str)``."""
         fn = tc.get("function", {})
         tool_name = fn.get("name", "")
-        tool_args, error_result = self._parse_tool_args(tool_name, fn.get("arguments", "{}"))
+        raw_args = fn.get("arguments", "{}")
+        tool_args, error_result = self._parse_tool_args(tool_name, raw_args)
 
-        # The model can return a name outside the Agent declaration or a name
-        # absent from the host schema even when the provider accepts it. Both
-        # cases are hard refusals before Sentinel/provider dispatch (#57).
-        raw_error = _raw_arguments_error(fn.get("arguments", "{}"), tool_name)
-        tool_blocked, refusal, tool_schema, denial_reason = _validate_model_tool_call(
-            tools, tool_name, tool_args, allowed_tools, raw_error
+        tool_blocked, refusal, tool_schema, denial_reason, tool_args = await self._admit_tool_call(
+            tool_name,
+            tool_args,
+            raw_args,
+            error_result,
+            tools=tools,
+            sentinel=sentinel,
+            auth=auth,
+            allowed_tools=allowed_tools,
+            security_pipeline=security_pipeline,
         )
         tool_result: Any = refusal or error_result
-        tool_blocked = tool_blocked or error_result is not None
-        if error_result is not None and not denial_reason:
-            denial_reason = "malformed tool arguments"
-
-        if not tool_blocked and not security_pipeline:
-            if sentinel is None or auth is None:
-                logger.warning(
-                    "Denied tool '%s': no Sentinel or caller auth to authorize it", tool_name
-                )
-                refusal = f"Error: Permission denied for tool '{tool_name}'"
-                denial_reason = "no sentinel or caller auth to authorize tool"
-                tool_blocked = True
-            else:
-                tool_args, refusal = await self._sentinel_admission(
-                    tool_name, tool_args, tool_schema, sentinel=sentinel, auth=auth
-                )
-            tool_blocked = tool_blocked or refusal is not None
 
         if tool_blocked and refusal is not None and audit_log is not None:
             await log_scoped_tool_denial(

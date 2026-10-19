@@ -30,6 +30,25 @@ async def _noop_status(msg: str) -> None:
     pass
 
 
+async def _audit_denial(
+    audit_log: Any,
+    *,
+    tool_name: str,
+    reason: str,
+    auth: Any,
+    agent_name: str,
+) -> None:
+    """Emit one scoped denial record when an audit log is wired (#847).
+
+    No-op without one: standalone callers keep the plain refusal string.
+    """
+    if audit_log is None:
+        return
+    await log_scoped_tool_denial(
+        audit_log, tool_name=tool_name, reason=reason, auth=auth, agent_name=agent_name
+    )
+
+
 def _raw_arguments_error(raw_args: str, tool_name: str) -> str | None:
     try:
         parsed = json.loads(raw_args)
@@ -379,25 +398,26 @@ class ArtificerStrategy:
 
         # M2 (#57): model-selected names cannot widen the Agent declaration.
         # With an allowlist in force, malformed arguments and names or schemas
-        # outside the declaration are hard refusals before Sentinel dispatch.
+        # outside the declaration are hard refusals before Sentinel dispatch;
+        # each refusal also leaves scoped denial evidence when an audit log is
+        # wired (#847).
         parse_error = (
             _raw_arguments_error(raw_args, tool_name) if allowed_tools is not None else None
         )
         if parse_error is not None:
-            if audit_log is not None:
-                await log_scoped_tool_denial(
-                    audit_log,
-                    tool_name=tool_name,
-                    reason="malformed tool arguments",
-                    auth=auth,
-                    agent_name=agent_name,
-                )
+            await _audit_denial(
+                audit_log,
+                tool_name=tool_name,
+                reason="malformed tool arguments",
+                auth=auth,
+                agent_name=agent_name,
+            )
             return tool_args, parse_error
         tool_blocked, refusal, tool_schema, denial_reason = _validate_model_tool_call(
             tool_name, tool_args, tools, allowed_tools
         )
-        if tool_blocked and audit_log is not None:
-            await log_scoped_tool_denial(
+        if tool_blocked:
+            await _audit_denial(
                 audit_log,
                 tool_name=tool_name,
                 reason=denial_reason,

@@ -9,6 +9,7 @@ Invocation execution API.
 
 from maistro import identity as identity_package
 from maistro.a2a.external import ExternalAgentRegistry
+from maistro.agents.spec.agent_spec import AgentRole
 from maistro.backlog.markdown_io import ParsedItem
 from maistro.backlog.model import (
     BacklogClaim,
@@ -142,6 +143,13 @@ _VULTURE_REFERENCES = (record_exception, set_status_on_exception)
 latest_by_dimension = "latest_by_dimension"
 
 _VULTURE_WHITELIST = (
+    # AgentRole's closed vocabulary is the agent-spec wire contract: role
+    # values round-trip through YAML manifests and API payloads by string
+    # value, and the spec tests pin the complete member set. #847 removed
+    # DEFAULT_TOOLS, the only in-src reference to the intent_router member;
+    # the vocabulary itself stays, so the member is named here the same way
+    # the #793 pack-contract enums are.
+    AgentRole.INTENT_ROUTER,
     # P0.1 identity split (#53): Principal is always importable; crypto and lifecycle
     # symbols load through __getattr__ and ConductorSeed's public API.
     identity_getattr,
