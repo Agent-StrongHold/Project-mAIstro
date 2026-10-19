@@ -171,35 +171,45 @@ class SkillCatalog:
             return
         root = directory.resolve()
         for path in directory.glob("*.md"):
-            key = str(path)
-            if path.is_symlink() or not path.resolve().is_relative_to(root):
-                logger.warning("Skipping unauthorized skill path: %s", path)
-                continue
-            mtime = path.stat().st_mtime
-            old_mtime = self._file_mtimes.get(key)
-            if old_mtime is None or mtime > old_mtime:
-                try:
-                    content = path.read_text(encoding="utf-8")
-                    safe, findings = security_scan(content)
-                    if not safe:
-                        logger.warning(
-                            "Skipping reloaded skill failed security scan: %s (%s)",
-                            path,
-                            ", ".join(findings),
-                        )
-                        continue
-                    skill_def = parse_skill_file(content, source=str(path))
-                    if skill_def is None:
-                        continue
-                    entry = SkillCatalogEntry(definition=skill_def, scope="builtin")
-                    with self._lock:
-                        self._entries = [
-                            e
-                            for e in self._entries
-                            if not (e.definition.name == skill_def.name and e.scope == "builtin")
-                        ]
-                    self.register(entry)
-                    self._file_mtimes[key] = mtime
-                    logger.info("Reloaded skill: %s from %s", skill_def.name, path.name)
-                except Exception:
-                    logger.warning("Failed to reload skill: %s", path, exc_info=True)
+            self._maybe_reload_skill(path, root)
+
+    def _maybe_reload_skill(self, path: Path, root: Path) -> None:
+        key = str(path)
+        if self._is_unauthorized_path(path, root):
+            logger.warning("Skipping unauthorized skill path: %s", path)
+            return
+        mtime = path.stat().st_mtime
+        old_mtime = self._file_mtimes.get(key)
+        if old_mtime is not None and mtime <= old_mtime:
+            return
+        try:
+            content = path.read_text(encoding="utf-8")
+            self._process_skill_reload(path, content, key, mtime)
+        except Exception:
+            logger.warning("Failed to reload skill: %s", path, exc_info=True)
+
+    def _is_unauthorized_path(self, path: Path, root: Path) -> bool:
+        return path.is_symlink() or not path.resolve().is_relative_to(root)
+
+    def _process_skill_reload(self, path: Path, content: str, key: str, mtime: float) -> None:
+        safe, findings = security_scan(content)
+        if not safe:
+            logger.warning(
+                "Skipping reloaded skill failed security scan: %s (%s)",
+                path,
+                ", ".join(findings),
+            )
+            return
+        skill_def = parse_skill_file(content, source=str(path))
+        if skill_def is None:
+            return
+        entry = SkillCatalogEntry(definition=skill_def, scope="builtin")
+        with self._lock:
+            self._entries = [
+                e
+                for e in self._entries
+                if not (e.definition.name == skill_def.name and e.scope == "builtin")
+            ]
+        self.register(entry)
+        self._file_mtimes[key] = mtime
+        logger.info("Reloaded skill: %s from %s", skill_def.name, path.name)
