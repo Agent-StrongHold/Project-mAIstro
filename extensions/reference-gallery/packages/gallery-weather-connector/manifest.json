@@ -1,0 +1,17 @@
+{
+  "manifest_version": 1,
+  "id": "gallery.weather_connector",
+  "name": "Gallery weather connector",
+  "version": "1.0.0",
+  "publisher": "gallery",
+  "api_version": "1.0.0",
+  "permissions": ["network.outbound", "tool.invoke"],
+  "entry_points": [
+    {
+      "name": "main",
+      "module": "gallery_weather_connector.plugin",
+      "attribute": "PLUGIN"
+    }
+  ],
+  "dependencies": []
+}
