@@ -94,7 +94,9 @@ def _table_digest(table: ExtensionPolicyTable) -> str:
             for org_id, policy in sorted(table.orgs.items())
         },
         "workspaces": {
-            f"{org_id}/{workspace_id}": {
+            # JSON-encoded [org_id, workspace_id] pair: delimiter-free, so
+            # IDs containing "/" cannot collide across distinct scopes.
+            json.dumps([org_id, workspace_id]): {
                 "ceiling": sorted(ov.permission_ceiling)
                 if ov.permission_ceiling is not None
                 else None,
