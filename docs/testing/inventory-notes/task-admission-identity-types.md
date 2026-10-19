@@ -2136,3 +2136,57 @@ No code or ledger change warranted this round (repair space re-proven empty at t
 all six merge-queue failures decompose to the same two structural facts the issue itself mandates
 and documents for an intentionally unwired leaf; integration hold stands; stack left unmerged; no
 inventory delta (stays `+79`). (Refs #1851)
+
+## Round-218 CI-repair verification at the assigned head `486bb9d35f9b` (job `322ccd42f80b4bc39a19c3bc320ed78e`)
+
+Develop moved again but nothing structural changed: this round's assigned develop base is
+`53db178509f8` (`origin/develop` tip, 2 commits `cf48bbd88` + `53db17850` past merge-base
+`e708451b3887`), and `git diff e708451b3..53db17850 -- quality/` is **empty** — zero grants, zero
+baseline motion, zero admission references anywhere in `quality/` at the tip (`git grep -c
+admission_identity 53db17850 -- quality/` -> no matches). The touched files (extensions gallery,
+durable-runs executor, ci.yml) have zero overlap with this branch's 4 surfaces, so no develop sync
+conflict is warranted, and the merge queue's evaluation at `53db17850` resolves the same trusted
+base `e708451b3887` my local gates resolved — every verdict below is firsthand at the exact
+assigned head; worktree found clean.
+
+- Driver battery 5/5 green (job logs check-0..4): `uv sync --locked --extra dev` ok; `ruff check .`
+  all passed; `ruff format --check .` 3330 files formatted; focused pytest **79 passed**;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok (16582 == recorded).
+- Module contract re-verified live: `__all__` 21 names; `AdmissionAssessment` the 6 verbatim
+  lowercase pairs in issue order; 17 dataclasses frozen+slots; ticket repr omits `owner_token`;
+  mypy on the module Success.
+- CI-exact vulture: **rc=1**, 1326 findings, `unclassified: 0`, `never_allowlist: 0` (banking leg
+  GREEN — no bookkeeping output), authorization leg RED on exactly the 5 issue-mandated enum
+  identities `admission_identity.py:515/516/518/519/520` (`MISMATCH`/`REPLAYED`/`TAKEOVER`/
+  `REPLACE_EXPIRED`/`LEGACY_UNRESOLVED`; `PENDING` unflagged via the same-name `Pending` collision),
+  +5/-0 vs trusted base `e708451b3887` (1321 -> 1326); gate remedy "land a reviewed grant first".
+- `check-reachability.py`: **rc=1**, 1413 modules / 169 unreachable, exactly 1 NEWLY UNREACHABLE
+  `maistro.runs.admission_identity`. `check-ratchet-provenance.py`: **rc=1** solely via the
+  reachability-provenance leg ("trusted-base gate returned 1"); lifecycle leg OK. ci.yml test-job
+  failure reproduced: the 3 reachability tests -> **3 failed / 36 passed**, every failure
+  `New unreachable modules::maistro.runs.admission_identity`; the Coverage gate remains the
+  documented quality.yml:713 cascade of those same failures. `check-reachability-dispositions.py`
+  rc=0, `check-promotion-surface.py` rc=0, `check-shipped-surface-truth.py` rc=0.
+- Instructed ledger amendment re-assessed, again a deliberate **no-op**: the 5 reviewed retained
+  identities are already banked multiset-exact under `pydantic-declarative-field`
+  (`quality/vulture-baseline.json:283-287`; numstat vs merge base exactly `5 0`); no fix this round
+  eliminated any identity (no code changed); they are the issue's fixed enum contract, not dead
+  code; pruning them flips the banking leg red (1326-scan vs 1321-ledger -> 5 unclassified); a
+  branch-side grant is inert by construction (`load_authorizations` reads the merge base) and
+  issue-prohibited. Ledger left in its correct reviewed state.
+- Scope invariants: `git diff e708451b3..HEAD` is exactly the 4 in-scope surfaces (+520 module,
+  +660 tests, +5 ledger, note), 0-line diffs in `ratchet-authorizations.json` /
+  `reachability-baseline.json`; 0 production importers; no `runs/__init__.py` export; #1841 anchors
+  intact (`store_boundary.py:56`, `store.py:507/576/907`, `model.py:306`).
+- Reconciliation for the issue's open checkbox, reaffirmed under this round's lane authority ("in an
+  explicit CI-repair round ... amend quality/vulture-baseline.json exactly as instructed"): the five
+  retained rows stand on that round-scoped authorization for reviewed retained identities, in
+  recorded conflict with the issue's ordinary-scope no-baseline-additions rule — recorded, not
+  silently resolved; the rows carry no grant and authorize nothing; the two named remedies (the
+  #1845 real reviewed consumer at an integration head, or an owner-landed develop grant under the
+  two-merge rule) remain outside this leaf.
+
+No code or ledger change warranted (repair space re-proven empty at this topology); all six
+merge-queue failures decompose to the same two structural facts the issue itself mandates and
+documents for an intentionally unwired leaf; integration hold stands; stack left unmerged; no
+inventory delta (stays `+79`). (Refs #1851)
