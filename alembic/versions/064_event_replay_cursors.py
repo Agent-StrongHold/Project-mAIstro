@@ -13,6 +13,15 @@ As with 004 and 036, the DDL is a frozen copy of the `event_replay_cursors`
 block in `maistro.events.pg_stores._SCHEMA`, not an import of it, and
 `tests/migrations/test_event_schema_agreement.py` diffs the two catalogues.
 
+The statement is guarded (`CREATE TABLE IF NOT EXISTS`), matching the
+adoption rule 044 states for the chain and the guarded DDL 046 carries for
+the same reason: the chain-level re-application test stamps a migrated
+database back and re-upgrades it, so a bare `CREATE TABLE` here fails that
+walk with `DuplicateTable`. A database that already carries the table (via
+an earlier `ensure_event_schema()` on a role that could create tables) is
+adopted untouched; a fresh one is built to exactly the definition the store
+reads.
+
 Revision ID: 064
 Revises: 063
 Create Date: 2026-10-17
@@ -20,7 +29,6 @@ Create Date: 2026-10-17
 
 from __future__ import annotations
 
-import sqlalchemy as sa
 from alembic import op
 
 revision = "064"
@@ -34,15 +42,18 @@ def upgrade() -> None:
     # `consumer_id` is the replay bridge's identity, one row per consumer.
     # `event_id` is the highest `event_log.id` acknowledged as replayed
     # (BIGINT to match `event_log.id`'s BIGSERIAL) and `updated_at` the float
-    # epoch of the last acknowledgement. `sa.text("0")` rather than `"0"` on
-    # the numeric default for the reason revision 004 gives: a string default
-    # renders as a quoted literal, which the catalogue records differently
-    # from the bare `DEFAULT 0` the store's own DDL emits.
-    op.create_table(
-        "event_replay_cursors",
-        sa.Column("consumer_id", sa.Text, primary_key=True),
-        sa.Column("event_id", sa.BigInteger, nullable=False, server_default=sa.text("0")),
-        sa.Column("updated_at", sa.Float(precision=53), nullable=False),
+    # epoch of the last acknowledgement. Frozen copy of the `_SCHEMA` block:
+    # guarded so a re-application over a database that already carries the
+    # table adopts it instead of failing with `DuplicateTable` (046's
+    # rationale; the same walk CI's coverage (PostgreSQL) leg drives).
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS event_replay_cursors (
+            consumer_id TEXT PRIMARY KEY,
+            event_id BIGINT NOT NULL DEFAULT 0,
+            updated_at DOUBLE PRECISION NOT NULL
+        )
+        """
     )
 
 
