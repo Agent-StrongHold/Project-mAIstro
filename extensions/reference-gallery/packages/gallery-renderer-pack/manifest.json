@@ -1,0 +1,17 @@
+{
+  "manifest_version": 1,
+  "id": "gallery.renderer_pack",
+  "name": "Gallery renderer pack",
+  "version": "1.0.0",
+  "publisher": "gallery",
+  "api_version": "1.0.0",
+  "permissions": ["workspace.read"],
+  "entry_points": [
+    {
+      "name": "main",
+      "module": "gallery_renderer_pack.plugin",
+      "attribute": "PLUGIN"
+    }
+  ],
+  "dependencies": []
+}
