@@ -158,6 +158,7 @@ if TYPE_CHECKING:
     from maistro.protocols.prompts import PromptManager
     from maistro.protocols.quota import QuotaTracker
     from maistro.protocols.tracing import TracingBackend
+    from maistro.security.sentinel.authz_types import Principal
     from maistro.types.agent import AgentIdentity
 
 
@@ -1226,73 +1227,20 @@ class Agent:
         delegated_auth = auth
         authorize_delegation = getattr(self._sentinel, "authorize_delegation", None)
         if authorize_delegation is not None:
-            from dataclasses import replace as replace_dataclass
-
-            from maistro.security.sentinel.authz_types import Principal
-
-            owner_id = str(getattr(auth, "user_id", "") or "")
-            if not owner_id:
-                return AgentResponse(
-                    content="Delegation refused: no owning principal.",
-                    agent_name=self.identity.name,
-                )
-            principal = Principal(
-                id=self.identity.name,
-                kind="agent",
-                roles=tuple(getattr(auth, "roles", ()) or ()),
-                scopes=tuple(
-                    value
-                    for value in (
-                        getattr(auth, "org_id", ""),
-                        getattr(auth, "team_id", ""),
-                        getattr(auth, "project_id", ""),
-                        f"agent:{self.identity.name}",
-                    )
-                    if value
-                ),
-                owner=owner_id,
-            )
-            decision = await authorize_delegation(
-                principal=principal,
-                owner_id=owner_id,
-                delegating_agent_id=self.identity.name,
-                target_agent_id=target.identity.name,
-                goal_id=goal_id or str(getattr(auth, "goal_id", "") or session_id or ""),
-                run_id=run_id or str(getattr(auth, "run_id", "") or turn_id or ""),
-                invocation_id=invocation_id
-                or str(getattr(auth, "invocation_id", "") or turn_id or ""),
-                scope=delegation_scope
-                or str(
-                    getattr(auth, "project_id", "")
-                    or getattr(auth, "team_id", "")
-                    or getattr(auth, "org_id", "")
-                    or owner_id
-                ),
-                requested_actions=frozenset(self._delegated_target_actions(target)),
-                artifact=delegate_text,
-            )
-            if not decision.allowed:
-                log.warning(
-                    "Delegation refused by host policy: agent=%s target=%s reason=%s",
-                    self.identity.name,
-                    target.identity.name,
-                    decision.reason,
-                )
-                return AgentResponse(
-                    content=f"Delegation refused: {decision.reason}",
-                    agent_name=self.identity.name,
-                )
-            if not hasattr(auth, "delegated_actions"):
-                return AgentResponse(
-                    content="Delegation refused: authorization envelope cannot be carried.",
-                    agent_name=self.identity.name,
-                )
-            delegated_auth = replace_dataclass(
+            delegated_auth, refusal = await self._authorize_delegate(
+                authorize_delegation,
                 auth,
-                delegated_actions=decision.effective_actions,
-                delegation_grant_id=decision.grant_id,
-                on_behalf_of=self.identity.name,
+                target=target,
+                delegate_message=delegate_text,
+                session_id=session_id,
+                turn_id=turn_id,
+                goal_id=goal_id,
+                run_id=run_id,
+                invocation_id=invocation_id,
+                delegation_scope=delegation_scope,
             )
+            if refusal is not None:
+                return refusal
 
         delegate_messages = [{"role": "user", "content": delegate_text}]
 
@@ -1325,6 +1273,116 @@ class Agent:
         return replace(
             delegated,
             delegation_chain=(self.identity.name, *delegated.delegation_chain),
+        )
+
+    async def _authorize_delegate(
+        self,
+        authorize_delegation: Any,
+        auth: Any,
+        *,
+        target: Agent,
+        delegate_message: str,
+        session_id: str | None,
+        turn_id: str | None,
+        goal_id: str | None,
+        run_id: str | None,
+        invocation_id: str | None,
+        delegation_scope: str | None,
+    ) -> tuple[Any, AgentResponse | None]:
+        """Consult host policy before this delegation may run.
+
+        The manifest's roster is only a request; the Sentinel seam is what
+        turns it into authority.  Returns the (possibly narrowed) auth the
+        delegate must run under, plus a refusal response when host policy
+        denies -- ``None`` means the delegation is cleared.
+        """
+        log = _logging.getLogger("maistro.agent")
+        owner_id = str(getattr(auth, "user_id", "") or "")
+        if not owner_id:
+            return auth, AgentResponse(
+                content="Delegation refused: no owning principal.",
+                agent_name=self.identity.name,
+            )
+        decision = await authorize_delegation(
+            principal=self._delegation_principal(auth, owner_id),
+            owner_id=owner_id,
+            delegating_agent_id=self.identity.name,
+            target_agent_id=target.identity.name,
+            goal_id=self._delegation_goal(goal_id, auth, session_id),
+            run_id=self._delegation_run(run_id, auth, turn_id),
+            invocation_id=self._delegation_invocation(invocation_id, auth, turn_id),
+            scope=self._delegation_scope(delegation_scope, auth, owner_id),
+            requested_actions=frozenset(self._delegated_target_actions(target)),
+            artifact=delegate_message,
+        )
+        if not decision.allowed:
+            log.warning(
+                "Delegation refused by host policy: agent=%s target=%s reason=%s",
+                self.identity.name,
+                target.identity.name,
+                decision.reason,
+            )
+            return auth, AgentResponse(
+                content=f"Delegation refused: {decision.reason}",
+                agent_name=self.identity.name,
+            )
+        if not hasattr(auth, "delegated_actions"):
+            return auth, AgentResponse(
+                content="Delegation refused: authorization envelope cannot be carried.",
+                agent_name=self.identity.name,
+            )
+        delegated_auth = replace(
+            auth,
+            delegated_actions=decision.effective_actions,
+            delegation_grant_id=decision.grant_id,
+            on_behalf_of=self.identity.name,
+        )
+        return delegated_auth, None
+
+    def _delegation_principal(self, auth: Any, owner_id: str) -> Principal:
+        """Build the canonical delegating principal from carrier auth."""
+        from maistro.security.sentinel.authz_types import Principal
+
+        return Principal(
+            id=self.identity.name,
+            kind="agent",
+            roles=tuple(getattr(auth, "roles", ()) or ()),
+            scopes=tuple(
+                value
+                for value in (
+                    getattr(auth, "org_id", ""),
+                    getattr(auth, "team_id", ""),
+                    getattr(auth, "project_id", ""),
+                    f"agent:{self.identity.name}",
+                )
+                if value
+            ),
+            owner=owner_id,
+        )
+
+    @staticmethod
+    def _delegation_goal(goal_id: str | None, auth: Any, session_id: str | None) -> str:
+        """Bind the delegation to the Goal scope it was authorized for."""
+        return goal_id or str(getattr(auth, "goal_id", "") or session_id or "")
+
+    @staticmethod
+    def _delegation_run(run_id: str | None, auth: Any, turn_id: str | None) -> str:
+        """Bind the delegation to one Run identity."""
+        return run_id or str(getattr(auth, "run_id", "") or turn_id or "")
+
+    @staticmethod
+    def _delegation_invocation(invocation_id: str | None, auth: Any, turn_id: str | None) -> str:
+        """Bind the delegation to one Invocation identity."""
+        return invocation_id or str(getattr(auth, "invocation_id", "") or turn_id or "")
+
+    @staticmethod
+    def _delegation_scope(delegation_scope: str | None, auth: Any, owner_id: str) -> str:
+        """Resolve the scope string the host grant must name."""
+        return delegation_scope or str(
+            getattr(auth, "project_id", "")
+            or getattr(auth, "team_id", "")
+            or getattr(auth, "org_id", "")
+            or owner_id
         )
 
     @staticmethod
