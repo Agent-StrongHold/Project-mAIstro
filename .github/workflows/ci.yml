@@ -153,6 +153,19 @@ jobs:
       # import to build or test.
       - name: Reference extension builds and tests in a clean environment
         run: python3 scripts/check-reference-extension.py
+      # The reference gallery (#980, M9-J2): the same two reusable gates,
+      # pointed at the out-of-tree-style repository's OWN policy via --policy.
+      # One gate pair per policy file is the whole external-repository story:
+      # nothing about the tooling changes, only which boundary document
+      # names the trees. The gallery's wheel-artifact rule differs (it
+      # distributes through the catalog, so its policy's required_artifacts
+      # names the SDK discovery manifest extension.json rather than a
+      # product-path artifact), which is exactly why the policy travels with the
+      # repository instead of being folded into the product-side one.
+      - name: Reference gallery packages import only the public SDK
+        run: python3 scripts/check-extension-imports.py --policy extensions/reference-gallery/namespace-policy.json
+      - name: Reference gallery packages build and test in a clean environment
+        run: python3 scripts/check-reference-extension.py --policy extensions/reference-gallery/namespace-policy.json
       # The physical half of the developer-tooling epic (#945): every family
       # template `maistro-ext-sdk new` emits is scaffolded, built as a wheel,
       # installed with the SDK + harness wheels into a fresh venv, sampled-
@@ -224,6 +237,12 @@ jobs:
       # profile to the `${VAR:?message}` shape the rest already use.
       - name: No deployment profile hands out a credential
         run: python3 scripts/check-compose-secrets.py
+      # Ordinary Docker/Podman Compose ignores Swarm-only deploy.resources.
+      # Require finite memory, swap, PID, and CPU ceilings in every shipped
+      # profile, supported overlay, and add-on so rendered deployment config cannot
+      # silently remove the containment boundary (#862).
+      - name: Compose profiles enforce resource containment
+        run: uv run python scripts/check-compose-resources.py
       # `security_violations` and `usage_events` were appended to forever
       # because no table had to say how long its rows live (#325). Every table
       # an Alembic revision, runtime `CREATE TABLE` or `__tablename__` creates
@@ -1059,122 +1078,21 @@ jobs:
         run: >-
           docker run --rm --entrypoint python maistro-engine:test
           -c "import importlib.util; assert importlib.util.find_spec('examples') is None, 'unpruned pytoniq examples namespace'"
-      - name: Boot the shipped engine image on an empty PostgreSQL 18 volume
+      # #1825: artifact-level Canvas proof, moved into ONE script that
+      # release.yml runs unchanged against the exact pushed digest it is about
+      # to sign and publish. The script boots the shipped image on an empty
+      # PostgreSQL 18 volume (this step's pre-existing restart-durability
+      # check, verbatim), and adds what liveness could never see: that the
+      # image alone imports maistro_canvas.canvas.store.PgCanvasStore (no
+      # network, no mounts, no PYTHONPATH — a source-tree or venv assist
+      # cannot pass for image contents), that a Canvas-less control image
+      # FAILS that probe, that the lifecycle logs canvas_store_wired, and
+      # that an AUTHENTICATED Canvas create/read through /v2/canvas succeeds
+      # while the same request without credentials is refused. It also prints
+      # the tested image id / repo digests, so the evidence names its artifact.
+      - name: Boot the shipped engine image and prove its Canvas surface (#1825)
         shell: bash
-        run: |
-          set -euo pipefail
-          network=maistro-engine-smoke
-          volume=maistro-engine-smoke-pgdata
-          postgres=maistro-engine-smoke-postgres
-          engine=maistro-engine-smoke-api
-
-          cleanup() {
-            status=$?
-            # Cleanup must never mask the real exit status: every command
-            # below is best-effort, and `exit "$status"` preserves the verdict.
-            if [[ $status -ne 0 ]]; then
-              docker logs "$engine" 2>&1 || true # the container may already be gone
-              docker logs "$postgres" 2>&1 || true # same
-              docker ps -a || true # state dump, not the verdict
-            fi
-            docker rm -f "$engine" "$postgres" >/dev/null 2>&1 || true # nothing to remove on an early failure
-            docker network rm "$network" >/dev/null 2>&1 || true # already absent
-            docker volume rm "$volume" >/dev/null 2>&1 || true # already absent
-            exit "$status"
-          }
-          trap cleanup EXIT
-
-          docker network create "$network"
-          docker volume create "$volume"
-          docker run -d --name "$postgres" --network "$network" \
-            -e POSTGRES_USER=maistro \
-            -e POSTGRES_PASSWORD=maistro-smoke-password \
-            -e POSTGRES_DB=maistro \
-            -e PGDATA=/var/lib/postgresql/18/docker \
-            -v "$volume:/var/lib/postgresql" \
-            pgvector/pgvector:pg18
-          for _ in $(seq 1 40); do
-            if docker exec "$postgres" pg_isready -U maistro >/dev/null 2>&1; then
-              break
-            fi
-            sleep 2
-          done
-          docker exec "$postgres" pg_isready -U maistro
-
-          docker run -d --name "$engine" --network "$network" -p 8000:8000 \
-            -e DB_HOST="$postgres" \
-            -e DB_PORT=5432 \
-            -e DB_NAME=maistro \
-            -e DB_USER=maistro \
-            -e DB_PASSWORD=maistro-smoke-password \
-            -e ROUTER_API_KEY=0123456789abcdef0123456789abcdef \
-            -e 'API_KEYS=["smoke:smoke-access-token"]' \
-            -e REQUIRE_AUTH=true \
-            -e LITELLM_BASE_URL=http://unused-gateway:4000 \
-            -e LITELLM_MASTER_KEY=smoke-gateway-key \
-            maistro-engine:test
-
-          for _ in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:8000/health/live >/dev/null; then
-              break
-            fi
-            sleep 2
-          done
-          curl -fsS http://127.0.0.1:8000/health/live
-          # Readiness races boot-time migration: liveness answers while the
-          # engine is still applying the alembic chain on the empty volume, so
-          # a single immediate /health/ready call fails under runner load
-          # (observed 2026-09-14: the smoke died with the container in
-          # health:starting and the migration chain mid-run). Poll with the
-          # same bounded budget; the final assertion stays fail-closed.
-          for _ in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:8000/health/ready >/dev/null; then
-              break
-            fi
-            sleep 2
-          done
-          curl -fsS http://127.0.0.1:8000/health/ready
-          # Revision ids in this chain are lowercase alnum + underscore
-          # (004_task_run_id, 035_outcome_scope_thumb_index); a hex-only
-          # match held only while the head happened to be numeric. The app
-          # can also report ready before its boot-time migration commits
-          # the alembic_version row (observed: ready ok at uptime 1.1s),
-          # so poll until the row exists and matches, then fail closed.
-          for _ in $(seq 1 60); do
-            v="$(docker exec "$postgres" psql -U maistro -d maistro -Atc \
-              "SELECT version_num FROM alembic_version" 2>/dev/null || true)"
-            if [[ "$v" =~ ^[0-9a-z_]+$ ]]; then break; fi
-            sleep 2
-          done
-          docker exec "$postgres" psql -U maistro -d maistro -Atc \
-            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-z_]+$'
-
-          # Recreate PostgreSQL against the same 18-style parent volume and
-          # prove the migrated cluster, not an anonymous volume, comes back.
-          docker rm -f "$engine" "$postgres"
-          docker run -d --name "$postgres" --network "$network" \
-            -e POSTGRES_USER=maistro \
-            -e POSTGRES_PASSWORD=maistro-smoke-password \
-            -e POSTGRES_DB=maistro \
-            -e PGDATA=/var/lib/postgresql/18/docker \
-            -v "$volume:/var/lib/postgresql" \
-            pgvector/pgvector:pg18
-          for _ in $(seq 1 40); do
-            if docker exec "$postgres" pg_isready -U maistro >/dev/null 2>&1; then
-              break
-            fi
-            sleep 2
-          done
-          # Second boot (recreated cluster): same migration-commit race, same
-          # bounded poll before the fail-closed assertion.
-          for _ in $(seq 1 60); do
-            v="$(docker exec "$postgres" psql -U maistro -d maistro -Atc \
-              "SELECT version_num FROM alembic_version" 2>/dev/null || true)"
-            if [[ "$v" =~ ^[0-9a-z_]+$ ]]; then break; fi
-            sleep 2
-          done
-          docker exec "$postgres" psql -U maistro -d maistro -Atc \
-            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-z_]+$'
+        run: scripts/smoke-engine-canvas.sh maistro-engine:test
       - name: Build hive-conductor (cached)
         run: >-
           scripts/buildx-build-retry.sh --
