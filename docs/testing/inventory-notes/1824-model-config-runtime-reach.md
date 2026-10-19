@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +17
+  packages/hive-conductor/backend/tests: +18
   packages/maistro-server/tests: +7
 ---
 
@@ -9,7 +9,8 @@ inventory-delta:
 Seventeen node IDs in
 `packages/hive-conductor/backend/tests/test_effective_gateway_key.py` (new) and
 seven in `packages/maistro-server/tests/test_worker_yaml_config_startup.py`
-(new). Two existing server node IDs were rewritten in place
+(new) — eighteen since the CI-repair round below — plus two existing server
+node IDs rewritten in place
 (`test_startup.py::TestRouterApiKeyValidation`, same count): they pin the
 environment-only ROUTER_API_KEY refusal, which now requires pinning the YAML
 singleton to None, because the worker — correctly — loads the documented
@@ -26,6 +27,16 @@ building its roster client and governed endpoint from the effective key (and
 holding no key at all when nothing is configured); and the governed egress
 endpoint resolving the same credential through the same contract as the roster
 client.
+
+**Hive +1 (CI-repair round, diff-coverage)**:
+`test_configured_client_dispatches_with_the_effective_credential` covers the
+second arc of `_HttpOpenAILLMClient._require_credential`'s credential branch
+(`adapters/maistro_core.py`) — the one the merge-queue coverage gate measured
+at 50% of 2 branch arcs because every prior test drove the empty-key refusal.
+The new test pins the other half of the fail-closed contract: a client built
+with the effective key is *not* refused — it dispatches to the gateway it
+names, carrying that credential as the bearer token. `stream` delegates to
+`complete`, so one passage covers the guard for both entry points.
 
 **Server +7** pin the worker-side config load: missing file starts empty and
 fail-closed (the pinned parser contract); the worker loads the documented YAML

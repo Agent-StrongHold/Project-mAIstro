@@ -217,6 +217,52 @@ class TestNoPlaceholderCredential:
         assert "sk-noop" not in message
         assert "MAISTRO_LLM_API_KEY" in message
 
+    async def test_configured_client_dispatches_with_the_effective_credential(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other half of the guard (#1824): a configured client passes it.
+
+        ``_require_credential`` must be a no-op when the effective key is
+        present — the refusal is fail-closed for absent configuration only,
+        never a blanket refusal. The dispatch that then happens carries the
+        intended credential as the bearer token for the gateway it names.
+        (``stream`` delegates to ``complete``, so this one passage covers the
+        guard for both entry points.)
+        """
+        import adapters.maistro_core as adapter
+
+        captured: dict[str, Any] = {}
+        payload = {"choices": [{"message": {"content": "ok"}}]}
+
+        class _FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, Any]:
+                return payload
+
+        class _FakeAsyncClient:
+            async def __aenter__(self) -> _FakeAsyncClient:
+                return self
+
+            async def __aexit__(self, *exc: object) -> None:
+                return None
+
+            async def post(self, url: str, **kwargs: Any) -> _FakeResponse:
+                captured["url"] = url
+                captured.update(kwargs)
+                return _FakeResponse()
+
+        monkeypatch.setattr(adapter, "shared_client", lambda *_a, **_kw: _FakeAsyncClient())
+        client = adapter._HttpOpenAILLMClient(
+            base_url="http://localhost:4000/v1", api_key="sk-effective-key", model="m"
+        )
+        result = await client.complete([{"role": "user", "content": "hi"}], "m")
+
+        assert result == payload, "a configured client dispatches, it does not refuse"
+        assert captured["headers"]["Authorization"] == "Bearer sk-effective-key"
+        assert captured["url"] == "http://localhost:4000/v1/chat/completions"
+
     async def test_runtime_builds_the_legacy_client_with_the_effective_key(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
