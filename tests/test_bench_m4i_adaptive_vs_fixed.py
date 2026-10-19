@@ -14,6 +14,12 @@ pin the properties that make the recorded comparison trustworthy:
 - the CLI entry point renders the markdown table and writes the same JSON
   the record holds.
 
+The degenerate paths are pinned too, not just the happy one: a harness path
+that yields no import spec refuses with the named `RuntimeError`; the default
+`--output`-less invocation renders to stdout only; and running the file as a
+script (`python scripts/bench_...py`, the documented usage) exits 0 through
+the `__main__` guard rather than only working when imported.
+
 Everything runs offline against the deterministic stub gateway (no network,
 no PostgreSQL) inside the suite's `--timeout=30` producer budget.
 """
@@ -22,6 +28,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import runpy
 import sys
 from pathlib import Path
 from typing import Any
@@ -105,3 +112,43 @@ class TestMain:
         # The stdout table is the human-readable rendering of the same arms.
         for arm in ("adaptive", "fixed-cheap", "fixed-strong", "fixed-vision"):
             assert f"| {arm} |" in table
+
+
+class TestDegeneratePaths:
+    """The guard arcs behind the diff-coverage gate, each pinned for real."""
+
+    def test_load_harness_refuses_a_path_that_yields_no_spec(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `spec_from_file_location` returns None for an unrecognized suffix,
+        # which is exactly the guard `_load_harness` exists for: refuse with
+        # the named RuntimeError instead of an opaque AttributeError when the
+        # harness path stops pointing at a Python module.
+        bogus = tmp_path / "harness.txt"
+        bogus.write_text("# not a module\n", encoding="utf-8")
+        monkeypatch.setattr(bench, "_HARNESS_PATH", bogus)
+        with pytest.raises(RuntimeError, match="cannot load harness"):
+            bench._load_harness()
+
+    def test_main_without_output_prints_the_table_to_stdout_only(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The default invocation (no --output) renders to stdout only and must
+        # not claim a file was written.
+        assert bench.main([]) == 0
+        out = capsys.readouterr().out
+        for arm in ("adaptive", "fixed-cheap", "fixed-strong", "fixed-vision"):
+            assert f"| {arm} |" in out
+        assert "written:" not in out
+
+    def test_script_entry_point_exits_zero(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The documented usage is running the file as a script. That path goes
+        # through the `__main__` guard and `raise SystemExit(main())` — execute
+        # it in-process with runpy so the entry point itself is the evidence.
+        monkeypatch.setattr(sys, "argv", [str(SCRIPT)])
+        with pytest.raises(SystemExit) as excinfo:
+            runpy.run_path(str(SCRIPT), run_name="__main__")
+        assert excinfo.value.code == 0
+        assert "| adaptive |" in capsys.readouterr().out
