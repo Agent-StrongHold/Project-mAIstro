@@ -48,8 +48,9 @@ into new helpers and that no existing test pinned:
    the behavior contract closed on missing) and touches nothing in the
    candidate tree.
 
-Behavior preservation itself is pinned by the pre-existing 37
-`test_fail_first.py` tests (red→green proof, flaky red, config taint,
-unrelated failure, candidate deletion, new-module test-first), the
+Behavior preservation itself is pinned by the pre-existing `test_fail_first.py`
+tests — 42 of the file's 45 collected tests at the final head; the other
+three are the ones listed above — red→green proof, flaky red, config taint,
+unrelated failure, candidate deletion, new-module test-first — plus the
 `test_candidate_fitness.py`/`test_candidate_fitness_scenarios.py` scorecard
 and promotion matrices, and `test_local_loop.py`.
