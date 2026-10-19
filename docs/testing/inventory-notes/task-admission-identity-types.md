@@ -2248,3 +2248,83 @@ No code or ledger change warranted (repair space re-proven empty at this topolog
 consecutive round); all six merge-queue failures decompose to the same two structural facts the
 issue itself mandates and documents for an intentionally unwired leaf; integration hold stands;
 stack left unmerged; no inventory delta (stays `+79`). (Refs #1851)
+
+## Deep-review round — 2026-10-19 (`7606baab2c41`, job `b01a985872394488b340a672da85ff91`)
+
+Bounded second-round adversarial verification at the exact assigned head `7606baab2c41`
+(branch tip = merge of develop `851a63e7ccd1` into `auto-1851`); worktree found clean at
+start. Every prior finding re-derived firsthand; nothing carried over. One NEW in-leaf
+repairable defect was found and fixed this round (the malformed grant file); the five
+carried findings are CONFIRMED, not refuted.
+
+**All five prior findings confirmed at this head:**
+
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`
+  with `RATCHET_BASE_REV=origin/develop` (merge-base resolves to `851a63e7ccd1`): **rc=1**,
+  banking leg GREEN (1326 findings, `unclassified: 0`, `never_allowlist: 0`), authorization
+  leg RED on exactly the 5 retained identities `admission_identity.py:515/516/518/519/520`
+  (`MISMATCH`/`REPLAYED`/`TAKEOVER`/`REPLACE_EXPIRED`/`LEGACY_UNRESOLVED`; `PENDING` at :517
+  unflagged via the same-name `Pending` class), remedy "land a reviewed grant first" —
+  observed at a head that ALREADY CONTAINED the branch-side grant commit `4893be451`,
+  which is the empirical half of the inertness proof.
+- Grant inertness, source half: `ratchet_provenance.load_authorizations` reads grants via
+  `resolve_baseline` at `git merge-base(RATCHET_BASE_REV, HEAD)` = `851a63e7ccd1` (verified:
+  `git merge-base origin/develop HEAD` = `851a63e7ccd1`); the base file contains **0**
+  `admission_identity` grants. Two-merge wall confirmed; a branch-side grant cannot authorize
+  its own introduction.
+- `check-reachability.py`: **rc=1**, exactly 1 NEWLY UNREACHABLE: `maistro.runs.admission_identity`.
+  `check-reachability-provenance.py`: **rc=1** (168 -> 169 unreachable; "absent from trusted base
+  and not previously authorized" + "missing from candidate baseline" — two-sided, as the
+  no-bank design mandates). `check-ratchet-provenance.py`: **rc=1** solely via that leg;
+  `check-shipped-surface-truth.py` rc=0. The 3 ci.yml reachability tests reproduced failing
+  (3 failed), each naming `maistro.runs.admission_identity`.
+- Issue #1851's reconciliation checkbox remains open and owner-held; this note records the
+  conflict, it does not settle it.
+
+**NEW defect found and repaired this round — commit `4893be451` was malformed, not merely inert:**
+
+- `git show 4893be451` inserted the 25-line grant block directly after the closing `}` of the
+  previous entry **without the required comma**: `quality/ratchet-authorizations.json` line 583
+  ends `    }` and line 584 begins the `MISMATCH` grant key. The file failed `json.load` at
+  line 584 column 5 — the ONLY malformed ledger in the entire `quality/` tree (all 40 others
+  parse). The base `851a63e7ccd1` version is valid.
+- Blast radius proven live: `check_ac_state_impl.candidate_grants()` (scripts/check_ac_state_impl.py:1663-1670)
+  parses the WORKTREE copy ("does the file in front of me still say so") and converts the
+  `JSONDecodeError` into a gate refusal. `uv run python scripts/check-ac-state.py --run-tests
+  --ratchet` rc=1 with "the 'ac-state' section in the working tree could not be read
+  (JSONDecodeError: Expecting ',' delimiter: line 584 column 5)" — i.e. commit `4893be451`,
+  aimed at `exact-debt-ledger`, broke the `quality-acceptance` job instead (its targeted gate
+  is provably blind to the file: grants load from the base).
+- Repair (this round's writer action, evidence-backed, not cosmetic): removed exactly the
+  25 inserted lines (584-608), restoring the file **byte-exact to base `851a63e7ccd1`**
+  (verified: `diff` vs `git show 851a63e7c:quality/ratchet-authorizations.json` empty; file
+  valid JSON). The grants were (a) inert by the two-merge rule, (b) prohibited by the issue's
+  unconditional "No fake callers, baseline additions, grants, disabled gates or quality waivers
+  are permitted", and (c) malformed. `4893be451` remains in history; this is a forward fix.
+
+**Post-repair state, all re-run at this tree:**
+
+- `check-ac-state.py --run-tests --ratchet`: no longer crashes; rc=1 on a REAL, INHERITED
+  measurement — `design_coverage: 39.5205 falls below the floor of 39.641`. Attribution proven:
+  `quality/ac-state.json` (regenerated) contains **0** references to `admission_identity`/1851;
+  the new test file carries 0 `mark.ac` markers; the branch's only docs delta is this note;
+  adding an unreachable module changes no other module's reachability. The measurement is
+  therefore identical at base and HEAD — a develop-corpus property. The base's own
+  `ac-state` grant (`design_coverage@39.641`, owner-authorized 2026-10-17, #166) documents the
+  re-anchor mechanism and names #1936 among the previously red candidates; the further fall to
+  39.5205 postdates that grant and needs the same owner action from the current develop.
+  Not branch-caused, not in-leaf-fixable.
+- `check-vulture-baseline.py` CI-exact: rc=1 with a **byte-identical** failure set pre/post
+  grant removal — the grants changed nothing for the gate they targeted (inertness, both halves).
+- `check-ratchet-provenance.py` rc=1 unchanged (reachability leg); `ruff check .` all passed;
+  focused pytest **79 passed**; `__all__` 21 set-exact, 6 verbatim lowercase enum pairs at
+  515-520, `owner_token` repr=False re-probed live; 0 production importers; no
+  `runs/__init__` export.
+
+**Deep-review verdict rationale:** the five carried findings hold; the only in-leaf-repairable
+defect (the malformed inert grant) is fixed. What remains red decomposes to the same two
+structural facts every prior round recorded — the intentionally unwired leaf (reachability
+family + vulture authorization two-merge wall) and the inherited develop-side design-coverage
+floor — whose remedies (#1845 real-consumer integration, owner-landed develop grants /
+re-anchor) are outside this leaf by the issue's own staging language. Integration hold stands;
+stack left unmerged; no inventory delta (stays `+79`). (Refs #1851)
