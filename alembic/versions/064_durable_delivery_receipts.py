@@ -100,6 +100,24 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Revision-063's InvocationStatus has no UNKNOWN member, so its row
+    # decoder (`InvocationStatus(row['status'])`) raises ValueError on any
+    # leftover 'unknown' receipt and the rolled-back runtime can neither read
+    # nor claim those rows. Reclassify them to 063-era terminal FAILED — the
+    # previous release's own outcome for ambiguous transports — so they are
+    # never re-dispatched by a runtime that cannot represent uncertainty, and
+    # tag last_error for operators. A later re-upgrade reclassifies these
+    # rows fail-closed back to UNKNOWN (the legacy_failed_unproven path,
+    # whose `last_error_code = ''` guard matches the column default), so no
+    # evidence is lost across the round-trip.
+    op.execute(
+        """
+        UPDATE handler_invocations SET status = 'failed',
+               last_error = COALESCE(NULLIF(last_error, ''),
+                                     'unknown_receipt_downgraded')
+         WHERE status = 'unknown'
+        """
+    )
     op.execute("ALTER TABLE handler_invocations DROP COLUMN IF EXISTS last_error_code")
     op.execute("ALTER TABLE handler_invocations DROP COLUMN IF EXISTS uncertain_prior_dispatch")
     op.execute("ALTER TABLE handler_invocations DROP COLUMN IF EXISTS last_outcome")

@@ -243,11 +243,31 @@ async def _settle_and_report(
     return settled.settled_for_cursor
 
 
+def _unsendable_target_reason(handler_url: str) -> tuple[str, str] | None:
+    """``(reason_code, detail)`` when the configured target can never be sent.
+
+    A missing or syntactically malformed URL must be refused before
+    ``begin_dispatch``: httpx raises ``InvalidURL`` outside its
+    ``HTTPError`` hierarchy, so left to the caller a malformed target would
+    surface as an indeterminate possibly-committed call and the trigger
+    would settle UNKNOWN after consuming every attempt for a call that
+    could never start.
+    """
+    if not handler_url:
+        return "handler_url_missing", ""
+    try:
+        httpx.URL(handler_url)
+    except httpx.InvalidURL as exc:
+        return "handler_url_malformed", str(exc)
+    return None
+
+
 async def _settle_refusal(
     invocation_store: InvocationStore,
     claimed: HandlerInvocation,
     *,
     reason_code: str,
+    detail: str = "",
 ) -> bool:
     """Visibly settle a pre-send refusal without any physical call.
 
@@ -265,7 +285,7 @@ async def _settle_refusal(
         claim_token=claimed.claim_token,
         expected_revision=claimed.revision,
         status=status,
-        outcome=HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, reason_code),
+        outcome=HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, reason_code, detail),
     )
 
 
@@ -341,8 +361,12 @@ async def _dispatch(
             invocation_store, claimed, reason_code="delivery_identity_changed"
         )
 
-    if not trigger.handler_url:
-        return await _settle_refusal(invocation_store, claimed, reason_code="handler_url_missing")
+    unsendable = _unsendable_target_reason(trigger.handler_url)
+    if unsendable is not None:
+        reason_code, detail = unsendable
+        return await _settle_refusal(
+            invocation_store, claimed, reason_code=reason_code, detail=detail
+        )
 
     prior_uncertainty = claimed.uncertain_prior_dispatch
     safe_contract = delivery.replay_safety in _SAFE_REPLAY_SAFETIES

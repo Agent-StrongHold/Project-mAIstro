@@ -610,6 +610,10 @@ def _copy_invocation(invocation: HandlerInvocation) -> HandlerInvocation:
     )
 
 
+#: Frozen receipt column list, interpolated into SQL text at the sites below
+#: (each marked ``# nosec B608``): it is a module constant, never data — every
+#: caller-supplied value travels as a bound ``?`` parameter, so the string
+#: composition bandit flags carries no injection surface.
 _RECEIPT_COLUMNS = (
     "trigger_id, event_id, status, attempts, last_error, created_at, lease_expires_at, "
     "delivery_key, handler_url, request_digest, replay_safety, contract_ref, claim_token, "
@@ -721,7 +725,7 @@ class SqliteInvocationStore:
 
     async def get(self, trigger_id: str, event_id: int) -> HandlerInvocation | None:
         cursor = await self._conn.execute(
-            f"SELECT {_RECEIPT_COLUMNS} FROM handler_invocations "
+            f"SELECT {_RECEIPT_COLUMNS} FROM handler_invocations "  # nosec B608
             "WHERE trigger_id = ? AND event_id = ?",
             (trigger_id, event_id),
         )
@@ -782,7 +786,7 @@ class SqliteInvocationStore:
                  last_outcome = NULL
                WHERE handler_invocations.status NOT IN ('success','failed','unknown')
                  AND handler_invocations.lease_expires_at <= excluded.created_at
-               RETURNING {_RECEIPT_COLUMNS}""",
+               RETURNING {_RECEIPT_COLUMNS}""",  # nosec B608
             (
                 trigger_id,
                 event_id,
@@ -821,7 +825,7 @@ class SqliteInvocationStore:
                  AND dispatch_started_at IS NULL AND attempts < 3
                  AND handler_url = ? AND request_digest = ?
                  AND replay_safety = ? AND contract_ref = ?
-               RETURNING {_RECEIPT_COLUMNS}""",
+               RETURNING {_RECEIPT_COLUMNS}""",  # nosec B608
             (
                 time.time(),
                 trigger_id,
@@ -903,7 +907,7 @@ class SqliteInvocationStore:
                  uncertain_prior_dispatch = ?, dispatch_started_at = NULL,
                  revision = revision + 1, lease_expires_at = 0
                WHERE trigger_id = ? AND event_id = ? AND claim_token = ? AND revision = ?
-               RETURNING """
+               RETURNING """  # nosec B608
             + _RECEIPT_COLUMNS,
             (
                 status.value,
@@ -937,7 +941,7 @@ class SqliteInvocationStore:
                  dispatch_started_at=excluded.dispatch_started_at,
                  last_outcome=excluded.last_outcome,
                  uncertain_prior_dispatch=excluded.uncertain_prior_dispatch,
-                 last_error_code=excluded.last_error_code""",
+                 last_error_code=excluded.last_error_code""",  # nosec B608
             (
                 invocation.trigger_id,
                 invocation.event_id,
@@ -963,7 +967,7 @@ class SqliteInvocationStore:
 
     async def list_for_event(self, event_id: int) -> list[HandlerInvocation]:
         cursor = await self._conn.execute(
-            f"SELECT {_RECEIPT_COLUMNS} FROM handler_invocations WHERE event_id = ?",
+            f"SELECT {_RECEIPT_COLUMNS} FROM handler_invocations WHERE event_id = ?",  # nosec B608
             (event_id,),
         )
         rows = await cursor.fetchall()

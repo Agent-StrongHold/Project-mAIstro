@@ -698,6 +698,35 @@ class TestClassificationTable:
         assert caller.calls == []
         assert cursor == 1
 
+    async def test_malformed_handler_url_is_a_pre_send_refusal(self) -> None:
+        # httpx.InvalidURL is outside the HTTPError hierarchy: without a local
+        # refusal gate a malformed target would be misread as an indeterminate
+        # possibly-committed call and settle UNKNOWN after burning attempts.
+        log, triggers, invocations = (
+            InMemoryEventLog(),
+            InMemoryTriggerStore(),
+            InMemoryInvocationStore(),
+        )
+        t = TriggerDefinition(
+            trigger_id="t-badurl",
+            event_pattern="a.b",
+            handler_url="http://handler.invalid:not-a-port/",
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="c",
+        )
+        await triggers.add(t)
+        await log.append("a.b")
+        caller = RecordingCaller()
+
+        cursor = await process_events(log, triggers, invocations, caller)
+        receipt = await invocations.get("t-badurl", 1)
+        assert receipt is not None
+        assert receipt.status is InvocationStatus.FAILED
+        assert receipt.last_error_code == "handler_url_malformed"
+        assert "Invalid port" in (receipt.last_error or "")
+        assert caller.calls == []
+        assert cursor == 1
+
     async def test_idempotent_declaration_without_a_contract_ref_acts_unproven(self) -> None:
         log, triggers, invocations = (
             InMemoryEventLog(),
