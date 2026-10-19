@@ -440,6 +440,6 @@ test("no recorded work renders the honest empty page", async () => {
   await stubGoalDoors(fresh, []);
   await fresh.goto("/goals", { waitUntil: "domcontentloaded" });
   await expect(fresh.getByRole("heading", { name: "Goals", exact: true })).toBeVisible();
-  await expect(fresh.getByText("No goals with recorded work yet")).toBeVisible();
+  await expect(fresh.getByText("No goals yet")).toBeVisible();
   await fresh.close();
 });
