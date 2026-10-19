@@ -90,6 +90,9 @@ def upgrade() -> None:
         sa.Column("detail", sa.Text, nullable=False, server_default=""),
         sa.Column("trace_id", sa.Text, nullable=False, server_default=""),
         sa.Column("request_id", sa.Text, nullable=False, server_default=""),
+        sa.Column("signature", sa.Text, nullable=False, server_default=""),
+        sa.Column("signing_key_id", sa.Text, nullable=False, server_default=""),
+        sa.Column("proof_type", sa.Text, nullable=False, server_default=""),
     )
     # The only ordering the store ever asks for, and the filters it allows.
     op.create_index("ix_audit_log_timestamp", "audit_log", ["timestamp"])
