@@ -2938,17 +2938,23 @@ async def _wire_audit_log(*, pg_pool: Any, db_pool: Any) -> Any:
     if pg_pool is not None:
         from maistro.persistence.pg_audit import PgAuditLog
 
-        return PgAuditLog(pg_pool)
+        pg_audit = PgAuditLog(pg_pool)
+        await pg_audit.ensure_schema()
+        return pg_audit
     if db_pool is not None:
         from maistro.persistence.sqlite_audit import SqliteAuditLog
 
-        audit = SqliteAuditLog(db_pool)
-        await audit.ensure_schema()
-        return audit
+        sqlite_audit = SqliteAuditLog(db_pool)
+        await sqlite_audit.ensure_schema()
+        return sqlite_audit
 
     from maistro.security.sentinel.audit import InMemoryAuditLog
+    from maistro.security.sentinel.signing import AuditSigner
 
-    return InMemoryAuditLog()
+    # A configured external seed keeps proofs verifiable across restarts. The
+    # generated fallback remains useful for explicitly ephemeral deployments,
+    # but every in-memory decision is still signed before retention.
+    return InMemoryAuditLog(signer=AuditSigner.from_environment())
 
 
 async def _wire_usage_log(db_pool: Any) -> tuple[InMemoryUsageLog, Any]:
