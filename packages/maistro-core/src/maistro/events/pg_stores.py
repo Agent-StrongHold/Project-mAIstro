@@ -46,13 +46,18 @@ from maistro.events.invocations import (
     MAX_ATTEMPTS,
     DeliveryAlreadyStarted,
     DeliveryAttemptLimitReached,
-    DeliveryDisposition,
     DeliveryIdentity,
     DeliveryIdentityMismatch,
     HandlerCallOutcome,
     HandlerInvocation,
     InvocationStatus,
     ReplaySafety,
+    _disposition_or_none,
+    _float_or_zero,
+    _int_or_zero,
+    _optional_float,
+    _optional_str,
+    _text,
     identity_matches,
     settle_fields,
     validate_settle,
@@ -742,28 +747,25 @@ def _row_to_trigger(row: Any) -> TriggerDefinition:
 
 
 def _row_to_invocation(row: Any) -> HandlerInvocation:
-    outcome = row["last_outcome"]
     return HandlerInvocation(
         trigger_id=row["trigger_id"],
         event_id=int(row["event_id"]),
         status=InvocationStatus(row["status"]),
         attempts=int(row["attempts"]),
-        last_error=row["last_error"] or "",
+        last_error=_text(row["last_error"]),
         created_at=float(row["created_at"]),
-        lease_expires_at=float(row["lease_expires_at"] or 0),
-        delivery_key=row["delivery_key"],
-        handler_url=row["handler_url"] or "",
-        request_digest=row["request_digest"] or "",
-        replay_safety=ReplaySafety(row["replay_safety"] or "unproven"),
-        contract_ref=row["contract_ref"] or "",
-        claim_token=row["claim_token"] or "",
-        revision=int(row["revision"] or 0),
-        dispatch_started_at=(
-            float(row["dispatch_started_at"]) if row["dispatch_started_at"] is not None else None
-        ),
-        last_outcome=DeliveryDisposition(outcome) if outcome else None,
+        lease_expires_at=_float_or_zero(row["lease_expires_at"]),
+        delivery_key=_optional_str(row["delivery_key"]),
+        handler_url=_text(row["handler_url"]),
+        request_digest=_text(row["request_digest"]),
+        replay_safety=ReplaySafety(str(row["replay_safety"] or "unproven")),
+        contract_ref=_text(row["contract_ref"]),
+        claim_token=_text(row["claim_token"]),
+        revision=_int_or_zero(row["revision"]),
+        dispatch_started_at=_optional_float(row["dispatch_started_at"]),
+        last_outcome=_disposition_or_none(row["last_outcome"]),
         uncertain_prior_dispatch=bool(row["uncertain_prior_dispatch"]),
-        last_error_code=row["last_error_code"] or "",
+        last_error_code=_text(row["last_error_code"]),
     )
 
 

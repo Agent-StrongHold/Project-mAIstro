@@ -325,6 +325,65 @@ async def _settle_attempt_limit(
     )
 
 
+async def _reread_settled(
+    invocation_store: InvocationStore, trigger_id: str, event_id: int
+) -> bool:
+    """Reread after losing a claim/CAS race without sending.
+
+    The caller never sends on a lost race, and never reports the event
+    settled unless the reread actually says so: only a receipt that is
+    settled for cursor (success/failed/unknown) may hold the cursor.
+    """
+    current = await invocation_store.get(trigger_id, event_id)
+    return current is not None and current.settled_for_cursor
+
+
+async def _settle_pre_send_refusal(
+    invocation_store: InvocationStore,
+    claimed: HandlerInvocation,
+    trigger: TriggerDefinition,
+    event: LoggedEvent,
+    delivery: DeliveryIdentity,
+) -> bool | None:
+    """Settle without HTTP when this claim cannot authorize a send.
+
+    Three facts stop a dispatch before any socket is opened: the frozen
+    receipt disagrees with the current authorized declaration; the target is
+    structurally unsendable; or an earlier send may have applied while the
+    recipient cannot deduplicate. Each settles visibly and reports. Returns
+    the cursor settlement, or None when the send may proceed.
+    """
+    if not identity_matches(claimed, delivery):
+        # Changed target/body/contract: the frozen receipt disagrees with the
+        # current authorized declaration. Refuse visibly, without HTTP.
+        return await _settle_refusal(
+            invocation_store, claimed, reason_code="delivery_identity_changed"
+        )
+
+    unsendable = _unsendable_target_reason(trigger.handler_url)
+    if unsendable is not None:
+        reason_code, detail = unsendable
+        return await _settle_refusal(
+            invocation_store, claimed, reason_code=reason_code, detail=detail
+        )
+
+    if claimed.uncertain_prior_dispatch and delivery.replay_safety not in _SAFE_REPLAY_SAFETIES:
+        # A possibly-applied earlier send + a recipient that cannot dedupe:
+        # automatic redelivery is exactly what cannot be allowed.
+        return await _settle_and_report(
+            invocation_store,
+            claimed.trigger_id,
+            claimed.event_id,
+            claim_token=claimed.claim_token,
+            expected_revision=claimed.revision,
+            status=InvocationStatus.UNKNOWN,
+            outcome=HandlerCallOutcome(
+                DeliveryDisposition.INDETERMINATE, "prior_uncertain_dispatch"
+            ),
+        )
+    return None
+
+
 async def _dispatch(
     event_log: EventLogStore,
     invocation_store: InvocationStore,
@@ -351,39 +410,13 @@ async def _dispatch(
         # Someone else owns this dispatch, or it is already settled. Either
         # way this worker must not send — and must not report the event
         # settled unless the reread actually says so.
-        current = await invocation_store.get(trigger.trigger_id, event.id)
-        return current is not None and current.settled_for_cursor
-
-    if not identity_matches(claimed, delivery):
-        # Changed target/body/contract: the frozen receipt disagrees with the
-        # current authorized declaration. Refuse visibly, without HTTP.
-        return await _settle_refusal(
-            invocation_store, claimed, reason_code="delivery_identity_changed"
-        )
-
-    unsendable = _unsendable_target_reason(trigger.handler_url)
-    if unsendable is not None:
-        reason_code, detail = unsendable
-        return await _settle_refusal(
-            invocation_store, claimed, reason_code=reason_code, detail=detail
-        )
+        return await _reread_settled(invocation_store, trigger.trigger_id, event.id)
 
     prior_uncertainty = claimed.uncertain_prior_dispatch
     safe_contract = delivery.replay_safety in _SAFE_REPLAY_SAFETIES
-    if prior_uncertainty and not safe_contract:
-        # A possibly-applied earlier send + a recipient that cannot dedupe:
-        # automatic redelivery is exactly what cannot be allowed.
-        return await _settle_and_report(
-            invocation_store,
-            claimed.trigger_id,
-            claimed.event_id,
-            claim_token=claimed.claim_token,
-            expected_revision=claimed.revision,
-            status=InvocationStatus.UNKNOWN,
-            outcome=HandlerCallOutcome(
-                DeliveryDisposition.INDETERMINATE, "prior_uncertain_dispatch"
-            ),
-        )
+    refused = await _settle_pre_send_refusal(invocation_store, claimed, trigger, event, delivery)
+    if refused is not None:
+        return refused
 
     try:
         begun = await invocation_store.begin_dispatch(
@@ -404,8 +437,7 @@ async def _dispatch(
         # the marker's owner will settle it.
         return False
     if begun is None:
-        current = await invocation_store.get(trigger.trigger_id, event.id)
-        return current is not None and current.settled_for_cursor
+        return await _reread_settled(invocation_store, trigger.trigger_id, event.id)
 
     outcome = await _call_with_cancellation_settlement(
         invocation_store,

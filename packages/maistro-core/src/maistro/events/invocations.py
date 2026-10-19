@@ -352,6 +352,11 @@ def identity_matches(receipt: HandlerInvocation, delivery: DeliveryIdentity) -> 
     )
 
 
+def _claim_is_current(receipt: HandlerInvocation, claim_token: str, expected_revision: int) -> bool:
+    """Whether the caller still owns the receipt: token and revision both match."""
+    return receipt.claim_token == claim_token and receipt.revision == expected_revision
+
+
 _SETTLE_TARGET_STATUSES = frozenset(
     {
         InvocationStatus.SUCCESS,
@@ -523,7 +528,7 @@ class InMemoryInvocationStore:
             receipt = self._invocations.get((trigger_id, event_id))
             if receipt is None:
                 return None
-            if receipt.claim_token != claim_token or receipt.revision != expected_revision:
+            if not _claim_is_current(receipt, claim_token, expected_revision):
                 return None
             if not identity_matches(receipt, delivery):
                 raise DeliveryIdentityMismatch(
@@ -561,7 +566,7 @@ class InMemoryInvocationStore:
             receipt = self._invocations.get((trigger_id, event_id))
             if receipt is None:
                 return None
-            if receipt.claim_token != claim_token or receipt.revision != expected_revision:
+            if not _claim_is_current(receipt, claim_token, expected_revision):
                 return None
             validate_settle(receipt, status, evidence)
             fields = settle_fields(receipt, status, evidence)
@@ -677,27 +682,56 @@ def _upgrade_column(upgrade: str) -> str | None:
     return None
 
 
+def _optional_str(value: object) -> str | None:
+    """A stored string column that may be NULL."""
+    return str(value) if value is not None else None
+
+
+def _optional_float(value: object) -> float | None:
+    """A stored float column that may be NULL."""
+    return float(value) if value is not None else None  # type: ignore[arg-type]
+
+
+def _text(value: object) -> str:
+    """A stored string column with NOT NULL DEFAULT '' semantics."""
+    return str(value or "")
+
+
+def _float_or_zero(value: object) -> float:
+    """A stored float column defaulting to zero when NULL/absent."""
+    return float(value or 0)  # type: ignore[arg-type]
+
+
+def _int_or_zero(value: object) -> int:
+    """A stored integer column defaulting to zero when NULL/absent."""
+    return int(value or 0)  # type: ignore[call-overload,no-any-return]
+
+
+def _disposition_or_none(value: object) -> DeliveryDisposition | None:
+    """A stored disposition enum that may be NULL/empty."""
+    return DeliveryDisposition(str(value)) if value else None
+
+
 def _row_to_invocation(row: tuple[object, ...]) -> HandlerInvocation:
-    outcome = row[15]
     return HandlerInvocation(
         trigger_id=str(row[0]),
         event_id=int(row[1]),  # type: ignore[call-overload]
         status=InvocationStatus(str(row[2])),
         attempts=int(row[3]),  # type: ignore[call-overload]
-        last_error=str(row[4] or ""),
+        last_error=_text(row[4]),
         created_at=float(row[5]),  # type: ignore[arg-type]
-        lease_expires_at=float(row[6] or 0),  # type: ignore[arg-type]
-        delivery_key=str(row[7]) if row[7] is not None else None,
-        handler_url=str(row[8] or ""),
-        request_digest=str(row[9] or ""),
+        lease_expires_at=_float_or_zero(row[6]),
+        delivery_key=_optional_str(row[7]),
+        handler_url=_text(row[8]),
+        request_digest=_text(row[9]),
         replay_safety=ReplaySafety(str(row[10] or "unproven")),
-        contract_ref=str(row[11] or ""),
-        claim_token=str(row[12] or ""),
-        revision=int(row[13] or 0),  # type: ignore[call-overload]
-        dispatch_started_at=float(row[14]) if row[14] is not None else None,  # type: ignore[arg-type]
-        last_outcome=DeliveryDisposition(str(outcome)) if outcome else None,
+        contract_ref=_text(row[11]),
+        claim_token=_text(row[12]),
+        revision=_int_or_zero(row[13]),
+        dispatch_started_at=_optional_float(row[14]),
+        last_outcome=_disposition_or_none(row[15]),
         uncertain_prior_dispatch=bool(row[16]),
-        last_error_code=str(row[17] or ""),
+        last_error_code=_text(row[17]),
     )
 
 
