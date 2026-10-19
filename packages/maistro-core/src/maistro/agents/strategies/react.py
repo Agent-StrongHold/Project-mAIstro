@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.agents.tool_dispatch import dispatch_tool_call
 from maistro.quota.usage_report import reported_usage
+from maistro.security.sentinel.audit import log_scoped_tool_denial
 from maistro.security.warden.detector import WardenContext
 from maistro.tools.contracts import ToolArgumentError, validate_tool_arguments
 from maistro.types.agent import ReasoningResult
@@ -42,22 +43,41 @@ def _validate_model_tool_call(
     tool_args: dict[str, Any],
     allowed_tools: frozenset[str] | None,
     raw_error: str | None,
-) -> tuple[bool, str | None, dict[str, Any]]:
-    """Return a refusal, if any, before Sentinel/provider dispatch."""
+) -> tuple[bool, str | None, dict[str, Any], str]:
+    """Return a refusal, if any, before Sentinel/provider dispatch.
+
+    The fourth element is the host-owned denial reason for the scoped audit
+    record (#847); it is empty when the call is admitted.
+    """
     schema = _find_tool_schema(tools, tool_name)
     if allowed_tools is None:
-        return False, None, schema
+        return False, None, schema, ""
     if raw_error is not None:
-        return True, raw_error, schema
+        return True, raw_error, schema, "malformed tool arguments"
     if tool_name not in allowed_tools:
-        return True, f"Error: tool '{tool_name}' is not in the Agent allowlist", schema
+        return (
+            True,
+            f"Error: tool '{tool_name}' is not in the Agent allowlist",
+            schema,
+            "tool not in agent allowlist",
+        )
     if not schema:
-        return True, f"Error: no schema is registered for tool '{tool_name}'", schema
+        return (
+            True,
+            f"Error: no schema is registered for tool '{tool_name}'",
+            schema,
+            "no schema registered for requested tool",
+        )
     try:
         validate_tool_arguments(schema, tool_args)
     except ToolArgumentError as exc:
-        return True, f"Error: invalid arguments for tool '{tool_name}': {exc}", schema
-    return False, None, schema
+        return (
+            True,
+            f"Error: invalid arguments for tool '{tool_name}': {exc}",
+            schema,
+            "invalid tool arguments",
+        )
+    return False, None, schema, ""
 
 
 def _find_tool_schema(
@@ -133,6 +153,11 @@ class ReactStrategy:
         tool_context: deque[WardenContext] = deque(maxlen=_TOOL_CONTEXT_MAX_TURNS)
 
         tool_choice = "required" if self.force_tool_first else "auto"
+        # #847: the Agent wires its audit log so a refusal here leaves scoped
+        # authorization-denied evidence, not only a returned error string.
+        audit_log = kwargs.get("audit_log")
+        identity = kwargs.get("identity")
+        agent_name = getattr(identity, "name", "") if identity is not None else ""
 
         for round_num in range(self.max_rounds + 1):
             if round_num > 0:
@@ -178,6 +203,8 @@ class ReactStrategy:
                     context=list(tool_context),
                     security_pipeline=security_pipeline,
                     tool_round=round_num,
+                    audit_log=audit_log,
+                    agent_name=agent_name,
                 )
                 tool_context.append(WardenContext(tool_result_str))
 
@@ -363,6 +390,8 @@ class ReactStrategy:
         context: list[WardenContext] | None = None,
         security_pipeline: bool = False,
         tool_round: int = 0,
+        audit_log: Any = None,
+        agent_name: str = "",
     ) -> tuple[dict[str, Any], str]:
         """Process a single tool call end-to-end: parse args, sentinel pre-call,
         execute, truncate, sanitize. Returns ``(tool_args, tool_result_str)``."""
@@ -374,11 +403,13 @@ class ReactStrategy:
         # absent from the host schema even when the provider accepts it. Both
         # cases are hard refusals before Sentinel/provider dispatch (#57).
         raw_error = _raw_arguments_error(fn.get("arguments", "{}"), tool_name)
-        tool_blocked, refusal, tool_schema = _validate_model_tool_call(
+        tool_blocked, refusal, tool_schema, denial_reason = _validate_model_tool_call(
             tools, tool_name, tool_args, allowed_tools, raw_error
         )
         tool_result: Any = refusal or error_result
         tool_blocked = tool_blocked or error_result is not None
+        if error_result is not None and not denial_reason:
+            denial_reason = "malformed tool arguments"
 
         if not tool_blocked and not security_pipeline:
             if sentinel is None or auth is None:
@@ -386,11 +417,22 @@ class ReactStrategy:
                     "Denied tool '%s': no Sentinel or caller auth to authorize it", tool_name
                 )
                 refusal = f"Error: Permission denied for tool '{tool_name}'"
+                denial_reason = "no sentinel or caller auth to authorize tool"
+                tool_blocked = True
             else:
                 tool_args, refusal = await self._sentinel_admission(
                     tool_name, tool_args, tool_schema, sentinel=sentinel, auth=auth
                 )
             tool_blocked = tool_blocked or refusal is not None
+
+        if tool_blocked and refusal is not None and audit_log is not None:
+            await log_scoped_tool_denial(
+                audit_log,
+                tool_name=tool_name,
+                reason=denial_reason or "refused before sentinel dispatch",
+                auth=auth,
+                agent_name=agent_name,
+            )
 
         if not tool_blocked:
             tool_result = await self._run_tool(

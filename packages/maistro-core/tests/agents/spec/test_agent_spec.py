@@ -14,7 +14,6 @@ import pytest
 from pydantic import ValidationError
 
 from maistro.agents.spec.agent_spec import (
-    DEFAULT_TOOLS,
     RECOVERABLE_ERRORS,
     AgentOutput,
     AgentRole,
@@ -68,8 +67,10 @@ def test_agent_spec_default_field_values() -> None:
     assert spec.prompt_variables == {}
     assert spec.recipe_name is None
     assert spec.result_type is None
-    assert spec.tools_allowed == []
-    assert spec.write_scopes == []
+    # #847 removed the unused security-looking declaration fields; the
+    # effective envelope is host-owned at the governed Invocation boundary.
+    assert "tools_allowed" not in AgentSpec.model_fields
+    assert "write_scopes" not in AgentSpec.model_fields
     assert spec.lane == Lane.BACKGROUND
     assert spec.langfuse_trace_id is None
     assert spec.langfuse_parent_span_id is None
@@ -90,17 +91,6 @@ def test_agent_spec_mutable_defaults_are_independent_per_instance() -> None:
 # ─── with_defaults() ─────────────────────────────────────────────────────────
 
 
-def test_with_defaults_fills_tools_allowed_from_role() -> None:
-    spec = _spec(role=AgentRole.CODER).with_defaults()
-    assert spec.tools_allowed == DEFAULT_TOOLS[AgentRole.CODER]
-    assert spec.tools_allowed == [
-        "file_ops.read",
-        "file_ops.write",
-        "file_ops.list",
-        "shell.run",
-    ]
-
-
 def test_with_defaults_fills_prompt_name_from_role() -> None:
     spec = _spec(role=AgentRole.PLANNER).with_defaults()
     assert spec.prompt_name == "planner.decompose"
@@ -110,12 +100,6 @@ def test_with_defaults_role_with_no_prompt_mapping_leaves_prompt_name_none() -> 
     # INTENT_ROUTER and CONVERSATION/ARTIFACT have no entry in _PROMPT_NAME_MAP.
     spec = _spec(role=AgentRole.INTENT_ROUTER).with_defaults()
     assert spec.prompt_name is None
-    assert spec.tools_allowed == []
-
-
-def test_with_defaults_does_not_overwrite_explicit_tools_allowed() -> None:
-    spec = _spec(role=AgentRole.CODER, tools_allowed=["custom.tool"]).with_defaults()
-    assert spec.tools_allowed == ["custom.tool"]
 
 
 def test_with_defaults_does_not_overwrite_explicit_prompt_name() -> None:
@@ -127,14 +111,6 @@ def test_with_defaults_returns_self_for_chaining() -> None:
     spec = _spec()
     result = spec.with_defaults()
     assert result is spec
-
-
-def test_with_defaults_unknown_role_default_tools_empty_list() -> None:
-    # DEFAULT_TOOLS.get(role, []) handles a role with no DEFAULT_TOOLS entry;
-    # every current AgentRole has an entry, so this exercises the dict literal
-    # for VALIDATOR explicitly as a representative role.
-    spec = _spec(role=AgentRole.VALIDATOR).with_defaults()
-    assert spec.tools_allowed == ["file_ops.read", "file_ops.list", "shell.run_read_only"]
 
 
 # ─── AgentOutput ─────────────────────────────────────────────────────────────
@@ -281,13 +257,15 @@ def test_recoverable_errors_is_frozenset_of_exactly_four() -> None:
     assert len(RECOVERABLE_ERRORS) == 4
 
 
-def test_default_tools_covers_every_role() -> None:
-    assert set(DEFAULT_TOOLS.keys()) == set(AgentRole)
+def test_agent_spec_declares_no_security_enforcement_fields() -> None:
+    """#847: declarations must not look like enforcement they do not have.
 
-
-def test_default_tools_intent_router_and_conversation_are_empty() -> None:
-    assert DEFAULT_TOOLS[AgentRole.INTENT_ROUTER] == []
-    assert DEFAULT_TOOLS[AgentRole.CONVERSATION] == []
+    `tools_allowed`/`write_scopes` were auto-populated documentation with no
+    production reader. The enforced envelope is AgentIdentity.tools at the
+    governed Invocation boundary; a spec-side duplicate would invite drift.
+    """
+    security_like = {name for name in AgentSpec.model_fields if "tool" in name or "scope" in name}
+    assert security_like == set()
 
 
 def test_agent_id_default_factory_uses_uuid4_hex(monkeypatch) -> None:

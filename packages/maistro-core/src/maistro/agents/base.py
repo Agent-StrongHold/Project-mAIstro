@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from maistro.agents.tool_dispatch import ToolCallExecutor, dispatch_tool_call
 from maistro.observability.correlation import current_execution_context
 from maistro.security.normalize import to_scan_string
+from maistro.security.sentinel.audit import log_scoped_tool_denial
 from maistro.security.sentinel.pii_filter import scan_and_redact
 from maistro.security.warden.detector import WardenContext, prior_message_context
 from maistro.types.agent import AgentResponse
@@ -245,6 +246,7 @@ class Agent:
         tool_executor: Any = None,
         tool_registry: Any = None,
         agent_resolver: Any = None,
+        audit_log: Any = None,
     ) -> None:
         self.identity = identity
         self._strategy = strategy
@@ -267,6 +269,9 @@ class Agent:
         self._tracer = tracer
         # Resolves a sub-agent name -> Agent for delegation. Callable or mapping.
         self._agent_resolver = agent_resolver
+        # Canonical audit trail for refusals that happen before Sentinel
+        # pre_call (#847): the strategy gate and this boundary's own denials.
+        self._audit_log = audit_log
 
     async def handle(
         self,
@@ -521,6 +526,11 @@ class Agent:
         # The declaration is an effective allowlist at execution time; a model
         # response cannot add names merely because a provider accepts them.
         strategy_kwargs["allowed_tools"] = frozenset(self.identity.tools)
+        # #847: refusals at the strategy gate precede Sentinel.pre_call, so
+        # they carry their own scoped denial evidence through the canonical
+        # audit log rather than only an error string.
+        if self._audit_log is not None:
+            strategy_kwargs["audit_log"] = self._audit_log
         if classified_task_type:
             strategy_kwargs["classified_task_type"] = classified_task_type
         return strategy_kwargs
@@ -864,6 +874,14 @@ class Agent:
         # not the mutable tool schemas handed to strategy implementations.
         # Model-selected and strategy-authored calls share this boundary.
         if tool_name not in self.identity.tools:
+            if self._audit_log is not None:
+                await log_scoped_tool_denial(
+                    self._audit_log,
+                    tool_name=tool_name,
+                    reason="tool not in agent allowlist",
+                    auth=auth,
+                    agent_name=self.identity.name,
+                )
             return f"Error: Permission denied for undeclared tool '{tool_name}'"
         if self._sentinel is None or auth is None:
             _logging.getLogger("maistro.agent").warning(
@@ -872,6 +890,14 @@ class Agent:
                 self.identity.name,
                 "Sentinel" if self._sentinel is None else "caller auth",
             )
+            if self._audit_log is not None:
+                await log_scoped_tool_denial(
+                    self._audit_log,
+                    tool_name=tool_name,
+                    reason="no sentinel or caller auth to authorize tool",
+                    auth=auth,
+                    agent_name=self.identity.name,
+                )
             return f"Error: Permission denied for tool '{tool_name}'"
         verdict = await self._sentinel.pre_call(
             tool_name, tool_args, auth, self._tool_schema(tool_name, tool_defs)

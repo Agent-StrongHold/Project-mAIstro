@@ -9,9 +9,11 @@ from typing import Any
 
 from maistro.agents.strategies.react import ReactStrategy, _find_tool_schema
 from maistro.security._types import AuthContext
+from maistro.security.sentinel.audit import InMemoryAuditLog
 from maistro.security.sentinel.policy import Sentinel
 from maistro.security.warden.detector import Warden
 from maistro.testing.faux_provider import FauxProvider, FauxResponse, ToolCallDef
+from maistro.types.security import AuditEntry
 
 
 @dataclass
@@ -618,3 +620,159 @@ async def test_reason_allowlisted_valid_call_still_executes() -> None:
 
     assert result.tool_history[0]["result"] == "sanitized:ran with {'path': 'a.py'}"
     assert sentinel.pre_calls == [("read_file", {"path": "a.py"})]
+
+
+# ─── #847: scoped authorization-denied audit evidence ─────────────────────
+
+
+class _Identity:
+    name = "test-agent"
+    tools: tuple[str, ...] = ("read_file",)
+
+
+async def _denied_entries(audit_log: InMemoryAuditLog) -> list[AuditEntry]:
+    page = await audit_log.get_page(denied=True)
+    return [entry for _row, entry in page.records]
+
+
+async def test_reason_unlisted_tool_denial_is_audited() -> None:
+    """#847: a pre-Sentinel refusal leaves durable denial evidence, not only a string."""
+    audit_log = InMemoryAuditLog()
+    provider = FauxProvider()
+    provider.seed_tool_call("write_file", {"path": "a.py"})
+    provider.seed(FauxResponse(content="acknowledged"))
+    strategy = ReactStrategy(max_rounds=2)
+
+    result = await strategy.reason(
+        [{"role": "user", "content": "x"}],
+        "m",
+        provider,
+        tools=_tools_for("write_file"),
+        tool_executor=_echo_executor,
+        sentinel=_FakeSentinel(),
+        auth=_Auth(),
+        allowed_tools=frozenset({"read_file"}),
+        audit_log=audit_log,
+        identity=_Identity(),
+    )
+
+    assert "not in the Agent allowlist" in result.tool_history[0]["result"]
+    entries = await _denied_entries(audit_log)
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.boundary == "tool_allowlist"
+    assert entry.verdict == "denied"
+    assert entry.tool_name == "write_file"
+    assert entry.agent_id == "test-agent"
+    assert entry.user_id == "u1"
+    assert entry.detail == "tool not in agent allowlist"
+
+
+async def test_reason_unknown_schema_denial_is_audited() -> None:
+    audit_log = InMemoryAuditLog()
+    provider = FauxProvider()
+    provider.seed_tool_call("drop_table", {})
+    provider.seed(FauxResponse(content="acknowledged"))
+    strategy = ReactStrategy(max_rounds=2)
+
+    await strategy.reason(
+        [{"role": "user", "content": "x"}],
+        "m",
+        provider,
+        tools=None,
+        tool_executor=_echo_executor,
+        sentinel=_FakeSentinel(),
+        auth=_Auth(),
+        allowed_tools=frozenset({"drop_table"}),
+        audit_log=audit_log,
+        identity=_Identity(),
+    )
+
+    entries = await _denied_entries(audit_log)
+    assert len(entries) == 1
+    assert entries[0].detail == "no schema registered for requested tool"
+    assert entries[0].tool_name == "drop_table"
+
+
+async def test_reason_schema_violating_args_denial_is_audited() -> None:
+    audit_log = InMemoryAuditLog()
+    provider = FauxProvider()
+    provider.seed_tool_call("read_file", {"evil": True})
+    provider.seed(FauxResponse(content="acknowledged"))
+    strategy = ReactStrategy(max_rounds=2)
+    tools = _tools_for(
+        "read_file",
+        {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    )
+
+    await strategy.reason(
+        [{"role": "user", "content": "x"}],
+        "m",
+        provider,
+        tools=tools,
+        tool_executor=_echo_executor,
+        sentinel=_FakeSentinel(),
+        auth=_Auth(),
+        allowed_tools=frozenset({"read_file"}),
+        audit_log=audit_log,
+        identity=_Identity(),
+    )
+
+    entries = await _denied_entries(audit_log)
+    assert len(entries) == 1
+    assert entries[0].detail == "invalid tool arguments"
+
+
+async def test_reason_no_sentinel_denial_is_audited() -> None:
+    """The standalone no-Sentinel refusal is denial-decision evidence too (#847)."""
+    audit_log = InMemoryAuditLog()
+    provider = FauxProvider()
+    provider.seed_tool_call("read_file", {"path": "a.py"})
+    provider.seed(FauxResponse(content="acknowledged"))
+    strategy = ReactStrategy(max_rounds=2)
+
+    result = await strategy.reason(
+        [{"role": "user", "content": "x"}],
+        "m",
+        provider,
+        tools=_tools_for("read_file"),
+        tool_executor=_echo_executor,
+        auth=_Auth(),
+        allowed_tools=frozenset({"read_file"}),
+        audit_log=audit_log,
+        identity=_Identity(),
+    )
+
+    assert "Permission denied" in result.tool_history[0]["result"]
+    entries = await _denied_entries(audit_log)
+    assert len(entries) == 1
+    assert entries[0].detail == "no sentinel or caller auth to authorize tool"
+
+
+async def test_reason_allowed_call_writes_no_denial_audit() -> None:
+    """Admitted traffic must not fabricate denial evidence."""
+    audit_log = InMemoryAuditLog()
+    provider = FauxProvider()
+    provider.seed_tool_call("read_file", {"path": "a.py"})
+    provider.seed(FauxResponse(content="ok"))
+    strategy = ReactStrategy(max_rounds=2)
+
+    await strategy.reason(
+        [{"role": "user", "content": "x"}],
+        "m",
+        provider,
+        tools=_tools_for("read_file"),
+        tool_executor=_echo_executor,
+        sentinel=_FakeSentinel(),
+        auth=_Auth(),
+        allowed_tools=frozenset({"read_file"}),
+        audit_log=audit_log,
+        identity=_Identity(),
+    )
+
+    assert await _denied_entries(audit_log) == []

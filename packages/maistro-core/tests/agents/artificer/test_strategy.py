@@ -628,6 +628,65 @@ class TestHandleToolCall:
         assert "no schema is registered for tool 'drop_table'" in result_str
 
     @pytest.mark.asyncio
+    async def test_unlisted_tool_denial_is_audited(self) -> None:
+        """#847: pre-Sentinel refusals leave scoped denial evidence."""
+        from maistro.security.sentinel.audit import InMemoryAuditLog
+
+        strategy = ArtificerStrategy()
+        audit_log = InMemoryAuditLog()
+
+        tc = {"id": "call_1", "function": {"name": "write_file", "arguments": "{}"}}
+        _tool_args, result_str = await strategy._handle_tool_call(
+            tc,
+            tools=_tools_for("write_file"),
+            tool_executor=_echo_executor,
+            trace=None,
+            status=_noop_status,
+            sentinel=_FakeSentinel(),
+            auth=_Auth(),
+            warden=None,
+            allowed_tools=frozenset({"read_file"}),
+            audit_log=audit_log,
+            agent_name="test-agent",
+        )
+
+        assert "not in the Agent allowlist" in result_str
+        page = await audit_log.get_page(denied=True)
+        entries = [entry for _row, entry in page.records]
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry.boundary == "tool_allowlist"
+        assert entry.verdict == "denied"
+        assert entry.tool_name == "write_file"
+        assert entry.agent_id == "test-agent"
+        assert entry.detail == "tool not in agent allowlist"
+
+    @pytest.mark.asyncio
+    async def test_allowlisted_valid_call_writes_no_denial_audit(self) -> None:
+        from maistro.security.sentinel.audit import InMemoryAuditLog
+
+        strategy = ArtificerStrategy()
+        audit_log = InMemoryAuditLog()
+
+        tc = {"id": "call_1", "function": {"name": "write_file", "arguments": "{}"}}
+        await strategy._handle_tool_call(
+            tc,
+            tools=_tools_for("write_file"),
+            tool_executor=_echo_executor,
+            trace=None,
+            status=_noop_status,
+            sentinel=_FakeSentinel(),
+            auth=_Auth(),
+            warden=None,
+            allowed_tools=frozenset({"write_file"}),
+            audit_log=audit_log,
+            agent_name="test-agent",
+        )
+
+        page = await audit_log.get_page(denied=True)
+        assert page.records == []
+
+    @pytest.mark.asyncio
     async def test_hostile_mapping_key_survives_repr_hiding_result(self) -> None:
         """#1094: the model-visible result string must contain mapping keys.
 

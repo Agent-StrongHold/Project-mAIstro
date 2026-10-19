@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.agents.tool_dispatch import dispatch_tool_call
 from maistro.security.normalize import to_scan_string
+from maistro.security.sentinel.audit import log_scoped_tool_denial
 from maistro.security.warden.detector import WardenContext
 from maistro.tools.contracts import ToolArgumentError, validate_tool_arguments
 from maistro.types.agent import ReasoningResult
@@ -66,10 +67,14 @@ def _validate_model_tool_call(
     tool_args: dict[str, Any],
     tools: list[dict[str, Any]] | None,
     allowed_tools: frozenset[str] | None,
-) -> tuple[bool, str | None, dict[str, Any]]:
-    """Return a refusal, if any, before Sentinel/provider dispatch."""
+) -> tuple[bool, str | None, dict[str, Any], str]:
+    """Return a refusal, if any, before Sentinel/provider dispatch.
+
+    The fourth element is the host-owned denial reason for the scoped audit
+    record (#847); it is empty when the call is admitted.
+    """
     if allowed_tools is None:
-        return False, None, {}
+        return False, None, {}, ""
     schema: dict[str, Any] = next(
         (
             item.get("function", {}).get("parameters", {})
@@ -79,14 +84,29 @@ def _validate_model_tool_call(
         {},
     )
     if tool_name not in allowed_tools:
-        return True, f"Error: tool '{tool_name}' is not in the Agent allowlist", schema
+        return (
+            True,
+            f"Error: tool '{tool_name}' is not in the Agent allowlist",
+            schema,
+            "tool not in agent allowlist",
+        )
     if not schema:
-        return True, f"Error: no schema is registered for tool '{tool_name}'", schema
+        return (
+            True,
+            f"Error: no schema is registered for tool '{tool_name}'",
+            schema,
+            "no schema registered for requested tool",
+        )
     try:
         validate_tool_arguments(schema, tool_args)
     except ToolArgumentError as exc:
-        return True, f"Error: invalid arguments for tool '{tool_name}': {exc}", schema
-    return False, None, schema
+        return (
+            True,
+            f"Error: invalid arguments for tool '{tool_name}': {exc}",
+            schema,
+            "invalid tool arguments",
+        )
+    return False, None, schema, ""
 
 
 _MAX_ARG_BYTES = 32_768
@@ -133,6 +153,10 @@ class ArtificerStrategy:
         tool_context: deque[WardenContext] = deque(maxlen=_TOOL_CONTEXT_MAX_TURNS)
         status = status_callback or _noop_status
         security_pipeline = bool(kwargs.get("security_pipeline", False))
+        # #847: scoped denial evidence for refusals that precede Sentinel.
+        audit_log = kwargs.get("audit_log")
+        identity = kwargs.get("identity")
+        agent_name = getattr(identity, "name", "") if identity is not None else ""
 
         await status("Planning...")
         if trace:
@@ -202,6 +226,8 @@ class ArtificerStrategy:
                     context=list(tool_context),
                     security_pipeline=security_pipeline,
                     tool_round=round_num,
+                    audit_log=audit_log,
+                    agent_name=agent_name,
                 )
                 tool_context.append(WardenContext(result_str))
                 tool_history.append(
@@ -340,6 +366,8 @@ class ArtificerStrategy:
         context: list[WardenContext] | None = None,
         security_pipeline: bool = False,
         tool_round: int = 0,
+        audit_log: Any = None,
+        agent_name: str = "",
     ) -> tuple[dict[str, Any], str]:
         """Process a single tool call end-to-end. Returns ``(tool_args, result_str)``."""
         fn = tc.get("function", {})
@@ -356,10 +384,26 @@ class ArtificerStrategy:
             _raw_arguments_error(raw_args, tool_name) if allowed_tools is not None else None
         )
         if parse_error is not None:
+            if audit_log is not None:
+                await log_scoped_tool_denial(
+                    audit_log,
+                    tool_name=tool_name,
+                    reason="malformed tool arguments",
+                    auth=auth,
+                    agent_name=agent_name,
+                )
             return tool_args, parse_error
-        tool_blocked, refusal, tool_schema = _validate_model_tool_call(
+        tool_blocked, refusal, tool_schema, denial_reason = _validate_model_tool_call(
             tool_name, tool_args, tools, allowed_tools
         )
+        if tool_blocked and audit_log is not None:
+            await log_scoped_tool_denial(
+                audit_log,
+                tool_name=tool_name,
+                reason=denial_reason,
+                auth=auth,
+                agent_name=agent_name,
+            )
         tool_result: Any = refusal
         if not tool_blocked:
             tool_args, sentinel_error, sentinel_blocked = await self._authorize_tool_call(

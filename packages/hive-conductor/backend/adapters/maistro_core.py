@@ -229,6 +229,10 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         context_builder=container.context_builder,
         warden=container.warden,
         sentinel=container.sentinel,
+        # #847: pre-Sentinel tool denials (strategy allowlist gate and the
+        # Agent's own undeclared-tool boundary) audit through the same
+        # canonical trail as Sentinel decisions.
+        audit_log=container.audit_log,
         learning_store=container.learning_store,
         # ADR-091's Layer 0-4 assembly. The container has always built this
         # and nothing read it back, so the episodic memories the Conductor

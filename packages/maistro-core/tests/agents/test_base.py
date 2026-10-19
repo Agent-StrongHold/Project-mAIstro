@@ -276,6 +276,7 @@ def _make_agent(
     tool_executor: Any = None,
     sentinel: Any = None,
     llm: Any = None,
+    audit_log: Any = None,
 ) -> Agent:
     return Agent(
         identity=identity or _identity(),
@@ -296,6 +297,7 @@ def _make_agent(
         agent_resolver=agent_resolver,
         tool_executor=tool_executor,
         sentinel=sentinel,
+        audit_log=audit_log,
     )
 
 
@@ -1741,3 +1743,102 @@ class TestClassifiedTaskTypeFromIntent:
         )
 
         assert strategy.calls[0].get("classified_task_type") == "chat"
+
+
+class TestScopedDenialAudit:
+    """#847: pre-Sentinel tool denials leave scoped authorization evidence."""
+
+    async def test_audit_log_threaded_into_strategy_kwargs(self) -> None:
+        from maistro.security.sentinel.audit import InMemoryAuditLog
+
+        strategy = _RecordingStrategy()
+        audit_log = InMemoryAuditLog()
+        agent = Agent(
+            identity=_identity(),
+            strategy=strategy,
+            llm=object(),
+            context_builder=_FakeContextBuilder(),
+            prompt_manager=_FakePromptManager(),
+            warden=_FakeWarden(),
+            audit_log=audit_log,
+        )
+
+        await agent.handle([{"role": "user", "content": "x"}], auth=_Auth())
+
+        assert strategy.calls[0]["audit_log"] is audit_log
+
+    async def test_strategy_kwargs_omit_audit_log_when_unwired(self) -> None:
+        strategy = _RecordingStrategy()
+        agent = _make_agent(strategy)
+
+        await agent.handle([{"role": "user", "content": "x"}], auth=_Auth())
+
+        assert "audit_log" not in strategy.calls[0]
+
+    async def test_undeclared_tool_denial_is_audited(self) -> None:
+        from maistro.security.sentinel.audit import InMemoryAuditLog
+
+        audit_log = InMemoryAuditLog()
+        agent = _make_agent(_RecordingStrategy(), sentinel=object(), audit_log=audit_log)
+
+        result = await agent._authorize_and_invoke("shell", {}, _Auth(), None)
+
+        assert result == "Error: Permission denied for undeclared tool 'shell'"
+        # Audit pages are org-scoped; _Auth carries org-1.
+        page = await audit_log.get_page(org_id="org-1", denied=True)
+        entries = [entry for _row, entry in page.records]
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry.boundary == "tool_allowlist"
+        assert entry.verdict == "denied"
+        assert entry.tool_name == "shell"
+        assert entry.agent_id == "tester"
+        assert entry.user_id == "u1"
+        assert entry.detail == "tool not in agent allowlist"
+
+    async def test_no_sentinel_denial_is_audited(self) -> None:
+        from maistro.security.sentinel.audit import InMemoryAuditLog
+
+        audit_log = InMemoryAuditLog()
+        identity = _identity(tools=("read_file",))
+        agent = _make_agent(_RecordingStrategy(), identity=identity, audit_log=audit_log)
+
+        result = await agent._authorize_and_invoke("read_file", {}, _Auth(), None)
+
+        assert result == "Error: Permission denied for tool 'read_file'"
+        page = await audit_log.get_page(org_id="org-1", denied=True)
+        entries = [entry for _row, entry in page.records]
+        assert len(entries) == 1
+        assert entries[0].detail == "no sentinel or caller auth to authorize tool"
+
+    async def test_allowed_call_writes_no_denial_audit(self) -> None:
+        from maistro.security.sentinel.audit import InMemoryAuditLog
+
+        audit_log = InMemoryAuditLog()
+        identity = _identity(tools=("read_file",))
+
+        class _AllowSentinel:
+            class verdict:
+                allowed = True
+                repaired_data = None
+
+            async def pre_call(self, *_args: Any, **_kwargs: Any) -> Any:
+                return self.verdict
+
+        agent = _make_agent(
+            _RecordingStrategy(),
+            identity=identity,
+            sentinel=_AllowSentinel(),
+            tool_executor=_echo_tool_executor,
+            audit_log=audit_log,
+        )
+
+        result = await agent._authorize_and_invoke("read_file", {}, _Auth(), None)
+
+        assert result == "read_file ran"
+        page = await audit_log.get_page(org_id="org-1", denied=True)
+        assert page.records == []
+
+
+async def _echo_tool_executor(name: str, _args: dict[str, Any]) -> str:
+    return f"{name} ran"
