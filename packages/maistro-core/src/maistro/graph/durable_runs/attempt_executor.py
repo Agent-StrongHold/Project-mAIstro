@@ -41,6 +41,7 @@ from maistro.runtime import (
 from . import executor as traversal
 from .authoritative_fold import fold_authoritative_frontier
 from .execution_store import DurableRunExecutionStore
+from .failure import sanitize_failure_message
 from .launch import require_admitted_launch_state
 from .protocol import DurableRunStore, RecoveryInfrastructureError
 from .spine import mirror_lifecycle
@@ -615,7 +616,7 @@ async def _walk_frontier(
         return await traversal._mark_failed(
             latest,
             error_code="PhysicalExecutionError",
-            error_message=str(exc) or type(exc).__name__,
+            error_message=sanitize_failure_message(str(exc) or type(exc).__name__),
             store=store,
         )
 
