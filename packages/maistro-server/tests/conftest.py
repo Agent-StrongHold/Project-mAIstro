@@ -17,11 +17,20 @@ os.environ.setdefault("RATE_LIMIT_BURST", "1000")
 
 @pytest.fixture(autouse=True)
 def _reset_singletons() -> Iterator[None]:
-    from maistro.config.settings import get_settings
+    from maistro.config.settings import get_settings, set_yaml_config
+
+    # The worker lifespan now loads the operator YAML itself (#1880), so any
+    # test that enters the real lifespan sets the process-wide YAML singleton.
+    # Leave each test the fresh-worker state it would have in its own process;
+    # a leaked singleton would shadow the env fallbacks `_validate_startup`
+    # (and the loader itself) are specified against.
+    set_yaml_config(None)
 
     get_settings.cache_clear()
 
     yield
+
+    set_yaml_config(None)
 
     import maistro.tasks.queue as queue_module
 
