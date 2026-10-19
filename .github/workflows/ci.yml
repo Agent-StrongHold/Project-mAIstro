@@ -153,6 +153,19 @@ jobs:
       # import to build or test.
       - name: Reference extension builds and tests in a clean environment
         run: python3 scripts/check-reference-extension.py
+      # The reference gallery (#980, M9-J2): the same two reusable gates,
+      # pointed at the out-of-tree-style repository's OWN policy via --policy.
+      # One gate pair per policy file is the whole external-repository story:
+      # nothing about the tooling changes, only which boundary document
+      # names the trees. The gallery's wheel-artifact rule differs (it
+      # distributes through the catalog, so its policy's required_artifacts
+      # names the SDK discovery manifest extension.json rather than a
+      # product-path artifact), which is exactly why the policy travels with the
+      # repository instead of being folded into the product-side one.
+      - name: Reference gallery packages import only the public SDK
+        run: python3 scripts/check-extension-imports.py --policy extensions/reference-gallery/namespace-policy.json
+      - name: Reference gallery packages build and test in a clean environment
+        run: python3 scripts/check-reference-extension.py --policy extensions/reference-gallery/namespace-policy.json
       # The physical half of the developer-tooling epic (#945): every family
       # template `maistro-ext-sdk new` emits is scaffolded, built as a wheel,
       # installed with the SDK + harness wheels into a fresh venv, sampled-
