@@ -191,9 +191,7 @@ class ChatSessionRegistry:
             for session_id in expired:
                 del partition[session_id]
         for principal_id in [
-            principal_id
-            for principal_id, partition in self._sessions.items()
-            if not partition
+            principal_id for principal_id, partition in self._sessions.items() if not partition
         ]:
             del self._sessions[principal_id]
 
@@ -329,11 +327,7 @@ class TuringState:
         with self._lock:
             scope = _require_scope_id(scope_id)
             scoped = self._scopes.get(scope)
-            known = (
-                scoped.facet_scores
-                if scoped is not None
-                else _default_facet_scores()
-            )
+            known = scoped.facet_scores if scoped is not None else _default_facet_scores()
             # Validate against the candidate facet map before any map
             # mutation, mirroring set_mood: a rejected write must not
             # install a default scope entry for an unseen principal.
