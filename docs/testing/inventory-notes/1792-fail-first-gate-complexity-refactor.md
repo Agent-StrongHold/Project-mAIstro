@@ -10,8 +10,8 @@ Issue #1792 refactored the six complexity blocks regressed or created by
 #1730 in `packages/maistro-rsi` down under the C ceiling (complexity ≤ 10)
 without transferring equivalent complexity into new helpers:
 
-- `fail_first.py`: `collect_fail_first_evidence` C(12) → B(7),
-  `_has_related_failure` C(14) → B(8), `fail_first_gate` C(11) → B(6), via
+- `fail_first.py`: `collect_fail_first_evidence` C(12) → B(6),
+  `_has_related_failure` C(14) → B(9), `fail_first_gate` C(11) → B(6), via
   extracted seam helpers (`_resolve_evidence_shas`, `_tree_states`,
   `_reconstruct_tree`, `_run_base_probes`, `_reproducible`,
   `_test_module_imports`, `_references_changed_module`,
@@ -25,6 +25,10 @@ without transferring equivalent complexity into new helpers:
 - `local_loop.py::LocalRsiLoop._fitness_decision` was already B(10) at this
   branch's implementation base (improved by work banked before it), so no
   code change was needed; verified and covered by the existing suite.
+
+All six values above are `radon cc` 6.0.1 measurements re-taken at the final
+head of this branch (the develop-sync merge commit that carries the refactor);
+they match the tree, not an intermediate state.
 
 ## Test delta
 
