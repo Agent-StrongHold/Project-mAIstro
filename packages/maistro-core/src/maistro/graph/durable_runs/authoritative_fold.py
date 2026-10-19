@@ -392,8 +392,16 @@ async def _fold_failures(
     *,
     prior_state: GraphExecutionState,
     store: DurableRunStore,
+    escalated_ids: tuple[str, ...] = (),
 ) -> DurableRunRecord:
-    """Retry failed visits without discarding completed sibling advancement."""
+    """Retry failed visits without discarding completed sibling advancement.
+
+    The ``completed`` subset arrives already supervised (plan post-state
+    mismatch, quality ladder) — ``fold_authoritative_frontier`` runs both
+    contracts before this fold, so a retryable failure elsewhere cannot
+    advance an unsupervised sibling. ``escalated_ids`` carries supervision's
+    re-queued visits into the same frontier as the retries.
+    """
     exhausted = traversal.first_exhausted_failure(prior_state, failures)
     if exhausted is not None:
         return await traversal._mark_failed(
@@ -405,7 +413,7 @@ async def _fold_failures(
 
     next_ids, decisions = traversal._route_completed_items(record, graph, completed)
     retry_ids = tuple(item.node_id for item in failures)
-    candidates = traversal._dedupe((*retry_ids, *next_ids))
+    candidates = traversal._dedupe((*retry_ids, *next_ids, *escalated_ids))
     ready, blocked_fanins = traversal._partition_ready_targets(
         record,
         graph,
@@ -441,25 +449,10 @@ async def fold_authoritative_frontier(
     for item in (*completed, *dispatched_failures):
         record = traversal._maybe_increment_synth_depth(record, item.spec, item.result)
 
-    if failures:
-        return await _fold_failures(
-            record,
-            graph,
-            completed,
-            failures,
-            prior_state=prior_state,
-            store=store,
-        )
-
-    halt_reason = traversal._blackboard_halt_reason(record)
-    if halt_reason is not None:
-        return await traversal._mark_failed(
-            record,
-            error_code="HaltRequested",
-            error_message=halt_reason,
-            store=store,
-        )
-
+    # Supervision binds the whole completed subset, including mixed-result
+    # frontiers: a retryable failure in one branch must not waive plan
+    # post-state supervision or the quality ladder for a completed sibling,
+    # so both contracts run before the failure path routes advancement.
     mismatch = _plan_mismatch_error(graph, completed)
     if mismatch is not None:
         return await traversal._mark_failed(
@@ -470,6 +463,26 @@ async def fold_authoritative_frontier(
         )
 
     record, completed, escalated_ids = _escalate_quality_shortfalls(record, completed)
+
+    if failures:
+        return await _fold_failures(
+            record,
+            graph,
+            completed,
+            failures,
+            prior_state=prior_state,
+            store=store,
+            escalated_ids=escalated_ids,
+        )
+
+    halt_reason = traversal._blackboard_halt_reason(record)
+    if halt_reason is not None:
+        return await traversal._mark_failed(
+            record,
+            error_code="HaltRequested",
+            error_message=halt_reason,
+            store=store,
+        )
 
     next_ids, decisions = traversal._route_completed_items(record, graph, completed)
     next_ids = traversal._dedupe((*next_ids, *escalated_ids))

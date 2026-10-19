@@ -14,7 +14,7 @@ from typing import ClassVar
 import pytest
 from pydantic import BaseModel
 
-from maistro.graph import Graph, Node
+from maistro.graph import Edge, Graph, Node
 from maistro.graph.durable_runs import InMemoryDurableRunStore, run_durable_graph
 from maistro.graph.nodes import BaseNode, NodeContext, NodeResult
 from maistro.graph.nodes.base import ReplaySemantics
@@ -117,6 +117,112 @@ async def test_matching_expectation_completes() -> None:
     )
     assert record.status is RunStatus.COMPLETED
     assert node.visit == 1
+
+
+class _AlwaysFails(BaseNode[_In, _Out]):
+    kind: ClassVar[str] = "test.verification_failing"
+    kind_category: ClassVar = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _In
+    output_schema: ClassVar[type[BaseModel]] = _Out
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def _execute(self, inputs: _In, ctx: NodeContext) -> _Out:
+        del inputs, ctx
+        self.calls += 1
+        raise ValueError("domain failure")
+
+
+async def _run_mixed_frontier(
+    *, quality: _ReportingNode, flaky: _AlwaysFails, gate: _ReportingNode, workspace: str
+):
+    """gate fans out to a retryable-failure branch and a quality-ladder branch."""
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root(workspace)
+    project = await projects.create(
+        workspace_id=workspace,
+        parent_project_id=root.project_id,
+        name=workspace,
+    )
+    run_store = InMemoryRunStore(project_store=projects)
+    graph = Graph(
+        workspace_id=workspace,
+        project_id=project.project_id,
+        name=workspace,
+        nodes=[
+            Node(node_id="gate", node_type=gate.kind),
+            Node(
+                node_id="flaky",
+                node_type=flaky.kind,
+                policies={"max_attempts": 2, "continue_on_failure": True},
+            ),
+            Node(
+                node_id="quality",
+                node_type=quality.kind,
+                policies={
+                    "max_attempts": 2,
+                    "escalation_ladder": {"models": ["flash", "pro"], "quality_floor": 0.7},
+                },
+            ),
+        ],
+        edges=[
+            Edge(
+                edge_id="gate-flaky",
+                from_node="gate",
+                to_node="flaky",
+                metadata={"parallel": True},
+            ),
+            Edge(
+                edge_id="gate-quality",
+                from_node="gate",
+                to_node="quality",
+                metadata={"parallel": True},
+            ),
+        ],
+        metadata={"entry_node": "gate"},
+    )
+    admitted = await run_store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    record = await run_durable_graph(
+        graph,
+        store=InMemoryDurableRunStore(),
+        node_resolver=lambda node_id, _graph: {
+            "gate": gate,
+            "flaky": flaky,
+            "quality": quality,
+        }[node_id],
+        run_id=admitted.run_id,
+        run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    return record, run_store
+
+
+async def test_mixed_frontier_supervises_completed_siblings() -> None:
+    """A retryable failure in one branch must not waive supervision for a
+    completed sibling: on the mixed-result frontier the sub-floor visit is
+    still withheld and re-queued at the next ladder rung instead of routing
+    past the quality contract alongside the failure's retry."""
+    gate = _ReportingNode(quality_by_visit=[None])
+    quality = _ReportingNode(quality_by_visit=[0.2, 0.9])
+    flaky = _AlwaysFails()
+    record, _ = await _run_mixed_frontier(
+        gate=gate, quality=quality, flaky=flaky, workspace="ws-verify-mixed"
+    )
+    assert record.status is RunStatus.COMPLETED
+    # The sibling's sub-floor visit was NOT accepted as final on the mixed
+    # frontier: it re-queued at the next rung exactly as it would have on a
+    # clean frontier, then passed on its second visit.
+    assert quality.visit == 2
+    assert quality.models_seen == [None, "pro"]
+    # The failing branch retried through its own budget; the exhausted failure
+    # stayed soft via continue_on_failure.
+    assert flaky.calls == 2
+    assert gate.visit == 1
 
 
 @pytest.mark.contract("boundary")
