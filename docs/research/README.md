@@ -84,6 +84,7 @@ Every child research epic/leaf defines:
 
 | Note | Family | Epic / leaf | Disposition at this head |
 |---|---|---|---|
+| [881 — execution-lifecycle state machines](881-execution-lifecycle-state-machines.md) | M8-A1 | leaf [#881](https://github.com/Agent-StrongHold/Project-mAIstro/issues/881), epic #880 | INCUBATE |
 | [894 — critical-zone mutation strategy](894-critical-zone-mutation-strategy.md) | M8-A14 | leaf [#894](https://github.com/Agent-StrongHold/Project-mAIstro/issues/894), epic #880 | INCUBATE |
 | [896 — coverage-guided fuzzing of parser surfaces](896-coverage-guided-fuzzing-parser-surfaces.md) | M8-A15 | leaf [#896](https://github.com/Agent-StrongHold/Project-mAIstro/issues/896), epic #880 | INCUBATE |
 | [900 — adaptive model routing, escalation, and inference economics](900-adaptive-model-routing-escalation-economics.md) | M8-B | epic [#900](https://github.com/Agent-StrongHold/Project-mAIstro/issues/900) (leaves #914–#919) | INCUBATE (family) |
@@ -116,9 +117,9 @@ Every child research epic/leaf defines:
 | [934 — heterogeneous local + cloud fleet benchmark](934-heterogeneous-fleet-benchmark.md) | M8-F1 | leaf [#934](https://github.com/Agent-StrongHold/Project-mAIstro/issues/934), epic #905 | WATCH |
 | [935 — cross-Agent batching, prefix/KV reuse, semantic caching](935-cross-agent-batching-kv-reuse.md) | M8-F2 | leaf [#935](https://github.com/Agent-StrongHold/Project-mAIstro/issues/935), epic #905 | WATCH |
 
-No leaf currently holds a GRADUATE or REJECT disposition; six are INCUBATE (critical-zone
-mutation #894, fuzzing leaf #896, model-routing leaves #914 and #916, plan-search leaf
-#928, and graph-pattern reuse leaf #929) and the rest are WATCH. Dispositions are owned by
+No leaf currently holds a GRADUATE or REJECT disposition; seven are INCUBATE (execution-lifecycle
+state machines #881, critical-zone mutation #894, fuzzing leaf #896, model-routing leaves #914
+and #916, plan-search leaf #928, and graph-pattern reuse leaf #929) and the rest are WATCH. Dispositions are owned by
 the individual notes —
 update the note first, then this table.
 
@@ -126,8 +127,8 @@ The initial research family, M8-A advanced software verification and assurance
 ([#880](https://github.com/Agent-StrongHold/Project-mAIstro/issues/880), leaves #881–#897), is
 tracked on GitHub with its in-repo evidence infrastructure in [`formal/`](../../formal/)
 ([INVARIANTS](../../formal/INVARIANTS.md), [README](../../formal/README.md)); its first
-notes in this folder are the critical-zone mutation prototype (#894) and the M8-A15 fuzzing
-prototype (#896) above.
+notes in this folder are the execution-lifecycle state-machine prototype (#881), the critical-zone
+mutation prototype (#894), and the M8-A15 fuzzing prototype (#896) above.
 
 ## Milestone object note
 
