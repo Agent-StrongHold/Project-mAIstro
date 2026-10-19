@@ -369,10 +369,10 @@ jobs:
             --sbom canvas-frontend-bundle=license-sboms/canvas-frontend-bundle.json \
             --sbom hive-conductor-npm-tree=license-sboms/hive-conductor-npm-tree.json \
             --sbom canvas-npm-tree=license-sboms/canvas-npm-tree.json \
-            --artifact maistro-engine=maistro-engine:pr-${CANDIDATE_TAG} \
-            --artifact hive-conductor=hive-conductor:pr-${CANDIDATE_TAG} \
-            --artifact maistro-engine-research=maistro-engine-research:pr-${CANDIDATE_TAG} \
-            --artifact maistro-rsi-runner=maistro-rsi-runner:pr-${CANDIDATE_TAG} \
+            --artifact "maistro-engine=maistro-engine:pr-${CANDIDATE_TAG}" \
+            --artifact "hive-conductor=hive-conductor:pr-${CANDIDATE_TAG}" \
+            --artifact "maistro-engine-research=maistro-engine-research:pr-${CANDIDATE_TAG}" \
+            --artifact "maistro-rsi-runner=maistro-rsi-runner:pr-${CANDIDATE_TAG}" \
             --output license-inventory.json
 
       - name: Upload license inventory and SBOMs

@@ -703,8 +703,8 @@ jobs:
             --only canvas-frontend-bundle \
             --only hive-conductor-npm-tree \
             --only canvas-npm-tree \
-            --artifact maistro-engine=${IMAGE_NAMESPACE}/maistro-engine@${ENGINE_DIGEST} \
-            --artifact hive-conductor=${IMAGE_NAMESPACE}/hive-conductor@${CONDUCTOR_DIGEST} \
+            --artifact "maistro-engine=${IMAGE_NAMESPACE}/maistro-engine@${ENGINE_DIGEST}" \
+            --artifact "hive-conductor=${IMAGE_NAMESPACE}/hive-conductor@${CONDUCTOR_DIGEST}" \
             --output license-inventory-release.json
 
       - uses: actions/upload-artifact@v7
