@@ -136,6 +136,43 @@ PM_CREDENTIAL_PROVIDERS: tuple[CredentialProvider, ...] = (
         placeholder="Confluence PAT",
     ),
     CredentialProvider(
+        id="openai_compatible",
+        label="OpenAI-compatible gateway",
+        description=(
+            "Connect to an OpenAI-compatible private gateway or hosted endpoint. "
+            "The base URL is an explicit egress destination and the API key is "
+            "stored in the encrypted credential vault."
+        ),
+        help_url="https://platform.openai.com/docs/api-reference",
+        placeholder="Gateway API key",
+        config_fields=(
+            ConfigField(
+                name="display_name",
+                label="Display name",
+                placeholder="My private gateway",
+                required=True,
+            ),
+            ConfigField(
+                name="base_url",
+                label="Base URL",
+                placeholder="https://llm.example.com/v1",
+                required=True,
+            ),
+            ConfigField(
+                name="organization",
+                label="Organization (optional)",
+                placeholder="org_…",
+                required=False,
+            ),
+            ConfigField(
+                name="project",
+                label="Project (optional)",
+                placeholder="proj_…",
+                required=False,
+            ),
+        ),
+    ),
+    CredentialProvider(
         id="airtable",
         label="Airtable personal access token",
         description=(
