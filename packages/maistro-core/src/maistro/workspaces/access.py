@@ -360,13 +360,8 @@ class AuthorizedWorkspaceProjectService:
             raise ValueError("principal id must be a non-empty string")
 
 
-# Short alias for composition roots that prefer the less verbose service name.
-WorkspaceProjectService = AuthorizedWorkspaceProjectService
-
-
 __all__ = [
     "AuthorizationRequest",
     "AuthorizedWorkspaceProjectService",
     "WorkspaceProjectAccessDenied",
-    "WorkspaceProjectService",
 ]

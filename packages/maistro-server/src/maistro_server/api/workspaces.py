@@ -12,12 +12,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from maistro.workspaces import (
+    AuthorizedWorkspaceProjectService,
     Workspace,
     WorkspaceAccessDenied,
     WorkspaceMembership,
     WorkspaceOwnershipError,
     WorkspaceProjectAccessDenied,
-    WorkspaceProjectService,
     WorkspaceRole,
 )
 from maistro_server.api import projects
@@ -64,7 +64,7 @@ class SetWorkspaceMembershipBody(BaseModel):
 async def create_workspace(
     body: CreateWorkspaceBody,
     auth: RequireAuth,
-    service: Annotated[WorkspaceProjectService, Depends(get_workspace_project_service)],
+    service: Annotated[AuthorizedWorkspaceProjectService, Depends(get_workspace_project_service)],
 ) -> Workspace:
     return await service.create_workspace(
         principal(auth), name=body.name, description=body.description
@@ -74,7 +74,7 @@ async def create_workspace(
 @router.get("", response_model=list[Workspace])
 async def list_workspaces(
     auth: RequireAuth,
-    service: Annotated[WorkspaceProjectService, Depends(get_workspace_project_service)],
+    service: Annotated[AuthorizedWorkspaceProjectService, Depends(get_workspace_project_service)],
 ) -> list[Workspace]:
     return await service.list_workspaces(principal(auth))
 
@@ -83,7 +83,7 @@ async def list_workspaces(
 async def get_workspace(
     workspace_id: str,
     auth: RequireAuth,
-    service: Annotated[WorkspaceProjectService, Depends(get_workspace_project_service)],
+    service: Annotated[AuthorizedWorkspaceProjectService, Depends(get_workspace_project_service)],
 ) -> Workspace:
     try:
         return await service.get_workspace(principal(auth), workspace_id)
@@ -96,7 +96,7 @@ async def update_workspace(
     workspace_id: str,
     body: UpdateWorkspaceBody,
     auth: RequireAuth,
-    service: Annotated[WorkspaceProjectService, Depends(get_workspace_project_service)],
+    service: Annotated[AuthorizedWorkspaceProjectService, Depends(get_workspace_project_service)],
 ) -> Workspace:
     try:
         return await service.update_workspace(
@@ -113,7 +113,7 @@ async def update_workspace(
 async def delete_workspace(
     workspace_id: str,
     auth: RequireAuth,
-    service: Annotated[WorkspaceProjectService, Depends(get_workspace_project_service)],
+    service: Annotated[AuthorizedWorkspaceProjectService, Depends(get_workspace_project_service)],
 ) -> None:
     try:
         await service.delete_workspace(principal(auth), workspace_id)
@@ -127,7 +127,7 @@ async def delete_workspace(
 async def list_members(
     workspace_id: str,
     auth: RequireAuth,
-    service: Annotated[WorkspaceProjectService, Depends(get_workspace_project_service)],
+    service: Annotated[AuthorizedWorkspaceProjectService, Depends(get_workspace_project_service)],
 ) -> list[WorkspaceMembership]:
     try:
         return await service.list_workspace_members(principal(auth), workspace_id)
@@ -141,7 +141,7 @@ async def set_member(
     user_id: str,
     body: SetWorkspaceMembershipBody,
     auth: RequireAuth,
-    service: Annotated[WorkspaceProjectService, Depends(get_workspace_project_service)],
+    service: Annotated[AuthorizedWorkspaceProjectService, Depends(get_workspace_project_service)],
 ) -> WorkspaceMembership:
     try:
         return await service.set_workspace_membership(
@@ -158,7 +158,7 @@ async def remove_member(
     workspace_id: str,
     user_id: str,
     auth: RequireAuth,
-    service: Annotated[WorkspaceProjectService, Depends(get_workspace_project_service)],
+    service: Annotated[AuthorizedWorkspaceProjectService, Depends(get_workspace_project_service)],
 ) -> None:
     try:
         await service.remove_workspace_membership(principal(auth), workspace_id, user_id=user_id)

@@ -14,7 +14,7 @@ from maistro.projects.scope import (
     ProjectNotFound,
 )
 from maistro.projects.scope_store import ProjectScopeStore
-from maistro.workspaces import WorkspaceProjectAccessDenied, WorkspaceProjectService
+from maistro.workspaces import AuthorizedWorkspaceProjectService, WorkspaceProjectAccessDenied
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.workspace_access import (
     access_http_error,
@@ -85,7 +85,7 @@ class AddProjectMembershipBody(BaseModel):
 async def get_root_project(
     workspace_id: str,
     auth: RequireAuth,
-    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
+    service: Annotated[AuthorizedWorkspaceProjectService, Depends(get_project_service)],
 ) -> Project:
     try:
         return await service.get_root_project(principal(auth), workspace_id)
@@ -102,7 +102,7 @@ async def get_project(
     workspace_id: str,
     project_id: str,
     auth: RequireAuth,
-    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
+    service: Annotated[AuthorizedWorkspaceProjectService, Depends(get_project_service)],
 ) -> Project:
     try:
         return await service.get_project(principal(auth), workspace_id, project_id)
@@ -115,7 +115,7 @@ async def list_project_children(
     workspace_id: str,
     project_id: str,
     auth: RequireAuth,
-    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
+    service: Annotated[AuthorizedWorkspaceProjectService, Depends(get_project_service)],
 ) -> list[Project]:
     try:
         return await service.list_project_children(principal(auth), workspace_id, project_id)
@@ -128,7 +128,7 @@ async def create_project(
     workspace_id: str,
     body: CreateProjectBody,
     auth: RequireAuth,
-    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
+    service: Annotated[AuthorizedWorkspaceProjectService, Depends(get_project_service)],
 ) -> Project:
     try:
         return await service.create_project(
@@ -151,7 +151,7 @@ async def move_project(
     project_id: str,
     body: MoveProjectBody,
     auth: RequireAuth,
-    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
+    service: Annotated[AuthorizedWorkspaceProjectService, Depends(get_project_service)],
 ) -> Project:
     try:
         return await service.move_project(
@@ -172,7 +172,7 @@ async def update_project_defaults(
     project_id: str,
     body: UpdateProjectDefaultsBody,
     auth: RequireAuth,
-    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
+    service: Annotated[AuthorizedWorkspaceProjectService, Depends(get_project_service)],
 ) -> Project:
     try:
         return await service.update_project_defaults(
@@ -187,7 +187,7 @@ async def delete_project(
     workspace_id: str,
     project_id: str,
     auth: RequireAuth,
-    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
+    service: Annotated[AuthorizedWorkspaceProjectService, Depends(get_project_service)],
 ) -> None:
     try:
         await service.delete_project(principal(auth), workspace_id, project_id)
@@ -202,7 +202,7 @@ async def list_project_memberships(
     workspace_id: str,
     project_id: str,
     auth: RequireAuth,
-    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
+    service: Annotated[AuthorizedWorkspaceProjectService, Depends(get_project_service)],
 ) -> list[ProjectMembership]:
     try:
         return await service.list_project_memberships(principal(auth), workspace_id, project_id)
@@ -220,7 +220,7 @@ async def add_project_membership(
     project_id: str,
     body: AddProjectMembershipBody,
     auth: RequireAuth,
-    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
+    service: Annotated[AuthorizedWorkspaceProjectService, Depends(get_project_service)],
 ) -> ProjectMembership:
     membership = ProjectMembership(
         workspace_id=workspace_id,

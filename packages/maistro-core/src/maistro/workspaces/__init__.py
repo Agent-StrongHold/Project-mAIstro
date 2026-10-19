@@ -8,7 +8,6 @@ from maistro.workspaces.access import (
     AuthorizationRequest,
     AuthorizedWorkspaceProjectService,
     WorkspaceProjectAccessDenied,
-    WorkspaceProjectService,
 )
 from maistro.workspaces.model import (
     Workspace,
@@ -50,7 +49,6 @@ __all__ = [
     "WorkspaceNotFound",
     "WorkspaceOwnershipError",
     "WorkspaceProjectAccessDenied",
-    "WorkspaceProjectService",
     "WorkspaceRole",
     "WorkspaceStore",
     "resolve_workspace_id",
