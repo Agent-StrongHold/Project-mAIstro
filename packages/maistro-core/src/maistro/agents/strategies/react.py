@@ -388,7 +388,7 @@ class ReactStrategy:
         auth: Any,
         allowed_tools: frozenset[str] | None,
         security_pipeline: bool,
-    ) -> tuple[bool, str | None, dict[str, Any], str]:
+    ) -> tuple[bool, str | None, dict[str, Any], str, dict[str, Any]]:
         """Admission gate before Sentinel/provider dispatch (#57/#847).
 
         Returns ``(blocked, refusal, schema, denial_reason, tool_args)`` where
@@ -450,7 +450,7 @@ class ReactStrategy:
         raw_args = fn.get("arguments", "{}")
         tool_args, error_result = self._parse_tool_args(tool_name, raw_args)
 
-        tool_blocked, refusal, tool_schema, denial_reason, tool_args = await self._admit_tool_call(
+        tool_blocked, refusal, _tool_schema, denial_reason, tool_args = await self._admit_tool_call(
             tool_name,
             tool_args,
             raw_args,
