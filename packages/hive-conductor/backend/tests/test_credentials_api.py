@@ -442,6 +442,168 @@ def test_openai_compatible_delete_removes_config_without_a_secret() -> None:
     assert c.get("/v1/credentials/openai_compatible/config").json()["config"] == {}
 
 
+def test_openai_compatible_config_validation_rejects_invalid_endpoint_values() -> None:
+    """Each endpoint-validation branch answers 422 before anything is persisted."""
+    c = _login()
+    good = {"display_name": "Gateway", "base_url": "https://gateway.example/v1"}
+    cases = [
+        ({"base_url": "https://gateway.example/v1"}, "display_name is required"),
+        (
+            {"display_name": "x" * 129, "base_url": "https://gateway.example/v1"},
+            "display_name exceeds 128 characters",
+        ),
+        ({"display_name": "Gateway"}, "base_url is required"),
+        (
+            {"display_name": "Gateway", "base_url": "https://gateway.example:notaport/v1"},
+            "base_url has an invalid port",
+        ),
+    ]
+    for config, detail in cases:
+        rejected = c.put("/v1/credentials/openai_compatible/config", json={"config": config})
+        assert rejected.status_code == 422, (detail, rejected.text)
+        assert detail in rejected.json()["detail"]
+    # A gateway path longer than the generic per-value cap is answered by the
+    # endpoint-specific validation on the probe route, which carries no
+    # generic cap of its own.
+    long_url = c.post(
+        "/v1/credentials/openai_compatible/test",
+        json={
+            "config": {"display_name": "Gateway", "base_url": "https://g.example/" + "a" * 2048},
+            "secret": "draft-key",
+        },
+    )
+    assert long_url.status_code == 422, long_url.text
+    assert "base_url exceeds 2048 characters" in long_url.json()["detail"]
+    # Nothing from a rejected PUT may persist: the stored config stays empty.
+    assert c.get("/v1/credentials/openai_compatible/config").json()["config"] == {}
+
+    # The optional identity fields validate against the merged config on the
+    # probe route: a previously accepted endpoint stays while the oversized
+    # field is refused (the generic PUT cap would answer 400 before this
+    # branch, so the merged validation is only reachable here).
+    assert (
+        c.put("/v1/credentials/openai_compatible/config", json={"config": good}).status_code == 200
+    )
+    for field in ("organization", "project"):
+        oversized = c.post(
+            "/v1/credentials/openai_compatible/test",
+            json={"config": {field: "o" * 257}, "secret": "draft-key"},
+        )
+        assert oversized.status_code == 422, oversized.text
+        assert f"{field} exceeds 256 characters" in oversized.json()["detail"]
+    kept = c.get("/v1/credentials/openai_compatible/config").json()["config"]
+    # Saving normalized the identity fields to empty strings; the oversized
+    # values from the refused probe never landed.
+    assert kept["display_name"] == good["display_name"]
+    assert kept["base_url"] == good["base_url"]
+    assert kept["organization"] == ""
+    assert kept["project"] == ""
+
+
+def test_openai_compatible_test_route_rejects_bad_requests(monkeypatch) -> None:
+    """The probe's request-validation paths answer with the documented status."""
+    c = _credential_writer("cred-probe-errors")
+    valid = {"display_name": "Gateway", "base_url": "https://gateway.internal/v1"}
+
+    # Unknown providers and unknown config fields never reach the network seam.
+    unknown = c.post("/v1/credentials/jira/test", json={"secret": "k"})
+    assert unknown.status_code == 404
+    bad_field = c.post(
+        "/v1/credentials/openai_compatible/test",
+        json={"config": {"bogus": "x"}, "secret": "k"},
+    )
+    assert bad_field.status_code == 400
+    assert "bogus" in bad_field.json()["detail"]
+    blank = c.post(
+        "/v1/credentials/openai_compatible/test",
+        json={"config": valid, "secret": "   "},
+    )
+    assert blank.status_code == 422
+    assert "API key is required" in blank.json()["detail"]
+
+    # No draft key and no stored key: the vault path answers 422, not 500.
+    no_key = c.post("/v1/credentials/openai_compatible/test", json={"config": valid})
+    assert no_key.status_code == 422
+    assert "API key is required" in no_key.json()["detail"]
+
+    # A vault that is not up is a 503, not a misleading auth failure.
+    from services.user_credentials import CredentialStoreUnavailable
+
+    def _down() -> None:
+        raise CredentialStoreUnavailable("Credential store is not initialized")
+
+    monkeypatch.setattr("services.user_credentials.require_store", _down)
+    down = c.post("/v1/credentials/openai_compatible/test", json={"config": valid})
+    assert down.status_code == 503
+
+
+def test_openai_compatible_probe_transport_classifications(monkeypatch) -> None:
+    """Transport failures and hostile gateway bodies classify per #289's table."""
+    c = _credential_writer("cred-probe-transport")
+    valid = {"display_name": "Gateway", "base_url": "https://gateway.internal/v1"}
+
+    import httpx
+
+    class _Response:
+        def __init__(self, status_code: int, payload: object, broken_json: bool = False) -> None:
+            self.status_code = status_code
+            self._payload = payload
+            self._broken_json = broken_json
+
+        def json(self) -> object:
+            if self._broken_json:
+                raise ValueError("not json")
+            return self._payload
+
+    class _Client:
+        def __init__(self, response: _Response) -> None:
+            self.response = response
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def get(self, _url: str, *, headers: dict[str, str]) -> _Response:
+            del headers
+            return self.response
+
+    # Transport death is `connectivity`; non-auth statuses and non-JSON
+    # /models bodies are `incompatible API behavior`.
+    scenarios = [
+        (httpx.ConnectTimeout("timed out"), 502, "connectivity:"),
+        (httpx.ReadError("socket gone"), 502, "connectivity:"),
+        (_Response(404, {"error": "no route"}), 502, "incompatible API behavior"),
+        (_Response(200, "", broken_json=True), 502, "was not JSON"),
+    ]
+    for outcome, status, detail in scenarios:
+        if isinstance(outcome, Exception):
+            monkeypatch.setattr(
+                "routes.credentials.sync_client",
+                lambda _exc=outcome, **_kw: (_ for _ in ()).throw(_exc),
+            )
+        else:
+            monkeypatch.setattr(
+                "routes.credentials.sync_client",
+                lambda _resp=outcome, **_kw: _Client(_resp),
+            )
+        probed = c.post(
+            "/v1/credentials/openai_compatible/test",
+            json={"config": valid, "secret": "draft-key"},
+        )
+        assert probed.status_code == status, (detail, probed.text)
+        assert detail in probed.json()["detail"]
+
+
+def test_delete_draft_credential_without_secret_or_config_404s() -> None:
+    """Deleting a never-configured provider is a 404, not a silent 204."""
+    fresh = _credential_writer("cred-delete-empty")
+    missing = fresh.delete("/v1/credentials/jira")
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "Credential not configured"
+
+
 def test_user_cannot_see_other_users_secrets() -> None:
     alice = _credential_writer("cred-scope-alice")
     alice_save = alice.put("/v1/credentials/jira", json={"secret": "alice-only-token"})
