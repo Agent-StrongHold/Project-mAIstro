@@ -81,3 +81,32 @@ module-name scan and the def-name net remain fully armed for anything else.
 - The `(path, name)` bank is a documented boundary judgment. This note is the
   in-tree evidence dossier for that review; `_DESIGN_SURFACE_BANK`'s own
   docstring carries the same rationale at the point of use.
+
+## Round 3 (2026-10-19, head `638aeb4b8`): the #2204 refactor split the bank's
+target — re-bank `_evaluation_provenance`
+
+The develop merge `638aeb4b8` (develop `5f714e1be`) brought `d8675ac89` (PR
+#2204, the #1663 consistency-evaluator complexity refactor), which extracted the
+inline `EvaluationProvenance(...)` construction out of the banked
+`evaluate_project_snapshot` into a new pure helper, `_evaluation_provenance`
+(`consistency.py:1086`). Verification job `cf690baf…` caught it:
+`check-3.log` — `test_maistro_design_declares_no_scoring_or_promotion_surface`
+failed with exactly one offender, `consistency.py:1086 def
+_evaluation_provenance`.
+
+Re-review against #796's forbidden list: the helper cites the exact
+brief/decision/artifact revisions the read-only evaluation saw — the same
+provenance record the already-banked `EvaluationProvenance` class models. It is
+pure construction from the frozen snapshot (no store access, no mutation, no
+model calls, no score, no promotion) and is called only from the banked
+`evaluate_project_snapshot` (`consistency.py:1128`). Same exception class as the
+rest of the bank; re-banked by exact `(path, name)` identity in the PR that
+merged the move, as the bank's own stale-row contract requires. A full re-scan
+of the package with the test's own scanner found no other offender, no module-
+name offender and no stale bank row.
+
+Validation this round: the M7-A7 contract file 7/7, the `fitness/` directory,
+the M5 reachability suite, `maistro-design` tests, ruff check/format, and the
+CI gates (`check-convergence-matrix.py`, `check-suite-inventory.py`,
+`check-doc-links.py`, `check-contract-markers.py`, `check-vulture-baseline.py`
+with CI's exact arguments) — see the commit message for per-command results.

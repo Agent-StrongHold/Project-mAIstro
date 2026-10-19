@@ -83,7 +83,14 @@ _DESIGN_FORBIDDEN_DEF_RE = re.compile(
 #: and explicitly "not a self-improvement authority", so it is neither a
 #: second scoring loop nor the private promotion path. ``_evaluate_upgrade``
 #: is a pack-upgrade *preflight*: it blocks on regressions and unauthorized
-#: backends and promotes nothing. Banking is path-pinned on purpose: the same
+#: backends and promotes nothing. ``_evaluation_provenance`` was extracted from
+#: the banked ``evaluate_project_snapshot`` by the #1663 complexity refactor
+#: (#2204, ``d8675ac89``, merged here in ``638aeb4b8``): it cites the exact
+#: brief/decision/artifact revisions the read-only evaluation saw — the same
+#: provenance record the banked ``EvaluationProvenance`` class models, built by
+#: pure construction from the frozen snapshot, with no I/O, no score and no
+#: promotion — and was re-reviewed and re-banked in the PR that merged it.
+#: Banking is path-pinned on purpose: the same
 #: name in any other module still trips, and any *new* scorer/evaluator/critic
 #: name anywhere in the package trips. A bank row whose file or definition
 #: disappears is stale and fails the scan (banking is not authorizing — the
@@ -105,6 +112,10 @@ _DESIGN_SURFACE_BANK: frozenset[tuple[str, str]] = frozenset(
         (
             "packages/maistro-design/src/maistro_design/consistency.py",
             "evaluate_project_snapshot",
+        ),
+        (
+            "packages/maistro-design/src/maistro_design/consistency.py",
+            "_evaluation_provenance",
         ),
         ("packages/maistro-design/src/maistro_design/packs/service.py", "_evaluate_upgrade"),
     }
