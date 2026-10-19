@@ -581,6 +581,31 @@
       "issue": "#364",
       "reason": "SQLiteScopeStore.bind_workspace_store is the late-binding composition hook for P0.8 store-boundary scope (#364 / #1841). Conformance tests and container wiring call it after both stores are constructed; vulture scans packages/*/src without test importers. This grant authorizes only this exact identity for the P0.8 burn PR."
     }
+    "packages/maistro-core/src/maistro/runs/admission_identity.py::unused variable 'MISMATCH'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1851",
+      "reason": "Part of the AdmissionAssessment enum defining immutable root-admission identity types for issue #1851. The enum is exported for future use by the C2 classifier and backend wiring, but currently unused in this leaf."
+    },
+    "packages/maistro-core/src/maistro/runs/admission_identity.py::unused variable 'REPLAYED'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1851",
+      "reason": "Part of the AdmissionAssessment enum defining immutable root-admission identity types for issue #1851. The enum is exported for future use by the C2 classifier and backend wiring, but currently unused in this leaf."
+    },
+    "packages/maistro-core/src/maistro/runs/admission_identity.py::unused variable 'TAKEOVER'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1851",
+      "reason": "Part of the AdmissionAssessment enum defining immutable root-admission identity types for issue #1851. The enum is exported for future use by the C2 classifier and backend wiring, but currently unused in this leaf."
+    },
+    "packages/maistro-core/src/maistro/runs/admission_identity.py::unused variable 'REPLACE_EXPIRED'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1851",
+      "reason": "Part of the AdmissionAssessment enum defining immutable root-admission identity types for issue #1851. The enum is exported for future use by the C2 classifier and backend wiring, but currently unused in this leaf."
+    },
+    "packages/maistro-core/src/maistro/runs/admission_identity.py::unused variable 'LEGACY_UNRESOLVED'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1851",
+      "reason": "Part of the AdmissionAssessment enum defining immutable root-admission identity types for issue #1851. The enum is exported for future use by the C2 classifier and backend wiring, but currently unused in this leaf."
+    }
   },
   "model-egress": {
     "maistro-canvas-frontend-server::mcp.character": {
