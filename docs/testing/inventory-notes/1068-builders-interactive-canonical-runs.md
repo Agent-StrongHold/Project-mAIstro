@@ -44,3 +44,35 @@ never empty.
 Cancellation remains owned by `run_durable_graph`: its cancellation handler
 settles open physical work and the canonical Run before propagating the task
 cancellation to Textual.
+
+## Repair round (CI at 21d730b4c, 2026-10-19)
+
+Four required checks failed at the synced head with one root cause: this
+branch's matrix edit cited `ADR-099` in the Builders pipeline row's
+*Governing ADR/spec* cell, but ADR-099 is `Proposed`, and a Proposed decision
+cannot govern an active document (`scripts/check-citation-status.py`:
+`matrix#Builders pipeline.governing -> maistro-engine#ADR-099`). The same
+unauthorized exception red `test` (3 failures in
+`tests/test_check_citation_status.py`, 5371 passed), `Coverage gate` (3
+failures, 363 passed), `exact-debt-ledger`
+(`check-ratchet-provenance.py`: 0 -> 1 citation exceptions), and `Validate
+ADR/spec front-matter` (its `check-citation-status-provenance.py` step).
+
+Repair: dropped `ADR-099` from the governing cell, leaving `ADR-090`
+(Accepted, five-stage stage machine) and `SPEC-201` (Accepted, interactive
+ReAct UX). This is also the semantics the issue requires — the shipped
+interactive path must not sit under the five-stage DAG proposal, which stays
+a Proposed direction, not shipped authority. No ledger amendment was used:
+a new citation exception cannot be candidate-authorized (the ratchet reads
+authorizations from the merge base), and the vulture ledger needed no change
+(1321 reviewed identities -> 1320 findings, `unclassified: 0`).
+
+Re-executed evidence at the repaired head: `check-citation-status.py` OK;
+`RATCHET_BASE_REV=origin/develop check-citation-status-provenance.py` OK
+(0 -> 0); `check-ratchet-provenance.py` all ratchets OK;
+`check-shipped-surface-truth.py` OK; `check-vulture-baseline.py
+packages/*/src --min-confidence 60 --exclude '*/third_party/*'` OK;
+`pytest tests/test_check_citation_status.py` 252 passed;
+`check-convergence-matrix.py` OK (52 subsystems, 1414 modules);
+`maistro-registry lint . --strict` OK; registry job unit battery 194 passed;
+builders/cli/retention lane suites 54 passed, 9 skipped.
