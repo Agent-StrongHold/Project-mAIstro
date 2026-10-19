@@ -59,11 +59,9 @@ async def _routed() -> Iterator[None]:
     container.agents = {CONDUCTOR_AGENT_NAME: ConductorAgent()}  # type: ignore[dict-item]
     chat_api.configure_container(container)
     runs_api.configure_run_store(container.run_store)
-    # Provision the configured Workspace so its owner ("dev") resolves as a
-    # member through the same boundary the routes answer through (#1152).
-    await container.workspace_store.create(
-        creator_user_id="dev", name="default", workspace_id="default"
-    )
+    # The configured Workspace and its "dev" owner membership come from
+    # create_container itself now (#1152), so the boundary the routes answer
+    # through has its membership rows without a test-side bootstrap.
     runs_api.configure_run_boundary(
         RunStoreBoundary(
             container.run_store, container.workspace_store, container.project_scope_store

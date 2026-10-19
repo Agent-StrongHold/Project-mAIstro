@@ -414,3 +414,19 @@ def test_the_endpoint_says_so_when_no_store_is_configured(client: TestClient) ->
         assert client.post("/runs/anything/cancel").status_code == 503
     finally:
         runs_api.configure_run_store(previous)
+
+
+def test_the_endpoint_says_so_when_no_boundary_is_configured(wired, client: TestClient) -> None:
+    """The boundary half of the same fail-loud rule (#1152), with the store
+    itself still configured: reads and cancellation must refuse loudly
+    instead of serving authorization-skipped traffic."""
+    previous = runs_api._run_boundary
+    runs_api.configure_run_boundary(None)
+    try:
+        refused = client.get("/runs/anything")
+        assert refused.status_code == 503
+        assert "No Run authorization boundary is configured" in refused.json()["error"]["message"]
+        assert client.post("/runs/anything/cancel").status_code == 503
+        assert client.get("/runs/anything/node-runs").status_code == 503
+    finally:
+        runs_api.configure_run_boundary(previous)

@@ -124,3 +124,18 @@ class TestAuthorize:
         assert decision.authorized is False
         assert decision.approver_scope is None
         assert decision.rlphd is None
+
+
+class TestPrincipalIdentity:
+    """#1152: `actor_principal_id` binds to a canonical Principal, so the type
+    itself refuses identities that could never be attributed — an empty id and
+    an agent nobody owns. Forged or empty actor text must not survive to the
+    accounting seam by constructing a "valid" Principal around it."""
+
+    def test_blank_id_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="non-empty"):
+            Principal(id="   ", kind="human")
+
+    def test_agent_without_owner_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="owner"):
+            Principal(id="agent-1", kind="agent")

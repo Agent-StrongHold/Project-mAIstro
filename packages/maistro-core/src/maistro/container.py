@@ -125,7 +125,11 @@ from maistro.workspaces.campaigns.wiring import (
     wire_in_memory_campaign_store,
 )
 from maistro.workspaces.store import WorkspaceStore
-from maistro.workspaces.wiring import WORKSPACE_PG_TABLES, wire_workspace_store
+from maistro.workspaces.wiring import (
+    DEFAULT_WORKSPACE_OWNER,
+    WORKSPACE_PG_TABLES,
+    wire_workspace_store,
+)
 
 if TYPE_CHECKING:
     import httpx  # type: ignore[import-not-found, unused-ignore]
@@ -2197,6 +2201,34 @@ async def _wire_working_memory_backend(db_pool: Any) -> WorkingMemoryManager:
     return wire_in_memory_working_memory()
 
 
+async def _provision_configured_workspace(
+    workspace_store: WorkspaceStore, workspace_id: str
+) -> None:
+    """Provision the configured Workspace and its owner at composition, not
+    left to the first operator action (#1152 review): the default server path
+    admits Runs into `workspace_id` from the first request, while the Run read
+    boundary answers on Workspace membership held in this store — a fresh
+    deployment whose Workspace row and owner membership did not exist yet
+    would admit Runs it could then never read, and the HTTP API cannot help
+    because it mints ids rather than accepting this one. `create` also files
+    the Root Project, which the spine primed already and `create_root` treats
+    as create-or-return, and grants its creator the OWNER membership the
+    boundary reads. Idempotent: a restart (or a replica that won a concurrent
+    first start) finds the row and skips the write; a lost create race is
+    re-checked before failing, so only a store that cannot see the row it
+    just refused to duplicate raises."""
+    if await workspace_store.get(workspace_id) is None:
+        try:
+            await workspace_store.create(
+                creator_user_id=DEFAULT_WORKSPACE_OWNER,
+                name=workspace_id,
+                workspace_id=workspace_id,
+            )
+        except Exception:
+            if await workspace_store.get(workspace_id) is None:
+                raise
+
+
 async def create_container(
     config: AgentConfig,
     *,
@@ -2391,6 +2423,9 @@ async def create_container(
             project_store=project_scope_store,
             pg_pool=pg_pool,
         )
+        # The configured Workspace is provisioned at composition, not left to
+        # the first operator action (#1152 review) — why is on the helper.
+        await _provision_configured_workspace(workspace_store, config.workspace_id)
         backlog_history_store = await wire_backlog_history_store(
             history_conn,
             project_store=project_scope_store,

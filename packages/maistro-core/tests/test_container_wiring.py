@@ -92,6 +92,86 @@ async def test_flush_usage_log_is_a_noop_without_persistence() -> None:
     assert container.usage_log.events_for("provider:model") != ()
 
 
+async def test_fresh_container_provisions_the_configured_workspace_and_its_owner() -> None:
+    """#1152 review: the Run boundary must never outlive its membership rows.
+
+    A fresh standalone deployment admits Runs into `config.workspace_id`
+    through the default admitter path, and the Run read boundary answers on
+    Workspace membership. Startup therefore provisions the configured
+    Workspace and its owner (the unauthenticated `dev` principal) before the
+    boundary is installed — otherwise the very first admitted run_id would
+    404 for the only principal the server can name.
+    """
+    from maistro.workspaces.model import WorkspaceRole
+    from maistro.workspaces.wiring import DEFAULT_WORKSPACE_OWNER
+
+    container = await _container()
+    workspace = await container.workspace_store.get(container.task_admitter.default_workspace_id)
+    assert workspace is not None, "startup did not provision the configured Workspace"
+    membership = await container.workspace_store.get_membership(
+        workspace.workspace_id, user_id=DEFAULT_WORKSPACE_OWNER
+    )
+    assert membership is not None and membership.role is WorkspaceRole.OWNER
+
+
+async def test_provisioning_is_idempotent_across_a_restart() -> None:
+    """A restart (or a replica) finds the row and skips the write: one
+    Workspace, one OWNER membership, no duplicate-root failure."""
+    from maistro.container import _provision_configured_workspace
+    from maistro.workspaces.model import WorkspaceRole
+    from maistro.workspaces.store import InMemoryWorkspaceStore
+    from maistro.workspaces.wiring import DEFAULT_WORKSPACE_OWNER
+
+    store = InMemoryWorkspaceStore()
+    await _provision_configured_workspace(store, "default")
+    await _provision_configured_workspace(store, "default")
+
+    workspace = await store.get("default")
+    assert workspace is not None
+    membership = await store.get_membership("default", user_id=DEFAULT_WORKSPACE_OWNER)
+    assert membership is not None and membership.role is WorkspaceRole.OWNER
+
+
+async def test_a_lost_create_race_keeps_provisioning_idempotent() -> None:
+    """The replica that lost the concurrent first start must not fail boot:
+    its create() loses to the winner's unique constraint, but the row the
+    winner wrote is exactly the one the loser was trying to make, so the
+    re-check swallows the refusal."""
+    from maistro.container import _provision_configured_workspace
+    from maistro.workspaces.store import InMemoryWorkspaceStore
+
+    class LostCreateRaceStore(InMemoryWorkspaceStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.create_attempts = 0
+
+        async def create(self, **kwargs: Any) -> Any:
+            self.create_attempts += 1
+            await super().create(**kwargs)  # the concurrent winner's row lands
+            raise RuntimeError("duplicate key value violates unique constraint")
+
+    store = LostCreateRaceStore()
+    await _provision_configured_workspace(store, "default")
+    assert store.create_attempts == 1
+    assert (await store.get("default")) is not None
+
+
+async def test_provisioning_fails_loudly_when_the_row_never_lands() -> None:
+    """A create() that raises with no visible row afterwards is a real fault,
+    not a lost race — the helper must propagate it, not boot half-wired."""
+    from maistro.container import _provision_configured_workspace
+
+    class BrokenStore:
+        async def get(self, workspace_id: str, *, principal_id: str | None = None) -> None:
+            return None
+
+        async def create(self, **kwargs: object) -> None:
+            raise RuntimeError("write refused")
+
+    with pytest.raises(RuntimeError, match="write refused"):
+        await _provision_configured_workspace(BrokenStore(), "default")  # type: ignore[arg-type]
+
+
 async def test_context_assembly_uses_the_canonical_scope_store() -> None:
     container = await _container(database_url="sqlite://")
 
