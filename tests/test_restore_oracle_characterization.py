@@ -107,54 +107,66 @@ def _bash(script: str) -> subprocess.CompletedProcess[str]:
     return _run(["bash", "-c", script])
 
 
-def _psql_ready_probe(container: str) -> subprocess.CompletedProcess[bytes]:
-    """One authenticated readiness query, over TCP, against `container`."""
-    return subprocess.run(
-        [
-            "docker",
-            "exec",
-            container,
-            "psql",
-            "-h",
-            "127.0.0.1",
-            "-X",
-            "-Atq",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-U",
-            PG_USER,
-            "-d",
-            PG_DB,
-            "-c",
-            "SELECT 1;",
-        ],
-        capture_output=True,
-    )
+#: Bounded readiness for the characterization containers. The official
+#: docker-entrypoint serves initdb and `docker_process_init_files` through a
+#: *temporary* server on the same Unix socket the real one later uses, so
+#: `pg_isready` answers "accepting connections" while the target database is
+#: not being served yet or the socket is mid-swap — a probe that lands there
+#: lets the first `psql` statement fail with exit status 2 ("connection to
+#: server went bad"), which is exactly how the `test` CI job's
+#: `pg_source_container` setup errored all four characterization tests at
+#: 6e2eca944ddbac50631b4ca7d92598a16c01d112 (run 39177311554, job
+#: 117822537422, 2026-10-18) and, via the coverage-gate root producer, all
+#: four again at run 39130160694. `pg_isready` is a server-liveness ping, not
+#: a statement channel; readiness here means one successful `SELECT 1`
+#: round-trip on the target database, the same lesson #689 recorded for the
+#: workflow service health checks. The probe goes over TCP (`-h 127.0.0.1`)
+#: because the temporary server answers *socket* queries too — even
+#: authenticated `SELECT 1`s for the target database once `docker_setup_db`
+#: has run — while it never listens on TCP; only a TCP round-trip proves the
+#: final server this module actually talks to is up. Both knobs are module
+#: constants so the stub-docker tests in test_restore_oracle_readiness_gate.py
+#: can shrink them.
+_READY_TIMEOUT_S = 90.0
+_READY_POLL_S = 1.0
 
 
 def _wait_ready(container: str) -> None:
-    """Wait until the container's *final* server executes an authenticated query.
+    """Wait until the container's *final* server answers `SELECT 1` with `1`.
 
-    A socket `pg_isready` probe is not sufficient here. The official image's
-    entrypoint initialises the cluster under a temporary server bound to the
-    unix socket only (`listen_addresses=''`), and that server answers
-    `pg_isready` — and even authenticated `psql` queries — before it is
-    stopped and the real server starts. A probe landing in that window reports
-    ready, and the fixture's first statement then races the temp→final
-    restart: observed in CI (coverage-gate root producer, run 39130160694) as
-    `docker exec … psql … CREATE TABLE …` exiting 2 — "connection to the
-    server went bad" — which errored all four characterisation tests through
-    the module fixture. The temporary server never listens on TCP, so a probe
-    over `-h 127.0.0.1` stays unanswered until the server this module actually
-    talks to is accepting connections; `psql -c 'SELECT 1'` (rather than
-    `pg_isready`) also proves authentication and execution, which is what the
-    statements after this call need.
+    Re-raises the last probe's exit code and stderr tail on timeout so a wedged
+    container is diagnosable from the failure alone.
     """
-    for _ in range(60):
-        if _psql_ready_probe(container).returncode == 0:
+    probe_cmd = [
+        "docker",
+        "exec",
+        container,
+        "psql",
+        "-h",
+        "127.0.0.1",
+        "-X",
+        "-Atq",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-U",
+        PG_USER,
+        "-d",
+        PG_DB,
+        "-c",
+        "SELECT 1",
+    ]
+    deadline = time.monotonic() + _READY_TIMEOUT_S
+    while True:
+        probe = subprocess.run(probe_cmd, capture_output=True, text=True)
+        if probe.returncode == 0 and probe.stdout.strip() == "1":
             return
-        time.sleep(1)
-    pytest.fail(f"characterization PostgreSQL {container} did not become ready")
+        if time.monotonic() >= deadline:
+            pytest.fail(
+                f"characterization PostgreSQL {container} did not become ready "
+                f"within {_READY_TIMEOUT_S:.0f}s; last `SELECT 1` probe "
+                f"exited {probe.returncode}: {probe.stderr.strip()[-400:]}"
+            )
+        time.sleep(_READY_POLL_S)
 
 
 def _source_lib() -> str:
