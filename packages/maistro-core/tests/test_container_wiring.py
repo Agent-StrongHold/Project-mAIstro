@@ -1167,3 +1167,101 @@ async def test_wiring_declines_to_build_an_admitter_with_no_template_store() -> 
         )
         is not None
     )
+
+
+# --- Audit log backend selection (ADR-073, #122) ----------------------------
+
+
+class _AuditFakeConnection:
+    """Minimal asyncpg double: records executed SQL so a wiring test can prove
+    `ensure_schema` ran against the selected backend."""
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    async def execute(self, query: str, *args: Any) -> str:
+        self.statements.append(query)
+        return "ALTER TABLE"
+
+
+class _AuditFakeAcquireCtx:
+    def __init__(self, conn: _AuditFakeConnection) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> _AuditFakeConnection:
+        return self._conn
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+
+class _AuditFakePool:
+    def __init__(self, conn: _AuditFakeConnection) -> None:
+        self._conn = conn
+
+    def acquire(self) -> _AuditFakeAcquireCtx:
+        return _AuditFakeAcquireCtx(self._conn)
+
+
+async def test_audit_log_wiring_prefers_postgres_and_upgrades_its_schema() -> None:
+    """PostgreSQL is the canonical durable system of record, so it wins when
+    both relational backends are configured — and wiring must run the
+    pre-proof-column schema upgrade, or a database created before signed audit
+    records cannot hold proofs at all (ADR-073)."""
+    import aiosqlite
+
+    from maistro.container import _wire_audit_log
+    from maistro.persistence.pg_audit import PgAuditLog
+
+    conn = _AuditFakeConnection()
+    sqlite_conn = await aiosqlite.connect(":memory:")
+    try:
+        audit = await _wire_audit_log(pg_pool=_AuditFakePool(conn), db_pool=sqlite_conn)
+
+        assert type(audit) is PgAuditLog
+        assert conn.statements == [
+            "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''",
+        ]
+    finally:
+        await sqlite_conn.close()
+
+
+async def test_audit_log_wiring_falls_back_to_sqlite_and_upgrades_its_schema() -> None:
+    """Choosing the SQLite backend must not leave the audit log as the one
+    relational store that silently resets on restart (#122): the sqlite branch
+    wires the durable SQLite store and runs its schema upgrade too."""
+    import aiosqlite
+
+    from maistro.container import _wire_audit_log
+    from maistro.persistence.sqlite_audit import SqliteAuditLog
+
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        audit = await _wire_audit_log(pg_pool=None, db_pool=conn)
+
+        assert type(audit) is SqliteAuditLog
+        cursor = await conn.execute("PRAGMA table_info(audit_log)")
+        columns = [row[1] for row in await cursor.fetchall()]
+        assert {"signature", "signing_key_id", "proof_type"} <= set(columns)
+    finally:
+        await conn.close()
+
+
+async def test_audit_log_wiring_without_relational_backend_returns_signed_memory_log() -> None:
+    """The ephemeral profile still signs every retained decision before it is
+    stored (ADR-073): the in-memory fallback carries a signer even where the
+    deployment never configured one, so records are verifiable in-process."""
+    from maistro.container import _wire_audit_log
+    from maistro.security._types import AuditEntry
+    from maistro.security.sentinel.audit import InMemoryAuditLog
+
+    audit = await _wire_audit_log(pg_pool=None, db_pool=None)
+
+    assert type(audit) is InMemoryAuditLog
+    assert audit.signer is not None
+    await audit.log(AuditEntry(boundary="tool_call", user_id="u1"))
+    [stored] = await audit.get_entries()
+    assert stored.signature
+    assert audit.verify(stored)
