@@ -420,6 +420,18 @@ jobs:
         env:
           MAISTRO_REQUIRE_PG_LEGS: "1"
         run: uv run pytest packages/maistro-server/tests/api/test_canvas_supported_path.py -v --tb=short
+      # The #1826 Design supported-path E2E, same shape and same contract as
+      # the Canvas step above: the module builds its own throwaway database,
+      # walks the root chain from empty, sets DATABASE_URL in the bare
+      # postgresql:// spelling Compose actually emits, and proves the real
+      # start_design_service composition persists, reads, lists and survives a
+      # restart over it. MAISTRO_REQUIRE_PG_LEGS turns a silent skip into a
+      # red job: a Design store that never ran is exactly what this step
+      # exists to prevent.
+      - name: Design supported path end to end over the migrated chain
+        env:
+          MAISTRO_REQUIRE_PG_LEGS: "1"
+        run: uv run pytest packages/hive-conductor/backend/tests/test_design_supported_path.py -v --tb=short
 
       - name: Hive scheduler tick uses canonical due state on both SQL backends
         env:
