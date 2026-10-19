@@ -1,7 +1,6 @@
 ---
 inventory-delta:
   packages/maistro-bootstrap/tests: +3
-  packages/maistro-core/tests: +3
 ---
 # auto-448-a9e4
 
@@ -21,13 +20,27 @@ its follow-up. Every delta is a new test; nothing was removed or duplicated
 
 ## packages/maistro-core/tests (+3)
 
-- `tests/sandbox/test_capture.py` — the reap/visibility contracts of the
-  bounded capture helpers: `communicate_bounded` must wait past stream EOF so
-  a child that closes fds 1/2 and keeps running is not reported from a
-  still-`None` `returncode` (`returncode or 0` would read as false success);
-  the reap must stay inside the caller's `wait_for` so a fd-closing child
-  that never exits surfaces as `TimeoutError` (the executor kill path), not
-  a phantom success; and `run_bounded` must return what was drained before
-  its join deadline when a descendant inherits the pipes and holds them open
-  (incremental `_DrainState` snapshots), instead of losing it with the
-  lingering drain thread.
+## packages/maistro-core/tests (+0, withdrawn 2026-10-19)
+
+This note originally recorded +3 here — the reap/visibility contracts of the
+bounded capture helpers (wait past stream EOF before reading `returncode`;
+reap inside the caller's `wait_for`; `run_bounded` returning the partial
+drain when a descendant holds the pipes). Those tests were written into
+`tests/sandbox/test_capture.py`, which the branch then carried as its own
+18-test file.
+
+The develop syncs (c9a18d300, a77e2edf9, fe5823181) adopted develop's
+per-stream sandbox capture policy, and the merge took develop's
+9-test `tests/sandbox/test_capture.py` verbatim — `git diff origin/develop
+HEAD -- packages/maistro-core/tests/sandbox/test_capture.py` is empty. The
+three contracts survive consolidated inside
+`tests/tools/sandbox/test_capture_helpers.py`
+(`test_communicate_bounded_reaps_and_bounds_both_streams`,
+`test_run_bounded_returns_partial_when_a_descendant_holds_the_pipes`), whose
++18 is counted by `448-tools-capture-drain-helpers.md`. Counting them here
+as well double-books three tests that exist once, so the core delta is
+withdrawn to 0. Verified against collection on pristine develop (e708451b):
+`pytest packages/maistro-core/tests --collect-only -q` → 16503 = develop's
+own expected, so no capability gap hides or adds nodes and the branch's true
+core increment is exactly what `448-tools-capture-drain-helpers.md` records
+(sandbox+tools subtree: 673 → 701).

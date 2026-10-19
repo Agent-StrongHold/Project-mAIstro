@@ -1,7 +1,6 @@
 ---
 inventory-delta:
   packages/maistro-bootstrap/tests: +2
-  packages/maistro-core/tests: +28
   packages/maistro-rsi/tests: +7
 ---
 # auto-448-c63b
@@ -10,9 +9,28 @@ Lane L448 (issue #448, M2 initiative) — the #1197 slice: sandbox output
 capture is bounded at the host on every reachable production execution path
 (docker exec, microVM launcher result, bootstrap container builder, RSI local
 sandbox, bubblewrap and fake backends). Every delta below is a new test
-pinning a #1197 contract; no existing test was removed. Net +37.
+pinning a #1197 contract; no existing test was removed.
 
-## packages/maistro-core/tests (+28)
+## packages/maistro-core/tests (+0, withdrawn 2026-10-19)
+
+This note originally recorded +28 here, measured against the pre-sync branch
+tree where `tests/sandbox/test_capture.py` was this branch's own new 18-test
+file. The develop syncs (c9a18d300, a77e2edf9, fe5823181) then adopted
+develop's per-stream sandbox capture policy, and the merge took develop's
+9-test `tests/sandbox/test_capture.py` verbatim (`git diff origin/develop
+HEAD -- packages/maistro-core/tests/sandbox/test_capture.py` is empty) —
+develop's own ledger already counts its 9. The surviving branch-side
+core increments this note describes (`test_import_layering.py` +3,
+`test_docker.py` +4, `test_microvm_sandbox.py` +3) are counted, together
+with the 18 helper contracts that superseded the vanished capture-file
+tests, by `448-tools-capture-drain-helpers.md` (+28 — exactly the branch's
+true increment over develop, verified by collection: pristine develop
+collects 16503 = its own expected, this branch collects 16531). Keeping
++28 here as well double-booked 31 nodes and made the maistro-core ledger
+drift −31 against every runner, so the core delta is withdrawn to 0.
+
+What the original +28 described, at authoring time (historical — the file
+fates above are now governed by develop's ledger and the 448-tools note):
 
 - `tests/sandbox/test_capture.py` — new file, 18 tests: retention limit and
   truncation truthfulness of `read_stream_bounded`/`communicate_bounded`

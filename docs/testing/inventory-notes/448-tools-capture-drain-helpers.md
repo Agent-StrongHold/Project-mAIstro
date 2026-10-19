@@ -25,14 +25,23 @@ Two mutations verified the new tests bite: making `read_stream_bounded` /
 `capture_fd_sync` retain whole chunks unbounded fails the drain-past-limit
 tests, and swallowing `run_bounded`'s `timed_out` flag fails the timeout test.
 
-Local measurement caveat (why `check-suite-inventory.py` still reports
-`maistro-core/tests` at -3 on this host): this WSL host's `dev` user exceeds
-the `max_processes=128` budget the bubblewrap probe self-enforces (#1235), so
-`detect_host_capabilities` cannot evidence tiers here that CI's runner class
-can, and 31 capability-parametrized nodes that CI collects do not collect here
-(`16517 = 16520 - 31 + 28`). The gap is pre-existing — plain arithmetic gives
-develop's own local collection as 16489 against the same ledger — and this
-branch changes none of it: its four touched test files are plain additions,
-verified stable at 16517 under bwrap-patched and DOCKER_HOST-perturbed
-re-collection. The authoritative arithmetic runs where the ledger was recorded,
-in CI.
+Local measurement note (corrected 2026-10-19): an earlier version of this
+paragraph claimed this WSL host undercollects `maistro-core/tests` by 31
+capability-parametrized nodes because `detect_host_capabilities` cannot
+evidence bubblewrap here. That claim is wrong, and re-measuring on this host
+at the develop tip (e708451b) disproves it: `pytest
+packages/maistro-core/tests --collect-only -q` collects **16503**, exactly
+develop's own recorded expectation, with `detect_host_capabilities()`
+refusing bubblewrap (`Creating new namespace failed: Resource temporarily
+unavailable`). Collection is capability-independent — no test file
+parametrizes over live host tiers — so the −31 the suite-inventory gate
+reported on the branch was never a host gap. It was a ledger overcount: two
+sibling lane notes (`auto-448-a9e4`, `auto-448-c63b`) still carried deltas
+for tests the develop sync had consolidated away (develop's 9-test
+`tests/sandbox/test_capture.py` replaced the branch's 18-test version
+verbatim, and its +10 of docker/microvm/import-layering additions are the
++10 counted above). Both notes' core deltas are withdrawn in their own
+amendments; with that, this note's +28 is the suite's entire true increment
+over develop (sandbox+tools subtree: 673 → 701 collected), and the gate
+reads expected 16531 == collected 16531 on this host and on CI's runner
+alike.
