@@ -1233,6 +1233,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/credentials/{provider_id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Credential
+         * @description Probe an OpenAI-compatible `/models` endpoint without persisting input.
+         */
+        post: operations["test_credential_v1_credentials__provider_id__test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/dag-metrics": {
         parameters: {
             query?: never;
@@ -6963,6 +6983,8 @@ export interface components {
             config?: {
                 [key: string]: string;
             };
+            /** Enabled */
+            enabled?: boolean | null;
         };
         /** SetCredentialBody */
         SetCredentialBody: {
@@ -7256,6 +7278,15 @@ export interface components {
             banned_aliases: string[];
             /** Preferred */
             preferred: string;
+        };
+        /** TestCredentialBody */
+        TestCredentialBody: {
+            /** Config */
+            config?: {
+                [key: string]: string;
+            };
+            /** Secret */
+            secret?: string | null;
         };
         /** ThemeOption */
         ThemeOption: {
@@ -10030,6 +10061,43 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["SetConfigBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_credential_v1_credentials__provider_id__test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestCredentialBody"];
             };
         };
         responses: {
