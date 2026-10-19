@@ -238,7 +238,7 @@ test("Design Studio reports unavailable persistence instead of an empty durable 
     await route.fulfill({
       status: 503,
       contentType: "application/json",
-      body: JSON.stringify({ detail: "Design persistence unavailable (DATABASE_URL not set)" }),
+      body: JSON.stringify({ detail: "Design persistence unavailable (no database URL configured)" }),
     });
   });
 
@@ -246,7 +246,7 @@ test("Design Studio reports unavailable persistence instead of an empty durable 
 
   const projectsHeader = page.getByText("Persisted Design projects", { exact: true }).locator("..");
   await expect(projectsHeader.getByText("unavailable", { exact: true })).toBeVisible();
-  await expect(page.getByText(/Persisted Design projects are unavailable:.*DATABASE_URL not set/)).toBeVisible();
+  await expect(page.getByText(/Persisted Design projects are unavailable:.*no database URL configured/)).toBeVisible();
   await expect(page.getByText("No persisted Design projects in this scope.", { exact: true })).toHaveCount(0);
 
   // Keep the shared serial browser state truthful for the following catalog test.
