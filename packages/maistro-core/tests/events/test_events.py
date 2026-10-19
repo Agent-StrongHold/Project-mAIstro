@@ -194,6 +194,119 @@ class TestEventBus:
         await bus.emit(Event(event_type="hello"))
         assert received == ["hello"]
 
+    async def test_post_handler_subscriber_failure_is_not_swallowed(self):
+        """A post-handler subscriber failure must raise EventSubscriberFailure."""
+        bus = EventBus()
+        received = []
+
+        async def good_subscriber(event):
+            received.append(event.event_type)
+
+        async def failing_subscriber(event):
+            raise OSError("post-handler subscriber exploded")
+
+        bus.subscribe(good_subscriber)  # before_handlers=False (default)
+        bus.subscribe(failing_subscriber, before_handlers=False)
+
+        with pytest.raises(EventSubscriberFailure) as excinfo:
+            await bus.emit(Event(event_type="hello"))
+
+        assert isinstance(excinfo.value.__cause__, OSError)
+        assert str(excinfo.value.__cause__) == "post-handler subscriber exploded"
+        # The good subscriber still ran before the failure.
+        assert received == ["hello"]
+        history = bus.get_history()
+        assert len(history) == 1
+        assert history[0].event_type == "hello"
+
+    async def test_post_handler_subscriber_failure_does_not_abort_other_subscribers(self):
+        """Multiple post-handler subscribers: a failure in one must not suppress others."""
+        bus = EventBus()
+        received = []
+        failed = []
+
+        async def subscriber_one(event):
+            received.append("one")
+
+        async def subscriber_two(event):
+            failed.append("two")
+            raise RuntimeError("subscriber two failed")
+
+        async def subscriber_three(event):
+            received.append("three")
+
+        bus.subscribe(subscriber_one)
+        bus.subscribe(subscriber_two)
+        bus.subscribe(subscriber_three)
+
+        with pytest.raises(EventSubscriberFailure) as excinfo:
+            await bus.emit(Event(event_type="multi"))
+
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
+        # Both one and three should have run.
+        assert received == ["one", "three"]
+        history = bus.get_history()
+        assert len(history) == 1
+        assert history[0].event_type == "multi"
+
+    async def test_trigger_failure_and_post_handler_subscriber_failure_both_surfaced(self):
+        """When both a trigger handler and a post-handler subscriber fail,
+        the TriggerActionFailure carries both as .subscriber_failures."""
+        bus = EventBus()
+        trigger = Trigger(name="boom", event_types=["test"], action_type="log")
+        bus.add_trigger(trigger)
+
+        async def bad_handler(_trigger, _event):
+            raise RuntimeError("handler exploded")
+
+        async def bad_subscriber(event):
+            raise OSError("subscriber exploded")
+
+        bus.register_handler("log", bad_handler)
+        bus.subscribe(bad_subscriber)  # before_handlers=False
+
+        with pytest.raises(TriggerActionFailure) as excinfo:
+            await bus.emit(Event(event_type="test"))
+
+        # The TriggerActionFailure is raised, carrying the handler failure.
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
+        assert str(excinfo.value.__cause__) == "handler exploded"
+        # The post-handler subscriber failure is attached as .subscriber_failures.
+        assert hasattr(excinfo.value, "subscriber_failures")
+        assert excinfo.value.subscriber_failures is not None
+        assert len(excinfo.value.subscriber_failures) == 1
+        assert isinstance(excinfo.value.subscriber_failures[0][1], OSError)
+        assert str(excinfo.value.subscriber_failures[0][1]) == "subscriber exploded"
+        # The trigger was not counted as fired.
+        assert trigger.fire_count == 0
+        assert trigger.last_fired is None
+
+    async def test_only_post_handler_subscriber_failure_raises_event_subscriber_failure(self):
+        """When no trigger handlers fail but a post-handler subscriber fails,
+        EventSubscriberFailure is raised (not TriggerActionFailure)."""
+        bus = EventBus()
+
+        async def good_handler(_trigger, _event):
+            return None
+
+        async def bad_subscriber(event):
+            raise OSError("only subscriber failed")
+
+        bus.register_handler("log", good_handler)
+        bus.add_trigger(Trigger(name="ok", event_types=["test"], action_type="log"))
+        bus.subscribe(bad_subscriber)  # before_handlers=False
+
+        with pytest.raises(EventSubscriberFailure) as excinfo:
+            await bus.emit(Event(event_type="test"))
+
+        assert isinstance(excinfo.value.__cause__, OSError)
+        assert str(excinfo.value.__cause__) == "only subscriber failed"
+        # The trigger still fired successfully.
+        triggers = bus.list_triggers()
+        assert len(triggers) == 1
+        assert triggers[0]["fire_count"] == 1
+        assert triggers[0]["last_fired"] is not None
+
     async def test_authoritative_subscriber_failure_is_not_swallowed(self):
         bus = EventBus()
         trigger = Trigger(name="must-not-run", event_types=["hello"], action_type="log")
@@ -214,6 +327,54 @@ class TestEventBus:
         assert isinstance(excinfo.value.__cause__, OSError)
         assert trigger.fire_count == 0
         assert bus.get_history() == []
+
+    async def test_authoritative_subscriber_success_runs_before_triggers(self):
+        """A before_handlers=True subscriber runs before trigger matching."""
+        bus = EventBus()
+        order = []
+
+        async def before_subscriber(event):
+            order.append("before")
+
+        async def trigger_handler(_trigger, _event):
+            order.append("handler")
+
+        bus.subscribe(before_subscriber, before_handlers=True)
+        bus.add_trigger(Trigger(name="test", event_types=["hello"], action_type="log"))
+        bus.register_handler("log", trigger_handler)
+
+        await bus.emit(Event(event_type="hello"))
+
+        assert order == ["before", "handler"]
+        trigger = bus.list_triggers()[0]
+        assert trigger["fire_count"] == 1
+
+    async def test_authoritative_subscriber_not_in_after_handlers(self):
+        """A before_handlers=True subscriber is not run in _notify_after_handlers."""
+        bus = EventBus()
+        before_count = 0
+        after_count = 0
+
+        async def before_subscriber(event):
+            nonlocal before_count
+            before_count += 1
+
+        async def after_subscriber(event):
+            nonlocal after_count
+            after_count += 1
+
+        bus.subscribe(before_subscriber, before_handlers=True)
+        bus.subscribe(after_subscriber, before_handlers=False)
+
+        await bus.emit(Event(event_type="hello"))
+
+        assert before_count == 1
+        assert after_count == 1
+        # Emit again to verify counts don't double-count
+        await bus.emit(Event(event_type="hello"))
+        assert before_count == 2
+        assert after_count == 2
+
 
 
 class TestEmitFiringAuthority:

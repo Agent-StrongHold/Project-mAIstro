@@ -379,3 +379,43 @@ async def test_recovery_cadence_wakes_due_runs_and_survives_a_failed_half(
 async def _observed(calls: list[str], expected: list[str]) -> None:
     while calls[: len(expected)] != expected:
         await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_canonical_recovery_events_requires_canonical_publisher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_canonical_recovery_events must raise when the publisher is not a
+    CanonicalEventPublisher (#1133)."""
+    import services.canonical_dag_runner as runner
+
+    container = SimpleNamespace(
+        run_store=object(),
+        canonical_event_publisher=EventBus(),  # Not a CanonicalEventPublisher
+    )
+    monkeypatch.setattr(runner, "_container", lambda: container)
+
+    with pytest.raises(RuntimeError, match="canonical recovery Event publisher is not configured"):
+        runner._canonical_recovery_events(container)
+
+
+@pytest.mark.asyncio
+async def test_canonical_recovery_events_returns_canonical_sink(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_canonical_recovery_events returns a CanonicalRecoveryEventSink when
+    the publisher is correctly configured."""
+    import services.canonical_dag_runner as runner
+
+    canonical_events = CanonicalEventPublisher(InMemoryEventStore(), legacy_bus=EventBus())
+    container = SimpleNamespace(
+        run_store=object(),
+        canonical_event_publisher=canonical_events,
+    )
+    monkeypatch.setattr(runner, "_container", lambda: container)
+
+    sink = runner._canonical_recovery_events(container)
+    assert isinstance(sink, CanonicalRecoveryEventSink)
+    assert sink._runs is container.run_store
+    assert sink._events is canonical_events
+
