@@ -33,6 +33,7 @@ const DISPOSITION_LABELS: Record<string, { label: string; color: string }> = {
   active: { label: "In progress", color: "var(--accent)" },
   waiting: { label: "Waiting", color: "#e8a03a" },
   evidence_settled: { label: "Work settled", color: "#5b8fb3" },
+  no_execution_evidence: { label: "No recorded runs", color: "var(--pencil)" },
 };
 
 function disposition(value: string): { label: string; color: string } {
@@ -390,8 +391,8 @@ export default function Goals() {
         <LoadingSpinner />
       ) : goals.length === 0 ? (
         <EmptyState
-          title="No goals with recorded work yet"
-          action="When work is started toward a goal, its history appears here."
+          title="No goals yet"
+          action="Goals appear here when recorded, even before work starts."
         />
       ) : (
         <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>

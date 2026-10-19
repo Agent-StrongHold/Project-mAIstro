@@ -113,6 +113,7 @@ class _Scene:
         parent_node_run_id: str | None = None,
         workspace_id: str | None = None,
         provenance: dict[str, Any] | None = None,
+        project_to_conductor: bool = True,
     ) -> str:
         """One canonical Run admitted for real, plus its #1036 projection row.
 
@@ -187,6 +188,8 @@ class _Scene:
             steps = (RunStatus.QUEUED, RunStatus.RUNNING, status)
         for step in steps:
             await self.store.transition_run(run.run_id, step)
+        if not project_to_conductor:
+            return run.run_id
         return await self.seed_projection(run.run_id, workspace)
 
     async def seed_projection(self, canonical_run_id: str, workspace_id: str) -> str:
@@ -1119,6 +1122,66 @@ async def test_cross_workspace_run_link_cannot_relocate_a_goal(
         assert correct.json()["also_in"] == []
     else:
         assert correct.status_code == 404
+
+
+async def test_goal_without_runs_is_discoverable_through_http(
+    monkeypatch: pytest.MonkeyPatch, authed_client: Any
+) -> None:
+    from maistro.goals import GoalRevisionDraft
+
+    scene = await _member_route_scene(monkeypatch)
+    root = await scene.workspaces.project_store.root_for_workspace(scene.view.id)
+    goal = await scene.goal_store.create_goal(
+        workspace_id=scene.view.id,
+        project_id=root.project_id,
+        agent_id="accountable-agent",
+        draft=GoalRevisionDraft(desired_state="not started yet", author="user"),
+    )
+    path = f"/v1/workspaces/{scene.view.id}/goals"
+    response = authed_client.get(path)
+    assert response.status_code == 200
+    assert [view["goal_id"] for view in response.json()] == [goal.goal_id]
+    detail = authed_client.get(f"{path}/{goal.goal_id}")
+    assert detail.status_code == 200
+    view = detail.json()
+    assert view["goal_revision_seen"] == "1"
+    assert view["desired_state"] == "not started yet"
+    assert view["accountable_agent_id"] == "accountable-agent"
+    assert view["project_id"] == root.project_id
+    assert view["goal_state"] == "active"
+    assert view["execution_disposition"] == "no_execution_evidence"
+    assert view["run_count"] == 0 and view["runs"] == []
+
+
+async def test_canonical_only_goal_history_and_backlink_without_duplicate_runs(
+    monkeypatch: pytest.MonkeyPatch, authed_client: Any
+) -> None:
+    from maistro.runs import RunStatus
+
+    scene = await _member_route_scene(monkeypatch)
+    goal_id = _next_id("goal")
+    runs = [
+        await scene.add_goal_run(goal_id=goal_id, status=status, project_to_conductor=False)
+        for status in (RunStatus.COMPLETED, RunStatus.RUNNING)
+    ]
+    path = f"/v1/workspaces/{scene.view.id}/goals"
+    listed = authed_client.get(path)
+    assert listed.status_code == 200
+    assert [view["goal_id"] for view in listed.json()] == [goal_id]
+    view = authed_client.get(f"{path}/{goal_id}").json()
+    assert view["goal_state"] == "active"
+    assert view["run_count"] == 2
+    assert {row["run_id"] for row in view["runs"]} == set(runs)
+    for row in view["runs"]:
+        detail = authed_client.get(f"/v1/dag-runs/{row['run_id']}")
+        assert detail.status_code == 200
+        assert detail.json()["status"] == row["status"]
+        assert detail.json()["goal_context"]["goal_id"] == goal_id
+    projection_id = await scene.seed_projection(runs[1], scene.view.id)
+    refreshed = authed_client.get(f"{path}/{goal_id}").json()
+    assert refreshed["run_count"] == 2
+    assert {row["run_id"] for row in refreshed["runs"]} == {runs[0], projection_id}
+    assert refreshed["also_in"] == []
 
 
 async def test_viewer_members_can_read_goal_inspection(

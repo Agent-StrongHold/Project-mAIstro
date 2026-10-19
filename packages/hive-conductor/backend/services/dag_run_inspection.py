@@ -19,10 +19,9 @@ canonical inspection migration retires or re-scopes it.
 By canonical ID, the Run itself is also the answer (#1036): a canonical Run
 from any producer that left no Conductor projection row is retrievable —
 inspectable and controllable — directly through the scoped canonical reader,
-under its own run id. Recent-list discovery stays projection-gated: ordering
-a page of canonical Runs the projection never saw needs the scoped store
-read capability #1036's read-contract boundary reserves for the store
-owners, not a prefix scan here.
+under its own run id. Recent-list discovery also consumes the scoped
+canonical store's bounded Workspace query. Retained projection rows enrich
+that page without duplicating canonical Runs or scanning private store state.
 
 `run.user_id` is deliberately NOT an authorization shortcut here. The
 canonical boundary is Workspace membership; a route-local
@@ -305,6 +304,25 @@ def _in_scope(record: dict[str, Any], allowed: set[str]) -> bool:
     return str(record.get("workspace_id") or "") in allowed
 
 
+async def _recent_canonical_runs(user_id: str, allowed: set[str]) -> list[Any]:
+    """Discovery belongs to the canonical scoped owner, not projection retention."""
+    from services.engine import get_engine
+
+    reader = get_engine().run_reader
+    if reader is None:
+        return []
+    runs = []
+    for workspace_id in sorted(allowed):
+        try:
+            runs.extend(
+                await reader.list_recent_runs(workspace_id, principal_id=user_id, limit=MAX_RUNS)
+            )
+        except Exception:
+            # Preserve the reviewed standalone/read-unavailable fallback.
+            continue
+    return runs
+
+
 async def list_visible_runs(user_id: str, *, limit: int = 25) -> list[dict[str, Any]]:
     """Recent-run summaries, restricted to the caller's Workspace universe."""
     allowed = await authorized_workspace_ids(user_id)
@@ -325,7 +343,16 @@ async def list_visible_runs(user_id: str, *, limit: int = 25) -> list[dict[str, 
         [_canonical_run_id(summary) for summary in in_scope], user_id
     )
     visible = [_overlay(summary, runs.get(_canonical_run_id(summary))) for summary in in_scope]
-    return visible[:limit]
+    represented = {
+        (_canonical_run_id(summary), str(summary.get("workspace_id") or "")) for summary in in_scope
+    }
+    for run in await _recent_canonical_runs(user_id, allowed):
+        if (run.run_id, run.workspace_id) not in represented:
+            visible.append(_canonical_only_detail(run))
+    visible.sort(
+        key=lambda row: (row.get("started_at") or 0, str(row.get("id") or "")), reverse=True
+    )
+    return visible[: max(0, limit)]
 
 
 def _canonical_only_detail(run: Any) -> dict[str, Any]:

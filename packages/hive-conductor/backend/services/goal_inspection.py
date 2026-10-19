@@ -23,10 +23,10 @@ deterministically from canonical Run statuses and reads `goal_state` only from
 the scoped canonical Goal authority. A terminal Run can therefore never
 silently render its Goal terminal.
 
-Authorization is not re-decided here either. Runs enter only through
-`list_visible_runs` (the caller's canonical Workspace universe, #1174), so a
-Goal whose evidence the caller cannot see is — by protocol contract — a Goal
-that does not exist for them.
+Authorization is not re-decided here either. Runs enter through
+`list_visible_runs` and Goals through the scoped Goal reader in the caller's
+canonical Workspace universe (#1174). A Goal does not require a retained
+Conductor projection row, or even a Run, to be discoverable.
 """
 
 from __future__ import annotations
@@ -37,7 +37,11 @@ from typing_extensions import TypedDict
 
 from maistro.runs.goal_context import GoalContext, goal_context_of
 from maistro.runs.model import Run, RunStatus
-from services.dag_run_inspection import canonical_runs_for, list_visible_runs
+from services.dag_run_inspection import (
+    authorized_workspace_ids,
+    canonical_runs_for,
+    list_visible_runs,
+)
 from services.dag_run_store import MAX_RUNS
 
 
@@ -131,6 +135,8 @@ _ACTIVE_RUN_STATUS_NAMES = frozenset(
 
 def _disposition(statuses: list[str]) -> str:
     """One disposition for a goal's evidence, in the priority order above."""
+    if not statuses:
+        return "no_execution_evidence"
     if "paused" in statuses:
         return DISPOSITION_WAITING_HUMAN
     if "failed" in statuses or "timed_out" in statuses:
@@ -167,6 +173,26 @@ def _context_for(run: Run | None) -> GoalContext | None:
     if run.goal_id is not None and run.goal_revision is not None:
         return GoalContext(goal_id=run.goal_id, goal_revision=str(run.goal_revision))
     return goal_context_of(run.provenance)
+
+
+async def _discovered_goal_ids(user_id: str) -> set[str]:
+    """Goals exist before execution; enumerate through their scoped owner."""
+    from services.engine import get_engine
+
+    reader = get_engine().goal_reader
+    if reader is None:
+        return set()
+    goal_ids: set[str] = set()
+    for workspace_id in await authorized_workspace_ids(user_id):
+        try:
+            goals = await reader.list_goals(
+                workspace_id, principal_id=user_id, limit=_EVIDENCE_WINDOW
+            )
+        except Exception:
+            # A down/standalone Goal bridge cannot manufacture Goal facts.
+            continue
+        goal_ids.update(goal.goal_id for goal in goals)
+    return goal_ids
 
 
 async def _canonical_goal_facts(
@@ -271,7 +297,13 @@ def _goal_view_for(
     contexts = [context for context, _summary, _run in ordered]
     # `ordered` is newest evidence first; a lexical sort would incorrectly
     # select revision "9" over revision "10" for its desired-state details.
-    seen_revision = contexts[0].goal_revision if contexts else None
+    seen_revision = (
+        contexts[0].goal_revision
+        if contexts
+        else str(canonical_goal.current_revision)
+        if canonical_goal is not None
+        else None
+    )
 
     def _recorded(pick) -> str | None:
         for context in contexts:
@@ -310,7 +342,14 @@ def _goal_view_for(
             # a legacy dag_id is never passed off as a canonical Graph id.
             unmatched_pipelines.append(row["dag_id"])
     statuses = [row["status"] for row in rows]
-    summary_row = ordered[0][1]
+    summary_row = (
+        ordered[0][1]
+        if ordered
+        else {
+            "workspace_id": canonical_goal.workspace_id,
+            "project_id": canonical_goal.project_id,
+        }
+    )
     return {
         "goal_id": goal_id,
         "workspace_id": summary_row.get("workspace_id"),
@@ -388,8 +427,7 @@ def _link_subgoals(views: list[dict[str, Any]]) -> None:
 async def _collect_goal_views(user_id: str) -> list[dict[str, Any]]:
     """Every Goal view in the caller's Workspace universe, most recent first."""
     summaries = await list_visible_runs(user_id, limit=_EVIDENCE_WINDOW)
-    if not summaries:
-        return []
+    discovered = await _discovered_goal_ids(user_id)
     # One batched canonical Run read for the page — the same door the status
     # overlay uses — so Run bindings never come from a product-private copy
     # (#65; #1174's one-door rule).
@@ -409,13 +447,21 @@ async def _collect_goal_views(user_id: str) -> list[dict[str, Any]]:
             # Not goal-driven evidence: the run stays exactly where it was —
             # on the #1036 run surfaces — and no pseudo-Goal is minted for it.
             continue
+        if run is not None:
+            # Legacy projection rows may predate Project stamping; canonical
+            # admission owns the Run's Project, never an empty projection field.
+            summary = {**summary, "project_id": run.project_id}
         key = (
             str(summary.get("workspace_id") or ""),
             str(summary.get("project_id") or ""),
             context.goal_id,
         )
         grouped.setdefault(key, []).append((context, summary, run))
-    canonical_facts = await _canonical_goal_facts(user_id, {goal_id for (_, _, goal_id) in grouped})
+    canonical_facts = await _canonical_goal_facts(
+        user_id, discovered | {goal_id for (_, _, goal_id) in grouped}
+    )
+    for goal_id, (goal, _revisions) in canonical_facts.items():
+        grouped.setdefault((goal.workspace_id, goal.project_id, goal_id), [])
     views = [
         _goal_view_for(goal_id, members, *canonical_facts.get(goal_id, (None, {})))
         for (_, _, goal_id), members in grouped.items()

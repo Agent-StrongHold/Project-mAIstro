@@ -124,6 +124,22 @@ async def test_a_member_reads_the_whole_run_tree_whoever_initiated_it(
     assert [item.attempt_id for item in attempts] == [a.attempt.attempt_id]
 
 
+async def test_recent_discovery_uses_membership_not_actor(world: _World) -> None:
+    assert await world.reader.list_recent_runs(world.a.run.workspace_id, principal_id="carol") == [
+        world.a.run
+    ]
+    refusals = []
+    for workspace, principal in (
+        (world.b.run.workspace_id, "alice"),
+        ("missing", "alice"),
+        (world.a.run.workspace_id, ""),
+    ):
+        with pytest.raises(RunNotVisible) as caught:
+            await world.reader.list_recent_runs(workspace, principal_id=principal)
+        refusals.append(str(caught.value))
+    assert len(set(refusals)) == 1
+
+
 async def _denials(reader: ScopedRunReader, tree: _Tree, principal: str) -> list[RunNotVisible]:
     run_id = tree.run.run_id
     calls = [

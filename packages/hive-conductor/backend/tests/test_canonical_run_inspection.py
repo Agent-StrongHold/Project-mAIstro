@@ -79,8 +79,8 @@ async def test_a_projectionless_canonical_run_is_inspectable_and_controllable_by
     by its canonical id: detail answers from the Run itself, the cancel route
     cancels through the canonical spine without writing a projection row, and
     a foreign observer gets the identical non-disclosing refusal a missing id
-    gets. Recent-list discovery stays projection-gated by design (#1036's
-    read-contract boundary reserves that for the scoped store capability).
+    gets. Recent-list discovery uses the canonical scoped store capability
+    added for Goal inspection, rather than requiring a projection row.
     """
     from routes.dag_runs import cancel_run as cancel_route
     from services.dag_run_inspection import (
@@ -152,10 +152,11 @@ async def test_a_projectionless_canonical_run_is_inspectable_and_controllable_by
     assert cancelled.finished_at is not None
     assert get_dag_run_store().get_run(run.run_id) is None
 
-    # Recent-list discovery stays projection-gated: the run is absent from
-    # the page by design while the by-id seam answers for it.
+    # Discovery and detail now agree without creating a projection row.
     listed = await list_visible_runs(_USER_ID, limit=25)
-    assert all(row["id"] != run.run_id for row in listed)
+    assert [row["id"] for row in listed] == [run.run_id]
+    assert listed[0]["status"] == "cancelled"
+    assert get_dag_run_store().get_run(run.run_id) is None
 
     # Foreign and random ids get the identical non-disclosing refusal --
     # detail, stream admission and the batch verdict reader all agree.

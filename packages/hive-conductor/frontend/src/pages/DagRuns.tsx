@@ -342,6 +342,7 @@ export default function DagRuns() {
             </section>
           )}
           {detail && detail.events.length > 0 && <svg
+            role="img"
             aria-label="Legacy activity sketch"
             width={width}
             height={height}
