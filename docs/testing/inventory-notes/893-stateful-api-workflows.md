@@ -36,8 +36,19 @@ the observed production asymmetry that a Run cancelled through
 until a worker reconciles it — a relation no stateless test in this package
 asserts.
 
+An independent re-validation round exposed two latent defects in the suite's
+own oracle (model, not production): the listing invariant checked only the
+first 200-row page while deep runs accumulate past one page in the shared
+in-memory store (now walks `next_cursor` to exhaustion), and it kept one
+owner per textual idempotency key where the admission scope is
+per-(principal, workspace, action, key) — both principals can hold the same
+textual key, and each owner's replay/409 verdict is computed against their
+own record (now tracked per-owner). Both surfaced only at nightly depth
+(fresh seeds), never on the derandomized PR profile.
+
 Runtime cost: ~7s derandomized on PRs (25 examples × ≤12 steps, 5/5 stable
-runs); 100×20 randomized runs stayed green 3/3 at 41-63s. Deeper nightly runs
+runs during development, 3/3 on re-validation post-fix); 100×20 randomized
+runs green 4/4 post-fix at 36-54s. Deeper nightly runs
 without touching the file: `MAISTRO_STATEFUL_API_EXAMPLES=200
 MAISTRO_STATEFUL_API_STEPS=40 MAISTRO_STATEFUL_API_DERANDOMIZE=0`. The second
 node ID also pins contract documentation: the served spec still declares no

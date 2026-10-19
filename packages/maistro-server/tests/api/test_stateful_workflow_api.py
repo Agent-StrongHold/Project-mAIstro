@@ -270,8 +270,11 @@ class WorkflowMachine(RuleBasedStateMachine):
         self._scenario = next(_SCENARIO_SEQ)
         self._names = count()
         self.receipts: dict[str, _Receipt] = {}
-        # textual explicit key -> (owner, task_id): scoping is per-principal
-        self.keys: dict[str, tuple[str, str]] = {}
+        # textual explicit key -> {owner -> task_id}: the admission scope is
+        # per-(principal, workspace, action, key), so two principals may hold
+        # the same textual key side by side, and each owner's replay/409
+        # verdict is computed against their own record only.
+        self.keys: dict[str, dict[str, str]] = {}
         # workspace_id -> owning principal: authority travels with the id
         self.workspace_owners: dict[str, str] = {}
 
@@ -296,7 +299,7 @@ class WorkflowMachine(RuleBasedStateMachine):
         receipt = _Receipt(data["task_id"], data["run_id"], owner, key, payload)
         self.receipts[data["task_id"]] = receipt
         if key is not None:
-            self.keys.setdefault(key, (owner, data["task_id"]))
+            self.keys.setdefault(key, {})[owner] = data["task_id"]
         return receipt
 
     # -- workflow rules ------------------------------------------------------
@@ -315,32 +318,27 @@ class WorkflowMachine(RuleBasedStateMachine):
         self._switch(owner)
         body = _schemathesis_body(self.surface, data, f"{key}:{next(self._names)}")
         response = self._post_task(body, key)
-        known = self.keys.get(key)
-        if known is None:
+        known_task = self.keys.get(key, {}).get(owner)
+        if known_task is None:
+            # This principal holds no claim under the key yet — even if the
+            # other principal holds the same textual key, the scope is
+            # per-principal and the admission mints its own run.
             assert response.status_code == 202, response.text
             return self._register(body, owner, key, response)
-        known_owner, known_task = known
-        if known_owner == owner:
-            # Same principal, same key: the payload fingerprint decides — the
-            # original payload reconciles to the original receipt, any other
-            # payload is a 409 that mints nothing.
-            original = self.receipts[known_task]
-            if original.body == body:
-                assert response.status_code == 202, response.text
-                replayed = response.json()
-                assert replayed["task_id"] == original.task_id
-                assert replayed["run_id"] == original.run_id
-                assert replayed["status"] == original.receipt_status
-                return original
-            assert response.status_code == 409, response.text
-            assert "different request payload" in response.json()["detail"]
+        # Same principal, same key: the payload fingerprint decides — the
+        # original payload reconciles to the original receipt, any other
+        # payload is a 409 that mints nothing.
+        original = self.receipts[known_task]
+        if original.body == body:
+            assert response.status_code == 202, response.text
+            replayed = response.json()
+            assert replayed["task_id"] == original.task_id
+            assert replayed["run_id"] == original.run_id
+            assert replayed["status"] == original.receipt_status
             return original
-        # A second principal sharing the textual key admits its own run: the
-        # scope is per-principal, and the two identities never collide.
-        assert response.status_code == 202, response.text
-        receipt = self._register(body, owner, key, response)
-        assert receipt.task_id != known_task
-        return receipt
+        assert response.status_code == 409, response.text
+        assert "different request payload" in response.json()["detail"]
+        return original
 
     @rule(target=task_entries, data=st.data())
     def submit_without_key(self, data: st.DataObject) -> _Receipt:
@@ -551,13 +549,32 @@ class WorkflowMachine(RuleBasedStateMachine):
     @invariant()
     def listings_match_the_model(self) -> None:
         """Every owned receipt is listed for its owner with the modeled
-        status; no other principal's receipt ever appears. This is the
-        relation a stateless single-principal test cannot see."""
+        status somewhere in the owner's pagination, and no other principal's
+        receipt ever appears. This is the relation a stateless
+        single-principal test cannot see.
+
+        The walk follows ``next_cursor`` to exhaustion: examples share one
+        in-memory store, so a deep run accumulates more tasks per principal
+        than one page holds and ``list_tasks`` truncates oldest-first —
+        checking only the first page would assert against a truncation
+        artifact instead of the listing relation."""
         for user in PRINCIPALS:
             self._switch(user)
-            page = self.surface.client.get("/tasks?limit=200")
-            assert page.status_code == 200
-            listed = {item["task_id"]: item["status"] for item in page.json()["items"]}
+            listed: dict[str, str] = {}
+            cursor: str | None = None
+            while True:
+                params: dict[str, str] = {"limit": "200"}
+                if cursor is not None:
+                    params["cursor"] = cursor
+                page = self.surface.client.get("/tasks", params=params)
+                assert page.status_code == 200, page.text
+                payload = page.json()
+                for item in payload["items"]:
+                    assert item["task_id"] not in listed, "listing repeated a task_id"
+                    listed[item["task_id"]] = item["status"]
+                cursor = payload["next_cursor"]
+                if cursor is None:
+                    break
             for task_id, receipt in self.receipts.items():
                 if receipt.owner == user:
                     assert listed.get(task_id) == receipt.receipt_status, (

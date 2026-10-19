@@ -81,13 +81,38 @@ invariant pin relations, not endpoints:
 
 **Zero production counterexamples.** PR profile (25 examples × ≤12 steps,
 derandomized): green 5/5 consecutive runs, ~7s. Deeper randomized profile
-(100 examples × 20 steps, fresh seeds): green 3/3 at 41-63s. Two failures
-during development were harness bugs the stateful form caught immediately —
-a principal switch that did not reach the auth dependency (every request ran
-as one principal, so every cross-principal assertion failed) and a
-cross-request rule that carried a workspace id without its owning principal
-(404 on the follow-up request). Both are exactly the "authority travels with
-the identifier" relation the suite now pins.
+(100 examples × 20 steps, fresh seeds): green 3/3 at 41-63s during
+development. Two failures during development were harness bugs the stateful
+form caught immediately — a principal switch that did not reach the auth
+dependency (every request ran as one principal, so every cross-principal
+assertion failed) and a cross-request rule that carried a workspace id
+without its owning principal (404 on the follow-up request). Both are
+exactly the "authority travels with the identifier" relation the suite now
+pins.
+
+**Independent re-validation sharpened this — in the suite's favor.** A
+re-validation round on a second machine re-ran the deep profile and hit
+two intermittent failures in ~11 runs (the derandomized PR profile never
+failed). Both were **model defects, not production defects** — production
+behavior matched its source on every one:
+
+1. the listing invariant checked only the first page (`limit=200`), but
+   examples share one in-memory store, so a deep run pushes a principal
+   past one page and the oldest-first truncation dropped the fresh
+   receipts the model still expected — fixed by walking `next_cursor` to
+   exhaustion (which also pins no-duplicate-ids and full-store
+   cross-principal non-leak);
+2. the model kept one `(owner, task)` per textual key, but the admission
+   scope is per-(principal, workspace, action, key): both principals can
+   hold the same textual key, and when the second owner reused a key their
+   own principal already held with a different body, production correctly
+   409'd where the model demanded 202 — fixed by tracking claims
+   per-owner.
+
+This is the experiment's own thesis working: the derandomized PR profile
+was byte-stable because it is shallow; the nightly-depth knob is what
+generates the interleavings that exposed both defects, and each failure
+shrank to a single rule plus its draws.
 
 **Unique yield beyond the stateless battery: 2 of 4 mutants.** In-tree edits
 with `/tmp` backup and byte-verified restore:
@@ -109,18 +134,27 @@ adds defense in depth at the HTTP relation level, not unique yield.
 **Stateless-vs-stateful comparison, per the issue's evidence ask:**
 
 - *Unique failures*: 2/4 mutants unique to the workflow suite; zero failures
-  the stateless battery found that the workflow missed.
+  the stateless battery found that the workflow missed; two further failures
+  the deep profile found were in the workflow's *own oracle*, not production
+  (above) — the stateless battery has no analogous mechanism to even
+  express that mistake.
 - *Setup complexity*: one file, reusing the existing in-memory spine wiring
   (`test_tasks_idempotency.py` pattern); no live service, no containers.
   Adding a new relation is one rule; adding a new stateless scenario is a new
   hand-written test.
 - *Runtime*: ~7s PR profile (comparable to the 44s stateless in-memory
   idempotency file); nightly depth is an env knob, not a code change.
-- *Flake rate*: 0 failures in 8 runs across profiles and seeds; derandomized
-  PR runs are byte-stable, nightly opts out for fresh orderings.
-- *Shrink/reproduction quality*: every dev-time failure minimized to a 2-4
-  step rule sequence with draws shown (both harness bugs above shrank to a
-  single rule plus one draw); this is materially better than a stateless
+- *Flake rate*: after the two oracle fixes, PR profile green 3/3 (6.9-10.5s)
+  and deep randomized profile green 4/4 (36-54s, fresh seeds) on the
+  re-validation machine, on top of the earlier development-machine runs;
+  derandomized PR runs are byte-stable, nightly opts out for fresh
+  orderings. Before the fixes the deep profile failed intermittently and
+  the PR profile never did — the honest reading is that PR-depth stability
+  is proven, deeper depth is exercising genuinely new interleavings.
+- *Shrink/reproduction quality*: every observed failure minimized to a 2-4
+  step rule sequence with draws shown (both dev-time harness bugs above
+  shrank to a single rule plus one draw; both re-validation model defects
+  shrank to one rule each). This is materially better than a stateless
   429-noise crash file, which reproduces one request and explains nothing
   about ordering.
 - *PR vs nightly*: PR-suitable as committed (deterministic, seconds,
