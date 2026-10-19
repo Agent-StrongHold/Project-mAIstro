@@ -42,3 +42,34 @@ no compensating removals):
   the offline suite's count is unchanged by them (skip, not collection).
 
 No other suite moved.
+
+## Verification record (repair round, head 7872a3d73)
+
+Re-validated at the stable post-sync head (`7872a3d73546`, the conflict-marker
+fix that moved the head during the previous verify attempt — the only content
+delta vs PR head `849fd89fb00f`). Every acceptance criterion re-executed by
+hand, not inherited:
+
+- Driver battery at this head: `ruff check .` / `ruff format --check .` clean;
+  scaffold file offline 85 passed + 5 skipped, with
+  `MAISTRO_TEST_EXTENSION_SCAFFOLD_E2E=1` 90 passed;
+  `scripts/check-suite-inventory.py` ok (17 suites);
+  `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` ok (1322 reviewed identities);
+  `scripts/check-extension-imports.py` ok; `scripts/check-extension-scaffold.py`
+  ok (CI-gated at `.github/workflows/ci.yml:165`); mypy `maistro-core` clean.
+- Manual clean-room run in `/tmp` (all five families via the real `maistro
+  extension new`): manifests pass both the in-repo validator and the normative
+  SDK schema (`maistro_ext_sdk.validation.manifest_from_json`; family enum
+  matches the closed vocabulary); generated code imports stdlib + own package
+  only; `uv build --wheel` succeeds and the wheel ships `extension.json`.
+- Local conformance + signing flow (the author-facing one):
+  `maistro-ext-harness run` 9/7/7/7/7 passed (0 failed) per family;
+  `certify` → CERTIFIED (standard profile, Ed25519-sealed);
+  `verify-certification` OK on the exact wheel bytes and refuses mutated bytes.
+
+Known non-blocking gaps (cross-package follow-ups, not #973 acceptance):
+`maistro-ext-sdk validate <dir>` does not resolve `src/`-layout entrypoints
+(the scaffold's layout), and product-side `maistro extensions certify` parses
+the install-record manifest contract (M9-B2), not the contract-1.0 discovery
+manifest the authoring stage uses — both belong to #949/#975 surface work.
