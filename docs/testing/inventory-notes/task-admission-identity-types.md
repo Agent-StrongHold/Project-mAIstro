@@ -2190,3 +2190,61 @@ No code or ledger change warranted (repair space re-proven empty at this topolog
 merge-queue failures decompose to the same two structural facts the issue itself mandates and
 documents for an intentionally unwired leaf; integration hold stands; stack left unmerged; no
 inventory delta (stays `+79`). (Refs #1851)
+
+## Round-219 CI-repair verification at the assigned head `b7ba7061316f` (job `40d81eddc9364610944a28dd471680c6`)
+
+Assigned head is the round-218 commit itself; assigned develop base advanced `53db178509f8` ->
+`64ea662cb015` (1 new commit, the Design DB-URL normalization; 5 commits total past merge-base
+`e708451b3887`). `git diff e708451b3..64ea662cb -- quality/` is again **empty**, the full develop
+delta contains 0 `admission_identity` references, and its touched files (extensions gallery, design
+engine, ci.yml, inventory docs) have zero overlap with this branch's 4 surfaces — no develop sync
+conflict; whether the merge queue resolves its trusted base at `e708451b3` (branch-local) or at
+`64ea662cb` (synthetic merge), the quality/ state it reads is identical, so every verdict below
+holds under both resolutions. The prior round's NEEDS-DEEP-REVIEW block was re-assessed against
+this round's lane authority and remains: the two structural reds are outside this leaf's repair
+authority by the issue's own text.
+
+- Driver battery 5/5 green (job logs check-0..4): `uv sync --locked --extra dev` ok; `ruff check .`
+  all passed; `ruff format --check .` 3330 files formatted; focused pytest **79 passed**;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok (16582 == recorded).
+- Module contract re-verified by a fresh live probe this round: `__all__` exactly the 21 names
+  (set-exact); `AdmissionAssessment` the 6 verbatim lowercase pairs in issue order at
+  `admission_identity.py:515-520`; 17 dataclasses frozen+slots; ticket repr omits `owner_token`;
+  `owns()` conjunction live-checked (scope / generation / owner each individually required); mypy
+  on the module Success.
+- CI-exact vulture: **rc=1**, 1326 findings, `unclassified: 0`, `never_allowlist: 0` (banking leg
+  GREEN — no bookkeeping output), authorization leg RED on exactly the 5 issue-mandated enum
+  identities `admission_identity.py:515/516/518/519/520` (`MISMATCH`/`REPLAYED`/`TAKEOVER`/
+  `REPLACE_EXPIRED`/`LEGACY_UNRESOLVED`; `PENDING` unflagged via the same-name `Pending` collision),
+  +5/-0 vs trusted base `e708451b3887` (1321 -> 1326); gate remedy "land a reviewed grant first".
+- `check-reachability.py`: **rc=1**, 1413 modules / 169 unreachable, exactly 1 NEWLY UNREACHABLE
+  `maistro.runs.admission_identity`. `check-ratchet-provenance.py`: **rc=1** solely via the
+  reachability-provenance leg ("trusted-base gate returned 1"); enumerations/lifecycle legs OK.
+  ci.yml test-job failure reproduced firsthand: `tests/test_check_reachability.py` +
+  `tests/test_reachability_baseline_identity.py` -> **3 failed / 36 passed**, every failure the
+  extra baseline item `maistro.runs.admission_identity`; the Coverage gate remains the documented
+  quality.yml:713 cascade of those same failures. `check-reachability-dispositions.py` rc=0,
+  `check-promotion-surface.py` rc=0, `check-shipped-surface-truth.py` rc=0.
+- Instructed ledger amendment re-assessed under this round's explicit CI-repair authorization,
+  again a deliberate **no-op**: the 5 reviewed retained identities are already banked
+  multiset-exact under `pydantic-declarative-field` (`quality/vulture-baseline.json:283-287`;
+  numstat vs merge base exactly `5 0`); no fix this round eliminated any identity (no code
+  changed); they are the issue's fixed enum contract, not dead code; pruning them flips the
+  banking leg red (1326-scan vs 1321-ledger -> 5 unclassified); a branch-side grant is inert by
+  construction (`load_authorizations` reads the trusted base) and issue-prohibited. Ledger left in
+  its correct reviewed state.
+- Scope invariants: `git diff e708451b3..HEAD` is exactly the 4 in-scope surfaces (+520 module,
+  +660 tests, +5 ledger, note), 0-line diffs in `ratchet-authorizations.json` /
+  `reachability-baseline.json`; 0 production importers; no `runs/__init__.py` export; #1841 anchors
+  intact (`store_boundary.py:56`, `store.py:507/576/907`, `model.py:306`).
+- Reconciliation for the issue's open checkbox, reaffirmed: the five retained rows stand on the
+  CI-repair rounds' explicit lane authorization for reviewed retained identities, in recorded
+  conflict with the issue's ordinary-scope no-baseline-additions rule — recorded, not silently
+  resolved; the rows carry no grant and authorize nothing; the two named remedies (the #1845 real
+  reviewed consumer at an integration head, or an owner-landed develop grant under the two-merge
+  rule) remain outside this leaf. Both named remedies require owner action.
+
+No code or ledger change warranted (repair space re-proven empty at this topology for the third
+consecutive round); all six merge-queue failures decompose to the same two structural facts the
+issue itself mandates and documents for an intentionally unwired leaf; integration hold stands;
+stack left unmerged; no inventory delta (stays `+79`). (Refs #1851)
