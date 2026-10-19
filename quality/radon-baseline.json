@@ -125,12 +125,12 @@
     {
       "key": "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py::execute_canvas",
       "path": "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py",
-      "line": 307,
+      "line": 382,
       "name": "execute_canvas",
       "classname": null,
       "rank": "E",
-      "complexity": 38,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+      "complexity": 33,
+      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the #393 scale-bound repair extracted the composite spec validation and application loops into _validate_spec_scales/_apply_layer_specs, bringing it to 33. The Boy Scout ratchet is expected to bring it down further rather than leave it here."
     },
     {
       "key": "packages/maistro-canvas/src/maistro_canvas/export.py::export_pptx",

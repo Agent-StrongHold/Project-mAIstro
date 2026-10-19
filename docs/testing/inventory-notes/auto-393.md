@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-canvas/tests: +60
+  packages/maistro-canvas/tests: +73
 ---
 
 # #393 Canvas layer scale bounded before image allocation
@@ -25,6 +25,13 @@ memory/CPU denial of service):
 - Worker-timeout and server-configuration tests: `CompositeTimeoutError`,
   env-var overrides, malformed-override fallback, and Pillow's decompression
   guard pinned to the per-image cap.
+- CI-repair round (+13): the composite spec-application surface
+  (x/y/scale/rotation/z_index/visible, unknown-layer skip, no-spec render,
+  default pixel-budget construction), the upload action (missing source,
+  happy path, typed worker failure persisting nothing), and the typed
+  422/422/504 rejections through the HTTP composite and export routes
+  (including the stored-composite export path, persisting nothing on
+  rejection).
 
 `test_compositor.py` swaps one test in place (zero-scale is now a typed
 rejection instead of a silent skip), so its count is unchanged; the net +60

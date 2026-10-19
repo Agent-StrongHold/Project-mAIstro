@@ -27,6 +27,7 @@ rejection — never a crash, never a silent acceptance.
 
 from __future__ import annotations
 
+import base64
 import io
 from collections.abc import Iterator
 from typing import Any
@@ -590,6 +591,223 @@ class TestToolScaleEnforcement:
 
         with pytest.raises(ValueError, match="between"):
             get_or_create_canvas("s6", _MAX_DIM * 2, 1024)
+
+
+# ---------------------------------------------------------------------------
+# Composite spec application, budget default, and the upload action
+# ---------------------------------------------------------------------------
+
+
+class TestCompositeSpecApplication:
+    """The composite request applies transform fields only after scale validation."""
+
+    @pytest.mark.asyncio
+    async def test_composite_applies_every_spec_field_and_skips_unknown_layers(self) -> None:
+        """x/y/scale/rotation/z_index/visible apply; an unknown layer id is skipped."""
+        canvas = _tool_canvas("s-app-1")
+        result = await execute_canvas(
+            "s-app-1",
+            "composite",
+            layers=[
+                {"layer_id": "ghost", "x": 99},  # unknown id — skipped, not an error
+                {
+                    "layer_id": "l1",
+                    "x": 5,
+                    "y": 6,
+                    "scale": 0.5,
+                    "rotation": 90,
+                    "z_index": 3,
+                    "visible": True,
+                },
+            ],
+        )
+        assert "error" not in result, result
+        layer = canvas.get_layer("l1")
+        assert layer is not None
+        assert (layer.x, layer.y, layer.scale, layer.rotation, layer.z_index, layer.visible) == (
+            5,
+            6,
+            0.5,
+            90,
+            3,
+            True,
+        )
+        assert canvas.get_layer("ghost") is None  # the skipped spec created nothing
+
+    @pytest.mark.asyncio
+    async def test_composite_with_no_layer_specs_renders_the_base_canvas(self) -> None:
+        """A composite without layer specs still renders — the spec loops are optional."""
+        _tool_canvas("s-app-2")
+        result = await execute_canvas("s-app-2", "composite", layers=None)
+        assert "error" not in result, result
+        assert result["image_b64"]
+        assert result["layer_count"] == 1
+
+    def test_composite_layers_builds_a_default_budget_when_omitted(self) -> None:
+        """_composite_layers charges the per-request budget itself when none is passed."""
+        from maistro_canvas.canvas.tool import Canvas, _composite_layers
+
+        canvas = Canvas(id="budgetless", width=64, height=64)
+        out = _composite_layers(canvas)
+        assert out[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+class TestUploadAction:
+    """Upload decodes untrusted bytes in the bounded worker or fails explicitly."""
+
+    @pytest.mark.asyncio
+    async def test_upload_without_source_image_returns_the_requirement_error(self) -> None:
+        canvas = _tool_canvas("u0")
+        result = await execute_canvas("u0", "upload", source_image="")
+        assert result["error"] == "upload_image (via source_image param) is required"
+        assert set(canvas.layers) == {"l1"}  # nothing was persisted
+
+    @pytest.mark.asyncio
+    async def test_upload_adds_a_layer_from_base64_source(self) -> None:
+        canvas = _tool_canvas("u1")
+        img = Image.new("RGBA", (32, 32), RED)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        result = await execute_canvas(
+            "u1",
+            "upload",
+            source_image=base64.b64encode(buf.getvalue()).decode(),
+            layer_type="object",
+        )
+        assert "error" not in result, result
+        assert result["width"] == 32
+        assert result["height"] == 32
+        assert result["image_b64"]
+        stored = canvas.layers[result["layer_id"]]
+        assert stored.image_data  # re-encoded PNG bytes were persisted onto the layer
+
+    @pytest.mark.asyncio
+    async def test_upload_typed_worker_failure_is_explicit_and_persists_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import maistro_canvas.canvas.tool as tool
+
+        canvas = _tool_canvas("u2")
+        img = Image.new("RGBA", (32, 32), RED)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        source = base64.b64encode(buf.getvalue()).decode()
+
+        async def timed_out(coro: Any, limits: Any = None) -> Any:
+            await coro
+            raise CompositeTimeoutError("decode/resize worker exceeded the configured timeout")
+
+        monkeypatch.setattr(tool, "run_with_resize_timeout", timed_out)
+        result = await execute_canvas("u2", "upload", source_image=source)
+        assert result["error"].startswith("COMPOSITE_TIMEOUT"), result
+        assert result.get("image_b64") is None  # no partial output
+        assert set(canvas.layers) == {"l1"}  # nothing was persisted for the failed upload
+
+
+# ---------------------------------------------------------------------------
+# HTTP surface: the typed #393 limit errors through the composite/export routes
+# ---------------------------------------------------------------------------
+
+
+class _ExplodingCompositor:
+    """Compositor stub whose composite() raises the given typed error."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    async def composite(self, canvas: Any, layers: list[Any]) -> Any:
+        raise self._exc
+
+
+class _SavingStore(_FakeStore):
+    """_FakeStore plus the composite-persistence calls the export/composite routes use."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.saved: list[tuple[Any, str]] = []
+        self._stored: dict[str, Any] = {}
+
+    async def latest_composite(self, canvas_id: str, *, org_id: str = "") -> Any:
+        return self._stored.get(canvas_id)  # export composites on demand when empty
+
+    async def save_composite(self, comp: Any, *, org_id: str = "") -> Any:
+        self.saved.append((comp, org_id))
+        self._stored[comp.canvas_id] = comp
+        return comp
+
+
+_TYPED_LIMIT_ERRORS = [
+    (LayerScaleLimitError("scale 1e6 above the server-configured maximum of 64.0"), 422),
+    (LayerPixelBudgetError("computed resize target exceeded the per-request pixel budget"), 422),
+    (CompositeTimeoutError("decode/resize worker exceeded the configured timeout of 5s"), 504),
+]
+
+
+class TestRouteTypedRejection:
+    """A layer violating the image limits yields an explicit typed HTTP error (#393)."""
+
+    @staticmethod
+    def _client(monkeypatch: pytest.MonkeyPatch, compositor: Any) -> TestClient:
+        monkeypatch.setenv("CANVAS_API_TOKEN", TEST_TOKEN)
+        store = _SavingStore()
+        app = FastAPI()
+        app.include_router(
+            _make_canvas_router(
+                store=store,  # type: ignore[arg-type]
+                executor=object(),  # type: ignore[arg-type]
+                compositor=compositor,  # type: ignore[arg-type]
+            ),
+            prefix="/api/canvas",
+        )
+        client = TestClient(
+            app,
+            raise_server_exceptions=True,
+            headers={"Authorization": f"Bearer {TEST_TOKEN}"},
+        )
+        client.post("/api/canvas", json={"name": "c", "width": 1024, "height": 1024})
+        client._store = store  # type: ignore[attr-defined]
+        return client
+
+    @pytest.mark.parametrize(("exc", "status"), _TYPED_LIMIT_ERRORS)
+    def test_composite_route_rejects_typed_limit_errors_explicitly(
+        self, monkeypatch: pytest.MonkeyPatch, exc: Exception, status: int
+    ) -> None:
+        client = self._client(monkeypatch, _ExplodingCompositor(exc))
+        r = client.post("/api/canvas/c1/composite")
+        assert r.status_code == status, r.text
+        body = r.json()
+        assert body["code"]
+        assert body["detail"]
+        assert client._store.saved == []  # type: ignore[attr-defined]
+
+    @pytest.mark.parametrize(("exc", "status"), _TYPED_LIMIT_ERRORS)
+    def test_export_route_rejects_typed_limit_errors_and_persists_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, exc: Exception, status: int
+    ) -> None:
+        client = self._client(monkeypatch, _ExplodingCompositor(exc))
+        r = client.get("/api/canvas/c1/export")
+        assert r.status_code == status, r.text
+        assert client._store.saved == []  # type: ignore[attr-defined]
+
+    def test_export_route_returns_a_stored_composite_without_recompositing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stored composite is served as-is — the compositor is never invoked."""
+        from maistro_canvas.types import CompositeResult
+
+        compositor = _ExplodingCompositor(LayerScaleLimitError("must never be reached"))
+        client = self._client(monkeypatch, compositor)
+        client._store._stored["c1"] = CompositeResult(  # type: ignore[attr-defined]
+            canvas_id="c1",
+            image_bytes=b"\x89PNG-stored",
+            width=1024,
+            height=1024,
+            layer_snapshot=[],
+        )
+        r = client.get("/api/canvas/c1/export")
+        assert r.status_code == 200, r.text
+        assert r.content == b"\x89PNG-stored"
+        assert client._store.saved == []  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------

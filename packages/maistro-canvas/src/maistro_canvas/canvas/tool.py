@@ -338,6 +338,42 @@ def _render_text(
     return buf.getvalue()
 
 
+def _validate_spec_scales(layers: list[dict[str, Any]], limits: CanvasImageLimits) -> None:
+    """Validate every scale in a composite request before any mutation (#393).
+
+    One bad spec must not leave partially applied transforms behind, so the
+    whole request is checked up front and the first offending scale raises a
+    typed :class:`LayerScaleLimitError`.
+    """
+    for spec in layers:
+        if "scale" in spec:
+            validate_scale(spec["scale"], limits)
+
+
+def _apply_layer_specs(canvas: Canvas, layers: list[dict[str, Any]]) -> None:
+    """Apply transform fields from composite layer specs onto their targets.
+
+    A spec that names an unknown layer is skipped rather than rejected: the
+    composite of the remaining layers still proceeds.
+    """
+    for spec in layers:
+        target = canvas.get_layer(spec.get("layer_id", spec.get("image", "")))
+        if target is None:
+            continue
+        if "x" in spec:
+            target.x = spec["x"]
+        if "y" in spec:
+            target.y = spec["y"]
+        if "scale" in spec:
+            target.scale = float(spec["scale"])
+        if "rotation" in spec:
+            target.rotation = spec["rotation"]
+        if "z_index" in spec:
+            target.z_index = spec["z_index"]
+        if "visible" in spec:
+            target.visible = spec["visible"]
+
+
 # ---------------------------------------------------------------------------
 # Canvas tool executor (the 5 actions)
 # ---------------------------------------------------------------------------
@@ -513,27 +549,8 @@ async def execute_canvas(  # noqa: C901
             # #393: validate every scale in the request *before* mutating any
             # layer, so one bad spec cannot leave partially applied transforms.
             if layers:
-                for spec in layers:
-                    if "scale" in spec:
-                        validate_scale(spec["scale"], limits)
-            # Update layer transforms from the provided layer specs
-            if layers:
-                for spec in layers:
-                    target = canvas.get_layer(spec.get("layer_id", spec.get("image", "")))
-                    if target is None:
-                        continue
-                    if "x" in spec:
-                        target.x = spec["x"]
-                    if "y" in spec:
-                        target.y = spec["y"]
-                    if "scale" in spec:
-                        target.scale = float(spec["scale"])
-                    if "rotation" in spec:
-                        target.rotation = spec["rotation"]
-                    if "z_index" in spec:
-                        target.z_index = spec["z_index"]
-                    if "visible" in spec:
-                        target.visible = spec["visible"]
+                _validate_spec_scales(layers, limits)
+                _apply_layer_specs(canvas, layers)
 
             # Decode/resize runs in a worker thread under the configured
             # timeout; a typed failure means no output is produced at all.
