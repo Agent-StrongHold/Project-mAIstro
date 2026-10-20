@@ -145,6 +145,52 @@ class TestIssueMetadataIntegrity(unittest.TestCase):
             )
         self.assertEqual(api.posts, [])
 
+    def test_cross_repository_sub_issue_is_inventoried_separately(self):
+        class CrossRepoAPI:
+            repository = "owner/repo"
+
+            def pages(self, path):
+                if path.endswith("/sub_issues"):
+                    return [
+                        {"number": 8, "repository_url": "https://api.github.com/repos/owner/repo"},
+                        {"number": 8, "repository_url": "https://api.github.com/repos/other/repo"},
+                    ]
+                return [{"number": 7, "labels": [], "milestone": None}]
+
+        inventory = gate.collect(CrossRepoAPI())
+        self.assertEqual(inventory["native_edges"], [{"child": 8, "parent": 7}])
+        self.assertEqual(
+            inventory["external_edges"],
+            [
+                {
+                    "child": 8,
+                    "parent": 7,
+                    "repository_url": "https://api.github.com/repos/other/repo",
+                }
+            ],
+        )
+
+    def test_external_child_does_not_mask_the_same_numbered_local_issue(self):
+        child, parent = issue(8, "Parent: #7"), issue(7)
+        external = [
+            {"child": 8, "parent": 7, "repository_url": "https://api.github.com/repos/other/repo"}
+        ]
+        snap = snapshot(child, parent)
+        snap["external_edges"] = external
+        report = gate.analyze(snap)
+        row = next(x for x in report["issues"] if x["number"] == 8)
+        self.assertEqual(row["status"], "missing_parent")
+        self.assertEqual(report["summary"]["external_edges"], 1)
+        api = FakeAPI(child, parent)
+        with tempfile.TemporaryDirectory() as directory, patch.object(gate.time, "sleep"):
+            self.assertEqual(
+                gate.apply_links(api, snap, manifest(child, parent), Path(directory) / "journal"), 1
+            )
+        self.assertEqual(
+            api.posts,
+            [("/issues/7/sub_issues", {"sub_issue_id": 1008, "replace_parent": False})],
+        )
+
     def test_live_conflicting_parent_refuses_write(self):
         child, parent = issue(1, "Parent: #2"), issue(2)
         api = FakeAPI(child, parent, actual=9)

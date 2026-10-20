@@ -155,6 +155,7 @@ def analyze(snapshot: dict[str, Any]) -> dict[str, Any]:
             "issues": len(issues),
             "open": sum(x["state"] == "open" for x in issues.values()),
             "native_edges": len(native),
+            "external_edges": len(snapshot.get("external_edges", [])),
             "status": dict(Counter(x["status"] for x in rows)),
             "missing_labels": sum(x["missing_labels"] for x in rows),
             "missing_milestone": sum(x["missing_milestone"] for x in rows),
@@ -242,6 +243,8 @@ def collect(api: API, with_comments: bool = False) -> dict[str, Any]:
     if len(numbers) != len(set(numbers)):
         raise ValueError("duplicate issue across inventory pages; retry a stable inventory")
     edges: list[dict[str, int]] = []
+    external: list[dict[str, Any]] = []
+    origin = f"https://api.github.com/repos/{api.repository}"
     comments = {}
     for issue in issues:
         number = issue["number"]
@@ -252,14 +255,21 @@ def collect(api: API, with_comments: bool = False) -> dict[str, Any]:
             children = api.pages(f"/issues/{number}/sub_issues")
             if summary is not None and len(children) != summary["total"]:
                 raise ValueError(f"#{number}: sub-issue count changed during inventory")
-            edges.extend({"child": child["number"], "parent": number} for child in children)
-    # All same-repository native edges are covered by the parent summaries.
+            for child in children:
+                edge = {"child": child["number"], "parent": number}
+                if child.get("repository_url") == origin:
+                    edges.append(edge)
+                else:
+                    external.append({**edge, "repository_url": child.get("repository_url")})
+    # Same-repository native edges are covered by the parent summaries and a
+    # cross-repository child never masks the local issue sharing its number.
     # The direct parent endpoint is checked again before every POST, including
     # refusal of external parents. Avoid 800 redundant API calls on each cron.
     return {
         "repository": api.repository,
         "issues": issues,
         "native_edges": edges,
+        "external_edges": external,
         "comments": comments,
     }
 
