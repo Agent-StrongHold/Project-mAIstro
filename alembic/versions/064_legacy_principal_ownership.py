@@ -154,6 +154,7 @@ def upgrade() -> None:
         ("outcomes", "user_id"),
         ("audit_log", "user_id"),
         ("tasks", "user_id"),
+        ("tasks", "service_principal_id"),
         ("canvases", "org_id"),
         ("learnings", "org_id"),
         ("episodic_memories", "org_id"),
@@ -169,6 +170,10 @@ def upgrade() -> None:
         ("asset_definitions", "org_id"),
         ("asset_instances", "org_id"),
         ("books", "org_id"),
+        ("user_model_facts", "owner_user_id"),
+        ("user_model_statement_keys", "owner_user_id"),
+        ("design_artifact_locks", "created_by"),
+        ("design_creative_briefs", "created_by"),
     ):
         op.execute(f"UPDATE {table} SET {column} = 'conductor' WHERE {column} = 'default'")
 
