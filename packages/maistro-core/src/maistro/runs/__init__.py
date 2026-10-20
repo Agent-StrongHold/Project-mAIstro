@@ -1,5 +1,12 @@
 """Canonical logical and physical execution lifecycle."""
 
+from maistro.runs.admission_identity import (
+    AdmissionBinding,
+    AdmissionRecordV2,
+    CanonicalJsonObject,
+    LegacyAdmissionRecord,
+    RootAdmissionEnvelope,
+)
 from maistro.runs.concurrency import RunConcurrencyExceeded, RunConcurrencyLimits
 from maistro.runs.eval import EvalSummary, eval_summary, open_re_eval_attempt
 from maistro.runs.execution import AttemptExecutionService, AttemptReconciler
@@ -50,6 +57,8 @@ __all__ = [
     "TERMINAL_RUN_STATUSES",
     "AcceptedNodeOutcome",
     "ActiveAttemptExists",
+    "AdmissionBinding",
+    "AdmissionRecordV2",
     "Attempt",
     "AttemptExecutionService",
     "AttemptLifecycleReconciler",
@@ -57,6 +66,7 @@ __all__ = [
     "AttemptReconciler",
     "AttemptResult",
     "AttemptStatus",
+    "CanonicalJsonObject",
     "EvalJudge",
     "EvalMethod",
     "EvalSummary",
@@ -64,8 +74,10 @@ __all__ = [
     "GraphSnapshot",
     "InMemoryRunStore",
     "InvalidLifecycleTransition",
+    "LegacyAdmissionRecord",
     "NodeRun",
     "NodeRunNotFound",
+    "RootAdmissionEnvelope",
     "Run",
     "RunConcurrencyExceeded",
     "RunConcurrencyLimits",

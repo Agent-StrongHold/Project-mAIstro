@@ -39,8 +39,25 @@ class PgAuditLog:
             )
 
     async def ensure_schema(self) -> None:
-        """Add proof columns to databases created before signed audit records."""
+        """Add proof columns to databases created before signed audit records.
+
+        ALTER-only, no CREATE TABLE: the table itself is owned by the migration
+        chain (revision 005), the same owner `PgLearningStore.ensure_schema`
+        records for `learnings`. On a database that has never run migrations
+        (for example the durable-events CI leg's fresh server) `audit_log` does
+        not exist yet, so this is a no-op rather than a crash: the container
+        wires the audit store before any migration has run there, and the rest
+        of that container already tolerates the migrated/absent state for the
+        other optional durable stores.
+
+        The existence probe is the same `to_regclass` guard the run and
+        workspace wiring use (`maistro.runs.wiring`, `maistro.container`) —
+        asked before any ALTER, so no exception path exists to classify and no
+        error-message text is load-bearing.
+        """
         async with self._pool.acquire() as conn:
+            if not await conn.fetchval("SELECT to_regclass('public.audit_log') IS NOT NULL"):
+                return
             await conn.execute(
                 "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''"
             )
