@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from maistro.container import Container, create_container
+from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
@@ -1125,12 +1126,20 @@ async def test_audit_log_wiring_prefers_postgres_and_upgrades_its_schema() -> No
         assert type(audit) is PgAuditLog
         creates = [s for s in conn.statements if "CREATE TABLE IF NOT EXISTS audit_log" in s]
         assert len(creates) == 1
-        assert conn.statements[2:] == [
+        assert conn.statements[2:6] == [
             "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''",
-            "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)",
+        ]
+        assert conn.statements[6] == (
+            "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
+        )
+        # The page indexes `get_page` needs: wiring is the only thing that can
+        # create them on a database the migration chain never touched.
+        assert conn.statements[7:] == [
+            f"CREATE INDEX IF NOT EXISTS {name} ON audit_log ({', '.join(fields)})"
+            for name, fields in AUDIT_PAGE_INDEXES.items()
         ]
     finally:
         await sqlite_conn.close()

@@ -5,7 +5,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from maistro.persistence.audit_pages import AuditPage, make_page, page_query
+from maistro.persistence.audit_pages import (
+    AUDIT_PAGE_INDEXES,
+    AuditPage,
+    make_page,
+    page_query,
+)
 from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
 from maistro.types.security import AuditEntry
 
@@ -27,6 +32,11 @@ _ALLOWED_FILTER_COLUMNS: frozenset[str] = frozenset(
 #: ``org_id``). The bootstrap below creates the table when it is missing so a
 #: container can come up against a database that has never run the chain —
 #: the same contract ``ensure_event_schema`` gives the durable event stores.
+#:
+#: The indexes 005 builds are part of that shape, not decoration: ``get_entries``
+#: filters ``user_id``/``agent_id`` under a ``timestamp DESC`` order, and a
+#: bootstrapped database is never migrated afterwards (see ``ensure_schema``),
+#: so an index left out here is missing for the database's whole life.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit_log (
     id BIGSERIAL PRIMARY KEY,
@@ -44,7 +54,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
     signature TEXT NOT NULL DEFAULT '',
     signing_key_id TEXT NOT NULL DEFAULT '',
     proof_type TEXT NOT NULL DEFAULT ''
-)
+);
+CREATE INDEX IF NOT EXISTS ix_audit_log_timestamp ON audit_log (timestamp);
+CREATE INDEX IF NOT EXISTS ix_audit_log_user ON audit_log (user_id, timestamp);
+CREATE INDEX IF NOT EXISTS ix_audit_log_agent ON audit_log (agent_id, timestamp);
 """
 
 #: Namespace for the bootstrap advisory lock. Arbitrary but fixed: any two
@@ -83,6 +96,11 @@ class PgAuditLog:
         A transaction-scoped advisory lock serialises them, exactly as
         ``ensure_event_schema`` does for the durable event stores.
 
+        The page indexes ``audit_pages.page_query`` names are created too, for
+        the same reason the SQLite sibling creates them: this database has no
+        migration to add them later, and a cursor page without its ordered
+        index sorts the whole table on every read.
+
         The migration chain remains the real path for a managed deployment;
         this is what lets tests and single-command dev runs work without one.
         A database this bootstrap has touched must not be migrated afterwards
@@ -107,6 +125,10 @@ class PgAuditLog:
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
             )
+            for name, fields in AUDIT_PAGE_INDEXES.items():
+                await conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS {name} ON audit_log ({', '.join(fields)})"
+                )
 
     async def log(self, entry: AuditEntry) -> None:
         """Sign and record an audit entry."""

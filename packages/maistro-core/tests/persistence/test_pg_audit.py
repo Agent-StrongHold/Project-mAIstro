@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES
 from maistro.persistence.pg_audit import PgAuditLog
 from maistro.security._types import AuditEntry as SentinelAuditEntry
 from maistro.security._types import Violation as SentinelViolation
@@ -128,12 +129,24 @@ async def test_ensure_schema_creates_the_table_and_adds_proof_columns(
     assert len(creates) == 1
     for column in ("id", "timestamp", "org_id", "signature", "signing_key_id", "proof_type"):
         assert column in creates[0]
-    assert statements[2:] == [
+    # The indexes 005 builds are part of the shape this bootstrap claims to
+    # copy: nothing migrates a bootstrapped database afterwards.
+    for index in ("ix_audit_log_timestamp", "ix_audit_log_user", "ix_audit_log_agent"):
+        assert f"CREATE INDEX IF NOT EXISTS {index}" in creates[0]
+    assert statements[2:6] == [
         "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''",
-        "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)",
+    ]
+    assert statements[6] == (
+        "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
+    )
+    # GET_PAGE shapes: `page_query` names one ordered index per filter
+    # combination, and the SQLite sibling's bootstrap creates the same set.
+    assert statements[7:] == [
+        f"CREATE INDEX IF NOT EXISTS {name} ON audit_log ({', '.join(fields)})"
+        for name, fields in AUDIT_PAGE_INDEXES.items()
     ]
 
 
@@ -146,6 +159,9 @@ async def test_ensure_schema_takes_the_bootstrap_lock(conn: FakeConnection) -> N
     statements = [call.query for call in conn.calls]
     assert statements[0] == "SELECT pg_advisory_xact_lock($1)"
     assert "CREATE TABLE IF NOT EXISTS audit_log" in statements[1]
+    # Every statement in the bootstrap must stay inside the locked
+    # transaction, including the index DDL added after the CREATE.
+    assert len(conn.calls) == 7 + len(AUDIT_PAGE_INDEXES)
 
 
 @pytest.mark.asyncio

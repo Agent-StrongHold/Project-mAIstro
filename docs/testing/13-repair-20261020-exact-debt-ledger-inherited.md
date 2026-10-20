@@ -175,13 +175,47 @@ currently red job (`exact-debt-ledger`, `Quality / Reachability`, the root
 `test` job, and the aggregating `Quality gate` / `Coverage gate` that inherit
 them) goes green without touching production code.
 
-## 7. Residual risks
+## 7. Re-derived again at `e5767cd3b` (job `5939f970`, same day)
+
+A second `exact-debt-ledger` repair round re-ran the gate rather than trusting
+this note. Nothing in sections 2–4 changed, and it is now measured a second,
+independent way — from a real git worktree of the base rather than a
+`git archive` extract
+(`git worktree add --detach ~/Git/worktrees/base13-e20e9f52 e20e9f52`):
+
+```
+$ cd ~/Git/worktrees/base13-e20e9f52 && uv run --project <branch> python scripts/check-reachability.py
+1417 production modules, 169 unreachable from any entry point
+1 module(s) are NEWLY UNREACHABLE:
+  maistro.runs.admission_identity  (maistro.runs.admission_identity)
+rc=1
+```
+
+`scripts/check-reachability-provenance.py` refuses to run *inside* that worktree
+(`FAIL: the base revision resolves to HEAD itself … the comparison could not
+fail`), which is the gate correctly rejecting a self-approving comparison — so
+the base-side scan above plus the base ledger (168 rows, no `admission_identity`)
+is the measurement, exactly as in section 3.
+
+At the branch head, unchanged: `check-vulture-baseline.py` **rc=0** (1326 →
+1326, `unclassified: 0`, `never_allowlist: 0`), `check-shipped-surface-truth.py`
+**rc=0**, `check-ratchet-provenance.py` **rc=1** on the single reachability
+bullet pair. There is still no vulture identity to bank or prune, and
+`git diff --numstat origin/develop -- quality/` is still empty.
+
+This round's substantive repair is to the branch's own production change, not
+to the gate: the audit bootstrap created the table without the indexes the
+migration chain and the SQLite sibling give it. See
+[`inventory-notes/13-audit-log-schema-bootstrap.md`](inventory-notes/13-audit-log-schema-bootstrap.md#second-repair-round--the-bootstraps-index-shape-2026-10-20-job-5939f970).
+
+## 8. Residual risks
 
 - Until step 1 lands, this epic PR cannot merge no matter what any lane does
   here; the failure will keep reproducing on every sync.
 - `quality/reachability-baseline.json`'s `_generated_from` still reads "1302
   production modules" against a 1417-module universe. Pre-existing on
   `develop`, not validated by the gate, and not touched here.
-- The audit bootstrap's `CREATE TABLE` mirrors migrations 005/036 by hand. A
-  future migration that changes `audit_log` must keep the two in step; the
-  real-PostgreSQL leg above is what will catch it.
+- The audit bootstrap mirrors migrations 005/036 (columns) and 005/062 (indexes)
+  by hand. A future migration that changes `audit_log` must keep the two in
+  step; the real-PostgreSQL `pg_indexes`/`information_schema` assertions in
+  `test_container_pg_durable_events.py` are what will catch it.

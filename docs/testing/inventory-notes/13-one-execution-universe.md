@@ -160,3 +160,20 @@ self-approved floor raise and records the blocker instead.
 This round adds three tests to `packages/maistro-core/tests`; the delta is
 recorded in [`13-audit-log-schema-bootstrap.md`](13-audit-log-schema-bootstrap.md),
 not here, so this note keeps describing the reconciliation it was written for.
+
+## Second CI-repair round at `e5767cd3b` (2026-10-20, job `5939f970`)
+
+`exact-debt-ledger` was re-run, not assumed. It still fails at its first step
+(`check-ratchet-provenance.py`, the reachability ratchet on develop's
+`maistro.runs.admission_identity`); its vulture and shipped-surface steps are
+green, so the lane's vulture-ledger remedy has nothing to amend. Full
+re-derivation, including the base-worktree measurement:
+[`../13-repair-20261020-exact-debt-ledger-inherited.md`](../13-repair-20261020-exact-debt-ledger-inherited.md).
+
+The repair that *was* available belongs to the branch's own production change:
+the `audit_log` bootstrap created the table without the indexes the migration
+chain (005, 062) and the SQLite sibling give it, which left every cursor-page
+and filtered audit read unindexed on a bootstrapped database. Fixed and proved
+on a real PostgreSQL 17 in
+[`13-audit-log-schema-bootstrap.md`](13-audit-log-schema-bootstrap.md#second-repair-round--the-bootstraps-index-shape-2026-10-20-job-5939f970).
+No node IDs were added, so no `inventory-delta` is recorded for this round.

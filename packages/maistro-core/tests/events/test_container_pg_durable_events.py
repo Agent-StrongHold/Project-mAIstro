@@ -171,6 +171,27 @@ class TestTheAuditStoreComesUpToo:
             (r["verdict"], r["user_id"], r["org_id"], bool(r["signing_key_id"])) for r in rows
         ] == [("allowed", "u1", "", True)]
 
+        # The table this bootstrap created is never migrated afterwards, so
+        # every index the read paths rely on has to be here now. `get_page`
+        # names one ordered index per filter shape (audit_pages.page_query).
+        from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES
+
+        present = {
+            r["indexname"]
+            for r in await pg_pool.fetch(
+                "SELECT indexname FROM pg_indexes WHERE tablename = 'audit_log'"
+            )
+        }
+        expected = {
+            "audit_log_pkey",
+            "ix_audit_log_scope",
+            "ix_audit_log_timestamp",
+            "ix_audit_log_user",
+            "ix_audit_log_agent",
+            *AUDIT_PAGE_INDEXES,
+        }
+        assert expected <= present
+
     async def test_the_audit_table_is_readable_after_the_wiring(self, pg_pool, wire):
         """The store reads back what it wrote, on the table it just created."""
         from maistro.types.security import AuditEntry

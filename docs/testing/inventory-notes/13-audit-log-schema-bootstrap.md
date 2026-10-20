@@ -69,3 +69,65 @@ way; the two stores now agree.
 - Reverting only the `CREATE TABLE` line makes the two new legs fail with
   `UndefinedTableError: relation "audit_log" does not exist`, so they fail
   against the regression they name.
+
+## Second repair round — the bootstrap's *index* shape (2026-10-20, job `5939f970`)
+
+Re-deriving this change at `e5767cd3b` found one claim in it that the code did
+not keep. The bootstrap's docstring and commit message say the table it creates
+is "the shape the migration chain builds (005 plus 036's `org_id`)" and that
+"the SQLite sibling … and the PostgreSQL store now agree". The columns did
+match; the **indexes did not**:
+
+| index | built by | SQLite bootstrap | PostgreSQL bootstrap (before) |
+|---|---|---|---|
+| `ix_audit_log_timestamp`, `ix_audit_log_user`, `ix_audit_log_agent` | 005 | n/a (SQLite never had them) | **absent** |
+| `ix_audit_log_scope` | 036 | present | present |
+| `ix_audit_page_0..7` (`audit_pages.AUDIT_PAGE_INDEXES`) | 062 | present | **absent** |
+
+This is permanent, not transient: `ensure_schema` documents that "a database
+this bootstrap has touched must not be migrated afterwards", so a bootstrapped
+database never receives 005's or 062's index DDL. `PgAuditLog.get_page` calls
+the same `page_query` the SQLite store does, whose module docstring states
+"each supported filter shape has an ordered index"; on a bootstrapped
+PostgreSQL database every cursor page — and every `get_entries(user_id=…)` /
+`agent_id=` read — therefore sorted the whole table with no index at all. The
+same applies to the `durable-events` job's database and to any single-command
+dev run the bootstrap exists to serve.
+
+### The fix
+
+`PgAuditLog._SCHEMA` now carries 005's three indexes, and `ensure_schema`
+creates every `AUDIT_PAGE_INDEXES` entry after the scope index — the same set,
+in the same `CREATE INDEX IF NOT EXISTS` form, the SQLite sibling's bootstrap
+already creates. The statements stay inside the locked transaction, so the
+concurrency argument that covers the `CREATE TABLE` covers them too.
+
+### Evidence (real `postgres:17`, never-migrated database)
+
+- `MAISTRO_TEST_DATABASE_URL=…/maestro_ci_13 MAISTRO_REQUIRE_PG_LEGS=1 uv run
+  pytest packages/maistro-core/tests/events -q` → `385 passed`.
+- After wiring, `pg_indexes` for `audit_log` contains the pkey plus all
+  thirteen indexes above, asserted by
+  `test_wiring_creates_the_audit_table_it_needs`. That assertion is meaningful:
+  deleting the `AUDIT_PAGE_INDEXES` loop fails it on the real server
+  (`assert {'audit_log_pkey', 'ix_audit_log_scope', 'ix_audit_log_timestamp',
+  …} <= {'audit_log_pkey', …, 'ix_audit_log_user'}`) plus the two fake-pool
+  file's `ensure_schema` tests and the wiring test (`4 failed, 70 passed`), and
+  deleting the three 005 indexes from `_SCHEMA` fails the real-server assertion
+  and the fake-pool column/index test again (`2 failed, 26 passed`).
+- Against the base tree's `pg_audit.py` (unmodified develop code, same fresh
+  database, `-o pythonpath=<base src>` because `pyproject.toml`'s `pythonpath`
+  ini precedes `PYTHONPATH`): `6 failed`, every one of them
+  `asyncpg.exceptions.UndefinedTableError: relation "audit_log" does not exist`
+  — both new audit legs and the four pre-existing container legs.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_audit.py
+  packages/maistro-core/tests/test_container_wiring.py
+  packages/maistro-core/tests/persistence/test_sqlite_audit.py
+  packages/maistro-core/tests/persistence/test_audit_pages.py -q` →
+  `94 passed, 5 skipped`.
+- `uv run ruff check .` clean; `uv run ruff format --check .` → 3362 files
+  already formatted; `scripts/check-suite-inventory.py --suite
+  packages/maistro-core/tests` → 16787 nodes, matches the recorded inventory.
+
+No node IDs were added by this round (assertions were added to existing tests),
+so the `inventory-delta` above is unchanged at `+3`.
