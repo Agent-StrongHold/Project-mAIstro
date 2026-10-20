@@ -1,3 +1,4 @@
+---
 inventory-delta:
   packages/maistro-design/tests: +3
   packages/hive-conductor/backend/tests: +5
