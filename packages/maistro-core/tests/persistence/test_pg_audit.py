@@ -7,12 +7,19 @@ canned rows, so tests assert on emitted SQL/params, not just "didn't raise".
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
 from maistro.persistence.pg_audit import PgAuditLog
+from maistro.security.sentinel.integrity import (
+    DecisionSignature,
+    DecisionSigner,
+    IntegrityStatus,
+    inspect_decision,
+)
 from maistro.types.security import AuditEntry
 
 
@@ -112,7 +119,101 @@ async def test_log_inserts_with_team_id_and_tool_name_defaults(
         None,
         None,
         "[]",
+        "",
+        entry.timestamp,
     )
+
+
+@pytest.mark.asyncio
+async def test_log_binds_the_signed_timestamp_instead_of_the_column_default(
+    log: PgAuditLog, conn: FakeConnection
+) -> None:
+    """``audit_log.timestamp`` defaults to ``now()``.
+
+    The timestamp is inside the signed contract, so a row that lets the default
+    stand can never re-verify after reload. Binding the entry's own timestamp —
+    and normalizing a naive one to UTC rather than letting the server's timezone
+    decide — is what makes a durable PG record verifiable at all.
+    """
+    stamp = datetime(2024, 5, 1, 12, 30, 45, 123456, tzinfo=UTC)
+    await log.log(AuditEntry(boundary="policy.decision", user_id="u1", timestamp=stamp))
+    call = conn.calls[0]
+    assert "timestamp" in call.query.split("VALUES")[0]
+    assert call.args[-1] == stamp
+
+    naive = datetime(2024, 5, 1, 12, 30, 45, 123456)
+    await log.log(AuditEntry(boundary="policy.decision", user_id="u1", timestamp=naive))
+    bound = conn.calls[1].args[-1]
+    assert bound == stamp
+    assert bound.tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_log_persists_inputs_hash_and_public_verification_material(
+    log: PgAuditLog, conn: FakeConnection
+) -> None:
+    """#69: the hash the signature covers must survive the write, or a reloaded
+    row cannot be re-verified no matter what keyring the reader holds."""
+    entry = AuditEntry(
+        boundary="policy.decision",
+        user_id="u1",
+        action="deploy",
+        timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+        inputs_hash="deadbeef",
+        integrity=DecisionSignature(
+            key_id="sentinel-abc",
+            algorithm="Ed25519",
+            signature="sig",
+            public_key="pub",
+        ),
+    )
+    await log.log(entry)
+    call = conn.calls[0]
+    assert "inputs_hash" in call.query
+    assert call.args[-2] == "deadbeef"
+    assert call.args[-1] == entry.timestamp
+    assert call.args[13:17] == ("", "sig", "sentinel-abc", "Ed25519")
+    assert call.args[17] == "pub"
+
+
+@pytest.mark.asyncio
+async def test_get_entries_rebuilds_the_signed_verification_contract(
+    log: PgAuditLog, conn: FakeConnection
+) -> None:
+    """Reload must restore every signed field, including the inputs hash."""
+    conn.queue_fetch(
+        [
+            {
+                "timestamp": datetime(2024, 1, 1, tzinfo=UTC),
+                "boundary": "policy.decision",
+                "user_id": "u1",
+                "action": "deploy",
+                "policy_snapshot": '{"permission_table":{"deploy":["admin"]}}',
+                "payload": '{"authorized":true}',
+                "inputs_hash": "deadbeef",
+                "signature": "sig",
+                "signature_key_id": "sentinel-abc",
+                "signature_algorithm": "Ed25519",
+                "signature_public_key": "pub",
+            }
+        ]
+    )
+    entry = (await log.get_entries())[0]
+    assert entry.inputs_hash == "deadbeef"
+    assert entry.integrity is not None
+    assert entry.integrity.key_id == "sentinel-abc"
+
+
+@pytest.mark.asyncio
+async def test_get_entries_unsigned_history_row_carries_no_verification_material(
+    log: PgAuditLog, conn: FakeConnection
+) -> None:
+    """A pre-signing historical row reloads with ``integrity is None`` so the
+    reader can label it unverifiable instead of presenting it as signed."""
+    conn.queue_fetch([{"timestamp": datetime(2024, 1, 1, tzinfo=UTC), "signature": None}])
+    entry = (await log.get_entries())[0]
+    assert entry.integrity is None
+    assert inspect_decision(entry) is IntegrityStatus.UNSIGNED
 
 
 @pytest.mark.asyncio
@@ -243,3 +344,56 @@ async def test_get_entries_invalid_filter_column_raises(
     monkeypatch.setattr(pg_audit_module, "_ALLOWED_FILTER_COLUMNS", frozenset({"agent_id"}))
     with pytest.raises(ValueError, match="Invalid filter column: 'user_id'"):
         await log.get_entries(user_id="u1")
+
+
+def _row_as_stored(query: str, args: tuple[Any, ...]) -> dict[str, Any]:
+    """Mirror what the database would hand back for the columns we wrote.
+
+    The double deliberately derives the row from the emitted INSERT's own column
+    list: a signed field that is never written cannot come back, and the
+    verification assertion below fails. That is the property the fake-asyncpg
+    suite was blind to when ``timestamp`` silently fell through to the column's
+    ``now()`` default.
+    """
+    head = query.split("VALUES")[0]
+    columns = [c.strip() for c in head[head.index("(") + 1 : head.rindex(")")].split(",")]
+    assert len(columns) == len(args), (columns, args)
+    return dict(zip(columns, args, strict=True))
+
+
+@pytest.mark.asyncio
+async def test_a_signed_decision_survives_the_write_and_reverifies(log, conn) -> None:
+    """#69: every field the signature covers must be persisted for the PG store.
+
+    Sign with the real signer, write, read the row back, and verify — the check
+    a reviewer can run against a production audit table.
+    """
+    signer = DecisionSigner()
+    entry = AuditEntry(
+        boundary="policy.decision",
+        user_id="owner-1",
+        principal_id="owner-1",
+        org_id="org-1",
+        team_id="team-1",
+        agent_id="agent-1",
+        action="deploy",
+        tool_name="deploy",
+        verdict="denied",
+        detail="over budget",
+        policy_snapshot='{"permission_table":{"deploy":["admin"]}}',
+        payload='{"authorized":false}',
+        inputs_hash="3f7868f23fd7ecf0",
+    )
+    entry = replace(entry, integrity=signer.sign(entry))
+    await log.log(entry)
+    conn.queue_fetch([_row_as_stored(*[(c.query, c.args) for c in conn.calls][-1])])
+
+    stored = (await log.get_entries(user_id="owner-1"))[0]
+    assert stored.integrity == entry.integrity
+    assert inspect_decision(stored, trusted_keys=signer.keyring) is IntegrityStatus.VERIFIED
+    assert inspect_decision(stored) is IntegrityStatus.VERIFIED
+
+    tampered = replace(stored, timestamp=stored.timestamp.replace(year=2030))
+    assert inspect_decision(tampered, trusted_keys=signer.keyring) is (
+        IntegrityStatus.INVALID_SIGNATURE
+    )

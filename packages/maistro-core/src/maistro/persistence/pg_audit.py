@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.security.sentinel.integrity import DecisionSignature
@@ -26,6 +27,20 @@ class PgAuditLog:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
+    @staticmethod
+    def _signed_timestamp(entry: AuditEntry) -> datetime:
+        """Store the timestamp the signature covers, not the insert time.
+
+        ``audit_log.timestamp`` has a ``now()`` default. Leaving the column to
+        that default would silently break verification: every reloaded row would
+        differ from the bytes that were signed, no matter how intact the rest of
+        the record is.
+        """
+        timestamp = entry.timestamp
+        if timestamp.tzinfo is None:
+            return timestamp.replace(tzinfo=UTC)
+        return timestamp
+
     async def log(self, entry: AuditEntry) -> None:
         """Record an audit entry."""
         async with self._pool.acquire() as conn:
@@ -34,8 +49,9 @@ class PgAuditLog:
                    (boundary, user_id, org_id, team_id, agent_id,
                     tool_name, verdict, detail, trace_id, request_id, action,
                     principal_id, policy_snapshot, payload, signature,
-                    signature_key_id, signature_algorithm, signature_public_key, violations)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)""",
+                    signature_key_id, signature_algorithm, signature_public_key, violations,
+                    inputs_hash, timestamp)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)""",
                 entry.boundary,
                 entry.user_id,
                 getattr(entry, "org_id", ""),
@@ -67,6 +83,8 @@ class PgAuditLog:
                     ],
                     sort_keys=True,
                 ),
+                getattr(entry, "inputs_hash", ""),
+                self._signed_timestamp(entry),
             )
 
     async def get_entries(
@@ -119,6 +137,7 @@ class PgAuditLog:
                 principal_id=r.get("principal_id", ""),
                 policy_snapshot=r.get("policy_snapshot", ""),
                 payload=r.get("payload", ""),
+                inputs_hash=r.get("inputs_hash", ""),
                 integrity=(
                     DecisionSignature(
                         key_id=r["signature_key_id"],

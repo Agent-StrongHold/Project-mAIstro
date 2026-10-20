@@ -7,8 +7,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from maistro.security.integrity_types import DecisionSignature
 from maistro.security.redact import redact as _redact
-from maistro.security.sentinel.integrity import DecisionSignature
 
 
 class TrustTier(StrEnum):
@@ -83,6 +83,7 @@ class AuditEntry:
     principal_id: str = ""
     policy_snapshot: str = ""
     payload: str = ""
+    inputs_hash: str = ""
     integrity: DecisionSignature | None = None
 
 

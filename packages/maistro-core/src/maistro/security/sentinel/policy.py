@@ -199,6 +199,10 @@ class Sentinel:
         tier = self.resolve_tier(action, principal, reversibility=reversibility)
         table = await self._effective_table()
         policy_snapshot = self._policy_snapshot(table)
+        # The signed contract names the inputs the decision was taken on, so a
+        # later reader can tell whether a record covers *this* call or a
+        # different one. Hashed, never raw: args can carry secrets.
+        inputs_hash = hash_args(args) if args else ""
 
         denial_reason = await self._permission_denial_reason(action, principal, table)
         if denial_reason is not None:
@@ -211,7 +215,9 @@ class Sentinel:
                 rlphd=None,
                 reason=denial_reason,
             )
-            return await self._record_authorization(action, principal, decision, policy_snapshot)
+            return await self._record_authorization(
+                action, principal, decision, policy_snapshot, inputs_hash
+            )
 
         if not within_budget:
             decision = AuthzDecision(
@@ -223,7 +229,9 @@ class Sentinel:
                 rlphd=None,
                 reason="over budget",
             )
-            return await self._record_authorization(action, principal, decision, policy_snapshot)
+            return await self._record_authorization(
+                action, principal, decision, policy_snapshot, inputs_hash
+            )
 
         if tier == Tier.BLOCKED:
             decision = AuthzDecision(
@@ -235,13 +243,17 @@ class Sentinel:
                 rlphd=None,
                 reason="action is blocked",
             )
-            return await self._record_authorization(action, principal, decision, policy_snapshot)
+            return await self._record_authorization(
+                action, principal, decision, policy_snapshot, inputs_hash
+            )
 
         needs = self._resolve_needs(tier, principal)
         if tier == Tier.SELF_ELEVATION:
             cleared = await self._check_elevation_grant(action, principal, needs, args)
             if cleared is not None:
-                return await self._record_authorization(action, principal, cleared, policy_snapshot)
+                return await self._record_authorization(
+                    action, principal, cleared, policy_snapshot, inputs_hash
+                )
 
         approver_scope: str | None = None
         if tier == Tier.DELEGATED and self._approver_graph is not None:
@@ -255,7 +267,7 @@ class Sentinel:
             )
             if auto_acted_decision is not None:
                 return await self._record_authorization(
-                    action, principal, auto_acted_decision, policy_snapshot
+                    action, principal, auto_acted_decision, policy_snapshot, inputs_hash
                 )
 
         decision = AuthzDecision(
@@ -267,7 +279,9 @@ class Sentinel:
             rlphd=rlphd_verdict,
             reason="",
         )
-        return await self._record_authorization(action, principal, decision, policy_snapshot)
+        return await self._record_authorization(
+            action, principal, decision, policy_snapshot, inputs_hash
+        )
 
     async def _record_authorization(
         self,
@@ -275,6 +289,7 @@ class Sentinel:
         principal: Principal,
         decision: AuthzDecision,
         policy_snapshot: str,
+        inputs_hash: str = "",
     ) -> AuthzDecision:
         verdict = "allowed" if decision.authorized else "denied"
         if decision.needs != "none" and decision.authorized:
@@ -301,6 +316,7 @@ class Sentinel:
                 sort_keys=True,
                 separators=(",", ":"),
             ),
+            inputs_hash=inputs_hash,
         )
         return replace(decision, integrity=entry.integrity)
 
@@ -407,6 +423,7 @@ class Sentinel:
                 verdict="denied",
                 violations=tuple(violations),
                 policy_snapshot=self._policy_snapshot(table),
+                inputs_hash=hash_args(args),
             )
             return verdict
 
@@ -424,6 +441,7 @@ class Sentinel:
                 violations=tuple(violations),
                 detail=limit_violation.detail,
                 policy_snapshot=self._policy_snapshot(table),
+                inputs_hash=hash_args(args),
             )
             return verdict
 
@@ -449,6 +467,7 @@ class Sentinel:
             detail=f"repaired={schema_verdict.repaired}" if schema_verdict.repaired else "",
             repaired_data=schema_verdict.repaired_data if schema_verdict.repaired else None,
             policy_snapshot=self._policy_snapshot(table),
+            inputs_hash=hash_args(args),
         )
 
         return verdict
@@ -600,6 +619,7 @@ class Sentinel:
         principal_id: str = "",
         policy_snapshot: str = "",
         payload: str = "",
+        inputs_hash: str = "",
     ) -> AuditEntry:
         if repaired_data and not detail:
             detail = f"repaired_data_keys={list(repaired_data.keys())}"
@@ -616,6 +636,7 @@ class Sentinel:
             principal_id=principal_id or user_id,
             policy_snapshot=policy_snapshot,
             payload=payload,
+            inputs_hash=inputs_hash,
         )
         # Sign before handing the record to any audit implementation. This
         # keeps the guarantee independent of whether storage is durable.

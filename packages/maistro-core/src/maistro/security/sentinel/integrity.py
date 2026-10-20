@@ -1,10 +1,26 @@
 """Tamper-evident Sentinel decision records (ADR-073 / issue #69).
 
 The signing key is held only by the process that makes decisions.  Each record
-stores the algorithm, key id, signature, and public verification key; none of
-those fields can recreate the private key.  Embedding the public key makes a
-durable record independently verifiable, while :class:`DecisionSigner` keeps a
-verification history so rotated keys remain trusted by an in-process verifier.
+stores the algorithm, verification-key reference (``key_id``), signature, and
+public verification key; none of those fields can recreate the private key.
+The record-side types live in :mod:`maistro.security.integrity_types`, which is
+cryptography-free so importing a type module never pulls in a crypto backend.
+
+Two verification modes exist on purpose:
+
+* **embedded** — :func:`verify_decision` with no keyring resolves the record's
+  own public key. It proves the record was not corrupted or edited in place,
+  which is what a reader who holds no out-of-band material can check.
+* **pinned** — a verifier that holds an independently trusted keyring (see
+  :meth:`DecisionSigner.keyring`) passes it as ``trusted_keys``. Only this mode
+  resists a writer who replaces *both* the public key and the signature, because
+  the key the record claims is checked against the reference the verifier
+  already trusts. ADR-073 names that reference as part of the contract, so
+  production verifiers must pin.
+
+:class:`DecisionSigner` keeps a verification history so rotated keys remain
+trusted by an in-process verifier, and drops retired *private* material at
+rotation so the record it protects can never carry the key that signed it.
 """
 
 from __future__ import annotations
@@ -12,8 +28,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from dataclasses import dataclass
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 from cryptography.exceptions import InvalidSignature
@@ -23,7 +40,28 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
+from maistro.security.integrity_types import DecisionSignature, VerificationKey
+
 _ALGORITHM = "Ed25519"
+#: Raw Ed25519 public keys are 32 bytes; anything else is not a key this
+#: mechanism can resolve, and must read as an unknown key rather than a
+#: signature mismatch.
+_PUBLIC_KEY_BYTES = 32
+
+
+class IntegrityStatus(StrEnum):
+    """How verification of one durable decision record resolved.
+
+    ``UNSIGNED`` exists so a historical record written before signing landed is
+    *labeled unverifiable* instead of being silently reported as invalid — or,
+    worse, retroactively presented as signed.
+    """
+
+    VERIFIED = "verified"
+    UNSIGNED = "unsigned"
+    UNSUPPORTED_ALGORITHM = "unsupported_algorithm"
+    UNKNOWN_KEY = "unknown_key"
+    INVALID_SIGNATURE = "invalid_signature"
 
 
 def _b64(value: bytes) -> str:
@@ -32,26 +70,6 @@ def _b64(value: bytes) -> str:
 
 def _unb64(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
-
-
-@dataclass(frozen=True)
-class DecisionSignature:
-    """Public verification material attached to one decision record."""
-
-    key_id: str
-    algorithm: str
-    signature: str
-    public_key: str
-
-
-@dataclass(frozen=True)
-class VerificationKey:
-    """A non-secret entry in the signer's rotation history."""
-
-    key_id: str
-    algorithm: str
-    public_key: str
-    active: bool
 
 
 def _timestamp(value: Any) -> str:
@@ -98,6 +116,7 @@ def canonical_decision_payload(record: Any) -> bytes:
         "detail": getattr(record, "detail", ""),
         "policy_snapshot": getattr(record, "policy_snapshot", ""),
         "payload": getattr(record, "payload", ""),
+        "inputs_hash": getattr(record, "inputs_hash", ""),
         "violations": violations,
     }
     return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode(
@@ -117,6 +136,16 @@ class DecisionSigner:
     @property
     def active_key_id(self) -> str:
         return self._active_key_id
+
+    @property
+    def keyring(self) -> dict[str, str]:
+        """The publishable verification-key reference set (never private material).
+
+        A deployment exposes this to verifiers out of band; a verifier that
+        passes it as ``trusted_keys`` gets the tamper-evidence ADR-073 asks for,
+        including across a restart of the signing process.
+        """
+        return {key_id: _b64(public_key) for key_id, public_key in self._public_keys.items()}
 
     @property
     def verification_history(self) -> tuple[VerificationKey, ...]:
@@ -161,15 +190,13 @@ class DecisionSigner:
             public_key=_b64(self._public_keys[key_id]),
         )
 
+    def status(self, record: Any) -> IntegrityStatus:
+        """Verify against this signer's own keyring, including retired keys."""
+        return inspect_decision(record, trusted_keys=self.keyring)
+
     def verify(self, record: Any) -> bool:
-        """Verify against this signer's known key history, including retired keys."""
-        material = getattr(record, "integrity", None)
-        if material is None or material.algorithm != _ALGORITHM:
-            return False
-        public_key = self._public_keys.get(material.key_id)
-        if public_key is None or _b64(public_key) != material.public_key:
-            return False
-        return _verify(public_key, canonical_decision_payload(record), material.signature)
+        """True only when :meth:`status` resolves to ``VERIFIED``."""
+        return self.status(record) is IntegrityStatus.VERIFIED
 
 
 def _verify(public_key: bytes, payload: bytes, signature: str) -> bool:
@@ -180,23 +207,64 @@ def _verify(public_key: bytes, payload: bytes, signature: str) -> bool:
     return True
 
 
-def verify_decision(record: Any) -> bool:
-    """Verify a durable record using only its embedded public material."""
+def inspect_decision(
+    record: Any,
+    *,
+    trusted_keys: Mapping[str, str] | None = None,
+) -> IntegrityStatus:
+    """Resolve one record's integrity, optionally against a pinned keyring.
+
+    ``trusted_keys`` maps a verification-key reference (``key_id``) to the
+    base64url raw public key an independent source says that reference holds.
+    When it is supplied, a record naming an unknown reference — or carrying a
+    public key that disagrees with the pinned one — is ``UNKNOWN_KEY``: a
+    store-writing attacker cannot swap in their own key and re-sign.
+    """
     material = getattr(record, "integrity", None)
-    if material is None or material.algorithm != _ALGORITHM:
-        return False
+    if material is None:
+        return IntegrityStatus.UNSIGNED
+    if material.algorithm != _ALGORITHM:
+        return IntegrityStatus.UNSUPPORTED_ALGORITHM
     try:
-        return _verify(
-            _unb64(material.public_key), canonical_decision_payload(record), material.signature
-        )
+        public_key = _unb64(material.public_key)
     except (ValueError, TypeError):
-        return False
+        return IntegrityStatus.UNKNOWN_KEY
+    if len(public_key) != _PUBLIC_KEY_BYTES:
+        return IntegrityStatus.UNKNOWN_KEY
+    if trusted_keys is not None:
+        pinned = trusted_keys.get(material.key_id)
+        if pinned is None:
+            return IntegrityStatus.UNKNOWN_KEY
+        try:
+            if _unb64(pinned) != public_key:
+                return IntegrityStatus.UNKNOWN_KEY
+        except (ValueError, TypeError):
+            return IntegrityStatus.UNKNOWN_KEY
+    if not _verify(public_key, canonical_decision_payload(record), material.signature):
+        return IntegrityStatus.INVALID_SIGNATURE
+    return IntegrityStatus.VERIFIED
+
+
+def verify_decision(
+    record: Any,
+    *,
+    trusted_keys: Mapping[str, str] | None = None,
+) -> bool:
+    """True only when :func:`inspect_decision` resolves to ``VERIFIED``.
+
+    Unsigned, unknown-key, wrong-algorithm and forged records all read False;
+    call :func:`inspect_decision` when the *reason* matters — an unsigned
+    historical record must be reported as unverifiable, not as tampered.
+    """
+    return inspect_decision(record, trusted_keys=trusted_keys) is IntegrityStatus.VERIFIED
 
 
 __all__ = [
     "DecisionSignature",
     "DecisionSigner",
+    "IntegrityStatus",
     "VerificationKey",
     "canonical_decision_payload",
+    "inspect_decision",
     "verify_decision",
 ]

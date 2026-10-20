@@ -11,8 +11,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
+from maistro.security.integrity_types import DecisionSignature
 from maistro.security.redact import redact
-from maistro.security.sentinel.integrity import DecisionSignature
 
 
 class IdentityKind(StrEnum):
@@ -140,6 +140,7 @@ class AuditEntry:
     principal_id: str = ""
     policy_snapshot: str = ""
     payload: str = ""
+    inputs_hash: str = ""
     org_id: str = ""
     integrity: DecisionSignature | None = None
 

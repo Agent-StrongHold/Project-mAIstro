@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     principal_id TEXT NOT NULL DEFAULT '',
     policy_snapshot TEXT NOT NULL DEFAULT '',
     payload TEXT NOT NULL DEFAULT '',
+    inputs_hash TEXT NOT NULL DEFAULT '',
     signature TEXT,
     signature_key_id TEXT,
     signature_algorithm TEXT,
@@ -62,6 +63,7 @@ class SqliteAuditLog:
             "principal_id": "TEXT NOT NULL DEFAULT ''",
             "policy_snapshot": "TEXT NOT NULL DEFAULT ''",
             "payload": "TEXT NOT NULL DEFAULT ''",
+            "inputs_hash": "TEXT NOT NULL DEFAULT ''",
             "signature": "TEXT",
             "signature_key_id": "TEXT",
             "signature_algorithm": "TEXT",
@@ -79,9 +81,9 @@ class SqliteAuditLog:
             """INSERT INTO audit_log
                (timestamp, boundary, user_id, org_id, team_id, agent_id,
                 tool_name, verdict, detail, trace_id, request_id, action,
-                principal_id, policy_snapshot, payload, signature,
+                principal_id, policy_snapshot, payload, inputs_hash, signature,
                 signature_key_id, signature_algorithm, signature_public_key, violations)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 entry.timestamp.isoformat(),
                 entry.boundary,
@@ -98,6 +100,7 @@ class SqliteAuditLog:
                 getattr(entry, "principal_id", "") or entry.user_id,
                 getattr(entry, "policy_snapshot", ""),
                 getattr(entry, "payload", ""),
+                getattr(entry, "inputs_hash", ""),
                 getattr(getattr(entry, "integrity", None), "signature", None),
                 getattr(getattr(entry, "integrity", None), "key_id", None),
                 getattr(getattr(entry, "integrity", None), "algorithm", None),
@@ -149,7 +152,7 @@ class SqliteAuditLog:
             f"SELECT timestamp, boundary, user_id, org_id, team_id, agent_id, tool_name, "
             f"verdict, detail, trace_id, request_id, action, principal_id, "
             f"policy_snapshot, payload, signature, signature_key_id, "
-            f"signature_algorithm, signature_public_key, violations FROM audit_log "
+            f"signature_algorithm, signature_public_key, violations, inputs_hash FROM audit_log "
             f"WHERE {where} ORDER BY timestamp DESC LIMIT ?"  # nosec B608
         )
 
@@ -175,6 +178,7 @@ class SqliteAuditLog:
                 principal_id=r[12] or "",
                 policy_snapshot=r[13] or "",
                 payload=r[14] or "",
+                inputs_hash=r[20] or "",
                 integrity=(
                     DecisionSignature(
                         key_id=r[16], algorithm=r[17], signature=r[15], public_key=r[18]

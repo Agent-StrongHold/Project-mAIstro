@@ -6,7 +6,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "036_sentinel_decision_integrity"
-down_revision = ("035", "035_outcome_scope_thumb_index")
+down_revision = "035_outcome_scope_thumb_index"
 branch_labels = None
 depends_on = None
 
@@ -23,6 +23,7 @@ def upgrade() -> None:
         "audit_log", sa.Column("policy_snapshot", sa.Text, nullable=False, server_default="")
     )
     op.add_column("audit_log", sa.Column("payload", sa.Text, nullable=False, server_default=""))
+    op.add_column("audit_log", sa.Column("inputs_hash", sa.Text, nullable=False, server_default=""))
     op.add_column("audit_log", sa.Column("signature", sa.Text, nullable=True))
     op.add_column("audit_log", sa.Column("signature_key_id", sa.Text, nullable=True))
     op.add_column("audit_log", sa.Column("signature_algorithm", sa.Text, nullable=True))
@@ -39,6 +40,7 @@ def downgrade() -> None:
         "signature_key_id",
         "signature",
         "payload",
+        "inputs_hash",
         "policy_snapshot",
         "principal_id",
         "org_id",
