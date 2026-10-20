@@ -449,8 +449,18 @@
       "handler": "create_cli_session",
       "disposition": "domain-state",
       "production_enabled": true,
-      "reason": "creates a CLI session record; the CLI page contract is tracked in #292",
+      "reason": "creates a CLI session record; the page contract it serves is defined in docs/architecture/CONDUCTOR-CLI-PAGE-CONTRACT.md (#292)",
       "effect_owner": "stores.cli_sessions"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/cli.py",
+      "method": "POST",
+      "route": "/exec",
+      "handler": "exec_cli_command",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "executes one registered CLI-page command through its backend capability (services/cli_commands.py), sanitizes output, appends durable session history, and audits the execution; unregistered commands answer 404",
+      "effect_owner": "services.cli_commands.cli_registry handlers (routes/health.py, routes/agents.py, stores.cli_sessions, routes/audit.log_audit)"
     },
     {
       "source": "packages/hive-conductor/backend/routes/containers.py",
