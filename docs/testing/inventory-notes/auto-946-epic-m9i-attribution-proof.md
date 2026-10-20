@@ -104,7 +104,8 @@ vulture scan (`packages/*/src --min-confidence 60 --exclude
 '*/third_party/*'`) reports exactly the banked identities.
 
 Known inherited gate conditions (not caused by this change). This head is a
-test-only diff against develop (one proof file + this note; `packages/*/src`,
+test-only diff against develop plus a locked-environment CVE bump
+(`uv.lock` only: aiohttp 3.14.3 → 3.14.5); `packages/*/src`,
 `quality/reachability-baseline.json`, and `quality/vulture-baseline.json` are
 byte-identical to develop's tip e20e9f52e), so every red merge-queue gate
 below reproduces on a clean checkout of develop and none is introduced here:
@@ -125,13 +126,13 @@ below reproduces on a clean checkout of develop and none is introduced here:
   needs #1851 to wire `admission_identity` (or an owner amendment of
   `quality/reachability-baseline.json`); neither is the authorized
   vulture-ledger amendment, and both are out of scope for this lane.
-- **Supply chain (pip-audit)** and the **security** workflow: the pip-audit
-  gate is green against this head's frozen environment
+- **Supply chain (pip-audit)** and the **security** workflow: repaired in
+  this round by upgrading `aiohttp` 3.14.3 → 3.14.5 in `uv.lock` (CVE-2026-111063,
+  CVE-2026-111064, GHSA-2g87-pp6c-29x5; fixed in 3.14.4). The pip-audit gate
+  is now green against this head's frozen environment
   (`scripts/pip_audit_gate.py` → `1 known, all triaged in ALLOWED`;
-  dependency-usage OK). This change adds no dependency, so the CI failure is a
-  registry/network transient (the same class as the prior rate-limit preflight
-  block). The `security` workflow red is its `supply-chain` job (this same
-  pip-audit step); its SAST scanners (bandit / semgrep / gitleaks) are green.
+  dependency-usage OK). The `security` workflow's SAST scanners (bandit /
+  semgrep / gitleaks) are green.
 - **test** and **Coverage gate**: the `test` job executes the server / Turing
   / design / ext-harness / ext-sdk / root / Hive suites, none of which this
   change touches (the maistro-core suite — this proof's home — is the
