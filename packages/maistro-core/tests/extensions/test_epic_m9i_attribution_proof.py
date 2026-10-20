@@ -44,10 +44,33 @@ operator would:
 Only exported ``maistro.extensions`` / ``maistro.capabilities`` /
 ``maistro.quota`` surfaces are used; the extension below imports nothing from
 host internals.
+
+Acceptance-criterion markers
+-----------------------------
+
+The epic's six criteria are **issue-level**: they live in issue #946, and no
+spec or ADR declares an ``M9-I`` document. The repository's acceptance-state
+gate counts a marker that names no declared criterion as debt
+(``markers_without_criterion`` — a counter that may only go down), so this
+file marks only the criteria a document actually declares *and* that the
+marked test genuinely proves:
+
+- **AC1** is proved against ``ADR-104/AC-3`` (the host drops undeclared
+  configuration at composition and the accessor refuses even the key's
+  presence) and ``ADR-104/AC-4`` (a routed effect produces a real canonical
+  ``Invocation`` row with run/node-run/attempt correlation, and the
+  extension identity lands in the canonical event envelope's provenance).
+- **AC2, AC3, AC4, AC5, AC6** have no declared criterion of their own — the
+  attribution/metering seam, the extension quota ledger, the health
+  projection, the ranking digests, and the version-history durability are
+  child-issue surfaces (#977, #978) without a spec or ADR that states them
+  as criteria. Their evidence is the assertions in the sections below, whose
+  section headers carry the epic's own ids.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime
@@ -71,6 +94,7 @@ from maistro.capabilities.invocation import (
 )
 from maistro.events.envelope import EventEnvelope, InMemoryEventStore
 from maistro.extensions import (
+    ConfigurationKeyNotDeclared,
     ExtensionCodeLoader,
     ExtensionDescriptor,
     ExtensionErrorKind,
@@ -132,6 +156,7 @@ CALLER = "agent-1"
 CAPABILITY = "ext.reference.echo"
 PROVIDER = "provider-a"
 SECRET = "sk-host-only-value"
+BINDING_ID = "binding-echo"
 
 CLOCK = 1_000.0
 
@@ -207,6 +232,7 @@ def _governed_route(
     return GovernedEffectRoute(
         effect_key="echo",
         binding=Binding(
+            binding_id=BINDING_ID,
             workspace_id=WORKSPACE,
             project_id=PROJECT,
             capability=CAPABILITY,
@@ -296,10 +322,13 @@ async def _invoke_once(
     invocations: InMemoryInvocationStore,
     events: InMemoryEventStore,
     quota: SqliteInvocationQuota | None = None,
+    captured_contexts: list[Any] | None = None,
 ) -> tuple[str, str, str, str]:
     """Drive one extension invocation through the canonical Attempt spine.
 
-    Returns (run_id, node_run_id, attempt_id, invocation_id).
+    Returns (run_id, node_run_id, attempt_id, invocation_id). A caller that
+    needs the authority the extension actually received passes
+    ``captured_contexts`` and gets the context appended to it.
     """
     store, workspace_id, project_id = await _spine()
     run_id, node_run_id = await _running_node_run(store, workspace_id, project_id)
@@ -316,7 +345,7 @@ async def _invoke_once(
     extension = MeteredGreeter()
 
     def context_factory(attempt: Any, _execution_context: Any) -> Any:
-        return host.invocation_context(
+        context = host.invocation_context(
             InvocationScope(
                 workspace_id=WORKSPACE,
                 agent_id=CALLER,
@@ -325,6 +354,9 @@ async def _invoke_once(
                 attempt_id=attempt.attempt_id,
             )
         )
+        if captured_contexts is not None:
+            captured_contexts.append(context)
+        return context
 
     service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())
     terminal = await service.execute(
@@ -343,13 +375,39 @@ async def _stream(events: InMemoryEventStore) -> list[EventEnvelope]:
     return await events.list_stream(f"workspace:{WORKSPACE}")
 
 
+async def _invocations_for_run(invocations: InMemoryInvocationStore, run_id: str) -> list[str]:
+    """The canonical Invocations one Run produced, in creation order."""
+    recorded = await invocations.list_effect(
+        run_id=run_id,
+        node_run_id=None,
+        binding_id=BINDING_ID,
+        effect_key="echo",
+    )
+    return [item.invocation_id for item in recorded]
+
+
+async def _reserve_result(ledger: ExtensionQuotaLedger, attempt: ExtensionQuotaRequest) -> str:
+    """Admit one reservation and report the server's verdict.
+
+    The ledger is the only authority on admission, so the outcome of a
+    concurrent attempt is whatever the shared database decided — never
+    whatever the caller believes.
+    """
+    try:
+        await ledger.reserve(attempt)
+    except ExtensionQuotaDenied:
+        return "denied"
+    return "admitted"
+
+
 # ---------------------------------------------------------------------------
 # AC1: every extension invocation is attributable to extension, version,
 # publisher, caller, and Workspace — on canonical evidence, without secrets.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.ac("M9-I/AC-1")
+@pytest.mark.ac("ADR-104/AC-3")
+@pytest.mark.ac("ADR-104/AC-4")
 async def test_extension_invocation_is_attributed_on_canonical_evidence(
     tmp_path: Path,
 ) -> None:
@@ -358,9 +416,25 @@ async def test_extension_invocation_is_attributed_on_canonical_evidence(
     meter = ExtensionMeter(tmp_path / "metering.sqlite", clock=lambda: CLOCK)
     await meter.ensure_schema()
 
+    captured_contexts: list[Any] = []
     run_id, node_run_id, attempt_id, invocation_id = await _invoke_once(
-        invocations=invocations, events=events
+        invocations=invocations, events=events, captured_contexts=captured_contexts
     )
+
+    # The authority the extension received carries the declared configuration
+    # only: the host dropped the undeclared secret at composition, and the
+    # accessor refuses even the key's presence.
+    assert len(captured_contexts) == 1
+    context = captured_contexts[0]
+    assert dict(context.config) == {"politeness": "warm"}
+    with pytest.raises(ConfigurationKeyNotDeclared):
+        context.config["api_key"]
+    # The public view would hide the secret either way, so the snapshot is
+    # what proves the host dropped the value *at composition* rather than
+    # leaving it in the context's storage behind a refusing accessor — the
+    # same observation ADR-104's conformance suite makes for the same reason.
+    assert "api_key" not in context.config._values
+    assert SECRET not in repr(context.config._values)
 
     # The canonical Invocation is the physical evidence the attribution row
     # must reference: same identity, same execution correlation.
@@ -421,7 +495,6 @@ async def test_extension_invocation_is_attributed_on_canonical_evidence(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.ac("M9-I/AC-2")
 async def test_one_provider_call_is_charged_once_and_attributed_once(
     tmp_path: Path,
 ) -> None:
@@ -472,7 +545,6 @@ async def test_one_provider_call_is_charged_once_and_attributed_once(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.ac("M9-I/AC-3")
 async def test_quota_denial_precedes_dispatch_and_blocks_all_evidence(
     tmp_path: Path,
 ) -> None:
@@ -483,7 +555,7 @@ async def test_quota_denial_precedes_dispatch_and_blocks_all_evidence(
             policy_id="workspace-tokens",
             org_id=ORG,
             unit="tokens",
-            limit=60,
+            limit=120,
             period_start=0,
             period_end=10_000,
             coverage_ref="operator-attested-fresh-period",
@@ -510,7 +582,7 @@ async def test_quota_denial_precedes_dispatch_and_blocks_all_evidence(
     # First invocation: admission holds, dispatch runs, the seam records and
     # settles — the composed happy path.
     await quota_ledger.reserve(reservation("res-one"))
-    _, _, _, invocation_id = await _invoke_once(invocations=invocations, events=events)
+    run_id, _, _, invocation_id = await _invoke_once(invocations=invocations, events=events)
     meter = ExtensionMeter(tmp_path / "quota.sqlite", clock=lambda: CLOCK)
     await meter.ensure_schema()
     await meter.record(_meter_row("evt-res-one", invocation_id=invocation_id))
@@ -518,14 +590,46 @@ async def test_quota_denial_precedes_dispatch_and_blocks_all_evidence(
         "res-one", ExtensionUsageAmounts(tokens=60, micro_usd=500, requests=1)
     )
     balance = await quota_ledger.policy_balance("workspace-tokens")
-    assert balance.available == 0
+    assert balance.available == 60
+
+    # Concurrency: two workers admit against the same remaining budget at
+    # once. The shared ledger admits exactly one and refuses the other — the
+    # quota is enforced server-side, so no client-side race can oversubscribe
+    # the Workspace.
+    stream_before = await _stream(events)
+    concurrent = dict(
+        zip(
+            ("res-conc-a", "res-conc-b"),
+            await asyncio.gather(
+                _reserve_result(quota_ledger, reservation("res-conc-a")),
+                _reserve_result(quota_ledger, reservation("res-conc-b")),
+            ),
+            strict=True,
+        )
+    )
+    assert sorted(concurrent.values()) == ["admitted", "denied"]
+    # The refusal produced no dispatch at all: no canonical Invocation, no
+    # event, no usage row.
+    assert await _stream(events) == stream_before
+    assert await _invocations_for_run(invocations, run_id) == [invocation_id]
+    totals = await meter.totals(org_id=ORG, workspace_id=WORKSPACE)
+    assert totals.events == 1
+    # The one admitted hold consumed the remaining budget server-side.
+    assert (await quota_ledger.policy_balance("workspace-tokens")).available == 0
+    # The refused concurrent work can never be settled into success-shaped
+    # usage either.
+    denied_reservation = next(name for name, verdict in concurrent.items() if verdict == "denied")
+    with pytest.raises(ExtensionQuotaConflict, match="denied reservation"):
+        await quota_ledger.commit(
+            denied_reservation, ExtensionUsageAmounts(tokens=60, micro_usd=500, requests=1)
+        )
 
     # Second invocation: the budget is exhausted server-side, so admission is
     # refused before any dispatch — no Invocation, no event, no usage row.
-    stream_before = await _stream(events)
     with pytest.raises(ExtensionQuotaDenied):
         await quota_ledger.reserve(reservation("res-two"))
     assert await _stream(events) == stream_before
+    assert await _invocations_for_run(invocations, run_id) == [invocation_id]
     totals = await meter.totals(org_id=ORG, workspace_id=WORKSPACE)
     assert totals.events == 1
 
@@ -542,7 +646,6 @@ async def test_quota_denial_precedes_dispatch_and_blocks_all_evidence(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.ac("M9-I/AC-5")
 async def test_top_extension_cost_contributor_is_identifiable(tmp_path: Path) -> None:
     meter = ExtensionMeter(tmp_path / "metering.sqlite", clock=lambda: CLOCK)
     await meter.ensure_schema()
@@ -584,7 +687,6 @@ async def test_top_extension_cost_contributor_is_identifiable(tmp_path: Path) ->
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.ac("M9-I/AC-6")
 async def test_historical_evidence_survives_upgrade_and_removal(tmp_path: Path) -> None:
     meter = ExtensionMeter(tmp_path / "metering.sqlite", clock=lambda: CLOCK)
     await meter.ensure_schema()
@@ -773,7 +875,6 @@ def _decision(
     )
 
 
-@pytest.mark.ac("M9-I/AC-4")
 async def test_availability_projection_composes_the_epic_evidence(
     tmp_path: Path,
 ) -> None:
@@ -908,7 +1009,6 @@ async def test_availability_projection_composes_the_epic_evidence(
         assert overview[DEPENDENCY_ID].summary is ExtensionOperationalState.READY
 
 
-@pytest.mark.ac("M9-I/AC-4")
 async def test_operator_holds_and_failure_evidence_survive_a_restart(
     tmp_path: Path,
 ) -> None:
@@ -992,7 +1092,6 @@ async def test_operator_holds_and_failure_evidence_survive_a_restart(
         assert released.summary is ExtensionOperationalState.UNHEALTHY
 
 
-@pytest.mark.ac("M9-I/AC-5")
 async def test_top_extension_error_and_latency_contributors_are_rankable(
     tmp_path: Path,
 ) -> None:
