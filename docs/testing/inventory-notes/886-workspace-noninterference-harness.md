@@ -41,5 +41,10 @@ Bob owns a second Workspace C instantiating A's persona, so a faulty cascade
 that deletes Agents by `persona_template_id` rather than `workspace_id` is
 caught, with the persona-scoped wipe simulated as a sensitivity leg).
 
-No product code, no flag, no authority path touched; the module only reads the
-seats the product already exposes, so no vulture/reachability identity changes.
+No product code, no flag, no authority path touched by the harness itself; the
+module only reads the seats the product already exposes. CI-repair round at
+`7382d1801`+1 (2026-10-20): the inherited `exact-debt-ledger` red was repaired
+by reconnecting the orphaned `maistro.runs.admission_identity` re-export in
+`maistro/runs/__init__.py` (pure re-export; reachability 168→168, vulture
+1326→1326, zero ledger rows changed). No test node IDs moved in this round, so
+the +17 delta above remains the recorded inventory.

@@ -101,6 +101,51 @@ deleting Agents by `persona_template_id` instead of `workspace_id` is caught.
 Each new regression class has an embedded sensitivity leg that simulates it and
 proves the oracle fails against it (AGENTS.md L88-L92).
 
+### CI-repair round for the merge-queue evaluation at `7382d1801` (2026-10-20)
+
+The merge queue red `exact-debt-ledger` / `Quality / Reachability` on this
+candidate whose own diff is docs + tests only. Reproduced locally with CI's
+exact invocations and traced to develop-inherited debt, not this lane:
+
+- `scripts/check-reachability.py` fails identically on pristine
+  `origin/develop` (`e20e9f52`): `maistro.runs.admission_identity` — the
+  #1851 root-admission contract leaf — is unreachable from every entry point
+  because nothing in production imports it, and the reachability baseline on
+  develop never banked it (168-row baseline, no disposition, no grant).
+- Banking it in this branch is structurally closed:
+  `ratchet_provenance.load_authorizations` reads
+  `quality/ratchet-authorizations.json` from the merge base, which has no
+  `reachability` grant for the module, and this lane cannot land the
+  grant-first merge. The two-merge rule does the blocking it was designed
+  for; the ledger files are therefore untouched here.
+- Repaired by reconnecting the leaf: `maistro/runs/__init__.py` re-exports
+  the five public identity names (`AdmissionBinding`, `AdmissionRecordV2`,
+  `CanonicalJsonObject`, `LegacyAdmissionRecord`, `RootAdmissionEnvelope`) —
+  a pure re-export with the module's own contract suite as the consumer
+  evidence. No behavior, authority path, or ledger row changes; the
+  harness's "product code untouched" claim above refers to the probe itself
+  and predates this repair.
+
+Post-repair gate evidence, all at this head with `RATCHET_BASE_REV=origin/develop`:
+`check-ratchet-provenance.py` exit 0 (all ratchets, including reachability
+168→168 and promotion-surface 272/74 unmoved), `check-shipped-surface-truth.py`
+exit 0, `check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` exit 0 (1326 reviewed → 1326 findings; the
+`__all__` re-exports surface no new identities, so no vulture banking was
+needed either), mypy strict clean over all seven package src trees, product
+backend suite 3785 passed / 24 skipped, `maistro-server` 571 passed / 8
+skipped, `maistro-core` runs suite 1320 passed / 338 skipped, the #1851
+admission contract suite 93 passed, and the harness module 17 passed.
+
+Two merge-queue failures are inherited develop debt this lane deliberately
+does not touch, with local reproduction: `Supply chain (pip-audit)` reports 5
+advisories (aiohttp 3.14.3 → 3.14.4 fixes three; ecdsa PYSEC-2026-1325 has no
+fixed version) against a lockfile byte-identical to develop's — a dependency
+bump and any allowlist edit belong to the security lane, not a research-test
+repair; and the `Coverage gate` combine job failed while all three of its
+coverage producer jobs succeeded at the same SHA, consistent with the
+documented timeout/cancellation history of that job rather than this diff.
+
 **Oracle validation by mutation** (injected, run, reverted; not committed):
 
 - `delete_workspace_agents` ignoring its workspace argument (the delete
