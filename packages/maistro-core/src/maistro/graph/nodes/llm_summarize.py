@@ -377,9 +377,9 @@ def _observation_routes(
 
 def _effective_rung(ctx: NodeContext) -> str:
     """The rung this visit is governed by: the escalation, else the seeded start."""
-    escalated = str(ctx.metadata.get(ESCALATED_MODEL_CONTEXT_KEY) or "").strip()
-    if escalated:
-        return escalated
+    escalation_rung = str(ctx.metadata.get(ESCALATED_MODEL_CONTEXT_KEY) or "").strip()
+    if escalation_rung:
+        return escalation_rung
     return str(ctx.metadata.get(LADDER_START_CONTEXT_KEY) or "").strip()
 
 
