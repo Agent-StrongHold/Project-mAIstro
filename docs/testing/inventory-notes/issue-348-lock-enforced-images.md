@@ -1,11 +1,23 @@
 ---
 inventory-delta:
-  tests/: +0
-  scripts/: +1 (scripts/check-image-lock-reconciliation.py)
-  workflows/: +1 job (ci.yml docker-rebuild-compare), +1 gate step (security.yml containers)
+  tests/: +23
 ---
 
 # issue-348-lock-enforced-images
+
+> Delta correction (develop-sync round): this note originally recorded `tests/: +0`,
+> claiming no pytest tests were added. That was wrong for the round as a whole: its
+> base commit 144286fcf added `tests/test_image_lock_contract.py` (23 collected cases
+> after parametrization) and recorded no delta anywhere, so the suite-inventory gate
+> drifted by exactly +23 at the merged tip (expected 5628, collected 5651). The delta
+> above is that correction; `tests/: +0` was accurate for this commit's own diff but
+> not for the round the note documents. The round also added
+> `scripts/check-image-lock-reconciliation.py`, one ci.yml job (`docker-rebuild-compare`)
+> and one security.yml gate step — none of these are pytest suites, so they record no
+> count here. (The front matter originally carried them as `scripts/:`/`workflows/:`
+> entries with prose suffixes; the suite-inventory gate now requires every delta line to
+> be `<recorded suite>: <±int>` with the suite in RECIPES, so the non-suite lines moved
+> into this note.)
 
 Repair round for #348 in worktree auto-348 on top of the prior attempt's
 commit 144286fc. No pytest tests were added — the new gate is a script whose

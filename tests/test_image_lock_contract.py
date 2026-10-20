@@ -161,10 +161,12 @@ class TestResearchImage:
 
 
 class TestWorkspaceMetadataIsPresent:
-    """The export resolves the selection by building the workspace root.
+    """Every --locked install resolves the WHOLE workspace.
 
-    Without the extension members' pyproject.toml in the build context the
-    export fails outright ("reference-greeter references a workspace in
+    `uv export --locked --package ...` resolves the selection by building the
+    workspace root, and `uv sync --locked` (the runner image) builds every
+    member. Without the extension members' pyproject.toml in the build
+    context both fail outright ("reference-greeter references a workspace in
     tool.uv.sources ... but is not a workspace member"), so the image cannot
     be built at all. The members are metadata for the lock check; they are
     never installed.
@@ -175,6 +177,7 @@ class TestWorkspaceMetadataIsPresent:
         [
             ROOT / "Dockerfile",
             ROOT / "Dockerfile.research",
+            ROOT / "Dockerfile.rsi-runner",
             ROOT / "packages/hive-conductor/Dockerfile",
             ROOT / "deploy/sbx/template/Dockerfile",
         ],

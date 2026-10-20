@@ -42,6 +42,17 @@ WORKDIR /workspace
 # scripts/check-build-context.py keeps this in agreement with the ignore files.
 COPY pyproject.toml uv.lock VERSION conftest.py alembic.ini /workspace/
 COPY packages /workspace/packages
+# The workspace's extension members are named here for the same reason the
+# product packages are. `uv sync --locked` verifies the committed lock against
+# every workspace member's pyproject.toml, and the root's `tool.uv.sources`
+# names the reference extension and the reference gallery's packages — so
+# without their metadata in the context the sync cannot resolve the workspace
+# at all ("reference-greeter references a workspace in tool.uv.sources ... but
+# is not a workspace member") and the image would carry a dependency set no
+# lock could vouch for. They are workspace metadata for the lock check, not
+# installed surface: the sync does not install them, and the extension
+# namespace policy and its isolation fixture keep them away from the product.
+COPY extensions/ /workspace/extensions/
 COPY scripts /workspace/scripts
 COPY tests /workspace/tests
 COPY formal /workspace/formal
