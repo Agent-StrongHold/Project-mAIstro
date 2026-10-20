@@ -47,9 +47,10 @@ from maistro.runs.model import (
 )
 from maistro.runs.store import RunIntegrityError, RunStore
 
+from .failure import sanitize_failure_message
 from .protocol import DurableRunStore
 from .spine import mirror_lifecycle
-from .types import DurableRunRecord
+from .types import RECOVERY_CLAIM_UNTIL_KEY, DurableRunRecord
 
 NodeResolver = Callable[[str, Graph], BaseNode[Any, Any]]
 
@@ -497,6 +498,7 @@ async def _checkpoint_paused_frontier(
 ) -> DurableRunRecord:
     """Persist paused siblings together with successors deferred until resume."""
     metadata = dict(record.graph_state.metadata)
+    metadata.pop(RECOVERY_CLAIM_UNTIL_KEY, None)
     pause_entries = {item.node_id: _pause_entry(item.result) for item in paused}
     existing_pauses = metadata.get("pauses", {})
     if isinstance(existing_pauses, Mapping):
@@ -1299,7 +1301,7 @@ async def _mark_failed(
     """
     record = _settle_open_node_runs(record, RunStatus.FAILED)
     run = _running_run(record.run)
-    error = f"{error_code}: {error_message}"[:512]
+    error = f"{error_code}: {sanitize_failure_message(error_message)}"[:512]
     if run.status is not RunStatus.RUNNING:
         raise ValueError(f"cannot fail run in status {run.status!r}")
     run = transition_run(run, RunStatus.FAILED, error=error)
