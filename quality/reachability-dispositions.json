@@ -591,6 +591,16 @@
         "maistro.graph.executor",
         "maistro.graph.run"
       ]
+    },
+    {
+      "id": "runs-admission-identity",
+      "subsystem": "Run / NodeRun / Attempt lifecycle",
+      "disposition": "CONNECT",
+      "rationale": "Immutable root-admission identity types (#1851). Nothing in production imports it yet; a later, separately reviewed integration lands the runtime consumer (prospective C2 classifier and backend wiring #1845). The module defines the typed vocabulary a future admission backend needs so it never has to import task models into RunStore or guess field semantics. It is a published library surface and becomes reachable exactly when the admission backend is wired.",
+      "root": "maistro.runs.admission backend / C2 classifier wiring (#1845)",
+      "modules": [
+        "maistro.runs.admission_identity"
+      ]
     }
   ]
 }
