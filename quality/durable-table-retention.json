@@ -1307,7 +1307,7 @@
       "retention": "undecided",
       "deletion_path": "maistro.quota.sqlite_usage_log:SqliteUsageLog.purge_expired",
       "issue": "#325",
-      "notes": "Aggregate-then-delete: purge_expired upserts per-(scope_key, day) sums into usage_event_aggregates and deletes the same bounded batch in one transaction, so deleting raw rows cannot corrupt accounting or current enforced quota state (the in-memory enforcement window is shorter than any horizon a caller passes). Legal hold is an explicit legal_hold_scopes argument. The horizon itself (DEFAULT_RAW_RETENTION_SECONDS is a default, not a decision) and the driving schedule are the importing product's (owner decision on #325); no in-process scheduler exists in this repo, so retention stays undecided until one drives it. Wired into production by Container._wire_sqlite_backend (#1204), whose snapshot/restore are idempotent by event identity."
+      "notes": "Aggregate-then-delete: purge_expired upserts per-(scope_key, day) sums into usage_event_aggregates and deletes the same bounded batch in one transaction, so deleting raw rows cannot corrupt accounting or current enforced quota state (the in-memory enforcement window is shorter than any horizon a caller passes). Legal hold is an explicit legal_hold_scopes argument. The horizon (a caller-supplied cutoff, not a code default) and the driving schedule are the importing product's (owner decision on #325); no in-process scheduler exists in this repo, so retention stays undecided until one drives it. Wired into production by Container._wire_sqlite_backend (#1204), whose snapshot/restore are idempotent by event identity."
     },
     {
       "table": "workspace_backlog_history",

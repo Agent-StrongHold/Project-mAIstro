@@ -91,10 +91,6 @@ CREATE INDEX IF NOT EXISTS idx_usage_events_scope_ts
     ON usage_events (scope_key, timestamp)
 """
 
-#: Raw rows are retained long enough for provider reconciliation.  The
-#: in-memory enforcement window is shorter, so purging rows older than this
-#: boundary cannot change a current quota decision after restore.
-DEFAULT_RAW_RETENTION_SECONDS = 90 * 24 * 60 * 60
 #: Most raw rows one `purge_expired` call may aggregate and delete.
 DEFAULT_PURGE_BATCH = 1_000
 
@@ -199,9 +195,12 @@ class SqliteUsageLog:
         Deleting raw rows therefore must not lose the spend they recorded:
         aggregates are upserted in the same transaction as the deletion, so a
         crash before commit removes neither and a retry adds the same bucket
-        exactly once. ``legal_hold_scopes`` is deliberately an explicit input
-        rather than a hidden process-local flag, so every replica applies the
-        same hold decision.
+        exactly once. The horizon is the caller's policy — the in-memory
+        enforcement window is shorter than any horizon a retention driver
+        should pass, so a cutoff cannot change a current quota decision —
+        and ``legal_hold_scopes`` is deliberately an explicit input rather
+        than a hidden process-local flag, so every replica applies the same
+        hold decision.
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
