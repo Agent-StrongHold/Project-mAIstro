@@ -12,12 +12,26 @@ authority-creep the manifest exists to prevent.
 
 from __future__ import annotations
 
+import operator
 import re
+from collections.abc import Callable
 
 from maistro_ext_sdk.contract import ContractVersion, parse_contract_version
 
 __all__ = ["VersionRange", "parse_version_range"]
 _OP_RE = re.compile(r"^(>=|<=|==|>|<)\s*(\d+\.\d+\.\d+)$")
+
+#: The comparison each specifier operator asks of its bound. Keyed by the
+#: exact tokens ``_OP_RE`` accepts, so the parser and this table must agree:
+#: an operator reachable here but not in the regex — or the other way —
+#: would mean a range text whose meaning nobody defined.
+_OPS: dict[str, Callable[[ContractVersion, ContractVersion], bool]] = {
+    ">=": operator.ge,
+    ">": operator.gt,
+    "==": operator.eq,
+    "<": operator.lt,
+    "<=": operator.le,
+}
 
 
 class VersionRange:
@@ -52,18 +66,7 @@ class VersionRange:
 
     def satisfied_by(self, version: ContractVersion) -> bool:
         """Whether ``version`` satisfies every specifier in the range."""
-        for op, bound in self._specs:
-            if op == ">=" and not version >= bound:
-                return False
-            if op == ">" and not version > bound:
-                return False
-            if op == "==" and version != bound:
-                return False
-            if op == "<" and not version < bound:
-                return False
-            if op == "<=" and not version <= bound:
-                return False
-        return True
+        return all(_OPS[op](version, bound) for op, bound in self._specs)
 
     def __str__(self) -> str:
         return self._text

@@ -152,10 +152,23 @@ gigabytes. They are now rlimits, set between `fork` and `exec` so they land on
 sandboxed process keeps the caller's controlling terminal and can push
 characters into it with `TIOCSTI`.
 
-Host-side file transfer (`write_file` / `read_file`) resolves every path inside
-the workdir and refuses anything that escapes it. Those calls run on the host —
-they are how work gets in and results come out — so an unchecked path would be
-a host write with no sandbox involved.
+Host-side file transfer (`write_file` / `read_file`) accepts only `/work` paths
+and walks each component from an opened workdir descriptor with `O_NOFOLLOW`.
+The final file is opened with `O_NOFOLLOW` too, so a directory or leaf symlink
+swap cannot redirect the operation to the host. These calls run on the host —
+they are how work gets in and results come out — so descriptor-relative access
+is part of the boundary rather than an optimization.
+
+`SandboxConfig.writable_paths` is not a caller-owned bind escape. Bubblewrap
+canonicalizes each requested directory and accepts it only below the explicit
+host-owned workspace roots (`/tmp/maistro-workspace`, `/repos`, or roots passed
+as backend capabilities). The backend's own workdir parent is an additional
+capability. A requested symlink itself is refused; symlinked parent components
+are allowed only when canonical resolution remains below an authorized root.
+Sensitive or broad roots (`/`, `/home`, `/etc`, `/run`, `/dev`, and the generic
+`/tmp`) are never writable mount roots. File transfer, execution, and teardown
+serialize on a per-instance ownership lock, so teardown cannot remove the
+workdir while a host operation or bwrap process is using it.
 
 ## Verification
 
