@@ -16,7 +16,7 @@ import base64
 import io
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from maistro.http import shared_client
@@ -350,13 +350,14 @@ def _validate_spec_scales(layers: list[dict[str, Any]], limits: CanvasImageLimit
             validate_scale(spec["scale"], limits)
 
 
-def _apply_layer_specs(canvas: Canvas, layers: list[dict[str, Any]]) -> None:
+def _apply_layer_specs(canvas: Canvas, layers: list[dict[str, Any]] | None) -> None:
     """Apply transform fields from composite layer specs onto their targets.
 
     A spec that names an unknown layer is skipped rather than rejected: the
-    composite of the remaining layers still proceeds.
+    composite of the remaining layers still proceeds. Omitting the specs is a
+    no-op, which keeps the complexity of the caller flat.
     """
-    for spec in layers:
+    for spec in layers or []:
         target = canvas.get_layer(spec.get("layer_id", spec.get("image", "")))
         if target is None:
             continue
@@ -372,6 +373,31 @@ def _apply_layer_specs(canvas: Canvas, layers: list[dict[str, Any]]) -> None:
             target.z_index = spec["z_index"]
         if "visible" in spec:
             target.visible = spec["visible"]
+
+
+def _composite_projection(
+    canvas: Canvas, layers: list[dict[str, Any]] | None, limits: CanvasImageLimits
+) -> Canvas:
+    """Return the canvas a composite request should render (#393).
+
+    Every spec's scale is validated before anything is written, and the
+    request's transforms are applied to a *copy*: the live session canvas
+    keeps its current transforms unless the composite succeeds, so a rejection
+    raised mid-render (pixel budget, worker timeout) cannot leave a
+    half-applied transform behind.
+    """
+    if not layers:
+        return canvas
+    _validate_spec_scales(layers, limits)
+    projected = Canvas(
+        id=canvas.id,
+        width=canvas.width,
+        height=canvas.height,
+        layers={layer_id: replace(layer) for layer_id, layer in canvas.layers.items()},
+        background_color=canvas.background_color,
+    )
+    _apply_layer_specs(projected, layers)
+    return projected
 
 
 # ---------------------------------------------------------------------------
@@ -546,18 +572,13 @@ async def execute_canvas(  # noqa: C901
     if action == "composite":
         try:
             limits = load_image_limits()
-            # #393: validate every scale in the request *before* mutating any
-            # layer, so one bad spec cannot leave partially applied transforms.
-            if layers:
-                _validate_spec_scales(layers, limits)
-                _apply_layer_specs(canvas, layers)
 
             # Decode/resize runs in a worker thread under the configured
             # timeout; a typed failure means no output is produced at all.
             result_bytes = await run_with_resize_timeout(
                 asyncio.to_thread(
                     _composite_layers,
-                    canvas,
+                    _composite_projection(canvas, layers, limits),
                     limits=limits,
                     budget=PixelBudget(limits),
                 ),
@@ -567,6 +588,10 @@ async def execute_canvas(  # noqa: C901
             # Explicit, typed rejection — no composite output is produced or
             # persisted for a request that violates a resource limit (#393).
             return {"action": "composite", "error": f"{exc.code}: {exc.detail}"}
+
+        # The request's transforms are committed only now that the composite
+        # succeeded; a rejected render leaves them unapplied (#393).
+        _apply_layer_specs(canvas, layers)
 
         return {
             "action": "composite",
@@ -953,14 +978,17 @@ def transform_layer(
     if layer is None:
         return None
 
+    # #393: validate the scale *before* any field is written. Rejecting after
+    # x/y had already been assigned would leave a half-applied transform on
+    # the session layer even though the request was reported as failed.
+    checked_scale = validate_scale(scale) if scale is not None else None
+
     if x is not None:
         layer.x = x
     if y is not None:
         layer.y = y
-    if scale is not None:
-        # #393: reject non-finite/non-positive/oversized scales explicitly,
-        # before the value is stored and later reaches the resize worker.
-        layer.scale = validate_scale(scale)
+    if checked_scale is not None:
+        layer.scale = checked_scale
     if rotation is not None:
         layer.rotation = rotation
     if z_index is not None:

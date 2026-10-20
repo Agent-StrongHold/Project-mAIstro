@@ -585,6 +585,43 @@ class TestToolScaleEnforcement:
         assert result["error"].startswith("LAYER_SCALE_OUT_OF_RANGE")
         assert canvas.get_layer("l1").scale == 1.0
 
+    @pytest.mark.asyncio
+    async def test_transform_applies_a_valid_scale(self) -> None:
+        """The validated scale is the value stored — not the raw request value."""
+        canvas = _tool_canvas("s5-ok")
+        result = await execute_canvas("s5-ok", "transform", layers=[{"layer_id": "l1", "scale": 2}])
+        assert "error" not in result, result
+        assert canvas.get_layer("l1").scale == 2.0
+
+    @pytest.mark.asyncio
+    async def test_transform_rejection_does_not_apply_sibling_fields(self) -> None:
+        """A rejected scale leaves x/y untouched — no half-applied transform."""
+        canvas = _tool_canvas("s5-x")
+        result = await execute_canvas(
+            "s5-x",
+            "transform",
+            layers=[{"layer_id": "l1", "x": 9.0, "y": 7.0, "scale": 1e6}],
+        )
+        assert result["error"].startswith("LAYER_SCALE_OUT_OF_RANGE")
+        layer = canvas.get_layer("l1")
+        assert (layer.x, layer.y, layer.scale) == (0, 0, 1.0)
+
+    @pytest.mark.asyncio
+    async def test_composite_rejection_does_not_commit_spec_transforms(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A render rejected mid-flight (budget) leaves the live transforms alone."""
+        import maistro_canvas.canvas.tool as tool
+
+        canvas = _tool_canvas("s-budget")
+        monkeypatch.setattr(tool, "load_image_limits", lambda: SMALL_LIMITS)
+        result = await execute_canvas(
+            "s-budget", "composite", layers=[{"layer_id": "l1", "x": 7.0, "scale": 10.0}]
+        )
+        assert result["error"].startswith("LAYER_PIXEL_BUDGET_EXCEEDED"), result
+        layer = canvas.get_layer("l1")
+        assert (layer.x, layer.scale) == (0, 1.0)
+
     def test_tool_canvas_dimensions_are_capped(self) -> None:
         """The tool path holds base dimensions to the same caps as HTTP."""
         from maistro_canvas.types import _MAX_DIM

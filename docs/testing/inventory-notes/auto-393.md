@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-canvas/tests: +73
+  packages/maistro-canvas/tests: +76
 ---
 
 # #393 Canvas layer scale bounded before image allocation
@@ -36,3 +36,9 @@ memory/CPU denial of service):
 `test_compositor.py` swaps one test in place (zero-scale is now a typed
 rejection instead of a silent skip), so its count is unchanged; the net +60
 is the new file.
+- Atomicity repair (+3 in `test_scale_limits.py`): a rejected `transform` no
+  longer writes the sibling `x`/`y` fields (validate-then-assign), and a
+  composite whose render is rejected mid-flight (pixel budget, worker
+  timeout) no longer commits the request's transforms to the live session
+  canvas — the specs are applied to a projection and committed only on
+  success. The third test pins that a valid scale stores the validated value.
