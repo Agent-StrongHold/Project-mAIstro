@@ -667,12 +667,68 @@ async def test_an_unstated_permission_grant_blocks_every_gated_node() -> None:
         await node._execute(node.input_schema(), _ctx())
 
 
-async def test_a_stated_permission_grant_runs_the_node_at_the_sandbox_floor(
+async def test_a_stated_permission_grant_runs_an_ordinary_node_inline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The deployment's permission grant IS the host policy record that makes
-    execution reachable; the sandbox floor applies because no explicit tier
-    record selects inline."""
+    execution reachable. A node whose own declared capabilities cannot reach
+    the world is reversible, so the host tier resolves to the inline floor --
+    the caller's `execution_tier` label is not consulted either way."""
+    import services.legacy_dag_node as adapter
+
+    captured: dict[str, Any] = {}
+
+    async def fake_llm_node(
+        raw_node: dict, node_id: str, inbound: dict, scratch: dict, task: str, **_: Any
+    ) -> None:
+        captured["node"] = raw_node["id"]
+        scratch[node_id] = {"success": True, "response": "inline output", "role": "worker"}
+
+    monkeypatch.setattr(adapter, "_run_llm_node", fake_llm_node)
+
+    node = _adapter_node(
+        {"id": "n1", "config": {}},
+        sentinel=_production_sentinel({"graph.node.execute": ["admin"]}),
+        principal_roles=("admin",),
+    )
+    output = await node._execute(node.input_schema(), _ctx())
+
+    assert captured["node"] == "n1"
+    assert output.response == "inline output"
+
+
+async def test_a_node_that_reaches_the_world_runs_at_the_sandbox_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The host's reading of the node's own declared capabilities raises the
+    floor: a node that can run shell commands, write files, or use
+    credentials is irreversible, so it runs in the isolated subprocess."""
+    import services.legacy_dag_node as adapter
+
+    captured: dict[str, Any] = {}
+
+    def fake_subprocess(raw_node: dict, task: str, context: str, env: dict, mode: str) -> dict:
+        captured["node"] = raw_node["id"]
+        return {"role": "worker", "response": "isolated output", "success": True}
+
+    monkeypatch.setattr(adapter, "_run_node_subprocess", fake_subprocess)
+
+    node = _adapter_node(
+        {"id": "n1", "config": {"capabilities": ["shell"]}},
+        sentinel=_production_sentinel({"graph.node.execute": ["admin"]}),
+        principal_roles=("admin",),
+    )
+    output = await node._execute(node.input_schema(), _ctx())
+
+    assert captured["node"] == "n1"
+    assert output.response == "isolated output"
+
+
+async def test_an_elevating_host_tier_record_raises_a_node_to_the_sandbox_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host tier record that elevates the action raises the floor for a node
+    the host would otherwise run inline; the record, not the caller, decides."""
     import services.legacy_dag_node as adapter
 
     captured: dict[str, Any] = {}
@@ -685,7 +741,10 @@ async def test_a_stated_permission_grant_runs_the_node_at_the_sandbox_floor(
 
     node = _adapter_node(
         {"id": "n1", "config": {}},
-        sentinel=_production_sentinel({"graph.node.execute": ["admin"]}),
+        sentinel=_production_sentinel(
+            {"graph.node.execute": ["admin"]},
+            tier_policy={("graph.node.execute", "admin"): Tier.SELF_ELEVATION},
+        ),
         principal_roles=("admin",),
     )
     output = await node._execute(node.input_schema(), _ctx())
@@ -727,7 +786,7 @@ async def test_an_untrusted_node_needs_more_than_an_execute_grant() -> None:
 async def test_an_explicit_host_tier_record_promotes_a_trusted_node_inline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Only an explicit OPEN/ROLE_AUTO host tier record selects inline (async)
+    """An explicit OPEN/ROLE_AUTO host tier record selects inline (async)
     execution -- request metadata never can."""
     import services.legacy_dag_node as adapter
 

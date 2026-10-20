@@ -396,3 +396,65 @@ def canonical_graph_spine(monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=container))
     return container
+
+
+@pytest.fixture
+def shipped_deployment_security():
+    """The Sentinel authority the shipped Conductor profile states (#60, #845).
+
+    Read from the shipped profile instead of restated here: the profile IS the
+    deployment's authority statement, and a test that hard-codes the grant
+    would keep proving an authority the product no longer ships. A profile
+    that states no graph-node grant fails the DAG-execution proofs loudly (the
+    node is blocked), which is the alarm the deployment contract wants.
+    """
+    import json
+
+    import yaml
+
+    from maistro.types.config import SecurityConfig
+
+    profile_path = Path(__file__).resolve().parents[2] / "docker-compose.yml"
+    profile = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+    environment = profile["services"]["hive-conductor"]["environment"]
+    stated = dict(item.split("=", 1) for item in environment if "=" in item)
+    return SecurityConfig(
+        permission_preset=stated.get("MAISTRO_PERMISSION_PRESET", "none"),
+        permissions=json.loads(stated.get("MAISTRO_PERMISSIONS", "{}")),
+    )
+
+
+@pytest.fixture
+def host_user_actor():
+    """Register the acting user as the host knows it, for one test.
+
+    The node adapter's Sentinel gate resolves the principal's roles from the
+    host's user store (``services.canonical_dag_runner._host_principal_roles``),
+    so a DAG run needs an actor the host can resolve a role for -- exactly
+    what an authenticated Conductor session provides in production. The record
+    is removed again so the session-scoped store keeps the shape other tests
+    see.
+    """
+    import stores
+
+    registered: list[str] = []
+
+    def _register(user_id: str, *, role: str = "user") -> str:
+        from datetime import UTC, datetime
+
+        stores.users[user_id] = stores.users._model_class(
+            id=user_id,
+            username=user_id,
+            password_hash="unused",
+            role=role,
+            is_active=True,
+            permissions=[],
+            created_at=datetime.now(UTC),
+        )
+        registered.append(user_id)
+        return user_id
+
+    yield _register
+
+    for user_id in registered:
+        stores.users.pop(user_id, None)

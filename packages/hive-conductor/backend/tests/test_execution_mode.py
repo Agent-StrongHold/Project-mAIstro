@@ -206,7 +206,9 @@ async def test_the_shipped_grant_makes_a_normal_node_reachable() -> None:
     """The shipped deployment grant is what makes a DAG node runnable.
 
     Without it the fail-closed table denies `graph.node.execute` and every
-    node in every shipped profile blocks (#60, #845).
+    node in every shipped profile blocks (#60, #845). With it, the node runs
+    at the floor the host resolves for it: inline for a node that cannot
+    reach the world, sandboxed for one that can.
     """
     principal = Principal(id="owner-1", kind="human", roles=("user",))
 
@@ -216,7 +218,17 @@ async def test_the_shipped_grant_makes_a_normal_node_reachable() -> None:
             "graph.node.execute",
             principal,
             args={"node_id": "n1"},
-            default=Tier.SELF_ELEVATION,
+            reversibility="reversible",
+        )
+        == "async"
+    )
+    assert (
+        await resolve_authorized_execution_mode(
+            _shipped_sentinel(),
+            "graph.node.execute",
+            principal,
+            args={"node_id": "n1"},
+            reversibility="irreversible",
         )
         == "sandbox"
     )
@@ -250,7 +262,7 @@ async def test_a_principal_without_a_host_role_is_denied() -> None:
             "graph.node.execute",
             principal,
             args={"node_id": "n1"},
-            default=Tier.SELF_ELEVATION,
+            reversibility="reversible",
         )
         == "blocked"
     )
