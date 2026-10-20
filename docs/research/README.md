@@ -84,7 +84,11 @@ Every child research epic/leaf defines:
 
 | Note | Family | Epic / leaf | Disposition at this head |
 |---|---|---|---|
+<<<<<<< HEAD
 | [881 — execution-lifecycle state machines](881-execution-lifecycle-state-machines.md) | M8-A1 | leaf [#881](https://github.com/Agent-StrongHold/Project-mAIstro/issues/881), epic #880 | INCUBATE |
+=======
+| [882 — invocation effect/idempotency stateful testing](882-invocation-effect-idempotency-stateful-testing.md) | M8-A2 | leaf [#882](https://github.com/Agent-StrongHold/Project-mAIstro/issues/882), epic #880 | GRADUATE |
+>>>>>>> fad17a87c34193a91c568eb8b0a910e8e6384ccd
 | [894 — critical-zone mutation strategy](894-critical-zone-mutation-strategy.md) | M8-A14 | leaf [#894](https://github.com/Agent-StrongHold/Project-mAIstro/issues/894), epic #880 | INCUBATE |
 | [896 — coverage-guided fuzzing of parser surfaces](896-coverage-guided-fuzzing-parser-surfaces.md) | M8-A15 | leaf [#896](https://github.com/Agent-StrongHold/Project-mAIstro/issues/896), epic #880 | INCUBATE |
 | [900 — adaptive model routing, escalation, and inference economics](900-adaptive-model-routing-escalation-economics.md) | M8-B | epic [#900](https://github.com/Agent-StrongHold/Project-mAIstro/issues/900) (leaves #914–#919) | INCUBATE (family) |
@@ -116,19 +120,38 @@ Every child research epic/leaf defines:
 | [930 — self-consistency, semantic entropy, answer-variation signals](930-answer-variation-uncertainty-signals.md) | M8-E1 | leaf [#930](https://github.com/Agent-StrongHold/Project-mAIstro/issues/930), epic #904 | WATCH |
 | [934 — heterogeneous local + cloud fleet benchmark](934-heterogeneous-fleet-benchmark.md) | M8-F1 | leaf [#934](https://github.com/Agent-StrongHold/Project-mAIstro/issues/934), epic #905 | WATCH |
 | [935 — cross-Agent batching, prefix/KV reuse, semantic caching](935-cross-agent-batching-kv-reuse.md) | M8-F2 | leaf [#935](https://github.com/Agent-StrongHold/Project-mAIstro/issues/935), epic #905 | WATCH |
+| [897 — Lean/Leanstral + Rust/Aeneas correctness kernel](897-lean-leanstral-rust-aeneas-correctness-kernel.md) | M8-A | leaf [#897](https://github.com/Agent-StrongHold/Project-mAIstro/issues/897), epic #880 | WATCH |
 
+<<<<<<< HEAD
 No leaf currently holds a GRADUATE or REJECT disposition; seven are INCUBATE (execution-lifecycle
 state machines #881, critical-zone mutation #894, fuzzing leaf #896, model-routing leaves #914
 and #916, plan-search leaf #928, and graph-pattern reuse leaf #929) and the rest are WATCH. Dispositions are owned by
+=======
+One leaf holds a GRADUATE disposition (invocation effect/idempotency stateful testing
+#882, scoped to its seam); six are INCUBATE (critical-zone
+mutation #894, fuzzing leaf #896, model-routing leaves #914 and #916, plan-search leaf
+#928, and graph-pattern reuse leaf #929) and the rest are WATCH. Dispositions are owned by
+>>>>>>> fad17a87c34193a91c568eb8b0a910e8e6384ccd
 the individual notes —
 update the note first, then this table.
 
 The initial research family, M8-A advanced software verification and assurance
 ([#880](https://github.com/Agent-StrongHold/Project-mAIstro/issues/880), leaves #881–#897), is
 tracked on GitHub with its in-repo evidence infrastructure in [`formal/`](../../formal/)
+<<<<<<< HEAD
 ([INVARIANTS](../../formal/INVARIANTS.md), [README](../../formal/README.md)); its first
 notes in this folder are the execution-lifecycle state-machine prototype (#881), the critical-zone
 mutation prototype (#894), and the M8-A15 fuzzing prototype (#896) above.
+=======
+([INVARIANTS](../../formal/INVARIANTS.md), [README](../../formal/README.md)); its leaves that
+have produced research notes keep them in this folder ([#882](882-invocation-effect-idempotency-stateful-testing.md),
+[#884](884-tla-plus-model-checking-execution-concurrency.md), [#885](885-differential-reference-model-testing.md),
+[#887](887-postgresql-concurrency-race-harness.md), [#888](888-replay-checkpoint-equivalence.md),
+[#889](889-metamorphic-testing.md), [#890](890-crosshair-symbolic-execution-pure-invariants.md),
+[#894](894-critical-zone-mutation-strategy.md), [#896](896-coverage-guided-fuzzing-parser-surfaces.md),
+[#897](897-lean-leanstral-rust-aeneas-correctness-kernel.md), [#918](918-concurrency-model-checking-tla-apalache.md));
+#882, #894, #896, #918, and #897 are registered in the index above.
+>>>>>>> fad17a87c34193a91c568eb8b0a910e8e6384ccd
 
 ## Milestone object note
 
