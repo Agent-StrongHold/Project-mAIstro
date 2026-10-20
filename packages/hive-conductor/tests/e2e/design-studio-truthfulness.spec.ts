@@ -174,7 +174,7 @@ test("Design Studio is the parent surface and never enables fake visual executio
     if (request.url().includes("/v1/canvas/")) canvasRequests.push(request.url());
   });
 
-  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+  await page.goto("/design-studio", { waitUntil: "domcontentloaded" });
   // Scope to the page heading: the fixed-page editor mounts by default in
   // poster mode and its safe template legitimately contains the words
   // "Design Studio" as body text.
@@ -242,7 +242,7 @@ test("Design Studio reports unavailable persistence instead of an empty durable 
     });
   });
 
-  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+  await page.goto("/design-studio", { waitUntil: "domcontentloaded" });
 
   const projectsHeader = page.getByText("Persisted Design projects", { exact: true }).locator("..");
   await expect(projectsHeader.getByText("unavailable", { exact: true })).toBeVisible();
@@ -257,7 +257,7 @@ test("Design Studio reports unavailable persistence instead of an empty durable 
 });
 
 test("Deck is a contained Design Studio mode with keyboard-safe editing", async () => {
-  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+  await page.goto("/design-studio", { waitUntil: "domcontentloaded" });
   const artifactTypes = page.getByRole("group", { name: "Design artifact types" });
   await artifactTypes.getByRole("button").filter({ hasText: "Presentation / Deck" }).press("Enter");
   await page.getByLabel("Describe the artifact").fill("A durable execution pitch deck");
@@ -267,7 +267,7 @@ test("Deck is a contained Design Studio mode with keyboard-safe editing", async 
   await expect(page.getByRole("listbox", { name: "Ordered deck pages" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Present" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Export HTML" })).toBeVisible();
-  await expect(page).toHaveURL(/\/cli\/canvas$/);
+  await expect(page).toHaveURL(/\/design-studio$/);
 });
 
 test("fixed-page artifacts rehydrate through the shared boundary", async () => {
@@ -280,7 +280,7 @@ test("fixed-page artifacts rehydrate through the shared boundary", async () => {
     );
   });
 
-  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+  await page.goto("/design-studio", { waitUntil: "domcontentloaded" });
   const editor = page.getByTestId("fixed-page-editor");
   const preview = editor.locator('[contenteditable="true"]');
   await expect(preview).toContainText("Persisted safely");
@@ -309,7 +309,7 @@ test("Design Studio reports optional design-system catalog degradation without h
     });
   });
 
-  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+  await page.goto("/design-studio", { waitUntil: "domcontentloaded" });
 
   const resourceHeader = page.getByText("Design resources", { exact: true }).locator("..");
   await expect(resourceHeader.getByText("degraded", { exact: true })).toBeVisible();
@@ -318,4 +318,24 @@ test("Design Studio reports optional design-system catalog degradation without h
 
   const discovery = page.getByRole("listitem").filter({ hasText: "Design resource discovery" });
   await expect(discovery).toContainText("degraded");
+});
+
+// #95: the implementation-era /cli/canvas path must not be a second product
+// identity. It stays only as a compatibility redirect onto the canonical
+// Design Studio route, and this is the test that keeps it a redirect.
+test("/cli/canvas is a compatibility redirect to the canonical Design Studio route", async () => {
+  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+  await expect(page).toHaveURL(/\/design-studio$/);
+  await expect(page.getByRole("heading", { name: "Design Studio", exact: true })).toBeVisible();
+});
+
+// #95: primary navigation uses the canonical Design Studio route, so the
+// product is a first-class destination rather than a path only insiders type.
+test("primary navigation deep-links the canonical Design Studio route", async () => {
+  await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
+  const navLink = page.locator(".icon-sidebar").getByRole("link", { name: "Design Studio" });
+  await expect(navLink).toBeVisible();
+  await navLink.click();
+  await expect(page).toHaveURL(/\/design-studio$/);
+  await expect(page.getByRole("heading", { name: "Design Studio", exact: true })).toBeVisible();
 });

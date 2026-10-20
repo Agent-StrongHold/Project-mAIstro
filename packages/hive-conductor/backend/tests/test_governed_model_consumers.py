@@ -20,6 +20,7 @@ from maistro.providers.router import CostAwareRouter
 from maistro.providers.types import ModelMetadata
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _canonical_scope(workspace_id: str = "ws-1") -> tuple[InMemoryProjectScopeStore, str]:
@@ -39,7 +40,11 @@ async def _admit_parent_run(
         name="evaluated-dag",
         nodes=[Node(node_id="worker", node_type="worker", name="worker")],
     )
-    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    run = await run_store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await run_store.transition_run(run.run_id, RunStatus.RUNNING)
     await run_store.transition_run(run.run_id, RunStatus.COMPLETED)
     return run.run_id
@@ -374,6 +379,7 @@ async def test_provider_health_with_minted_identity_completes_operation(
         operation="provider-activation:judge",
         workspace_id="ws-1",
         project_id=project_id,
+        actor_principal_id="test-admin",
         provenance={"activation_source": "routes.providers", "provider": "judge"},
     )
 

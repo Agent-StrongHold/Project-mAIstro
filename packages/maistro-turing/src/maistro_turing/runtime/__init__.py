@@ -217,7 +217,9 @@ class TuringChatSession:
                 )
         prompt_parts.append("Respond naturally as yourself.")
 
-        reply = self._provider.complete(
+        # Async seam (#397): the model call is awaited on the owning loop;
+        # the sync path is reserved for non-loop callers.
+        reply = await self._provider.acomplete(
             "\n".join(prompt_parts),
             max_tokens=1000,
         )

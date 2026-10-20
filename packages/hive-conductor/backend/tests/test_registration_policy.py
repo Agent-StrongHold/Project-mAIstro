@@ -1040,7 +1040,11 @@ class TestSetupGuardEdges:
 
     @pytest.mark.parametrize(
         "missing",
-        ["hardware_preset", "admin_password", "user_password"],
+        # hardware_preset used to be here, but #443 gave it the declared
+        # default ("auto"): the terminal path states the documented default
+        # and the SPA states its pick or the same default, so omitting it is
+        # no longer a contract violation. admin/user passwords stay required.
+        ["admin_password", "user_password"],
     )
     def test_missing_required_fields_are_refused_422(
         self, monkeypatch: pytest.MonkeyPatch, missing: str

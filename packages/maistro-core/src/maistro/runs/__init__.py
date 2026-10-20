@@ -1,6 +1,7 @@
 """Canonical logical and physical execution lifecycle."""
 
 from maistro.runs.concurrency import RunConcurrencyExceeded, RunConcurrencyLimits
+from maistro.runs.eval import EvalSummary, eval_summary, open_re_eval_attempt
 from maistro.runs.execution import AttemptExecutionService, AttemptReconciler
 from maistro.runs.exploration import (
     PROVENANCE_KEY,
@@ -43,10 +44,13 @@ from maistro.runs.model import (
     Attempt,
     AttemptResult,
     AttemptStatus,
+    EvalJudge,
+    EvalMethod,
     ExecutionLease,
     GraphSnapshot,
     NodeRun,
     Run,
+    RunEvalScore,
     RunStatus,
 )
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
@@ -83,6 +87,9 @@ __all__ = [
     "AttemptResult",
     "AttemptStatus",
     "DuplicateThesisError",
+    "EvalJudge",
+    "EvalMethod",
+    "EvalSummary",
     "ExecutionLease",
     "ExplorationContractError",
     "ExplorationPlan",
@@ -97,6 +104,7 @@ __all__ = [
     "RunConcurrencyExceeded",
     "RunConcurrencyLimits",
     "RunEffectClaim",
+    "RunEvalScore",
     "RunExecutionService",
     "RunIntegrityError",
     "RunNotFound",
@@ -112,10 +120,12 @@ __all__ = [
     "ThesisSettledError",
     "ThesisWidthMismatchError",
     "WaveWinnerAlreadyNamedError",
+    "eval_summary",
     "exploration_plan_of",
     "fan_out_wave",
     "merge_thesis_record",
     "name_wave_winner",
+    "open_re_eval_attempt",
     "record_thesis_score",
     "rejected_thesis_texts",
     "thesis_provenance_of",

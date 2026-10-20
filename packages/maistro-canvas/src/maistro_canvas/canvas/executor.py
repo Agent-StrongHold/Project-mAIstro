@@ -26,6 +26,7 @@ from maistro_canvas.canvas.canonical_execution import (
     canonical_run_id,
     correlate_run,
 )
+from maistro_canvas.canvas.retry_policy import JobFailureClass, classify_failure
 from maistro_canvas.types import (
     _IMAGE_GEN_ACTIONS,
     GenerationJobRecord,
@@ -135,6 +136,21 @@ class PreclassifiedJobFailure(RuntimeError):
     """
 
 
+def _failure_message(cls: JobFailureClass) -> str:
+    """The user-safe message for a failure class — the single keyword match in
+    ``classify_failure`` decides the class, so a message and a retry decision
+    can never disagree about what kind of failure a job suffered."""
+    if cls is JobFailureClass.RATE_LIMITED:
+        return "Generation failed: rate limit reached. Try again in a moment."
+    if cls is JobFailureClass.UNAVAILABLE:
+        return "Generation failed: provider service temporarily unavailable."
+    if cls is JobFailureClass.AUTH:
+        return "Generation failed: provider authentication error."
+    if cls is JobFailureClass.TIMEOUT:
+        return "Generation failed: provider request timed out."
+    return "Generation failed: provider error. Please try again."
+
+
 def _sanitise_error(exc: Exception) -> str:
     """Return a safe error message — strips stack traces and raw provider bodies."""
     if isinstance(exc, PreclassifiedJobFailure):
@@ -142,18 +158,8 @@ def _sanitise_error(exc: Exception) -> str:
     if isinstance(exc, TimeoutError):
         # Includes the canonical Runtime's RuntimeDeadlineExceeded, whose text
         # is an execution id rather than anything the keyword match can see.
-        return "Generation failed: provider request timed out."
-    raw = str(exc)
-    lower = raw.lower()
-    if "429" in raw or "rate_limit" in lower or "too many" in lower or "ratelimit" in lower:
-        return "Generation failed: rate limit reached. Try again in a moment."
-    if "503" in raw or "service unavailable" in lower:
-        return "Generation failed: provider service temporarily unavailable."
-    if "401" in raw or "403" in raw or "unauthorized" in lower or "forbidden" in lower:
-        return "Generation failed: provider authentication error."
-    if "timeout" in lower or "timed out" in lower:
-        return "Generation failed: provider request timed out."
-    return "Generation failed: provider error. Please try again."
+        return _failure_message(JobFailureClass.TIMEOUT)
+    return _failure_message(classify_failure(exc))
 
 
 class CanvasExecutor:

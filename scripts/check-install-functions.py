@@ -160,7 +160,6 @@ EXTERNAL_COMMANDS = {
     "date": "POSIX: timestamped log lines",
     "dirname": "POSIX: derive SCRIPT_DIR companions",
     "docker": "documented dependency: compose runtime",
-    "docker-compose": "legacy compose v1 spelling accepted by detect_compose_cmd",
     "dockerd": "WSL2 fallback: start the daemon unsupervised when no init system has it",
     "find": "POSIX file tool: prune stale files from archive installs",
     "git": "get.sh clones/updates the source checkout; install.sh reads its tag",
@@ -176,11 +175,19 @@ EXTERNAL_COMMANDS = {
     "nohup": "WSL2 fallback: keep the unsupervised dockerd alive past the installer",
     "open": "macOS: open the UI in the default browser after install",
     "podman": "documented alternative compose runtime",
-    "podman-compose": "documented alternative compose runtime",
     "py": "Windows launcher fallback probed by ensure_python",
     "python": "fallback spelling of python3 probed by ensure_python",
     "python3": "documented dependency (>= 3.11): scripts/secret_env.py and probes",
+    "pkill": (
+        "procps/BSD: the arm64 check's timeout reaps the credential helper "
+        "docker spawned, which is what blocks; killing docker alone leaves it"
+    ),
     "rm": "POSIX file tool: cleanup of generated files",
+    "rmdir": (
+        "POSIX file tool: take down an adopted unfinished install's directory. "
+        "Chosen over rm -rf because it refuses a non-empty directory, so "
+        "anything get.sh did not expect makes it stop instead of deleting it"
+    ),
     "sed": "POSIX stream editor: rewrite generated files",
     "service": "WSL2: supervised init-system start of the Docker daemon",
     "setx": "Windows (Git Bash/MSYS): persist MAISTRO_REPO_ROOT across shells",
