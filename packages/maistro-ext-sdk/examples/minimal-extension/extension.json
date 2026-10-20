@@ -1,0 +1,22 @@
+{
+  "id": "acme.weather",
+  "publisher": "acme",
+  "version": "1.0.0",
+  "title": "ACME Weather tool",
+  "description": "Minimal out-of-tree example extension: a tool that reads a weather API. Ships with the SDK as the reference an external author copies.",
+  "contract": ">=1.0.0,<2.0.0",
+  "family": "tool",
+  "capabilities": ["network.outbound"],
+  "effects": ["external-side-effect"],
+  "data": {
+    "scopes": []
+  },
+  "network": {
+    "allow": ["api.weather.example"],
+    "allowed_ports": [443]
+  },
+  "entrypoint": {
+    "module": "acme_weather.plugin",
+    "object": "PLUGIN"
+  }
+}

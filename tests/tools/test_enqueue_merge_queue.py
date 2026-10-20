@@ -315,6 +315,9 @@ def test_run_rechecks_current_pr_and_refuses_retarget(enqueue: ModuleType) -> No
         def __init__(self) -> None:
             self.enqueued = False
 
+        def merge_group_runs(self):
+            return []
+
         def open_develop_prs(self):
             return [raw_pr()]
 
@@ -343,6 +346,9 @@ def test_run_never_enqueues_trusted_surface(enqueue: ModuleType) -> None:
         def __init__(self) -> None:
             self.enqueued = False
 
+        def merge_group_runs(self):
+            return []
+
         def open_develop_prs(self):
             return [raw_pr()]
 
@@ -368,6 +374,9 @@ def test_run_enqueues_green_surface(enqueue: ModuleType) -> None:
     class GreenApi:
         def __init__(self) -> None:
             self.enqueued = False
+
+        def merge_group_runs(self):
+            return []
 
         def open_develop_prs(self):
             return [raw_pr()]
@@ -396,6 +405,9 @@ def test_run_does_not_repeat_an_existing_auto_merge_request(enqueue: ModuleType)
             self.enqueued = False
             self.statuses_read = False
 
+        def merge_group_runs(self):
+            return []
+
         def open_develop_prs(self):
             return [raw_pr()]
 
@@ -423,6 +435,9 @@ def test_policy_evidence_failure_is_loud_and_fail_closed(enqueue: ModuleType) ->
     class BrokenEvidenceApi:
         def __init__(self) -> None:
             self.enqueued = False
+
+        def merge_group_runs(self):
+            return []
 
         def open_develop_prs(self):
             return [raw_pr()]
@@ -555,6 +570,9 @@ def test_http_error_detail_survives_unreadable_body(enqueue: ModuleType) -> None
 
 def test_run_waits_when_exact_head_gates_are_not_green(enqueue: ModuleType) -> None:
     class PendingGatesApi:
+        def merge_group_runs(self):
+            return []
+
         def open_develop_prs(self):
             return [raw_pr()]
 
@@ -575,6 +593,9 @@ def test_run_waits_when_exact_head_gates_are_not_green(enqueue: ModuleType) -> N
 
 def test_run_waits_when_head_moves_during_object_fetch(enqueue: ModuleType) -> None:
     class HeadMovedApi:
+        def merge_group_runs(self):
+            return []
+
         def open_develop_prs(self):
             return [raw_pr()]
 
@@ -597,6 +618,9 @@ def test_run_skips_conflicted_candidates_without_failing_controller(
     enqueue: ModuleType,
 ) -> None:
     class ConflictedApi:
+        def merge_group_runs(self):
+            return []
+
         def open_develop_prs(self):
             return [raw_pr()]
 
@@ -617,6 +641,9 @@ def test_run_skips_conflicted_candidates_without_failing_controller(
 
 def test_queue_request_failure_is_loud_and_nonzero(enqueue: ModuleType) -> None:
     class BrokenQueueApi:
+        def merge_group_runs(self):
+            return []
+
         def open_develop_prs(self):
             return [raw_pr()]
 
@@ -633,3 +660,255 @@ def test_queue_request_failure_is_loud_and_nonzero(enqueue: ModuleType) -> None:
             raise RuntimeError("queue transport failed")
 
     assert enqueue.run(BrokenQueueApi()) == 1
+
+
+# --- failed-candidate quarantine ------------------------------------------
+#
+# GitHub builds one entry branch per queued PR, `gh-readonly-queue/develop/
+# pr-N-<parent>`, where <parent> is the head of the entry ahead (or the base
+# head at the front). Observed on develop 2026-09-13: `pr-1381-62cfc8…` sat on
+# the `pr-1384` entry whose runs had head_sha `62cfc8…`. That link is what
+# these tests exercise: a failure is the entry's own unless the chain it was
+# built on reaches an entry that did not verify.
+
+
+def queue_run(
+    pr: int,
+    parent: str,
+    head: str,
+    conclusion: str | None,
+    *,
+    name: str = "CI",
+    created_at: str = "2026-09-14T01:00:00Z",
+    base: str = "develop",
+    event: str = "merge_group",
+) -> dict[str, object]:
+    return {
+        "event": event,
+        "name": name,
+        "head_branch": f"gh-readonly-queue/{base}/pr-{pr}-{parent}",
+        "head_sha": head,
+        "conclusion": conclusion,
+        "created_at": created_at,
+    }
+
+
+def test_a_failed_entry_at_the_front_owns_its_failure(enqueue: ModuleType) -> None:
+    failures = enqueue.own_queue_failures(
+        [
+            queue_run(568, "base0", "h568", "failure", name="CI"),
+            queue_run(568, "base0", "h568", "success", name="quality"),
+            queue_run(568, "base0", "h568", "failure", name="Gate C"),
+        ]
+    )
+    assert set(failures) == {568}
+    (failure,) = failures[568]
+    assert failure.parent == "base0"
+    assert failure.workflows == ("CI", "Gate C")
+    assert failure.created_at == enqueue._parse_time("2026-09-14T01:00:00Z")
+
+
+def test_entries_rebuilt_behind_a_failed_entry_are_not_blamed(enqueue: ModuleType) -> None:
+    """ALLGREEN ejects the failing entry and rebuilds the ones behind it. The
+    cancelled runs behind it — and a run that managed to conclude `failure`
+    before the cancel reached it — are the batch's cost, not a bad head."""
+    failures = enqueue.own_queue_failures(
+        [
+            queue_run(568, "base0", "h568", "failure"),
+            queue_run(570, "h568", "h570", "cancelled"),
+            queue_run(572, "h570", "h572", "failure"),
+        ]
+    )
+    assert set(failures) == {568}
+
+
+def test_an_entry_behind_a_green_entry_owns_its_failure(enqueue: ModuleType) -> None:
+    failures = enqueue.own_queue_failures(
+        [
+            queue_run(568, "base0", "h568", "success"),
+            queue_run(570, "h568", "h570", "failure"),
+        ]
+    )
+    assert set(failures) == {570}
+
+
+def test_a_parent_outside_the_window_reads_as_the_base_head(enqueue: ModuleType) -> None:
+    """Fail closed: when the entry ahead scrolled out of the fetched history the
+    controller cannot show it failed, so the entry keeps its own failure."""
+    failures = enqueue.own_queue_failures([queue_run(570, "unseen", "h570", "failure")])
+    assert set(failures) == {570}
+
+
+def test_cancelled_and_still_running_entries_are_not_failures(enqueue: ModuleType) -> None:
+    failures = enqueue.own_queue_failures(
+        [
+            queue_run(568, "base0", "h568", "cancelled"),
+            queue_run(570, "h568", "h570", None),
+        ]
+    )
+    assert failures == {}
+
+
+def test_foreign_bases_and_non_queue_runs_are_ignored(enqueue: ModuleType) -> None:
+    failures = enqueue.own_queue_failures(
+        [
+            queue_run(1, "base0", "h1", "failure", base="main"),
+            queue_run(568, "base0", "h568", "failure", event="push"),
+            {"event": "merge_group", "head_branch": "develop", "conclusion": "failure"},
+        ]
+    )
+    assert failures == {}
+
+
+def test_a_failed_run_without_a_usable_timestamp_is_loud(enqueue: ModuleType) -> None:
+    with pytest.raises(RuntimeError, match="unusable timestamp"):
+        enqueue.own_queue_failures([queue_run(568, "base0", "h568", "failure", created_at="")])
+
+
+def test_a_queue_failure_binds_to_the_head_whose_gates_it_postdates(
+    enqueue: ModuleType,
+) -> None:
+    """No entry for a head can exist before that head's gates-ran first
+    succeeded, so a failure at or after that moment belongs to this head; an
+    older one belongs to a head that has since moved."""
+    failures = {
+        568: [
+            enqueue.QueueFailure(
+                number=568,
+                parent="base0",
+                created_at=enqueue._parse_time("2026-09-14T01:00:00Z"),
+                workflows=("CI",),
+            )
+        ]
+    }
+    earlier = [{"context": "gates-ran", "state": "success", "created_at": "2026-09-14T00:30:00Z"}]
+    later = [{"context": "gates-ran", "state": "success", "created_at": "2026-09-14T02:00:00Z"}]
+    assert enqueue.queue_failure_for_head(candidate(enqueue), earlier, failures) is not None
+    assert enqueue.queue_failure_for_head(candidate(enqueue), later, failures) is None
+    assert enqueue.queue_failure_for_head(candidate(enqueue), earlier, {}) is None
+
+
+def test_the_earliest_gates_success_is_the_bound(enqueue: ModuleType) -> None:
+    """A re-run of Gates Ran publishes gates-ran again; the queue entry may
+    already have been created after the first success, so the first one
+    bounds the quarantine, not the latest."""
+    failures = {
+        568: [
+            enqueue.QueueFailure(
+                number=568,
+                parent="base0",
+                created_at=enqueue._parse_time("2026-09-14T01:00:00Z"),
+                workflows=("CI",),
+            )
+        ]
+    }
+    statuses = [
+        {"context": "gates-ran", "state": "success", "created_at": "2026-09-14T02:00:00Z"},
+        {"context": "gates-ran", "state": "success", "created_at": "2026-09-14T00:30:00Z"},
+        {"context": "other", "state": "success", "created_at": "2026-09-13T00:00:00Z"},
+    ]
+    assert enqueue.queue_failure_for_head(candidate(enqueue), statuses, failures) is not None
+
+
+def test_run_quarantines_a_head_that_already_failed_in_the_queue(
+    enqueue: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class QuarantinedApi:
+        def __init__(self) -> None:
+            self.enqueued = False
+
+        def merge_group_runs(self):
+            return [queue_run(568, "base0", "h568", "failure", created_at="2026-09-14T01:00:00Z")]
+
+        def open_develop_prs(self):
+            return [raw_pr()]
+
+        def pull_request(self, number: int):
+            return raw_pr()
+
+        def statuses(self, sha: str):
+            return green_statuses()  # gates-ran success at 2026-08-28T23:59:00Z
+
+        def policy_assessment(self, current):
+            raise AssertionError("a quarantined head must not be assessed")
+
+        def enqueue(self, current):
+            self.enqueued = True
+            return "accepted"
+
+    api = QuarantinedApi()
+    assert enqueue.run(api) == 0
+    assert not api.enqueued
+    out = capsys.readouterr().out
+    assert "PR #568: quarantined on abc123" in out
+    assert "failed CI at 2026-09-14T01:00:00Z" in out
+
+
+def test_run_requeues_a_head_pushed_after_the_queue_failure(enqueue: ModuleType) -> None:
+    class PushedSinceApi:
+        def __init__(self) -> None:
+            self.enqueued = False
+
+        def merge_group_runs(self):
+            return [queue_run(568, "base0", "h568", "failure", created_at="2026-08-01T00:00:00Z")]
+
+        def open_develop_prs(self):
+            return [raw_pr()]
+
+        def pull_request(self, number: int):
+            return raw_pr()
+
+        def statuses(self, sha: str):
+            return green_statuses()
+
+        def policy_assessment(self, current):
+            return green_assessment(enqueue)
+
+        def enqueue(self, current):
+            self.enqueued = True
+            return "accepted"
+
+    api = PushedSinceApi()
+    assert enqueue.run(api) == 0
+    assert api.enqueued
+
+
+def test_unreadable_queue_history_refuses_every_admission(
+    enqueue: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class BlindApi:
+        def merge_group_runs(self):
+            raise urllib.error.URLError("actions listing down")
+
+        def open_develop_prs(self):
+            raise AssertionError("no admission may be scanned without queue history")
+
+    assert enqueue.run(BlindApi()) == 1
+    assert "refusing every admission" in capsys.readouterr().err
+
+
+def test_merge_group_runs_page_until_a_short_page(enqueue: ModuleType) -> None:
+    api = enqueue.GitHubApi("read", "queue", "acme/widgets")
+    pages = {1: [{"id": i} for i in range(100)], 2: [{"id": 100}]}
+    seen: list[str] = []
+
+    def fake_request(method: str, path: str, payload=None, *, token=None):
+        seen.append(path)
+        assert method == "GET" and token is None
+        page = int(path.rsplit("page=", 1)[1])
+        return {"workflow_runs": pages[page]}
+
+    api._request = fake_request  # type: ignore[method-assign]
+    runs = api.merge_group_runs()
+    assert len(runs) == 101
+    assert seen == [
+        "/repos/acme/widgets/actions/runs?event=merge_group&per_page=100&page=1",
+        "/repos/acme/widgets/actions/runs?event=merge_group&per_page=100&page=2",
+    ]
+
+
+def test_merge_group_runs_reject_a_malformed_listing(enqueue: ModuleType) -> None:
+    api = enqueue.GitHubApi("read", "queue", "acme/widgets")
+    api._request = lambda *args, **kwargs: {"workflow_runs": "nope"}  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="invalid workflow-run listing"):
+        api.merge_group_runs()

@@ -16,7 +16,10 @@ from maistro.tasks.models import TaskStatus
 from maistro.tasks.status import can_transition
 
 # Independently re-derived expected transitions:
-#   QUEUED    -> PLANNING (kicked off) or CANCELLED (aborted before starting)
+#   QUEUED    -> PLANNING (kicked off), FAILED (a dispatch failure before any
+#                phase ran — legal since #849 so a pre-PLANNING failure cannot
+#                strand the receipt QUEUED forever), or CANCELLED (aborted
+#                before starting)
 #   PLANNING  -> CODING (plan ready), or FAILED/CANCELLED
 #   CODING    -> REVIEWING (code ready), COMPLETED (no review step needed),
 #                or FAILED/CANCELLED
@@ -26,7 +29,7 @@ from maistro.tasks.status import can_transition
 #                or FAILED/CANCELLED
 #   COMPLETED, FAILED, CANCELLED -> terminal, no further transitions
 EXPECTED: dict[TaskStatus, frozenset[TaskStatus]] = {
-    TaskStatus.QUEUED: frozenset({TaskStatus.PLANNING, TaskStatus.CANCELLED}),
+    TaskStatus.QUEUED: frozenset({TaskStatus.PLANNING, TaskStatus.FAILED, TaskStatus.CANCELLED}),
     TaskStatus.PLANNING: frozenset({TaskStatus.CODING, TaskStatus.FAILED, TaskStatus.CANCELLED}),
     TaskStatus.CODING: frozenset(
         {

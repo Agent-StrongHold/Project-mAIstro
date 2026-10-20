@@ -15,6 +15,7 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import RunStatus
 from maistro.runs.store import RunIntegrityError
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 pytestmark = [pytest.mark.contract("boundary")]
 
@@ -34,7 +35,9 @@ async def _canonical_run() -> tuple[InMemoryRunStore, str]:
         nodes=[Node(node_id="step", node_type="test.checkpoint-authority")],
     )
     run_store = InMemoryRunStore(project_store=projects)
-    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    run = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     return run_store, run.run_id
 
 

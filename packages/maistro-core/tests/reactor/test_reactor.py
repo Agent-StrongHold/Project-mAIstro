@@ -182,16 +182,21 @@ class TestBouncerOnEveryEvent:
             await reactor.stop()
 
 
+async def _eventually(reactor: Any, sql: str) -> list[tuple[Any, ...]]:
+    rows: list[tuple[Any, ...]] = []
+    for _ in range(50):
+        rows = reactor.state_query(sql)
+        if rows:
+            break
+        await asyncio.sleep(0.02)
+    return rows
+
+
 class TestStateSubmitIntegration:
-    """AC: All state mutations from handlers go through state.submit()."""
+    """AC: All state mutations from handlers go through state.submit() (#1178)."""
 
-    @pytest.mark.asyncio()
-    async def test_handler_uses_state_submit(self, tmp_path: Path) -> None:
-        from maistro.reactor import Reactor
-
-        db_path = tmp_path / "state.db"
-        reactor = Reactor(state_db_path=str(db_path))
-
+    @staticmethod
+    def _log_handler(reactor: Any) -> Any:
         async def handler(event: Any) -> None:
             reactor.state_submit(
                 lambda conn: conn.execute(
@@ -200,16 +205,209 @@ class TestStateSubmitIntegration:
                 )
             )
 
-        reactor.register_source("log-event", handler)
+        return handler
+
+    @pytest.mark.asyncio()
+    async def test_handler_writes_through_the_shared_state_writer(self, tmp_path: Path) -> None:
+        from maistro.reactor import Reactor
+        from maistro.state import State
+
+        state = State(db_path=tmp_path / "custom.db")
+        state.open_writer()
+        reactor = Reactor(state=state)
+        reactor.register_source("log-event", self._log_handler(reactor))
         await reactor.start()
         try:
             await reactor.emit("log-event", {"name": "test-event"})
             await asyncio.sleep(0.2)
+            state.flush()
 
-            rows = reactor.state_query("SELECT * FROM reactor_log")
-            assert any("test-event" in str(r) for r in rows)
+            assert reactor.state_query("SELECT event_name FROM reactor_log") == [("test-event",)]
+            reader = state.open_reader()
+            try:
+                applied = reader.execute(
+                    "SELECT name FROM schema_migrations WHERE name = 'reactor_log_001'"
+                ).fetchall()
+            finally:
+                reader.close()
+            assert applied == [("reactor_log_001",)]
         finally:
             await reactor.stop()
+        # The State belongs to its owner: stopping the reactor must not close it.
+        state.submit_sync(lambda conn: conn.execute("INSERT INTO reactor_log VALUES ('after')"))
+        state.close()
+        assert sorted(p.name for p in tmp_path.iterdir() if p.suffix == ".db") == ["custom.db"]
+
+    @pytest.mark.asyncio()
+    async def test_state_submit_routes_through_state_submit(self, tmp_path: Path) -> None:
+        from maistro.reactor import Reactor
+        from maistro.state import State
+
+        state = State(db_path=tmp_path / "state.db")
+        submitted: list[Any] = []
+        real_submit = state.submit
+
+        def spy(fn: Any) -> None:
+            submitted.append(fn)
+            real_submit(fn)
+
+        state.submit = spy  # type: ignore[method-assign]
+        reactor = Reactor(state=state)
+        await reactor.start()
+        try:
+
+            def write(conn: Any) -> None:
+                conn.execute("INSERT INTO reactor_log VALUES ('x')")
+
+            reactor.state_submit(write)
+            assert submitted == [write]
+        finally:
+            await reactor.stop()
+            state.close()
+
+    @pytest.mark.asyncio()
+    async def test_concurrent_reactor_and_persisted_store_writes_never_lock(
+        self, tmp_path: Path
+    ) -> None:
+        from pydantic import BaseModel
+
+        from maistro.reactor import Reactor
+        from maistro.state import PersistedStore, State
+
+        class Item(BaseModel):
+            n: int
+
+        state = State(db_path=tmp_path / "state.db")
+        store = PersistedStore(state)
+        store.initialize()
+        reactor = Reactor(state=state)
+        reactor.register_source("log-event", self._log_handler(reactor))
+        await reactor.start()
+        iterations = 200
+        errors: list[Exception] = []
+
+        def put_all() -> None:
+            for i in range(iterations):
+                try:
+                    store.put("items", str(i), Item(n=i))
+                except Exception as exc:
+                    errors.append(exc)
+
+        try:
+            writer = asyncio.get_running_loop().run_in_executor(None, put_all)
+            for i in range(iterations):
+                await reactor.emit("log-event", {"name": f"e{i}"})
+                await asyncio.sleep(0)
+            await writer
+            await asyncio.sleep(0.3)
+            state.flush()
+            rows = reactor.state_query("SELECT COUNT(*) FROM reactor_log")
+            items = len(store.list_all("items", Item))
+        finally:
+            await reactor.stop()
+            state.close()
+        assert errors == []
+        assert rows == [(iterations,)]
+        assert items == iterations
+
+    @pytest.mark.asyncio()
+    async def test_restart_reads_the_same_reactor_log(self, tmp_path: Path) -> None:
+        from maistro.reactor import Reactor
+        from maistro.state import State
+
+        db = tmp_path / "state.db"
+        first_state = State(db_path=db)
+        first = Reactor(state=first_state)
+        first.register_source("log-event", self._log_handler(first))
+        await first.start()
+        await first.emit("log-event", {"name": "before-restart"})
+        await asyncio.sleep(0.2)
+        await first.stop()
+        first_state.flush()
+        first_state.close()
+
+        second_state = State(db_path=db)
+        second = Reactor(state=second_state)
+        await second.start()
+        try:
+            rows = second.state_query("SELECT event_name FROM reactor_log")
+        finally:
+            await second.stop()
+            second_state.close()
+        assert rows == [("before-restart",)]
+
+    @pytest.mark.asyncio()
+    async def test_without_state_writes_are_dropped_and_queries_empty(self) -> None:
+        from maistro.reactor import Reactor
+
+        reactor = Reactor()
+        await reactor.start()
+        try:
+            reactor.state_submit(lambda conn: conn.execute("SELECT 1"))
+            assert reactor.state_query("SELECT 1") == []
+        finally:
+            await reactor.stop()
+
+    def test_state_db_path_combined_with_state_is_refused(self, tmp_path: Path) -> None:
+        from maistro.reactor import Reactor
+        from maistro.state import State
+
+        with pytest.raises(ValueError, match="state_db_path"):
+            Reactor(state=State(db_path=tmp_path / "a.db"), state_db_path=str(tmp_path / "b.db"))
+
+    @pytest.mark.asyncio()
+    async def test_deprecated_state_db_path_owns_a_single_state_writer(
+        self, tmp_path: Path
+    ) -> None:
+        from maistro.reactor import Reactor
+
+        db_path = tmp_path / "state.db"
+        with pytest.warns(DeprecationWarning, match="state_db_path"):
+            reactor = Reactor(state_db_path=str(db_path))
+        reactor.register_source("log-event", self._log_handler(reactor))
+        await reactor.start()
+        try:
+            await reactor.emit("log-event", {"name": "test-event"})
+            rows = await _eventually(reactor, "SELECT * FROM reactor_log")
+            assert rows == [("test-event",)]
+        finally:
+            await reactor.stop()
+        # stop() released the State it owned, so nothing is left writing.
+        assert reactor.state_query("SELECT * FROM reactor_log") == []
+
+    @pytest.mark.asyncio()
+    async def test_deprecated_state_db_path_survives_restart(self, tmp_path: Path) -> None:
+        from maistro.reactor import Reactor
+
+        with pytest.warns(DeprecationWarning):
+            reactor = Reactor(state_db_path=str(tmp_path / "state.db"))
+        reactor.register_source("log-event", self._log_handler(reactor))
+        for name in ("first", "second"):
+            await reactor.start()
+            try:
+                await reactor.emit("log-event", {"name": name})
+                await asyncio.sleep(0.2)
+            finally:
+                await reactor.stop()
+        await reactor.start()
+        try:
+            rows = reactor.state_query("SELECT event_name FROM reactor_log ORDER BY rowid")
+        finally:
+            await reactor.stop()
+        assert rows == [("first",), ("second",)]
+
+    @pytest.mark.asyncio()
+    async def test_failed_migration_leaves_reactor_stopped(self, tmp_path: Path) -> None:
+        from maistro.reactor import Reactor
+
+        unopenable = tmp_path / "is-a-directory"
+        unopenable.mkdir()
+        with pytest.warns(DeprecationWarning):
+            reactor = Reactor(state_db_path=str(unopenable))
+        with pytest.raises(Exception):  # noqa: B017 — sqlite3's refusal type is incidental
+            await reactor.start()
+        assert reactor.is_running is False
+        assert reactor.state_query("SELECT 1") == []
 
 
 class TestHandlerTimeout:

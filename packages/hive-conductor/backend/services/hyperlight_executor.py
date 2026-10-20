@@ -363,28 +363,71 @@ with Sandbox(sc) as sb:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        # The drain is owned as a Task before anything downstream can fail.
+        # Handed straight to `wait_for`, `process.communicate()` is an unowned
+        # coroutine, and `wait_for` is not guaranteed to reach the `await` that
+        # consumes it: anything that raises first -- the transport failure
+        # below -- drops it on the floor, leaving the child's pipes with no
+        # reader and Python shouting `coroutine ... was never awaited` into a
+        # log nobody reads. A Task is consumable from every exit path, so
+        # `_settle` can always finish what this line started.
+        draining = asyncio.create_task(process.communicate())
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_s)
+            stdout, stderr = await asyncio.wait_for(draining, timeout=timeout_s)
         except asyncio.CancelledError:
-            with contextlib.suppress(ProcessLookupError):
-                process.kill()
-            await process.wait()
+            await self._settle(process, draining)
             raise
         except TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                process.kill()
-            await process.wait()
+            await self._settle(process, draining)
             return {"output": "", "error": "timeout", "success": False}
         except Exception as exc:
-            with contextlib.suppress(ProcessLookupError):
-                process.kill()
-            await process.wait()
+            await self._settle(process, draining)
             return {"output": "", "error": str(exc)[:200], "success": False}
         return {
             "output": stdout.decode(errors="replace"),
             "error": stderr.decode(errors="replace")[:500],
             "success": process.returncode == 0,
         }
+
+    @staticmethod
+    async def _settle(
+        process: asyncio.subprocess.Process,
+        draining: asyncio.Task[tuple[bytes, bytes]],
+    ) -> None:
+        """Kill the child and consume its drain, whatever state either is in.
+
+        Reaping the process is only half of it. `wait()` collects the exit
+        status; the drain is what holds the pipe readers, so a failure path
+        that waits without settling the drain still walks away from an open
+        pair of pipes. Both are settled here, and the drain's own error may
+        not displace the failure that brought us here -- this runs *because*
+        something already went wrong, and that is the story the caller gets.
+
+        One `CancelledError` at that `await` is not like the others. The drain
+        was just cancelled on the line above, so it raising is finished
+        business. A cancellation of *this* task lands at the very same await
+        and is the Attempt being torn down -- the one thing this adapter exists
+        to honour, and the one thing it must not report as a transport error.
+        They are indistinguishable by type, so `cancelling()` is what tells
+        them apart: it counts cancellation requests against the running task
+        and nothing else. A pending one is carried past the reap, so the child
+        is still collected, and then re-raised.
+        """
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        draining.cancel()
+        torn_down: asyncio.CancelledError | None = None
+        try:
+            await draining
+        except asyncio.CancelledError as cancelled:
+            running = asyncio.current_task()
+            if running is not None and running.cancelling() > 0:
+                torn_down = cancelled
+        except Exception:
+            logger.debug("drain failed while settling a failed sandbox run", exc_info=True)
+        await process.wait()
+        if torn_down is not None:
+            raise torn_down
 
     def _sync_run(self, cmd: list[str], env: dict, timeout_s: int) -> dict[str, Any]:
         try:

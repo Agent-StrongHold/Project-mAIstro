@@ -37,6 +37,7 @@ from maistro.graph.nodes.base import (
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
 from maistro.runs.store import RunIntegrityError
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 pytestmark = [pytest.mark.contract("behavioral")]
@@ -138,6 +139,34 @@ class _UnclassifiedPauseNode(BaseNode[_PauseIn, _PauseOut]):
         return _PauseOut(text="unreachable")
 
 
+class _HardCrash(BaseException):
+    """Simulate process death without letting the Attempt terminalize."""
+
+
+class _LeaseResumeNode(BaseNode[_PauseIn, _PauseOut]):
+    """Pause once, then exercise a resumed Attempt's lease."""
+
+    kind: ClassVar[str] = "test.resume.lease"
+    kind_category: ClassVar = "wait"
+    input_schema: ClassVar[type[BaseModel]] = _PauseIn
+    output_schema: ClassVar[type[BaseModel]] = _PauseOut
+    reaches: ClassVar[int] = 0
+    mode: ClassVar[str] = "complete"
+
+    async def _execute(self, inputs: _PauseIn, ctx: NodeContext) -> _PauseOut:
+        type(self).reaches += 1
+        if type(self).reaches == 1:
+            pause_until(
+                PAUSE_WAITING_ON_JIRA_SUBTASKS,
+                resume_at=datetime.now(UTC) - timedelta(seconds=1),
+            )
+        if type(self).mode == "slow":
+            await asyncio.sleep(0.2)
+        elif type(self).mode == "crash":
+            raise _HardCrash()
+        return _PauseOut(text=f"resumed:{inputs.marker}")
+
+
 class _CrashAfterResumeNode(BaseNode[_PauseIn, _PauseOut]):
     """Pauses once, then stays live until the resumed worker is killed."""
 
@@ -197,6 +226,7 @@ for _cls in (
     _CrashAfterResumeNode,
     _CrashOnceAfterResumeNode,
     _FailingNode,
+    _LeaseResumeNode,
 ):
     with contextlib.suppress(ValueError):
         register_node(_cls)
@@ -224,12 +254,100 @@ async def _parked_run(container: Container, kind: str, *, workspace: str) -> str
         graph,
         provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE, SCHEDULE_INPUTS_KEY: {"marker": "m"}},
         initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     assert await container.execute_admitted_runs() == 1
     parked = await container.run_store.get_run(run.run_id)
     assert parked is not None
     assert parked.status in {RunStatus.WAITING, RunStatus.PAUSED}
     return run.run_id
+
+
+class TestResumedAttemptLeases:
+    async def _parked_lease_run(self, container: Container) -> tuple[Any, Any, Any]:
+        _LeaseResumeNode.reaches = 0
+        _LeaseResumeNode.mode = "complete"
+        run_id = await _parked_run(container, _LeaseResumeNode.kind, workspace="resume-lease-ws")
+        run = await container.run_store.get_run(run_id)
+        assert run is not None
+        (node_run,) = await container.run_store.list_node_runs(run_id)
+        attempts = await container.run_store.list_attempts(node_run.node_run_id)
+        assert len(attempts) == 1
+        from maistro.runs.consumption import resumable_pause
+
+        pause = resumable_pause(node_run, attempts, now=datetime.now(UTC))
+        assert pause is not None
+        return run, node_run, pause
+
+    @pytest.mark.ac("ADR-082526-b36a/AC-8")
+    async def test_a_healthy_resumed_attempt_renews_its_lease(self) -> None:
+        """A resumed Attempt survives work longer than its configured TTL."""
+        from maistro.runs.consumption import ScheduleAttemptExecutor
+        from maistro.runtime import PythonExecutionRuntime
+
+        container = await _container()
+        run, _node_run, pause = await self._parked_lease_run(container)
+        _LeaseResumeNode.mode = "slow"
+        executor = ScheduleAttemptExecutor(
+            container.run_store,
+            runtime=PythonExecutionRuntime(),
+            lease_ttl=timedelta(seconds=0.06),
+        )
+
+        resumed = await executor.resume(run, pause)
+
+        assert resumed.status is RunStatus.COMPLETED
+        (node_run,) = await container.run_store.list_node_runs(run.run_id)
+        attempts = await container.run_store.list_attempts(node_run.node_run_id)
+        assert attempts[-1].status is AttemptStatus.COMPLETED
+        assert attempts[-1].execution_lease is not None
+        assert _LeaseResumeNode.reaches == 2
+
+    @pytest.mark.ac("ADR-082526-b36a/AC-1")
+    @pytest.mark.ac("ADR-082526-b36a/AC-3")
+    @pytest.mark.ac("ADR-082526-b36a/AC-7")
+    async def test_a_restarted_resume_attempt_is_reclaimed_and_can_retry(self) -> None:
+        """A fresh executor preserves recovery across a resumed Attempt crash."""
+        from maistro.runs.consumption import ScheduleAttemptExecutor
+        from maistro.runtime import PythonExecutionRuntime
+
+        container = await _container()
+        run, node_run, pause = await self._parked_lease_run(container)
+        _LeaseResumeNode.mode = "crash"
+        ttl = timedelta(seconds=0.06)
+        restarted_executor = ScheduleAttemptExecutor(
+            container.run_store,
+            runtime=PythonExecutionRuntime(),
+            lease_ttl=ttl,
+        )
+
+        with pytest.raises(_HardCrash):
+            await restarted_executor.resume(run, pause)
+
+        attempts = await container.run_store.list_attempts(node_run.node_run_id)
+        resumed_attempt = attempts[-1]
+        assert resumed_attempt.status is AttemptStatus.RUNNING
+        lease = resumed_attempt.execution_lease
+        assert lease is not None and lease.expires_at is not None
+
+        assert (
+            await container.recover_abandoned_attempts(
+                now=lease.expires_at + timedelta(microseconds=1)
+            )
+            == 1
+        )
+        recovered = await container.run_store.get_attempt(resumed_attempt.attempt_id)
+        assert recovered is not None and recovered.status is AttemptStatus.CANCELLED
+
+        _LeaseResumeNode.mode = "complete"
+        after_recovery = await container.run_store.get_run(run.run_id)
+        assert after_recovery is not None and after_recovery.status is RunStatus.WAITING
+        completed = await restarted_executor.resume(after_recovery, pause)
+
+        assert completed.status is RunStatus.COMPLETED
+        attempts = await container.run_store.list_attempts(node_run.node_run_id)
+        assert attempts[-1].status is AttemptStatus.COMPLETED
+        assert len(attempts) == 3
 
 
 class TestTheTableClassifiesEveryPause:
@@ -334,6 +452,7 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         graph,
         provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE, SCHEDULE_INPUTS_KEY: {"marker": "m"}},
         initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     # Leave room for a real PostgreSQL round trip while keeping the recovery
     # window short enough to exercise the heartbeat and expiry boundary.
@@ -365,17 +484,28 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         # Poll for a renewal instead of sleeping a fixed multiple of the TTL:
         # PostgreSQL round trips can consume most of a short test window, while
         # the explicit recovery clock below makes expiry itself deterministic.
-        loop = asyncio.get_running_loop()
+        # The budget is completed poll iterations, not wall-clock: on a
+        # coverage-instrumented CI runner, leaked background threads and disk
+        # stalls can starve this loop's cooperative tasks (the heartbeat with
+        # them) for whole seconds while any clock keeps advancing, so a
+        # wall-clock deadline can expire without the heartbeat ever getting a
+        # turn (seen as a flaky "not renewed by the heartbeat" on the
+        # no-services coverage job and again on the coverage (PostgreSQL)
+        # job's sqlite leg, adjacent pass and fail runs on the same head).
+        # Each completed iteration proves the loop was scheduled; once it is,
+        # the heartbeat's lapsed timer fires within a few iterations, so an
+        # exhausted budget means the heartbeat genuinely never renewed.
         live = await store.get_attempt(resumed.attempt_id)
-        renewal_deadline = loop.time() + 5.0
+        polls_left = 150
         while (
             live is None
             or live.execution_lease is None
             or live.execution_lease.expires_at is None
             or live.execution_lease.expires_at <= lease.expires_at
         ):
-            if loop.time() >= renewal_deadline:
+            if polls_left <= 0:
                 pytest.fail("a live resumed Attempt was not renewed by the heartbeat")
+            polls_left -= 1
             await asyncio.sleep(0.05)
             live = await store.get_attempt(resumed.attempt_id)
         live_lease = live.execution_lease
@@ -638,6 +768,10 @@ class TestThePollDeadlineCanNowBeReached:
             run_id="r",
             dag_id="d",
             node_id="n1",
+            workspace_id="w1",
+            project_id="p1",
+            node_run_id="nr1",
+            attempt_id="a1",
             metadata={RESUMED_PAUSE_KEY: {"first_seen": long_ago}},
         )
 
@@ -649,10 +783,10 @@ class TestThePollDeadlineCanNowBeReached:
         monkeypatch.setattr(jira_module, "_fetch_subtask_statuses", _statuses)
         result = await node.run(
             {
-                "base_url": "https://jira.example.com",
+                "binding_id": "test-jira-subtasks-binding",
                 "parent_key": "PROJ-100",
-                "pat": "x",
                 "timeout_seconds": 60,
+                "poll_interval_seconds": 60,
             },
             ctx,
         )
@@ -681,6 +815,31 @@ class TestTheTickUnderStress:
         (node_run,) = await container.run_store.list_node_runs(run_id)
         attempts = await container.run_store.list_attempts(node_run.node_run_id)
         assert len(attempts) == 2
+
+    async def test_a_caught_resume_failure_is_failed_accounting_not_resumed(
+        self, monkeypatch
+    ) -> None:
+        """#849: the tick counted a caught resume failure as a resumed Run, so
+        a tick that re-entered three polls and blew up on all three reported
+        three resumed. The breakdown is the honest answer now; the int return
+        keeps its attempted meaning, documented as such."""
+        _PollingPauseNode.reaches = 0
+        container = await _container()
+        await _parked_run(container, _PollingPauseNode.kind, workspace="accounting-ws")
+
+        async def _boom(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("the resolver blew up before any Attempt existed")
+
+        monkeypatch.setattr("maistro.runs.consumption.ScheduleAttemptExecutor.resume", _boom)
+
+        accounting = await container.resume_parked_runs_accounting()
+
+        assert accounting.attempted == 1
+        assert accounting.succeeded == 0, "a caught failure is not a resumed Run"
+        assert accounting.failed == 1
+        assert accounting.skipped == 0
+        # The compatibility return: attempted, as its docstring now states.
+        assert await container.resume_parked_runs() == 1
 
     async def test_a_resume_that_fails_outright_leaves_the_run_parked(self, monkeypatch) -> None:
         """Not RUNNING over a parked NodeRun. Nothing about the pause has
@@ -1245,6 +1404,7 @@ class TestAMultiNodeRunIsNotThisTicksToResume:
             graph,
             provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE},
             initial_status=RunStatus.QUEUED,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
         await container.run_store.transition_run(run.run_id, RunStatus.WAITING)

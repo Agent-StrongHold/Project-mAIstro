@@ -25,6 +25,7 @@ from maistro.runs.model import (
 )
 
 from . import executor as traversal
+from .failure import sanitize_failure_message
 from .protocol import DurableRunStore
 from .types import DurableRunRecord
 
@@ -75,7 +76,9 @@ def _logical_outcome(
     else:
         logical_status = RunStatus.FAILED
         result = None
-        message = item.result.error_message or f"node {item.node_id} failed"
+        message = sanitize_failure_message(
+            item.result.error_message or f"node {item.node_id} failed"
+        )
         error = f"{item.result.error_code or 'NodeFailure'}: {message}"[:512]
     return AcceptedNodeOutcome(
         node_run_id=item.node_run.node_run_id,
@@ -275,7 +278,10 @@ async def fold_authoritative_frontier(
     prior_state = record.graph_state
     record, completed, paused, failures = _accept_frontier(record, items)
     record = traversal._merge_frontier_blackboards(record, items)
-    for item in completed:
+    # A failed synth node whose dispatched child failed still spent a level
+    # (#1193): its retry must start from the deeper depth.
+    dispatched_failures = tuple(item for item in failures if item.result.metadata.get("dispatched"))
+    for item in (*completed, *dispatched_failures):
         record = traversal._maybe_increment_synth_depth(record, item.spec, item.result)
 
     if failures:

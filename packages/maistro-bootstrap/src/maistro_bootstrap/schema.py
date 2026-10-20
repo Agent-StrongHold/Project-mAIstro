@@ -6,6 +6,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from maistro.config.first_run import (
+    DEFAULT_ADMIN_USERNAME,
+    DEFAULT_CRYPTO_PROFILE,
+    DEFAULT_DAILY_DRIVER_USERNAME,
+    CryptoProfile,
+)
+
 SchemaVersion = Literal["1"]
 
 InstallMode = Literal["preview", "apply"]
@@ -17,7 +24,6 @@ UsersIntent = Literal["bootstrap_admin", "sso_later", "skip"]
 StackBringup = Literal["none", "root_full"]
 SandboxProfile = Literal["safe", "developer"]
 InstallSurface = Literal["curl", "checkout"]
-CryptoProfile = Literal["distributed_identity_root", "no_crypto", "full_all_crypto"]
 DeliveryMode = Literal["image_pull", "source_build"]
 
 
@@ -46,9 +52,9 @@ class InstallAnswersV1(BaseModel):
     install_surface: InstallSurface = "curl"
     delivery_mode: DeliveryMode = "image_pull"
     sandbox_profile: SandboxProfile = "safe"
-    crypto_profile: CryptoProfile = "distributed_identity_root"
-    admin_user: str = "maistro-admin"
-    daily_driver_user: str = "maistro-user"
+    crypto_profile: CryptoProfile = DEFAULT_CRYPTO_PROFILE
+    admin_user: str = DEFAULT_ADMIN_USERNAME
+    daily_driver_user: str = DEFAULT_DAILY_DRIVER_USERNAME
     additional_users: list[str] = Field(default_factory=list)
     first_agents: list[str] = Field(default_factory=lambda: ["guide", "operator", "builder"])
     reactor_enabled: bool = True

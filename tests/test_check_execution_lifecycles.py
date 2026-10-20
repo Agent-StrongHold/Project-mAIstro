@@ -193,7 +193,13 @@ def test_created_is_a_work_state_even_without_queued(gate) -> None:
     }
 
 
+@pytest.mark.timeout(180)
 def test_the_real_rsi_literal_is_discovered(gate) -> None:
+    # Whole-repository scan (~2700 files), and under the coverage gate's
+    # `--source=scripts` producer every line of the gate script is traced.
+    # Measured 27s bare and over the suite's 30s default that way on CI
+    # (#91 repair round, run 36835563261), so the margin is stated rather than
+    # discovered when a slower runner turns it into an intermittent red.
     found = gate.discover()
     assert found["services.rsi::RunStatus"] == {
         "PENDING",
@@ -345,6 +351,7 @@ def test_main_rejects_an_unledgered_literal_source_fixture(
         require_metric_version=lambda *_args, **_kwargs: None,
         load_authorizations=lambda *_args, **_kwargs: {},
         head_sha=lambda *_args, **_kwargs: "fixture",
+        bundled_implementation_fingerprint=lambda *_args, **_kwargs: "bundled-sha256:fake",
     )
     monkeypatch.setattr(gate, "_provenance", lambda: provenance)
 
@@ -358,7 +365,11 @@ def test_a_missing_rationale_fails(gate) -> None:
     assert "pkg.jobs::JobStatus: needs a rationale" in failures
 
 
+@pytest.mark.timeout(180)
 def test_the_shipped_ledger_matches_the_shipped_code(
     gate, real_repository_ratchet_base: None
 ) -> None:
+    # Same whole-repository scan through gate.main(); measured 31.5s bare
+    # locally, past the 30s suite default the moment coverage traces the
+    # script. Same stated-margin rationale as the discovery test above.
     assert gate.main() == 0
