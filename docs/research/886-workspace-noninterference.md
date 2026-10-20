@@ -87,6 +87,20 @@ conflicts were all additive and resolved to develop's side; this lane's diff
 against `origin/develop` is only this note, its inventory note, and the
 harness module.
 
+Re-validated after the review pass on this lane (2026-10-20): the module
+reports **17 passed in 18.96s**; the product backend suite collects 3809 node
+IDs and the suite-inventory gate matches; `ruff check` / `ruff format --check`
+are clean. The review's P2 findings are addressed: Bob-owned destructive
+surfaces are seeded so a whole-store wipe cannot compare `[] == []`; A-side
+query payloads are inspected for B's identity; a same-principal two-Workspace
+case (Alice holds an editor membership in B and seeds a B-side schedule)
+catches a user-scoped delete; the persona-feedback exception now pins the
+middleware admin gate that refuses a non-admin GET on the summary path; and a
+matching-persona Workspace C (instantiating A's persona) is added so a cascade
+deleting Agents by `persona_template_id` instead of `workspace_id` is caught.
+Each new regression class has an embedded sensitivity leg that simulates it and
+proves the oracle fails against it (AGENTS.md L88-L92).
+
 **Oracle validation by mutation** (injected, run, reverted; not committed):
 
 - `delete_workspace_agents` ignoring its workspace argument (the delete

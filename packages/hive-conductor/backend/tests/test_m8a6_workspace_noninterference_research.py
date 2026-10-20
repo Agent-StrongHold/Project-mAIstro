@@ -621,9 +621,7 @@ def parties():
     # Seed B-owned schedule and memory rows before any baseline is taken: a
     # destructive A-side delete whose regression wipes the entire backing
     # store must not pass vacuously against an empty `[] == []` projection.
-    seeded_schedule = bob.post(
-        "/v1/schedules", json={**_SCHEDULE_BODY, "workspace_id": h.ws_b.id}
-    )
+    seeded_schedule = bob.post("/v1/schedules", json={**_SCHEDULE_BODY, "workspace_id": h.ws_b.id})
     assert seeded_schedule.status_code == 201, seeded_schedule.text
     h.bob_schedule_ids.append(seeded_schedule.json()["id"])  # teardown
     seeded_memory = bob.post(
@@ -806,6 +804,63 @@ def test_deleting_a_cascades_only_into_a(parties) -> None:
     )
 
 
+def test_deleting_a_cascades_only_into_a_with_matching_personas(parties) -> None:
+    """Review P2: the delete cascade must be scoped by Workspace, not persona.
+
+    The permanent fixture gives A and B different personas, so a faulty
+    cascade that deletes Agents by `persona_template_id` rather than by
+    `workspace_id` leaves B untouched and passes every deletion check. Here
+    Bob owns a second Workspace C that instantiates *A's* persona; deleting A
+    must not take C's Agents with it.
+    """
+    h = parties
+    from models.workspace import Workspace
+
+    created_c = h.bob.post(
+        "/v1/workspaces", json={"persona_template_id": _A_PERSONA, "name": "M8A6 Workspace C"}
+    )
+    assert created_c.status_code == 201, created_c.text
+    ws_c = Workspace(**created_c.json())
+
+    try:
+        before_c = _projection(h.bob, ws_c.id)
+        assert before_c["agents"], "C should have materialized Agents to observe"
+        assert {a["workspace_id"] for a in before_c["agents"]} == {ws_c.id}
+
+        _op_delete_workspace_a(h)
+
+        after_c = _projection(h.bob, ws_c.id)
+        assert after_c == before_c, (
+            "A's deletion touched C, which shares A's persona: the Agent "
+            "cascade is persona-scoped, not Workspace-scoped"
+        )
+
+        # Sensitivity (AGENTS.md L88-L92): simulate exactly the named
+        # regression -- a cascade that removes every Agent of A's persona --
+        # and prove the oracle fails against it, so the passes above are not
+        # vacuous.
+        import stores
+        from services.agent_materialization import workspace_agent_id
+
+        for aid, row in list(stores.agents.items()):
+            if row.workspace_id == ws_c.id:
+                stores.agents.pop(aid, None)
+        stores.agents.discard(workspace_agent_id(ws_c.id))
+        after_regression = _projection(h.bob, ws_c.id)
+        with pytest.raises(AssertionError, match="noninterference violated"):
+            _assert_untouched(before_c, after_regression, "persona-scoped cascade")
+        assert not after_regression["agents"]
+    finally:
+        import stores
+        from services.agent_materialization import delete_workspace_agents
+        from services.workspace_authority import delete_workspace
+
+        with contextlib.suppress(Exception):
+            asyncio.run(delete_workspace(ws_c.id))
+        delete_workspace_agents(ws_c.id)
+        stores.workspaces.pop(ws_c.id, None)
+
+
 async def _canonical_get(workspace_id: str) -> Any:
     from services.workspace_authority import canonical_store_for_tests
 
@@ -841,9 +896,7 @@ def test_same_principal_two_workspaces_destructive_ops_stay_workspace_scoped(
     # the A-op working set the vocabulary pops from. (Agents have no
     # equivalent row here: adding an Agent to a Workspace is owner-gated, so
     # an editor membership cannot seed one -- schedules carry the case.)
-    b_schedule = h.alice.post(
-        "/v1/schedules", json={**_SCHEDULE_BODY, "workspace_id": h.ws_b.id}
-    )
+    b_schedule = h.alice.post("/v1/schedules", json={**_SCHEDULE_BODY, "workspace_id": h.ws_b.id})
     assert b_schedule.status_code == 201, b_schedule.text
     b_schedule_id = b_schedule.json()["id"]
     assert b_schedule.json()["workspace_id"] == h.ws_b.id
@@ -855,7 +908,6 @@ def test_same_principal_two_workspaces_destructive_ops_stay_workspace_scoped(
     assert any(s["id"] == b_schedule_id for s in baseline["schedules"])
 
     # The destructive corner of the vocabulary, still explicitly scoped to A.
-    a_projection = _observe_a(h)
     for op in (
         _op_create_schedule_a,
         _op_delete_schedule_a,
@@ -866,7 +918,6 @@ def test_same_principal_two_workspaces_destructive_ops_stay_workspace_scoped(
     ):
         op(h)
         _assert_untouched(baseline, _observe(h), f"same-principal: {op.__name__}")
-        a_projection = _observe_a(h)
     _op_delete_workspace_a(h)
     _assert_untouched(baseline, _observe(h), "same-principal: delete workspace A")
 
@@ -958,6 +1009,24 @@ def test_persona_feedback_aggregates_across_workspaces_of_one_persona(parties) -
             f.workspace_id == twin_a["id"] and f.comment == "m8a6 exception probe"
             for f in summary.recent
         ), "expected the documented cross-workspace persona-feedback aggregation"
+
+        # Review P2: the admin gate the documented exception depends on. The
+        # persona-wide summary is an operator-only read (middleware/auth.py
+        # refuses a non-admin GET on the persona feedback path), so Bob -- a
+        # non-admin Workspace owner -- must be refused. If the middleware guard
+        # were removed, he could read other Workspaces' user ids and comments
+        # through this endpoint while every store-level assertion above still
+        # passed.
+        refused = h.bob.get(f"/v1/workspaces/persona-templates/{_B_PERSONA}/feedback")
+        assert refused.status_code == 403, (
+            "expected the persona-wide feedback summary to be admin-gated; got "
+            f"{refused.status_code} {refused.text}"
+        )
+        refused_alice = h.alice.get(f"/v1/workspaces/persona-templates/{_B_PERSONA}/feedback")
+        assert refused_alice.status_code == 403, (
+            "expected a non-admin A-side principal to be refused the summary too; got "
+            f"{refused_alice.status_code} {refused_alice.text}"
+        )
     finally:
         assert h.alice.delete(f"/v1/workspaces/{twin_a['id']}").status_code == 204
 
