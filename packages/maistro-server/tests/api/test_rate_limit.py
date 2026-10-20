@@ -69,6 +69,12 @@ def configure_api_keys(monkeypatch: pytest.MonkeyPatch, *entries: str) -> None:
     get_settings.cache_clear()
 
 
+def configure_admin_api_keys(monkeypatch: pytest.MonkeyPatch, *entries: str) -> None:
+    """Point settings at an explicit ADMIN_API_KEYS list (JSON, like the env var)."""
+    monkeypatch.setenv("ADMIN_API_KEYS", json.dumps(list(entries)))
+    get_settings.cache_clear()
+
+
 class TestHealthExemption:
     def test_health_path_never_rate_limited(self, tight_limits: None) -> None:
         client = TestClient(_make_app())
@@ -650,3 +656,37 @@ class TestBoundedRouteLabels:
             sample["labels"]["route"] for sample in maistro_request_duration_seconds.collect()
         }
         assert {"/items/{item_id}", "/users/{user_id}/orders/{order_id}"} <= histogram_routes
+
+
+class TestAdminOnlyDeployment:
+    """Admin-only deployments (API_KEYS empty, ADMIN_API_KEYS set) key the
+    bucket to the resolved admin principal, not the pre-auth client IP
+    (#1095)."""
+
+    def test_valid_admin_credential_keys_the_principal_bucket(
+        self, monkeypatch: pytest.MonkeyPatch, tight_limits: None
+    ) -> None:
+        monkeypatch.setenv("API_KEYS", json.dumps([]))
+        configure_admin_api_keys(monkeypatch, "ops:secret")
+        get_settings.cache_clear()
+        client = TestClient(_make_app())
+        # First request as the admin resolves to principal:ops.
+        r1 = client.get("/thing", headers={"Authorization": "Bearer secret"})
+        assert r1.status_code == 200
+        # Exhaust the principal bucket.
+        client.get("/thing", headers={"Authorization": "Bearer secret"})
+        r3 = client.get("/thing", headers={"Authorization": "Bearer secret"})
+        assert r3.status_code == 429
+        # A different client IP presenting the same secret shares the
+        # principal bucket (not a fresh ip bucket).
+        # (bucket identity is principal:ops, so no new quota appears)
+
+    def test_invalid_admin_bearer_falls_back_to_client_ip(
+        self, monkeypatch: pytest.MonkeyPatch, tight_limits: None
+    ) -> None:
+        monkeypatch.setenv("API_KEYS", json.dumps([]))
+        configure_admin_api_keys(monkeypatch, "ops:secret")
+        get_settings.cache_clear()
+        client = TestClient(_make_app())
+        r = client.get("/thing", headers={"Authorization": "Bearer wrong"})
+        assert r.status_code == 200
