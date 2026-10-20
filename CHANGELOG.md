@@ -70,6 +70,21 @@ or placeholder-only section.
   catalog through `provider_adapter_catalog`; configuring an adapter
   authorizes nothing by itself). See ADR-105.
 
+- **The out-of-tree reference extension repository ships four extension families with a shared publish/sign/catalog workflow (#980).**
+  `extensions/reference-gallery/` is a third-party-shaped, multi-package
+  repository: a `tool`-family connector, a `skill` (with an extension-level
+  dependency the catalog resolves), a `capability-provider` model adapter
+  written against the ADR-104 provider-adapter SDK contract, and a
+  `renderer-plugin` UI pack. `tools/publish.py` builds every package, binds
+  each manifest to its wheel's digest, signs the canonical install payload
+  with the publisher's Ed25519 key, and emits a deterministic catalog
+  snapshot that `resolve_lock`/`materialize_lock` and the governed
+  inspect → authorize → install lifecycle consume — wheels, never editable
+  source paths. The same reusable extension gates run in CI against the
+  gallery's own namespace policy via `--policy`, and the four packages'
+  suites are inventoried and collected like the first-party reference
+  extension's.
+
 - **The extension SDK boundary is enforced and a reference extension ships outside the
   core tree (#951).** `extensions/namespace-policy.json` declares the public
   package namespace policy — the public SDK root (`maistro_ext_sdk`) versus the
@@ -101,6 +116,12 @@ or placeholder-only section.
   stable `/v1` mounts; no `/vN` path duplication exists.
 
 ### Changed
+
+- **Quality and SAST checks can be retried independently (#1357).** Each Quality
+  obligation and SAST scanner has its own job. The existing required check names
+  now reject incomplete or unsuccessful dependency results, preserving branch
+  protection and merge-queue enforcement. One duplicate credential-authority
+  invocation is removed; scanner scopes and proof profiles stay unchanged.
 
 - **Evolve model effects require declared, execution-scoped authority (#1087).**
   Manual/request-scoped Evolve work now resolves an operator-declared `model.chat`
