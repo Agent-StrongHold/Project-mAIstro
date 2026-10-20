@@ -114,3 +114,23 @@ The change also edits `install.sh`, `docs/install/default-installer.md`
 (runtime-selection policy + OS/runtime/privilege matrix), and the pydantic
 install manifest schema (`container_runtime` field) — none of which move a
 count.
+
+## CI repair: supply-chain lock refresh (this note carries the round)
+
+The `security` job failed at `0f7134057` on three advisories that postdate
+the lock and are unrelated to this branch's diff (no dependency declaration
+is touched by the feature): `aiohttp==3.14.3 CVE-2026-111064`,
+`GHSA-2g87-pp6c-29x5` and `CVE-2026-111063`, all fixed in `3.14.4`.
+Repaired per the gate's own prescription by refreshing the lock
+(`uv lock --upgrade-package aiohttp==3.14.4`; `aiohttp` 3.14.3 → 3.14.4 and
+its transitive `yarl` 1.24.2 → 1.25.1, no other package version or
+requirement edge changed) and re-proved with CI's exact sequence
+(`uv sync --locked --extra dev`, `uv pip install pip-audit`, freeze,
+`pip-audit --strict --format=json`, `scripts/pip_audit_gate.py`): green, with
+only the triaged `ecdsa PYSEC-2026-1325` remaining, plus
+`scripts/check-dependency-namespaces.py` green. The `Supply chain
+(pip-audit)` job shape (`uv sync --locked --all-extras`) is green the same
+way. No test-count change from the repair; the +16 above is the suite truth.
+Full round record, including the base-owned reachability failures this round
+attributed to `origin/develop` with a pristine-base reproduction:
+[`REPAIR-NOTES-1820-ci-gate-repair.md`](../../../REPAIR-NOTES-1820-ci-gate-repair.md).
