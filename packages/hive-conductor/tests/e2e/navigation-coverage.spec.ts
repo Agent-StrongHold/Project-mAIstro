@@ -11,15 +11,16 @@
  * narrow-screen drawer), be reachable by keyboard, land on its destination,
  * and leave exactly one active entry bearing its accessible name.
  *
- * Reachability is per principal, matching AppShell's `visibleNav`: the two
- * entries carrying a mutation `scope` (`schedules.write`,
- * `containers.control`) are asserted absent for the setup wizard's daily
- * user (granted only `dags.write`) and walked under the admin account, which
+ * Reachability is per principal, matching AppShell's capabilities-driven nav
+ * filter (#373): the entries carrying an authorization gate (`schedules.write`,
+ * `containers.control`, and since #373 RSI's `rsi.execute` surface) are
+ * asserted absent for the setup wizard's daily user (granted only
+ * `dags.write`) and walked under the admin account, which
  * `principal_has_permission` passes through every gate.
  */
 
 import { expect, test, type BrowserContext, type Locator, type Page } from "@playwright/test";
-import { loginAsAdmin, loginAsPM, setupIfNeeded } from "./session";
+import { ADMIN_PASS, ADMIN_USER, loginAsAdmin, loginAsPM, setupIfNeeded } from "./session";
 
 test.describe.configure({ mode: "serial" });
 
@@ -36,12 +37,12 @@ let adminNarrowPage: Page;
  * the shell fails the visibility step; a destination that fails to render
  * fails the probe; an ambiguous active state fails the single-active check.
  *
- * `scope` marks the two entries AppShell renders conditionally
- * (`visibleNav`): the value mirrors the `AuthMiddleware` mutation gate for
- * that surface (backend/middleware/auth.py `_PROTECTED_OPS`), so the entry
- * is only expected for a principal holding the grant — the setup wizard's
- * admin (every permission) and not the daily user (see
- * DAILY_USER_ENTRIES below). */
+ * `scope` marks the entries AppShell renders conditionally: the value is the
+ * API-enforced permission that gate reads (`scope` for the mutation gates,
+ * and since #373 the RSI surface's `rsi.execute` — same policy table, same
+ * `/v1/auth/capabilities` contract), so the entry is only expected for a
+ * principal holding the grant — the setup wizard's admin (every permission)
+ * and not the daily user (see DAILY_USER_ENTRIES below). */
 const NAV_ENTRIES: Array<{ label: string; path: string; scope?: string; probe: (p: Page) => Locator }> = [
   { label: "Chat", path: "/chat", probe: (p) => p.getByLabel("Chat messages") },
   { label: "Dashboard", path: "/dashboard", probe: (p) => p.getByRole("heading", { name: "Live Operations", exact: true }) },
@@ -57,7 +58,13 @@ const NAV_ENTRIES: Array<{ label: string; path: string; scope?: string; probe: (
   { label: "Messages", path: "/messages", probe: (p) => p.getByRole("heading", { name: "Message Board", exact: true }) },
   { label: "Quotas", path: "/quotas", probe: (p) => p.getByRole("heading", { name: "Quotas & Stats", exact: true }) },
   { label: "Inner Temple", path: "/knowledge", probe: (p) => p.getByRole("heading", { name: "Inner Temple", exact: true }) },
-  { label: "RSI", path: "/rsi", probe: (p) => p.getByRole("heading", { name: "RSI — Recursive Self-Improvement", exact: true }) },
+  // #373: RSI is a gated surface — without an effective-or-elevatable
+  // `rsi.execute` the entry is hidden entirely, with the entry carrying a
+  // locked marker when the grant only needs self-elevation. Either state
+  // changes the accessible name away from the plain "RSI" the walk matches,
+  // so like the other gated rows it is asserted absent for the daily user
+  // and walked under the admin account.
+  { label: "RSI", path: "/rsi", scope: "rsi.execute", probe: (p) => p.getByRole("heading", { name: "RSI — Recursive Self-Improvement", exact: true }) },
   { label: "Integrations", path: "/mcp", probe: (p) => p.getByRole("heading", { name: "MCP", exact: true }) },
   { label: "Containers", path: "/containers", scope: "containers.control", probe: (p) => p.getByRole("heading", { name: "Containers", exact: true }) },
   { label: "CLI", path: "/cli", probe: (p) => p.getByRole("heading", { name: "CLI", exact: true }) },
@@ -77,11 +84,11 @@ const URL_ONLY_ENTRIES: Array<{ path: string; heading: string; navLabel: string 
 
 /** What the setup wizard's daily user is granted: routes/setup.py's
  * `_DEFAULT_DAILY_USER_PERMISSIONS` is `["dags.write"]`, and AppShell's
- * `visibleNav` hides any entry whose mutation scope the session lacks
- * (#1417 review: an entry must not imply access the principal lacks). The
- * ordinary-principal walk below covers exactly these rows; the two scoped
- * rows are asserted absent for this account and walked under the admin
- * account instead. */
+ * capabilities-driven filter hides any gated entry whose permission the
+ * session cannot act on or elevate to (#1417 review; #373 moved the whole
+ * filter onto the live capability snapshot). The ordinary-principal walk
+ * below covers exactly these rows; the gated rows are asserted absent for
+ * this account and walked under the admin account instead. */
 const DAILY_USER_ENTRIES = NAV_ENTRIES.filter((entry) => !entry.scope);
 
 /** CI's 20s per-test budget, not caution, splits the daily user's 19 rows
@@ -209,11 +216,33 @@ for (const [index, group] of chunk(DAILY_USER_ENTRIES, DRAWER_CHUNK_SIZE).entrie
 }
 
 /** The permission half of the contract (route-inventory.md): the daily user
- * holds no `schedules.write`/`containers.control` grant, so AppShell must not
- * render those entries in EITHER chrome mode — the pages' every mutation
- * would 403 for this account. Hidden, not merely unlinked from the rail. */
-test("mutation-scoped destinations stay out of both chrome modes without the grant", async () => {
+ * holds no `schedules.write`/`containers.control`/`rsi.execute` grant, so
+ * AppShell must not render those entries in EITHER chrome mode — the pages'
+ * every mutation would 403 for this account. Hidden, not merely unlinked
+ * from the rail. The reset first arranges the no-grant state this test
+ * asserts from, whatever an earlier spec (authorization.spec.ts grants and
+ * revokes `rsi.execute` on the same store-persistent account) left behind;
+ * authorization.spec.ts pins the same discipline. */
+test("mutation-scoped destinations stay out of both chrome modes without the grant", async ({ request }) => {
+  const login = await request.post("/v1/auth/login", {
+    data: { username: ADMIN_USER, password: ADMIN_PASS },
+  });
+  expect(login.status()).toBe(200);
+  const who = await page.request.get("/v1/auth/whoami");
+  expect(who.status()).toBe(200);
+  const { user } = await who.json();
+  expect(user, "daily-user page must have a session before the reset").toBeTruthy();
+  const granted = await request.patch(`/v1/auth/users/${user.id}/permissions`, {
+    data: { permissions: ["dags.write"] },
+  });
+  expect(granted.status()).toBe(200);
+  // A reload is the no-stale-cache contract doing its job: the next snapshot
+  // is a fresh, no-store fetch that reflects the reset immediately.
+  await page.reload();
+  await narrowPage.reload();
+
   const scoped = NAV_ENTRIES.filter((entry) => entry.scope);
+  await expect(page.locator(".icon-sidebar").getByRole("link", { name: "RSI", exact: true })).toHaveCount(0);
   await page.goto("/dashboard");
   for (const entry of scoped) {
     await expect(page.locator(".icon-sidebar").getByRole("link", { name: entry.label, exact: true })).toHaveCount(0);

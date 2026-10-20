@@ -45,15 +45,23 @@ export function AuthorizationProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    setLoading(true);
     try {
       const next = await apiGet<AuthorizationSnapshot>("/v1/auth/capabilities");
       setSnapshot(next);
       setError(null);
     } catch (err) {
-      setSnapshot(null);
+      // A failed refresh keeps the last good snapshot: a background poll that
+      // hiccups must not tear the gated surface down (PermissionBoundary
+      // renders the notice whenever snapshot is null). The very first load
+      // failing still leaves snapshot null, so every gate fails closed.
       setError(err instanceof Error ? err.message : "Could not load authorization");
     } finally {
+      // "loading" is the INITIAL load only. The 30s/focus background
+      // refreshes must not flip it back: PermissionBoundary unmounts the
+      // whole surface while loading, so a refresh that toggled it would
+      // collapse and remount the page (dropping its state) twice a minute —
+      // the fake-clock polling ladder in rsi-polling-resilience.spec.ts
+      // catches exactly that as an extra fresh-mount status poll (#373).
       setLoading(false);
     }
   }, []);
@@ -74,9 +82,15 @@ export function AuthorizationProvider({ children }: { children: ReactNode }) {
     loading,
     error,
     refresh,
-    can: (permission) => permission == null || Boolean(snapshot?.capabilities[permission]?.effective),
-    canElevate: (permission) => Boolean(permission && snapshot?.capabilities[permission]?.can_elevate),
-    surfacePermission: (surface) => snapshot?.surfaces[surface]?.permission ?? null,
+    // All three readers tolerate a snapshot that is null (fetch failed) or
+    // shaped by something other than /v1/auth/capabilities (an older backend
+    // behind a proxy, a route mock): optional chaining all the way down means
+    // the shell fails closed — gated entries hidden, boundaries show the
+    // explanation — instead of throwing "Cannot read properties of
+    // undefined" into the error boundary and taking every page down (#373).
+    can: (permission) => permission == null || Boolean(snapshot?.capabilities?.[permission]?.effective),
+    canElevate: (permission) => Boolean(permission && snapshot?.capabilities?.[permission]?.can_elevate),
+    surfacePermission: (surface) => snapshot?.surfaces?.[surface]?.permission ?? null,
     elevate: async (permission, taskId, password) => {
       await apiPost("/v1/auth/elevate", { password, permissions: [permission], task_id: taskId });
       await refresh();

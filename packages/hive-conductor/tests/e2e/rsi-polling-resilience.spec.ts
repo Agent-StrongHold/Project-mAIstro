@@ -294,6 +294,31 @@ async function stubV1Routes(scope: BrowserContext): Promise<void> {
       },
     }),
   );
+  // #373: /rsi sits behind PermissionBoundary("rsi.execute"), which reads the
+  // live capability snapshot — without this stub the catch-all above answers
+  // the capabilities fetch with `{}` and the boundary correctly shows the
+  // no-authority notice instead of the page under test. This spec owns the
+  // polling loop, not the authorization matrix, so the mocked principal holds
+  // rsi.execute effectively.
+  await scope.route("**/v1/auth/capabilities", (route) =>
+    route.fulfill({
+      json: {
+        version: "hive-http-capabilities-v1",
+        role: "user",
+        assigned_permissions: ["rsi.execute"],
+        elevated_permissions: ["rsi.execute"],
+        effective_permissions: ["rsi.execute"],
+        elevated_tasks: ["rsi-spec"],
+        elevated_task_expiries: {},
+        capabilities: {
+          "rsi.execute": { assigned: true, elevated: true, effective: true, can_elevate: false, reason: "active elevation" },
+        },
+        surfaces: {
+          rsi: { permission: "rsi.execute", read_path: "/v1/rsi/status", effective: true, can_elevate: false },
+        },
+      },
+    }),
+  );
   await scope.route(/\/v1\/workspaces(\?.*)?$/, (route) =>
     route.fulfill({
       json: [

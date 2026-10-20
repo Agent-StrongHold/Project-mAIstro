@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { useAuthorization } from "../context/AuthorizationContext";
+import { randomId } from "../lib/ids";
 
 export function ElevationPrompt({
   permission,
@@ -14,7 +15,14 @@ export function ElevationPrompt({
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [taskId] = useState(() => `ui-elevation-${permission}-${crypto.randomUUID()}`);
+  // The task label comes from lib/ids' randomId, not crypto.randomUUID:
+  // randomUUID exists only in a secure context, and plain-HTTP is a supported
+  // deployment (docker-compose.test.yml's SESSION_COOKIE_SECURE=false +
+  // ALLOW_INSECURE_TRANSPORT pair, and the documented LAN-homelab mode).
+  // There the initializer threw "crypto.randomUUID is not a function" and
+  // clicking "request elevation" tore down the whole tree before the
+  // password field ever rendered (#373 e2e, #1344 for the same bug class).
+  const [taskId] = useState(() => `ui-elevation-${permission}-${randomId()}`);
 
   if (!canElevate(permission)) {
     return (
