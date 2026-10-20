@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +55
+  tests/: +72
 ---
 # Issue 363 license inventory
 
@@ -245,3 +245,55 @@ Evidence this round (all local, this tree):
   c2d7209f1 two hours later; recorded as CI/DB-race flake, not repaired here.
 - `integration-scope` is the aggregator waiting on the required specialized
   checks; it follows the gates above.
+
+## Delta 6 (repair round: the gate's own blind spots)
+
+Seventeen tests added for four defects in the gate itself, each of which
+contradicted an acceptance criterion of this issue and was confirmed against
+the *real* SBOMs the CI job scans (the four final images plus both frontend
+surfaces, kept locally as git-ignored `license-sboms/`).
+
+1. **Sentinel licence values are missing metadata, not licences**
+   (`NOASSERTION`, `NONE`, `UNKNOWN`, `LicenseRef-Unknown`). The gate
+   accepted any non-empty `id`/`name`/`value`, so a component whose producer
+   had no licence to report was recorded as `license_status: known` and
+   passed. It now needs a reviewed resolution like any other unknown.
+   Real effect: `pkg:pypi/x25519@0.0.2` (a transitive dependency of
+   `pytoniq-core-fork`, shipped in three of the four images) declares
+   `License: UNKNOWN` in its METADATA and is now resolved by a new reviewed
+   resolution in `quality/license-policy.json` (trove classifier
+   `License :: Public Domain`).
+2. **A file component with licence evidence keeps it.** The blanket
+   `not-applicable` exemption was for provenance records (a lockfile), but
+   Syft also reports shipped scripts, fonts and vendored assets as file
+   components; a file component carrying an explicit licence (a GPL script)
+   was rewritten to `not-applicable` before the copyleft classifier ever saw
+   it. A file component with no licence is still provenance.
+3. **Copyleft families that the frontend trees actually ship.**
+   `OFL-1.1`, `EUPL-1.2` and `CC-BY-SA-*` were classified as "other", so a
+   copyleft finding was presented to legal as a benign one. Real effect on
+   the CI surfaces: three OFL fonts shipped in the conductor's npm tree
+   (`@fontsource-variable/bricolage-grotesque`, `.../inter`,
+   `.../jetbrains-mono`) are now surfaced as copyleft — the copyleft count
+   moved 423 → 426 on the same SBOMs.
+4. **The inventory records the policy file that was used.** It recorded the
+   default `quality/license-policy.json` whatever `--policy` said, which is
+   a false provenance statement about how the legal verdict was reached.
+
+The reviewed resolutions were also bound to the versions actually reviewed:
+`pkg:pypi/wcwidth@*` became three version-bound rows (`0.7.0`, `0.9.2`,
+`0.9.3`) — 0.9.3 is the version the engine-research and conductor images
+ship, and the wheel's `licenses/LICENSE` file is the MIT text — so a later,
+unreviewed wcwidth release needs its own review instead of inheriting one.
+
+Evidence (all local, this tree, against the SBOMs the CI job scans):
+
+- `python3 scripts/check-license-inventory.py --policy quality/license-policy.json ...`
+  over the eight CI surfaces → `OK: inventoried 8 surface(s), 25931
+  component(s); copyleft=426 (policy=review)` (the same run with the
+  previous script → `copyleft=423`, with the three OFL fonts classified as
+  "other").
+- The same gate over the two sandbox surfaces (`deploy/sbx/license-inventory/sboms/`)
+  → `OK: inventoried 2 surface(s), 61517 component(s); copyleft=325
+  (policy=review)`.
+- `tests/test_check_license_inventory.py` → 71 passed (54 before this delta).

@@ -795,3 +795,163 @@ def test_repository_license_policy_validates(gate):
         gate.build_inventory(policy, {})
     missing = excinfo.value.args[0].split(": ", 1)[1].split(", ")
     assert set(missing) == required
+
+
+def test_sentinel_license_value_is_missing_metadata_not_a_license(gate, tmp_path):
+    """NOASSERTION and friends are not licences.
+
+    A producer that emits a placeholder is saying "I have no licence to
+    report". Accepting the placeholder as a licence would let a component
+    with unknown licence metadata pass as known, which is exactly what the
+    reviewed-resolution rule exists to prevent.
+    """
+    policy = _policy(tmp_path)
+    sbom = _sbom(tmp_path, licenses=[{"license": {"id": "NOASSERTION"}}])
+    inventory, unknown = _run(gate, tmp_path, policy, sbom)
+    assert unknown == ["image: pkg:pypi/example@1.0 (pkg:pypi/example@1.0)"]
+    component = inventory["surfaces"][0]["components"][0]
+    assert component["licenses"] == []
+    assert component["license_status"] == "unresolved"
+    assert component["legal_class"] == "unknown"
+
+
+@pytest.mark.parametrize("sentinel", ["NOASSERTION", "NONE", "UNKNOWN", "LicenseRef-Unknown"])
+def test_every_missing_license_sentinel_needs_a_reviewed_resolution(gate, tmp_path, sentinel):
+    policy = _policy(tmp_path)
+    sbom = _sbom(tmp_path, licenses=[{"license": {"name": sentinel}}])
+    inventory, unknown = _run(gate, tmp_path, policy, sbom)
+    assert unknown != []
+    component = inventory["surfaces"][0]["components"][0]
+    assert component["license_status"] == "unresolved"
+
+
+def test_sentinel_license_value_with_a_reviewed_resolution_is_reviewed(gate, tmp_path):
+    """A placeholder plus a reviewed resolution is a resolution, not a gap."""
+    policy = _policy(tmp_path)
+    policy["reviewed_resolutions"] = [
+        {
+            "identity": "pkg:pypi/example@1.0",
+            "license": "MIT",
+            "reason": "Wheel METADATA declares License-Expression: MIT.",
+            "owner": "Engineering and Legal",
+            "reviewed_on": "2026-10-18",
+        }
+    ]
+    sbom = _sbom(tmp_path, licenses=[{"license": {"id": "NOASSERTION"}}])
+    inventory, unknown = _run(gate, tmp_path, policy, sbom)
+    assert unknown == []
+    component = inventory["surfaces"][0]["components"][0]
+    assert component["licenses"] == ["MIT"]
+    assert component["license_status"] == "reviewed"
+
+
+def test_sentinel_alongside_a_real_license_keeps_the_real_license(gate, tmp_path):
+    policy = _policy(tmp_path)
+    sbom = _sbom(
+        tmp_path,
+        licenses=[{"license": {"id": "NOASSERTION"}}, {"license": {"id": "MIT"}}],
+    )
+    inventory, unknown = _run(gate, tmp_path, policy, sbom)
+    assert unknown == []
+    component = inventory["surfaces"][0]["components"][0]
+    assert component["licenses"] == ["MIT"]
+    assert component["license_status"] == "known"
+
+
+def test_file_component_with_explicit_license_keeps_its_evidence(gate, tmp_path):
+    """A shipped script or font is a file component with a licence.
+
+    Rewriting it to "not-applicable" would hide a licensed artifact from
+    the legal review — the file-component exemption is for provenance
+    records (a lockfile), not for vendored assets.
+    """
+    policy = _policy(tmp_path)
+    script = {
+        "bom-ref": "file:/app/bin/tool.sh",
+        "type": "file",
+        "name": "tool.sh",
+        "licenses": [{"license": {"id": "GPL-3.0-only"}}],
+    }
+    sbom = _write_sbom(tmp_path, {"bomFormat": "CycloneDX", "components": [script]})
+    inventory, unknown = _run(gate, tmp_path, policy, sbom)
+    assert unknown == []
+    component = inventory["surfaces"][0]["components"][0]
+    assert component["licenses"] == ["GPL-3.0-only"]
+    assert component["license_status"] == "known"
+    assert component["legal_class"] == "copyleft"
+    assert inventory["surfaces"][0]["license_evidence"][0]["licenses"] == ["GPL-3.0-only"]
+
+
+def test_file_component_without_license_stays_provenance(gate, tmp_path):
+    policy = _policy(tmp_path)
+    lock = {
+        "bom-ref": "file:package-lock.json",
+        "type": "file",
+        "name": "package-lock.json",
+        "licenses": [{"license": {"id": "NOASSERTION"}}],
+    }
+    sbom = _write_sbom(tmp_path, {"bomFormat": "CycloneDX", "components": [lock]})
+    inventory, unknown = _run(gate, tmp_path, policy, sbom)
+    assert unknown == []
+    component = inventory["surfaces"][0]["components"][0]
+    assert component["license_status"] == "not-applicable"
+    assert component["legal_class"] == "not-applicable"
+
+
+@pytest.mark.parametrize(
+    "license_id",
+    ["OFL-1.1", "EUPL-1.2", "CC-BY-SA-4.0", "CC-BY-SA-3.0", "SIL OPEN FONT LICENSE 1.1"],
+)
+def test_copyleft_families_are_classified_as_copyleft(gate, tmp_path, license_id):
+    """Fonts, the EUPL and share-alike assets are copyleft.
+
+    The frontend trees ship OFL fonts and CC-BY-SA assets; classifying them
+    as "other" would present a copyleft finding to legal as a benign one.
+    """
+    policy = _policy(tmp_path)
+    sbom = _sbom(tmp_path, licenses=[{"license": {"id": license_id}}])
+    inventory, unknown = _run(gate, tmp_path, policy, sbom)
+    assert unknown == []
+    component = inventory["surfaces"][0]["components"][0]
+    assert component["legal_class"] == "copyleft", license_id
+
+
+def test_permissive_licenses_stay_non_copyleft(gate, tmp_path):
+    policy = _policy(tmp_path)
+    sbom = _sbom(tmp_path, licenses=[{"license": {"id": "MIT"}}])
+    inventory, _ = _run(gate, tmp_path, policy, sbom)
+    assert inventory["surfaces"][0]["components"][0]["legal_class"] == "other"
+
+
+def test_inventory_records_the_policy_file_that_was_used(gate, tmp_path, capsys):
+    """The recorded policy path is the policy that governed the inventory.
+
+    Recording the default while a different policy was supplied is a false
+    statement about how the legal verdict was reached.
+    """
+    policy = _policy(tmp_path)
+    policy_file = _write_policy_file(tmp_path, policy)
+    sbom = _sbom(tmp_path, licenses=[{"license": {"id": "MIT"}}])
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    exit_code = gate.main(
+        [
+            "--policy",
+            str(policy_file),
+            "--sbom",
+            f"image={sbom}",
+            "--output",
+            str(tmp_path / "inventory.json"),
+        ]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+    inventory = json.loads((tmp_path / "inventory.json").read_text(encoding="utf-8"))
+    assert inventory["policy"]["path"] == str(policy_file)
+    assert inventory["policy"]["path"] != "quality/license-policy.json"
+
+
+def test_inventory_records_the_default_policy_when_none_is_supplied(gate, tmp_path):
+    policy = _policy(tmp_path)
+    sbom = _sbom(tmp_path, licenses=[{"license": {"id": "MIT"}}])
+    inventory, _ = _run(gate, tmp_path, policy, sbom)
+    assert inventory["policy"]["path"] == "quality/license-policy.json"

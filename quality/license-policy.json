@@ -272,11 +272,32 @@
       "reviewed_on": "2026-10-18"
     },
     {
-      "identity": "pkg:pypi/wcwidth@*",
+      "identity": "pkg:pypi/wcwidth@0.7.0",
       "license": "MIT",
-      "reason": "Wheel METADATA declares License-Expression: MIT for reviewed versions 0.7.0 and 0.9.2; the 0.9.2 wheel omits the field in the format Syft reads.",
+      "reason": "Wheel METADATA declares License-Expression: MIT for this reviewed version.",
       "owner": "Engineering and Legal",
       "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/wcwidth@0.9.2",
+      "license": "MIT",
+      "reason": "Wheel METADATA declares License-Expression: MIT for this reviewed version; the 0.9.2 wheel omits the field in the format Syft reads.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/wcwidth@0.9.3",
+      "license": "MIT",
+      "reason": "Reviewed for the 0.9.3 wheel that the maistro-engine-research and hive-conductor images ship: METADATA carries the classifier OSI Approved :: MIT License and the wheel's licenses/LICENSE file is the MIT text. Bound to this version so a later, unreviewed release of wcwidth needs its own review instead of inheriting this one.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-20"
+    },
+    {
+      "identity": "pkg:pypi/x25519@*",
+      "license": "Public Domain",
+      "reason": "The 0.0.2 wheel's METADATA declares License: UNKNOWN, which is missing metadata rather than a licence; the trove classifier License :: Public Domain is the operative licence evidence and no LICENSE file ships in the wheel. The reviewed resolution is what makes the missing metadata acceptable.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-20"
     },
     {
       "identity": "pkg:pypi/yattag@*",

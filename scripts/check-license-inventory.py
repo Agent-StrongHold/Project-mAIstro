@@ -33,10 +33,28 @@ DEFAULT_POLICY = ROOT / "quality" / "license-policy.json"
 
 # SPDX identifiers and common Syft names.  This is intentionally conservative:
 # an unfamiliar expression is reviewable rather than being guessed permissive.
+# The frontend trees ship OFL fonts and CC-BY-SA assets, and the EUPL is a
+# copyleft licence too, so those families are recognised as well: a
+# copyleft component that is classified as "other" is a copyleft component the
+# legal reviewer never sees, which is the failure this gate exists to prevent.
 COPYLEFT_RE = re.compile(
-    r"(?:^|[- /])(?:a?gpl|gpl|lgpl|mpl|epl|cddl|eucdl|sspl|osl)(?:[- /]|$)|"
-    r"(?:^|[- ])(?:gnu|mozilla public|eclipse public|common development)",
+    r"(?:^|[- /])(?:a?gpl|gpl|lgpl|mpl|epl|cddl|eucdl|sspl|osl|eupl|ofl|cc-by-sa)(?:[- /]|$)|"
+    r"(?:^|[- ])(?:gnu|mozilla public|eclipse public|common development|sil open font)",
     re.IGNORECASE,
+)
+
+#: Values a producer emits to say "I have no licence to report".  They are not
+#: licences: accepting one as evidence would let a component with no licence
+#: metadata pass as known, which is exactly what the unknown-licence rule
+#: exists to prevent.  A component carrying only these needs a reviewed
+#: resolution, like a component with no licence field at all.
+MISSING_LICENSE_SENTINELS = frozenset(
+    {
+        "noassertion",
+        "none",
+        "unknown",
+        "licenseref-unknown",
+    }
 )
 
 
@@ -209,7 +227,9 @@ def _license_values(component: dict[str, Any]) -> list[str]:
     expression = component.get("licenseExpression")
     if isinstance(expression, str) and expression.strip():
         values.append(expression.strip())
-    return list(dict.fromkeys(values))
+    # A sentinel is missing metadata, not a licence.
+    real = [value for value in values if value.strip().lower() not in MISSING_LICENSE_SENTINELS]
+    return list(dict.fromkeys(real))
 
 
 def _component_identity(component: dict[str, Any]) -> str:
@@ -241,6 +261,20 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _policy_path(policy_path: Path | None) -> str:
+    """The policy file that actually governed this inventory.
+
+    The recorded path is the provenance of the artifact: an inventory that
+    says ``quality/license-policy.json`` while a different policy file was
+    supplied is a false statement about how the legal verdict was reached.
+    """
+    path = policy_path if policy_path is not None else DEFAULT_POLICY
+    try:
+        return str(path.resolve().relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
 def _components_for_sbom(path: Path) -> list[dict[str, Any]]:
     document = _load_json(path)
     if document.get("bomFormat") != "CycloneDX":
@@ -267,11 +301,20 @@ def _component_record(
     bom_ref = str(component.get("bom-ref", "")).strip()
     if not bom_ref:
         raise InventoryError(f"{surface_id}: {identity} has no CycloneDX bom-ref")
+    licenses = _license_values(component)
+    reviewed = _resolution(identity, resolutions)
     # A file component (such as package-lock.json) is SBOM provenance rather
     # than a separately licensed dependency. Keep it in the reconciliation
     # evidence, but state that legal metadata is not applicable instead of
     # mistaking the absence of a package license for unknown metadata.
-    if component.get("type") == "file":
+    #
+    # Only a file component that carries NO license at all is provenance.
+    # Syft also reports shipped scripts, fonts, bundles and other vendored
+    # assets as file components, and one of those can carry an explicit
+    # licence (a GPL script, an OFL font). Rewriting those to
+    # "not-applicable" hides a licensed artifact from the legal review, so a
+    # file component with licence evidence keeps that evidence.
+    if component.get("type") == "file" and not licenses and reviewed is None:
         record = {
             "bom_ref": bom_ref,
             "identity": identity,
@@ -284,8 +327,6 @@ def _component_record(
             "review": None,
         }
         return record, {"component_ref": bom_ref, "identity": identity, "licenses": []}
-    licenses = _license_values(component)
-    reviewed = _resolution(identity, resolutions)
     status = "known"
     if not licenses:
         if reviewed is None:
@@ -356,6 +397,7 @@ def build_inventory(
     sboms: dict[str, Path],
     artifacts: dict[str, str] | None = None,
     only: set[str] | None = None,
+    policy_path: Path | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     all_surfaces = _check_policy(policy)
     artifacts = artifacts or {}
@@ -388,7 +430,7 @@ def build_inventory(
     inventory = {
         "schema_version": 1,
         "policy": {
-            "path": str(DEFAULT_POLICY.relative_to(ROOT)),
+            "path": _policy_path(policy_path),
             "unknown_license_action": policy["legal"]["unknown_license_action"],
             "copyleft_action": policy["legal"]["copyleft_action"],
         },
@@ -421,7 +463,11 @@ def main(argv: list[str] | None = None) -> int:
         sboms = _parse_pairs(args.sbom, "sbom")
         artifacts = _parse_artifacts(args.artifact)
         inventory, unknown = build_inventory(
-            policy, sboms, artifacts, set(args.only) if args.only is not None else None
+            policy,
+            sboms,
+            artifacts,
+            set(args.only) if args.only is not None else None,
+            args.policy,
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(
