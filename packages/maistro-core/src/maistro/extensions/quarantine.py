@@ -349,9 +349,7 @@ class ExtensionGovernanceService:
         checked in the fixed order publisher → package → version, so a
         publisher quarantine can never be read as anything narrower.
         """
-        mismatch = self._publisher_mismatch(
-            extension_id=extension_id, publisher=publisher
-        )
+        mismatch = self._publisher_mismatch(extension_id=extension_id, publisher=publisher)
         if mismatch:
             # Fail closed: a mismatched publisher is not a new identity but
             # a false label on the pinned one, so it can never admit.
@@ -399,9 +397,7 @@ class ExtensionGovernanceService:
 
     def _require_pinned_publisher(self, *, extension_id: str, publisher: str) -> None:
         """Refuse mutations that name a publisher other than the pinned one."""
-        mismatch = self._publisher_mismatch(
-            extension_id=extension_id, publisher=publisher
-        )
+        mismatch = self._publisher_mismatch(extension_id=extension_id, publisher=publisher)
         if mismatch:
             raise QuarantineAuthorityError(mismatch)
 

@@ -437,9 +437,7 @@ def test_quarantined_package_cannot_be_bypassed_by_a_different_publisher() -> No
     assert refused.governing_state is GovernanceState.QUARANTINED
     assert PUBLISHER in refused.reason and OTHER_PUBLISHER in refused.reason
     with pytest.raises(QuarantineAuthorityError):
-        service.begin_invocation(
-            extension_id=EXT, version=VERSION, publisher=OTHER_PUBLISHER
-        )
+        service.begin_invocation(extension_id=EXT, version=VERSION, publisher=OTHER_PUBLISHER)
 
 
 def test_mismatched_publisher_cannot_blend_strikes_or_clear_a_package() -> None:
@@ -458,18 +456,27 @@ def test_mismatched_publisher_cannot_blend_strikes_or_clear_a_package() -> None:
             ),
             actor=SYSTEM,
         )
-    assert service.strikes(extension_id=EXT, version=VERSION, kind=EvidenceKind.SECURITY_VIOLATION) == 1
+    assert (
+        service.strikes(extension_id=EXT, version=VERSION, kind=EvidenceKind.SECURITY_VIOLATION)
+        == 1
+    )
     for mutation in (
         lambda: service.disable_version(
-            extension_id=EXT, version=VERSION, publisher=OTHER_PUBLISHER,
-            actor=ADMIN, reason="x",
+            extension_id=EXT,
+            version=VERSION,
+            publisher=OTHER_PUBLISHER,
+            actor=ADMIN,
+            reason="x",
         ),
         lambda: service.quarantine_package(
             extension_id=EXT, publisher=OTHER_PUBLISHER, actor=ADMIN, reason="x"
         ),
         lambda: service.re_enable_version(
-            extension_id=EXT, version=VERSION, publisher=OTHER_PUBLISHER,
-            actor=ADMIN, reason="x",
+            extension_id=EXT,
+            version=VERSION,
+            publisher=OTHER_PUBLISHER,
+            actor=ADMIN,
+            reason="x",
         ),
         lambda: service.re_enable_package(
             extension_id=EXT, publisher=OTHER_PUBLISHER, actor=ADMIN, reason="x"
@@ -485,13 +492,19 @@ def test_first_pinning_wins_and_matching_publishers_are_unaffected() -> None:
     operations under the same publisher behave exactly as before."""
     service = _service()
     service.disable_version(
-        extension_id=EXT, version=VERSION, publisher=PUBLISHER,
-        actor=ADMIN, reason="bad build",
+        extension_id=EXT,
+        version=VERSION,
+        publisher=PUBLISHER,
+        actor=ADMIN,
+        reason="bad build",
     )
     assert not _admit(service).allowed
     service.re_enable_version(
-        extension_id=EXT, version=VERSION, publisher=PUBLISHER,
-        actor=ADMIN, reason="reviewed",
+        extension_id=EXT,
+        version=VERSION,
+        publisher=PUBLISHER,
+        actor=ADMIN,
+        reason="reviewed",
     )
     assert _admit(service).allowed
     assert _admit(service, extension_id=OTHER_PUBLISHER_EXT, publisher=OTHER_PUBLISHER).allowed
