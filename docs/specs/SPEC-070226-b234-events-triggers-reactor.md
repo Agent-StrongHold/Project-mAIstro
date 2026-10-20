@@ -29,6 +29,7 @@ ac-modules:
   AC-2: maistro.events.trigger_store
   AC-3: maistro.events.invocations
   AC-4: maistro.events.processing
+  AC-6: maistro.events.processing
 layer: Observability
 owners:
   - '@BlakeMatthews-dev'

@@ -501,6 +501,7 @@ class TestClassificationTable:
         assert receipt.status is InvocationStatus.RETRYING
         assert receipt.uncertain_prior_dispatch  # cumulative uncertainty recorded
 
+    @pytest.mark.ac("SPEC-070226-b234/AC-6")
     async def test_indeterminate_on_an_unproven_recipient_is_unknown_after_one_shot(self) -> None:
         log, triggers, invocations = (
             InMemoryEventLog(),
@@ -948,6 +949,7 @@ class TestCrashPhases:
 
         return caller
 
+    @pytest.mark.ac("SPEC-070226-b234/AC-6")
     async def test_unknown_receipts_stay_inspectable_while_later_events_advance(self) -> None:
         log, trig_store, invocations, trigger = self._stack()
         await trig_store.add(trigger)
