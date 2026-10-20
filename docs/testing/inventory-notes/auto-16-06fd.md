@@ -1,8 +1,29 @@
+---
+inventory-delta:
+  packages/hive-conductor/backend/tests: +2
+  packages/maistro-core/tests: +8
+---
 # auto-16-06fd (issue #16 verification round)
 
 Verification round for the M1 event/recovery plane on branch `auto-16`
 (merge base `ce2048cd`). This round moved no collected test count, so the
 note records no `inventory-delta` block.
+
+A subsequent repair commit (`0db266ec3` — `test: add coverage for diff-coverage
+failures in issue #16`) added the test files that back the event/recovery and
+DAG-recovery surface touched by this branch:
+
+- `packages/maistro-core/tests/events/test_events.py` — event-bus trigger
+  firing-authority legs (the `CanonicalEventPublisher` projection path);
+- `packages/maistro-core/tests/runs/test_recovery_events.py` — the canonical
+  store-sink and recovery-disposition projection tests;
+- `packages/hive-conductor/backend/tests/test_dag_recovery.py` — the legacy-DAG
+  recovery projection through `CanonicalRecoveryEventSink` in
+  `canonical_dag_runner.py`.
+
+These additions are recorded in the `inventory-delta` front matter above
+(`packages/maistro-core/tests`: +8, `packages/hive-conductor/backend/tests`:
++2).
 
 What it did instead:
 

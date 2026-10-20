@@ -418,4 +418,3 @@ async def test_canonical_recovery_events_returns_canonical_sink(
     assert isinstance(sink, CanonicalRecoveryEventSink)
     assert sink._runs is container.run_store
     assert sink._events is canonical_events
-

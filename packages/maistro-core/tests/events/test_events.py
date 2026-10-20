@@ -376,7 +376,6 @@ class TestEventBus:
         assert after_count == 2
 
 
-
 class TestEmitFiringAuthority:
     """A trigger is counted as fired only when its handler actually completed (#836).
 

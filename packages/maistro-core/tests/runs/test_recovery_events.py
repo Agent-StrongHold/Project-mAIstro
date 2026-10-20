@@ -290,4 +290,3 @@ async def test_canonical_event_store_sink_returns_appended_envelope() -> None:
     assert result.payload["disposition"] == "accepted"
     # The same envelope instance is returned.
     assert result is recorded.events[0]
-
