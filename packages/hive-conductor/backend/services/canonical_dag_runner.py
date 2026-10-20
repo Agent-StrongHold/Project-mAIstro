@@ -52,14 +52,11 @@ def _host_principal_roles(user_id: str) -> tuple[str, ...]:
     if not user_id:
         return ()
     try:
-        import stores
+        from services import registration_policy
 
-        user = stores.users.get(user_id)
+        role = registration_policy.host_user_role(user_id)
     except Exception:  # pragma: no cover - store unavailable in isolation
         return ()
-    if user is None:
-        return ()
-    role = getattr(user, "role", "")
     return (str(role),) if role else ()
 
 
