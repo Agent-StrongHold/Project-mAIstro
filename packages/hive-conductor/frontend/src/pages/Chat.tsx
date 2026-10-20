@@ -203,8 +203,30 @@ export default function ChatPage() {
       .catch(() => {});
   }, []);
   const [modelOpen, setModelOpen] = useState(false);
+  const modelButtonRef = useRef<HTMLButtonElement>(null);
+  const modelDropdownRef = useRef<HTMLUListElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const listEndRef = useRef<HTMLDivElement>(null);
+
+  // A menu that closes without returning focus strands the keyboard user on
+  // <body>, so the next Tab restarts at the top of the page instead of where
+  // they were (#370). Selecting an option or pressing Escape both land back on
+  // the trigger.
+  const closeModelMenu = useCallback(() => {
+    setModelOpen(false);
+    modelButtonRef.current?.focus();
+  }, []);
+
+  // Opening the listbox moves focus onto the selected option so Arrow/Enter
+  // operate it without a pointer.
+  useEffect(() => {
+    if (!modelOpen) return;
+    const dropdown = modelDropdownRef.current;
+    const option =
+      dropdown?.querySelector<HTMLButtonElement>(".model-option--active") ??
+      dropdown?.querySelector<HTMLButtonElement>("button");
+    option?.focus();
+  }, [modelOpen]);
 
   const activeSession = sessions.find((s) => s.id === activeId) ?? sessions[0] ?? createSession();
 
@@ -426,8 +448,15 @@ export default function ChatPage() {
           <span className="chat-header-title">AI Assistant</span>
           <div className="model-selector">
             <button
+              ref={modelButtonRef}
               className="btn-model"
               onClick={() => setModelOpen((o) => !o)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && modelOpen) {
+                  event.preventDefault();
+                  closeModelMenu();
+                }
+              }}
               aria-haspopup="listbox"
               aria-expanded={modelOpen}
               aria-label={`Current model: ${model}`}
@@ -435,7 +464,28 @@ export default function ChatPage() {
               {model} <span aria-hidden="true">▾</span>
             </button>
             {modelOpen && (
-              <ul className="model-dropdown" role="listbox" aria-label="Select model">
+              <ul
+                ref={modelDropdownRef}
+                className="model-dropdown"
+                role="listbox"
+                aria-label="Select model"
+                onKeyDown={(event) => {
+                  const options = Array.from(
+                    event.currentTarget.querySelectorAll<HTMLButtonElement>("button"),
+                  );
+                  const index = options.indexOf(document.activeElement as HTMLButtonElement);
+                  if (event.key === "ArrowDown") {
+                    event.preventDefault();
+                    options[Math.min(index + 1, options.length - 1)]?.focus();
+                  } else if (event.key === "ArrowUp") {
+                    event.preventDefault();
+                    options[Math.max(index - 1, 0)]?.focus();
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeModelMenu();
+                  }
+                }}
+              >
                 {MODELS.map((m) => (
                   <li key={m} role="option" aria-selected={m === model}>
                     <button
@@ -443,7 +493,7 @@ export default function ChatPage() {
                       className={`model-option${m === model ? " model-option--active" : ""}`}
                       onClick={() => {
                         setModel(m);
-                        setModelOpen(false);
+                        closeModelMenu();
                       }}
                     >
                       {m}
