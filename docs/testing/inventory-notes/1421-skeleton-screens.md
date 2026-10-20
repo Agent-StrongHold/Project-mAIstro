@@ -155,3 +155,50 @@ credentials-draft case) that touch none of the surfaces above. Frontend
 (both tsconfigs + vite), `npx tsc --noEmit`,
 `scripts/check-frontend-typed-client.py` (56 raw fetch / 136 hand-typed,
 none new) and `scripts/check-vulture-baseline.py` all pass.
+
+## CI-repair round 2026-10-20 (pip-audit supply chain; gate attribution)
+
+Five earlier repair jobs died to provider 429s before doing any work, so this
+round re-derived everything at the assigned head `69b3710103df` (tree clean;
+`origin/develop` still `e20e9f52ea94`, the merge base — no sync conflict).
+
+* **Supply chain (pip-audit) — fixed.** The gate failed on three aiohttp
+  3.14.3 advisories (CVE-2026-111064, GHSA-2g87-pp6c-29x5, CVE-2026-111063),
+  all fixed upstream in 3.14.4. Repaired the way the gate prescribes
+  ("fix by upgrading the dependency", no allowlist edit): `uv lock
+  --upgrade-package aiohttp` moves only aiohttp (3.14.3 → 3.14.5) and its
+  direct dependency yarl (1.24.2 → 1.25.1); aiohttp has no direct dependents
+  in the workspace (only the dev-only cosmic-ray mutation tool). CI's exact
+  flow re-run locally — `uv pip freeze --exclude-editable` →
+  `pip-audit --strict --format=json` → `scripts/pip_audit_gate.py` — exits 0
+  (`pip-audit OK (1 known, all triaged in ALLOWED)`), and ci.yml `security`'s
+  other step `check-dependency-namespaces.py` exits 0.
+* **Owner-held develop-inherited failures — attributed, not branch-caused.**
+  The branch diff vs develop is 12 files, all frontend/e2e/docs (`*.py` diff
+  empty; `admission_identity.py` byte-identical blob both sides; zero
+  `quality/` rows), so every Python-side gate behaves identically on both
+  trees. Reproduced firsthand at this head with CI's exact arguments:
+  `check-reachability.py` rc=1 on exactly `maistro.runs.admission_identity`
+  (NEW unreachable, 169 vs the trusted 168), which reds
+  `check-ratchet-provenance.py` and with it vulture-ratchet's
+  exact-debt-ledger job (whose vulture leg itself is green, 1326 = 1326),
+  quality.yml's Quality / Reachability, and the Quality gate aggregate; and
+  `pytest tests/test_reachability_baseline_identity.py
+  tests/test_check_reachability.py` fails exactly 3 (36 pass), the root-suite
+  slice ci.yml's test job runs. This is the failure the #1851 lane's round-221
+  note already records as owner-held on develop (clearable only by a
+  develop-side reviewed grant or the #1845 integration that wires a real
+  consumer), so no repair belongs to this lane. The coverage gate consumes
+  those same producers' data and this candidate adds zero Python lines to
+  diff coverage.
+* **#1421 acceptance re-proven at this head.** The full Playwright UI suite
+  ran in the CI execution mode (`docker compose -f docker-compose.test.yml
+  --profile test up --build --abort-on-container-exit --exit-code-from
+  e2e-tests e2e-tests`) against a live hive-conductor: **201 passed, 0
+  failed** (4.5m), including all 27 harness tests across the four #1421
+  skeleton specs plus the retained template-picker and app-shell coverage;
+  stack torn down with `down -v` after. Frontend `npm run lint` (0 errors,
+  94 warnings) and `npm run build` pass; `check-suite-inventory.py` (23 ==
+  recorded, e2e still non-pytest-collectible) and
+  `check-frontend-typed-client.py` (56/136, none new) pass; ruff check /
+  format --check pass. Inventory delta stays `+0`.
