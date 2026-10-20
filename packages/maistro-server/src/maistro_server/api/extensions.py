@@ -1,10 +1,13 @@
 """Governed extension install lifecycle over HTTP (#953, M9-B2).
 
 These routes are the operator surface of the inspect → authorize → install
-state machine; they execute nothing themselves. Every write attributes the
-authenticated principal as the actor, every decision requires a reason, and
-the permissions shown back are read from the install record's immutable
-manifest snapshot — never re-derived from a request body.
+state machine; they execute nothing themselves. Every route is authenticated
+— reads included, because an install record's granted permissions and its
+audit trail are exactly what a credentialless caller must not enumerate.
+Every write attributes the authenticated principal as the actor, every
+decision requires a reason, and the permissions shown back are read from the
+install record's immutable manifest snapshot — never re-derived from a
+request body.
 
 Authorization mapping: a Workspace-scoped install requires canonical
 Workspace ADMINISTER membership for every phase (inspection creates durable
@@ -18,7 +21,8 @@ from __future__ import annotations
 
 import base64
 import binascii
-from datetime import datetime
+import uuid
+from datetime import UTC, datetime
 from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -26,23 +30,29 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from maistro.extensions import (
     ArtifactMismatch,
+    ExtensionErrorRecord,
+    ExtensionHealthService,
     ExtensionInstallRecord,
     ExtensionInstallService,
     ExtensionLifecycleError,
+    ExtensionOperationalStatus,
+    ExtensionOperatorAction,
     ExtensionPackage,
+    ExtensionPinned,
     ExtensionScope,
     ExtensionTransition,
+    ExtensionUsageDigest,
     InspectionConflict,
     InvalidTransition,
     ManifestRejected,
-    PinConflict,
-    PinRecord,
-    PreflightError,
-    PreflightReport,
-    RemovalNote,
+    OperatorDecision,
+    RankingMetric,
+    RollbackRefused,
+    SloPosition,
     UnknownInstall,
+    state_for_action,
 )
-from maistro.extensions.types import OperatorTrustEvidence
+from maistro.extensions.types import TrustClaim
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.workspace_access import (
     get_workspace_store,
@@ -129,6 +139,33 @@ class InstallBody(ScopeBody):
     payload_b64: str = Field(min_length=1)
 
 
+class ReasonBody(ScopeBody):
+    """A lifecycle decision that must carry its recorded reason."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1)
+
+
+class ResumeBody(ReasonBody):
+    model_config = ConfigDict(extra="forbid")
+
+    payload_b64: str = Field(min_length=1)
+
+
+class DisableBody(ReasonBody):
+    model_config = ConfigDict(extra="forbid")
+
+    extension_id: str = Field(min_length=1)
+
+
+class RollbackBody(ResumeBody):
+    model_config = ConfigDict(extra="forbid")
+
+    extension_id: str = Field(min_length=1)
+    to_install_id: str | None = None
+
+
 class ManifestView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -160,7 +197,6 @@ class InstallRecordView(BaseModel):
     authority_delta: tuple[str, ...]
     artifact_sha256: str | None
     failure_reason: str | None
-    status_reason: str | None = None
     requested_by: str
     authorized_by: str | None
     installed_by: str | None
@@ -168,6 +204,9 @@ class InstallRecordView(BaseModel):
     created_at: str | None
     updated_at: str | None
     expires_at: str | None
+    pinned: bool
+    pinned_by: str | None
+    pinned_at: str | None
     manifest: ManifestView
 
 
@@ -209,7 +248,6 @@ def _record_view(
         authority_delta=record.authority_delta,
         artifact_sha256=record.artifact_sha256,
         failure_reason=record.failure_reason,
-        status_reason=record.status_reason,
         requested_by=record.requested_by,
         authorized_by=record.authorized_by,
         installed_by=record.installed_by,
@@ -217,6 +255,9 @@ def _record_view(
         created_at=_iso(record.created_at),
         updated_at=_iso(record.updated_at),
         expires_at=_iso(record.expires_at),
+        pinned=record.pinned,
+        pinned_by=record.pinned_by,
+        pinned_at=_iso(record.pinned_at),
         manifest=ManifestView(
             manifest_version=manifest.manifest_version,
             extension_id=manifest.extension_id,
@@ -264,8 +305,9 @@ def _http_error(exc: Exception) -> HTTPException:
         return HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, ManifestRejected):
         return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
-    if isinstance(exc, (PinConflict, PreflightError)):
-        # A refused preflight changed nothing; 409 with the named checks.
+    if isinstance(exc, (ExtensionPinned, RollbackRefused)):
+        # The current state is safe and untouched; the operator must decide
+        # (lift the pin, re-authorize) before the requested move can happen.
         return HTTPException(status.HTTP_409_CONFLICT, detail=str(exc))
     return HTTPException(
         status.HTTP_409_CONFLICT,
@@ -296,7 +338,7 @@ async def inspect_extension(
                 manifest_bytes=body.manifest_text.encode("utf-8"),
                 payload=_decode_payload(body.payload_b64),
             ),
-            trust_evidence=OperatorTrustEvidence(
+            trust_evidence=TrustClaim(
                 publisher_id=body.trust.publisher_id,
                 signature_present=body.trust.signature_present,
                 signer_key_id=body.trust.signer_key_id,
@@ -366,6 +408,7 @@ async def install_extension(
 @router.get("/installations/{install_id}", response_model=InstallRecordView)
 async def get_extension_installation(
     install_id: str,
+    auth: RequireAuth,
     service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
     org_id: Annotated[str, Query(min_length=1)],
     workspace_id: Annotated[str, Query()] = "",
@@ -386,12 +429,156 @@ async def get_extension_installation(
     return _record_view(record, requested_permissions=displayed)
 
 
+@router.post("/installations/{install_id}/pin", response_model=InstallRecordView)
+async def pin_extension_version(
+    install_id: str,
+    body: ReasonBody,
+    auth: RequireAuth,
+    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
+) -> InstallRecordView:
+    """Pin the active version so no other version can be activated silently.
+
+    While the pin stands, activation of any other version of the extension is
+    refused with 409: lifting the pin is an explicit, separately audited
+    decision, so an update can never move a pinned version by itself.
+    """
+    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
+    await _require_scope_authority(scope, auth)
+    try:
+        record = await service.pin(install_id, actor=_actor(auth), scope=scope, reason=body.reason)
+    except ExtensionLifecycleError as exc:
+        raise _http_error(exc) from exc
+    return _record_view(record)
+
+
+@router.post("/installations/{install_id}/unpin", response_model=InstallRecordView)
+async def unpin_extension_version(
+    install_id: str,
+    body: ReasonBody,
+    auth: RequireAuth,
+    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
+) -> InstallRecordView:
+    """Lift the pin, auditing the lift before any version change follows."""
+    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
+    await _require_scope_authority(scope, auth)
+    try:
+        record = await service.unpin(
+            install_id, actor=_actor(auth), scope=scope, reason=body.reason
+        )
+    except ExtensionLifecycleError as exc:
+        raise _http_error(exc) from exc
+    return _record_view(record)
+
+
+@router.post("/disable", response_model=InstallRecordView)
+async def disable_extension(
+    body: DisableBody,
+    auth: RequireAuth,
+    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
+) -> InstallRecordView:
+    """Suspend an extension: new use stops immediately, history is kept.
+
+    The scope's resolution seam answers nothing from the moment this lands;
+    every record and transition stays queryable. Resume brings the extension
+    back by re-running its activation loader with the same bound artifact.
+    """
+    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
+    await _require_scope_authority(scope, auth)
+    try:
+        record = await service.disable(
+            scope, body.extension_id, actor=_actor(auth), reason=body.reason
+        )
+    except ExtensionLifecycleError as exc:
+        raise _http_error(exc) from exc
+    return _record_view(record)
+
+
+@router.post("/installations/{install_id}/resume", response_model=InstallRecordView)
+async def resume_extension(
+    install_id: str,
+    body: ResumeBody,
+    auth: RequireAuth,
+    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
+) -> InstallRecordView:
+    """Return a disabled extension to service by re-crossing the loader seam.
+
+    The same bound artifact must be presented; the grant is not re-decided —
+    resume is a governed return of exactly the authorization on record.
+    """
+    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
+    await _require_scope_authority(scope, auth)
+    try:
+        record = await service.resume(
+            install_id,
+            actor=_actor(auth),
+            scope=scope,
+            payload=_decode_payload(body.payload_b64),
+            reason=body.reason,
+        )
+    except ExtensionLifecycleError as exc:
+        raise _http_error(exc) from exc
+    return _record_view(record)
+
+
+@router.post("/rollback", response_model=InstallRecordView)
+async def rollback_extension(
+    body: RollbackBody,
+    auth: RequireAuth,
+    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
+) -> InstallRecordView:
+    """Restore a superseded version through the activation loader.
+
+    Refused with 409 — leaving the current version untouched — when the
+    target's frozen grant declares authority the active grant does not hold,
+    when the target no longer evaluates compatible, or when the presented
+    artifact does not digest to the target's bound artifact.
+    """
+    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
+    await _require_scope_authority(scope, auth)
+    try:
+        record = await service.rollback(
+            scope,
+            body.extension_id,
+            actor=_actor(auth),
+            payload=_decode_payload(body.payload_b64),
+            reason=body.reason,
+            to_install_id=body.to_install_id,
+        )
+    except ExtensionLifecycleError as exc:
+        raise _http_error(exc) from exc
+    return _record_view(record)
+
+
+@router.post("/installations/{install_id}/remove", response_model=InstallRecordView)
+async def remove_extension(
+    install_id: str,
+    body: ReasonBody,
+    auth: RequireAuth,
+    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
+) -> InstallRecordView:
+    """Uninstall one record: terminal for authority, preserved as evidence.
+
+    The historical record — manifest snapshot, digest, grant, trust evidence
+    and full transition trail — remains queryable after removal.
+    """
+    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
+    await _require_scope_authority(scope, auth)
+    try:
+        record = await service.remove(
+            install_id, actor=_actor(auth), scope=scope, reason=body.reason
+        )
+    except ExtensionLifecycleError as exc:
+        raise _http_error(exc) from exc
+    return _record_view(record)
+
+
 @router.get(
     "/installations/{install_id}/transitions",
     response_model=list[TransitionView],
 )
 async def get_extension_installation_transitions(
     install_id: str,
+    auth: RequireAuth,
     service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
     org_id: Annotated[str, Query(min_length=1)],
     workspace_id: Annotated[str, Query()] = "",
@@ -422,6 +609,7 @@ async def sweep_expired_authorizations(
 
 @router.get("/active", response_model=InstallRecordView)
 async def get_active_extension(
+    auth: RequireAuth,
     service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
     org_id: Annotated[str, Query(min_length=1)],
     extension_id: Annotated[str, Query(min_length=1)],
@@ -440,492 +628,394 @@ async def get_active_extension(
 
 
 # ---------------------------------------------------------------------------
-# Post-install lifecycle (#954, M9-B3): pin, upgrade, rollback, disable,
-# resume, remove, resolution and reconciliation. Same discipline as above:
-# routes execute nothing themselves, every write attributes the
-# authenticated principal, every decision carries a reason, and scope
-# authority is checked before the service is touched.
+# M9-I3 (#978): truthful operational views.
+#
+# Every view below is a projection over canonical evidence: the install
+# lifecycle store, re-derived compatibility, dependency readiness, host-
+# recorded observations, and the durable operator decisions. There is
+# deliberately no route by which an extension could report its own health —
+# observations enter through the host's invocation seam only, so nothing on
+# these endpoints is self-report.
 # ---------------------------------------------------------------------------
 
 
-class ExtensionRefBody(ScopeBody):
-    """Names one extension inside a scope (shared by pin routes)."""
+def get_health_service(request: Request) -> ExtensionHealthService:
+    """Return the operational-view facade wired by the process Container."""
+    container = getattr(request.app.state, "container", None)
+    if container is None or not hasattr(container, "ensure_extension_health_service"):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No extension health service is configured",
+        )
+    return cast(ExtensionHealthService, container.ensure_extension_health_service())
+
+
+class OperationalStatusView(BaseModel):
+    """The truthful operational projection of one extension version.
+
+    ``healthy`` is a state (healthy/degraded/unhealthy/unmeasured), not a
+    boolean: "no evidence" must be distinguishable from "evidence of
+    health". ``ready`` is false whenever any gate fails, and
+    ``not_ready_reasons`` says exactly which.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    extension_id: str = Field(min_length=1)
+    extension_id: str
+    version: str
+    installed: bool
+    authorized: bool
+    compatible: bool
+    dependency_ready: bool
+    healthy: str
+    policy_state: str
+    ready: bool
+    live: bool
+    summary: str
+    not_ready_reasons: tuple[str, ...]
+    incompatibility_failures: tuple[str, ...]
+    dependency_failures: tuple[str, ...]
 
 
-class PinBody(ExtensionRefBody):
+class ErrorRecordView(BaseModel):
+    """One classified failure with its extension/version/dependency provenance."""
+
     model_config = ConfigDict(extra="forbid")
 
-    version: str | None = None
-    reason: str = Field(min_length=1)
+    error_id: str
+    at: str
+    org_id: str
+    workspace_id: str
+    extension_id: str
+    version: str
+    kind: str
+    code: str
+    message: str
+    dependency: str | None = None
+    dependency_version: str | None = None
 
 
-class UnpinBody(ExtensionRefBody):
-    model_config = ConfigDict(extra="forbid")
+class UsageDigestView(BaseModel):
+    """Aggregated usage facts for one (extension, version) pair.
 
-    reason: str = Field(min_length=1)
+    Unmeasured metrics are ``null`` — absent, never zero — so a rank by cost
+    or latency cannot be gamed by silence.
+    """
 
-
-class UpgradeBody(ScopeBody):
-    model_config = ConfigDict(extra="forbid")
-
-    manifest_text: str = Field(min_length=1)
-    payload_b64: str = Field(min_length=1)
-    trust: TrustEvidenceBody
-
-
-class RollbackBody(ScopeBody):
-    model_config = ConfigDict(extra="forbid")
-
-    payload_b64: str = Field(min_length=1)
-    reason: str = Field(min_length=1)
-    allow_broadened: bool = False
-
-
-class DisableBody(ScopeBody):
-    model_config = ConfigDict(extra="forbid")
-
-    reason: str = Field(min_length=1)
-
-
-class ResumeBody(ScopeBody):
-    model_config = ConfigDict(extra="forbid")
-
-    payload_b64: str = Field(min_length=1)
-
-
-class RemoveBody(ScopeBody):
-    model_config = ConfigDict(extra="forbid")
-
-    reason: str = Field(min_length=1)
-
-
-class ReconcileBody(ExtensionRefBody):
-    model_config = ConfigDict(extra="forbid")
-
-
-class PinView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     org_id: str
     workspace_id: str
     extension_id: str
     version: str
-    pinned_by: str
-    reason: str
-    pinned_at: str | None
+    invocations: int
+    failures: int
+    error_rate: float | None = None
+    latency_samples: int
+    latency_avg_ms: float | None = None
+    latency_max_ms: float | None = None
+    cost_units_total: float | None = None
+    active: bool
 
 
-class PinEventView(BaseModel):
+class SloPositionView(BaseModel):
+    """SLO/alert inputs for one extension version (ADR-038 shape)."""
+
     model_config = ConfigDict(extra="forbid")
 
-    seq: int
+    slo_target: float
+    window_observations: int
+    observed_success_rate: float | None = None
+    error_budget_remaining: float | None = None
+    budget_exhausted: bool
+
+
+class OperatorDecisionView(BaseModel):
+    """One audited operator decision over an extension's runtime admission."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision_id: str
     at: str
+    org_id: str
+    workspace_id: str
+    extension_id: str
     action: str
-    version: str | None
+    state: str
     actor: str
     reason: str
 
 
-class PinStatusView(BaseModel):
+class HealthDetailView(BaseModel):
+    """One extension's status, its newest failures, and its SLO position."""
+
     model_config = ConfigDict(extra="forbid")
 
-    pin: PinView | None
-    events: tuple[PinEventView, ...]
+    status: OperationalStatusView
+    recent_errors: list[ErrorRecordView]
+    slo: SloPositionView | None = None
 
 
-class PreflightCheckView(BaseModel):
+class TelemetryExportView(BaseModel):
+    """Exportable telemetry for a scope: the same objects the views serve."""
+
     model_config = ConfigDict(extra="forbid")
 
-    name: str
-    passed: bool
-    detail: str
+    statuses: list[OperationalStatusView]
+    usage: list[UsageDigestView]
+    errors: list[ErrorRecordView]
+    operator_decisions: list[OperatorDecisionView]
 
 
-class AuthorityDeltaView(BaseModel):
+class OperatorActionBody(ScopeBody):
     model_config = ConfigDict(extra="forbid")
 
-    new: tuple[str, ...]
-    retained: tuple[str, ...]
-    dropped: tuple[str, ...]
+    action: ExtensionOperatorAction
+    # The audit trail documents a required reason; a whitespace-only string
+    # passes min_length but carries no evidence, so the same non-blank rule
+    # the install authorization service applies is enforced here (pydantic
+    # matches ``pattern`` with search semantics, mirroring ``reason.strip()``).
+    reason: str = Field(min_length=1, pattern=r"\S")
 
 
-class PreflightView(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    operation: str
-    extension_id: str
-    from_version: str | None
-    to_version: str
-    checks: tuple[PreflightCheckView, ...]
-    authority: AuthorityDeltaView
-    allowed: bool
-    broadens_authority: bool
-
-
-class UpgradeView(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    record: InstallRecordView
-    preflight: PreflightView
-
-
-class RemovalNoteView(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    seq: int
-    at: str
-    install_id: str
-    extension_id: str
-    version: str
-    actor: str
-    purged: tuple[str, ...]
-    failed: tuple[str, ...]
-
-
-def _pin_view(pin: PinRecord) -> PinView:
-    return PinView(
-        org_id=pin.org_id,
-        workspace_id=pin.workspace_id,
-        extension_id=pin.extension_id,
-        version=pin.version,
-        pinned_by=pin.pinned_by,
-        reason=pin.reason,
-        pinned_at=_iso(pin.pinned_at),
+def _status_view(projection: ExtensionOperationalStatus) -> OperationalStatusView:
+    return OperationalStatusView(
+        extension_id=projection.extension_id,
+        version=projection.version,
+        installed=projection.installed,
+        authorized=projection.authorized,
+        compatible=projection.compatible,
+        dependency_ready=projection.dependency_ready,
+        healthy=str(projection.healthy),
+        policy_state=str(projection.policy_state),
+        ready=projection.ready,
+        live=projection.live,
+        summary=str(projection.summary),
+        not_ready_reasons=projection.not_ready_reasons,
+        incompatibility_failures=projection.incompatibility_failures,
+        dependency_failures=projection.dependency_failures,
     )
 
 
-def _preflight_view(report: PreflightReport) -> PreflightView:
-    return PreflightView(
-        operation=report.operation,
-        extension_id=report.extension_id,
-        from_version=report.from_version,
-        to_version=report.to_version,
-        checks=tuple(
-            PreflightCheckView(name=check.name, passed=check.passed, detail=check.detail)
-            for check in report.checks
-        ),
-        authority=AuthorityDeltaView(
-            new=report.authority.new,
-            retained=report.authority.retained,
-            dropped=report.authority.dropped,
-        ),
-        allowed=report.allowed,
-        broadens_authority=report.broadens_authority,
+def _error_view(error: ExtensionErrorRecord) -> ErrorRecordView:
+    return ErrorRecordView(
+        error_id=error.error_id,
+        at=error.at.isoformat(),
+        org_id=error.org_id,
+        workspace_id=error.workspace_id,
+        extension_id=error.extension_id,
+        version=error.version,
+        kind=str(error.kind),
+        code=error.code,
+        message=error.message,
+        dependency=error.dependency,
+        dependency_version=error.dependency_version,
     )
 
 
-def _removal_note_view(note: RemovalNote) -> RemovalNoteView:
-    return RemovalNoteView(
-        seq=note.seq,
-        at=note.at.isoformat(),
-        install_id=note.install_id,
-        extension_id=note.extension_id,
-        version=note.version,
-        actor=note.actor,
-        purged=note.purged,
-        failed=note.failed,
+def _digest_view(digest: ExtensionUsageDigest) -> UsageDigestView:
+    return UsageDigestView(
+        org_id=digest.org_id,
+        workspace_id=digest.workspace_id,
+        extension_id=digest.extension_id,
+        version=digest.version,
+        invocations=digest.invocations,
+        failures=digest.failures,
+        error_rate=digest.error_rate,
+        latency_samples=digest.latency_samples,
+        latency_avg_ms=digest.latency_avg_ms,
+        latency_max_ms=digest.latency_max_ms,
+        cost_units_total=digest.cost_units_total,
+        active=digest.active,
     )
 
 
-@router.post("/pins", response_model=PinView, status_code=201)
-async def pin_extension(
-    body: PinBody,
+def _slo_view(position: SloPosition) -> SloPositionView:
+    return SloPositionView(
+        slo_target=position.slo_target,
+        window_observations=position.window_observations,
+        observed_success_rate=position.observed_success_rate,
+        error_budget_remaining=position.error_budget_remaining,
+        budget_exhausted=position.budget_exhausted,
+    )
+
+
+def _decision_view(decision: OperatorDecision) -> OperatorDecisionView:
+    return OperatorDecisionView(
+        decision_id=decision.decision_id,
+        at=decision.at.isoformat(),
+        org_id=decision.org_id,
+        workspace_id=decision.workspace_id,
+        extension_id=decision.extension_id,
+        action=str(decision.action),
+        state=str(decision.state),
+        actor=decision.actor,
+        reason=decision.reason,
+    )
+
+
+@router.get("/health", response_model=list[OperationalStatusView])
+async def get_extension_health_overview(
     auth: RequireAuth,
-    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
-) -> PinView:
-    """Hold the extension at its active version against version changes."""
-    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
-    await _require_scope_authority(scope, auth)
-    try:
-        pin = await service.pin(
-            scope,
-            body.extension_id,
-            actor=_actor(auth),
-            version=body.version,
-            reason=body.reason,
-        )
-    except ExtensionLifecycleError as exc:
-        raise _http_error(exc) from exc
-    return _pin_view(pin)
-
-
-@router.post("/pins/release", response_model=PinStatusView)
-async def release_extension_pin(
-    body: UnpinBody,
-    auth: RequireAuth,
-    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
-) -> PinStatusView:
-    """Release the version pin. Idempotent; the release is audited."""
-    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
-    await _require_scope_authority(scope, auth)
-    try:
-        await service.unpin(scope, body.extension_id, actor=_actor(auth), reason=body.reason)
-        pin, events = await service.pin_status(scope, body.extension_id)
-    except ExtensionLifecycleError as exc:
-        raise _http_error(exc) from exc
-    return PinStatusView(
-        pin=_pin_view(pin) if pin is not None else None,
-        events=tuple(
-            PinEventView(
-                seq=event.seq,
-                at=event.at.isoformat(),
-                action=event.action,
-                version=event.version,
-                actor=event.actor,
-                reason=event.reason,
-            )
-            for event in events
-        ),
-    )
-
-
-@router.get("/pins", response_model=PinStatusView)
-async def get_extension_pin(
-    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
+    health: Annotated[ExtensionHealthService, Depends(get_health_service)],
     org_id: Annotated[str, Query(min_length=1)],
-    extension_id: Annotated[str, Query(min_length=1)],
     workspace_id: Annotated[str, Query()] = "",
-) -> PinStatusView:
-    """The scope's current pin and its audited event trail."""
+) -> list[OperationalStatusView]:
+    """Operational status of every extension recorded in the scope.
+
+    Readiness here is earned, not claimed: a projection is ready only when
+    the canonical lifecycle, a fresh compatibility evaluation, dependency
+    readiness, recorded health, and the operator state all allow it.
+    """
     scope = ExtensionScope(org_id=org_id, workspace_id=workspace_id)
-    pin, events = await service.pin_status(scope, extension_id)
-    return PinStatusView(
-        pin=_pin_view(pin) if pin is not None else None,
-        events=tuple(
-            PinEventView(
-                seq=event.seq,
-                at=event.at.isoformat(),
-                action=event.action,
-                version=event.version,
-                actor=event.actor,
-                reason=event.reason,
-            )
-            for event in events
-        ),
-    )
+    projections = await health.statuses(scope)
+    return [_status_view(projection) for projection in projections]
 
 
-@router.post("/upgrades", response_model=UpgradeView, status_code=201)
-async def upgrade_extension(
-    body: UpgradeBody,
+@router.get("/health/{extension_id}", response_model=HealthDetailView)
+async def get_extension_health_detail(
+    extension_id: str,
     auth: RequireAuth,
-    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
-) -> UpgradeView:
-    """Begin a version upgrade: preflight, then the governed inspection.
-
-    The response carries the preflight report (with the authority delta an
-    operator is deciding on) and the candidate's install record in
-    ``awaiting_authorization``. Activation is a separate, explicit call —
-    and only after the authorization decision.
-    """
-    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
-    await _require_scope_authority(scope, auth)
-    try:
-        record, report = await service.upgrade(
-            actor=_actor(auth),
-            scope=scope,
-            package=ExtensionPackage(
-                manifest_bytes=body.manifest_text.encode("utf-8"),
-                payload=_decode_payload(body.payload_b64),
-            ),
-            trust_evidence=OperatorTrustEvidence(
-                publisher_id=body.trust.publisher_id,
-                signature_present=body.trust.signature_present,
-                signer_key_id=body.trust.signer_key_id,
-                package_sha256=body.trust.package_sha256,
-            ),
-        )
-    except ExtensionLifecycleError as exc:
-        raise _http_error(exc) from exc
-    return UpgradeView(record=_record_view(record), preflight=_preflight_view(report))
-
-
-@router.post(
-    "/installations/{install_id}/upgrade-activation",
-    response_model=InstallRecordView,
-)
-async def activate_extension_upgrade(
-    install_id: str,
-    body: InstallBody,
-    auth: RequireAuth,
-    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
-) -> InstallRecordView:
-    """Activate an authorized upgrade: the pointer swaps once and the
-    previous version is retained as superseded rollback material."""
-    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
-    await _require_scope_authority(scope, auth)
-    try:
-        record = await service.activate_upgrade(
-            install_id,
-            actor=_actor(auth),
-            scope=scope,
-            payload=_decode_payload(body.payload_b64),
-        )
-    except ExtensionLifecycleError as exc:
-        raise _http_error(exc) from exc
-    return _record_view(record)
-
-
-@router.post(
-    "/installations/{install_id}/rollback",
-    response_model=InstallRecordView,
-)
-async def rollback_extension(
-    install_id: str,
-    body: RollbackBody,
-    auth: RequireAuth,
-    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
-) -> InstallRecordView:
-    """Restore a superseded version after the preflight proves it safe.
-
-    A refused rollback answers 409 with the failed checks named; the current
-    state is untouched. Restoring permissions the current version had
-    dropped requires ``allow_broadened`` — an explicit acknowledgment, not a
-    default.
-    """
-    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
-    await _require_scope_authority(scope, auth)
-    try:
-        record = await service.rollback(
-            install_id,
-            actor=_actor(auth),
-            scope=scope,
-            payload=_decode_payload(body.payload_b64),
-            reason=body.reason,
-            allow_broadened=body.allow_broadened,
-        )
-    except ExtensionLifecycleError as exc:
-        raise _http_error(exc) from exc
-    return _record_view(record)
-
-
-@router.post(
-    "/installations/{install_id}/disable",
-    response_model=InstallRecordView,
-)
-async def disable_extension(
-    install_id: str,
-    body: DisableBody,
-    auth: RequireAuth,
-    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
-) -> InstallRecordView:
-    """Suspend the extension: invocation resolution stops immediately."""
-    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
-    await _require_scope_authority(scope, auth)
-    try:
-        record = await service.disable(
-            install_id, actor=_actor(auth), scope=scope, reason=body.reason
-        )
-    except ExtensionLifecycleError as exc:
-        raise _http_error(exc) from exc
-    return _record_view(record)
-
-
-@router.post(
-    "/installations/{install_id}/resume",
-    response_model=InstallRecordView,
-)
-async def resume_extension(
-    install_id: str,
-    body: ResumeBody,
-    auth: RequireAuth,
-    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
-) -> InstallRecordView:
-    """Re-activate a disabled extension from its bound artifact; the frozen
-    grant stands, so no new authorization is required."""
-    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
-    await _require_scope_authority(scope, auth)
-    try:
-        record = await service.resume(
-            install_id,
-            actor=_actor(auth),
-            scope=scope,
-            payload=_decode_payload(body.payload_b64),
-        )
-    except ExtensionLifecycleError as exc:
-        raise _http_error(exc) from exc
-    return _record_view(record)
-
-
-@router.post(
-    "/installations/{install_id}/removal",
-    response_model=InstallRecordView,
-)
-async def remove_extension(
-    install_id: str,
-    body: RemoveBody,
-    auth: RequireAuth,
-    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
-) -> InstallRecordView:
-    """Uninstall: authority ends, canonical evidence is retained, and the
-    owned-resource cleanup policy runs with its purge reported."""
-    scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
-    await _require_scope_authority(scope, auth)
-    try:
-        record = await service.remove(
-            install_id, actor=_actor(auth), scope=scope, reason=body.reason
-        )
-    except ExtensionLifecycleError as exc:
-        raise _http_error(exc) from exc
-    return _record_view(record)
-
-
-@router.get(
-    "/installations/{install_id}/removal-notes",
-    response_model=list[RemovalNoteView],
-)
-async def get_extension_removal_notes(
-    install_id: str,
-    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
+    health: Annotated[ExtensionHealthService, Depends(get_health_service)],
     org_id: Annotated[str, Query(min_length=1)],
+    version: Annotated[str | None, Query()] = None,
     workspace_id: Annotated[str, Query()] = "",
-) -> list[RemovalNoteView]:
-    """The audited owned-resource cleanup reports for one removal."""
-    try:
-        notes = await service.removal_history(
-            install_id, scope=ExtensionScope(org_id=org_id, workspace_id=workspace_id)
-        )
-    except ExtensionLifecycleError as exc:
-        raise _http_error(exc) from exc
-    return [_removal_note_view(note) for note in notes]
+    slo_target: Annotated[float, Query(gt=0.0, lt=1.0)] = 0.99,
+    error_limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> HealthDetailView:
+    """One extension's status (``version`` selects a historical one), its
+    newest classified failures, and its SLO error-budget position, all
+    scoped to the requested version when one is given.
 
-
-@router.get("/resolution", response_model=InstallRecordView)
-async def resolve_extension(
-    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
-    org_id: Annotated[str, Query(min_length=1)],
-    extension_id: Annotated[str, Query(min_length=1)],
-    workspace_id: Annotated[str, Query()] = "",
-) -> InstallRecordView:
-    """What an invocation of this extension would load right now.
-
-    This is the invocation-resolution seam made observable: a disabled,
-    superseded or removed extension answers 404 — nothing is servable.
+    A historical version projects with its own evidence and the scope's
+    current active pointer, so a superseded or removed version stays
+    identifiable and never reports active.
     """
-    record = await service.resolve(
-        ExtensionScope(org_id=org_id, workspace_id=workspace_id), extension_id
+    scope = ExtensionScope(org_id=org_id, workspace_id=workspace_id)
+    projection = (
+        await health.version_status(scope, extension_id, version)
+        if version is not None
+        else await health.status(scope, extension_id)
     )
-    if record is None:
+    if projection is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"extension {extension_id!r} is not currently resolvable in this scope",
+            detail=f"no install record for {extension_id!r} in this scope",
         )
-    return _record_view(record)
+    slo = await health.slo(scope, extension_id, slo_target=slo_target, version=version)
+    errors = await health.recent_errors(scope, extension_id, version=version, limit=error_limit)
+    return HealthDetailView(
+        status=_status_view(projection),
+        recent_errors=[_error_view(error) for error in errors],
+        slo=_slo_view(slo) if slo is not None else None,
+    )
 
 
-@router.post("/reconciliation")
-async def reconcile_extension(
-    body: ReconcileBody,
+@router.get("/usage", response_model=list[UsageDigestView])
+async def get_extension_usage_ranking(
     auth: RequireAuth,
-    service: Annotated[ExtensionInstallService, Depends(get_extension_service)],
-) -> dict[str, int]:
-    """Operator maintenance: repair the pointer/state invariants a crash can
-    leave behind. Every repair is itself an audited transition."""
+    health: Annotated[ExtensionHealthService, Depends(get_health_service)],
+    org_id: Annotated[str, Query(min_length=1)],
+    by: RankingMetric = RankingMetric.USAGE,
+    limit: Annotated[int, Query(ge=1, le=100)] = 10,
+    workspace_id: Annotated[str, Query()] = "",
+) -> list[UsageDigestView]:
+    """Rank extension versions by usage, cost, failures, error rate, or latency.
+
+    Unmeasured metrics sort last rather than reading as zero, and every row
+    keeps its exact version with an explicit ``active`` flag, so historical
+    traffic stays attributable without reporting removed versions active.
+    """
+    scope = ExtensionScope(org_id=org_id, workspace_id=workspace_id)
+    ranked = await health.rank(scope, by, limit=limit)
+    return [_digest_view(digest) for digest in ranked]
+
+
+@router.get("/telemetry/export", response_model=TelemetryExportView)
+async def export_extension_telemetry(
+    auth: RequireAuth,
+    health: Annotated[ExtensionHealthService, Depends(get_health_service)],
+    org_id: Annotated[str, Query(min_length=1)],
+    workspace_id: Annotated[str, Query()] = "",
+) -> TelemetryExportView:
+    """Exportable telemetry for one scope.
+
+    Shares one code path with the operator views, so the export can never
+    disagree with what the dashboards serve.
+    """
+    scope = ExtensionScope(org_id=org_id, workspace_id=workspace_id)
+    exported = await health.export_telemetry(scope)
+    return TelemetryExportView(
+        statuses=[_status_view(item) for item in exported.statuses],
+        usage=[_digest_view(item) for item in exported.usage],
+        errors=[_error_view(item) for item in exported.errors],
+        operator_decisions=[_decision_view(item) for item in exported.operator_decisions],
+    )
+
+
+@router.post(
+    "/health/{extension_id}/operator",
+    response_model=OperatorDecisionView,
+    status_code=200,
+)
+async def decide_extension_operator_state(
+    extension_id: str,
+    body: OperatorActionBody,
+    auth: RequireAuth,
+    health: Annotated[ExtensionHealthService, Depends(get_health_service)],
+) -> OperatorDecisionView:
+    """Apply a durable operator decision: enable, disable, quarantine, release.
+
+    The decision is append-only evidence with the authenticated principal as
+    the actor and the required reason; the newest decision is the durable
+    state that survives restarts. This is an admission hold, not a health
+    judgement — the projection keeps the two distinct.
+    """
     scope = ExtensionScope(org_id=body.org_id, workspace_id=body.workspace_id)
     await _require_scope_authority(scope, auth)
-    repaired = await service.reconcile(scope=scope, extension_id=body.extension_id)
-    return {"repaired": len(repaired)}
+    decision = await health.apply_decision(
+        OperatorDecision(
+            decision_id=uuid.uuid4().hex,
+            at=datetime.now(UTC),
+            org_id=scope.org_id,
+            workspace_id=scope.workspace_id,
+            extension_id=extension_id,
+            action=body.action,
+            state=state_for_action(body.action),
+            actor=_actor(auth),
+            reason=body.reason,
+        )
+    )
+    return _decision_view(decision)
+
+
+# The handlers are this module's public surface: FastAPI registers them from
+# the decorators, which static import scanning cannot see. Declaring them here
+# is the same statement a2a.py's __all__ makes (see the comment there), and is
+# what keeps this module's route handlers out of the fastapi-route-handler
+# Vulture ledger: a new handler must join this list (the drift is caught by
+# test_all_covers_every_route_handler), not silently re-enter the dead-code
+# ratchet as unbanked debt.
+__all__ = [
+    "decide_extension_authorization",
+    "decide_extension_operator_state",
+    "disable_extension",
+    "export_extension_telemetry",
+    "get_active_extension",
+    "get_extension_health_detail",
+    "get_extension_health_overview",
+    "get_extension_installation",
+    "get_extension_installation_transitions",
+    "get_extension_service",
+    "get_extension_usage_ranking",
+    "get_health_service",
+    "inspect_extension",
+    "install_extension",
+    "pin_extension_version",
+    "remove_extension",
+    "resume_extension",
+    "rollback_extension",
+    "router",
+    "sweep_expired_authorizations",
+    "unpin_extension_version",
+]

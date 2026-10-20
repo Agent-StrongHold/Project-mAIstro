@@ -7,6 +7,7 @@ FIFO eviction, org-scoped isolation, and outcome tracking.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
@@ -17,11 +18,21 @@ from maistro.memory.learnings.evidence import (
     outcome_confidence,
     promotion_blockers,
 )
-from maistro.memory.learnings.lifecycle import StageTransition, plan_advance
+from maistro.memory.learnings.lifecycle import (
+    StageTransition,
+    advance_stage,
+    commit_to_repertoire,
+    plan_advance,
+)
 from maistro.memory.types import Learning, LearningStage
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.learning_scope import matches_learning_scope
-from maistro.types.memory import CONTRADICT_DELTA, EPISTEMIC_BONUS, REINFORCE_DELTA
+from maistro.types.memory import (
+    CONTRADICT_DELTA,
+    EPISTEMIC_BONUS,
+    LEARNING_STAGE_ORDER,
+    REINFORCE_DELTA,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +304,63 @@ class InMemoryLearningStore:
             learning.status = "promoted"
             promoted.append(learning)
         return promoted
+
+    async def promote_learning(
+        self,
+        learning_id: int,
+        *,
+        org_id: str = "",
+        validated_by: str = "",
+        evaluator_version: str = "",
+        validated_at: datetime | None = None,
+        validation_run_ids: Sequence[str] = (),
+        validation_content_hash: str = "",
+        authority: Actor = Actor.AGENT,
+    ) -> Learning | None:
+        """Promote exactly one active learning, recording validation provenance.
+
+        The per-candidate seam the Gauntlet path needs (see the SQL twins for
+        the full contract, M4-B2): `check_auto_promotions` promotes every
+        threshold-crossing row that passes the shared evidence verdict, but an
+        independent validator decides per candidate after running its own
+        trials, so the store must be able to promote exactly one, writing the
+        verdict's provenance — the exact evaluation Runs, the evaluator
+        version, the frozen-content hash. Only an `active`, in-scope row
+        flips; a rejected candidate's row — its evidence, its anti-learning —
+        is never touched here. Like `produced_by`, an out-of-scope id is a
+        None, not a write.
+
+        The ladder (ADR-103) is honoured on the fast path: the row is asserted
+        (LEARNING), validated (VALIDATED) and committed (REPERTOIRE) with one
+        commit instant — the Gauntlet's acceptance *is* the validation
+        instant — so a promoted row is a repertoire row in both reads.
+
+        ADR-057: this is the ``promote`` authority, like
+        `check_auto_promotions` — an agent-authority call under
+        ``SYSTEM_MANAGED`` is denied before any status flips.
+        """
+        require_write_authority(
+            self._exposure_mode, "promote", authority, subject=type(self).__name__
+        )
+        for learning in self._learnings:
+            if learning.id != learning_id:
+                continue
+            if learning.status != "active" or learning.org_id != org_id:
+                return None
+            stamp = validated_at or datetime.now(UTC)
+            current = LEARNING_STAGE_ORDER.get(learning.stage, 0)
+            for rung in (LearningStage.LEARNING, LearningStage.VALIDATED):
+                if LEARNING_STAGE_ORDER[rung] > current:
+                    advance_stage(learning, rung, now=stamp, gauntlet_name=validated_by)
+            commit_to_repertoire(learning, now=stamp)
+            learning.status = "promoted"
+            learning.validated_by = validated_by
+            learning.validated_evaluator_version = evaluator_version
+            learning.validated_at = stamp
+            learning.validation_run_ids = list(validation_run_ids)
+            learning.validation_content_hash = validation_content_hash
+            return learning
+        return None
 
     async def get_promoted(
         self,

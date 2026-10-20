@@ -423,7 +423,7 @@ class TestScorecardEnforcement:
         _commit(repo, "candidate")
         calls: list[tuple] = []
 
-        def _fake_run(cmd, cwd, timeout=900, argv=()):  # type: ignore[no-untyped-def]
+        def _fake_run(cmd, cwd, timeout=900, argv=(), execute=None):  # type: ignore[no-untyped-def]
             calls.append((cmd, argv))
             return True, "exit 0"
 
@@ -452,7 +452,7 @@ class TestScorecardEnforcement:
         _commit(repo, "candidate")
         calls: list[tuple] = []
 
-        def _fake_run(cmd, cwd, timeout=900, argv=()):  # type: ignore[no-untyped-def]
+        def _fake_run(cmd, cwd, timeout=900, argv=(), execute=None):  # type: ignore[no-untyped-def]
             calls.append((cmd, argv))
             return True, "exit 0"
 
@@ -498,7 +498,7 @@ class TestScorecardEnforcement:
         _commit(repo, "candidate")
         calls: list[tuple] = []
 
-        def _fake_run(cmd, cwd, timeout=900, argv=()):  # type: ignore[no-untyped-def]
+        def _fake_run(cmd, cwd, timeout=900, argv=(), execute=None):  # type: ignore[no-untyped-def]
             calls.append((cmd, argv))
             return True, "exit 0"
 
@@ -579,7 +579,7 @@ class TestAdversarialSelfScoringFixture:
         # The weakened oracle WOULD say pass — prove it never gets the chance.
         oracle_calls: list[tuple] = []
 
-        def _fake_run(cmd, cwd, timeout=900, argv=()):  # type: ignore[no-untyped-def]
+        def _fake_run(cmd, cwd, timeout=900, argv=(), execute=None):  # type: ignore[no-untyped-def]
             oracle_calls.append((cmd, argv))
             return True, "exit 0"
 

@@ -110,7 +110,7 @@ class TestTheEpistemicColumnsLand:
         measured-and-perfect (the rule ADR-083026-a91e set for metrics). The
         defaulted columns backfill, so the NOT NULL add succeeds on a
         populated table. The epistemic default is `empirical`, the reconciled
-        pipeline-epistemics reading (ADR-100126-8c2d) that `053` landed: a
+        pipeline-epistemics reading (ADR-100126-8c2d) that `054` landed: a
         captured tool correction is empirical-by-construction.
         """
         assert _alembic("upgrade", "head").returncode == 0

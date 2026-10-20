@@ -1,87 +1,71 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +35
-  packages/maistro-server/tests: +13
+  packages/maistro-core/tests: +38
+  packages/maistro-server/tests: +9
 ---
-# 954-extension-post-install-lifecycle
+# 954 — Extension post-install lifecycle: pin, rollback, disable, remove (#954, M9-B3)
 
-M9-B3 finishes the extension lifecycle after activation (#954, epic #939),
-on the same state machine the B2 lane (#953) installed — this lane merges
-`auto-953` first so there is exactly one lifecycle authority, not a second
-competing one. `packages/maistro-core/tests/extensions/test_post_install_lifecycle.py`
-(+35) pins the service semantics; `packages/maistro-server/tests/api/test_extensions_lifecycle_api.py`
-(+13) drives the new operator routes over the real router.
+Adds the governed post-install lifecycle to the extension install state
+machine (`packages/maistro-core/src/maistro/extensions/service.py`, store seam
+in `store.py`, new states/edges in `types.py`) and the HTTP operator surface in
+`maistro_server/api/extensions.py`, plus the suite that pins the epic's
+acceptance criteria against reachable production behavior.
 
-## What the core suite pins (35)
+## packages/maistro-core/tests (+38)
 
-Each issue acceptance criterion has a test that would fail if the behavior
-regressed, not just if a value changed:
+`extensions/test_post_install_lifecycle.py` (38 cases) drives pin → upgrade →
+rollback → disable → resume → remove through the real service and store:
 
-- **Same-authority upgrades** (`TestSameAuthorityUpgrade`): the upgrade
-  record's authority delta is empty against the active grant, the new grant
-  equals the old one exactly, permissions display through the immutable
-  snapshot check, the predecessor is superseded (retained, not deleted), and
-  `resolve()` serves exactly the new version. Narrowing upgrades take the
-  grant from the new snapshot; the pointer swaps once; upgrades without an
-  active predecessor, downgrades-through-upgrade, and same-version-different-
-  bytes are preflight refusals that leave `AWAITING_AUTHORIZATION` empty;
-  byte-identical re-requests are idempotent; a candidate that fails trust at
-  inspection is recorded REJECTED with the old version still serving.
-- **Broader authority** (`TestBroadenedAuthorityReauthorization`): the delta
-  names exactly the new permission, the loader receives zero calls before the
-  explicit decision (activation before `authorize` raises `InvalidTransition`
-  without touching code), and only the approved decision lets the broader
-  grant through; denial leaves the current version serving.
-- **Rollback** (`TestRollback`): a proven-compatible rollback re-activates
-  through the loader seam with the exact bound bytes, swaps the pointer,
-  retains the displaced version with a reason naming who rolled back and to
-  what; substituted bytes, unsatisfiable dependencies (proven by moving the
-  dependency partner past the old range), pins held at another version, and
-  authority the current grant dropped all refuse **before the first state
-  change** — asserted by comparing the full transition trail byte-for-byte
-  across the refusal; broadened rollbacks require `allow_broadened` and then
-  name the restored permissions in the audit trail; completed rollbacks retry
-  without re-activating.
-- **Disable** (`TestDisable`): `resolve()` returns None the moment disable
-  returns; the record, its frozen grant and its trail survive verbatim (the
-  disable transition is attributed and reasons are on the record); resume
-  re-activates through the loader with the grant unchanged and refuses
-  substituted bytes; disable is idempotent and refuses non-ACTIVE records.
-- **Remove** (`TestRemove`): removal keeps the record (snapshot digest and
-  frozen grant intact) and every transition queryable — the store's record
-  dict is asserted to still hold the install id — while resolution stops and
-  the (scope, extension, version) key is released so a reinstall opens a
-  *fresh* authorization track (never resurrecting the removed record); the
-  janitor purges only after the REMOVED transition is durable, its purge is
-  reported as an audited note, janitor failures are recorded without
-  restoring authority, and a remove retry re-runs a pending cleanup exactly
-  once; removing a superseded record never disturbs the active one.
-- **Idempotency + crash recovery** (`TestIdempotencyAndCrashRecovery`):
-  upgrade retries neither re-run the loader nor fork a second authorization
-  track; a loader crash mid-upgrade leaves a truthful FAILED record with the
-  old version serving and recovers on the same bound artifact; both crash
-  windows are constructed through the store and repaired by `reconcile()`
-  (orphan ACTIVE superseded with a `system:reconciliation` transition;
-  pointer-to-non-ACTIVE cleared, with `resolve()` shown safe even before the
-  repair); a full install→upgrade→rollback→disable→remove run leaves both
-  versions' provenance queryable in order.
+- `TestPin` (7) — a pin holds the active version in place: activation of any
+  other version raises `ExtensionPinned` until the pin is explicitly lifted
+  (audited), re-pinning is an idempotent no-op, a scope holds at most one pin,
+  and pin/unpin land on the same audit trail as state-shaped events.
+- `TestDisableResume` (7) — disable clears the active pointer so the
+  resolution seam answers nothing immediately (structural stop, not
+  convention), every record and transition stays queryable, and resume
+  re-crosses the loader seam with the same bound artifact; an unwired loader
+  fails closed (record FAILED, pointer stays unset, nothing runs); a disable
+  retried after a newer disable returns the newest suspended record, not the
+  oldest.
+- `TestFailedActivationRetry` (1) — a FAILED record cannot re-enter through
+  the install gate to displace a newer active version with authority the
+  active grant does not hold: the retry re-proves the rollback gates
+  (`RollbackRefused`) before anything is touched.
+- `TestRollback` (8) — rollback restores a superseded version through the
+  loader seam only when its frozen grant declares no authority the active
+  grant lacks and its manifest still evaluates compatible; otherwise
+  `RollbackRefused` leaves the current version untouched (trail lengths
+  pinned). Wrong payload records nothing; retrying a completed rollback with
+  the same bytes is an idempotent no-op; rollback away from a pinned version
+  is refused.
+- `TestRemove` (9) — the janitor runs *before* any transition (a purge failure
+  aborts with the record untouched), what it cleaned is recorded on the trail,
+  removal is terminal for the record's authority while every record, snapshot,
+  grant and transition stays queryable, the active pointer and any pin die
+  with the record, pre-decision states cannot be removed, and re-removal is a
+  no-op.
+- `TestUpgradeAuthority` (3) — an update cannot silently increase declared
+  authority: the broader request parks for explicit re-authorization and the
+  grant afterwards is exactly the new snapshot's, never a silent union.
+- `TestAuditAndIsolation` (3) — every lifecycle transition carries actor,
+  org/workspace scope, version and a reason; the new states cannot reach
+  ACTIVE without the loader; scope isolation holds for the new verbs.
 
-## What the API suite pins (13)
+The concurrent-activation case (`TestConcurrentActivation`, #937) is counted
+once, by `937-activation-lock-concurrency.md`, whose race test this suite
+carries after the develop-sync resolution: two separately authorized installs
+of one scoped extension race while the store yields inside `active_record` /
+`set_active` — exactly one record stays ACTIVE, the pointer names it, and the
+loser is SUPERSEDED (the per-`(scope, extension)` extension lock serializes
+the pointer read-modify-write).
 
-The routes are the operator surface and add their own guarantees: the
-upgrade endpoint pairs the record with the preflight report (empty delta
-visible on the wire), activation before decision answers 409 with zero
-loader calls, pins hold and release with the audited event trail, disable
-flips `/resolution` to 404 immediately, removal keeps record + transitions
-readable and lists (empty) removal notes, reconciliation requires workspace
-authority (denial does not leak existence), and every write attributes the
-authenticated principal — verified with two principals on one trail.
+## packages/maistro-server/tests (+9)
 
-## What did not move
-
-No B2 behavior changed where it was already pinned: all 106 prior core
-extension tests and 12 prior API tests pass unmodified (the only B2-line
-edits are the transition-table growth the issue requires and `inspect`
-learning to skip REMOVED records when opening a track). The merge of the B2
-lane added its own +118 under the note `953-extension-install-lifecycle`,
-which travels with this branch.
+`test_extensions_api.py` adds `TestPostInstallLifecycleHttp` (9 cases) proving
+the same verbs over the HTTP operator surface — pin → upgrade under a pin →
+rollback → disable/resume → remove, with 409 refusals, the audited trail and
+evidence retention asserted on the wire — plus four governed-refusal cases so
+every lifecycle endpoint's error path is exercised over HTTP: pinning a record
+that never reached ACTIVE (409), unpin/disable of an unknown install (404, no
+scope leak), and removal of a pre-decision candidate (409 with the record still
+parked for its decision).

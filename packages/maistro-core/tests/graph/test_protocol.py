@@ -866,6 +866,12 @@ class TestBeamWidth:
 
         assert isinstance(result, HyperagentOutput)
         assert result.success is True
+        # One generation per beam slot, and the highest-scoring plan survives.
+        # A width-1 traversal would make one call and keep "weak", the first
+        # response, so both assertions fail if beam_width stops being honoured.
+        assert llm.call_count == 3
+        assert len(result.node_results) == 1
+        assert "summary='strong'" in str(result.node_results[0].output)
 
 
 class TestEvaluateCondition:

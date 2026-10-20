@@ -1,1113 +1,1046 @@
-"""The post-install extension lifecycle (#954, M9-B3).
+"""The post-install extension lifecycle (#954, M9-B3; epic #939).
 
-These tests drive pin / upgrade / rollback / disable / remove end to end on
-the same state machine B2 installed, and pin each acceptance criterion of
-the issue against reachable production behavior:
+These tests drive pin → upgrade → rollback → disable → resume → remove
+against the governed service and pin the epic's acceptance criteria on
+reachable production behavior:
 
-- compatible same-authority upgrades apply without silently changing
-  permissions (the grant is frozen from the immutable snapshot, and the
-  authority delta of a same-authority upgrade is empty);
-- broader authority always requires the explicit new authorization decision
-  before the new version can activate;
-- rollback either succeeds with proven-compatible state or fails before the
-  first state change (digest, compatibility, pin, and broadened-authority
-  refusals all leave the scope untouched);
-- disable stops invocation resolution immediately while every record and
-  transition survives;
-- remove never deletes canonical historical evidence;
-- lifecycle retries are idempotent, and the pointer/state invariants a crash
-  can leave behind are repaired by the reconciliation sweep.
+* a pinned version does not move silently (activation of another version is
+  refused until the pin is explicitly lifted, and both decisions are audited);
+* an upgrade cannot silently broaden authority — the broader request parks
+  for explicit re-authorization, and the grant afterwards is exactly the new
+  snapshot's, never a silent union;
+* rollback restores a superseded version only when its frozen grant declares
+  no authority the current grant lacks and its manifest still evaluates
+  compatible — otherwise it refuses before corrupting the current state;
+* disable removes the extension from the resolution seam immediately while
+  every record, snapshot and transition stays queryable;
+* remove runs the host janitor before any transition, is terminal for the
+  record's authority, and preserves the historical evidence;
+* every lifecycle operation — including pin/unpin, which change no state —
+  lands on the same audited trail with actor, scope, version and reason.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
-import json
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from extensions.test_install_lifecycle import (
+    PAYLOAD,
+    POLICY,
+    SCOPE,
+    RecordingLoader,
+    authorize_and_install,
+    inspect_default,
+    make_service,
+)
 from maistro.extensions import (
     ArtifactMismatch,
     ExtensionLifecycleError,
+    ExtensionPinned,
+    ExtensionState,
     InMemoryExtensionStore,
     InvalidTransition,
-    PinConflict,
-    PreflightError,
-    TrustPolicy,
+    RollbackRefused,
+    UnknownInstall,
 )
-from maistro.extensions.service import (
-    ExtensionCodeLoader,
-    ExtensionInstallService,
-    LoadedExtension,
-)
-from maistro.extensions.types import (
-    ExtensionPackage,
-    ExtensionScope,
-    ExtensionState,
-    OperatorTrustEvidence,
-    PinRecord,
-    RemovalNote,
-)
+from maistro.extensions.service import ExtensionInstallService, RetainAllJanitor
+from maistro.extensions.types import ExtensionScope
 
-PAYLOAD_V1 = b"extension-payload-v1"
-PAYLOAD_V2 = b"extension-payload-v2"
+OTHER_PAYLOAD = b"extension-payload-v2"
+THIRD_PAYLOAD = b"extension-payload-v3"
 
 
 def _digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def manifest_bytes(
-    *,
-    extension_id: str = "acme.chart_tools",
-    version: str = "1.4.0",
-    permissions: tuple[str, ...] = ("network.http", "storage.workspace"),
-    payload: bytes = PAYLOAD_V1,
-    api_version: str = "1.0.0",
-    publisher: str = "acme",
-    dependencies: tuple[dict[str, str], ...] = (),
-) -> bytes:
-    """A valid manifest whose artifact claim describes ``payload`` exactly."""
-    document = {
-        "manifest_version": 1,
-        "id": extension_id,
-        "name": "Chart Tools",
-        "version": version,
-        "publisher": publisher,
-        "api_version": api_version,
-        "permissions": list(permissions),
-        "entry_points": [{"name": "main", "module": "acme_chart.main", "attribute": "activate"}],
-        "artifact": {"sha256": _digest(payload), "size": len(payload)},
-        "dependencies": [dict(dep) for dep in dependencies],
-    }
-    return json.dumps(document).encode("utf-8")
-
-
-class DeterministicClock:
-    def __init__(self, start: datetime | None = None) -> None:
-        self.now = start or datetime(2026, 10, 5, 12, 0, 0, tzinfo=UTC)
-
-    def __call__(self) -> datetime:
-        return self.now
-
-    def advance(self, delta: timedelta) -> None:
-        self.now += delta
-
-
-class RecordingLoader:
-    """Loader spy recording every activation across the whole lifecycle."""
-
-    def __init__(self, *, fail_once: bool = False) -> None:
-        self.calls: list[tuple[str, str, bytes]] = []
-        self._fail_once = fail_once
-        self._failed_already = False
-
-    def arm(self) -> None:
-        """Fail on the next activation (the previous ones already passed)."""
-        self._fail_once = True
-
-    async def load(self, record, payload: bytes) -> LoadedExtension:
-        self.calls.append((record.install_id, record.version, bytes(payload)))
-        if self._fail_once and not self._failed_already:
-            self._failed_already = True
-            raise RuntimeError("simulated activation crash")
-        return LoadedExtension(extension_id=record.extension_id, version=record.version)
-
-
-class RecordingJanitor:
-    """Janitor spy: names the resources it purges, or fails on demand."""
-
-    def __init__(self, *, fail: bool = False) -> None:
-        self.purged: list[str] = []
-        self.calls: list[str] = []
-        self._fail = fail
-
-    async def purge(self, record) -> tuple[str, ...]:
-        self.calls.append(record.install_id)
-        if self._fail:
-            raise RuntimeError("storage bucket unavailable")
-        resources = (f"ws-data://{record.extension_id}/{record.version}",)
-        self.purged.extend(resources)
-        return resources
-
-
-TRUST = OperatorTrustEvidence(publisher_id="acme", signature_present=True, signer_key_id="key-1")
-POLICY = TrustPolicy(
-    trusted_publishers=frozenset({"acme"}),
-    require_signature=True,
-    allowed_signer_keys=frozenset({"key-1"}),
-)
-SCOPE = ExtensionScope(org_id="org-1", workspace_id="ws-1")
-
-_ids = iter(f"install-{n}" for n in range(10000))
-
-
-def make_service(
-    *,
-    loader: ExtensionCodeLoader | None = None,
-    clock: DeterministicClock | None = None,
-    store: InMemoryExtensionStore | None = None,
-    janitor: RecordingJanitor | None = None,
-) -> tuple[ExtensionInstallService, InMemoryExtensionStore, RecordingLoader, DeterministicClock]:
-    chosen_loader = loader or RecordingLoader()
-    chosen_clock = clock or DeterministicClock()
-    chosen_store = store or InMemoryExtensionStore()
-    service = ExtensionInstallService(
-        chosen_store,
-        loader=chosen_loader,
-        trust_policy=POLICY,
-        platform_api_version="1.0.0",
-        clock=chosen_clock,
-        install_id_factory=lambda: f"install-{next(_ids)}",
-        owned_resource_janitor=janitor,
-    )
-    return service, chosen_store, chosen_loader, chosen_clock
-
-
-async def install_version(
+async def activate(
     service: ExtensionInstallService,
     *,
-    version: str,
-    payload: bytes = PAYLOAD_V1,
+    version: str = "1.4.0",
     permissions: tuple[str, ...] = ("network.http", "storage.workspace"),
+    payload: bytes = PAYLOAD,
     extension_id: str = "acme.chart_tools",
     actor: str = "operator-1",
     scope: ExtensionScope = SCOPE,
     **manifest_kwargs: object,
-):
-    """inspect → authorize → install: one governed install, end to end."""
-    record = await service.inspect(
-        actor=actor,
+) -> object:
+    """Inspect → authorize → install one candidate, returning the record."""
+    record = await inspect_default(
+        service,
+        extension_id=extension_id,
+        version=version,
+        permissions=permissions,
+        payload=payload,
         scope=scope,
-        package=ExtensionPackage(
-            manifest_bytes=manifest_bytes(
-                extension_id=extension_id,
-                version=version,
-                permissions=permissions,
-                payload=payload,
-                **manifest_kwargs,  # type: ignore[arg-type]
-            ),
-            payload=payload,
-        ),
-        trust_evidence=TRUST,
-    )
-    assert record.state is ExtensionState.AWAITING_AUTHORIZATION, record
-    await service.authorize(
-        record.install_id, actor=actor, scope=scope, approve=True, reason="reviewed"
-    )
-    return await service.install(record.install_id, actor=actor, scope=scope, payload=payload)
-
-
-async def begin_upgrade(
-    service: ExtensionInstallService,
-    *,
-    version: str,
-    payload: bytes = PAYLOAD_V2,
-    permissions: tuple[str, ...] = ("network.http", "storage.workspace"),
-    extension_id: str = "acme.chart_tools",
-    actor: str = "operator-2",
-    scope: ExtensionScope = SCOPE,
-    **manifest_kwargs: object,
-):
-    """The upgrade request alone: preflight + inspect, before any decision."""
-    return await service.upgrade(
         actor=actor,
-        scope=scope,
-        package=ExtensionPackage(
-            manifest_bytes=manifest_bytes(
-                extension_id=extension_id,
-                version=version,
-                permissions=permissions,
-                payload=payload,
-                **manifest_kwargs,  # type: ignore[arg-type]
-            ),
-            payload=payload,
-        ),
-        trust_evidence=TRUST,
+        **manifest_kwargs,
     )
+    return await authorize_and_install(service, record, payload=payload, actor=actor)
 
 
-async def upgrade_to(
-    service: ExtensionInstallService,
-    **kwargs: object,
-) -> tuple[object, object, object]:
-    """upgrade → authorize → activate_upgrade: one governed upgrade."""
-    record, report = await begin_upgrade(service, **kwargs)
-    scope = kwargs.get("scope", SCOPE)
-    actor = str(kwargs.get("actor", "operator-2"))
-    payload = bytes(kwargs.get("payload", PAYLOAD_V2))
-    await service.authorize(
-        record.install_id, actor=actor, scope=scope, approve=True, reason="delta reviewed"
-    )
-    activated = await service.activate_upgrade(
-        record.install_id, actor=actor, scope=scope, payload=payload
-    )
-    return activated, report, record
+class PurgeSpy:
+    """Janitor spy: records purge calls, optionally fails them."""
 
+    def __init__(self, *, fail: bool = False) -> None:
+        self.purged: list[str] = []
+        self._fail = fail
 
-async def install_then_upgrade(service: ExtensionInstallService):
-    v1 = await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-    v2, _report, _candidate = await upgrade_to(service, version="1.5.0", payload=PAYLOAD_V2)
-    return v1, v2
-
-
-class TestSameAuthorityUpgrade:
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_upgrade_applies_with_empty_authority_delta_and_frozen_grant(self) -> None:
-        """AC: compatible same-authority upgrades apply without silently
-        changing permissions.
-
-        The upgrade record's authority delta must be empty against the active
-        grant, the new grant must be exactly the snapshot's declared
-        permissions, and the old version must keep its own record and grant
-        intact as provenance.
-        """
-        service, _store, _loader, _clock = make_service()
-        v1 = await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        assert v1.granted_permissions == ("network.http", "storage.workspace")
-
-        v2, report, _candidate = await upgrade_to(service, version="1.5.0", payload=PAYLOAD_V2)
-
-        assert v2.state is ExtensionState.ACTIVE
-        assert v2.version == "1.5.0"
-        assert report.allowed
-        assert report.authority.new == (), "same-authority upgrade must request nothing new"
-        assert v2.granted_permissions == v1.granted_permissions, (
-            "permissions must not drift from the authorized set"
-        )
-        assert v2.requested_permissions == v2.manifest.permissions
-        # The old version is retired, not deleted: provenance survives.
-        v1_final = await service.get(v1.install_id, scope=SCOPE)
-        assert v1_final.state is ExtensionState.SUPERSEDED
-        assert v1.granted_permissions == ("network.http", "storage.workspace")
-        # Resolution serves exactly the new version.
-        resolved = await service.resolve(SCOPE, "acme.chart_tools")
-        assert resolved is not None and resolved.install_id == v2.install_id
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_upgraded_permissions_come_from_the_new_immutable_snapshot(self) -> None:
-        """The grant follows the snapshot the operator approved — verified
-        against its anchored digest, not re-derived from a request."""
-        service, _store, _loader, _clock = make_service()
-        await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        v2, _report, _candidate = await upgrade_to(
-            service,
-            version="1.5.0",
-            payload=PAYLOAD_V2,
-            permissions=("network.http",),
-        )
-        # Narrowing is allowed (it never broadens); the grant is the snapshot's.
-        assert v2.granted_permissions == ("network.http",)
-        displayed = await service.permissions_in_snapshot(v2)
-        assert displayed == ("network.http",)
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_upgrade_swaps_pointer_once_and_retires_the_predecessor(self) -> None:
-        service, store, _loader, _clock = make_service()
-        await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        v2, _report, _candidate = await upgrade_to(service, version="1.5.0", payload=PAYLOAD_V2)
-        pointer = await store.active_record(SCOPE, "acme.chart_tools")
-        assert pointer is not None and pointer.install_id == v2.install_id
-        actives = [
-            r for r in await store.records_in_state(ExtensionState.ACTIVE) if r.org_id == "org-1"
-        ]
-        assert [r.install_id for r in actives] == [v2.install_id]
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_upgrade_requires_an_active_predecessor(self) -> None:
-        service, _store, _loader, _clock = make_service()
-        with pytest.raises(PreflightError, match="no ACTIVE install"):
-            await begin_upgrade(service, version="2.0.0")
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_upgrade_preflight_refuses_downgrades_and_same_version_new_bytes(self) -> None:
-        service, store, _loader, _clock = make_service()
-        await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        with pytest.raises(PreflightError, match="rollback, not an upgrade"):
-            await begin_upgrade(service, version="1.0.0")
-        # Same version, different bytes: one version may never have two contents.
-        with pytest.raises(PreflightError, match="different manifest bytes"):
-            await begin_upgrade(service, version="1.4.0", payload=PAYLOAD_V2)
-        # Nothing changed by the refused upgrades.
-        resolved = await service.resolve(SCOPE, "acme.chart_tools")
-        assert resolved is not None and resolved.version == "1.4.0"
-        assert await store.records_in_state(ExtensionState.AWAITING_AUTHORIZATION) == []
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_byte_identical_upgrade_request_is_idempotent(self) -> None:
-        service, _store, _loader, _clock = make_service()
-        active = await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        record, report = await begin_upgrade(service, version="1.4.0", payload=PAYLOAD_V1)
-        assert record.install_id == active.install_id
-        assert record.state is ExtensionState.ACTIVE
-        assert report.allowed
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_upgrade_inspect_failure_records_rejected(self) -> None:
-        """A candidate that passes preflight metadata but fails trust at
-        inspection is recorded REJECTED — truthfully, with nothing changed."""
-        service, _store, _loader, _clock = make_service()
-        await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        record, _report = await service.upgrade(
-            actor="operator-2",
-            scope=SCOPE,
-            package=ExtensionPackage(
-                manifest_bytes=manifest_bytes(version="1.5.0", payload=PAYLOAD_V2),
-                payload=PAYLOAD_V2,
-            ),
-            trust_evidence=OperatorTrustEvidence(publisher_id="acme", signature_present=False),
-        )
-        assert record.state is ExtensionState.REJECTED
-        resolved = await service.resolve(SCOPE, "acme.chart_tools")
-        assert resolved is not None and resolved.version == "1.4.0"
-
-
-class TestBroadenedAuthorityReauthorization:
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_broader_authority_names_the_new_permission_and_requires_decision(self) -> None:
-        """AC: broader authority always requires explicit new authorization.
-
-        The upgraded manifest adds ``filesystem.read``. The record must park
-        in AWAITING_AUTHORIZATION with the delta naming exactly the new
-        permission, activation must be structurally impossible before the
-        decision, and only the explicit approval lets it through.
-        """
-        service, _store, loader, _clock = make_service()
-        await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        calls_after_install = len(loader.calls)
-
-        record, report = await begin_upgrade(
-            service,
-            version="1.5.0",
-            permissions=("network.http", "storage.workspace", "filesystem.read"),
-        )
-        assert record.state is ExtensionState.AWAITING_AUTHORIZATION
-        assert record.authority_delta == ("filesystem.read",)
-        assert report.authority.new == ("filesystem.read",)
-        assert report.broadens_authority
-        assert len(loader.calls) == calls_after_install, (
-            "no code may run before the explicit decision"
-        )
-
-        with pytest.raises(InvalidTransition):
-            await service.activate_upgrade(
-                record.install_id, actor="operator-2", scope=SCOPE, payload=PAYLOAD_V2
-            )
-        assert len(loader.calls) == calls_after_install, (
-            "a refused activation must not reach the loader either"
-        )
-
-        await service.authorize(
-            record.install_id,
-            actor="operator-2",
-            scope=SCOPE,
-            approve=True,
-            reason="delta approved",
-        )
-        activated = await service.activate_upgrade(
-            record.install_id, actor="operator-2", scope=SCOPE, payload=PAYLOAD_V2
-        )
-        assert activated.state is ExtensionState.ACTIVE
-        assert activated.granted_permissions == (
-            "network.http",
-            "storage.workspace",
-            "filesystem.read",
-        )
-        transitions = await service.transitions(record.install_id, scope=SCOPE)
-        authorized = next(t for t in transitions if t.to_state is ExtensionState.AUTHORIZED)
-        assert authorized.actor == "operator-2"
-        assert "delta approved" in authorized.reason
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_denial_of_broadened_upgrade_leaves_current_version_active(self) -> None:
-        service, _store, _loader, _clock = make_service()
-        v1 = await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        record, _report = await begin_upgrade(
-            service,
-            version="1.5.0",
-            permissions=("network.http", "storage.workspace", "filesystem.read"),
-        )
-        await service.authorize(
-            record.install_id, actor="operator-2", scope=SCOPE, approve=False, reason="too broad"
-        )
-        resolved = await service.resolve(SCOPE, "acme.chart_tools")
-        assert resolved is not None and resolved.install_id == v1.install_id
-
-
-class TestRollback:
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_rollback_restores_proven_compatible_state(self) -> None:
-        """AC: rollback succeeds with proven compatible state.
-
-        The superseded v1 becomes ACTIVE again through the loader seam, the
-        pointer swaps, v2 is retained as SUPERSEDED with its grant, and both
-        versions' audit trails survive.
-        """
-        service, _store, loader, _clock = make_service()
-        v1, v2 = await install_then_upgrade(service)
-
-        rolled = await service.rollback(
-            v1.install_id,
-            actor="operator-3",
-            scope=SCOPE,
-            payload=PAYLOAD_V1,
-            reason="regression in 1.5.0",
-        )
-        assert rolled.state is ExtensionState.ACTIVE
-        assert rolled.version == "1.4.0"
-        assert rolled.granted_permissions == v1.granted_permissions
-        v2_final = await service.get(v2.install_id, scope=SCOPE)
-        assert v2_final.state is ExtensionState.SUPERSEDED
-        resolved = await service.resolve(SCOPE, "acme.chart_tools")
-        assert resolved is not None and resolved.install_id == v1.install_id
-        # The rollback went through the loader seam with the exact v1 bytes.
-        assert any(
-            install_id == v1.install_id and payload == PAYLOAD_V1
-            for install_id, _version, payload in loader.calls
-        )
-        # Both trails retained; the rollback step is explicit and attributed.
-        for record in (v1, v2):
-            trail = await service.transitions(record.install_id, scope=SCOPE)
-            assert trail, f"{record.version} must keep its audit trail"
-        rollback_transition = [
-            t
-            for t in await service.transitions(v1.install_id, scope=SCOPE)
-            if t.to_state is ExtensionState.INSTALLING
-        ][-1]
-        assert "rollback" in rollback_transition.reason
-        assert rollback_transition.actor == "operator-3"
-        # The displaced v2 records who rolled it away and why.
-        v2_trail = await service.transitions(v2.install_id, scope=SCOPE)
-        assert v2_trail[-1].to_state is ExtensionState.SUPERSEDED
-        assert "rolled back to 1.4.0" in v2_trail[-1].reason
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_later_activations_preserve_the_original_installer(self) -> None:
-        """AC: installed_by stays the first installer across resume/rollback.
-
-        Resume and rollback funnel through the shared activation path, which
-        must not reattribute the record to the operator performing the later
-        lifecycle action; those later actors stay on the transition trail
-        instead, and the record keeps its original installation provenance.
-        """
-        service, _store, _loader, _clock = make_service()
-        v1 = await install_version(service, version="1.4.0", actor="installer-1")
-        assert v1.installed_by == "installer-1"
-
-        await service.disable(v1.install_id, actor="operator-9", scope=SCOPE, reason="maintenance")
-        resumed = await service.resume(
-            v1.install_id, actor="operator-9", scope=SCOPE, payload=PAYLOAD_V1
-        )
-        assert resumed.state is ExtensionState.ACTIVE
-        assert resumed.installed_by == "installer-1"
-        resume_trail = await service.transitions(v1.install_id, scope=SCOPE)
-        assert resume_trail[-1].actor == "operator-9"
-
-        v2, _report, _candidate = await upgrade_to(service, version="1.5.0", payload=PAYLOAD_V2)
-        rolled = await service.rollback(
-            v1.install_id,
-            actor="operator-9",
-            scope=SCOPE,
-            payload=PAYLOAD_V1,
-            reason="regression in 1.5.0",
-        )
-        assert rolled.state is ExtensionState.ACTIVE
-        assert rolled.installed_by == "installer-1"
-        assert v2 is not None
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_rollback_with_substituted_bytes_fails_before_any_change(self) -> None:
-        """AC: rollback fails before corrupting current state.
-
-        A tampered payload must be refused on the digest check with zero
-        state changes: states, pointer and audit trails all untouched, and
-        the loader never reached.
-        """
-        service, store, loader, _clock = make_service()
-        v1, v2 = await install_then_upgrade(service)
-        transitions_before = await service.transitions(v1.install_id, scope=SCOPE)
-
-        with pytest.raises(ArtifactMismatch):
-            await service.rollback(
-                v1.install_id,
-                actor="operator-3",
-                scope=SCOPE,
-                payload=b"tampered-bytes",
-                reason="oops",
-            )
-
-        pointer = await store.active_record(SCOPE, "acme.chart_tools")
-        assert pointer is not None and pointer.install_id == v2.install_id
-        assert (await service.get(v1.install_id, scope=SCOPE)).state is ExtensionState.SUPERSEDED
-        assert (await service.get(v2.install_id, scope=SCOPE)).state is ExtensionState.ACTIVE
-        assert await service.transitions(v1.install_id, scope=SCOPE) == transitions_before
-        assert not any(
-            payload == b"tampered-bytes" for _install_id, _version, payload in loader.calls
-        ), "refused rollback must not reach the loader"
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_rollback_refused_when_incompatible_with_current_scope(self) -> None:
-        """v1 declared a dependency the current scope can no longer satisfy
-        once the dependency partner moves on: the preflight must refuse
-        before anything changes."""
-        service, store, _loader, _clock = make_service()
-        # The dependency partner must be active before v1 (which requires it) installs.
-        await install_version(service, extension_id="acme.dep", version="2.1.0", payload=b"dep-v2")
-        v1 = await install_version(
-            service,
-            version="1.4.0",
-            payload=PAYLOAD_V1,
-            dependencies=({"id": "acme.dep", "range": "^2.0.0"},),
-        )
-        v2, _r, _c = await upgrade_to(service, version="1.5.0", payload=PAYLOAD_V2)
-        # The dependency partner then upgrades past v1's declared range.
-        dep3, _r2, _c2 = await upgrade_to(
-            service, extension_id="acme.dep", version="3.0.0", payload=b"dep-v3"
-        )
-        assert dep3.state is ExtensionState.ACTIVE
-
-        with pytest.raises(PreflightError, match="dependency"):
-            await service.rollback(
-                v1.install_id,
-                actor="operator-3",
-                scope=SCOPE,
-                payload=PAYLOAD_V1,
-                reason="try old version",
-            )
-        pointer = await store.active_record(SCOPE, "acme.chart_tools")
-        assert pointer is not None and pointer.install_id == v2.install_id, (
-            "a refused rollback must leave the current version active"
-        )
-        assert (await service.get(v1.install_id, scope=SCOPE)).state is ExtensionState.SUPERSEDED
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_rollback_restoring_dropped_authority_requires_explicit_acknowledgment(
-        self,
-    ) -> None:
-        """Rolling back to a version whose grant holds permissions the
-        current version no longer asks for is a real authority change: it is
-        refused without the explicit acknowledgment, and the refusal names
-        the permissions. With the acknowledgment it proceeds — as an explicit
-        act, with the restored authority named in the audit trail."""
-        service, store, _loader, _clock = make_service()
-        v1 = await install_version(
-            service,
-            version="1.4.0",
-            payload=PAYLOAD_V1,
-            permissions=("network.http", "storage.workspace", "filesystem.read"),
-        )
-        v2, _r, _c = await upgrade_to(
-            service, version="1.5.0", payload=PAYLOAD_V2, permissions=("network.http",)
-        )
-        assert v2.granted_permissions == ("network.http",)
-
-        with pytest.raises(PreflightError, match=r"filesystem\.read"):
-            await service.rollback(
-                v1.install_id,
-                actor="operator-3",
-                scope=SCOPE,
-                payload=PAYLOAD_V1,
-                reason="downgrade",
-            )
-        pointer = await store.active_record(SCOPE, "acme.chart_tools")
-        assert pointer is not None and pointer.install_id == v2.install_id
-
-        rolled = await service.rollback(
-            v1.install_id,
-            actor="operator-3",
-            scope=SCOPE,
-            payload=PAYLOAD_V1,
-            reason="downgrade, broadened authority accepted",
-            allow_broadened=True,
-        )
-        assert rolled.state is ExtensionState.ACTIVE
-        assert rolled.granted_permissions == (
-            "network.http",
-            "storage.workspace",
-            "filesystem.read",
-        )
-        trail = await service.transitions(v1.install_id, scope=SCOPE)
-        installing = [t for t in trail if t.to_state is ExtensionState.INSTALLING][-1]
-        assert "filesystem.read" in installing.reason, (
-            "the restored authority must be named in the audit trail"
-        )
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_rollback_refused_while_pinned_to_other_version(self) -> None:
-        service, _store, _loader, _clock = make_service()
-        v1, _v2 = await install_then_upgrade(service)
-        await service.pin(
-            SCOPE, "acme.chart_tools", actor="operator-1", version="1.5.0", reason="hold"
-        )
-        with pytest.raises(PinConflict, match=r"pinned at 1\.5\.0"):
-            await service.rollback(
-                v1.install_id,
-                actor="operator-3",
-                scope=SCOPE,
-                payload=PAYLOAD_V1,
-                reason="downgrade",
-            )
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_completed_rollback_retries_idempotently(self) -> None:
-        service, _store, loader, _clock = make_service()
-        v1, _v2 = await install_then_upgrade(service)
-        first = await service.rollback(
-            v1.install_id, actor="operator-3", scope=SCOPE, payload=PAYLOAD_V1, reason="regression"
-        )
-        activations_after_first = len(loader.calls)
-        again = await service.rollback(
-            v1.install_id, actor="operator-3", scope=SCOPE, payload=PAYLOAD_V1, reason="regression"
-        )
-        assert again.install_id == first.install_id
-        assert again.state is ExtensionState.ACTIVE
-        assert len(loader.calls) == activations_after_first, "the retry must not re-activate"
-
-
-class TestDisable:
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_disable_stops_resolution_immediately_and_preserves_history(self) -> None:
-        """AC: disable prevents new invocations immediately while preserving
-        historical Runs/Invocations.
-
-        In this platform the invocation seam is ``resolve``; it must return
-        None the moment disable returns. Every prior transition, the record
-        and its frozen grant survive verbatim.
-        """
-        service, _store, _loader, _clock = make_service()
-        active = await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        before = await service.transitions(active.install_id, scope=SCOPE)
-
-        disabled = await service.disable(
-            active.install_id, actor="operator-4", scope=SCOPE, reason="suspected bad outputs"
-        )
-        assert disabled.state is ExtensionState.DISABLED
-        assert disabled.status_reason == "suspected bad outputs"
-        assert await service.resolve(SCOPE, "acme.chart_tools") is None
-
-        after = await service.transitions(active.install_id, scope=SCOPE)
-        assert len(after) == len(before) + 1
-        disable_transition = after[-1]
-        assert disable_transition.from_state is ExtensionState.ACTIVE
-        assert disable_transition.to_state is ExtensionState.DISABLED
-        assert disable_transition.actor == "operator-4"
-        assert "suspected bad outputs" in disable_transition.reason
-        # The grant is retained, not revoked: disable is suspension.
-        assert disabled.granted_permissions == active.granted_permissions
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_resume_restores_resolution_through_the_loader_without_new_authorization(
-        self,
-    ) -> None:
-        service, _store, loader, _clock = make_service()
-        active = await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        await service.disable(
-            active.install_id, actor="operator-4", scope=SCOPE, reason="maintenance"
-        )
-
-        resumed = await service.resume(
-            active.install_id, actor="operator-4", scope=SCOPE, payload=PAYLOAD_V1
-        )
-        assert resumed.state is ExtensionState.ACTIVE
-        assert resumed.granted_permissions == active.granted_permissions, (
-            "resume must not change the grant"
-        )
-        resolved = await service.resolve(SCOPE, "acme.chart_tools")
-        assert resolved is not None and resolved.install_id == active.install_id
-        assert any(call[0] == active.install_id for call in loader.calls)
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_resume_refuses_substituted_bytes(self) -> None:
-        service, _store, _loader, _clock = make_service()
-        active = await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        await service.disable(
-            active.install_id, actor="operator-4", scope=SCOPE, reason="maintenance"
-        )
-        with pytest.raises(ArtifactMismatch):
-            await service.resume(
-                active.install_id, actor="operator-4", scope=SCOPE, payload=b"other-bytes"
-            )
-        assert await service.resolve(SCOPE, "acme.chart_tools") is None
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_disable_is_idempotent_and_refuses_non_active(self) -> None:
-        service, _store, _loader, _clock = make_service()
-        active = await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        first = await service.disable(
-            active.install_id, actor="operator-4", scope=SCOPE, reason="once"
-        )
-        second = await service.disable(
-            active.install_id, actor="operator-4", scope=SCOPE, reason="twice"
-        )
-        assert second.install_id == first.install_id
-        assert second.state is ExtensionState.DISABLED
-
-        record = await service.inspect(
-            actor="operator-1",
-            scope=SCOPE,
-            package=ExtensionPackage(
-                manifest_bytes=manifest_bytes(version="1.5.0", payload=PAYLOAD_V2),
-                payload=PAYLOAD_V2,
-            ),
-            trust_evidence=TRUST,
-        )
-        with pytest.raises(InvalidTransition):
-            await service.disable(
-                record.install_id, actor="operator-4", scope=SCOPE, reason="not active"
-            )
+    async def purge(self, record: object) -> tuple[str, ...]:
+        name = f"{record.extension_id}@{record.version}"  # type: ignore[attr-defined]
+        if self._fail:
+            raise RuntimeError("simulated janitor outage")
+        self.purged.append(name)
+        return (f"owned:{name}",)
 
 
 class TestPin:
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
-    async def test_pin_holds_the_version_against_upgrades_until_unpinned(self) -> None:
-        service, store, _loader, _clock = make_service()
-        await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        pin = await service.pin(
-            SCOPE, "acme.chart_tools", actor="operator-1", reason="freeze for quarter end"
-        )
-        assert isinstance(pin, PinRecord)
-        assert pin.version == "1.4.0"
-        assert pin.pinned_by == "operator-1"
+    async def test_pin_holds_the_active_version_and_is_audited(self) -> None:
+        service, _store, _loader, _clock = make_service()
+        record = await activate(service)
 
-        with pytest.raises(PinConflict, match=r"pinned at 1\.4\.0"):
-            await begin_upgrade(service, version="1.5.0")
-        # Nothing changed by the refused upgrade.
-        assert await store.get_pin(SCOPE, "acme.chart_tools") is not None
-        resolved = await service.resolve(SCOPE, "acme.chart_tools")
-        assert resolved is not None and resolved.version == "1.4.0"
-
-        assert await service.unpin(
-            SCOPE, "acme.chart_tools", actor="operator-1", reason="quarter closed"
+        pinned = await service.pin(
+            record.install_id, actor="operator-1", scope=SCOPE, reason="freeze the known-good"
         )
-        activated, _report, _candidate = await upgrade_to(service, version="1.5.0")
-        assert activated.state is ExtensionState.ACTIVE
+
+        assert pinned.pinned is True
+        assert pinned.pinned_by == "operator-1"
+        assert pinned.pinned_at is not None
+        assert await service.pinned_record(SCOPE, record.extension_id) is pinned
+        trail = await service.transitions(record.install_id, scope=SCOPE)
+        last = trail[-1]
+        assert last.from_state is ExtensionState.ACTIVE
+        assert last.to_state is ExtensionState.ACTIVE
+        assert last.actor == "operator-1"
+        assert "pinned" in last.reason and "freeze the known-good" in last.reason
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
-    async def test_pin_is_idempotent_for_same_version_and_conflicts_for_another(self) -> None:
+    async def test_pinned_version_does_not_move_silently(self) -> None:
+        """AC: update cannot silently change a pinned version.
+
+        Activating another version while the pin stands is refused before any
+        transition: the candidate stays AUTHORIZED, the pinned version stays
+        active, and the trail of the pinned record is untouched.
+        """
+        service, _store, loader, _clock = make_service()
+        first = await activate(service)
+        await service.pin(first.install_id, actor="operator-1", scope=SCOPE, reason="hold")
+        trail_before = await service.transitions(first.install_id, scope=SCOPE)
+
+        candidate = await inspect_default(service, version="1.5.0", payload=OTHER_PAYLOAD)
+        await service.authorize(
+            candidate.install_id, actor="operator-1", scope=SCOPE, approve=True, reason="ok"
+        )
+        with pytest.raises(ExtensionPinned, match="pinned"):
+            await service.install(
+                candidate.install_id, actor="operator-1", scope=SCOPE, payload=OTHER_PAYLOAD
+            )
+
+        active = await service.active(SCOPE, "acme.chart_tools")
+        assert active is not None and active.version == "1.4.0"
+        assert active.pinned is True
+        assert len(await service.transitions(first.install_id, scope=SCOPE)) == len(trail_before)
+        assert len(loader.calls) == 1  # the refused activation never reached the loader
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_unpin_is_audited_and_allows_the_upgrade(self) -> None:
         service, _store, _loader, _clock = make_service()
-        await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        first = await service.pin(SCOPE, "acme.chart_tools", actor="operator-1", reason="a")
-        again = await service.pin(SCOPE, "acme.chart_tools", actor="operator-1", reason="b")
-        assert again.version == first.version == "1.4.0"
-        with pytest.raises(PreflightError, match=r"the active version is 1\.4\.0"):
-            await service.pin(
-                SCOPE, "acme.chart_tools", actor="operator-1", version="9.9.9", reason="c"
+        first = await activate(service)
+        await service.pin(first.install_id, actor="operator-1", scope=SCOPE, reason="hold")
+
+        await service.unpin(
+            first.install_id, actor="operator-2", scope=SCOPE, reason="upgrade window"
+        )
+        assert await service.pinned_record(SCOPE, "acme.chart_tools") is None
+        upgraded = await activate(service, version="1.5.0", payload=OTHER_PAYLOAD)
+        active = await service.active(SCOPE, "acme.chart_tools")
+        assert active is not None and active.version == "1.5.0"
+
+        trail = await service.transitions(first.install_id, scope=SCOPE)
+        unpin_events = [t for t in trail if "unpinned" in t.reason]
+        assert len(unpin_events) == 1 and unpin_events[0].actor == "operator-2"
+        retirement = trail[-1]
+        assert retirement.to_state is ExtensionState.SUPERSEDED
+        assert retirement.from_state is ExtensionState.ACTIVE
+        assert upgraded.version == "1.5.0"
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_repin_and_unpin_of_an_unpinned_record_are_idempotent(self) -> None:
+        service, _store, _loader, _clock = make_service()
+        record = await activate(service)
+
+        again = await service.pin(
+            record.install_id, actor="operator-1", scope=SCOPE, reason="re-pin"
+        )
+        assert again.pinned is True
+        trail = await service.transitions(record.install_id, scope=SCOPE)
+        assert sum(1 for t in trail if "pinned" in t.reason) == 1
+
+        unpinned = await service.unpin(
+            record.install_id, actor="operator-1", scope=SCOPE, reason="release"
+        )
+        assert unpinned.pinned is False
+        untouched = await service.unpin(
+            record.install_id, actor="operator-1", scope=SCOPE, reason="again"
+        )
+        assert untouched.pinned is False
+        trail = await service.transitions(record.install_id, scope=SCOPE)
+        assert sum(1 for t in trail if "unpinned" in t.reason) == 1
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_pin_requires_an_active_record(self) -> None:
+        service, _store, _loader, _clock = make_service()
+        candidate = await inspect_default(service)
+        with pytest.raises(InvalidTransition):
+            await service.pin(candidate.install_id, actor="operator-1", scope=SCOPE, reason="early")
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_pin_refuses_a_second_pin_for_the_extension(self) -> None:
+        """The one-pin invariant is enforced, not assumed.
+
+        The only way two records of one extension can both carry ``pinned``
+        is corrupt state, so the test writes a stale pinned record through
+        the store directly and proves the service refuses to add a second.
+        """
+        store = InMemoryExtensionStore()
+        service, _store, _loader, _clock = make_service(store=store)
+        live = await activate(service, version="1.5.0", payload=OTHER_PAYLOAD)
+        # Corrupt state: a second record of the same extension carries a pin.
+        stale = await inspect_default(service, version="1.4.0")
+        stale = replace(
+            stale,
+            state=ExtensionState.DISABLED,
+            pinned=True,
+            pinned_by="ghost-operator",
+            pinned_at=stale.updated_at,
+        )
+        await store.save_record(stale)
+
+        with pytest.raises(ExtensionPinned, match="already pinned"):
+            await service.pin(live.install_id, actor="operator-1", scope=SCOPE, reason="second pin")
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_pin_demands_actor_and_reason(self) -> None:
+        service, _store, _loader, _clock = make_service()
+        record = await activate(service)
+        with pytest.raises(ValueError, match="actor"):
+            await service.pin(record.install_id, actor="  ", scope=SCOPE, reason="x")
+        with pytest.raises(ValueError, match="reason"):
+            await service.pin(record.install_id, actor="op", scope=SCOPE, reason=" ")
+
+
+class TestDisableResume:
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_disable_stops_new_use_immediately_and_keeps_evidence(self) -> None:
+        """AC: disable immediately stops new extension use while preserving
+        historical evidence.
+
+        The resolution seam returns nothing the moment the disable lands,
+        the scope's installed-versions view drops it, and the record keeps
+        its manifest snapshot, frozen grant and artifact digest queryable.
+        """
+        service, _store, _loader, _clock = make_service()
+        record = await activate(service)
+
+        disabled = await service.disable(
+            SCOPE, record.extension_id, actor="operator-1", reason="suspect release"
+        )
+
+        assert disabled.state is ExtensionState.DISABLED
+        assert await service.active(SCOPE, record.extension_id) is None
+        assert (await service._store.installed_versions(SCOPE)) == {}
+        intact = await service.get(record.install_id, scope=SCOPE)
+        assert intact.granted_permissions == record.granted_permissions
+        assert intact.manifest.source_sha256 == record.manifest.source_sha256
+        assert intact.artifact_sha256 == record.artifact_sha256
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_disable_is_audited(self) -> None:
+        service, _store, _loader, _clock = make_service()
+        record = await activate(service)
+        await service.disable(
+            SCOPE, record.extension_id, actor="operator-9", reason="suspect release"
+        )
+        trail = await service.transitions(record.install_id, scope=SCOPE)
+        last = trail[-1]
+        assert last.from_state is ExtensionState.ACTIVE
+        assert last.to_state is ExtensionState.DISABLED
+        assert last.actor == "operator-9" and "suspect release" in last.reason
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_resume_requires_the_bound_artifact_and_reruns_the_loader(self) -> None:
+        service, _store, loader, _clock = make_service()
+        record = await activate(service)
+        await service.disable(SCOPE, record.extension_id, actor="op", reason="pause")
+        loader.calls.clear()
+
+        with pytest.raises(ArtifactMismatch):
+            await service.resume(
+                record.install_id,
+                actor="op",
+                scope=SCOPE,
+                payload=b"tampered",
+                reason="back",
+            )
+        still = await service.get(record.install_id, scope=SCOPE)
+        assert still.state is ExtensionState.DISABLED
+
+        resumed = await service.resume(
+            record.install_id, actor="op", scope=SCOPE, payload=PAYLOAD, reason="all clear"
+        )
+        assert resumed.state is ExtensionState.ACTIVE
+        active = await service.active(SCOPE, record.extension_id)
+        assert active is not None and active.install_id == record.install_id
+        assert [call[0] for call in loader.calls] == [record.install_id]
+        trail = await service.transitions(record.install_id, scope=SCOPE)
+        verbs = [t.reason for t in trail]
+        assert any("resumed" in reason for reason in verbs)
+        # The mandatory operator rationale is carried verbatim on the trail.
+        assert any("all clear" in reason for reason in verbs)
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_disable_twice_is_idempotent(self) -> None:
+        service, _store, _loader, _clock = make_service()
+        record = await activate(service)
+        first = await service.disable(SCOPE, record.extension_id, actor="op", reason="pause")
+        trail_len = len(await service.transitions(record.install_id, scope=SCOPE))
+        second = await service.disable(SCOPE, record.extension_id, actor="op", reason="pause again")
+        assert second.state is ExtensionState.DISABLED
+        assert second.install_id == first.install_id
+        assert len(await service.transitions(record.install_id, scope=SCOPE)) == trail_len
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_disable_retry_after_a_newer_disable_returns_latest_record(self) -> None:
+        """A repeated disable with no active pointer is idempotent on the most
+        recently disabled record, not the oldest one: disabling 1.4.0, then
+        installing and disabling 1.5.0, must report 1.5.0 on retry — the
+        records iterate oldest-first, so the newest DISABLED wins."""
+        service, _store, _loader, _clock = make_service()
+        first = await activate(service)
+        await service.disable(SCOPE, first.extension_id, actor="op", reason="pause 1.4.0")
+        second = await activate(service, version="1.5.0", payload=OTHER_PAYLOAD)
+        await service.disable(SCOPE, second.extension_id, actor="op", reason="pause 1.5.0")
+
+        retry = await service.disable(
+            SCOPE, second.extension_id, actor="op", reason="pause 1.5.0 again"
+        )
+
+        assert retry.state is ExtensionState.DISABLED
+        assert retry.install_id == second.install_id
+        assert retry.version == "1.5.0"
+        assert retry.install_id != first.install_id
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_disable_of_an_unknown_extension_is_unknown(self) -> None:
+        service, _store, _loader, _clock = make_service()
+        await activate(service)
+        with pytest.raises(UnknownInstall):
+            await service.disable(SCOPE, "acme.nobody", actor="op", reason="nope")
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_resume_of_an_active_record_is_idempotent(self) -> None:
+        """Retrying a resume after a crash cannot double-activate: an already
+        ACTIVE record returns as-is, without another loader run."""
+        service, _store, loader, _clock = make_service()
+        record = await activate(service)
+        loader.calls.clear()
+
+        again = await service.resume(
+            record.install_id, actor="op", scope=SCOPE, payload=PAYLOAD, reason="retry"
+        )
+        assert again.state is ExtensionState.ACTIVE
+        assert loader.calls == []  # no second activation
+
+
+class TestRollback:
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_rollback_restores_the_superseded_version(self) -> None:
+        """AC: rollback succeeds with proven compatible state.
+
+        After a same-authority upgrade, rolling back re-crosses the loader
+        with the original bound artifact, swaps the pointer back, and retires
+        the newer version — audited on both trails.
+        """
+        service, _store, loader, _clock = make_service()
+        first = await activate(service)
+        upgraded = await activate(service, version="1.5.0", payload=OTHER_PAYLOAD)
+        loader.calls.clear()
+
+        rolled_back = await service.rollback(
+            SCOPE,
+            "acme.chart_tools",
+            actor="operator-1",
+            payload=PAYLOAD,
+            reason="1.5.0 regressed",
+        )
+
+        assert rolled_back.install_id == first.install_id
+        assert rolled_back.state is ExtensionState.ACTIVE
+        active = await service.active(SCOPE, "acme.chart_tools")
+        assert active is not None and active.version == "1.4.0"
+        assert [call[0] for call in loader.calls] == [first.install_id]
+        newer_trail = await service.transitions(upgraded.install_id, scope=SCOPE)
+        assert newer_trail[-1].to_state is ExtensionState.SUPERSEDED
+        older_trail = await service.transitions(first.install_id, scope=SCOPE)
+        assert any("rolled back" in t.reason for t in older_trail)
+        # The mandatory operator rationale is carried verbatim on the trail.
+        assert any("1.5.0 regressed" in t.reason for t in older_trail)
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_rollback_refuses_broadened_authority_before_touching_state(self) -> None:
+        """AC: broader authority always requires explicit new authorization.
+
+        The superseded record's frozen grant declares a permission the
+        current active grant lacks; the rollback is refused and neither the
+        current record nor the target gains a single new transition.
+        """
+        service, _store, _loader, _clock = make_service()
+        narrow = await activate(service, permissions=("network.http",))
+        wider = await activate(
+            service,
+            version="1.5.0",
+            permissions=("network.http", "storage.workspace"),
+            payload=OTHER_PAYLOAD,
+        )
+        narrower_still = await activate(service, version="2.0.0", permissions=("network.http",))
+        assert narrower_still.version == "2.0.0"
+
+        target_trail = len(await service.transitions(wider.install_id, scope=SCOPE))
+        current_trail = len(await service.transitions(narrower_still.install_id, scope=SCOPE))
+        with pytest.raises(RollbackRefused, match=r"storage\.workspace"):
+            await service.rollback(
+                SCOPE,
+                "acme.chart_tools",
+                actor="op",
+                payload=OTHER_PAYLOAD,
+                reason="go back to 1.5.0",
+                to_install_id=wider.install_id,
+            )
+        active = await service.active(SCOPE, "acme.chart_tools")
+        assert active is not None and active.version == "2.0.0"
+        assert active.granted_permissions == ("network.http",)
+        assert len(await service.transitions(wider.install_id, scope=SCOPE)) == target_trail
+        assert (
+            len(await service.transitions(narrower_still.install_id, scope=SCOPE)) == current_trail
+        )
+        assert narrow is not None  # the old narrow version was never consulted
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_rollback_refuses_an_incompatible_target(self) -> None:
+        """A target whose dependencies are no longer satisfied is refused.
+
+        The superseded version declared a dependency on another extension;
+        that dependency has since been disabled, so the target no longer
+        evaluates compatible and the rollback must not corrupt the current
+        state by half-restoring it.
+        """
+        service, _store, _loader, _clock = make_service()
+        lib = await activate(service, extension_id="acme.lib", version="0.9.0")
+        with_dep = await activate(
+            service,
+            version="1.4.0",
+            dependencies=({"id": "acme.lib", "range": "*"},),
+        )
+        plain = await activate(service, version="1.5.0", payload=OTHER_PAYLOAD)
+        await service.disable(SCOPE, "acme.lib", actor="op", reason="retire the lib")
+
+        with pytest.raises(RollbackRefused, match=r"acme\.lib"):
+            await service.rollback(
+                SCOPE,
+                "acme.chart_tools",
+                actor="op",
+                payload=PAYLOAD,
+                reason="back to the dependency-using build",
+                to_install_id=with_dep.install_id,
+            )
+        active = await service.active(SCOPE, "acme.chart_tools")
+        assert active is not None and active.install_id == plain.install_id
+        assert lib is not None
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_rollback_with_wrong_payload_records_nothing(self) -> None:
+        service, _store, _loader, _clock = make_service()
+        first = await activate(service)
+        await activate(service, version="1.5.0", payload=OTHER_PAYLOAD)
+
+        with pytest.raises(ArtifactMismatch):
+            await service.rollback(
+                SCOPE,
+                "acme.chart_tools",
+                actor="op",
+                payload=b"not the artifact",
+                reason="rollback",
+            )
+        first_trail = await service.transitions(first.install_id, scope=SCOPE)
+        assert first_trail[-1].to_state is ExtensionState.SUPERSEDED
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_rollback_from_a_pinned_version_is_refused(self) -> None:
+        service, _store, _loader, _clock = make_service()
+        first = await activate(service)
+        await activate(service, version="1.5.0", payload=OTHER_PAYLOAD)
+        active = await service.active(SCOPE, "acme.chart_tools")
+        assert active is not None and active.install_id != first.install_id
+        await service.pin(active.install_id, actor="op", scope=SCOPE, reason="hold")
+
+        with pytest.raises(ExtensionPinned):
+            await service.rollback(
+                SCOPE,
+                "acme.chart_tools",
+                actor="op",
+                payload=PAYLOAD,
+                reason="go back",
             )
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
-    async def test_unpin_is_idempotent_and_pin_operations_are_audited(self) -> None:
+    async def test_rollback_retry_is_idempotent(self) -> None:
         service, _store, _loader, _clock = make_service()
-        await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        assert not await service.unpin(SCOPE, "acme.chart_tools", actor="operator-1", reason="noop")
-        await service.pin(SCOPE, "acme.chart_tools", actor="operator-1", reason="hold")
-        await service.pin(SCOPE, "acme.chart_tools", actor="operator-1", reason="refresh")
-        assert await service.unpin(SCOPE, "acme.chart_tools", actor="operator-1", reason="release")
+        first = await activate(service)
+        await activate(service, version="1.5.0", payload=OTHER_PAYLOAD)
+        rolled = await service.rollback(
+            SCOPE, "acme.chart_tools", actor="op", payload=PAYLOAD, reason="regression"
+        )
+        trail_len = len(await service.transitions(first.install_id, scope=SCOPE))
 
-        _pin, events = await service.pin_status(SCOPE, "acme.chart_tools")
-        assert [event.action for event in events] == ["pin", "refresh", "unpin"]
-        assert events[0].actor == "operator-1"
-        assert events[0].version == "1.4.0"
-        assert events[-1].version is None
+        again = await service.rollback(
+            SCOPE,
+            "acme.chart_tools",
+            actor="op",
+            payload=PAYLOAD,
+            reason="retry after a crash",
+            to_install_id=first.install_id,
+        )
+        assert again.install_id == rolled.install_id
+        assert again.state is ExtensionState.ACTIVE
+        assert len(await service.transitions(first.install_id, scope=SCOPE)) == trail_len
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
-    async def test_pin_requires_an_active_install_and_a_reason(self) -> None:
+    async def test_rollback_without_a_superseded_target_is_refused(self) -> None:
         service, _store, _loader, _clock = make_service()
-        with pytest.raises(PreflightError, match="no ACTIVE install"):
-            await service.pin(SCOPE, "acme.absent", actor="operator-1", reason="x")
-        await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        with pytest.raises(ValueError, match="reason is required"):
-            await service.pin(SCOPE, "acme.chart_tools", actor="operator-1", reason="  ")
+        await activate(service)
+        with pytest.raises(InvalidTransition, match="SUPERSEDED"):
+            await service.rollback(
+                SCOPE, "acme.chart_tools", actor="op", payload=PAYLOAD, reason="nothing to undo"
+            )
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_rollback_refuses_a_record_of_another_extension(self) -> None:
+        service, _store, _loader, _clock = make_service()
+        await activate(service)
+        other = await activate(service, extension_id="acme.lib", version="0.9.0")
+        await service.disable(SCOPE, "acme.lib", actor="op", reason="park")
+        with pytest.raises(UnknownInstall, match="not a record"):
+            await service.rollback(
+                SCOPE,
+                "acme.chart_tools",
+                actor="op",
+                payload=PAYLOAD,
+                reason="wrong target",
+                to_install_id=other.install_id,
+            )
+
+
+class TestFailedActivationRetry:
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_failed_rollback_cannot_reenter_through_the_install_gate(self) -> None:
+        """A FAILED record is not a free initial-install retry.
+
+        A rollback that passes its authority/compatibility gates but fails
+        in the loader leaves the target FAILED. If a narrower version has
+        since become active, reactivating the failed record through the
+        ordinary install endpoint must re-prove those gates first — else the
+        retry would activate authority the current grant does not hold
+        without a fresh inspect → authorize pass.
+        """
+        service, store, _loader, _clock = make_service()
+        wide = await activate(service, permissions=("network.http", "storage.workspace"))
+        mid = await activate(
+            service,
+            version="1.5.0",
+            permissions=("network.http", "storage.workspace"),
+            payload=OTHER_PAYLOAD,
+        )
+        assert mid.state is ExtensionState.ACTIVE
+
+        # The rollback's gates pass; the loader crashes. Wide ends FAILED and
+        # the failed rollback moved nothing else.
+        broken = ExtensionInstallService(
+            store,
+            loader=RecordingLoader(fail=True),
+            trust_policy=POLICY,
+            platform_api_version="1.0.0",
+        )
+        with pytest.raises(ExtensionLifecycleError, match="rolled back"):
+            await broken.rollback(
+                SCOPE,
+                "acme.chart_tools",
+                actor="op",
+                payload=PAYLOAD,
+                reason="1.5.0 regressed",
+                to_install_id=wide.install_id,
+            )
+        failed = await store.get_record(wide.install_id)
+        assert failed is not None and failed.state is ExtensionState.FAILED
+        assert mid.state is ExtensionState.ACTIVE
+
+        # A narrower version becomes active before anyone retries the failure.
+        narrow = await activate(service, version="2.0.0", permissions=("network.http",))
+        assert narrow.state is ExtensionState.ACTIVE
+
+        trail = len(await service.transitions(wide.install_id, scope=SCOPE))
+        narrow_trail = len(await service.transitions(narrow.install_id, scope=SCOPE))
+        with pytest.raises(RollbackRefused, match=r"storage\.workspace"):
+            await service.install(wide.install_id, actor="op", scope=SCOPE, payload=PAYLOAD)
+        active = await service.active(SCOPE, "acme.chart_tools")
+        assert active is not None and active.version == "2.0.0"
+        assert len(await service.transitions(wide.install_id, scope=SCOPE)) == trail
+        assert len(await service.transitions(narrow.install_id, scope=SCOPE)) == narrow_trail
+
+        # The retry is not blanket-refused: once the active grant covers the
+        # failed record's authority again, the ordinary retry re-crosses the
+        # loader and swaps the pointer.
+        await activate(
+            service,
+            version="2.1.0",
+            permissions=("network.http", "storage.workspace"),
+        )
+        revived = await service.install(wide.install_id, actor="op", scope=SCOPE, payload=PAYLOAD)
+        assert revived.state is ExtensionState.ACTIVE
+        active = await service.active(SCOPE, "acme.chart_tools")
+        assert active is not None and active.install_id == wide.install_id
 
 
 class TestRemove:
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
-    async def test_remove_ends_authority_but_never_deletes_canonical_evidence(self) -> None:
+    async def test_remove_stops_use_and_preserves_historical_evidence(self) -> None:
         """AC: remove does not delete canonical historical evidence.
 
-        After removal the record (with its immutable manifest snapshot and
-        frozen grant) and the full transition trail must remain queryable,
-        while resolution stops and the (scope, extension, version) key is
-        released for a fresh authorization track.
+        After removal the record is terminal for authority but every piece
+        of provenance — manifest snapshot, artifact digest, frozen grant,
+        full transition trail — remains queryable through the same seams.
         """
-        service, store, _loader, _clock = make_service()
-        active = await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        trail_before = await service.transitions(active.install_id, scope=SCOPE)
-        assert trail_before
+        service, _store, _loader, _clock = make_service()
+        record = await activate(service)
 
         removed = await service.remove(
-            active.install_id, actor="operator-5", scope=SCOPE, reason="contract ended"
+            record.install_id, actor="operator-1", scope=SCOPE, reason="obsolete"
         )
+
         assert removed.state is ExtensionState.REMOVED
-        assert removed.status_reason == "contract ended"
-        assert await service.resolve(SCOPE, "acme.chart_tools") is None
-
-        fetched = await service.get(active.install_id, scope=SCOPE)
-        assert fetched is removed
-        assert fetched.manifest.source_sha256 == active.manifest.source_sha256
-        assert fetched.granted_permissions == active.granted_permissions
-        trail_after = await service.transitions(active.install_id, scope=SCOPE)
-        assert len(trail_after) == len(trail_before) + 1
-        removal = trail_after[-1]
-        assert removal.actor == "operator-5"
-        assert removal.from_state is ExtensionState.ACTIVE
-        assert removal.to_state is ExtensionState.REMOVED
-        assert removal.reason == "removed: contract ended"
-        # The store holds no deletion path for records or transitions.
-        assert active.install_id in store._records  # retention IS the assertion
+        assert await service.active(SCOPE, record.extension_id) is None
+        evidence = await service.get(record.install_id, scope=SCOPE)
+        assert evidence.manifest.source_sha256 == record.manifest.source_sha256
+        assert evidence.artifact_sha256 == record.artifact_sha256
+        assert evidence.granted_permissions == record.granted_permissions
+        trail = await service.transitions(record.install_id, scope=SCOPE)
+        assert trail[-1].to_state is ExtensionState.REMOVED
+        assert "obsolete" in trail[-1].reason
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
-    async def test_remove_releases_the_key_so_reinstall_opens_a_fresh_track(self) -> None:
+    async def test_removed_record_is_terminal_for_authority(self) -> None:
         service, _store, _loader, _clock = make_service()
-        active = await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        await service.remove(
-            active.install_id, actor="operator-5", scope=SCOPE, reason="offboarding"
-        )
-        fresh = await service.inspect(
-            actor="operator-6",
-            scope=SCOPE,
-            package=ExtensionPackage(
-                manifest_bytes=manifest_bytes(version="1.4.0", payload=PAYLOAD_V1),
-                payload=PAYLOAD_V1,
-            ),
-            trust_evidence=TRUST,
-        )
-        assert fresh.state is ExtensionState.AWAITING_AUTHORIZATION
-        assert fresh.install_id != active.install_id, (
-            "a removed record must never be silently resurrected"
-        )
-        # The old record stays REMOVED with its history.
-        assert (await service.get(active.install_id, scope=SCOPE)).state is ExtensionState.REMOVED
-        assert await service.transitions(active.install_id, scope=SCOPE)
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_remove_runs_the_janitor_and_reports_the_purge(self) -> None:
-        """The owned-resource cleanup policy: purge strictly after authority
-        ends, report what was purged, attribute the report."""
-        janitor = RecordingJanitor()
-        service, _store, _loader, _clock = make_service(janitor=janitor)
-        active = await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        removed = await service.remove(
-            active.install_id, actor="operator-5", scope=SCOPE, reason="offboarding"
-        )
-        assert removed.state is ExtensionState.REMOVED
-        assert janitor.calls == [active.install_id]
-        notes = await service.removal_history(active.install_id, scope=SCOPE)
-        assert len(notes) == 1
-        note = notes[0]
-        assert isinstance(note, RemovalNote)
-        assert note.purged == ("ws-data://acme.chart_tools/1.4.0",)
-        assert note.failed == ()
-        assert note.actor == "operator-5"
-        assert note.install_id == active.install_id
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_janitor_failure_is_recorded_and_never_preserves_authority(self) -> None:
-        janitor = RecordingJanitor(fail=True)
-        service, _store, _loader, _clock = make_service(janitor=janitor)
-        active = await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        removed = await service.remove(
-            active.install_id, actor="operator-5", scope=SCOPE, reason="offboarding"
-        )
-        assert removed.state is ExtensionState.REMOVED, "cleanup failure must not undo removal"
-        assert await service.resolve(SCOPE, "acme.chart_tools") is None
-        notes = await service.removal_history(active.install_id, scope=SCOPE)
-        assert notes[0].purged == ()
-        assert notes[0].failed and "storage bucket unavailable" in notes[0].failed[0]
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_remove_retry_is_idempotent_and_retries_pending_cleanup(self) -> None:
-        service, _store, _loader, _clock = make_service()
-        active = await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        await service.remove(active.install_id, actor="operator-5", scope=SCOPE, reason="a")
-        janitor = RecordingJanitor()
-        again = await service.remove(
-            active.install_id,
-            actor="operator-5",
-            scope=SCOPE,
-            reason="retry cleanup",
-            janitor=janitor,
-        )
-        assert again.state is ExtensionState.REMOVED
-        assert janitor.calls == [active.install_id], "the retry must run the pending cleanup"
-        notes = await service.removal_history(active.install_id, scope=SCOPE)
-        assert len(notes) == 1
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_remove_of_superseded_leaves_the_active_one_serving(self) -> None:
-        service, _store, _loader, _clock = make_service()
-        v1, v2 = await install_then_upgrade(service)
-        await service.remove(v1.install_id, actor="operator-5", scope=SCOPE, reason="prune old")
-        resolved = await service.resolve(SCOPE, "acme.chart_tools")
-        assert resolved is not None and resolved.install_id == v2.install_id, (
-            "removing a superseded record must not disturb the active one"
-        )
-        await service.remove(v2.install_id, actor="operator-5", scope=SCOPE, reason="sunset")
-        assert await service.resolve(SCOPE, "acme.chart_tools") is None
-
-
-class TestIdempotencyAndCrashRecovery:
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_upgrade_retry_after_activation_is_idempotent(self) -> None:
-        service, _store, loader, _clock = make_service()
-        await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        record, _report = await begin_upgrade(service, version="1.5.0")
-        await service.authorize(
-            record.install_id, actor="operator-2", scope=SCOPE, approve=True, reason="ok"
-        )
-        first = await service.activate_upgrade(
-            record.install_id, actor="operator-2", scope=SCOPE, payload=PAYLOAD_V2
-        )
-        second = await service.activate_upgrade(
-            record.install_id, actor="operator-2", scope=SCOPE, payload=PAYLOAD_V2
-        )
-        assert second.install_id == first.install_id
-        assert second.state is ExtensionState.ACTIVE
-        activations = [call for call in loader.calls if call[0] == record.install_id]
-        assert len(activations) == 1, "retry must not re-run the loader"
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_upgrade_retry_reuses_one_authorization_track(self) -> None:
-        """Retrying the upgrade request must not fork a second authorization
-        track for one candidate version."""
-        service, store, _loader, _clock = make_service()
-        await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        first, _report = await begin_upgrade(service, version="1.5.0")
-        second, _report = await begin_upgrade(service, version="1.5.0")
-        assert first.install_id == second.install_id
-        awaiting = await store.records_in_state(ExtensionState.AWAITING_AUTHORIZATION)
-        assert len([r for r in awaiting if r.extension_id == "acme.chart_tools"]) == 1
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_failed_upgrade_activation_recovers_with_the_same_artifact(self) -> None:
-        """AC: lifecycle retries are idempotent and crash/restart-safe.
-
-        A loader crash mid-upgrade leaves a truthful FAILED record and the
-        old version serving; recovery presents the same bound artifact and
-        completes without a second decision on new authority.
-        """
-        flaky = RecordingLoader()
-        service, _store, _loader, _clock = make_service(loader=flaky)
-        v1 = await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        record, _report = await begin_upgrade(service, version="1.5.0")
-        await service.authorize(
-            record.install_id, actor="operator-2", scope=SCOPE, approve=True, reason="ok"
-        )
-        flaky.arm()  # the crash must hit the UPGRADE activation, not v1's install
-        with pytest.raises(ExtensionLifecycleError):
-            await service.activate_upgrade(
-                record.install_id, actor="operator-2", scope=SCOPE, payload=PAYLOAD_V2
-            )
-        # Truthful failure: FAILED record, old version still serving.
-        failed = await service.get(record.install_id, scope=SCOPE)
-        assert failed.state is ExtensionState.FAILED
-        assert failed.failure_reason and "activation failed" in failed.failure_reason
-        resolved = await service.resolve(SCOPE, "acme.chart_tools")
-        assert resolved is not None and resolved.install_id == v1.install_id
-
-        recovered = await service.activate_upgrade(
-            record.install_id, actor="operator-2", scope=SCOPE, payload=PAYLOAD_V2
-        )
-        assert recovered.state is ExtensionState.ACTIVE
-        final = await service.resolve(SCOPE, "acme.chart_tools")
-        assert final is not None and final.install_id == record.install_id
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_reconcile_supersedes_active_records_the_pointer_lost(self) -> None:
-        """Crash window: activation swapped the pointer but the supersede
-        never ran. Reconciliation must retire the orphan ACTIVE record as an
-        audited transition, leaving exactly one servable version."""
-        service, store, _loader, _clock = make_service()
-        v1 = await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        v2, _report, _candidate = await upgrade_to(service, version="1.5.0")
-        # Simulate the crash: v1 is ACTIVE again but the pointer names v2.
-        await store.save_record(replace(v1, state=ExtensionState.ACTIVE, status_reason=None))
-
-        repaired = await service.reconcile(scope=SCOPE, extension_id="acme.chart_tools")
-        assert [record.install_id for record in repaired] == [v1.install_id]
-        superseded = await service.get(v1.install_id, scope=SCOPE)
-        assert superseded.state is ExtensionState.SUPERSEDED
-        resolved = await service.resolve(SCOPE, "acme.chart_tools")
-        assert resolved is not None and resolved.install_id == v2.install_id
-        trail = await service.transitions(v1.install_id, scope=SCOPE)
-        assert trail[-1].actor == "system:reconciliation"
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_reconcile_clears_pointers_to_records_that_lose_activeness(self) -> None:
-        """Crash window: a disable transition landed but the pointer drop did
-        not. Resolution must not serve a DISABLED record even before
-        reconciliation, and reconcile must repair the pointer itself."""
-        service, store, _loader, _clock = make_service()
-        active = await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        disabled = await service.disable(
-            active.install_id, actor="operator-4", scope=SCOPE, reason="window"
-        )
-        # Simulate the crash: the pointer is back, wrongly.
-        await store.set_active(disabled)
-        assert await store.active_record(SCOPE, "acme.chart_tools") is not None
-        assert await service.resolve(SCOPE, "acme.chart_tools") is None, (
-            "resolve must never serve a non-ACTIVE record, pointer or not"
-        )
-        await service.reconcile(scope=SCOPE, extension_id="acme.chart_tools")
-        assert await store.active_record(SCOPE, "acme.chart_tools") is None
-
-    @pytest.mark.contract("behavioral")
-    @pytest.mark.scope("unit")
-    async def test_full_lifecycle_leaves_queryable_provenance_for_every_version(self) -> None:
-        """Historical provenance retention across the whole lifecycle:
-        after install → upgrade → rollback → disable → remove, every record
-        and every transition remains queryable in order."""
-        service, _store, _loader, _clock = make_service()
-        v1 = await install_version(service, version="1.4.0", payload=PAYLOAD_V1)
-        v2, _report, _candidate = await upgrade_to(service, version="1.5.0")
+        first = await activate(service)
+        newer = await activate(service, version="1.5.0", payload=OTHER_PAYLOAD)
+        # Put the older version back in service so a version IS active.
         await service.rollback(
-            v1.install_id, actor="operator-3", scope=SCOPE, payload=PAYLOAD_V1, reason="regression"
+            SCOPE, "acme.chart_tools", actor="op", payload=PAYLOAD, reason="undo"
         )
-        await service.disable(v1.install_id, actor="operator-4", scope=SCOPE, reason="sunsetting")
-        await service.remove(v1.install_id, actor="operator-5", scope=SCOPE, reason="gone")
+        await service.remove(newer.install_id, actor="op", scope=SCOPE, reason="gone")
 
-        for record in (v1, v2):
-            trail = await service.transitions(record.install_id, scope=SCOPE)
-            assert trail[0].from_state is ExtensionState.INSPECTING
-            assert len(trail) >= 4
-            assert all(trail[i].seq < trail[i + 1].seq for i in range(len(trail) - 1))
-        final = await service.get(v1.install_id, scope=SCOPE)
-        assert final.state is ExtensionState.REMOVED
-        other = await service.get(v2.install_id, scope=SCOPE)
-        assert other.state is ExtensionState.SUPERSEDED
+        with pytest.raises(InvalidTransition):
+            await service.authorize(
+                newer.install_id, actor="op", scope=SCOPE, approve=True, reason="zombie"
+            )
+        with pytest.raises(InvalidTransition, match="superseded record"):
+            await service.rollback(
+                SCOPE,
+                "acme.chart_tools",
+                actor="op",
+                payload=PAYLOAD,
+                reason="back from the dead",
+                to_install_id=newer.install_id,
+            )
+        with pytest.raises(InvalidTransition):
+            await service.resume(
+                newer.install_id, actor="op", scope=SCOPE, payload=OTHER_PAYLOAD, reason="zombie"
+            )
+        # The active survivor is untouched by every refused operation.
+        active = await service.active(SCOPE, first.extension_id)
+        assert active is not None and active.install_id == first.install_id
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_janitor_failure_aborts_removal_with_the_record_untouched(self) -> None:
+        """The janitor runs before any transition: a purge failure leaves the
+        extension exactly as it was, with no half-removed state on the trail."""
+        service, _store, _loader, _clock = make_service()
+        record = await activate(service)
+        failing = PurgeSpy(fail=True)
+        trail_len = len(await service.transitions(record.install_id, scope=SCOPE))
+
+        with pytest.raises(RuntimeError, match="janitor"):
+            await service.remove(
+                record.install_id, actor="op", scope=SCOPE, reason="cleanup", janitor=failing
+            )
+
+        still = await service.get(record.install_id, scope=SCOPE)
+        assert still.state is ExtensionState.ACTIVE
+        active = await service.active(SCOPE, record.extension_id)
+        assert active is not None
+        assert len(await service.transitions(record.install_id, scope=SCOPE)) == trail_len
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_removed_janitor_resources_are_recorded_on_the_trail(self) -> None:
+        service, _store, _loader, _clock = make_service()
+        record = await activate(service)
+        spy = PurgeSpy()
+        await service.remove(
+            record.install_id, actor="op", scope=SCOPE, reason="cleanup", janitor=spy
+        )
+        assert spy.purged == ["acme.chart_tools@1.4.0"]
+        trail = await service.transitions(record.install_id, scope=SCOPE)
+        assert "owned:acme.chart_tools@1.4.0" in trail[-1].reason
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_default_policy_is_retain_all(self) -> None:
+        """The epic requires removal to preserve history, so the default
+        janitor retains every owned resource and says so on the trail."""
+        service, _store, _loader, _clock = make_service()
+        assert isinstance(service._janitor, RetainAllJanitor)
+        record = await activate(service)
+        await service.remove(record.install_id, actor="op", scope=SCOPE, reason="gone")
+        trail = await service.transitions(record.install_id, scope=SCOPE)
+        assert "retained" in trail[-1].reason
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_remove_clears_the_pin_and_the_pointer(self) -> None:
+        service, _store, _loader, _clock = make_service()
+        record = await activate(service)
+        await service.pin(record.install_id, actor="op", scope=SCOPE, reason="hold")
+
+        await service.remove(record.install_id, actor="op", scope=SCOPE, reason="gone")
+
+        assert await service.pinned_record(SCOPE, record.extension_id) is None
+        assert await service.active(SCOPE, record.extension_id) is None
+        removed = await service.get(record.install_id, scope=SCOPE)
+        assert removed.pinned is False
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_remove_twice_is_idempotent(self) -> None:
+        service, _store, _loader, _clock = make_service()
+        record = await activate(service)
+        await service.remove(record.install_id, actor="op", scope=SCOPE, reason="gone")
+        trail_len = len(await service.transitions(record.install_id, scope=SCOPE))
+        again = await service.remove(record.install_id, actor="op", scope=SCOPE, reason="again")
+        assert again.state is ExtensionState.REMOVED
+        assert len(await service.transitions(record.install_id, scope=SCOPE)) == trail_len
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_remove_refuses_records_that_never_held_a_grant(self) -> None:
+        service, _store, _loader, _clock = make_service()
+        denied = await inspect_default(service)
+        await service.authorize(
+            denied.install_id, actor="op", scope=SCOPE, approve=False, reason="no"
+        )
+        with pytest.raises(InvalidTransition, match="removed"):
+            await service.remove(denied.install_id, actor="op", scope=SCOPE, reason="tidy")
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_remove_of_a_disabled_record(self) -> None:
+        service, _store, _loader, _clock = make_service()
+        record = await activate(service)
+        await service.disable(SCOPE, record.extension_id, actor="op", reason="pause")
+        removed = await service.remove(
+            record.install_id, actor="op", scope=SCOPE, reason="gone for good"
+        )
+        assert removed.state is ExtensionState.REMOVED
+        assert await service.active(SCOPE, record.extension_id) is None
+
+
+class TestUpgradeAuthority:
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_broader_upgrade_parks_until_reauthorized(self) -> None:
+        """AC: update cannot silently increase declared authority.
+
+        The upgrade candidate's authority delta names exactly the new
+        permission against the active grant; installation before the
+        explicit decision is refused and the old version stays active; after
+        approval the grant is the new snapshot's set — computed, not unioned.
+        """
+        service, _store, loader, _clock = make_service()
+        first = await activate(service, permissions=("network.http",))
+        assert first.granted_permissions == ("network.http",)
+
+        upgrade = await inspect_default(
+            service,
+            version="1.5.0",
+            permissions=("network.http", "storage.workspace"),
+            payload=OTHER_PAYLOAD,
+        )
+        assert upgrade.state is ExtensionState.AWAITING_AUTHORIZATION
+        assert upgrade.authority_delta == ("storage.workspace",)
+
+        with pytest.raises(InvalidTransition):
+            await service.install(
+                upgrade.install_id, actor="op", scope=SCOPE, payload=OTHER_PAYLOAD
+            )
+        active = await service.active(SCOPE, "acme.chart_tools")
+        assert active is not None and active.version == "1.4.0"
+
+        await service.authorize(
+            upgrade.install_id,
+            actor="operator-2",
+            scope=SCOPE,
+            approve=True,
+            reason="needs storage",
+        )
+        upgraded = await service.install(
+            upgrade.install_id, actor="op", scope=SCOPE, payload=OTHER_PAYLOAD
+        )
+        assert upgraded.granted_permissions == ("network.http", "storage.workspace")
+        assert upgraded.authorized_by == "operator-2"
+        active = await service.active(SCOPE, "acme.chart_tools")
+        assert active is not None and active.version == "1.5.0"
+        old = await service.get(first.install_id, scope=SCOPE)
+        assert old.state is ExtensionState.SUPERSEDED
+        assert old.granted_permissions == ("network.http",)  # frozen, untouched
+        assert len(loader.calls) == 2
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_same_authority_upgrade_changes_exactly_the_snapshot(self) -> None:
+        """AC: compatible same-authority upgrades apply without silently
+        changing permissions — the grant afterwards is exactly the new
+        snapshot's requested set, identical to the old one here."""
+        service, _store, _loader, _clock = make_service()
+        first = await activate(service)
+        upgraded = await activate(service, version="1.5.0", payload=OTHER_PAYLOAD)
+
+        assert upgraded.granted_permissions == first.granted_permissions
+        assert upgraded.requested_permissions == first.requested_permissions
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_superseded_record_keeps_its_snapshot_queryable(self) -> None:
+        """AC: active version and publisher provenance are queryable — for
+        the retired version too: publisher, digest and manifest survive the
+        displacement."""
+        service, _store, _loader, _clock = make_service()
+        first = await activate(service)
+        await activate(service, version="1.5.0", payload=OTHER_PAYLOAD)
+
+        old = await service.get(first.install_id, scope=SCOPE)
+        assert old.state is ExtensionState.SUPERSEDED
+        assert old.manifest.publisher == "acme"
+        assert old.artifact_sha256 == _digest(PAYLOAD)
+        assert old.manifest.source_sha256 is not None
+        assert await service.pinned_record(SCOPE, "acme.chart_tools") is None
+
+
+class TestAuditAndIsolation:
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_every_lifecycle_operation_is_audited_with_actor_scope_reason(
+        self,
+    ) -> None:
+        """AC: all lifecycle transitions emit canonical auditable evidence."""
+        service, _store, _loader, _clock = make_service()
+        first = await activate(service)
+        await service.pin(first.install_id, actor="op-pin", scope=SCOPE, reason="hold")
+        await service.unpin(first.install_id, actor="op-unpin", scope=SCOPE, reason="release")
+        second = await activate(service, version="1.5.0", payload=OTHER_PAYLOAD)
+        await service.rollback(
+            SCOPE, "acme.chart_tools", actor="op-rollback", payload=PAYLOAD, reason="undo"
+        )
+        await service.disable(SCOPE, "acme.chart_tools", actor="op-disable", reason="pause")
+        await service.resume(
+            first.install_id, actor="op-resume", scope=SCOPE, payload=PAYLOAD, reason="back"
+        )
+        await service.remove(second.install_id, actor="op-remove", scope=SCOPE, reason="gone")
+
+        actors = {"op-pin", "op-unpin", "op-rollback", "op-disable", "op-resume", "op-remove"}
+        seen: set[str] = set()
+        for install_id in (first.install_id, second.install_id):
+            for transition in await service.transitions(install_id, scope=SCOPE):
+                assert transition.actor
+                assert transition.org_id == SCOPE.org_id
+                assert transition.workspace_id == SCOPE.workspace_id
+                assert transition.extension_id == "acme.chart_tools"
+                assert transition.version
+                assert transition.reason.strip()
+                if transition.actor in actors:
+                    seen.add(transition.actor)
+        assert seen == actors
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_lifecycle_operations_are_scope_checked(self) -> None:
+        service, _store, _loader, _clock = make_service()
+        record = await activate(service)
+        foreign = ExtensionScope(org_id="org-2", workspace_id="ws-9")
+
+        with pytest.raises(UnknownInstall):
+            await service.pin(record.install_id, actor="op", scope=foreign, reason="x")
+        with pytest.raises(UnknownInstall):
+            await service.remove(record.install_id, actor="op", scope=foreign, reason="x")
+        with pytest.raises(UnknownInstall):
+            await service.resume(
+                record.install_id, actor="op", scope=foreign, payload=PAYLOAD, reason="x"
+            )
+        # Still intact in its own scope.
+        active = await service.active(SCOPE, record.extension_id)
+        assert active is not None and active.state is ExtensionState.ACTIVE
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_new_states_cannot_reach_active_without_the_loader(self) -> None:
+        """DISABLED and SUPERSEDED return only through the loader seam.
+
+        Resume of a disabled record whose loader is unwired fails closed:
+        the record stays DISABLED, the pointer stays unset, nothing runs.
+        """
+        from extensions.test_install_lifecycle import UnwiredExtensionLoader
+
+        # UnwiredLoader cannot even activate the first install; drive one
+        # with a real loader, then swap the service's loader seam.
+        working, store, _loader, clock = make_service()
+        record = await activate(working)
+        await working.disable(SCOPE, record.extension_id, actor="op", reason="pause")
+
+        resumed_service = ExtensionInstallService(
+            store,
+            loader=UnwiredExtensionLoader(),
+            trust_policy=POLICY,
+            platform_api_version="1.0.0",
+            clock=clock,
+        )
+        from maistro.extensions import ExtensionLifecycleError
+
+        with pytest.raises(ExtensionLifecycleError, match="resumed"):
+            await resumed_service.resume(
+                record.install_id, actor="op", scope=SCOPE, payload=PAYLOAD, reason="back"
+            )
+        # The truthful failure state is recorded, and — the fail-closed
+        # property that matters — the extension did NOT come back into use.
+        still = await working.get(record.install_id, scope=SCOPE)
+        assert still.state is ExtensionState.FAILED
+        assert await working.active(SCOPE, record.extension_id) is None
+
+
+class TestConcurrentActivation:
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_concurrent_installs_of_one_extension_leave_exactly_one_active(self) -> None:
+        """Two separately authorized installs of the same scoped extension race:
+        their distinct install-id record locks never contend, so the pointer
+        swap and supersede must be serialized per (scope, extension). The
+        loser must end SUPERSEDED — never ACTIVE under a pointer naming the
+        winner."""
+        service, store, _loader, _clock = make_service()
+
+        # The in-memory store has no suspension points, so the read-prior →
+        # supersede → set-active tail is accidentally atomic in a single event
+        # loop. Yield inside ``active_record`` and ``set_active`` to open the
+        # window where both racers could otherwise capture the same prior
+        # active record before either finishes its pointer swap.
+        original_active_record = store.active_record
+        original_set_active = store.set_active
+
+        async def yielding_active_record(scope: object, extension_id: str) -> object:
+            await asyncio.sleep(0)
+            return await original_active_record(scope, extension_id)  # type: ignore[arg-type]
+
+        async def yielding_set_active(record: object) -> None:
+            await asyncio.sleep(0)
+            await original_set_active(record)  # type: ignore[arg-type]
+
+        store.active_record = yielding_active_record  # type: ignore[method-assign]
+        store.set_active = yielding_set_active  # type: ignore[method-assign]
+
+        async def authorize_then_install(version: str, payload: bytes) -> object:
+            record = await inspect_default(
+                service,
+                version=version,
+                payload=payload,
+                permissions=("network.http",),
+            )
+            await service.authorize(
+                record.install_id,
+                actor="operator-1",
+                scope=SCOPE,
+                approve=True,
+                reason="ok",
+            )
+            return await service.install(
+                record.install_id, actor="operator-1", scope=SCOPE, payload=payload
+            )
+
+        first = await authorize_then_install("1.0.0", PAYLOAD)
+        candidate_a, candidate_b = await asyncio.gather(
+            authorize_then_install("1.1.0", OTHER_PAYLOAD),
+            authorize_then_install("1.2.0", THIRD_PAYLOAD),
+        )
+
+        # Either candidate may win the race; exactly one may hold the pointer.
+        pointer = await store.active_record(SCOPE, "acme.chart_tools")
+        assert pointer is not None
+        assert pointer.install_id in (candidate_a.install_id, candidate_b.install_id)  # type: ignore[attr-defined]
+        loser_id = (
+            candidate_b.install_id  # type: ignore[attr-defined]
+            if pointer.install_id == candidate_a.install_id  # type: ignore[attr-defined]
+            else candidate_a.install_id  # type: ignore[attr-defined]
+        )
+        # Re-read from the store: the records returned by ``install`` are
+        # snapshots taken before any later supersede.
+        loser_now = await store.get_record(loser_id)
+        assert loser_now is not None and loser_now.state is ExtensionState.SUPERSEDED
+        assert pointer.state is ExtensionState.ACTIVE
+        first_now = await store.get_record(first.install_id)  # type: ignore[attr-defined]
+        assert first_now is not None and first_now.state is ExtensionState.SUPERSEDED
+        # Exactly one ACTIVE record for the (scope, extension), and it is the
+        # one the pointer names.
+        served = [
+            record
+            for record in await store.records_in_state(ExtensionState.ACTIVE)
+            if record.org_id == SCOPE.org_id
+            and record.workspace_id == SCOPE.workspace_id
+            and record.extension_id == "acme.chart_tools"
+        ]
+        assert [record.install_id for record in served] == [pointer.install_id]

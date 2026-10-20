@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from maistro.extensions.types import ExtensionManifest, OperatorTrustEvidence
+from maistro.extensions.types import ExtensionManifest, TrustClaim
 
 
 @dataclass(frozen=True)
@@ -37,7 +37,7 @@ class TrustReport:
 
 
 def evaluate_trust(
-    manifest: ExtensionManifest, evidence: OperatorTrustEvidence, policy: TrustPolicy
+    manifest: ExtensionManifest, evidence: TrustClaim, policy: TrustPolicy
 ) -> TrustReport:
     """Evaluate publisher/package trust for an inspected manifest."""
     failures: list[str] = []

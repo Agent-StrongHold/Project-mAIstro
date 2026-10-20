@@ -20,7 +20,7 @@ from maistro.extensions.authority import (
 )
 from maistro.extensions.compatibility import CompatibilityPolicy, evaluate_compatibility
 from maistro.extensions.trust import TrustPolicy, evaluate_trust
-from maistro.extensions.types import ExtensionScope, OperatorTrustEvidence
+from maistro.extensions.types import ExtensionScope, TrustClaim
 
 
 def _manifest_bytes(**overrides: object) -> bytes:
@@ -137,9 +137,7 @@ class TestCompatibility:
 
 
 class TestTrust:
-    EVIDENCE = OperatorTrustEvidence(
-        publisher_id="acme", signature_present=True, signer_key_id="k1"
-    )
+    EVIDENCE = TrustClaim(publisher_id="acme", signature_present=True, signer_key_id="k1")
     POLICY = TrustPolicy(
         trusted_publishers=frozenset({"acme"}),
         require_signature=True,
@@ -151,7 +149,7 @@ class TestTrust:
         assert report.trusted
 
     def test_unsigned_package_fails_when_signature_required(self) -> None:
-        evidence = OperatorTrustEvidence(publisher_id="acme", signature_present=False)
+        evidence = TrustClaim(publisher_id="acme", signature_present=False)
         report = evaluate_trust(_manifest(), evidence, self.POLICY)
         assert not report.trusted
         assert any("no signature" in f for f in report.failures)
@@ -164,7 +162,7 @@ class TestTrust:
     def test_unlisted_publisher_is_refused(self) -> None:
         report = evaluate_trust(
             _manifest(publisher="shady"),
-            OperatorTrustEvidence(publisher_id="shady", signature_present=True, signer_key_id="k1"),
+            TrustClaim(publisher_id="shady", signature_present=True, signer_key_id="k1"),
             self.POLICY,
         )
         assert not report.trusted
@@ -173,32 +171,30 @@ class TestTrust:
     def test_evidence_naming_a_different_publisher_is_a_tamper_signal(self) -> None:
         report = evaluate_trust(
             _manifest(publisher="acme"),
-            OperatorTrustEvidence(publisher_id="someone-else", signature_present=True),
+            TrustClaim(publisher_id="someone-else", signature_present=True),
             self.POLICY,
         )
         assert not report.trusted
         assert any("publisher mismatch" in f for f in report.failures)
 
     def test_unknown_signer_key_is_refused_when_keys_are_pinned(self) -> None:
-        evidence = OperatorTrustEvidence(
-            publisher_id="acme", signature_present=True, signer_key_id="rogue"
-        )
+        evidence = TrustClaim(publisher_id="acme", signature_present=True, signer_key_id="rogue")
         report = evaluate_trust(_manifest(), evidence, self.POLICY)
         assert not report.trusted
         assert any("signing key" in f for f in report.failures)
 
     def test_missing_signer_key_is_refused_when_keys_are_pinned(self) -> None:
-        evidence = OperatorTrustEvidence(publisher_id="acme", signature_present=True)
+        evidence = TrustClaim(publisher_id="acme", signature_present=True)
         report = evaluate_trust(_manifest(), evidence, self.POLICY)
         assert not report.trusted
 
     def test_signature_not_required_allows_unsigned(self) -> None:
         policy = TrustPolicy(trusted_publishers=frozenset({"acme"}), require_signature=False)
-        report = evaluate_trust(_manifest(), OperatorTrustEvidence(publisher_id="acme"), policy)
+        report = evaluate_trust(_manifest(), TrustClaim(publisher_id="acme"), policy)
         assert report.trusted
 
     def test_evidence_digest_must_match_the_manifest_claim(self) -> None:
-        evidence = OperatorTrustEvidence(
+        evidence = TrustClaim(
             publisher_id="acme",
             signature_present=True,
             signer_key_id="k1",
@@ -254,3 +250,20 @@ class TestAuthority:
     def test_requested_set_is_a_set_not_a_multiset(self) -> None:
         delta = compute_authority_delta(("a.b", "a.b"), AuthorityBaseline())
         assert delta.new == ("a.b",)
+
+    def test_scope_refuses_a_non_string_org_id(self) -> None:
+        """The guard is isinstance-first: a non-str must raise the same
+        ValueError a blank id raises, not surface a downstream AttributeError."""
+        with pytest.raises(ValueError, match="org_id is required"):
+            ExtensionScope(org_id=None)  # type: ignore[arg-type]
+
+    def test_scope_refuses_a_blank_org_id(self) -> None:
+        with pytest.raises(ValueError, match="org_id is required"):
+            ExtensionScope(org_id="   ")
+
+    def test_describe_names_the_workspace_only_when_scoped_to_one(self) -> None:
+        assert (
+            ExtensionScope(org_id="org-1", workspace_id="ws-1").describe
+            == "org:org-1/workspace:ws-1"
+        )
+        assert ExtensionScope(org_id="org-1").describe == "org:org-1"
