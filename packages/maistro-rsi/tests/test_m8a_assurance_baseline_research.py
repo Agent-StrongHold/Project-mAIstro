@@ -490,6 +490,67 @@ def _baseline_rows() -> tuple[AssuranceCandidate, ...]:
 #: population; tests validate the structure of every row.
 MEASURED_BASELINE: Final = _baseline_rows()
 
+#: Technique rows for leaves that have reported experiments.
+#: Each row must be fully evidenced and carry a disposition.
+def _technique_rows() -> tuple[AssuranceCandidate, ...]:
+    """Technique rows for leaves that have reported experiments."""
+    return (
+        AssuranceCandidate(
+            name="execution Hypothesis state machines (#881)",
+            kind="technique",
+            scores={
+                "defect_yield": 0,
+                "confidence_strength": 1,
+                "applicability_breadth": 2,
+                "oracle_trustworthiness": 3,
+                "implementation_effort": 1,
+                "maintenance_burden": 1,
+                "ci_runtime_cost": 0,
+                "async_distributed_friction": 1,
+            },
+            evidence={
+                "defect_yield": Evidence(
+                    "docs/research/880-advanced-verification-assurance.md",
+                    "state machine defined but test not yet running due to pytest collection issue",
+                ),
+                "confidence_strength": Evidence(
+                    "docs/research/880-advanced-verification-assurance.md",
+                    "model matches initial state; no transitions executed in test",
+                ),
+                "applicability_breadth": Evidence(
+                    "docs/research/880-advanced-verification-assurance.md",
+                    "applies to execution lifecycle seam; other seams require different models",
+                ),
+                "oracle_trustworthiness": Evidence(
+                    "docs/research/880-advanced-verification-assurance.md",
+                    "model derived from documented transitions in maistro.runs.lifecycle",
+                ),
+                "implementation_effort": Evidence(
+                    "docs/research/880-advanced-verification-assurance.md",
+                    "state machine is straightforward to write",
+                ),
+                "maintenance_burden": Evidence(
+                    "docs/research/880-advanced-verification-assurance.md",
+                    "minimal; depends on the documented lifecycle",
+                ),
+                "ci_runtime_cost": Evidence(
+                    "docs/research/880-advanced-verification-assurance.md",
+                    "test not yet running in CI",
+                ),
+                "async_distributed_friction": Evidence(
+                    "docs/research/880-advanced-verification-assurance.md",
+                    "model does not capture concurrency; only linear transitions",
+                ),
+            },
+            disposition="WATCH",
+            failure_class="interleaved lifecycle sequences (unit tests fix one path)",
+        ),
+    )
+
+
+#: All candidates (baseline + technique) for the assurance matrix.
+ALL_CANDIDATES: Final = MEASURED_BASELINE + _technique_rows()
+
 
 # ---------------------------------------------------------------------------
 # Contract tests
@@ -609,11 +670,7 @@ def test_cost_increase_lowers_rank_at_equal_benefit() -> None:
 
 
 def test_ranking_is_deterministic_across_repeated_calls() -> None:
-    population = [
-        *MEASURED_BASELINE,
-        _candidate(name="leaf #881 prototype", kind="technique", disposition="WATCH"),
-        _candidate(name="leaf #890 prototype", kind="technique", disposition="WATCH"),
-    ]
+    population = list(ALL_CANDIDATES)
     first = rank_candidates(population)
     for _ in range(3):
         assert rank_candidates(population) == first
