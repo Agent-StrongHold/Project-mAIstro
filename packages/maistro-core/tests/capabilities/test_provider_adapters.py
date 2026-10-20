@@ -25,6 +25,12 @@ Acceptance coverage, each test naming the criterion it pins:
 
 from __future__ import annotations
 
+import hashlib
+import importlib.util
+import json
+import subprocess
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import aiosqlite
@@ -2056,3 +2062,204 @@ async def test_undeclared_binding_emits_no_extension_provenance(
     terminal = [e for e in events if e.type == "capability.invocation.completed"]
     assert terminal
     assert "extension" not in terminal[-1].provenance
+
+
+# --- The shipped reference extension proves the correlation (M9-I1, #976) ---
+
+#: The shipped reference gallery adapter package (M9-J2, #980). This is a
+#: real out-of-tree package in the checkout, not a fabricated stand-in: the
+#: proof below binds the identity of an actual published extension.
+_GALLERY_ADAPTER_DIR = (
+    Path(__file__).resolve().parents[4]
+    / "extensions"
+    / "reference-gallery"
+    / "packages"
+    / "gallery-model-adapter"
+)
+
+#: The canonical chat-completions body the gallery adapter's normalizers
+#: pass through unchanged (it is an OpenAI-compatible provider).
+_GALLERY_RESPONSE: dict[str, object] = {
+    "model": "gallery-chat-fast-2026-01",
+    "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+    "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+}
+
+
+def _gallery_plugin() -> Any:
+    """Load the shipped gallery adapter's entrypoint module by path.
+
+    The package is out-of-tree and is not installed into this environment;
+    it ships plain data plus pure functions, so loading the entrypoint module
+    the manifest names is exactly what a host does with the artifact it
+    installed.
+    """
+    plugin = _GALLERY_ADAPTER_DIR / "src" / "gallery_model_adapter" / "plugin.py"
+    spec = importlib.util.spec_from_file_location("gallery_model_adapter_plugin", plugin)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _gallery_manifest() -> dict[str, Any]:
+    """The shipped publisher manifest of the reference gallery adapter."""
+    raw = (_GALLERY_ADAPTER_DIR / "manifest.json").read_bytes()
+    manifest = json.loads(raw.decode("utf-8"))
+    assert isinstance(manifest, dict)
+    return manifest
+
+
+def _gallery_package_sha256(out_dir: Path) -> str:
+    """The digest of the artifact a host installed: the package's own wheel.
+
+    Built with ``uv build`` exactly as the gallery's publish tool builds it,
+    so the digest recorded in the evidence is the digest of the real
+    published artifact rather than a value invented by the test.
+    """
+    subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(out_dir)],
+        cwd=_GALLERY_ADAPTER_DIR,
+        check=True,
+        capture_output=True,
+    )
+    wheels = sorted(out_dir.glob("*.whl"))
+    assert len(wheels) == 1, wheels
+    return hashlib.sha256(wheels[0].read_bytes()).hexdigest()
+
+
+class _GalleryAdapter(ReferenceChatAdapter):
+    """The host's wrapper of the shipped gallery adapter's plain data.
+
+    The package ships data and pure functions; the host binds them to the
+    SDK protocol. Nothing here re-implements the package's behavior — every
+    hook delegates to the shipped module.
+    """
+
+    def __init__(self, spec: ProviderAdapterSpec, plugin: Any) -> None:
+        super().__init__(spec)
+        self._plugin = plugin
+
+    def normalize_request(self, model: str, request: ModelChatRequest) -> dict[str, object]:
+        return dict(self._plugin.normalize_request(model, request))
+
+    def normalize_response(self, payload: Mapping[str, object]) -> dict[str, object]:
+        return dict(self._plugin.normalize_response(payload))
+
+    def usage_from(self, payload: Mapping[str, object]) -> tuple[int, int] | None:
+        return self._plugin.usage_from(payload)
+
+    def error_kind_for(self, status: int) -> str:
+        return self._plugin.error_kind_for(status)
+
+    def health_from(self, payload: Mapping[str, object]) -> bool:
+        return bool(self._plugin.health_from(payload))
+
+
+@pytest.mark.ac("#976/AC-6")
+async def test_shipped_reference_extension_correlates_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The shipped reference extension proves the correlation end to end.
+
+    The chain the issue asks for, run against a real out-of-tree package
+    instead of a fabricated one: the host installs the shipped gallery
+    adapter, binds the *exact* identity of the installed artifact (manifest
+    id, version, publisher, and the digests of the manifest and the wheel it
+    published), wires it through the canonical provider-adapter bootstrap,
+    and one governed call runs under canonical Run/NodeRun/Attempt ids. The
+    terminal audit event then names the extension package beside the
+    canonical correlation fields — never inside them — and the stored
+    Invocation still decodes the exact package identity with the extension
+    long since gone.
+    """
+    plugin = _gallery_plugin()
+    manifest = _gallery_manifest()
+    package_sha256 = _gallery_package_sha256(tmp_path)
+    manifest_sha256 = hashlib.sha256(
+        (_GALLERY_ADAPTER_DIR / "manifest.json").read_bytes()
+    ).hexdigest()
+
+    # The host binds the installed package's identity to the adapter it
+    # provides; the adapter's own data is the shipped spec, unchanged.
+    spec = ProviderAdapterSpec.model_validate(
+        {
+            **plugin.SPEC,
+            "extension_id": manifest["id"],
+            "version": manifest["version"],
+            "publisher": manifest["publisher"],
+            "package_sha256": package_sha256,
+            "manifest_sha256": manifest_sha256,
+        }
+    )
+    catalog, store = await _catalog_with(_GalleryAdapter(spec, plugin))
+    effects = _effects(
+        provider="gallery-provider",
+        key_id="gallery-provider-key",
+        api_key="resolved-gallery-secret",
+    )
+
+    loaded = await bootstrap_provider_adapters(
+        _ConfigShim(
+            [
+                _adapter_config(
+                    adapter_id="gallery-model-adapter",
+                    binding_id="binding-gallery",
+                )
+            ]
+        ),
+        effects,
+        store,
+        catalog,
+    )
+    binding = loaded[0]
+
+    # The Binding snapshot names the exact installed package.
+    decoded = attribution_from_payload(binding.config["extension_attribution"])
+    assert decoded.extension_id == "gallery.model_adapter"
+    assert decoded.version == "1.0.0"
+    assert decoded.publisher == "gallery"
+    assert decoded.package_sha256 == package_sha256
+    assert decoded.manifest_sha256 == manifest_sha256
+
+    captured = _CapturedGateway(_GALLERY_RESPONSE)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: captured.client())
+    result = await _egress(effects, catalog, store).complete(
+        binding=binding,
+        run_id="run-gallery",
+        node_run_id="nr-gallery",
+        attempt_id="att-gallery",
+        effect_key="test:gallery-proof",
+        request=ModelChatRequest(
+            model="gallery-chat-fast",
+            messages=[{"role": "user", "content": "h"}],
+        ),
+    )
+    assert result.usage is not None  # the canonical effect actually happened
+
+    # Durable evidence: the stored Invocation decodes the identity alone.
+    stored = await effects.invocation_store.get(result.invocation_id)
+    assert stored is not None
+    cold = attribution_from_payload(stored.binding.config["extension_attribution"])
+    assert cold.extension_id == "gallery.model_adapter"
+    assert cold.package_sha256 == package_sha256
+
+    # The canonical audit event carries the identity as provenance, beside
+    # (never inside) the canonical correlation fields.
+    events = await effects.event_store.list_stream("workspace:ws1")
+    terminal = [e for e in events if e.type == "capability.invocation.completed"]
+    assert terminal, [e.type for e in events]
+    event = terminal[-1]
+    assert event.run_id == "run-gallery"
+    assert event.correlation_id == "run-gallery"
+    assert event.invocation_id == result.invocation_id
+    assert "extension_id" not in event.__dict__
+    event_decoded = attribution_from_payload(event.provenance["extension"])
+    assert event_decoded.extension_id == "gallery.model_adapter"
+    assert event_decoded.publisher == "gallery"
+    assert event_decoded.package_sha256 == package_sha256
+
+    # The credential the transport resolved never reached the evidence.
+    flat = str(event.provenance) + str(stored.binding.config)
+    assert "resolved-gallery-secret" not in flat

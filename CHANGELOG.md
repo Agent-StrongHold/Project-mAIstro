@@ -35,14 +35,18 @@ or placeholder-only section.
   (historical evidence stays readable across upgrades and removal). Provider
   adapter packages may declare the same identity on `ProviderAdapterSpec`
   (all four fields or none; strict semver and digest shape enforced at
-  registration): `bootstrap_provider_adapters` snapshots the payload into the
+  registration, with an optional `extension_id` naming the installed package
+  itself when the adapter is provided by an out-of-tree extension): `bootstrap_provider_adapters` snapshots the payload into the
   wired `model.chat` Binding, governed adapter calls log canonical
   `extension_*` identity fields, adapter errors name the failing version and
   publisher, and durable Invocation evidence carries the attribution beside —
   never instead of — the canonical caller/Workspace/Run/NodeRun/Attempt/
   Invocation ids. Attribution is provenance only: the canonical correlation
   namespace rejects extension-defined ids, and the Event envelope's existing
-  provenance redaction applies to the fragment.
+  provenance redaction applies to the fragment. The shipped out-of-tree
+  gallery adapter package proves the chain end to end: its manifest id,
+  version, publisher and the digests of the manifest and the wheel it
+  publishes travel with one governed call into the terminal audit event.
 
 - **Named `cross-product-parity` CI job and M1 closeout strict mode
   (#459, partial).** The #459 cross-product parity suite

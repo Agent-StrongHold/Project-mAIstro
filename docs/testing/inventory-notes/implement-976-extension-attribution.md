@@ -1,12 +1,12 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +48
+  packages/maistro-core/tests: +49
 ---
 # Extension attribution through canonical telemetry (#976, M9-I1)
 
 ## What moved
 
-`packages/maistro-core/tests` collects 48 more node IDs, all additive; no test
+`packages/maistro-core/tests` collects 49 more node IDs, all additive; no test
 was removed or renamed.
 
 - **41** from the extension attribution evidence slice: a new
@@ -32,6 +32,13 @@ was removed or renamed.
   extension contract's parser over a corpus, and a static check refuses any
   ``maistro.capabilities`` module that imports ``maistro.extensions`` — the
   edge that put 300+ extension modules on the promotion path.
+- **1** from the reference-extension proof: the shipped out-of-tree gallery
+  adapter package (`extensions/reference-gallery/packages/gallery-model-adapter`)
+  is driven through the canonical provider-adapter bootstrap, one governed
+  call and the terminal audit event, with the identity bound to the artifact
+  the host actually installed (the package's manifest digest and the digest of
+  the wheel `uv build` produces from the shipped source) — a real extension
+  proving the correlation end to end, not a fabricated stand-in.
 
 ## Evidence shape
 

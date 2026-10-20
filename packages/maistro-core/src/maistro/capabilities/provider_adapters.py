@@ -276,6 +276,15 @@ class ProviderAdapterSpec(BaseModel):
     publisher: str = ""
     package_sha256: str = ""
     manifest_sha256: str = ""
+    #: The installed extension package's own id, when the adapter is provided
+    #: by an extension package rather than shipped in-tree. The adapter id
+    #: names the provider adapter inside the host; the extension id names the
+    #: package that installed it ("publisher.name" in the manifest's shape).
+    #: Attribution must name the *package* — an effect traced to "an adapter"
+    #: is not traced to the exact extension that caused it — so a host that
+    #: installed the package declares its manifest id here. Empty means the
+    #: adapter id is the extension id (the in-tree reference adapter's case).
+    extension_id: str = ""
 
     @model_validator(mode="after")
     def _validate_spec(self) -> ProviderAdapterSpec:
@@ -372,7 +381,7 @@ class ProviderAdapterSpec(BaseModel):
         # import closure and may not import the extensions package.
         try:
             ExtensionAttribution(
-                extension_id=self.adapter_id,
+                extension_id=self.extension_id or self.adapter_id,
                 version=self.version,
                 publisher=self.publisher,
                 package_sha256=self.package_sha256,
@@ -392,7 +401,7 @@ class ProviderAdapterSpec(BaseModel):
         if not self.version:
             return None
         return ExtensionAttribution(
-            extension_id=self.adapter_id,
+            extension_id=self.extension_id or self.adapter_id,
             version=self.version,
             publisher=self.publisher,
             package_sha256=self.package_sha256,

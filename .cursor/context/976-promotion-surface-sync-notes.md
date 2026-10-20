@@ -1,66 +1,70 @@
-# Lane L976 round notes — develop sync, import cycle fix, promotion-surface red
+# Lane L976 round notes — develop sync, promotion-surface repair, reference-extension proof
 
-Branch `auto-976`, round starting at head `4a2140c58` (issue #976, M9-I1).
+Branch `auto-976`, round starting at head `b5a07536d` (issue #976, M9-I1).
+Previous round's notes are in git history (`4a2140c58` era); this file
+records the state after the repair.
 
 ## What this round did
 
-1. **Resolved the preserved develop-sync conflict.** The worktree carried an
-   in-progress merge of develop `420d503d` with 3 conflicted files
-   (CHANGELOG.md, `extensions/__init__.py`, `cli/_extensions.py`) — both-adds
-   conflicts, resolved as unions (`dd06f3804`). Then merged the remaining 2
-   develop commits up to `35a72ff` (`c784df6d4`, clean auto-merge).
-   `quality/` verified byte-identical to `origin/develop` via
-   `git diff --numstat origin/develop -- quality/`.
+1. **Merged develop `e20e9f52` into the branch** (`d01033a75`). The branch
+   was 999 commits behind; the merge reduced the review diff to exactly the
+   13 #976 files. The 3 conflicts (CHANGELOG.md, `extensions/__init__.py`,
+   `cli/_extensions.py`) were both-adds and resolved as unions.
+   `git diff --numstat origin/develop -- quality/` is **empty** — no ledger
+   rows were lost in the merge.
 
-2. **Fixed a real import cycle the sync exposed** (commit of this file):
-   develop's `maistro/extensions/__init__.py` now imports
-   `.isolation` → `sandbox → runs → graph → harness_executor`, which imports
-   `maistro.capabilities` — so #976's module-level
-   `from maistro.extensions.attribution import ...` in
-   `capabilities/governed_invocation.py` and
-   `capabilities/provider_adapters.py` re-entered partially-initialized
-   `maistro.capabilities` (manifest: `test_metering.py::
-   test_two_os_processes_cannot_race_same_remaining_budget` ImportError).
-   Fix: both imports moved to function scope (walker-visible, semantics
-   unchanged). All suites pass post-fix.
+2. **Repaired the promotion-surface regression in code** (`b5a07536d`) — no
+   ledger row, no grant, no gate weakened. Cause: `maistro.capabilities.*`
+   imported `maestro.extensions.*` at module level, and the extensions
+   package initializer pulls `isolation → sandbox → runs → graph →
+   harness_executor → capabilities`; the closure exploded 272 → 661 modules
+   (355 uncovered). Repair: the canonical attribution carrier moved **down**
+   into the protected capabilities layer as
+   `maistro/capabilities/providers/extension_attribution.py` (stdlib only),
+   and `maistro.extensions.attribution` re-exports the same objects (one
+   type, pinned by an identity test). The dependency direction is now the
+   natural one: extensions use capabilities, never the reverse.
+   Gate: `python3 scripts/check-promotion-surface.py` → **exit 0,
+   "promotion surface: ok"**, closure back to 272 modules, no
+   `maistro.extensions` module in it.
 
-## OPEN BLOCKER for the next lane (needs a decision above implementation-lane authority)
+3. **Closed the reference-extension gap (AC-6)** with a real out-of-tree
+   package instead of the fabricated "Acme" stand-in: the shipped
+   `extensions/reference-gallery/packages/gallery-model-adapter` is driven
+   through the canonical provider-adapter bootstrap, one governed call and
+   the terminal audit event. The identity is bound to the artifact the host
+   actually installed — the package's manifest digest and the digest of the
+   wheel `uv build` produces from the shipped source (the same artifact the
+   gallery's publish tool publishes). `ProviderAdapterSpec` gained one
+   optional field, `extension_id`, so attribution can name the **package**
+   (`gallery.model_adapter`) rather than only the host-scoped adapter id
+   (`gallery-model-adapter`); empty keeps the previous behavior.
 
-`python3 scripts/check-promotion-surface.py` (CI job "Every module the
-promotion path reaches escalates", ci.yml:250) is RED on this branch:
+## Acceptance evidence (reachable production behavior)
 
-- On `origin/develop` (`35a72ff`): exit 0, closure 272 modules, no
-  `maistro.extensions` in the closure.
-- On pre-merge `4a2140c58`: exit 1 with 13 flagged modules (all core
-  `maistro.extensions.*`) — i.e. the red predates this sync; the prior round
-  never ran this gate.
-- On the merged tree: exit 1 with 355 flagged modules. The RSI closure
-  reaches `maistro.capabilities.providers.llm_gateway` → `provider_adapters`
-  → (`extensions.attribution`, `extensions.semver`) and `governed_invocation`
-  → `extensions.attribution`; importing any `maistro.extensions.*` submodule
-  pulls the package `__init__`, which (post-develop-merge) imports
-  isolation/sandbox/runs/graph — exploding the closure to 661 modules.
+| Criterion | Where it is proven |
+|---|---|
+| AC-1 exact extension/version/publisher + canonical caller/Workspace | `tests/capabilities/test_provider_adapters.py` (declared identity → Binding snapshot → Invocation evidence → terminal event provenance), `tests/extensions/test_attribution.py` (install-record identity, activation log, CLI rendering) |
+| AC-2 metadata survives delegation / external hops | Provider/Agent hop: the carrier rides the Binding snapshot → Invocation → Event across the external call (`test_provider_adapters.py`). **Residual:** the carrier does not yet ride inside the a2a `DelegationContext` to a remote peer's provenance — seam: `maistro/a2a/delegation_context.py` + `maistro/graph/nodes/agent_delegate_remote.py` + the receiving admission in `maistro-server/api/a2a.py` |
+| AC-3 no parallel correlation identity | `correlation_id == run_id` asserted on the terminal event; the carrier carries no id-shaped field; the extension id never enters the correlation namespace |
+| AC-4 historical evidence readable after upgrade/ removal | The stored Invocation decodes the identity with no registry/catalog/installed package consulted (`attribution_from_payload` on durable evidence alone) |
+| AC-5 no extension secrets by default | The carrier's field set is closed (no free-form slot); the Event envelope redacts provenance; the resolved credential never reaches the evidence (asserted) |
+| AC-6 reference extension proof | `test_shipped_reference_extension_correlates_end_to_end` — the shipped gallery adapter, real digests, canonical bootstrap → governed call → event → cold decode |
 
-The walker (`ast.walk`) deliberately counts function-level imports, so lazy
-imports do not evade it; the coupling is real (#976 capability dispatch
-genuinely loads extension identity code).
+## Re-validated after the repair (all green)
 
-Repair options, all outside this lane's authority:
-- baseline rows in `quality/promotion-surface-baseline.json` (~355, or 13 on a
-  decoupled design) — a ledger edit requiring the two-merge authorization
-  workflow (grant must land from the merge base first);
-- protection patterns in `maistro_rsi/sensitive_paths.py` — a policy change;
-- architectural decoupling of `maistro.capabilities` from
-  `maistro.extensions` (e.g. decoding attribution at bootstrap time instead
-  of invocation time) — an accepted-design change that would churn #976's
-  pinned tests.
+ruff check/format; mypy on `packages/maistro-core/src` (only the 5
+pre-existing `maistro_bootstrap` import-not-found errors in untouched files);
+capabilities + extensions suites (**1881 passed, 7 skipped**);
+promotion-surface (exit 0); promotion-surface-provenance (273 modules, no
+tolerance expansion); vulture with CI's exact args (1326 == 1326); radon
+(134 == 134); reachability-dispositions (168 unreachable modules, all
+dispositioned); suite inventory (`packages/maistro-core/tests`, delta
+**+49**); cross-package-imports; extension-imports; shipped-surface-truth;
+backlog-consistency.
 
-## Re-validated after the sync (all green)
-
-ruff check/format; mypy (CI's 10-package list, 1062 files); extensions +
-capabilities suites (1852 passed, 7 skipped); maistro-server (565 passed);
-vulture/radon/reachability/dispositions/promotion-input ratchets with CI args
-(1322==1322); suite inventory (17 suites ok); test-duplicates;
-cross-package-imports; extension-imports; dependency-namespaces;
-release-consistency; doc-links; contract-markers; backlog-consistency.
-Only promotion-surface is red (see above).
+Pre-existing failures that are **not** this change's: `check-reachability.py`
+fails identically on `origin/develop` (its message is about built-but-never-wired
+modules), and `check-vulture-baseline.py` under its *default* arguments (which
+include `tests`) — CI invokes it with `packages/*/src --min-confidence 60
+--exclude '*/third_party/*'`, which is green.
