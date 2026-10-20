@@ -44,6 +44,27 @@ services:
       # drop it. Both are needed, which is the point of them being separate.
       - SESSION_COOKIE_SECURE=false
       - ALLOW_INSECURE_TRANSPORT=true
+      # #290 (develop integration): schedule execution requires the canonical
+      # execution spine (run store + graph run store), and a bare harness
+      # container gets an ephemeral in-memory Container whose fire path fails
+      # closed — so this harness pins the file-backed SQLite canonical store
+      # the shipped image explicitly supports (aiosqlite is in requirements.txt
+      # for exactly this), under the durable CONDUCTOR_DATA_DIR so the
+      # restart-marked test sees the same store the pre-restart phase wrote.
+      # The product frequency floor (#1200) applies to everything the
+      # scheduler admits; the harness selects the hard minimum (300s, the
+      # product's own fail-loud bound — see SCHEDULE_FLOOR_HARD_MINIMUM_S) so
+      # the UTC suite can observe a natural fire inside the CI job budget
+      # instead of waiting out the default 900s floor.
+      - DATABASE_URL=sqlite:////tmp/conductor/canonical.sqlite3
+      - SCHEDULE_MIN_FREQUENCY_GAP_S=300
+      # create_container() refuses to build the canonical Container without a
+      # router key (fail-closed #155): with DATABASE_URL set the roster must
+      # materialize or every Workspace request fails closed (#37). The harness
+      # has no gateway; the stub key unblocks roster construction while model
+      # calls keep failing at call time — the F3 degraded mode this harness
+      # already runs in.
+      - MAISTRO_ROUTER_API_KEY=test-harness-not-a-real-key
     # No curl/shell in the `hive` runtime image (Chainguard/Wolfi, near-zero
     # CVEs — see Dockerfile). Its own HEALTHCHECK already uses Python's
     # urllib for exactly this reason; mirror that here rather than `curl`,

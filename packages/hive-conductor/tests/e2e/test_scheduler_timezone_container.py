@@ -7,7 +7,11 @@ ships, not what the developer environment resolves:
   - a `UTC` schedule and a real IANA zone (`Europe/Berlin`) are accepted,
     persisted, and their `next_run` is computed against the image's zone
     database (the api-tests container computes the expected instant from its
-    own deliberately pinned `tzdata` wheel — see tests/Dockerfile);
+    own deliberately pinned `tzdata` wheel — see tests/Dockerfile); the UTC
+    schedule then fires *naturally* — the tick's admission path moves the
+    cursor past the computed occurrence on its own, with no manual fire —
+    which is the end-to-end proof that the shipped scheduler executes what
+    it computed;
   - the Berlin `next_run` keeps its wall time (04:30) and the season-correct
     offset (CET +1 / CEST +2), which is exactly the DST property that breaks
     when a zone resolves through UTC by accident — whether the next
@@ -22,11 +26,17 @@ ships, not what the developer environment resolves:
     and the UTC schedule recomputes `next_run` from the persisted zone.
 
 The schedules target `daily-status`, the graph template the shipped image
-registers in its own process at boot: the scheduler's fallback admission
-path refuses to fire a template that is not registered, so an arbitrary
-DAG id would leave the cursor — and with it `next_run` — untouched forever.
-The Berlin schedule is fired manually (its natural 04:30 fire is up to a
-day away) through the same admission path the tick uses.
+registers in its own process at boot: the canonical admission path refuses
+to fire a template that is not registered, so an arbitrary DAG id would
+leave the cursor — and with it `next_run` — untouched forever. The Berlin
+schedule is fired manually (its natural 04:30 fire is up to a day away)
+through the same canonical admission path the tick uses. Both paths need
+the canonical execution spine, which the harness wires deliberately: the
+compose file gives hive a file-backed SQLite `DATABASE_URL` (a supported
+shipped mode) and selects the hard-minimum frequency floor
+(`SCHEDULE_MIN_FREQUENCY_GAP_S=300`), so the UTC schedule is `*/5 * * * *`
+— the fastest recurrence the floor admits — and its natural fire lands
+within at most one 5-minute boundary plus a tick.
 
 The restart-marked test is skipped unless `SCHED_TZ_AFTER_RESTART=1` is set
 in its environment — the pre-restart phase must not fail for not having
@@ -45,6 +55,13 @@ import pytest
 
 BASE = os.environ.get("HIVE_BASE_URL", "http://localhost:8101")
 _POLL_BUDGET = timedelta(seconds=90)  # the tick loop sleeps 30s between sweeps
+# Natural-fire budget: the UTC schedule is `*/5 * * * *` — the fastest
+# recurrence the harness's hard-minimum frequency floor admits — so the
+# computed occurrence is up to one 5-minute boundary away, and the tick that
+# consumes it sweeps at most 30s later. 7 minutes bounds the worst case with
+# margin (develop integration: the product floor is operator configuration,
+# and the harness selects 300s deliberately — see docker-compose.test.yml).
+_NATURAL_FIRE_BUDGET = timedelta(seconds=420)
 # The template the shipped image registers at boot; see module docstring.
 MISSION_TEMPLATE = "daily-status"
 UTC_NAME = "tz-verify UTC"
@@ -138,10 +155,44 @@ def _next_run(client: httpx.Client, schedule_id: str) -> dict:
     pytest.fail(f"schedule {schedule_id} computed no next_run within {_POLL_BUDGET}")
 
 
+def _wait_for_natural_fire(client: httpx.Client, schedule_id: str, computed: str) -> None:
+    """Poll until the tick consumes the computed occurrence on its own.
+
+    A fire the test asked for would prove nothing about the scheduler; the
+    cursor may only move past `computed` when the tick's admission path
+    created the Run for that occurrence by itself. This is the container-level
+    version of the unit suite's `evaluate` pins: the shipped image's loop,
+    over its own zone database, executing what it computed.
+    """
+    deadline = datetime.now(UTC) + _NATURAL_FIRE_BUDGET
+    while datetime.now(UTC) < deadline:
+        r = client.get(f"/v1/schedules/{schedule_id}")
+        assert r.status_code == 200, f"GET schedule failed: {r.text}"
+        next_run = r.json().get("next_run")
+        if next_run and datetime.fromisoformat(next_run) > datetime.fromisoformat(computed):
+            return
+        time.sleep(10)
+    pytest.fail(
+        f"schedule {schedule_id} never fired naturally past {computed} "
+        f"within {_NATURAL_FIRE_BUDGET}"
+    )
+
+
 def test_utc_schedule_persists_and_computes_next_run(
     client: httpx.Client, admin_session, workspace
 ) -> None:
-    r = _create_schedule(client, UTC_NAME, "* * * * *", "UTC", workspace)
+    """UTC is computed, then executed, by the shipped scheduler itself.
+
+    `*/5 * * * *` is the fastest recurrence the harness's hard-minimum
+    frequency floor admits (300s, #1200); `* * * * *` is correctly refused
+    with a 422 naming the floor, which the invalid-zone test below relies on
+    for its own 422 to be attributable to the zone alone.
+    """
+    refused = _create_schedule(client, f"{UTC_NAME} too-fast", "* * * * *", "UTC", workspace)
+    assert refused.status_code == 422, f"60s cron was admitted: {refused.text}"
+    assert "schedule_min_frequency_gap_s" in refused.text, refused.text
+
+    r = _create_schedule(client, UTC_NAME, "*/5 * * * *", "UTC", workspace)
     assert r.status_code == 201, f"UTC schedule create failed: {r.text}"
     body = r.json()
     sid = body["id"]
@@ -153,7 +204,11 @@ def test_utc_schedule_persists_and_computes_next_run(
     next_run = datetime.fromisoformat(projected["next_run"])
     assert next_run.tzinfo is not None
     now = datetime.now(UTC)
-    assert now <= next_run <= now + timedelta(minutes=2), (now, next_run)
+    assert now <= next_run <= now + timedelta(minutes=5), (now, next_run)
+
+    # And the shipped scheduler executes what it computed: the cursor moves
+    # past this occurrence without any manual fire.
+    _wait_for_natural_fire(client, sid, projected["next_run"])
 
 
 def test_berlin_schedule_keeps_wall_time_and_season_offset(
@@ -205,8 +260,11 @@ def test_invalid_timezone_is_refused_at_the_boundary(
     client: httpx.Client, admin_session, workspace
 ) -> None:
     for zone in ("Mars/Olympus_Mons", "Not/AZone"):
-        r = _create_schedule(client, f"bad zone {zone}", "* * * * *", zone, workspace)
+        r = _create_schedule(client, f"bad zone {zone}", "*/5 * * * *", zone, workspace)
         assert r.status_code == 422, f"{zone} was accepted: {r.status_code} {r.text}"
+        # The cron passes the frequency floor, so the 422 is attributable to
+        # the zone and nothing else.
+        assert "unknown timezone" in r.text, r.text
 
 
 def test_health_reports_tz_database_and_scheduler(client: httpx.Client) -> None:
@@ -245,8 +303,8 @@ def test_restart_recovery_preserves_schedules_and_recomputes_next_run(
 
     now = datetime.now(UTC)
 
-    # The UTC schedule fires within a tick of coming back up, so its cursor
-    # is recomputed from the persisted zone by the new process.
+    # The UTC schedule's cursor is recomputed from the persisted zone by the
+    # new process (its next occurrence is at most one 5-minute boundary away).
     utc_row = by_name[UTC_NAME]
     if not utc_row.get("next_run"):
         utc_row = _next_run(client, utc_row["id"])
