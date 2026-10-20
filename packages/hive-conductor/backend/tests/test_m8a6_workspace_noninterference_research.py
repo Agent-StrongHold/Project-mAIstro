@@ -93,6 +93,9 @@ class Harness:
         self.memory_ids: list[str] = []
         self.chat_ids: list[str] = []
         self.feedback_ids: list[str] = []
+        #: Seeded B-owned rows: teardown-only, never A-op working sets.
+        self.bob_schedule_ids: list[str] = []
+        self.bob_memory_ids: list[str] = []
         #: Members currently added to A (removed ones are popped).
         self.members: list[str] = []
         #: Whether A is archived (active=False) right now; an archived
@@ -543,6 +546,21 @@ def parties():
     assert alice.get("/v1/memory/namespaces").status_code == 200
     assert bob.get("/v1/memory/namespaces").status_code == 200
 
+    # Seed B-owned schedule and memory rows before any baseline is taken: a
+    # destructive A-side delete whose regression wipes the entire backing
+    # store must not pass vacuously against an empty `[] == []` projection.
+    seeded_schedule = bob.post(
+        "/v1/schedules", json={**_SCHEDULE_BODY, "workspace_id": h.ws_b.id}
+    )
+    assert seeded_schedule.status_code == 201, seeded_schedule.text
+    h.bob_schedule_ids.append(seeded_schedule.json()["id"])  # teardown
+    seeded_memory = bob.post(
+        "/v1/memory/entries",
+        json={"key": "m8a6-bob", "value": "b-owned", "namespace": "m8a6-b"},
+    )
+    assert seeded_memory.status_code == 200, seeded_memory.text
+    h.bob_memory_ids.append(seeded_memory.json()["id"])  # teardown
+
     try:
         yield h
     finally:
@@ -556,9 +574,13 @@ def _cleanup(h: Harness) -> None:
 
     for sid in h.schedule_ids:
         stores.schedules.pop(sid, None)
+    for sid in h.bob_schedule_ids:
+        stores.schedules.pop(sid, None)
     for aid in h.agent_ids:
         stores.agents.pop(aid, None)
     for eid in h.memory_ids:
+        stores.memory_entries.pop(eid, None)
+    for eid in h.bob_memory_ids:
         stores.memory_entries.pop(eid, None)
     for cid in h.chat_ids:
         stores.chat_sessions.pop(cid, None)
@@ -594,6 +616,10 @@ def test_parties_start_independent_and_b_projection_is_populated(parties) -> Non
     assert observed["store_level"]["canonical"]["workspace_id"] == h.ws_b.id
     assert observed["store_level"]["root_project_id"]
     assert observed["store_level"]["presentation"] is not None
+    # The fixture seeds B-owned rows precisely so destructive A-side deletes
+    # are checked against a populated B projection, never `[] == []`.
+    assert observed["schedules"], "expected the seeded B-owned schedule"
+    assert observed["memory_entries"], "expected the seeded B-owned memory entry"
 
     # A is invisible to B's principal: the untouched party cannot even name A.
     assert h.ws_a.id not in observed["workspace_list_ids"]
