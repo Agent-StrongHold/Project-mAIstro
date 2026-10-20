@@ -94,7 +94,7 @@ class DesignCanonicalExecution:
                 await self._runs.transition_run(run.run_id, RunStatus.CANCELLED)
                 await self._runs.delete_run(run.run_id)
             raise
-        return cast(str, run.run_id)
+        return run.run_id
 
     async def generate(
         self,

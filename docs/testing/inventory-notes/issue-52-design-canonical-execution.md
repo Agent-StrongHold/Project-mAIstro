@@ -24,3 +24,16 @@ Round 2 (develop sync ab8b3737 + repair):
   helper (`services.request_principal`), the boundary AuthMiddleware actually
   stamps — the previous `state.user` dict read never existed in the live app
   and would have 401'd every authenticated Design request.
+
+Round 3 (develop sync fad17a87c):
+
+- All three `design_service.py` conflicts were additive — develop's
+  `store_cause`/`DesignStoreConfigurationError` (#1826) vs this branch's
+  `canonical_execution_available`/`get_design_canonical_execution` (#52) —
+  so the resolution keeps both exports, both status fields, and both
+  constructor arguments; `to_dict` on both parents already carried both keys.
+- `canonical_execution.py`: removed a redundant `cast(str, run.run_id)` that
+  CI's full-scope `mypy --strict` invocation flagged (a single-package mypy
+  run cannot see `maistro.*` from source and misreports the package untyped).
+- No test counts changed this round; the front-matter deltas still match
+  collection (`scripts/check-suite-inventory.py`: ok, 21 suites).
