@@ -88,8 +88,13 @@ const alpha = {
   success_conditions: ["Site is live"],
   stop_conditions: [],
   parent_goal_id: null,
-  execution_disposition: "active",
-  blocker: null,
+  execution_disposition: "blocked",
+  blocker: {
+    run_id: CHILD_RUN_ID,
+    canonical_run_id: CHILD_RUN_ID,
+    status: "failed",
+    error: "delivery node exhausted attempts",
+  },
   selected_graphs: [{ graph_id: GRAPH_ID, name: "Launch graph" }],
   unmatched_pipelines: [],
   subgoals: [SUBGOAL_ID],
@@ -114,9 +119,9 @@ const beta = {
   goal_id: SUBGOAL_ID,
   parent_goal_id: GOAL_ID,
   subgoals: [],
-  // The HITL fence: a paused run reads waiting-human, not failed.
+  // A human pause is distinct from a failure, but is not a failure blocker.
   execution_disposition: "waiting_human",
-  blocker: { run_id: PAUSED_RUN_ID, status: "paused", error: "waiting on approval" },
+  blocker: null,
   run_count: 1,
   runs: [
     runRow({
