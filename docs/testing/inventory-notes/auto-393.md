@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-canvas/tests: +88
-  packages/maistro-server/tests: +7
+  packages/maistro-server/tests: +10
 ---
 
 # #393 Canvas layer scale bounded before image allocation
@@ -56,7 +56,7 @@ is the new file.
   rotation allocates — asserted via a rotate spy), and
   `TestTypedCompositorLimitErrors` in the server suite (publish/export map
   `LAYER_SCALE_OUT_OF_RANGE`/`LAYER_PIXEL_BUDGET_EXCEEDED` to 422 and
-  `COMPOSITE_TIMEOUT` to 504 by stable code, matching the canvas routes,
-  while an untyped provider failure stays a truthful 502). All ten
-  regression-naming tests were demonstrated to fail against the pre-fix
-  code before landing.
+  `COMPOSITE_TIMEOUT` to 504 by stable code — on both the composite and the
+  exporter-encode paths — while an untyped provider failure stays a truthful
+  502). All ten regression-naming tests were demonstrated to fail against
+  the pre-fix code before landing.

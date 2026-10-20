@@ -474,6 +474,38 @@ class TestTypedCompositorLimitErrors:
         assert resp.status_code == 502
         assert "Composite failed" in resp.json()["detail"]
 
+    @pytest.mark.parametrize(
+        ("code", "expected_status"),
+        [
+            ("LAYER_SCALE_OUT_OF_RANGE", 422),
+            ("LAYER_PIXEL_BUDGET_EXCEEDED", 422),
+            ("COMPOSITE_TIMEOUT", 504),
+        ],
+    )
+    def test_encode_failure_maps_typed_rejections_too(
+        self, store: FakeCanvasStore, code: str, expected_status: int
+    ) -> None:
+        """The exporter's encode step shares the compositor's limits, so a
+        typed rejection raised there maps the same way as on the composite
+        path — not to the blanket 502 the provider-failure branch uses."""
+
+        class ExplodingEncode(StubCompositor):
+            async def composite(self, canvas: Any, layers: list[Any]) -> Any:
+                return SimpleNamespace(image_bytes=self.png)  # composite is fine
+
+            async def encode(
+                self, image_bytes: bytes, *, fmt: str = "png", quality: int = 90
+            ) -> bytes:
+                raise _TypedCanvasLimitError(code, f"{code}: encode rejected by a server limit")
+
+        app = _governed_app(store, compositor=ExplodingEncode())
+        client = TestClient(app)
+        created = _create(client)
+        resp = client.get(f"/v2/canvas/designs/{created['id']}/export/webp")
+        assert resp.status_code == expected_status, (code, resp.text)
+        body = resp.json()["detail"]
+        assert body["code"] == code
+
 
 class TestGovernedPublish:
     def test_publish_creates_version_with_provenance(self, store: FakeCanvasStore) -> None:
