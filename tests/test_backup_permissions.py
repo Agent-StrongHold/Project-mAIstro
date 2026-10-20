@@ -18,7 +18,34 @@ def _run_backup(tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], Path,
     bin_dir.mkdir()
     docker_log = tmp_path / "docker.log"
     docker = bin_dir / "docker"
-    docker.write_text('#!/bin/sh\necho invoked >> "$DOCKER_TEST_LOG"\nprintf "fixture data\\n"\n')
+    # The #1881 producer (backup.sh + pg-semantic-oracle.sh) opens ONE
+    # long-lived psql session — `docker compose exec -T <svc> stdbuf -oL psql
+    # ...` with no `-c` — to export its snapshot, so the stub must speak that
+    # protocol: answer pg_export_snapshot() with an id in PostgreSQL's
+    # dash-separated-hex form, then hold the session open (consume stdin)
+    # until the library COMMITs and closes the pipe. Every other invocation
+    # (one-shot `psql -c` queries, pg_dump, redis-cli, docker run) keeps the
+    # old behavior of echoing fixture data.
+    docker.write_text(
+        "#!/bin/sh\n"
+        'echo invoked >> "$DOCKER_TEST_LOG"\n'
+        "session=0\n"
+        'for arg in "$@"; do\n'
+        '  case "$arg" in\n'
+        "    psql) session=1 ;;\n"
+        "    -c) session=0 ;;\n"
+        "  esac\n"
+        "done\n"
+        'if [ "$session" = 1 ]; then\n'
+        "  while IFS= read -r line; do\n"
+        '    case "$line" in\n'
+        "      *pg_export_snapshot*) echo '00000001-0000000A-1' ;;\n"
+        "    esac\n"
+        "  done\n"
+        "  exit 0\n"
+        "fi\n"
+        'printf "fixture data\\n"\n'
+    )
     docker.chmod(0o700)
     root = tmp_path / "backups"
     env = {
@@ -29,6 +56,11 @@ def _run_backup(tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], Path,
         "POSTGRES_DB": "fixture",
         "REMOTE_TARGET": "",
         "RETENTION_DAYS": "14",
+        # Merge reconciliation (#88 + #1881): this harness stubs docker, so no
+        # Conductor volume exists to capture. The real backup.sh writes the
+        # Conductor durable state + escrow unless a stack explicitly opts out
+        # with SKIP_CONDUCTOR_BACKUP=1 — the same opt-out the drill honors.
+        "SKIP_CONDUCTOR_BACKUP": "1",
     }
     result = subprocess.run(
         ["bash", str(_SCRIPT)],
@@ -47,11 +79,22 @@ def test_new_backup_is_private_under_permissive_umask(tmp_path: Path) -> None:
     assert docker_log.exists()
     assert stat.S_IMODE(destination.stat().st_mode) == 0o700
     files = list(destination.iterdir())
+    # The #1881 artifact contract: the custom-format archive, its provenance,
+    # the semantic evidence (schema inventory + row counts) and a sha256 side
+    # car for each — plus the deployed ref. Every one of them must be private.
+    # Merge reconciliation (#88 + #1881): backup.sh additionally seals every
+    # component with an integrity manifest that verify-restore.sh re-checks
+    # before restoring anything, so the manifest is part of the artifact set.
     assert {p.name for p in files} == {
         "postgres-fixture.dump",
-        "postgres-fixture.sql",
-        "postgres-fixture.sql.sha256",
+        "postgres-fixture.dump.sha256",
+        "postgres-fixture.provenance",
+        "postgres-fixture.schema",
+        "postgres-fixture.schema.sha256",
+        "postgres-fixture.rowcounts",
+        "postgres-fixture.rowcounts.sha256",
         "deployed-git-ref.txt",
+        "manifest.sha256",
     }
     assert all(stat.S_IMODE(p.stat().st_mode) == 0o600 for p in files)
 

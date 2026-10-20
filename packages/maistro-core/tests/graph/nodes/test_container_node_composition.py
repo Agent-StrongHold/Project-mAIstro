@@ -39,6 +39,10 @@ _CONTAINER_ATTRIBUTE = {
     "effect_context": "capability_effects",
     "provider_registry": "provider_registry",
     "llm_router": "llm_router",
+    # Inbound A2A content policy and its audit trail (#1137): both are
+    # Container-owned instances the resolver hands the delegate node.
+    "warden": "warden",
+    "audit_log": "audit_log",
 }
 
 

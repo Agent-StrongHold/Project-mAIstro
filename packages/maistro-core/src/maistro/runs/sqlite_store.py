@@ -233,6 +233,13 @@ CREATE TABLE IF NOT EXISTS canonical_runs (
     FOREIGN KEY (parent_node_run_id) REFERENCES canonical_node_runs(node_run_id)
 );
 
+-- Recovery enumerates the bounded live prefix from this index, matching the
+-- PostgreSQL `ix_canonical_runs_live` partial index. The ordering expressions
+-- follow `status` so `list_by_status` walks the index in `(created_at,
+-- run_id)` order instead of building a temporary B-tree over the whole live
+-- population on every recovery tick.
+CREATE INDEX IF NOT EXISTS idx_canonical_runs_status
+    ON canonical_runs(status, json_extract(payload, '$.created_at'), run_id);
 CREATE INDEX IF NOT EXISTS idx_canonical_runs_workspace_project
     ON canonical_runs(workspace_id, project_id);
 CREATE INDEX IF NOT EXISTS idx_canonical_runs_parent

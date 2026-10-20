@@ -60,7 +60,7 @@ from .time_travel import (
     load_state,
     state_epoch_appended,
 )
-from .types import DurableRunRecord
+from .types import RECOVERY_CLAIM_UNTIL_KEY, DurableRunRecord
 
 _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
 _GRAPH_TERMINAL_STATUSES = frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED})
@@ -482,6 +482,8 @@ class CanonicalDurableRunStore:
                 continuation.version,
             )
             return await self._continuations.delete(run_id)
+        if await self._reconcile_terminal_spine(continuation, canonical):
+            return True
         if await self._reconcile_answered_hitl(continuation, canonical):
             return True
         if await self._reconcile_terminal_hitl(continuation, canonical):
@@ -492,13 +494,54 @@ class CanonicalDurableRunStore:
             return True
         if await self._reconcile_unstarted_claim(continuation, canonical, moment):
             return True
-        if canonical.status is RunStatus.RUNNING and continuation.status in {
+        return await self._reconcile_parked_graph(continuation, canonical)
+
+    async def _reconcile_terminal_spine(
+        self,
+        continuation: GraphContinuation,
+        canonical: Run,
+    ) -> bool:
+        """Repair a stale continuation projection from settled canonical history.
+
+        A terminal Run is the lifecycle authority. Its continuation cannot
+        remain recovery-visible and thereby offer already-settled traversal to
+        a later resume or due scan. This changes only the continuation lookup
+        projection; its graph history remains intact. Optimistic concurrency
+        lets a concurrent writer win, after which the next tick rereads the
+        actual canonical terminal state.
+        """
+        if canonical.status not in TERMINAL_RUN_STATUSES or continuation.status is canonical.status:
+            return False
+        repaired = continuation.model_copy(
+            update={"status": canonical.status, "version": continuation.version + 1}
+        )
+        try:
+            await self._continuations.update(repaired)
+        except ValueError:
+            return False
+        return True
+
+    async def _reconcile_parked_graph(
+        self, continuation: GraphContinuation, canonical: Run
+    ) -> bool:
+        """Mirror a durable park, excluding a claim's pre-activation projection."""
+        if canonical.status is not RunStatus.RUNNING or continuation.status not in {
             RunStatus.WAITING,
             RunStatus.PAUSED,
         }:
-            await self._run_store.transition_run(run_id, continuation.status)
-            return True
-        return False
+            return False
+        # A claim retains the prior WAITING index until the owner's next
+        # checkpoint. Real parking clears its marker. Even after expiry this
+        # is a claim projection, so leave takeover to the due scan rather
+        # than moving the canonical lifecycle backwards under a walker.
+        if (
+            continuation.resume_at is not None
+            and continuation.graph_state.metadata.get(RECOVERY_CLAIM_UNTIL_KEY)
+            == continuation.resume_at.isoformat()
+        ):
+            return False
+        await self._run_store.transition_run(continuation.run_id, continuation.status)
+        return True
 
     async def _reconcile_answered_hitl(
         self,
