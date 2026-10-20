@@ -36,6 +36,8 @@ from pathlib import Path
 
 import structlog
 
+from maistro.sandbox import NoSuitableBackendError
+
 logger = structlog.get_logger(__name__)
 
 __all__ = ["ContainmentUnavailable", "run_validation_in_container"]
@@ -79,6 +81,13 @@ def run_validation_in_container(
     try:
         with ContainerBuilderSandbox(cycle_dir, image=image) as sandbox:
             code, output = sandbox.run_argv_status(argv, timeout=timeout)
+    except NoSuitableBackendError as exc:
+        # The canonical selector refused: this host cannot evidence a backend
+        # strong enough for the builders policy (#76). That is exactly the
+        # "containment could not be established" case — never a verdict.
+        raise ContainmentUnavailable(
+            f"no canonical sandbox backend satisfies the builders policy on this host: {exc}"
+        ) from exc
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         raise ContainmentUnavailable(
             f"could not run the candidate's validation under container isolation: {exc}"

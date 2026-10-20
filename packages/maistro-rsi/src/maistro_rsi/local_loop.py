@@ -658,8 +658,11 @@ def make_builders_apply_patch(
     ``isolation`` selects the BuilderSandbox:
       - ``"local"``    — `LocalWorktreeSandbox`, edits run on the host (fast).
       - ``"container"``— `ContainerBuilderSandbox`, the agent's edits and commands
-        run inside an ephemeral Docker container (ADR-093), then sync back to the
-        worktree for the loop to commit. Requires ``image`` to be built.
+        run inside a sandbox selected by the canonical `maistro.sandbox`
+        selector under the builders policy (ADR-093/#76 — hardware-VM tier;
+        a host that cannot evidence such a backend refuses), then sync back
+        to the worktree for the loop to commit. Requires ``image`` to be
+        preloaded on the deployment.
 
     Model resolution is left to `ResponsesAPICallable` (``model=None`` →
     ``MAISTRO_BUILDERS_MODEL``/``DEFAULT_MODEL`` from the loaded ``.env``).
@@ -725,8 +728,9 @@ def make_builders_apply_patch(
 
             with ContainerBuilderSandbox(work_path, image=image) as csbx:
                 await _run_turns(BuilderSession(sandbox=csbx), cycle_model)
-                # Agent ran isolated in the container; bring its edits back to the
-                # host worktree so the loop can stage/commit/test them.
+                # Agent ran isolated in the canonical sandbox; bring its edits
+                # back to the host worktree so the loop can stage/commit/test
+                # them.
                 csbx.sync_to_host()
         else:
             from maistro_bootstrap.builders.sandbox import LocalWorktreeSandbox

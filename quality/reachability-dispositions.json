@@ -630,6 +630,26 @@
       "modules": [
         "@tool/build-evidence"
       ]
+    },
+    {
+      "id": "sandbox-retired-docker-backend",
+      "subsystem": "Sandbox isolation",
+      "disposition": "RETIRE",
+      "rationale": "The direct Docker sandbox: `SandboxContainer` built its own hardened `docker run`/`docker exec` argv — a second sandbox implementation beside the canonical selector that bypassed the ADR-093 policy authority (#76 finding 2). The #76 cutover retired it from product authority: every retained code-execution path (tools/sandbox MCP server, evolve benchmarks, RSI, builders, opencode) enters through `maistro.sandbox`'s selector and `SandboxProtocol`, and the vm tier is served by the Kata backend. Unreachable from every process entry point, as intended; the reachability ratchet (quality/reachability-baseline.json) and packages/maistro-core/tests/sandbox/test_single_authority.py keep it that way. RETIRE is a decision, not permission to delete — the module stays until its last consumers' behavioural parity is proven (#35).",
+      "replaced_by": "maistro.sandbox.wiring.build_selector / maistro.sandbox.selector.SandboxSelector over maistro.sandbox.SandboxProtocol (ADR-093); vm tier served by maistro.sandbox.backends.kata",
+      "modules": [
+        "maistro.tools.sandbox.docker"
+      ]
+    },
+    {
+      "id": "sandbox-rlimit-exec-helper",
+      "subsystem": "Sandbox isolation",
+      "disposition": "CONNECT",
+      "rationale": "A `python -m` subprocess target, not an import: bubblewrap.py launches it as `sys.executable -m maistro.sandbox.backends._rlimit_exec` to apply rlimits through a tiny execing helper — the async/threaded-safe replacement for `preexec_fn` (#76). The import-graph scan cannot follow a `-m` edge, the same blind spot `shell-invoked-build-evidence` documents for tooling, so the module reports unreachable while being load-bearing for the bubblewrap backend on every spawn.",
+      "root": "maistro.sandbox.backends.bubblewrap's spawn path (`sys.executable -m maistro.sandbox.backends._rlimit_exec`); becomes visible to the graph if backend rooting ever follows subprocess `-m` invocations",
+      "modules": [
+        "maistro.sandbox.backends._rlimit_exec"
+      ]
     }
   ]
 }

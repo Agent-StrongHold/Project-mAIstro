@@ -143,6 +143,27 @@ class TestItFailsClosed:
         with pytest.raises(ContainmentUnavailable, match="container sandbox"):
             run_validation_in_container(tmp_path, ["pytest"], image="img", timeout=5)
 
+    @pytest.mark.ac("SPEC-082926-a6ab/AC-5")
+    def test_a_selector_refusal_is_containment_unavailable(
+        self, tmp_path: Path, sandbox: type[_Sandbox], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#76: the builders sandbox enters through the canonical selector, so
+        a host that cannot evidence a strong enough backend refuses with
+        `NoSuitableBackendError` at `__enter__`. That is "containment could not
+        be established" — never a verdict for the candidate."""
+        from maistro.sandbox import NoSuitableBackendError
+
+        def _refuse(self: _Sandbox) -> _Sandbox:
+            raise NoSuitableBackendError(
+                "Workload requires min_tier='vm'. Available: bubblewrap. "
+                "No backend qualifies — execution refused."
+            )
+
+        monkeypatch.setattr(_Sandbox, "__enter__", _refuse)
+
+        with pytest.raises(ContainmentUnavailable, match="canonical sandbox backend"):
+            run_validation_in_container(tmp_path, ["pytest"], image="img", timeout=5)
+
     @pytest.mark.ac("SPEC-082926-a6ab/AC-4")
     def test_the_refusal_is_not_an_ordinary_failure(self) -> None:
         """`ContainmentUnavailable` must not be catchable as the loop's own

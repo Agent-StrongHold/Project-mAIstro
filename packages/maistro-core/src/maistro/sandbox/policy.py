@@ -107,6 +107,22 @@ BENCHMARK_EVAL = WorkloadPolicy(
     reason="Benchmark execution runs untrusted candidate code",
 )
 
+BUILDER_AGENT = WorkloadPolicy(
+    min_tier="vm",
+    network_allowed=False,
+    # A builders session is one sandbox for a whole working session — many
+    # commands over hours (installs, test suites) — not one command. The
+    # ceilings are operator budgets for what the session may consume, not
+    # isolation strength: the tier floor stays `vm` (#76).
+    max_memory_mb=2048,
+    max_timeout_s=14400,
+    reason=(
+        "The builders agent executes model-generated edits and commands; its "
+        "session sandbox runs behind the VM boundary (unattended, #76)"
+    ),
+    mode=ExecutionMode.AUTONOMOUS,
+)
+
 BROWSER_AUTOMATION = WorkloadPolicy(
     min_tier="container",
     network_allowed=True,

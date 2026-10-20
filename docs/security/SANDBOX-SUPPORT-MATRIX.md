@@ -27,6 +27,19 @@ claim support. `detect_host_capabilities()` and `build_selector` refuse a host
 that cannot construct that exact profile. The result is a refusal, not a
 silent downgrade.
 
+### Caller-wired vm substrate: the launcher seam (deny-only)
+
+`LauncherVMSandboxBackend` wraps SPEC-205's `VMMLauncher` seam as a vm-tier
+backend. It is never registered by `build_selector` — a launcher cannot be
+probed as a host capability — but callers that wire one (the opencode harness
+factory is the shipped example) register it behind a `SandboxSelector`, so
+policy admission, egress and budgets remain the selector's decision (#76).
+Its support surface is deliberately narrow: **deny-only**. No shipped launcher
+can filter destinations, and none provides a networked guest profile, so a
+`SCOPED` grant is refused at selection and a `HOST` grant at spawn — the
+substrate's own `network` field is overridden to `none` by the policy grant
+rather than trusted.
+
 ## What each workload requires
 
 From `maistro.sandbox.policy`:
@@ -37,7 +50,16 @@ From `maistro.sandbox.policy`:
 | `BENCHMARK_EVAL` | `vm` | **Yes, when the Kata profile is available; otherwise refused** |
 | `TRUSTED_TOOL` | `container` | **Yes, selected on Kata (VM is stronger); otherwise refused** |
 | `BROWSER_AUTOMATION` | `container` | **Yes, selected on Kata (VM is stronger); otherwise refused** |
+| `BUILDER_AGENT` | `vm` (autonomous) | **No — a builders session is unattended model-generated work; Kata profile or refusal** |
 | `DEV_ONLY` | `fake` | Only when the process opted into the fake |
+
+`BUILDER_AGENT` (#76) is the policy the builders agent session runs under
+(`ContainerBuilderSandbox`): the tier floor is the same `vm` as
+`UNTRUSTED_CODE`; its larger memory/time ceilings are session envelopes, not
+isolation strength. The adapter owns only the host-side credential boundary
+(denylist-filtered seed copy, `.git`-filtered sync-back); the sandbox itself
+comes from the selector, so a host without the Kata profile refuses the
+session instead of running it in a weaker private container.
 
 On a host with only bubblewrap, every standard policy refuses. This reads as
 restrictive because it is: ADR-093's Tier 3 is "a guardrail against accidents
@@ -97,6 +119,26 @@ This is the sandbox boundary, and it is a different thing from
 `maistro.security.ssrf`, which guards the engine's *own* outbound calls. That
 guard is worth nothing against candidate code, which can open a socket without
 going through Python at all.
+
+## Product consumers (the cutover invariant, #76)
+
+Every supported code-execution consumer enters through the selector; none
+constructs a direct Docker/process/microVM sandbox of its own:
+
+| Consumer | Policy | Backend it gets |
+|---|---|---|
+| Sandbox MCP tools (`maistro.tools.sandbox.canonical`) | `TRUSTED_TOOL` | strongest available (Kata when evidenced) |
+| Evolve benchmark checks (`maistro_evolve.benchmarks.sandbox_exec`) | `TRUSTED_TOOL` | strongest available |
+| RSI microVM adapter (`maistro_rsi.sandbox.microvm`) | `TRUSTED_TOOL` | strongest available |
+| RSI contained validation + builders sessions (`ContainerBuilderSandbox`) | `BUILDER_AGENT` | Kata profile, else refusal |
+| opencode foreign harness (`opencode_microvm_factory`) | `UNTRUSTED_CODE` | launcher-vm substrate registered behind the selector (deny-only) |
+
+The builders adapter's host-side credential boundary (denylist-filtered seed
+copy, `.git`-filtered sync-back) is caller policy on top of the selected
+backend, not a second isolation implementation. `maistro.tools.sandbox.docker`
+retains no product callers; it is unreachable per `check-reachability.py` and
+slated for removal. The bootstrap hardening suite asserts the adapter never
+constructs a container CLI itself.
 
 ## Failure behaviour
 
